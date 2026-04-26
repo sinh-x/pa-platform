@@ -13,5 +13,7 @@ export * from "./trash/index.js";
 export * from "./health/index.js";
 export * from "./teams/index.js";
 export * from "./activity/index.js";
+export * from "./signal/index.js";
+export * from "./repo-health/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";

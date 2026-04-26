@@ -72,6 +72,14 @@ export function getKnowledgeBaseDir(): string {
   return resolve(getAiUsageDir(), "knowledge-base");
 }
 
+export function getRepoHealthDir(): string {
+  return resolve(getKnowledgeBaseDir(), "repo-health");
+}
+
+export function getRepoHealthDbPath(): string {
+  return resolve(getKnowledgeBaseDir(), "repo-health.db");
+}
+
 export function getDeploymentsDir(): string {
   return resolve(getAiUsageDir(), "deployments");
 }
@@ -86,6 +94,14 @@ export function getBulletinsDir(): string {
 
 export function getTrashDir(): string {
   return resolve(getAiUsageDir(), "trash");
+}
+
+export function getSignalDir(): string {
+  return resolve(getAiUsageDir(), "signal");
+}
+
+export function getQueueDir(): string {
+  return resolve(getAiUsageDir(), "queue");
 }
 
 export function getRegistryDbPath(): string {
