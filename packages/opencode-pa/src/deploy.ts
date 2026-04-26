@@ -40,7 +40,12 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
       : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env });
-    writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");
+    // Only persist a session file when a real opencode session token was captured.
+    // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
+    // the deploy id as a placeholder, which silently broke `opa deploy --resume`.
+    if (result.sessionId) {
+      writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");
+    }
     const pid = typeof result.metadata?.["pid"] === "number" ? result.metadata["pid"] : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
@@ -77,7 +82,14 @@ function firstLine(text: string): string {
 
 function readPriorSession(deploymentId: string, sessionFileName: string): string {
   const sessionPath = resolve(getDeployPaths(deploymentId).deployDir, sessionFileName);
-  return readFileSync(sessionPath, "utf-8").trim();
+  if (!existsSync(sessionPath)) {
+    throw new Error(`no opencode session id recorded for ${deploymentId} — cannot resume (foreground TUI runs are not resumable)`);
+  }
+  const value = readFileSync(sessionPath, "utf-8").trim();
+  if (!value) {
+    throw new Error(`empty opencode session id recorded for ${deploymentId} — cannot resume`);
+  }
+  return value;
 }
 
 function computePlannerVars(team: string, mode: string | undefined, today: string): Record<string, string> {

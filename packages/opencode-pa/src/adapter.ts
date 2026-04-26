@@ -111,7 +111,11 @@ export class OpencodeAdapter implements RuntimeAdapter {
       if (errorMessage) {
         appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "opencode", body: errorMessage }), activityLogPath);
       }
-      return { sessionId: sessionId ?? opts.deployId, exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
+      // Foreground TUI cannot observe stdout to capture an opencode session token, and
+      // a resumed run must replay --session <real-token>, not <deploy-id>. We therefore
+      // return only sessionId from the resume path; deploy.ts skips the session file
+      // when undefined and `pa deploy --resume` fails fast with an actionable error.
+      return { ...(sessionId ? { sessionId } : {}), exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
     }
 
     const args = ["run", "-m", opts.model ?? this.defaultModel, "--dangerously-skip-permissions"];
@@ -121,7 +125,8 @@ export class OpencodeAdapter implements RuntimeAdapter {
 
     if (opts.mode === "background") {
       const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
-      return { sessionId: result.sessionId ?? sessionId ?? opts.deployId, exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
+      const captured = result.sessionId ?? sessionId;
+      return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
     const env = { ...this.env, ...opts.env };
@@ -138,13 +143,26 @@ export class OpencodeAdapter implements RuntimeAdapter {
     if (errorMessage) {
       appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "opencode", body: errorMessage }), activityLogPath);
     }
-    return { sessionId: parseSessionId(result.stdout) ?? parseSessionId(result.stderr) ?? sessionId ?? opts.deployId, exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
+    const captured = parseSessionId(result.stdout) ?? parseSessionId(result.stderr) ?? sessionId;
+    return { ...(captured ? { sessionId: captured } : {}), exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
   }
 }
 
 function runInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): OpencodeCommandResult {
-  const result = spawnSync("opencode", args, { cwd: opts.cwd, env: opts.env, stdio: "inherit" });
-  return { status: result.status, stdout: "", stderr: result.error?.message ?? "", ...(result.error ? { spawnError: result.error } : {}) };
+  // stdin/stdout stay attached to the parent TTY so the opencode TUI renders normally.
+  // stderr is piped so non-spawn failures (auth, model errors, mid-run crashes) leave
+  // a captured tail in result.stderr; we replay it to the parent's stderr after the
+  // child exits so users still see the message inline. spawnSync default 1 MiB buffer
+  // is plenty since adapterErrorMessage truncates to STDERR_TAIL_BYTES.
+  const result = spawnSync("opencode", args, {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdio: ["inherit", "inherit", "pipe"],
+    encoding: "utf-8",
+  });
+  const stderr = typeof result.stderr === "string" ? result.stderr : "";
+  if (stderr.length > 0) process.stderr.write(stderr);
+  return { status: result.status, stdout: "", stderr, ...(result.error ? { spawnError: result.error } : {}) };
 }
 
 function adapterErrorMessage(result: OpencodeCommandResult, exitCode: number): string | undefined {
@@ -274,16 +292,49 @@ function writeLog(path: string, stdout: string, stderr: string): void {
 
 function parseSessionId(output: string): string | undefined {
   for (const line of output.split("\n").filter(Boolean)) {
-    try {
-      const raw = JSON.parse(line) as Record<string, unknown>;
-      const session = raw["sessionID"] ?? raw["sessionId"] ?? raw["session_id"] ?? raw["id"];
-      if (typeof session === "string" && session.length > 0) return session;
-    } catch {
-      const match = line.match(/session(?:ID|Id|_id)?["':=\s]+([a-zA-Z0-9_-]+)/);
-      if (match?.[1]) return match[1];
-    }
+    const id = parseSessionIdLine(line);
+    if (id) return id;
   }
   return undefined;
+}
+
+function parseSessionIdLine(line: string): string | undefined {
+  try {
+    const raw = JSON.parse(line) as Record<string, unknown>;
+    const session = raw["sessionID"] ?? raw["sessionId"] ?? raw["session_id"] ?? raw["id"];
+    if (typeof session === "string" && session.length > 0) return session;
+  } catch {
+    const match = line.match(/session(?:ID|Id|_id)?["':=\s]+([a-zA-Z0-9_-]+)/);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+// Line-buffered session-id parser: opencode JSON streams may split a sessionID
+// line across multiple stdout chunks, so per-chunk regex/JSON.parse is unsafe
+// (review d-f412e8 Sec-3). Accumulate until newline; only inspect complete lines.
+export function createOpencodeSessionIdParser(): { write(text: string): void; flush(): string | undefined } {
+  let pending = "";
+  let captured: string | undefined;
+  const inspect = (line: string): void => {
+    if (captured || !line.trim()) return;
+    const id = parseSessionIdLine(line);
+    if (id) captured = id;
+  };
+  return {
+    write(text: string): void {
+      if (captured) return;
+      pending += text;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) inspect(line);
+    },
+    flush(): string | undefined {
+      if (!captured && pending) inspect(pending);
+      pending = "";
+      return captured;
+    },
+  };
 }
 
 function normalizeKind(raw: Record<string, unknown>): ActivityEvent["kind"] {

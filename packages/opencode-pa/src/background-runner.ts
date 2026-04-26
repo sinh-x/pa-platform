@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, getDeployPaths } from "@pa-platform/pa-core";
-import { createOpencodeActivityWriter } from "./adapter.js";
+import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
   args: string[];
@@ -23,8 +23,11 @@ const STDERR_TAIL_BYTES = 2000;
 try {
   const result = await runOpencode(config);
 
-  const sessionId = result.sessionId ?? config.deploymentId;
-  writeFileSync(resolve(dirname(config.logFile), config.sessionFileName), sessionId, "utf-8");
+  // Only persist a session file when the runner observed a real session token.
+  // Falling back to deployment id silently broke `opa deploy --resume`.
+  if (result.sessionId) {
+    writeFileSync(resolve(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
+  }
   const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
   if (result.exitCode === 0) {
     appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "opencode", body: "opa background deploy completed" }), activityLogPath);
@@ -60,13 +63,15 @@ function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
   // line-flushed writes are atomic for sub-PIPE_BUF (4096-byte) lines; STDERR_TAIL_BYTES = 2000 guarantees that.
   // Out-of-order timestamps are acceptable per §9 R2 — consumers sort by timestamp.
   const activity = createOpencodeActivityWriter(config.deploymentId, getDeployPaths(config.deploymentId).activityLogPath);
+  const sessionParser = createOpencodeSessionIdParser();
   const child = spawn("opencode", config.args, { cwd: config.cwd, env: { ...process.env, ...config.env }, stdio: ["ignore", "pipe", "pipe"] });
-  let sessionId: string | undefined;
   let stderrTail = "";
 
   const collectStdout = (chunk: Buffer): void => {
     const text = chunk.toString("utf-8");
-    sessionId ??= parseSessionId(text);
+    // Line-buffered parsing — a JSON line containing sessionID may straddle two
+    // chunks, so per-chunk parseSessionId(text) was unsafe (review d-f412e8 Sec-3).
+    sessionParser.write(text);
     log.write(text);
     jsonl.write(text);
     activity.write(text);
@@ -90,12 +95,14 @@ function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
     });
     child.on("close", (code) => {
       activity.flush();
+      const sessionId = sessionParser.flush();
       log.end();
       jsonl.end();
-      resolvePromise({ exitCode: code ?? 1, sessionId, stderrTail, ...(spawnError ? { spawnError } : {}) });
+      resolvePromise({ exitCode: code ?? 1, ...(sessionId ? { sessionId } : {}), stderrTail, ...(spawnError ? { spawnError } : {}) });
     });
   });
 }
+
 
 // Truncates from the end by UTF-16 code units, not Unicode codepoints.
 // For typical opencode stderr (ASCII + UTF-8) this is exact; multi-byte
@@ -109,18 +116,4 @@ function tailString(text: string, max: number): string {
 function firstLine(text: string): string {
   if (!text) return "";
   return text.split("\n", 1)[0] ?? "";
-}
-
-function parseSessionId(output: string): string | undefined {
-  for (const line of output.split("\n").filter(Boolean)) {
-    try {
-      const raw = JSON.parse(line) as Record<string, unknown>;
-      const session = raw["sessionID"] ?? raw["sessionId"] ?? raw["session_id"] ?? raw["id"];
-      if (typeof session === "string" && session.length > 0) return session;
-    } catch {
-      const match = line.match(/session(?:ID|Id|_id)?["':=\s]+([a-zA-Z0-9_-]+)/);
-      if (match?.[1]) return match[1];
-    }
-  }
-  return undefined;
 }

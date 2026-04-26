@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
-import { createOpencodeActivityWriter, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
+import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
 
 interface StubAdapterOpts {
@@ -186,7 +186,9 @@ require("node:fs").writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(proce
       assert.equal(deployments[0]?.runtime, "opencode");
       assert.equal(deployments[0]?.provider, "minimax");
       const deployId = deployments[0]!.deploy_id;
-      assert.equal(readFileSync(join(root, "deployments", deployId, "session-id-opencode.txt"), "utf-8"), deployId);
+      // Foreground TUI runs are not resumable — adapter no longer writes a fake session
+      // file (deploy id != opencode token). resume() throws an actionable error instead.
+      assert.equal(existsSync(join(root, "deployments", deployId, "session-id-opencode.txt")), false);
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
@@ -332,6 +334,74 @@ test("opa deploy registry summary includes exit code on failure", async () => {
     assert.match(deployment.summary ?? "", /exit 1/);
     assert.match(deployment.summary ?? "", /boom: model auth failed/);
   });
+});
+
+test("opa foreground captures real opencode stderr on non-zero exit", async () => {
+  await withOpaEnv(async (root) => {
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const opencode = join(bin, "opencode");
+    writeFileSync(opencode, `#!/bin/sh
+echo "model auth failed: token expired" >&2
+echo "context: refresh failed" >&2
+exit 7
+`, "utf-8");
+    chmodSync(opencode, 0o755);
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
+    const previousStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "openai"], { hooks: createOpencodeHooks(new OpencodeAdapter()), io: { stdout: () => {}, stderr: () => {} } });
+      assert.notEqual(code, 0);
+      const deployment = queryDeploymentStatuses()[0]!;
+      assert.equal(deployment.status, "failed");
+      assert.match(deployment.summary ?? "", /exit 7/);
+      assert.match(deployment.summary ?? "", /model auth failed: token expired/);
+      const activity = readFileSync(join(root, "deployments", deployment.deploy_id, "activity.jsonl"), "utf-8").trim().split("\n");
+      const errorLine = activity.map((row) => JSON.parse(row) as Record<string, unknown>).find((row) => row["kind"] === "error");
+      assert.ok(errorLine, "expected an error-kind activity event");
+      assert.match(String(errorLine["body"]), /model auth failed: token expired/);
+      assert.equal(existsSync(join(root, "deployments", deployment.deploy_id, "session-id-opencode.txt")), false);
+    } finally {
+      process.stderr.write = previousStderrWrite;
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+    }
+  });
+});
+
+test("opa deploy --resume fails fast when no session id was recorded", async () => {
+  await withOpaEnv(async (root) => {
+    // Pretend a previous foreground deploy ran but never produced a session file.
+    const priorId = "d-foregr";
+    const priorDir = join(root, "deployments", priorId);
+    mkdirSync(priorDir, { recursive: true });
+    writeFileSync(join(priorDir, "primer.md"), "stub primer");
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", priorId], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.notEqual(code, 0);
+    assert.match(stderr.join("\n"), /no opencode session id recorded/);
+  });
+});
+
+test("createOpencodeSessionIdParser handles chunks split mid-line", () => {
+  const line = JSON.stringify({ type: "session", sessionID: "ses_chunkstraddle_real_token" });
+  const parser = createOpencodeSessionIdParser();
+  parser.write(line.slice(0, 18));
+  parser.write(line.slice(18) + "\n");
+  assert.equal(parser.flush(), "ses_chunkstraddle_real_token");
+});
+
+test("createOpencodeSessionIdParser ignores partial sessionID matches across chunks", () => {
+  // Old per-chunk regex would match the partial 'sessionID":"ses_par' and capture
+  // 'ses_par' as the session id. The line-buffered parser waits for newline before
+  // inspecting, so the full token wins.
+  const parser = createOpencodeSessionIdParser();
+  parser.write('{"sessionID":"ses_par');
+  parser.write('tial_complete"}\n');
+  assert.equal(parser.flush(), "ses_partial_complete");
 });
 
 function restore(key: string, value: string | undefined): void {
