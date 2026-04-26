@@ -59,15 +59,20 @@ function __pa_core_projects
 end
 
 function __pa_core_deployments
-    command -q sqlite3; or return
+    command -q pa-core; or return
 
-    set -l registry_db ~/Documents/ai-usage/deployments/registry.db
-    if set -q PA_REGISTRY_DB
-        set registry_db "$PA_REGISTRY_DB"
-    end
-    if test -f "$registry_db"
-        sqlite3 "$registry_db" "SELECT deployment_id, team || ' - ' || COALESCE(summary, '(no summary)') FROM deployments ORDER BY started_at DESC LIMIT 100;" -separator \t 2>/dev/null
-    end
+    pa-core registry list --limit 100 2>/dev/null | awk 'NR>2 && $1 ~ /^d-/ {
+        id = substr($0, 1, 12);
+        team = substr($0, 14, 22);
+        status = substr($0, 37, 10);
+        summary = substr($0, 90);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", id);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", team);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", status);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", summary);
+        if (summary == "") summary = "(no summary)";
+        print id "\t" team " - " status " - " summary;
+    }'
 end
 
 function __pa_core_ticket_ids
