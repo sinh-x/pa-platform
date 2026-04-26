@@ -77,7 +77,7 @@ test("runCoreCommand exposes status list and detail", async () => {
     const deployDir = join(root, "deployments", "d-cli-1");
     mkdirSync(deployDir, { recursive: true });
     writeFileSync(join(deployDir, "artifact.txt"), "artifact");
-    writeFileSync(join(deployDir, "activity.jsonl"), JSON.stringify({ deployId: "d-cli-1", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "hello" }) + "\n");
+    writeFileSync(join(deployDir, "activity.jsonl"), JSON.stringify({ deployId: "d-cli-1", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "hello", partType: "text" }) + "\n");
     const reportDir = join(root, "agent-teams", "builder", "done");
     mkdirSync(reportDir, { recursive: true });
     writeFileSync(join(reportDir, "report.md"), "Report for d-cli-1");
@@ -88,6 +88,7 @@ test("runCoreCommand exposes status list and detail", async () => {
 
     const activity = capture();
     assert.equal(await runCoreCommand(["status", "d-cli-1", "--activity"], { io: activity.io }), 0);
+    assert.match(activity.stdout.join("\n"), /text\/text/);
     assert.match(activity.stdout.join("\n"), /hello/);
 
     const report = capture();

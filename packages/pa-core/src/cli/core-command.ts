@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { readActivityEvents } from "../activity/index.js";
 import { BulletinStore } from "../bulletins/index.js";
 import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
@@ -908,18 +909,13 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
     io.stdout(`Activity log is empty: ${activityFile}`);
     return 0;
   }
-  io.stdout(`Activity timeline - ${deployId} (${lines.length} events)`);
-  for (const line of lines) {
-    try {
-      const event = JSON.parse(line) as Record<string, unknown>;
-      const ts = String(event["timestamp"] ?? event["ts"] ?? "").slice(11, 19);
-      const source = String(event["source"] ?? event["agent"] ?? "unknown");
-      const kind = String(event["kind"] ?? event["event"] ?? "event");
-      const body = String(event["body"] ?? event["summary"] ?? "").slice(0, 100);
-      io.stdout(`${ts.padEnd(9)} ${source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
-    } catch {
-      // Skip malformed activity rows.
-    }
+  const events = readActivityEvents(activityFile);
+  io.stdout(`Activity timeline - ${deployId} (${events.length} events)`);
+  for (const event of events) {
+    const ts = event.timestamp.slice(11, 19);
+    const kind = event.partType ? `${event.kind}/${event.partType}` : event.kind;
+    const body = event.body.slice(0, 100);
+    io.stdout(`${ts.padEnd(9)} ${event.source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
   }
   return 0;
 }
