@@ -1,13 +1,13 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Context, Next } from "hono";
+import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { bulletinRoutes, configRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
-import type { AgentApiHooks } from "./routes/index.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
-  hooks?: AgentApiHooks;
+  hooks?: CoreExecutionHooks;
 }
 
 export interface AgentApiInstance {
