@@ -92,6 +92,10 @@
               install -Dm644 completions/pa-core.fish $out/share/fish/vendor_completions.d/pa-core.fish
             fi
 
+            if [ -f completions/opa.fish ]; then
+              install -Dm644 completions/opa.fish $out/share/fish/vendor_completions.d/opa.fish
+            fi
+
             cp -r node_modules $share/node_modules
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-core \

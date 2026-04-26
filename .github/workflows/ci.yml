@@ -35,4 +35,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fish
 
       - name: Check fish completions
-        run: fish --no-execute completions/pa-core.fish
+        run: |
+          fish --no-execute completions/pa-core.fish
+          fish --no-execute completions/opa.fish

@@ -59,7 +59,7 @@ corepack pnpm build
 nix flake show --no-write-lock-file
 ```
 
-Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`.
+Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish` and `completions/opa.fish`.
 
 ## Branch Strategy
 
