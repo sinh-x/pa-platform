@@ -20,7 +20,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : request.interactive ? "interactive" : request.direct ? "direct" : "foreground";
   const paths = getDeployPaths(deploymentId);
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath };
+  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name };
 
   if (request.dryRun) {
     writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);

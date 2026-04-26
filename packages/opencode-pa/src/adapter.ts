@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createActivityEvent, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 
 export type OpencodeProvider = "minimax" | "openai";
@@ -43,10 +44,10 @@ export class OpencodeAdapter implements RuntimeAdapter {
     this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
       const logFile = opts.logFile ?? resolve(this.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
-      const log = createWriteStream(logFile, { flags: "a" });
-      const child = spawn("opencode", args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-      child.stdout?.pipe(log, { end: false });
-      child.stderr?.pipe(log, { end: false });
+      const configPath = resolve(dirname(logFile), "opencode-background.json");
+      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
+      const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
+      const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
       child.unref();
       return { pid: child.pid };
     });
@@ -165,4 +166,12 @@ function extractBody(raw: Record<string, unknown>): string {
 
 function basenameDeployId(deployDir: string): string {
   return deployDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown";
+}
+
+function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM"] as const) {
+    if (env[key]) picked[key] = env[key]!;
+  }
+  return picked;
 }
