@@ -1,6 +1,7 @@
 export * from "./paths.js";
 export * from "./time.js";
 export * from "./config.js";
+export * from "./timers.js";
 export * from "./yaml-parser.js";
 export * from "./repos.js";
 export * from "./interactive.js";

@@ -140,3 +140,68 @@ test("runCoreCommand exposes board and teams views", async () => {
     assert.match(teamDetail.stdout.join("\n"), /Build core CLI/);
   });
 });
+
+test("runCoreCommand exposes ticket and bulletin commands", async () => {
+  await withCliEnv(async () => {
+    const createTicket = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "CLI ticket", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: createTicket.io }), 0);
+    assert.match(createTicket.stdout.join("\n"), /Created PAP-001/);
+
+    const listTicket = capture();
+    assert.equal(await runCoreCommand(["ticket", "list", "--project", "pa-platform"], { io: listTicket.io }), 0);
+    assert.match(listTicket.stdout.join("\n"), /CLI ticket/);
+
+    const updateTicket = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "implementing", "--doc-ref", "implementation:agent-teams/builder/artifacts/example.md"], { io: updateTicket.io }), 0);
+    assert.match(updateTicket.stdout.join("\n"), /implementing/);
+
+    const commentTicket = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content", "Working"], { io: commentTicket.io }), 0);
+    assert.match(commentTicket.stdout.join("\n"), /Commented PAP-001/);
+
+    const createBulletin = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Pause", "--block", "all", "--message", "Stop"], { io: createBulletin.io }), 0);
+    assert.match(createBulletin.stdout.join("\n"), /Created B-001/);
+
+    const listBulletins = capture();
+    assert.equal(await runCoreCommand(["bulletin", "list"], { io: listBulletins.io }), 0);
+    assert.match(listBulletins.stdout.join("\n"), /Pause/);
+
+    const resolveBulletin = capture();
+    assert.equal(await runCoreCommand(["bulletin", "resolve", "B-001"], { io: resolveBulletin.io }), 0);
+    assert.match(resolveBulletin.stdout.join("\n"), /Resolved B-001/);
+  });
+});
+
+test("runCoreCommand exposes health, trash, and codectx commands", async () => {
+  await withCliEnv(async (root) => {
+    const health = capture();
+    assert.equal(await runCoreCommand(["health", "tickets", "--json"], { io: health.io }), 0);
+    assert.match(health.stdout.join("\n"), /"overallScore"/);
+
+    const filePath = join(root, "old.md");
+    writeFileSync(filePath, "old");
+    const trash = capture();
+    assert.equal(await runCoreCommand(["trash", "move", filePath, "--reason", "test", "--actor", "builder/team-manager", "--type", "other"], { io: trash.io }), 0);
+    assert.match(trash.stdout.join("\n"), /Trashed T-001/);
+
+    const trashList = capture();
+    assert.equal(await runCoreCommand(["trash", "list"], { io: trashList.io }), 0);
+    assert.match(trashList.stdout.join("\n"), /old.md/);
+
+    const sourceDir = join(root, "source");
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, "index.ts"), "export function hello() { return 'hi'; }\n");
+    const analyze = capture();
+    assert.equal(await runCoreCommand(["codectx", "analyze", sourceDir], { io: analyze.io }), 0);
+    assert.match(analyze.stdout.join("\n"), /Analyzed/);
+
+    const summary = capture();
+    assert.equal(await runCoreCommand(["codectx", "summary", sourceDir], { io: summary.io }), 0);
+    assert.match(summary.stdout.join("\n"), /Functions:/);
+
+    const query = capture();
+    assert.equal(await runCoreCommand(["codectx", "query", sourceDir, "exports"], { io: query.io }), 0);
+    assert.match(query.stdout.join("\n"), /hello/);
+  });
+});
