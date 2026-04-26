@@ -32,6 +32,7 @@ export interface RunCoreCommandOptions {
   hooks?: CoreExecutionHooks;
   io?: CliIo;
   now?: Date;
+  binaryName?: string;
 }
 
 export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions = {}): Promise<number> {
@@ -39,7 +40,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
   const [command, ...rest] = argv;
   try {
     if (!command || command === "help" || command === "--help" || command === "-h") {
-      printHelp(io);
+      printHelp(io, opts.binaryName ?? "pa-core");
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
@@ -59,7 +60,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "timers") return runTimersCommand(io);
     if (command === "signal") return runSignalCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
-    printHelp(io);
+    printHelp(io, opts.binaryName ?? "pa-core");
     return 1;
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
@@ -516,6 +517,8 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
     io.stderr(validated.error);
     return 1;
   }
+  if (validated.request.listModes) return printDeployModes(validated.request.team, io);
+  if (validated.request.validate) return validateDeployConfig(validated.request.team, io);
   if (!hooks.deploy) {
     io.stderr("Deployment execution requires an adapter hook");
     return 1;
@@ -780,17 +783,44 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
   const [team, ...rest] = argv;
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
-  const flagMap: Record<string, keyof DeployRequest> = { "--mode": "mode", "--objective": "objective", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout" };
+  const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--interactive": "interactive", "--direct": "direct", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
+    const booleanKey = booleanMap[arg];
+    if (booleanKey) {
+      fields[booleanKey] = true;
+      continue;
+    }
     const key = flagMap[arg];
     if (!key) return { error: `Unsupported deploy option: ${arg}` };
     const value = rest[i + 1];
     if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
-    fields[key] = key === "timeout" ? Number(value) : value;
+    if (key === "objectiveFile") fields.objective = readFileSync(resolve(value), "utf-8");
+    else fields[key] = key === "timeout" ? Number(value) : value;
     i += 1;
   }
   return { fields };
+}
+
+function printDeployModes(team: string, io: Required<CliIo>): number {
+  const config = loadTeamConfig(team);
+  const modes = config.deploy_modes ?? [];
+  if (modes.length === 0) {
+    io.stdout(`No deploy modes configured for ${team}.`);
+    return 0;
+  }
+  io.stdout(`Deploy modes for ${team}:`);
+  for (const mode of modes) io.stdout(`  ${mode.id.padEnd(18)} ${mode.label}`);
+  return 0;
+}
+
+function validateDeployConfig(team: string, io: Required<CliIo>): number {
+  const config = loadTeamConfig(team);
+  io.stdout(`Valid team config: ${config.name}`);
+  io.stdout(`Agents: ${config.agents.length}`);
+  io.stdout(`Modes: ${(config.deploy_modes ?? []).length}`);
+  return 0;
 }
 
 function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } | { error: string } {
@@ -1557,8 +1587,8 @@ function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>
   io.stdout(`  Events:   ${eventCount}`);
 }
 
-function printHelp(io: Required<CliIo>): void {
-  io.stdout("Usage: pa-core <command> [options]");
+function printHelp(io: Required<CliIo>, binaryName: string): void {
+  io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
 }
 

@@ -1,0 +1,24 @@
+{
+  "name": "@pa-platform/opencode-pa",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "opencode runtime adapter for PA platform",
+  "bin": {
+    "opa": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\"",
+    "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@pa-platform/pa-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.0"
+  }
+}
