@@ -72,8 +72,11 @@
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
+            cp -r packages/pa-core/node_modules $share/packages/pa-core/node_modules
             cp packages/opencode-pa/package.json $share/packages/opencode-pa/package.json
             cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist
+            mkdir -p $share/packages/opencode-pa/node_modules/@pa-platform
+            ln -s ../../../pa-core $share/packages/opencode-pa/node_modules/@pa-platform/pa-core
 
             install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
             import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";
@@ -93,6 +96,10 @@
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-core \
               --add-flags "$share/pa-core-cli.mjs" \
+              --prefix PATH : "${runtimePath}"
+
+            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/opa \
+              --add-flags "$share/packages/opencode-pa/dist/cli.js" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
@@ -121,12 +128,14 @@
       packages = forAllSystems (system: {
         pa-platform = paPlatformFor system;
         pa-core = paPlatformFor system;
+        opa = paPlatformFor system;
         default = paPlatformFor system;
       });
 
       overlays.default = final: prev: {
         pa-platform = self.packages.${prev.stdenv.hostPlatform.system}.pa-platform;
         pa-core = self.packages.${prev.stdenv.hostPlatform.system}.pa-core;
+        opa = self.packages.${prev.stdenv.hostPlatform.system}.opa;
       };
 
       devShells = forAllSystems (system:
