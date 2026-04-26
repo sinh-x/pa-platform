@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, createAgentApiApp } from "../index.js";
+import { appendActivityEvent, appendRegistryEvent, closeDb, createActivityEvent, createAgentApiApp } from "../index.js";
 
 function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-agent-api-"));
@@ -75,5 +75,26 @@ test("agent API rejects path traversal query params", async () => {
     const { app } = createAgentApiApp();
     const response = await app.request("/api/documents?path=/tmp/outside.md");
     assert.equal(response.status, 403);
+  });
+});
+
+test("agent API exposes deployment lists, detail, and activity", async () => {
+  await withApiEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001", agents: ["team-manager"] });
+    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done" });
+    appendActivityEvent(createActivityEvent({ deployId: "d-api-1", timestamp: "2026-04-26T00:00:30.000Z", kind: "text", source: "opencode", body: "hello" }));
+    const { app } = createAgentApiApp();
+    const list = await app.request("/api/deployments?all=true&ticket_id=PAP-001");
+    assert.equal(list.status, 200);
+    const listBody = await list.json() as { deployments: Array<{ deploy_id: string }>; total: number };
+    assert.equal(listBody.total, 1);
+    assert.equal(listBody.deployments[0]?.deploy_id, "d-api-1");
+    const detail = await app.request("/api/deployments/d-api-1");
+    assert.equal(detail.status, 200);
+    const detailBody = await detail.json() as { deployment: { status: string }; activity_events: unknown[] };
+    assert.equal(detailBody.deployment.status, "success");
+    assert.equal(detailBody.activity_events.length, 1);
+    const activity = await app.request("/api/deployments/d-api-1/activity");
+    assert.equal((await activity.json() as { events: unknown[]; activity_events: unknown[] }).events.length, 2);
   });
 });

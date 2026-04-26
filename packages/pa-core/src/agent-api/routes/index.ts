@@ -6,3 +6,4 @@ export * from "./documents.js";
 export * from "./folders.js";
 export * from "./config.js";
 export * from "./repos.js";
+export * from "./deployments.js";
