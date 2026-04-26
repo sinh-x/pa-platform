@@ -154,6 +154,10 @@ function adapterErrorMessage(result: OpencodeCommandResult, exitCode: number): s
   return tail.length > 0 ? tail : `opencode exited with code ${exitCode}`;
 }
 
+// Truncates from the end by UTF-16 code units, not Unicode codepoints.
+// For typical opencode stderr (ASCII + UTF-8) this is exact; multi-byte
+// characters near the 2000-char boundary may be approximated. Acceptable
+// for diagnostic logs — see review d-6be10b finding Sec-2.
 function tailString(text: string, max: number): string {
   if (!text) return "";
   return text.length <= max ? text : text.slice(text.length - max);
@@ -171,6 +175,10 @@ function runStreamingCommand(args: string[], opts: StreamingCommandOpts): Promis
   mkdirSync(dirname(opts.outputPath), { recursive: true });
   const log = opts.logFile ? createWriteStream(opts.logFile, { flags: "a" }) : undefined;
   const jsonl = createWriteStream(opts.outputPath, { flags: "a" });
+  // Both this writer and the opencode plugin (~/.config/opencode/plugins/pa-safety-activity.js)
+  // append to activity.jsonl concurrently. Intentional per requirements §6 — appendFileSync({flag:"a"})
+  // line-flushed writes are atomic for sub-PIPE_BUF (4096-byte) lines; STDERR_TAIL_BYTES = 2000 guarantees that.
+  // Out-of-order timestamps are acceptable per §9 R2 — consumers sort by timestamp.
   const activity = createOpencodeActivityWriter(opts.deployId, getDeployPaths(opts.deployId).activityLogPath);
   const child = spawn("opencode", args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";

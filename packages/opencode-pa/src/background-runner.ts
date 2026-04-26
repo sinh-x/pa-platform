@@ -55,6 +55,10 @@ function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
   mkdirSync(dirname(config.logFile), { recursive: true });
   const log = createWriteStream(config.logFile, { flags: "a" });
   const jsonl = createWriteStream(resolve(dirname(config.logFile), "opencode-output.jsonl"), { flags: "a" });
+  // Both this writer and the opencode plugin (~/.config/opencode/plugins/pa-safety-activity.js)
+  // append to activity.jsonl concurrently. Intentional per requirements §6 — appendFileSync({flag:"a"})
+  // line-flushed writes are atomic for sub-PIPE_BUF (4096-byte) lines; STDERR_TAIL_BYTES = 2000 guarantees that.
+  // Out-of-order timestamps are acceptable per §9 R2 — consumers sort by timestamp.
   const activity = createOpencodeActivityWriter(config.deploymentId, getDeployPaths(config.deploymentId).activityLogPath);
   const child = spawn("opencode", config.args, { cwd: config.cwd, env: { ...process.env, ...config.env }, stdio: ["ignore", "pipe", "pipe"] });
   let sessionId: string | undefined;
@@ -93,6 +97,10 @@ function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
   });
 }
 
+// Truncates from the end by UTF-16 code units, not Unicode codepoints.
+// For typical opencode stderr (ASCII + UTF-8) this is exact; multi-byte
+// characters near the 2000-char boundary may be approximated. Acceptable
+// for diagnostic logs — see review d-6be10b finding Sec-2.
 function tailString(text: string, max: number): string {
   if (!text) return "";
   return text.length <= max ? text : text.slice(text.length - max);
