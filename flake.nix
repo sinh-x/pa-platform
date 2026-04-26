@@ -67,7 +67,7 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            mkdir -p $share/packages/pa-core $out/bin
+            mkdir -p $share/packages/pa-core $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
@@ -82,6 +82,10 @@
             for dir in docs skills teams; do
               [ -d "$dir" ] && cp -r "$dir" "$share/"
             done
+
+            if [ -f completions/pa-core.fish ]; then
+              install -Dm644 completions/pa-core.fish $out/share/fish/vendor_completions.d/pa-core.fish
+            fi
 
             cp -r node_modules $share/node_modules
 

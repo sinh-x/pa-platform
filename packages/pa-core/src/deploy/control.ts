@@ -31,6 +31,7 @@ export interface SelfUpdateStartResult extends SelfUpdateStatusResult {
 
 export interface CoreExecutionHooks {
   deploy?(request: DeployRequest): Promise<DeployHookResult> | DeployHookResult;
+  serve?(action: "start" | "stop" | "restart" | "status"): Promise<{ status: string; message?: string }> | { status: string; message?: string };
   selfUpdate?(): Promise<SelfUpdateStartResult> | SelfUpdateStartResult;
   getSelfUpdateStatus?(): Promise<SelfUpdateStatusResult> | SelfUpdateStatusResult;
 }

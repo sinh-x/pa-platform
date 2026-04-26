@@ -1,4 +1,7 @@
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { BulletinStore } from "../bulletins/index.js";
 import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
@@ -6,12 +9,16 @@ import { validateDeployRequestFields } from "../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../deploy/index.js";
 import { generateHealthReport, saveHealthSnapshot } from "../health/index.js";
 import type { HealthCategory } from "../health/index.js";
-import { appendRegistryEvent, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../registry/index.js";
+import { getSignalDir } from "../paths.js";
+import { appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../registry/index.js";
 import { listRepos } from "../repos.js";
+import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
+import { routeMessage } from "../signal/router.js";
+import { cleanSignalEntries, writeRoutedMessage } from "../signal/writers.js";
 import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries, TicketStore } from "../tickets/index.js";
-import type { CreateTicketInput, Estimate, TicketPriority, TicketStatus, TicketType } from "../tickets/index.js";
+import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../tickets/index.js";
 import { listSystemdTimers } from "../timers.js";
-import { getTeamRuntimeStatus, listTeamConfigs } from "../teams/index.js";
+import { getTeamRuntimeStatus, listTeamConfigs, loadTeamConfig } from "../teams/index.js";
 import { TrashStore } from "../trash/index.js";
 import type { TrashFileType, TrashStatus } from "../trash/index.js";
 import type { DeploymentStatus } from "../types.js";
@@ -38,6 +45,9 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date());
     if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {});
+    if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, io, opts.hooks ?? {});
+    if (command === "schedule") return runScheduleCommand(rest, io);
+    if (command === "remove-timer") return runRemoveTimerCommand(rest, io);
     if (command === "board") return runBoardCommand(rest, io);
     if (command === "teams") return runTeamsCommand(rest, io);
     if (command === "registry") return runRegistryCommand(rest, io);
@@ -47,6 +57,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "trash") return runTrashCommand(rest, io);
     if (command === "codectx") return runCodeCtxCommand(rest, io);
     if (command === "timers") return runTimersCommand(io);
+    if (command === "signal") return runSignalCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
     printHelp(io);
     return 1;
@@ -68,6 +79,66 @@ function runTimersCommand(io: Required<CliIo>): number {
   }
 }
 
+async function runServeCommand(command: string, io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
+  if (!hooks.serve) return printError("Serve process management requires an adapter hook", io);
+  const action = command === "serve" ? "start" : command === "serve-status" ? "status" : command;
+  const result = await hooks.serve(action as "start" | "stop" | "restart" | "status");
+  io.stdout(result.message ?? `Serve ${action}: ${result.status}`);
+  return result.status === "error" || result.status === "failed" ? 1 : 0;
+}
+
+function runScheduleCommand(argv: string[], io: Required<CliIo>): number {
+  const parsed = parseScheduleArgs(argv);
+  if ("error" in parsed) return printError(parsed.error, io);
+  const resolved = resolveSchedule(parsed.spec, parsed.repeat, parsed.times, parsed.command);
+  if ("error" in resolved) return printError(resolved.error, io);
+  const systemdDir = resolve(process.env["XDG_CONFIG_HOME"] ?? resolve(homedir(), ".config"), "systemd/user");
+  const servicePath = resolve(systemdDir, `${resolved.unitName}.service`);
+  const timerPath = resolve(systemdDir, `${resolved.unitName}.timer`);
+  if (!parsed.dryRun) {
+    mkdirSync(systemdDir, { recursive: true });
+    writeFileSync(servicePath, buildServiceUnit(resolved.description, resolved.execCommand));
+    writeFileSync(timerPath, buildTimerUnit(resolved.description, parsed.repeat, resolved.timeDisplay, resolved.onCalendarLines));
+    execSystemctl(["--user", "daemon-reload"]);
+    execSystemctl(["--user", "enable", "--now", `${resolved.unitName}.timer`]);
+  }
+  io.stdout(`${parsed.dryRun ? "Would schedule" : "Scheduled"}: ${resolved.unitName} (${parsed.repeat}${resolved.timeDisplay ? ` at${resolved.timeDisplay}` : ""})`);
+  io.stdout(`Timer: ${resolved.unitName}.timer`);
+  io.stdout(`Service: ${servicePath}`);
+  return 0;
+}
+
+function runRemoveTimerCommand(argv: string[], io: Required<CliIo>): number {
+  const parsed = parseRemoveTimerArgs(argv);
+  if ("error" in parsed) return printError(parsed.error, io);
+  const unitName = parsed.name.startsWith("pa-") ? parsed.name : `pa-${parsed.name}`;
+  const systemdDir = resolve(process.env["XDG_CONFIG_HOME"] ?? resolve(homedir(), ".config"), "systemd/user");
+  const timerPath = resolve(systemdDir, `${unitName}.timer`);
+  const servicePath = resolve(systemdDir, `${unitName}.service`);
+  if (!parsed.dryRun) {
+    tryExecSystemctl(["--user", "stop", `${unitName}.timer`]);
+    tryExecSystemctl(["--user", "disable", `${unitName}.timer`]);
+    if (existsSync(timerPath)) unlinkSync(timerPath);
+    if (existsSync(servicePath)) unlinkSync(servicePath);
+    execSystemctl(["--user", "daemon-reload"]);
+  }
+  io.stdout(`${parsed.dryRun ? "Would remove" : "Removed"} timer: ${unitName}`);
+  return 0;
+}
+
+function runSignalCommand(argv: string[], io: Required<CliIo>): number {
+  const [subcommand, ...rest] = argv;
+  if (subcommand !== "collect") {
+    io.stderr(`Unknown signal subcommand: ${subcommand ?? ""}`.trim());
+    io.stderr("Available subcommands: collect");
+    return 1;
+  }
+  const opts = parseSignalCollectArgs(rest);
+  if ("error" in opts) return printError(opts.error, io);
+  if (opts.reprocess) return runSignalReprocess(opts.dryRun, io);
+  return runSignalCollect(opts, io);
+}
+
 function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
   const store = new TicketStore();
@@ -84,6 +155,10 @@ function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket show requires id", io);
     const ticket = store.get(id);
     if (!ticket) return printError(`Ticket not found: ${id}`, io);
+    if (rest.includes("--json")) {
+      io.stdout(JSON.stringify(ticket, null, 2));
+      return 0;
+    }
     io.stdout(`${ticket.id} | ${ticket.status} | ${ticket.priority} | ${ticket.assignee}`);
     io.stdout(ticket.title);
     if (ticket.summary) io.stdout(`Summary: ${ticket.summary}`);
@@ -116,8 +191,42 @@ function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     io.stdout(`Commented ${id}: ${comment.id}`);
     return 0;
   }
+  if (subcommand === "attach") {
+    const id = rest[0];
+    if (!id) return printError("ticket attach requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--file", "--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    const file = parsed.values["--file"];
+    if (!file) return printError("--file is required", io);
+    const ticket = store.attach(id, file, parsed.values["--actor"] ?? "pa-core");
+    io.stdout(`Attached to ${ticket.id}: ${file}`);
+    return 0;
+  }
+  if (subcommand === "move") {
+    const id = rest[0];
+    if (!id) return printError("ticket move requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--project", "--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    const project = parsed.values["--project"];
+    if (!project) return printError("--project is required", io);
+    const ticket = store.move(id, project, parsed.values["--actor"] ?? "pa-core");
+    io.stdout(`Moved: ${id} -> ${ticket.id}`);
+    return 0;
+  }
+  if (subcommand === "delete") {
+    const id = rest[0];
+    if (!id) return printError("ticket delete requires id", io);
+    const opts = parseTicketDeleteArgs(rest.slice(1));
+    if ("error" in opts) return printError(opts.error, io);
+    if (opts.force && !opts.yes) return printError("--force requires --yes in pa-core non-interactive mode", io);
+    store.delete(id, opts.actor, opts.force);
+    io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
+    return 0;
+  }
+  if (subcommand === "check-refs") return runTicketCheckRefs(rest, io, store);
+  if (subcommand === "subticket") return runSubTicketCommand(rest, io, store);
   io.stderr(`Unknown ticket subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: list, show, create, update, comment");
+  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, check-refs, subticket");
   return 1;
 }
 
@@ -271,6 +380,7 @@ function runRegistryCommand(argv: string[], io: Required<CliIo>): number {
     let deployments = queryDeploymentStatuses();
     if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
     if (opts.status) deployments = deployments.filter((deployment) => deployment.status === opts.status);
+    if (opts.since) deployments = deployments.filter((deployment) => deployment.started_at >= opts.since!);
     printDeploymentList(deployments.slice(0, opts.limit ?? 20), io);
     return 0;
   }
@@ -289,8 +399,13 @@ function runRegistryCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "complete") return runRegistryComplete(rest, io);
+  if (subcommand === "update" || subcommand === "amend") return runRegistryUpdate(rest, io, subcommand === "amend");
+  if (subcommand === "search") return runRegistrySearch(rest, io);
+  if (subcommand === "analytics") return runRegistryAnalytics(rest, io);
+  if (subcommand === "clean") return runRegistryClean(rest, io);
+  if (subcommand === "sweep") return runRegistrySweep(rest, io);
   io.stderr(`Unknown registry subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: list, show, complete");
+  io.stderr("Available subcommands: list, show, complete, update, amend, search, analytics, clean, sweep");
   return 1;
 }
 
@@ -387,6 +502,214 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
   }
   io.stdout(`Deployment pending: ${result.deploymentId ?? "(adapter-managed)"}`);
   return 0;
+}
+
+function parseScheduleArgs(argv: string[]): { spec: string; repeat: "hourly" | "daily" | "weekly" | "monthly"; times: string[]; command: string; dryRun: boolean } | { error: string } {
+  const opts = { repeat: "daily" as "hourly" | "daily" | "weekly" | "monthly", times: [] as string[], command: defaultPaCommand(), dryRun: false };
+  let spec = "";
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--repeat") {
+      const value = argv[i + 1];
+      if (value !== "hourly" && value !== "daily" && value !== "weekly" && value !== "monthly") return { error: "--repeat must be hourly, daily, weekly, or monthly" };
+      opts.repeat = value;
+      i += 1;
+    } else if (arg === "--time") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--time requires a value" };
+      opts.times.push(value);
+      i += 1;
+    } else if (arg === "--command") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--command requires a value" };
+      opts.command = value;
+      i += 1;
+    } else if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg.startsWith("-")) return { error: `Unsupported schedule option: ${arg}` };
+    else if (!spec) spec = arg;
+    else opts.times.push(arg);
+  }
+  if (!spec) return { error: "schedule requires spec" };
+  return { spec, repeat: opts.repeat, times: opts.times.length > 0 ? opts.times : ["09:00"], command: opts.command, dryRun: opts.dryRun };
+}
+
+function parseRemoveTimerArgs(argv: string[]): { name: string; dryRun: boolean } | { error: string } {
+  let name = "";
+  let dryRun = false;
+  for (const arg of argv) {
+    if (arg === "--dry-run") dryRun = true;
+    else if (arg.startsWith("-")) return { error: `Unsupported remove-timer option: ${arg}` };
+    else if (!name) name = arg;
+    else return { error: `Unexpected remove-timer argument: ${arg}` };
+  }
+  return name ? { name, dryRun } : { error: "remove-timer requires timer name" };
+}
+
+function resolveSchedule(spec: string, repeat: "hourly" | "daily" | "weekly" | "monthly", times: string[], command: string): { unitName: string; description: string; execCommand: string; onCalendarLines: string[]; timeDisplay: string } | { error: string } {
+  let unitName: string;
+  let description: string;
+  let execCommand: string;
+  if (spec === "signal:collect") {
+    unitName = "pa-signal-collect";
+    description = "personal-assistant signal collect";
+    execCommand = `${command} signal collect`;
+    return { unitName, description, execCommand, onCalendarLines: ["*:0/2:00"], timeDisplay: " every 2 hours" };
+  }
+  if (spec.startsWith("daily:")) {
+    const mode = spec.slice("daily:".length);
+    if (!mode || !["plan", "progress", "end"].includes(mode)) return { error: `Invalid daily mode '${mode}'. Use: plan | progress | end` };
+    unitName = `pa-daily-${mode}`;
+    description = `personal-assistant planner ${mode}`;
+    execCommand = `${command} deploy planner --mode ${mode} --background`;
+  } else if (spec.includes(":")) {
+    const [team, mode] = spec.split(":");
+    if (!team || !mode) return { error: `Invalid team:mode syntax '${spec}'. Expected <team>:<mode>.` };
+    try {
+      loadTeamConfig(team);
+    } catch {
+      return { error: `Team not found: ${team}` };
+    }
+    unitName = `pa-${team}-${mode}`;
+    description = `personal-assistant ${team}:${mode}`;
+    execCommand = `${command} deploy ${team} --mode ${mode} --background`;
+  } else {
+    try {
+      loadTeamConfig(spec);
+    } catch {
+      return { error: `Team not found: ${spec}` };
+    }
+    unitName = `pa-${spec}`;
+    description = `personal-assistant deploy: ${spec}`;
+    execCommand = `${command} deploy ${spec} --background`;
+  }
+  const onCalendarLines = times.map((time) => calendarLine(repeat, time));
+  const invalid = onCalendarLines.find((line) => line.startsWith("Error:"));
+  if (invalid) return { error: invalid };
+  return { unitName, description, execCommand, onCalendarLines, timeDisplay: times.map((time) => ` ${time}`).join("") };
+}
+
+function calendarLine(repeat: "hourly" | "daily" | "weekly" | "monthly", time: string): string {
+  if (!/^\d{1,2}:\d{2}$/.test(time)) return `Error: Invalid time format '${time}'. Expected HH:MM.`;
+  const [hour, min] = time.split(":");
+  if (repeat === "hourly") return "hourly";
+  if (repeat === "daily") return `*-*-* ${hour}:${min}:00`;
+  if (repeat === "weekly") return `Mon *-*-* ${hour}:${min}:00`;
+  return `*-*-01 ${hour}:${min}:00`;
+}
+
+function buildServiceUnit(description: string, execCommand: string): string {
+  return `[Unit]\nDescription=${description}\n\n[Service]\nType=oneshot\nExecStart=${execCommand}\nKillMode=process\nEnvironment=HOME=${homedir()}\n`;
+}
+
+function buildTimerUnit(description: string, repeat: string, timeDisplay: string, onCalendarLines: string[]): string {
+  return `[Unit]\nDescription=${description} (${repeat}${timeDisplay ? ` at${timeDisplay}` : ""})\n\n[Timer]\n${onCalendarLines.map((line) => `OnCalendar=${line}`).join("\n")}\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n`;
+}
+
+function defaultPaCommand(): string {
+  if (process.env["PA_COMMAND"]) return process.env["PA_COMMAND"]!;
+  if (process.env["PA_CORE_BIN"]) return process.env["PA_CORE_BIN"]!;
+  if (process.env["PA_BIN"]) return resolve(process.env["PA_BIN"]!, "pa");
+  return "pa-core";
+}
+
+function execSystemctl(args: string[]): void {
+  execFileSync("systemctl", args, { stdio: "ignore" });
+}
+
+function tryExecSystemctl(args: string[]): void {
+  try {
+    execSystemctl(args);
+  } catch {
+    // The timer may not exist or may already be stopped.
+  }
+}
+
+function parseSignalCollectArgs(argv: string[]): { dryRun: boolean; skipRoute: boolean; reprocess: boolean; conversationId?: string } | { error: string } {
+  const opts: { dryRun: boolean; skipRoute: boolean; reprocess: boolean; conversationId?: string } = { dryRun: false, skipRoute: false, reprocess: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg === "--skip-route") opts.skipRoute = true;
+    else if (arg === "--reprocess") opts.reprocess = true;
+    else if (arg === "--conversation-id") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--conversation-id requires a value" };
+      opts.conversationId = value;
+      i += 1;
+    } else return { error: `Unsupported signal collect option: ${arg}` };
+  }
+  return opts;
+}
+
+function runSignalCollect(opts: { dryRun: boolean; skipRoute: boolean; conversationId?: string }, io: Required<CliIo>): number {
+  const state = readCollectorState();
+  io.stdout("=== Signal Note to Self Collector ===");
+  io.stdout(`Last processed: ${state.lastProcessedAt > 0 ? new Date(state.lastProcessedAt).toISOString() : "never"}`);
+  io.stdout(`Total processed: ${state.totalProcessed}`);
+  let conversationId = opts.conversationId;
+  if (!conversationId) {
+    const identity = getOwnIdentity();
+    const conversation = findNoteToSelfConversation(identity);
+    if (!conversation) return printError("Could not find Note to Self conversation", io);
+    conversationId = conversation.id;
+    io.stdout(`Own identity: ${identity.e164} (${identity.uuid})`);
+  }
+  io.stdout(`Note to Self conversation: ${conversationId}${opts.conversationId ? " (override)" : ""}`);
+  if (opts.dryRun) {
+    const messages = fetchNotesSince(conversationId, state.lastProcessedAt);
+    io.stdout(messages.length === 0 ? "No new messages found." : `Would extract ${messages.length} new message(s).`);
+    for (const msg of messages) io.stdout(`  [${new Date(msg.sent_at).toISOString()}] ${(msg.body ?? "(no text body)").slice(0, 80).replace(/\n/g, " ")}`);
+    return 0;
+  }
+  const result = extractNotesSinceLastRun(conversationId);
+  io.stdout(result.count === 0 ? "No new messages found." : `Extracted ${result.count} new message(s).`);
+  for (const file of result.files) io.stdout(`  ${file}`);
+  if (!opts.skipRoute && result.files.length > 0) routeSignalFiles(result.files, false, io);
+  return 0;
+}
+
+function runSignalReprocess(dryRun: boolean, io: Required<CliIo>): number {
+  const rawDir = getSignalPaths(getSignalDir()).rawDir;
+  if (!existsSync(rawDir)) {
+    io.stdout("No raw notes found in signal/raw/.");
+    return 0;
+  }
+  const files = readdirSync(rawDir).filter((file) => file.endsWith(".md")).map((file) => join(rawDir, file));
+  if (files.length === 0) {
+    io.stdout("No raw notes found in signal/raw/.");
+    return 0;
+  }
+  io.stdout(`Found ${files.length} raw note(s) to reprocess.`);
+  if (!dryRun) io.stdout(`Removed ${cleanSignalEntries()} previous entries.`);
+  routeSignalFiles(files, dryRun, io);
+  return 0;
+}
+
+function routeSignalFiles(files: string[], dryRun: boolean, io: Required<CliIo>): void {
+  let routed = 0;
+  let errors = 0;
+  for (const file of files) {
+    try {
+      const result = routeMessage(file);
+      const sentAt = extractSentAtFromFile(file);
+      if (dryRun) io.stdout(`  [${new Date(sentAt).toISOString().slice(0, 10)}] ${result.destination} <- ${basename(file)}`);
+      else {
+        const writeResult = writeRoutedMessage(result, sentAt);
+        markSignalNoteAsProcessed(file);
+        io.stdout(`  ${result.destination.padEnd(16)} -> ${writeResult.path}${writeResult.ticketId ? ` (${writeResult.ticketId})` : ""}`);
+      }
+      routed += 1;
+    } catch (error) {
+      errors += 1;
+      io.stderr(`ERROR: ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  io.stdout(`Routed ${routed} note(s). Errors: ${errors}.`);
+}
+
+function extractSentAtFromFile(filePath: string): number {
+  const match = readFileSync(filePath, "utf-8").match(/^sentAt:\s*(\d+)/m);
+  return match ? Number.parseInt(match[1]!, 10) : Date.now();
 }
 
 function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): number {
@@ -488,8 +811,8 @@ function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean } | { er
   return opts;
 }
 
-function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; limit?: number } | { error: string } {
-  const opts: { team?: string; status?: DeploymentStatus["status"]; limit?: number } = {};
+function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string } | { error: string } {
+  const opts: { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--team") {
@@ -500,7 +823,13 @@ function parseRegistryListArgs(argv: string[]): { team?: string; status?: Deploy
     } else if (arg === "--status") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: "--status requires a value" };
+      if (!isDeploymentStatus(value)) return { error: `Invalid status '${value}'. Must be one of: running, success, partial, failed, crashed, dead, unknown` };
       opts.status = value as DeploymentStatus["status"];
+      i += 1;
+    } else if (arg === "--since") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--since requires a value" };
+      opts.since = value;
       i += 1;
     } else if (arg === "--limit") {
       const value = argv[i + 1];
@@ -530,13 +859,19 @@ function runRegistryComplete(argv: string[], io: Required<CliIo>): number {
     io.stderr(parsed.error);
     return 1;
   }
-  appendRegistryEvent({ deployment_id: deployId, team: deployment.team, event: "completed", timestamp: new Date().toISOString(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile });
+  const events = getDeploymentEvents(deployId);
+  if (parsed.fallback && events.some((event) => event.event === "completed" || event.event === "crashed")) {
+    io.stdout("Skipping: deployment already has terminal event");
+    return 0;
+  }
+  appendRegistryEvent({ deployment_id: deployId, team: deployment.team, event: "completed", timestamp: new Date().toISOString(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, fallback: parsed.fallback });
   io.stdout(`Completed ${deployId} with status ${parsed.status}`);
   return 0;
 }
 
-function parseRegistryCompleteArgs(argv: string[]): { status: "success" | "partial" | "failed"; summary?: string; logFile?: string } | { error: string } {
-  const opts: { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string } = {};
+function parseRegistryCompleteArgs(argv: string[]): { status: "success" | "partial" | "failed"; summary?: string; logFile?: string; rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number }; fallback?: boolean } | { error: string } {
+  const opts: { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; fallback?: boolean } = {};
+  const ratingValues: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--status") {
@@ -554,14 +889,149 @@ function parseRegistryCompleteArgs(argv: string[]): { status: "success" | "parti
       if (!value || value.startsWith("-")) return { error: "--log-file requires a value" };
       opts.logFile = value;
       i += 1;
+    } else if (arg === "--fallback") opts.fallback = true;
+    else if (arg.startsWith("--rating-")) {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
+      ratingValues[arg] = value;
+      i += 1;
     } else return { error: `Unsupported registry complete option: ${arg}` };
   }
-  return opts.status ? { status: opts.status, summary: opts.summary, logFile: opts.logFile } : { error: "--status is required" };
+  const rating = parseRatingOptions(ratingValues);
+  if ("error" in rating) return rating;
+  return opts.status ? { status: opts.status, summary: opts.summary, logFile: opts.logFile, fallback: opts.fallback, rating: rating.rating } : { error: "--status is required" };
 }
 
-function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string } | { error: string } {
-  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string } = {};
-  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search"]));
+function runRegistryUpdate(argv: string[], io: Required<CliIo>, deprecatedAlias: boolean): number {
+  const [deployId, ...rest] = argv;
+  if (!deployId) return printError("registry update requires deploy-id", io);
+  const events = getDeploymentEvents(deployId);
+  const started = events.find((event) => event.event === "started");
+  if (!started) return printError(`Deployment not found: ${deployId}`, io);
+  const parsed = parseRegistryUpdateArgs(rest);
+  if ("error" in parsed) return printError(parsed.error, io);
+  if (deprecatedAlias) io.stderr("Warning: `pa registry amend` is deprecated. Use `pa registry update` instead.");
+  appendRegistryEvent({ deployment_id: deployId, team: started.team, event: "updated", timestamp: new Date().toISOString(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, note: parsed.note });
+  io.stdout(`${deprecatedAlias ? "Amended" : "Updated"}: ${deployId} - ${parsed.summary ?? parsed.note ?? "update recorded"}`);
+  return 0;
+}
+
+function parseRegistryUpdateArgs(argv: string[]): { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; note?: string; rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number } } | { error: string } {
+  const opts: { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; note?: string } = {};
+  const ratingValues: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--status") {
+      const value = argv[i + 1];
+      if (value !== "success" && value !== "partial" && value !== "failed") return { error: "--status must be success, partial, or failed" };
+      opts.status = value;
+      i += 1;
+    } else if (arg === "--summary" || arg === "--log-file" || arg === "--note") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
+      if (arg === "--summary") opts.summary = value;
+      else if (arg === "--log-file") opts.logFile = value;
+      else opts.note = value;
+      i += 1;
+    } else if (arg.startsWith("--rating-")) {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
+      ratingValues[arg] = value;
+      i += 1;
+    } else return { error: `Unsupported registry update option: ${arg}` };
+  }
+  const rating = parseRatingOptions(ratingValues);
+  if ("error" in rating) return rating;
+  if (!opts.status && !opts.summary && !opts.logFile && !opts.note && !rating.rating) return { error: "At least one field is required. Use --summary, --status, --log-file, --rating-*, or --note." };
+  return { ...opts, rating: rating.rating };
+}
+
+function runRegistrySearch(argv: string[], io: Required<CliIo>): number {
+  const [query, ...rest] = argv;
+  if (!query?.trim()) return printError("Search query cannot be empty", io);
+  const parsed = parseLimitOnly(rest, "registry search");
+  if ("error" in parsed) return printError(parsed.error, io);
+  const needle = query.toLowerCase();
+  const eventDeployIds = new Set((getDb().prepare("SELECT deployment_id, team, event, summary, note, objective FROM registry_events ORDER BY timestamp DESC").all() as Array<Record<string, unknown>>)
+    .filter((row) => `${row["deployment_id"] ?? ""} ${row["team"] ?? ""} ${row["event"] ?? ""} ${row["summary"] ?? ""} ${row["note"] ?? ""} ${row["objective"] ?? ""}`.toLowerCase().includes(needle))
+    .map((row) => String(row["deployment_id"])));
+  const matches = queryDeploymentStatuses().filter((deployment) => eventDeployIds.has(deployment.deploy_id) || `${deployment.deploy_id} ${deployment.team} ${deployment.status} ${deployment.summary ?? ""} ${deployment.objective ?? ""}`.toLowerCase().includes(needle)).slice(0, parsed.limit ?? 20);
+  if (matches.length === 0) {
+    io.stdout("No results found.");
+    return 0;
+  }
+  printDeploymentList(matches, io);
+  return 0;
+}
+
+function runRegistryAnalytics(argv: string[], io: Required<CliIo>): number {
+  const opts = parseRegistryAnalyticsArgs(argv);
+  if ("error" in opts) return printError(opts.error, io);
+  let deployments = queryDeploymentStatuses();
+  if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
+  if (opts.since) deployments = deployments.filter((deployment) => deployment.started_at >= opts.since!);
+  if (!opts.view || opts.view === "daily") {
+    io.stdout("=== Deployments Per Day ===");
+    for (const [day, rows] of groupBy(deployments, (deployment) => deployment.started_at.slice(0, 10))) io.stdout(`${day.padEnd(12)} ${String(rows.length).padEnd(8)} ${rows.filter((d) => d.status === "success").length}`);
+  }
+  if (!opts.view || opts.view === "teams") {
+    io.stdout("=== Team Activity ===");
+    for (const [team, rows] of groupBy(deployments, (deployment) => deployment.team)) io.stdout(`${team.padEnd(20)} ${String(rows.length).padEnd(8)} ${rows[0]?.started_at ?? ""}`);
+  }
+  if (!opts.view || opts.view === "ratings") {
+    io.stdout("=== Rating Trends ===");
+    const rows = (getDb().prepare("SELECT team, timestamp, rating FROM registry_events WHERE rating IS NOT NULL ORDER BY timestamp DESC LIMIT 60").all() as Array<{ team: string; timestamp: string; rating: string }>).filter((row) => !opts.team || row.team === opts.team);
+    for (const row of rows) {
+      const rating = JSON.parse(row.rating) as { overall?: number; productivity?: number; quality?: number };
+      io.stdout(`${row.timestamp.slice(0, 10).padEnd(12)} ${row.team.padEnd(16)} ${String(rating.overall ?? "N/A").padEnd(8)} ${String(rating.productivity ?? "N/A").padEnd(8)} ${String(rating.quality ?? "N/A")}`);
+    }
+  }
+  return 0;
+}
+
+function runRegistryClean(argv: string[], io: Required<CliIo>): number {
+  const opts = parseRegistryCleanArgs(argv);
+  if ("error" in opts) return printError(opts.error, io);
+  const thresholdMs = opts.thresholdHours * 60 * 60 * 1000;
+  const now = Date.now();
+  const orphans = queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && now - new Date(deployment.started_at).getTime() > thresholdMs);
+  if (orphans.length === 0) {
+    io.stdout("No orphaned deployments found.");
+    return 0;
+  }
+  io.stdout(`Found ${orphans.length} orphaned deployment(s) (running > ${opts.thresholdHours}h):`);
+  for (const deployment of orphans) io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(12)} ${deployment.started_at}`);
+  if (!opts.markDead) {
+    io.stdout("Dry-run: no changes made. Use --mark-dead to mark them as crashed.");
+    return 0;
+  }
+  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "crashed", timestamp: new Date().toISOString(), exit_code: -1, summary: "Marked as dead by registry clean" });
+  return 0;
+}
+
+function runRegistrySweep(argv: string[], io: Required<CliIo>): number {
+  const fix = argv.includes("--fix");
+  const unsupported = argv.find((arg) => arg !== "--fix" && arg !== "--dry-run");
+  if (unsupported) return printError(`Unsupported registry sweep option: ${unsupported}`, io);
+  const orphans = queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && (!deployment.pid || !isProcessAlive(deployment.pid)));
+  if (orphans.length === 0) {
+    io.stdout("No orphaned deployments found.");
+    return 0;
+  }
+  io.stdout(`Found ${orphans.length} orphaned deployment(s):`);
+  for (const deployment of orphans) io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(15)} ${deployment.pid ?? "none"}`);
+  if (!fix) {
+    io.stdout("Dry-run: no changes made. Use --fix to write fallback markers.");
+    return 0;
+  }
+  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "completed", timestamp: new Date().toISOString(), status: "partial", summary: "Resolved by pa registry sweep (fallback)", fallback: true });
+  io.stdout(`Swept ${orphans.length} orphaned deployment(s).`);
+  return 0;
+}
+
+function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[] } | { error: string } {
+  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[] } = {};
+  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags"]));
   if ("error" in result) return result;
   if (result.values["--project"]) opts.project = result.values["--project"];
   if (result.values["--status"]) opts.status = result.values["--status"] as TicketStatus;
@@ -569,6 +1039,8 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
   if (result.values["--priority"]) opts.priority = result.values["--priority"] as TicketPriority;
   if (result.values["--type"]) opts.type = result.values["--type"] as TicketType;
   if (result.values["--search"]) opts.search = result.values["--search"];
+  if (result.values["--tags"]) opts.tags = splitCsv(result.values["--tags"]);
+  if (result.values["--exclude-tags"]) opts.excludeTags = splitCsv(result.values["--exclude-tags"]);
   return opts;
 }
 
@@ -601,16 +1073,23 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   };
 }
 
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; add_doc_ref?: { path: string; type?: string; primary?: boolean } }; actor: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--status", "--assignee", "--priority", "--tags", "--doc-ref", "--actor"]));
+function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string } | { error: string } {
+  const result = parseTicketUpdateFlagPairs(argv);
   if ("error" in result) return result;
   const values = result.values;
-  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; add_doc_ref?: { path: string; type?: string; primary?: boolean } } = {};
+  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
   if (values["--status"]) input.status = values["--status"] as TicketStatus;
   if (values["--assignee"]) input.assignee = values["--assignee"];
   if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
   if (values["--tags"]) input.tags = splitCsv(values["--tags"]);
-  if (values["--doc-ref"]) input.add_doc_ref = parseDocRefFlag(values["--doc-ref"]!);
+  if (values["--blocked-by"] !== undefined) input.blockedBy = splitCsv(values["--blocked-by"]);
+  if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
+  if (values["--doc-ref"]) input.add_doc_ref = { ...parseDocRefFlag(values["--doc-ref"]!), primary: result.booleans.has("--doc-ref-primary") };
+  if (values["--remove-doc-ref"]) input.remove_doc_ref = values["--remove-doc-ref"];
+  if (values["--linked-branch"]) input.add_linked_branch = parseLinkedBranchFlag(values["--linked-branch"]!);
+  if (values["--remove-linked-branch"]) input.remove_linked_branch = values["--remove-linked-branch"];
+  if (values["--linked-commit"]) input.add_linked_commit = parseLinkedCommitFlag(values["--linked-commit"]!);
+  if (values["--remove-linked-commit"]) input.remove_linked_commit = values["--remove-linked-commit"];
   return { input, actor: values["--actor"] ?? "pa-core" };
 }
 
@@ -620,6 +1099,102 @@ function parseTicketCommentArgs(argv: string[]): { author: string; content: stri
   if (!result.values["--author"]) return { error: "--author is required" };
   if (!result.values["--content"]) return { error: "--content is required" };
   return { author: result.values["--author"]!, content: result.values["--content"]! };
+}
+
+function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
+  const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor"]);
+  const booleanFlags = new Set(["--doc-ref-primary", "--force"]);
+  const values: Record<string, string> = {};
+  const booleans = new Set<string>();
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i]!;
+    if (booleanFlags.has(flag)) {
+      booleans.add(flag);
+      continue;
+    }
+    if (!valueFlags.has(flag)) return { error: `Unsupported option: ${flag}` };
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("-")) return { error: `${flag} requires a value` };
+    values[flag] = value;
+    i += 1;
+  }
+  return { values, booleans };
+}
+
+function parseTicketDeleteArgs(argv: string[]): { force: boolean; yes: boolean; actor: string } | { error: string } {
+  const opts = { force: false, yes: false, actor: "pa-core" };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--force") opts.force = true;
+    else if (arg === "--yes") opts.yes = true;
+    else if (arg === "--actor") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--actor requires a value" };
+      opts.actor = value;
+      i += 1;
+    } else return { error: `Unsupported ticket delete option: ${arg}` };
+  }
+  return opts;
+}
+
+function runTicketCheckRefs(argv: string[], io: Required<CliIo>, store: TicketStore): number {
+  const parsed = parseFlagPairs(argv, new Set(["--project"]));
+  if ("error" in parsed) return printError(parsed.error, io);
+  const project = parsed.values["--project"];
+  if (!project) return printError("--project is required", io);
+  const orphans: Array<{ ticketId: string; type: string; path: string; addedAt: string }> = [];
+  for (const ticket of store.list({ project })) {
+    for (const ref of ticket.doc_refs) {
+      if (ref.type === "url" || ref.path.startsWith("http://") || ref.path.startsWith("https://")) continue;
+      if (!existsSync(resolve(ref.path))) orphans.push({ ticketId: ticket.id, type: ref.type, path: ref.path, addedAt: ref.addedAt });
+    }
+  }
+  if (orphans.length === 0) {
+    io.stdout(`All doc_refs in project '${project}' are valid.`);
+    return 0;
+  }
+  io.stdout(`Orphaned doc_refs (${orphans.length}):`);
+  for (const orphan of orphans) io.stdout(`${orphan.ticketId.padEnd(10)} ${orphan.type.padEnd(12)} ${orphan.path}`);
+  return 1;
+}
+
+function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketStore): number {
+  const [subcommand, parentId, maybeSubId, ...rest] = argv;
+  if (!subcommand) return printError("ticket subticket requires subcommand", io);
+  if (!parentId) return printError("ticket subticket requires parent id", io);
+  if (subcommand === "create") {
+    const parsed = parseFlagPairs([maybeSubId, ...rest].filter((value): value is string => !!value), new Set(["--title", "--summary", "--assignee", "--priority", "--estimate", "--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    const title = parsed.values["--title"];
+    if (!title) return printError("--title is required", io);
+    const result = store.addSubTicket(parentId, { title, summary: parsed.values["--summary"] ?? "", assignee: parsed.values["--assignee"] ?? "", priority: (parsed.values["--priority"] ?? "medium") as TicketPriority, estimate: (parsed.values["--estimate"] ?? "S") as Estimate }, parsed.values["--actor"] ?? "pa-core");
+    io.stdout(`Created sub-ticket: ${result.subTicket.id}`);
+    return 0;
+  }
+  if (subcommand === "list") {
+    const subTickets = store.listSubTickets(parentId);
+    for (const sub of subTickets) io.stdout(`${sub.id.padEnd(18)} ${sub.status.padEnd(12)} ${sub.priority.padEnd(8)} ${sub.title}`);
+    io.stdout(`Count: ${subTickets.length}`);
+    return 0;
+  }
+  if (subcommand === "update" || subcommand === "complete") {
+    const subTicketId = maybeSubId;
+    if (!subTicketId) return printError(`ticket subticket ${subcommand} requires sub-ticket id`, io);
+    const parsed = subcommand === "complete" ? { values: { "--status": "done" } } : parseFlagPairs(rest, new Set(["--status", "--assignee", "--title", "--summary", "--priority", "--estimate", "--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    const values = parsed.values;
+    const input: { status?: SubTicketStatus; assignee?: string; title?: string; summary?: string; priority?: TicketPriority; estimate?: Estimate } = {};
+    if (values["--status"]) input.status = values["--status"] as SubTicketStatus;
+    if (values["--assignee"]) input.assignee = values["--assignee"];
+    if (values["--title"]) input.title = values["--title"];
+    if (values["--summary"]) input.summary = values["--summary"];
+    if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
+    if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
+    const result = store.updateSubTicket(parentId, subTicketId, input, values["--actor"] ?? "pa-core");
+    io.stdout(`${subcommand === "complete" ? "Completed" : "Updated"}: ${result.subTicket.id}`);
+    return 0;
+  }
+  return printError(`Unknown ticket subticket subcommand: ${subcommand}`, io);
 }
 
 function parseBulletinCreateArgs(argv: string[]): { title: string; block: BulletinBlock; except?: string[]; body: string } | { error: string } {
@@ -706,8 +1281,108 @@ function parseDocRefFlag(value: string): { path: string; type?: string; primary?
   return { path: value };
 }
 
+function parseLinkedBranchFlag(value: string): { repo: string; branch: string; sha?: string } {
+  const parts = value.split("|");
+  if (parts.length < 2) throw new Error(`Invalid --linked-branch format "${value}". Expected: repo|branch|sha`);
+  return { repo: parts[0]!, branch: parts.length > 2 ? parts.slice(1, -1).join("|") : parts.slice(1).join("|"), sha: parts.length > 2 ? parts.at(-1) : undefined };
+}
+
+function parseLinkedCommitFlag(value: string): { repo: string; sha: string; message?: string; author?: string; timestamp?: string } {
+  const parts = value.split("|");
+  if (parts.length < 2) throw new Error(`Invalid --linked-commit format "${value}". Expected: repo|sha|message|author|timestamp`);
+  return { repo: parts[0]!, sha: parts[1]!, message: parts[2], author: parts[3], timestamp: parts[4] };
+}
+
 function splitCsv(value: string | undefined): string[] {
   return value ? value.split(",").map((entry) => entry.trim()).filter(Boolean) : [];
+}
+
+function parseRatingOptions(values: Record<string, string>): { rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number } } | { error: string } {
+  if (Object.keys(values).length === 0) return {};
+  const source = values["--rating-source"] ?? "agent";
+  if (source !== "agent" && source !== "system" && source !== "user") return { error: "--rating-source must be agent, system, or user" };
+  const rating: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number } = { source, overall: numberRating(values["--rating-overall"] ?? "0") };
+  for (const [flag, key] of [["--rating-productivity", "productivity"], ["--rating-quality", "quality"], ["--rating-efficiency", "efficiency"], ["--rating-insight", "insight"]] as const) {
+    if (values[flag] !== undefined) rating[key] = numberRating(values[flag]);
+  }
+  for (const value of [rating.overall, rating.productivity, rating.quality, rating.efficiency, rating.insight]) if (value !== undefined && (Number.isNaN(value) || value < 0 || value > 5)) return { error: "Rating values must be between 0 and 5" };
+  return { rating };
+}
+
+function numberRating(value: string): number {
+  return Number.parseFloat(value);
+}
+
+function parseLimitOnly(argv: string[], context: string): { limit?: number } | { error: string } {
+  const opts: { limit?: number } = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg !== "--limit") return { error: `Unsupported ${context} option: ${arg}` };
+    const value = argv[i + 1];
+    if (!value || value.startsWith("-")) return { error: "--limit requires a value" };
+    const limit = Number(value);
+    if (!Number.isInteger(limit) || limit < 1) return { error: "--limit must be a positive integer" };
+    opts.limit = limit;
+    i += 1;
+  }
+  return opts;
+}
+
+function parseRegistryAnalyticsArgs(argv: string[]): { view?: "daily" | "teams" | "ratings"; team?: string; since?: string } | { error: string } {
+  const opts: { view?: "daily" | "teams" | "ratings"; team?: string; since?: string } = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    const value = argv[i + 1];
+    if (arg === "--view") {
+      if (value !== "daily" && value !== "teams" && value !== "ratings") return { error: "--view must be daily, teams, or ratings" };
+      opts.view = value;
+      i += 1;
+    } else if (arg === "--team" || arg === "--since") {
+      if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
+      if (arg === "--team") opts.team = value;
+      else opts.since = value;
+      i += 1;
+    } else return { error: `Unsupported registry analytics option: ${arg}` };
+  }
+  return opts;
+}
+
+function parseRegistryCleanArgs(argv: string[]): { thresholdHours: number; markDead: boolean } | { error: string } {
+  const opts = { thresholdHours: 6, markDead: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--mark-dead") opts.markDead = true;
+    else if (arg === "--dry-run") {
+      // dry-run is the default; accepted for compatibility.
+    } else if (arg === "--threshold") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--threshold requires a value" };
+      const thresholdHours = Number.parseFloat(value);
+      if (!Number.isFinite(thresholdHours) || thresholdHours <= 0) return { error: "--threshold must be a positive number" };
+      opts.thresholdHours = thresholdHours;
+      i += 1;
+    } else return { error: `Unsupported registry clean option: ${arg}` };
+  }
+  return opts;
+}
+
+function groupBy<T>(values: T[], keyFn: (value: T) => string): Array<[string, T[]]> {
+  const grouped = new Map<string, T[]>();
+  for (const value of values) grouped.set(keyFn(value), [...(grouped.get(keyFn(value)) ?? []), value]);
+  return [...grouped.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDeploymentStatus(value: string): value is DeploymentStatus["status"] {
+  return ["running", "success", "partial", "failed", "crashed", "dead", "unknown"].includes(value);
 }
 
 function printError(error: string, io: Required<CliIo>): number {
@@ -742,7 +1417,7 @@ function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>
 
 function printHelp(io: Required<CliIo>): void {
   io.stdout("Usage: pa-core <command> [options]");
-  io.stdout("Commands: repos list, status, deploy, board, teams, registry, ticket, bulletin, health, trash, codectx, timers");
+  io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
 }
 
 function normalizeIo(io: CliIo = {}): Required<CliIo> {

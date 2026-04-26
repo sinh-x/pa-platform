@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
 import { matchAssignee } from "./validate.js";
-import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
+import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
 
@@ -85,6 +85,68 @@ export class TicketStore {
     this.writeTicket({ ...ticket, comments: [...ticket.comments, comment], updatedAt: now });
     this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
     return comment;
+  }
+
+  attach(id: string, path: string, actor = "pa-core"): Ticket {
+    return this.update(id, { add_doc_ref: { type: "attachment", path } }, actor);
+  }
+
+  move(id: string, project: string, actor = "pa-core"): Ticket {
+    const current = this.get(id);
+    if (!current) throw new Error(`Ticket not found: ${id}`);
+    const { key, prefix } = resolveProject(project);
+    const newId = this.allocateId(prefix);
+    const now = new Date().toISOString();
+    const moved = this.normalizeTicket({ ...current, id: newId, project: key, updatedAt: now });
+    this.writeTicket(moved);
+    writeFileSync(this.ticketPath(id), JSON.stringify({ _alias: true, movedTo: newId, movedAt: now, movedBy: actor }, null, 2));
+    this.appendAudit(id, "updated", actor, { movedTo: [id, newId] });
+    this.appendAudit(newId, "created", actor, { movedFrom: [id, newId] });
+    return moved;
+  }
+
+  delete(id: string, actor = "pa-core", hard = false): void {
+    const ticket = this.get(id);
+    if (!ticket) throw new Error(`Ticket not found: ${id}`);
+    if (hard) {
+      unlinkSync(this.ticketPath(id));
+      this.appendAudit(id, "deleted", actor, { hard: [false, true] });
+      return;
+    }
+    this.update(id, { status: "cancelled" }, actor);
+    this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
+  }
+
+  addSubTicket(parentId: string, input: Pick<SubTicket, "title" | "summary" | "assignee" | "priority" | "estimate">, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
+    const ticket = this.get(parentId);
+    if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
+    const now = new Date().toISOString();
+    const nextCounter = ticket.nextSubTicketCounter + 1;
+    const subTicket: SubTicket = { id: `${ticket.id}-ST-${nextCounter}`, title: input.title, summary: input.summary, assignee: input.assignee, priority: input.priority, estimate: input.estimate, status: "open", createdAt: now, updatedAt: now };
+    const next = { ...ticket, subTickets: [...ticket.subTickets, subTicket], nextSubTicketCounter: nextCounter, updatedAt: now };
+    this.writeTicket(next);
+    this.appendAudit(parentId, "updated", actor, { subTickets: [ticket.subTickets.length, next.subTickets.length] });
+    return { ticket: next, subTicket };
+  }
+
+  updateSubTicket(parentId: string, subTicketId: string, input: Partial<Pick<SubTicket, "title" | "summary" | "status" | "assignee" | "priority" | "estimate">>, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
+    const ticket = this.get(parentId);
+    if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
+    const index = ticket.subTickets.findIndex((sub) => sub.id === subTicketId);
+    if (index < 0) throw new Error(`Sub-ticket not found: ${subTicketId}`);
+    const now = new Date().toISOString();
+    const subTicket = { ...ticket.subTickets[index]!, ...input, updatedAt: now };
+    const subTickets = ticket.subTickets.map((sub, i) => (i === index ? subTicket : sub));
+    const next = { ...ticket, subTickets, updatedAt: now };
+    this.writeTicket(next);
+    this.appendAudit(parentId, "updated", actor, { subTicket: [ticket.subTickets[index], subTicket] });
+    return { ticket: next, subTicket };
+  }
+
+  listSubTickets(parentId: string): SubTicket[] {
+    const ticket = this.get(parentId);
+    if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
+    return ticket.subTickets;
   }
 
   list(filters: TicketListFilters = {}): Ticket[] {
