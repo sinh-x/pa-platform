@@ -67,11 +67,13 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            mkdir -p $share/packages/pa-core $out/bin $out/share/fish/vendor_completions.d
+            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
+            cp packages/opencode-pa/package.json $share/packages/opencode-pa/package.json
+            cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist
 
             install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
             import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";
