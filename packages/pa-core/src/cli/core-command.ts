@@ -529,7 +529,8 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
     io.stderr(result.reason ?? "Deployment failed");
     return 1;
   }
-  io.stdout(`Deployment pending: ${result.deploymentId ?? "(adapter-managed)"}`);
+  const label = result.status === "success" ? "completed" : "pending";
+  io.stdout(`Deployment ${label}: ${result.deploymentId ?? "(adapter-managed)"}`);
   return 0;
 }
 
@@ -1563,13 +1564,13 @@ function printError(error: string, io: Required<CliIo>): number {
 }
 
 function printDeploymentList(deployments: DeploymentStatus[], io: Required<CliIo>): void {
-  io.stdout(`${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(20)} ${"ENDED".padEnd(20)} SUMMARY`);
-  io.stdout(`${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------".padEnd(20)} ${"-------------------".padEnd(20)} -------`);
+  io.stdout(`${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(26)} ${"ENDED".padEnd(26)} SUMMARY`);
+  io.stdout(`${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------------".padEnd(26)} ${"-------------------------".padEnd(26)} -------`);
   for (const deployment of deployments) {
     const started = shortTs(deployment.started_at);
     const ended = deployment.completed_at ? shortTs(deployment.completed_at) : "-";
     const summary = truncate(deployment.summary ?? "", 50);
-    io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${started.padEnd(20)} ${ended.padEnd(20)} ${summary}`);
+    io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${started.padEnd(26)} ${ended.padEnd(26)} ${summary}`);
   }
 }
 
@@ -1580,6 +1581,9 @@ function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>
   io.stdout(`  Started:  ${shortTs(deployment.started_at)}`);
   if (deployment.completed_at) io.stdout(`  Ended:    ${shortTs(deployment.completed_at)}`);
   if (deployment.runtime) io.stdout(`  Runtime:  ${deployment.runtime}`);
+  if (deployment.provider) io.stdout(`  Provider: ${deployment.provider}`);
+  if (deployment.models?.["team"]) io.stdout(`  Model:    ${deployment.models["team"]}`);
+  if (deployment.models?.["agents"]) io.stdout(`  Agents Model: ${deployment.models["agents"]}`);
   if (deployment.agents.length > 0) io.stdout(`  Agents:   ${deployment.agents.join(",")}`);
   if (deployment.pid !== undefined) io.stdout(`  PID:      ${deployment.pid}`);
   if (deployment.summary) io.stdout(`  Summary:  ${deployment.summary}`);
@@ -1597,7 +1601,17 @@ function normalizeIo(io: CliIo = {}): Required<CliIo> {
 }
 
 function shortTs(timestamp: string): string {
-  return timestamp.replace("T", " ").slice(0, 19);
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp.replace("T", " ").slice(0, 19);
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad2(Math.floor(absOffset / 60))}:${pad2(absOffset % 60)}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${offset}`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function localDate(timestamp: string): string {

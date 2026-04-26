@@ -56,7 +56,7 @@ test("runCoreCommand exposes repos list", async () => {
 
 test("runCoreCommand exposes status list and detail", async () => {
   await withCliEnv(async (root) => {
-    appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", agents: ["team-manager"], runtime: "opencode" });
+    appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", agents: ["team-manager"], runtime: "opencode", provider: "minimax", models: { team: "minimax-coding-plan/MiniMax-M2.7" } });
     appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done" });
     const list = capture();
     assert.equal(await runCoreCommand(["status", "--recent", "1"], { io: list.io }), 0);
@@ -66,6 +66,8 @@ test("runCoreCommand exposes status list and detail", async () => {
     const detail = capture();
     assert.equal(await runCoreCommand(["status", "d-cli-1"], { io: detail.io }), 0);
     assert.match(detail.stdout.join("\n"), /Deployment: d-cli-1/);
+    assert.match(detail.stdout.join("\n"), /Provider:\s+minimax/);
+    assert.match(detail.stdout.join("\n"), /Model:\s+minimax-coding-plan\/MiniMax-M2\.7/);
     assert.match(detail.stdout.join("\n"), /Events:\s+2/);
 
     const wait = capture();

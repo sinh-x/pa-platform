@@ -22,7 +22,7 @@ export interface DeployRequest {
 }
 
 export interface DeployHookResult {
-  status: "pending" | "failed";
+  status: "pending" | "success" | "failed";
   team?: string;
   mode?: string | null;
   reason?: string;
