@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable, Writable } from "node:stream";
 import test from "node:test";
-import { detectDocumentType, isInsideSandbox, normalizeSandboxPath, parseMarkdownMetadata, resolveContentInput, validateSandboxPath, writeFeedbackAnnotation } from "../index.js";
+import { detectDocumentType, isInsideSandbox, normalizeSandboxPath, parseMarkdownMetadata, resolveContentInput, selectProject, validateSandboxPath, writeFeedbackAnnotation } from "../index.js";
 
 test("resolveContentInput reads inline or file content and rejects ambiguous input", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-utils-"));
@@ -60,4 +61,25 @@ test("markdown utilities parse metadata and write feedback annotations", () => {
   assert.match(annotated, /action: rejected/);
   assert.match(annotated, /## Human Review/);
   assert.equal(parseMarkdownMetadata(annotated).human_feedback?.what_to_fix, "Add test");
+});
+
+test("selectProject reads numbered project choices from an input stream", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-select-project-"));
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  try {
+    const config = join(root, "config");
+    writeFileSync(join(root, "placeholder"), "");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(join(config, "repos.yaml"), `repos:\n  first:\n    path: ${join(root, "first")}\n    prefix: ONE\n  second:\n    path: ${join(root, "second")}\n    prefix: TWO\n`);
+    process.env["PA_PLATFORM_CONFIG"] = config;
+    const logs: string[] = [];
+    const selected = await selectProject({ cwd: root, input: Readable.from(["2\n"]), output: new Writable({ write(_chunk, _encoding, callback) { callback(); } }), log: (message) => logs.push(message) });
+    assert.equal(selected.key, "second");
+    assert.equal(selected.prefix, "TWO");
+    assert.equal(logs.some((line) => line.includes("Select a project")), true);
+  } finally {
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

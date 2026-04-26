@@ -3,6 +3,7 @@ export * from "./time.js";
 export * from "./config.js";
 export * from "./yaml-parser.js";
 export * from "./repos.js";
+export * from "./interactive.js";
 export * from "./registry/index.js";
 export * from "./tickets/index.js";
 export * from "./bulletins/index.js";
