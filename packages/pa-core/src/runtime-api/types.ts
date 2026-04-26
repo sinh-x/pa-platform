@@ -1,13 +1,7 @@
+import type { ActivityEvent } from "../activity/index.js";
 import type { RuntimeName } from "../types.js";
 
-export interface ActivityEvent {
-  deployId: string;
-  timestamp: string;
-  kind: "thinking" | "text" | "tool_use" | "tool_result" | "error";
-  source: RuntimeName | string;
-  body: string;
-  metadata?: Record<string, unknown>;
-}
+export type { ActivityEvent } from "../activity/index.js";
 
 export interface HookConfig {
   deploymentId: string;
