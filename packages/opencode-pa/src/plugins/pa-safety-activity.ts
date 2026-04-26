@@ -41,6 +41,8 @@ function readPatterns() {
 }
 
 const PATTERNS = readPatterns()
+let lastActivityKey = ""
+let lastActivityAt = 0
 
 function truncate(value, max = 400) {
   if (value === undefined || value === null) return ""
@@ -52,6 +54,11 @@ function appendActivity(event) {
   if (!isPaDeployment()) return
   const path = activityLogPath()
   if (!path) return
+  const now = Date.now()
+  const dedupeKey = event.event + ":" + JSON.stringify(event.data || {})
+  if (dedupeKey === lastActivityKey && now - lastActivityAt < 1000) return
+  lastActivityKey = dedupeKey
+  lastActivityAt = now
   mkdirSync(dirname(path), { recursive: true })
   appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), deploy_id: deploymentId(), ...event }) + "\n")
 }
@@ -167,6 +174,11 @@ function summarizeResult(result) {
   return truncate(maskSensitiveText(JSON.stringify(result)))
 }
 
+function summarizeBody(properties) {
+  if (!properties) return ""
+  return truncate(maskSensitiveText(String(properties.summary || properties.message || properties.text || properties.content || properties.title || properties.error || properties.status || "")), 500)
+}
+
 function messagePart(properties) {
   return properties?.part || properties?.message?.part || properties?.chunk || properties
 }
@@ -206,12 +218,12 @@ export const PaSafetyActivityPlugin = async () => {
         if (isBlockedFilePath(filePath)) throw new Error("BLOCKED: sensitive file access is not allowed: " + filePath)
       }
       if (tool === "apply_patch") guardPatch(args)
-      appendActivity({ agent: sessionId(input), event: "tool_call", data: { tool, summary: summarizeTool(tool, args) } })
+      appendActivity({ agent: sessionId(input), event: "tool.execute.before", data: { tool, args, summary: summarizeTool(tool, args) } })
     },
 
     "tool.execute.after": async (input, output) => {
       const tool = input?.tool || output?.tool || "unknown"
-      appendActivity({ agent: sessionId(input), event: output?.error ? "tool_error" : "tool_success", data: { tool, tool_use_id: input?.toolCallID || input?.toolCallId || input?.id || "", summary: summarizeResult(output?.result || output) } })
+      appendActivity({ agent: sessionId(input), event: "tool.execute.after", data: { tool, tool_use_id: input?.toolCallID || input?.toolCallId || input?.id || "", error: output?.error || undefined, result: output?.result, summary: summarizeResult(output?.result || output) } })
     },
 
     event: async ({ event }) => {
@@ -221,17 +233,34 @@ export const PaSafetyActivityPlugin = async () => {
         case "message.updated": {
           const part = messagePart(properties)
           const partType = messagePartType(part, properties)
-          appendActivity({ agent: sessionId(properties), event: partType.includes("think") ? "assistant_thinking" : "assistant_text", data: { part_type: partType, text: truncate(maskSensitiveText(String(messageText(part))), 1000) } })
+          appendActivity({ agent: sessionId(properties), event: event.type, data: { ...properties, part_type: partType, text: truncate(maskSensitiveText(String(messageText(part))), 1000) } })
           break
         }
-        case "session.created": appendActivity({ agent: sessionId(properties), event: "session_started", data: { client: "opencode" } }); break
-        case "session.idle": appendActivity({ agent: "main", event: "session_idle", data: {} }); break
-        case "session.compacted": appendActivity({ agent: "main", event: "context_compacted", data: {} }); break
-        case "session.error": appendActivity({ agent: "main", event: "session_error", data: { error: truncate(properties?.error || properties) } }); break
-        case "permission.asked": appendActivity({ agent: "main", event: "permission_asked", data: { permission: truncate(properties) } }); break
-        case "permission.replied": appendActivity({ agent: "main", event: "permission_replied", data: { reply: truncate(properties) } }); break
-        case "todo.updated": appendActivity({ agent: "main", event: "todo_updated", data: { todo: truncate(properties, 300) } }); break
-        case "command.executed": appendActivity({ agent: "main", event: "command_executed", data: { command: truncate(properties) } }); break
+        case "message.part.removed":
+        case "message.removed":
+        case "session.created":
+        case "session.updated":
+        case "session.status":
+        case "session.idle":
+        case "session.compacted":
+        case "session.diff":
+        case "session.deleted":
+        case "session.error":
+        case "permission.asked":
+        case "permission.replied":
+        case "todo.updated":
+        case "command.executed":
+        case "file.edited":
+        case "file.watcher.updated":
+        case "lsp.client.diagnostics":
+        case "lsp.updated":
+        case "installation.updated":
+        case "server.connected":
+        case "tui.prompt.append":
+        case "tui.command.execute":
+        case "tui.toast.show":
+          appendActivity({ agent: sessionId(properties) || "main", event: event.type, data: { ...properties, summary: summarizeBody(properties) } })
+          break
       }
     },
   }

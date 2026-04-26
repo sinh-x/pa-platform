@@ -178,7 +178,7 @@ test("normalizeActivityEvent applies secret masking to body", () => {
   try {
     const logPath = join(root, "activity.jsonl");
     const lines = [
-      JSON.stringify({ ts: 1714000000000, deploy_id: "d-mask", agent: "opencode", event: "tool_call", data: { token: "sk-secret123", tool: "Bash", description: "ls" } }),
+      JSON.stringify({ ts: 1714000000000, deploy_id: "d-mask", agent: "opencode", event: "tool_call", data: { token: "sk-secret123", tool: "Bash", description: "ls sk-secret123" } }),
       JSON.stringify({ ts: 1714000001000, deploy_id: "d-mask", agent: "opencode", event: "message.updated", data: { message: "Using bearer abc123 token" } }),
     ].join("\n") + "\n";
     writeFileSync(logPath, lines);
@@ -230,6 +230,53 @@ test("normalizeActivityEvent maps TUI and permission events to text", () => {
     assert.equal(events[1]?.kind, "text");
     assert.equal(events[2]?.kind, "tool_use");
     assert.equal(events[3]?.kind, "text");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("normalizeActivityEvent summarizes documented opencode plugin events", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-activity-documented-"));
+  try {
+    const logPath = join(root, "activity.jsonl");
+    const documentedEvents = [
+      { event: "message.part.updated", data: { part: { type: "thinking", thinking: "reasoning with bearer abc123" } }, kind: "thinking", body: /part=thinking.*\[REDACTED\]/ },
+      { event: "message.updated", data: { message: { role: "assistant" }, text: "final answer" }, kind: "text", body: /role=assistant.*final answer/ },
+      { event: "message.part.removed", data: { partId: "p1", messageId: "m1" }, kind: "text", body: /partId=p1/ },
+      { event: "message.removed", data: { messageId: "m1" }, kind: "text", body: /messageId=m1/ },
+      { event: "tool.execute.before", data: { tool: "bash", args: { command: "pnpm test" } }, kind: "tool_use", body: /tool=bash.*pnpm test/ },
+      { event: "tool.execute.after", data: { tool: "bash", result: "ok" }, kind: "tool_result", body: /tool=bash.*ok/ },
+      { event: "tool.execute.after", data: { tool: "bash", error: "failed" }, kind: "error", body: /tool=bash.*failed/ },
+      { event: "session.created", data: { sessionId: "ses_1", title: "new" }, kind: "text", body: /sessionId=ses_1/ },
+      { event: "session.updated", data: { title: "renamed" }, kind: "text", body: /renamed/ },
+      { event: "session.status", data: { status: "busy" }, kind: "text", body: /busy/ },
+      { event: "session.idle", data: { status: "idle" }, kind: "text", body: /idle/ },
+      { event: "session.compacted", data: { message: "compacted" }, kind: "text", body: /compacted/ },
+      { event: "session.diff", data: { diff: "+ changed" }, kind: "text", body: /changed/ },
+      { event: "session.deleted", data: { sessionId: "ses_1" }, kind: "text", body: /ses_1/ },
+      { event: "session.error", data: { error: "session failed" }, kind: "error", body: /session failed/ },
+      { event: "permission.asked", data: { tool: "bash", message: "allow?" }, kind: "text", body: /allow/ },
+      { event: "permission.replied", data: { decision: "approved" }, kind: "text", body: /approved/ },
+      { event: "todo.updated", data: { todos: [{ content: "one" }, { content: "two" }] }, kind: "text", body: /items=2/ },
+      { event: "command.executed", data: { command: "deploy" }, kind: "tool_result", body: /deploy/ },
+      { event: "file.edited", data: { file: "/repo/src/index.ts", tool: "edit" }, kind: "tool_result", body: /src\/index\.ts/ },
+      { event: "file.watcher.updated", data: { file: "/repo/.env", change: "changed" }, kind: "text", body: /\[REDACTED_FILE\]/ },
+      { event: "lsp.client.diagnostics", data: { diagnostics: [{ severity: 1, message: "type error" }, { severity: 2, message: "warning" }] }, kind: "error", body: /diagnostics=2.*type error/ },
+      { event: "lsp.updated", data: { server: "tsserver", status: "ready" }, kind: "text", body: /tsserver/ },
+      { event: "installation.updated", data: { version: "1.2.3" }, kind: "text", body: /1\.2\.3/ },
+      { event: "server.connected", data: { url: "http://localhost:4096" }, kind: "text", body: /localhost/ },
+      { event: "tui.prompt.append", data: { text: "user prompt" }, kind: "text", body: /user prompt/ },
+      { event: "tui.command.execute", data: { command: "help" }, kind: "tool_use", body: /help/ },
+      { event: "tui.toast.show", data: { title: "Notice", message: "saved" }, kind: "text", body: /Notice.*saved/ },
+    ];
+    writeFileSync(logPath, documentedEvents.map(({ event, data }, idx) => JSON.stringify({ ts: 1714000000000 + idx, deploy_id: "d-doc", agent: "opencode", event, data })).join("\n") + "\n");
+    const events = readActivityEvents(logPath);
+    assert.equal(events.length, documentedEvents.length);
+    for (const [idx, expected] of documentedEvents.entries()) {
+      assert.equal(events[idx]?.kind, expected.kind, expected.event);
+      assert.match(events[idx]?.body ?? "", expected.body, expected.event);
+      assert.ok((events[idx]?.body ?? "").length <= 500, expected.event);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

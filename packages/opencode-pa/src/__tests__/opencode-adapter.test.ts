@@ -265,7 +265,35 @@ test("opencode JSONL maps to useful live activity events", () => {
   assert.equal(event.timestamp, "2026-04-26T14:30:40.082Z");
   assert.equal(event.source, "ses_235d");
   assert.equal(event.kind, "tool_result");
+  assert.equal(event.partType, "tool");
   assert.match(event.body, /task completed Gather today's session logs/);
+});
+
+test("opencode JSONL masks and truncates stream activity bodies", () => {
+  const longSecretText = `Bearer abc123 ${"x".repeat(700)}`;
+  const event = opencodeJsonToActivityEvent({
+    type: "reasoning",
+    timestamp: 1777213840082,
+    part: { type: "reasoning", thinking: longSecretText },
+  }, "d-live");
+
+  assert.equal(event.kind, "thinking");
+  assert.match(event.body, /\[REDACTED\]/);
+  assert.equal(event.body.includes("abc123"), false);
+  assert.ok(event.body.length <= 500);
+});
+
+test("opencode JSONL maps step and tool result stream events", () => {
+  const stepStart = opencodeJsonToActivityEvent({ type: "step_start", message: "step 1" }, "d-live");
+  const stepFinish = opencodeJsonToActivityEvent({ type: "step_finish", message: "done" }, "d-live");
+  const failedTool = opencodeJsonToActivityEvent({ type: "tool_use", part: { type: "tool", tool: "bash", state: { status: "failed", input: { command: "exit 1" } } } }, "d-live");
+
+  assert.equal(stepStart.kind, "text");
+  assert.equal(stepStart.body, "step 1");
+  assert.equal(stepFinish.kind, "text");
+  assert.equal(stepFinish.body, "done");
+  assert.equal(failedTool.kind, "error");
+  assert.match(failedTool.body, /bash failed exit 1/);
 });
 
 test("opencode activity writer appends split JSONL chunks", () => {
@@ -281,6 +309,7 @@ test("opencode activity writer appends split JSONL chunks", () => {
     const rows = readFileSync(activityPath, "utf-8").trim().split("\n").map((row) => JSON.parse(row) as Record<string, unknown>);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]?.["kind"], "text");
+    assert.equal(rows[0]?.["partType"], "text");
     assert.equal(rows[0]?.["source"], "ses_235d");
     assert.equal(rows[0]?.["body"], "hello");
   } finally {
@@ -401,6 +430,38 @@ test("opencode installHooks installs repo-managed activity plugin", () => {
     assert.match(readFileSync(pluginPath, "utf-8"), /PA_DEPLOYMENT_ID/);
     assert.match(readFileSync(pluginPath, "utf-8"), /PA_ACTIVITY_LOG/);
     assert.match(readFileSync(pluginPath, "utf-8"), /message\.part\.updated/);
+    for (const eventName of [
+      "message.part.updated",
+      "message.updated",
+      "message.part.removed",
+      "message.removed",
+      "tool.execute.before",
+      "tool.execute.after",
+      "session.created",
+      "session.updated",
+      "session.status",
+      "session.idle",
+      "session.compacted",
+      "session.diff",
+      "session.deleted",
+      "session.error",
+      "permission.asked",
+      "permission.replied",
+      "todo.updated",
+      "command.executed",
+      "file.edited",
+      "file.watcher.updated",
+      "lsp.client.diagnostics",
+      "lsp.updated",
+      "installation.updated",
+      "server.connected",
+      "tui.prompt.append",
+      "tui.command.execute",
+      "tui.toast.show",
+    ]) {
+      assert.match(readFileSync(pluginPath, "utf-8"), new RegExp(eventName.replaceAll(".", "\\.")), eventName);
+    }
+    assert.match(readFileSync(pluginPath, "utf-8"), /dedupeKey/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

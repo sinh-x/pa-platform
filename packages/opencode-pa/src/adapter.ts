@@ -15,6 +15,8 @@ export interface OpencodeCommandResult {
 }
 
 const STDERR_TAIL_BYTES = 2000;
+const STREAM_BODY_MAX_CHARS = 500;
+const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)key(?:\b|_)/i, /bearer\s+\S+/i, /sk-\S+/i];
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
@@ -75,6 +77,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
           kind: normalizeKind(raw),
           source: extractSource(raw),
           body: extractBody(raw),
+          partType: extractPartType(raw),
           metadata: raw,
         }));
       } catch {
@@ -269,6 +272,7 @@ export function opencodeJsonToActivityEvent(raw: Record<string, unknown>, deploy
     kind: normalizeKind(raw),
     source: extractSource(raw),
     body: extractBody(raw),
+    partType: extractPartType(raw),
     metadata: raw,
   });
 }
@@ -360,15 +364,26 @@ function extractBody(raw: Record<string, unknown>): string {
   if (tool) {
     const status = stringValue(state?.["status"]);
     const description = stringValue(input?.["description"] ?? input?.["command"] ?? input?.["filePath"] ?? input?.["file_path"] ?? input?.["pattern"] ?? input?.["url"]);
-    return [tool, status, description].filter(Boolean).join(" ");
+    return sanitizeStreamBody([tool, status, description].filter(Boolean).join(" "));
   }
   const body = part?.["text"] ?? part?.["thinking"] ?? raw["text"] ?? raw["content"] ?? raw["message"] ?? raw["body"] ?? raw["type"] ?? "";
-  return typeof body === "string" ? body : JSON.stringify(body);
+  return sanitizeStreamBody(typeof body === "string" ? body : JSON.stringify(body));
+}
+
+function sanitizeStreamBody(value: string): string {
+  let result = value;
+  for (const pattern of STREAM_SECRET_PATTERNS) result = result.replace(pattern, "[REDACTED]");
+  return result.length > STREAM_BODY_MAX_CHARS ? `${result.slice(0, STREAM_BODY_MAX_CHARS - 3)}...` : result;
 }
 
 function extractSource(raw: Record<string, unknown>): string {
   const sessionId = stringValue(raw["sessionID"] ?? raw["sessionId"] ?? raw["session_id"]);
   return sessionId ? sessionId.slice(0, 8) : "opencode";
+}
+
+function extractPartType(raw: Record<string, unknown>): string | undefined {
+  const part = recordValue(raw["part"]);
+  return stringValue(raw["partType"] ?? raw["part_type"] ?? part?.["type"] ?? raw["type"]);
 }
 
 function normalizeTimestamp(value: unknown): string | undefined {
