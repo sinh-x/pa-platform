@@ -124,7 +124,29 @@ export interface TicketListFilters {
   type?: TicketType;
   tags?: string[];
   excludeTags?: string[];
+  excludeTypes?: TicketType[];
   search?: string;
 }
 
 export type CounterStore = Record<string, number>;
+
+export const DOC_REF_BADGE_ORDER: readonly string[] = ["req", "plan", "spike", "impl", "uat", "orch", "session", "log", "url", "attachment"] as const;
+
+export const STANDARD_DOC_REF_TYPES: readonly string[] = ["req", "uat", "impl", "orch", "plan", "spike", "session", "log", "url", "attachment"] as const;
+
+export const DOC_REF_TYPE_DISPLAY: Readonly<Record<string, string>> = {
+  req: "REQ",
+  uat: "UAT",
+  impl: "IMPL",
+  orch: "ORCH",
+  plan: "PLAN",
+  spike: "SPIKE",
+  session: "SESSION",
+  log: "LOG",
+  url: "URL",
+  attachment: "ATTACHMENT",
+  requirements: "REQ",
+  implementation: "IMPL",
+  review: "REVIEW",
+  "review-report": "REVIEW",
+} as const;

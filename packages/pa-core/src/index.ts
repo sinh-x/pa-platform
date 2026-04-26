@@ -9,5 +9,6 @@ export * from "./bulletins/index.js";
 export * from "./documents/index.js";
 export * from "./primer/index.js";
 export * from "./codectx/index.js";
+export * from "./trash/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";

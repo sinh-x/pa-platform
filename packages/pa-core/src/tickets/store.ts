@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
+import { matchAssignee } from "./validate.js";
 import type { AddDocRefInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
@@ -154,11 +155,12 @@ export class TicketStore {
 function matchesFilters(ticket: Ticket, filters: TicketListFilters): boolean {
   if (filters.project && ticket.project !== filters.project) return false;
   if (filters.status && ticket.status !== filters.status) return false;
-  if (filters.assignee && ticket.assignee !== filters.assignee) return false;
+  if (filters.assignee && !matchAssignee(ticket.assignee, filters.assignee)) return false;
   if (filters.priority && ticket.priority !== filters.priority) return false;
   if (filters.type && ticket.type !== filters.type) return false;
   if (filters.tags?.some((tag) => !ticket.tags.includes(tag))) return false;
   if (filters.excludeTags?.some((tag) => ticket.tags.includes(tag))) return false;
+  if (filters.excludeTypes?.some((type) => ticket.type === type)) return false;
   if (filters.search) {
     const haystack = `${ticket.id} ${ticket.title} ${ticket.summary} ${ticket.description}`.toLowerCase();
     if (!haystack.includes(filters.search.toLowerCase())) return false;
