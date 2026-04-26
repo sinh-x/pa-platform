@@ -10,6 +10,7 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - 'completions/**'
+      - '.github/workflows/nix-build.yml'
   pull_request:
     branches: [main, develop]
     paths:
@@ -19,6 +20,7 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - 'completions/**'
+      - '.github/workflows/nix-build.yml'
 
 jobs:
   nix-build:
@@ -27,8 +29,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: DeterminateSystems/nix-installer-action@main
-
-      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Build pa-platform
         run: |
