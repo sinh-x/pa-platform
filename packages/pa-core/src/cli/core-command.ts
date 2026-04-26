@@ -7,9 +7,9 @@ import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
 import { validateDeployRequestFields } from "../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../deploy/index.js";
-import { generateHealthReport, saveHealthSnapshot } from "../health/index.js";
+import { formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, saveHealthSnapshot } from "../health/index.js";
 import type { HealthCategory } from "../health/index.js";
-import { getSignalDir } from "../paths.js";
+import { getAiUsageDir, getDeploymentDir, getSignalDir } from "../paths.js";
 import { appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../registry/index.js";
 import { listRepos } from "../repos.js";
 import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
@@ -45,7 +45,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date());
     if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {});
-    if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, io, opts.hooks ?? {});
+    if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});
     if (command === "schedule") return runScheduleCommand(rest, io);
     if (command === "remove-timer") return runRemoveTimerCommand(rest, io);
     if (command === "board") return runBoardCommand(rest, io);
@@ -79,9 +79,10 @@ function runTimersCommand(io: Required<CliIo>): number {
   }
 }
 
-async function runServeCommand(command: string, io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
+async function runServeCommand(command: string, argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
   if (!hooks.serve) return printError("Serve process management requires an adapter hook", io);
-  const action = command === "serve" ? "start" : command === "serve-status" ? "status" : command;
+  const nested = command === "serve" && ["stop", "restart", "status"].includes(argv[0] ?? "") ? argv[0] : undefined;
+  const action = nested ?? (command === "serve" ? "start" : command === "serve-status" ? "status" : command);
   const result = await hooks.serve(action as "start" | "stop" | "restart" | "status");
   io.stdout(result.message ?? `Serve ${action}: ${result.status}`);
   return result.status === "error" || result.status === "failed" ? 1 : 0;
@@ -261,9 +262,16 @@ function runBulletinCommand(argv: string[], io: Required<CliIo>): number {
 function runHealthCommand(argv: string[], io: Required<CliIo>): number {
   const parsed = parseHealthArgs(argv);
   if ("error" in parsed) return printError(parsed.error, io);
+  if (parsed.history) {
+    const snapshots = listHealthSnapshots(10);
+    for (const snapshot of snapshots) io.stdout(`${snapshot.timestamp} ${String(snapshot.overallScore).padStart(3)}/100 ${snapshot.categories.map((category) => `${category.name}:${category.score}`).join(" ")}`);
+    io.stdout(`Count: ${snapshots.length}`);
+    return 0;
+  }
   const report = generateHealthReport(parsed);
   if (parsed.save) saveHealthSnapshot(report);
   if (parsed.json) io.stdout(JSON.stringify(report));
+  else if (parsed.primerSummary) io.stdout(formatPrimerHealthSummary(report));
   else {
     io.stdout(`Health: ${report.overallScore}/100 ${report.scoreLabel}`);
     for (const category of report.categories) io.stdout(`${category.name}: ${category.score} (${category.findings.length} findings)`);
@@ -323,11 +331,11 @@ function runTrashCommand(argv: string[], io: Required<CliIo>): number {
 
 function runCodeCtxCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
-  if (subcommand === "analyze") {
+  if (subcommand === "analyze" || subcommand === "refresh") {
     const repoPath = rest[0] ? resolve(rest[0]) : process.cwd();
     const result = analyzeRepo(repoPath);
     saveGraph(result.graph);
-    io.stdout(`Analyzed ${repoPath}: ${result.processed} files, ${result.errors} errors`);
+    io.stdout(`${subcommand === "refresh" ? "Refreshed" : "Analyzed"} ${repoPath}: ${result.processed} files, ${result.errors} errors`);
     io.stdout(generateSummary(result.graph));
     return 0;
   }
@@ -338,8 +346,26 @@ function runCodeCtxCommand(argv: string[], io: Required<CliIo>): number {
     io.stdout(generateSummary(graph));
     return 0;
   }
+  if (subcommand === "status") {
+    const repo = rest[0] ?? process.cwd();
+    const graph = loadGraph(repo);
+    if (!graph) {
+      io.stdout(`No graph found for: ${repo}`);
+      return 1;
+    }
+    io.stdout(`Graph exists for: ${repo}`);
+    io.stdout(`Generated: ${graph.generatedAt}`);
+    io.stdout(`Nodes: ${graph.nodeCount}`);
+    io.stdout(`Edges: ${graph.edgeCount}`);
+    return 0;
+  }
   if (subcommand === "query") {
-    const [repo, type, target] = rest;
+    const queryTypes = new Set(["exports", "file", "function", "fn", "class"]);
+    const [first, second, third] = rest;
+    const oldStyle = first ? queryTypes.has(first) : false;
+    const repo = oldStyle ? third ?? process.cwd() : first;
+    const type = oldStyle ? first : second;
+    const target = oldStyle ? second : third;
     if (!repo || !type) return printError("codectx query requires repo and type", io);
     const graph = loadGraph(repo);
     if (!graph) return printError(`No graph found for ${repo}`, io);
@@ -348,7 +374,7 @@ function runCodeCtxCommand(argv: string[], io: Required<CliIo>): number {
       const result = queryFile(graph, target);
       if (!result) return printError(`File not found: ${target}`, io);
       io.stdout(formatFileResult(result));
-    } else if (type === "function" && target) {
+    } else if ((type === "function" || type === "fn") && target) {
       const result = queryFunction(graph, target);
       if (!result) return printError(`Function not found: ${target}`, io);
       io.stdout(formatFunctionResult(result));
@@ -365,7 +391,7 @@ function runCodeCtxCommand(argv: string[], io: Required<CliIo>): number {
     return graphExists(repo) ? 0 : 1;
   }
   io.stderr(`Unknown codectx subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: analyze, summary, query, exists");
+  io.stderr("Available subcommands: analyze, refresh, summary, status, query, exists");
   return 1;
 }
 
@@ -507,6 +533,7 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
 function parseScheduleArgs(argv: string[]): { spec: string; repeat: "hourly" | "daily" | "weekly" | "monthly"; times: string[]; command: string; dryRun: boolean } | { error: string } {
   const opts = { repeat: "daily" as "hourly" | "daily" | "weekly" | "monthly", times: [] as string[], command: defaultPaCommand(), dryRun: false };
   let spec = "";
+  let positionalRepeatSeen = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--repeat") {
@@ -527,10 +554,18 @@ function parseScheduleArgs(argv: string[]): { spec: string; repeat: "hourly" | "
     } else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg.startsWith("-")) return { error: `Unsupported schedule option: ${arg}` };
     else if (!spec) spec = arg;
+    else if (!positionalRepeatSeen && isRepeatValue(arg)) {
+      opts.repeat = arg;
+      positionalRepeatSeen = true;
+    }
     else opts.times.push(arg);
   }
   if (!spec) return { error: "schedule requires spec" };
   return { spec, repeat: opts.repeat, times: opts.times.length > 0 ? opts.times : ["09:00"], command: opts.command, dryRun: opts.dryRun };
+}
+
+function isRepeatValue(value: string): value is "hourly" | "daily" | "weekly" | "monthly" {
+  return value === "hourly" || value === "daily" || value === "weekly" || value === "monthly";
 }
 
 function parseRemoveTimerArgs(argv: string[]): { name: string; dryRun: boolean } | { error: string } {
@@ -724,6 +759,10 @@ function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): numbe
       io.stderr(`Deployment not found: ${opts.deployId}`);
       return 1;
     }
+    if (opts.wait) return waitForDeployment(opts.deployId, io);
+    if (opts.report) return showDeploymentReport(opts.deployId, io);
+    if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
+    if (opts.activity) return showDeploymentActivity(opts.deployId, io);
     printDeploymentDetail(deployment, io);
     return 0;
   }
@@ -754,12 +793,16 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
   return { fields };
 }
 
-function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean } | { error: string } {
-  const opts: { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean } = {};
+function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } | { error: string } {
+  const opts: { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--running") opts.running = true;
     else if (arg === "--today") opts.today = true;
+    else if (arg === "--wait") opts.wait = true;
+    else if (arg === "--report") opts.report = true;
+    else if (arg === "--artifacts") opts.artifacts = true;
+    else if (arg === "--activity") opts.activity = true;
     else if (arg === "--team") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: "--team requires a value" };
@@ -777,6 +820,99 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else return { error: `Unexpected status argument: ${arg}` };
   }
   return opts;
+}
+
+function waitForDeployment(deployId: string, io: Required<CliIo>): number {
+  const deployment = queryDeploymentStatus(deployId);
+  if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
+  if (deployment.status === "running") {
+    io.stdout(`Deployment still running: ${deployId}`);
+    return 1;
+  }
+  io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
+  return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
+}
+
+function showDeploymentReport(deployId: string, io: Required<CliIo>): number {
+  for (const dir of reportSearchDirs()) {
+    if (!existsSync(dir)) continue;
+    const entries = readdirSync(dir).filter((entry) => entry.endsWith(".md"));
+    const filenameMatch = entries.find((entry) => entry.includes(deployId));
+    if (filenameMatch) {
+      io.stdout(readFileSync(resolve(dir, filenameMatch), "utf-8"));
+      return 0;
+    }
+    for (const entry of entries) {
+      const filePath = resolve(dir, entry);
+      const content = readFileSync(filePath, "utf-8");
+      if (content.includes(deployId)) {
+        io.stdout(content);
+        return 0;
+      }
+    }
+  }
+  io.stdout(`No work report found for deployment: ${deployId}`);
+  return 0;
+}
+
+function showDeploymentArtifacts(deployId: string, io: Required<CliIo>): number {
+  const dir = getDeploymentDir(deployId);
+  if (!existsSync(dir)) {
+    io.stdout(`No workspace found for deployment: ${deployId}`);
+    return 0;
+  }
+  for (const file of listFilesRecursive(dir)) io.stdout(file);
+  return 0;
+}
+
+function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
+  const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
+  if (!existsSync(activityFile)) {
+    io.stdout(`No activity log found for deployment: ${deployId}`);
+    io.stdout(`Expected: ${activityFile}`);
+    return 0;
+  }
+  const lines = readFileSync(activityFile, "utf-8").split("\n").filter((line) => line.trim());
+  if (lines.length === 0) {
+    io.stdout(`Activity log is empty: ${activityFile}`);
+    return 0;
+  }
+  io.stdout(`Activity timeline - ${deployId} (${lines.length} events)`);
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      const ts = String(event["timestamp"] ?? event["ts"] ?? "").slice(11, 19);
+      const source = String(event["source"] ?? event["agent"] ?? "unknown");
+      const kind = String(event["kind"] ?? event["event"] ?? "event");
+      const body = String(event["body"] ?? event["summary"] ?? "").slice(0, 100);
+      io.stdout(`${ts.padEnd(9)} ${source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
+    } catch {
+      // Skip malformed activity rows.
+    }
+  }
+  return 0;
+}
+
+function reportSearchDirs(): string[] {
+  const base = getAiUsageDir();
+  const dirs = [resolve(base, "sinh-inputs/inbox"), resolve(base, "sinh-inputs/done"), resolve(base, "sinh-inputs/archives")];
+  const agentTeams = resolve(base, "agent-teams");
+  if (!existsSync(agentTeams)) return dirs;
+  for (const team of readdirSync(agentTeams, { withFileTypes: true })) {
+    if (!team.isDirectory()) continue;
+    dirs.push(resolve(agentTeams, team.name, "done"), resolve(agentTeams, team.name, "ongoing"));
+  }
+  return dirs;
+}
+
+function listFilesRecursive(dir: string): string[] {
+  const results: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = resolve(dir, entry.name);
+    if (entry.isDirectory()) results.push(...listFilesRecursive(fullPath));
+    else results.push(fullPath);
+  }
+  return results;
 }
 
 function parseBoardArgs(argv: string[]): { project?: string; assignee?: string } | { error: string } {
@@ -1045,14 +1181,16 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
 }
 
 function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; actor: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--project", "--title", "--type", "--priority", "--estimate", "--assignee", "--summary", "--description", "--status", "--from", "--to", "--tags", "--actor"]));
+  const result = parseFlagPairs(argv, new Set(["--project", "--title", "--type", "--priority", "--estimate", "--assignee", "--summary", "--description", "--status", "--from", "--to", "--tags", "--doc-ref", "--actor"]));
   if ("error" in result) return result;
   const values = result.values;
   for (const flag of ["--project", "--title", "--type", "--priority", "--estimate", "--assignee"] as const) {
     if (!values[flag]) return { error: `${flag} is required` };
   }
+  const actor = values["--actor"] ?? "pa-core";
+  const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
   return {
-    actor: values["--actor"] ?? "pa-core",
+    actor,
     input: {
       project: values["--project"]!,
       title: values["--title"]!,
@@ -1067,7 +1205,7 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
       to: values["--to"] ?? "",
       tags: splitCsv(values["--tags"]),
       blockedBy: [],
-      doc_refs: [],
+      doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: new Date().toISOString(), addedBy: actor }] : [],
       comments: [],
     },
   };
@@ -1094,11 +1232,13 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
 }
 
 function parseTicketCommentArgs(argv: string[]): { author: string; content: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--author", "--content"]));
+  const result = parseFlagPairs(argv, new Set(["--author", "--content", "--content-file"]));
   if ("error" in result) return result;
   if (!result.values["--author"]) return { error: "--author is required" };
-  if (!result.values["--content"]) return { error: "--content is required" };
-  return { author: result.values["--author"]!, content: result.values["--content"]! };
+  if (result.values["--content"] && result.values["--content-file"]) return { error: "Use only one of --content or --content-file" };
+  if (!result.values["--content"] && !result.values["--content-file"]) return { error: "one of --content or --content-file is required" };
+  const content = result.values["--content-file"] ? readFileSync(resolve(result.values["--content-file"]!), "utf-8") : result.values["--content"]!;
+  return { author: result.values["--author"]!, content };
 }
 
 function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
@@ -1207,12 +1347,14 @@ function parseBulletinCreateArgs(argv: string[]): { title: string; block: Bullet
   return { title, block: block === "all" ? "all" : splitCsv(block), except: splitCsv(result.values["--except"]), body: result.values["--message"] ?? "" };
 }
 
-function parseHealthArgs(argv: string[]): { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean } | { error: string } {
-  const opts: { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean } = {};
+function parseHealthArgs(argv: string[]): { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean; primerSummary?: boolean; history?: boolean } | { error: string } {
+  const opts: { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean; primerSummary?: boolean; history?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--json") opts.json = true;
     else if (arg === "--save") opts.save = true;
+    else if (arg === "--primer-summary") opts.primerSummary = true;
+    else if (arg === "--history") opts.history = true;
     else if (arg === "--days") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: "--days requires a value" };

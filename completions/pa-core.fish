@@ -59,6 +59,8 @@ function __pa_core_projects
 end
 
 function __pa_core_deployments
+    command -q sqlite3; or return
+
     set -l registry_db ~/Documents/ai-usage/deployments/registry.db
     if set -q PA_REGISTRY_DB
         set registry_db "$PA_REGISTRY_DB"
@@ -97,6 +99,7 @@ complete -c pa-core -n __fish_use_subcommand -a serve -d 'Start API server throu
 complete -c pa-core -n __fish_use_subcommand -a stop -d 'Stop API server through adapter hook'
 complete -c pa-core -n __fish_use_subcommand -a restart -d 'Restart API server through adapter hook'
 complete -c pa-core -n __fish_use_subcommand -a serve-status -d 'Show API server status through adapter hook'
+complete -c pa-core -n '__fish_seen_subcommand_from serve; and not __fish_seen_subcommand_from stop restart status' -a 'stop restart status' -d 'Serve action'
 complete -c pa-core -n __fish_use_subcommand -a schedule -d 'Schedule a systemd timer'
 complete -c pa-core -n __fish_use_subcommand -a timers -d 'List PA systemd timers'
 complete -c pa-core -n __fish_use_subcommand -a remove-timer -d 'Remove a systemd timer'
@@ -124,8 +127,13 @@ complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only 
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__pa_core_teams)'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l recent -d 'Limit recent deployments' -r
+complete -c pa-core -n '__fish_seen_subcommand_from status' -l wait -d 'Check whether deployment is terminal'
+complete -c pa-core -n '__fish_seen_subcommand_from status' -l report -d 'Show work report for deployment'
+complete -c pa-core -n '__fish_seen_subcommand_from status' -l artifacts -d 'List deployment artifact files'
+complete -c pa-core -n '__fish_seen_subcommand_from status' -l activity -d 'Show deployment activity timeline'
 
 complete -c pa-core -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 2' -a '(__pa_core_teams) daily:plan daily:progress daily:end signal:collect' -d 'Schedule spec'
+complete -c pa-core -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 3' -a 'hourly daily weekly monthly' -d 'Repeat interval'
 complete -c pa-core -n '__fish_seen_subcommand_from schedule' -l repeat -d 'Repeat interval' -r -a 'hourly daily weekly monthly'
 complete -c pa-core -n '__fish_seen_subcommand_from schedule' -l time -d 'Time HH:MM' -r
 complete -c pa-core -n '__fish_seen_subcommand_from schedule' -l command -d 'Command written to systemd unit' -r
@@ -209,6 +217,8 @@ complete -c pa-core -n '__fish_seen_subcommand_from bulletin; and __fish_seen_su
 
 complete -c pa-core -n '__fish_seen_subcommand_from health' -l json -d 'Output JSON'
 complete -c pa-core -n '__fish_seen_subcommand_from health' -l save -d 'Save snapshot'
+complete -c pa-core -n '__fish_seen_subcommand_from health' -l primer-summary -d 'Compact primer summary'
+complete -c pa-core -n '__fish_seen_subcommand_from health' -l history -d 'Show health snapshot history'
 complete -c pa-core -n '__fish_seen_subcommand_from health' -l days -d 'Window days' -r
 complete -c pa-core -n '__fish_seen_subcommand_from health' -l since -d 'Window since date' -r
 
@@ -223,8 +233,8 @@ complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subco
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l days -d 'Minimum age days' -r
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l dry-run -d 'Preview purge'
 
-complete -c pa-core -n '__fish_seen_subcommand_from codectx; and not __fish_seen_subcommand_from analyze summary query exists' -a 'analyze summary query exists'
-complete -c pa-core -n '__fish_seen_subcommand_from codectx; and __fish_seen_subcommand_from query' -a 'exports file function class' -d 'Query type'
+complete -c pa-core -n '__fish_seen_subcommand_from codectx; and not __fish_seen_subcommand_from analyze refresh summary status query exists' -a 'analyze refresh summary status query exists'
+complete -c pa-core -n '__fish_seen_subcommand_from codectx; and __fish_seen_subcommand_from query' -a 'exports file function fn class' -d 'Query type'
 
 complete -c pa-core -n '__fish_seen_subcommand_from signal; and not __fish_seen_subcommand_from collect' -a collect -d 'Collect Note to Self messages'
 complete -c pa-core -n '__fish_seen_subcommand_from signal; and __fish_seen_subcommand_from collect' -l dry-run -d 'Preview without writing'

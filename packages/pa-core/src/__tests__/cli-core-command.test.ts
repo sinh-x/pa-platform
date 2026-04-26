@@ -55,7 +55,7 @@ test("runCoreCommand exposes repos list", async () => {
 });
 
 test("runCoreCommand exposes status list and detail", async () => {
-  await withCliEnv(async () => {
+  await withCliEnv(async (root) => {
     appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", agents: ["team-manager"], runtime: "opencode" });
     appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done" });
     const list = capture();
@@ -67,6 +67,30 @@ test("runCoreCommand exposes status list and detail", async () => {
     assert.equal(await runCoreCommand(["status", "d-cli-1"], { io: detail.io }), 0);
     assert.match(detail.stdout.join("\n"), /Deployment: d-cli-1/);
     assert.match(detail.stdout.join("\n"), /Events:\s+2/);
+
+    const wait = capture();
+    assert.equal(await runCoreCommand(["status", "d-cli-1", "--wait"], { io: wait.io }), 0);
+    assert.match(wait.stdout.join("\n"), /success - done/);
+
+    const deployDir = join(root, "deployments", "d-cli-1");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "artifact.txt"), "artifact");
+    writeFileSync(join(deployDir, "activity.jsonl"), JSON.stringify({ deployId: "d-cli-1", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "hello" }) + "\n");
+    const reportDir = join(root, "agent-teams", "builder", "done");
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(join(reportDir, "report.md"), "Report for d-cli-1");
+
+    const artifacts = capture();
+    assert.equal(await runCoreCommand(["status", "d-cli-1", "--artifacts"], { io: artifacts.io }), 0);
+    assert.match(artifacts.stdout.join("\n"), /artifact\.txt/);
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-cli-1", "--activity"], { io: activity.io }), 0);
+    assert.match(activity.stdout.join("\n"), /hello/);
+
+    const report = capture();
+    assert.equal(await runCoreCommand(["status", "d-cli-1", "--report"], { io: report.io }), 0);
+    assert.match(report.stdout.join("\n"), /Report for d-cli-1/);
   });
 });
 
@@ -143,6 +167,10 @@ test("runCoreCommand routes serve process management through adapter hook", asyn
     assert.equal(await runCoreCommand(["restart"], { io: served.io, hooks: { serve: (action) => { seen.push(action); return { status: "ok", message: `served ${action}` }; } } }), 0);
     assert.deepEqual(seen, ["restart"]);
     assert.match(served.stdout.join("\n"), /served restart/);
+
+    const nested = capture();
+    assert.equal(await runCoreCommand(["serve", "status"], { io: nested.io, hooks: { serve: (action) => ({ status: "ok", message: `served ${action}` }) } }), 0);
+    assert.match(nested.stdout.join("\n"), /served status/);
   });
 });
 
@@ -151,6 +179,10 @@ test("runCoreCommand exposes schedule and remove-timer dry-runs", async () => {
     const schedule = capture();
     assert.equal(await runCoreCommand(["schedule", "builder:daily", "--repeat", "weekly", "--time", "10:30", "--command", "pa-core", "--dry-run"], { io: schedule.io }), 0);
     assert.match(schedule.stdout.join("\n"), /Would schedule: pa-builder-daily/);
+
+    const positional = capture();
+    assert.equal(await runCoreCommand(["schedule", "builder", "daily", "09:00", "--dry-run"], { io: positional.io }), 0);
+    assert.match(positional.stdout.join("\n"), /Would schedule: pa-builder/);
 
     const remove = capture();
     assert.equal(await runCoreCommand(["remove-timer", "builder-daily", "--dry-run"], { io: remove.io }), 0);
@@ -196,7 +228,7 @@ test("runCoreCommand exposes board and teams views", async () => {
 test("runCoreCommand exposes ticket and bulletin commands", async () => {
   await withCliEnv(async () => {
     const createTicket = capture();
-    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "CLI ticket", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: createTicket.io }), 0);
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "CLI ticket", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--doc-ref", "implementation:agent-teams/builder/artifacts/create.md"], { io: createTicket.io }), 0);
     assert.match(createTicket.stdout.join("\n"), /Created PAP-001/);
 
     const listTicket = capture();
@@ -210,6 +242,12 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
     const commentTicket = capture();
     assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content", "Working"], { io: commentTicket.io }), 0);
     assert.match(commentTicket.stdout.join("\n"), /Commented PAP-001/);
+
+    const commentFile = join(process.env["PA_AI_USAGE_HOME"]!, "comment.md");
+    writeFileSync(commentFile, "File comment");
+    const commentTicketFile = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content-file", commentFile], { io: commentTicketFile.io }), 0);
+    assert.match(commentTicketFile.stdout.join("\n"), /Commented PAP-001/);
 
     const attachTicket = capture();
     assert.equal(await runCoreCommand(["ticket", "attach", "PAP-001", "--file", "agent-teams/builder/artifacts/example.md"], { io: attachTicket.io }), 0);
@@ -247,6 +285,16 @@ test("runCoreCommand exposes health, trash, and codectx commands", async () => {
     assert.equal(await runCoreCommand(["health", "tickets", "--json"], { io: health.io }), 0);
     assert.match(health.stdout.join("\n"), /"overallScore"/);
 
+    const primerHealth = capture();
+    assert.equal(await runCoreCommand(["health", "--primer-summary"], { io: primerHealth.io }), 0);
+    assert.match(primerHealth.stdout.join("\n"), /PA Health:/);
+
+    const saveHealth = capture();
+    assert.equal(await runCoreCommand(["health", "--save"], { io: saveHealth.io }), 0);
+    const healthHistory = capture();
+    assert.equal(await runCoreCommand(["health", "--history"], { io: healthHistory.io }), 0);
+    assert.match(healthHistory.stdout.join("\n"), /Count:/);
+
     const filePath = join(root, "old.md");
     writeFileSync(filePath, "old");
     const trash = capture();
@@ -271,6 +319,18 @@ test("runCoreCommand exposes health, trash, and codectx commands", async () => {
     const query = capture();
     assert.equal(await runCoreCommand(["codectx", "query", sourceDir, "exports"], { io: query.io }), 0);
     assert.match(query.stdout.join("\n"), /hello/);
+
+    const oldStyleQuery = capture();
+    assert.equal(await runCoreCommand(["codectx", "query", "fn", "hello", sourceDir], { io: oldStyleQuery.io }), 0);
+    assert.match(oldStyleQuery.stdout.join("\n"), /hello/);
+
+    const codeStatus = capture();
+    assert.equal(await runCoreCommand(["codectx", "status", sourceDir], { io: codeStatus.io }), 0);
+    assert.match(codeStatus.stdout.join("\n"), /Graph exists/);
+
+    const refresh = capture();
+    assert.equal(await runCoreCommand(["codectx", "refresh", sourceDir], { io: refresh.io }), 0);
+    assert.match(refresh.stdout.join("\n"), /Refreshed/);
   });
 });
 
