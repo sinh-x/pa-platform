@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Context, Next } from "hono";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
-import { bulletinRoutes, configRoutes, deploymentsRoutes, documentsRoutes, focusRoutes, foldersRoutes, reposRoutes, teamsRoutes, ticketRoutes } from "./routes/index.js";
+import { bulletinRoutes, configRoutes, deploymentsRoutes, documentsRoutes, focusRoutes, foldersRoutes, repoCommitsRoutes, repoDeploymentsRoutes, reposRoutes, teamsRoutes, ticketRoutes } from "./routes/index.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
@@ -26,6 +26,8 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", configRoutes());
   app.route("/", deploymentsRoutes());
   app.route("/", reposRoutes());
+  app.route("/", repoCommitsRoutes());
+  app.route("/", repoDeploymentsRoutes());
   app.route("/", teamsRoutes());
   app.route("/", ticketRoutes());
   app.route("/", focusRoutes());

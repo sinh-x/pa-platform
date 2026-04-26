@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,5 +97,25 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
     assert.equal(detailBody.activity_events.length, 1);
     const activity = await app.request("/api/deployments/d-api-1/activity");
     assert.equal((await activity.json() as { events: unknown[]; activity_events: unknown[] }).events.length, 2);
+  });
+});
+
+test("agent API exposes repo commits and repo deployment filters", async () => {
+  await withApiEnv(async (root) => {
+    const repo = join(root, "repo");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    appendRegistryEvent({ deployment_id: "d-repo-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", repo: "pa-platform" });
+    appendRegistryEvent({ deployment_id: "d-repo-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success" });
+    const { app } = createAgentApiApp();
+    const branches = await app.request("/api/repos/pa-platform/branches");
+    assert.equal(branches.status, 200);
+    assert.equal((await branches.json() as { branches: unknown[] }).branches.length, 1);
+    const commits = await app.request("/api/repos/pa-platform/commits?limit=5");
+    assert.equal((await commits.json() as { commits: Array<{ message: string }> }).commits[0]?.message, "initial");
+    const deployments = await app.request("/api/repos/pa-platform/deployments?all=true");
+    assert.equal((await deployments.json() as { total: number }).total, 1);
   });
 });
