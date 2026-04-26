@@ -66,7 +66,7 @@ export interface DocRef {
 
 export interface AuditEntry {
   ticket_id: string;
-  action: "created" | "updated" | "commented" | "attached" | "doc_ref_added" | "doc_ref_removed" | "deleted";
+  action: "created" | "updated" | "commented" | "attached" | "doc_ref_added" | "doc_ref_removed" | "branch_link_added" | "branch_link_removed" | "commit_link_added" | "commit_link_removed" | "deleted";
   actor: string;
   timestamp: string;
   changes: Record<string, [unknown, unknown]>;
@@ -111,9 +111,29 @@ export interface AddDocRefInput {
   addedBy?: string;
 }
 
+export interface AddLinkedBranchInput {
+  repo: string;
+  branch: string;
+  sha?: string;
+  linkedBy?: string;
+}
+
+export interface AddLinkedCommitInput {
+  repo: string;
+  sha: string;
+  message?: string;
+  author?: string;
+  timestamp?: string;
+  linkedBy?: string;
+}
+
 export type UpdateTicketInput = Partial<Omit<Ticket, "id" | "project" | "createdAt" | "subTickets" | "nextSubTicketCounter">> & {
   add_doc_ref?: AddDocRefInput;
   remove_doc_ref?: string;
+  add_linked_branch?: AddLinkedBranchInput;
+  remove_linked_branch?: string;
+  add_linked_commit?: AddLinkedCommitInput;
+  remove_linked_commit?: string;
 };
 
 export interface TicketListFilters {

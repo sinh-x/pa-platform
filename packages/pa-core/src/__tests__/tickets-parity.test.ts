@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,5 +84,48 @@ test("board, focus, and metrics build from TicketStore", () => {
     const metrics = computeSprintMetrics("2000-01-01", "2999-01-01", "pa-platform", store);
     assert.equal(metrics.throughput, 1);
     assert.equal(metrics.velocityPoints, 2);
+  });
+});
+
+test("tickets validate and store linked git branches and commits", () => {
+  withTicketEnv((root, ticketsDir) => {
+    const repoDir = join(root, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repoDir, stdio: "ignore" });
+    execFileSync("git", ["branch", "feature/test"], { cwd: repoDir, stdio: "ignore" });
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf-8" }).trim();
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repoDir}\n    prefix: PAP\n`);
+
+    const store = new TicketStore(ticketsDir);
+    const ticket = store.create({
+      project: "pa-platform",
+      title: "Link git work",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+
+    const linked = store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/test" }, add_linked_commit: { repo: "pa-platform", sha } }, "test");
+    assert.equal(linked.linkedBranches[0]?.branch, "feature/test");
+    assert.equal(linked.linkedBranches[0]?.sha, sha);
+    assert.equal(linked.linkedCommits[0]?.sha, sha);
+    assert.equal(linked.linkedCommits[0]?.message, "initial");
+
+    const unlinked = store.update(ticket.id, { remove_linked_branch: "pa-platform:feature/test", remove_linked_commit: sha }, "test");
+    assert.equal(unlinked.linkedBranches.length, 0);
+    assert.equal(unlinked.linkedCommits.length, 0);
   });
 });
