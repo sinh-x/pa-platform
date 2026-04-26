@@ -1,0 +1,27 @@
+{
+  "name": "@pa-platform/pa-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runtime-agnostic core library for PA platform adapters",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime-api": {
+      "types": "./dist/runtime-api/index.d.ts",
+      "import": "./dist/runtime-api/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.6.0",
+    "js-yaml": "^4.1.0"
+  }
+}
