@@ -9,3 +9,4 @@ export * from "./repos.js";
 export * from "./deployments.js";
 export * from "./repo-deployments.js";
 export * from "./repo-commits.js";
+export * from "./repo-git-ext.js";

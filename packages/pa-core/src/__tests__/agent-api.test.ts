@@ -119,3 +119,27 @@ test("agent API exposes repo commits and repo deployment filters", async () => {
     assert.equal((await deployments.json() as { total: number }).total, 1);
   });
 });
+
+test("agent API exposes repo diff and compare routes", async () => {
+  await withApiEnv(async (root) => {
+    const repo = join(root, "repo");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim();
+    execFileSync("git", ["checkout", "-b", "feature"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "README.md"), "# Test\n\nChange\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "change"], { cwd: repo, stdio: "ignore" });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim();
+    const { app } = createAgentApiApp();
+    const diff = await app.request(`/api/repos/pa-platform/diff?commit=${head}`);
+    assert.equal(diff.status, 200);
+    assert.equal((await diff.json() as { filesChanged: number }).filesChanged, 1);
+    const compare = await app.request(`/api/repos/pa-platform/compare?from=${base}&to=${head}`);
+    assert.equal((await compare.json() as { count: number }).count, 1);
+    const remote = await app.request("/api/repos/pa-platform/branches/remote");
+    assert.equal(remote.status, 200);
+  });
+});
