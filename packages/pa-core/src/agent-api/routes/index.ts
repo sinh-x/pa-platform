@@ -7,6 +7,8 @@ export * from "./folders.js";
 export * from "./config.js";
 export * from "./repos.js";
 export * from "./deployments.js";
+export * from "./deploy-routing.js";
 export * from "./repo-deployments.js";
 export * from "./repo-commits.js";
 export * from "./repo-git-ext.js";
+export * from "./timers.js";

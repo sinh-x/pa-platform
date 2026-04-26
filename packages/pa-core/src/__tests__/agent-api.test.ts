@@ -14,8 +14,8 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
-  writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
+  writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
+  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n  - id: chat\n    label: Chat\n    mode_type: interactive\n`);
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
@@ -62,6 +62,9 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
 
     const teams = await app.request("/api/pa-teams");
     assert.equal((await teams.json() as { teams: Array<{ name: string }> }).teams[0]?.name, "builder");
+
+    const routing = await app.request("/api/deploy-routing");
+    assert.deepEqual(await routing.json(), { teams: [{ name: "builder", description: "Builder", modes: [{ id: "plan", label: "Plan", modeType: null }] }], repos: [{ name: "pa-platform", path: join(root, "repo"), description: "Test repo" }] });
 
     mkdirSync(join(root, "agent-teams", "builder", "artifacts"), { recursive: true });
     writeFileSync(join(root, "agent-teams", "builder", "artifacts", "note.md"), "# Note\n\nBody");
@@ -141,5 +144,12 @@ test("agent API exposes repo diff and compare routes", async () => {
     assert.equal((await compare.json() as { count: number }).count, 1);
     const remote = await app.request("/api/repos/pa-platform/branches/remote");
     assert.equal(remote.status, 200);
+  });
+});
+
+test("agent API exposes timer parsing helpers", async () => {
+  await withApiEnv(async () => {
+    const { parseTimersOutput } = await import("../index.js");
+    assert.deepEqual(parseTimersOutput("NEXT LEFT LAST PASSED UNIT ACTIVATES\nMon 2026-03-16 05:00:00 +07 6h - - pa-daily-plan.timer pa.service"), [{ unit: "pa-daily-plan.timer", team: "daily-plan", next_in: "6h" }]);
   });
 });

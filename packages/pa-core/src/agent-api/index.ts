@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Context, Next } from "hono";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
-import { bulletinRoutes, configRoutes, deploymentsRoutes, documentsRoutes, focusRoutes, foldersRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, teamsRoutes, ticketRoutes } from "./routes/index.js";
+import { bulletinRoutes, configRoutes, deploymentsRoutes, deployRoutingRoutes, documentsRoutes, focusRoutes, foldersRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
@@ -25,11 +25,13 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.get("/api/health", (c) => c.json({ status: "ok" }));
   app.route("/", configRoutes());
   app.route("/", deploymentsRoutes());
+  app.route("/", deployRoutingRoutes());
   app.route("/", reposRoutes());
   app.route("/", repoCommitsRoutes());
   app.route("/", repoDeploymentsRoutes());
   app.route("/", repoGitExtRoutes());
   app.route("/", teamsRoutes());
+  app.route("/", timersRoutes());
   app.route("/", ticketRoutes());
   app.route("/", focusRoutes());
   app.route("/", bulletinRoutes());
