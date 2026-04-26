@@ -35,6 +35,7 @@ export interface SpawnResult {
   exitCode: number;
   logFile?: string;
   metadata?: Record<string, unknown>;
+  errorMessage?: string;
 }
 
 export interface RuntimeAdapter {
