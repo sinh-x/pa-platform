@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createActivityEvent, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 
 export type OpencodeProvider = "minimax" | "openai";
 
@@ -10,7 +10,10 @@ export interface OpencodeCommandResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  spawnError?: Error;
 }
+
+const STDERR_TAIL_BYTES = 2000;
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
@@ -29,7 +32,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   readonly defaultModel = PROVIDER_DEFAULT_MODELS.minimax;
   readonly sessionFileName = "session-id-opencode.txt";
 
-  private readonly runCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
+  private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
   private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
@@ -37,10 +40,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   constructor(options: OpencodeAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env ?? process.env;
-    this.runCommand = options.runCommand ?? ((args, opts) => {
-      const result = spawnSync("opencode", args, { cwd: opts.cwd, env: opts.env, encoding: "utf-8" });
-      return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-    });
+    this.runCommand = options.runCommand;
     this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
       const logFile = opts.logFile ?? resolve(this.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
@@ -53,11 +53,11 @@ export class OpencodeAdapter implements RuntimeAdapter {
     });
   }
 
-  spawn(opts: SpawnOpts): SpawnResult {
+  spawn(opts: SpawnOpts): Promise<SpawnResult> {
     return this.runOpencode(opts);
   }
 
-  resume(opts: ResumeOpts): SpawnResult {
+  resume(opts: ResumeOpts): Promise<SpawnResult> {
     return this.runOpencode(opts, opts.sessionId);
   }
 
@@ -70,9 +70,9 @@ export class OpencodeAdapter implements RuntimeAdapter {
         const raw = JSON.parse(line) as Record<string, unknown>;
         events.push(createActivityEvent({
           deployId: String(raw["deployId"] ?? basenameDeployId(deployDir)),
-          timestamp: typeof raw["timestamp"] === "string" ? raw["timestamp"] : undefined,
+          timestamp: normalizeTimestamp(raw["timestamp"]),
           kind: normalizeKind(raw),
-          source: "opencode",
+          source: extractSource(raw),
           body: extractBody(raw),
           metadata: raw,
         }));
@@ -98,11 +98,25 @@ export class OpencodeAdapter implements RuntimeAdapter {
     };
   }
 
-  private runOpencode(opts: SpawnOpts, sessionId?: string): SpawnResult {
+  private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
     const primer = readFileSync(opts.primerPath, "utf-8");
+    const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
+    if (opts.mode === "foreground" || opts.mode === "direct" || opts.mode === "interactive") {
+      const args = ["-m", opts.model ?? this.defaultModel];
+      if (sessionId) args.push("--session", sessionId);
+      args.push("--prompt", primer);
+      const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
+      const exitCode = result.status ?? 1;
+      const errorMessage = adapterErrorMessage(result, exitCode);
+      if (errorMessage) {
+        appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "opencode", body: errorMessage }), activityLogPath);
+      }
+      return { sessionId: sessionId ?? opts.deployId, exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
+    }
+
     const args = ["run", "-m", opts.model ?? this.defaultModel, "--dangerously-skip-permissions"];
     if (sessionId) args.push("--session", sessionId);
-    if (opts.mode === "background") args.push("--format", "json", "--print-logs");
+    args.push("--format", "json");
     args.push(primer);
 
     if (opts.mode === "background") {
@@ -110,12 +124,126 @@ export class OpencodeAdapter implements RuntimeAdapter {
       return { sessionId: result.sessionId ?? sessionId ?? opts.deployId, exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
-    const result = this.runCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
-    if (opts.logFile) writeLog(opts.logFile, result.stdout, result.stderr);
-    const outputPath = resolve(dirname(opts.primerPath), "opencode-output.jsonl");
-    writeLog(outputPath, result.stdout, result.stderr);
-    return { sessionId: parseSessionId(result.stdout) ?? parseSessionId(result.stderr) ?? sessionId ?? opts.deployId, exitCode: result.status ?? 1, logFile: opts.logFile };
+    const env = { ...this.env, ...opts.env };
+    const result = this.runCommand
+      ? this.runCommand(args, { cwd: this.cwd, env })
+      : await runStreamingCommand(args, { cwd: this.cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl") });
+    if (this.runCommand) {
+      if (opts.logFile) writeLog(opts.logFile, result.stdout, result.stderr);
+      const outputPath = resolve(dirname(opts.primerPath), "opencode-output.jsonl");
+      writeLog(outputPath, result.stdout, result.stderr);
+    }
+    const exitCode = result.status ?? 1;
+    const errorMessage = adapterErrorMessage(result, exitCode);
+    if (errorMessage) {
+      appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "opencode", body: errorMessage }), activityLogPath);
+    }
+    return { sessionId: parseSessionId(result.stdout) ?? parseSessionId(result.stderr) ?? sessionId ?? opts.deployId, exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
   }
+}
+
+function runInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): OpencodeCommandResult {
+  const result = spawnSync("opencode", args, { cwd: opts.cwd, env: opts.env, stdio: "inherit" });
+  return { status: result.status, stdout: "", stderr: result.error?.message ?? "", ...(result.error ? { spawnError: result.error } : {}) };
+}
+
+function adapterErrorMessage(result: OpencodeCommandResult, exitCode: number): string | undefined {
+  if (result.spawnError) return result.spawnError.message;
+  if (exitCode === 0) return undefined;
+  const tail = tailString(result.stderr, STDERR_TAIL_BYTES);
+  return tail.length > 0 ? tail : `opencode exited with code ${exitCode}`;
+}
+
+function tailString(text: string, max: number): string {
+  if (!text) return "";
+  return text.length <= max ? text : text.slice(text.length - max);
+}
+
+interface StreamingCommandOpts {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  deployId: string;
+  logFile?: string;
+  outputPath: string;
+}
+
+function runStreamingCommand(args: string[], opts: StreamingCommandOpts): Promise<OpencodeCommandResult> {
+  mkdirSync(dirname(opts.outputPath), { recursive: true });
+  const log = opts.logFile ? createWriteStream(opts.logFile, { flags: "a" }) : undefined;
+  const jsonl = createWriteStream(opts.outputPath, { flags: "a" });
+  const activity = createOpencodeActivityWriter(opts.deployId, getDeployPaths(opts.deployId).activityLogPath);
+  const child = spawn("opencode", args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+
+  const collectStdout = (chunk: Buffer): void => {
+    const text = chunk.toString("utf-8");
+    stdout += text;
+    log?.write(text);
+    jsonl.write(text);
+    activity.write(text);
+  };
+  const collectStderr = (chunk: Buffer): void => {
+    const text = chunk.toString("utf-8");
+    stderr = tailString(stderr + text, STDERR_TAIL_BYTES);
+    log?.write(text);
+    jsonl.write(text);
+    activity.write(text);
+  };
+
+  child.stdout.on("data", collectStdout);
+  child.stderr.on("data", collectStderr);
+
+  return new Promise((resolvePromise) => {
+    let spawnError: Error | undefined;
+    child.on("error", (error) => {
+      spawnError = error;
+      stderr = tailString(stderr + error.message, STDERR_TAIL_BYTES);
+      activity.write(JSON.stringify({ type: "error", timestamp: Date.now(), message: error.message }) + "\n");
+    });
+    child.on("close", (code) => {
+      activity.flush();
+      log?.end();
+      jsonl.end();
+      resolvePromise({ status: code ?? 1, stdout, stderr, ...(spawnError ? { spawnError } : {}) });
+    });
+  });
+}
+
+export function createOpencodeActivityWriter(deployId: string, activityLogPath: string): { write(text: string): void; flush(): void } {
+  let pending = "";
+  const processLine = (line: string): void => {
+    if (!line.trim()) return;
+    try {
+      const raw = JSON.parse(line) as Record<string, unknown>;
+      appendActivityEvent(opencodeJsonToActivityEvent(raw, deployId), activityLogPath);
+    } catch {
+      appendActivityEvent(createActivityEvent({ deployId, kind: "text", source: "opencode", body: line }), activityLogPath);
+    }
+  };
+  return {
+    write(text: string): void {
+      pending += text;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) processLine(line);
+    },
+    flush(): void {
+      processLine(pending);
+      pending = "";
+    },
+  };
+}
+
+export function opencodeJsonToActivityEvent(raw: Record<string, unknown>, deployId: string): ActivityEvent {
+  return createActivityEvent({
+    deployId: String(raw["deployId"] ?? deployId),
+    timestamp: normalizeTimestamp(raw["timestamp"]),
+    kind: normalizeKind(raw),
+    source: extractSource(raw),
+    body: extractBody(raw),
+    metadata: raw,
+  });
 }
 
 export function resolveOpencodeModel(provider: string | undefined, model: string | undefined): string {
@@ -151,7 +279,12 @@ function parseSessionId(output: string): string | undefined {
 }
 
 function normalizeKind(raw: Record<string, unknown>): ActivityEvent["kind"] {
-  const type = String(raw["type"] ?? raw["kind"] ?? raw["role"] ?? "text").toLowerCase();
+  const part = recordValue(raw["part"]);
+  const state = recordValue(part?.["state"]);
+  const status = String(state?.["status"] ?? "").toLowerCase();
+  const type = String(raw["type"] ?? raw["kind"] ?? part?.["type"] ?? raw["role"] ?? "text").toLowerCase();
+  if (["error", "failed", "failure"].includes(status)) return "error";
+  if (type.includes("tool") && ["completed", "success", "done"].includes(status)) return "tool_result";
   if (type.includes("tool") && type.includes("result")) return "tool_result";
   if (type.includes("tool")) return "tool_use";
   if (type.includes("think") || type.includes("reason")) return "thinking";
@@ -160,8 +293,36 @@ function normalizeKind(raw: Record<string, unknown>): ActivityEvent["kind"] {
 }
 
 function extractBody(raw: Record<string, unknown>): string {
-  const body = raw["text"] ?? raw["content"] ?? raw["message"] ?? raw["body"] ?? raw["type"] ?? "";
+  const part = recordValue(raw["part"]);
+  const state = recordValue(part?.["state"]);
+  const input = recordValue(state?.["input"]);
+  const tool = stringValue(part?.["tool"] ?? raw["tool"]);
+  if (tool) {
+    const status = stringValue(state?.["status"]);
+    const description = stringValue(input?.["description"] ?? input?.["command"] ?? input?.["filePath"] ?? input?.["file_path"] ?? input?.["pattern"] ?? input?.["url"]);
+    return [tool, status, description].filter(Boolean).join(" ");
+  }
+  const body = part?.["text"] ?? part?.["thinking"] ?? raw["text"] ?? raw["content"] ?? raw["message"] ?? raw["body"] ?? raw["type"] ?? "";
   return typeof body === "string" ? body : JSON.stringify(body);
+}
+
+function extractSource(raw: Record<string, unknown>): string {
+  const sessionId = stringValue(raw["sessionID"] ?? raw["sessionId"] ?? raw["session_id"]);
+  return sessionId ? sessionId.slice(0, 8) : "opencode";
+}
+
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  return undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function basenameDeployId(deployDir: string): string {
