@@ -52,7 +52,13 @@ test("signal reader helpers manage state and raw notes under a configurable base
 
 test("signal writers use configurable destinations and ticket store", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-signal-writers-"));
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   try {
+    const config = join(root, "config");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(join(config, "repos.yaml"), `repos:\n  pa:\n    path: ${join(root, "pa")}\n    prefix: PA\n  learning:\n    path: ${join(root, "learning")}\n    prefix: LM\n`);
+    process.env["PA_PLATFORM_CONFIG"] = config;
+
     const paths = {
       learningRepo: join(root, "learning"),
       signalBase: join(root, "signal"),
@@ -75,6 +81,8 @@ test("signal writers use configurable destinations and ticket store", () => {
     assert.match(readFileSync(journalPath, "utf-8"), /#signal #youtube/);
     assert.equal(cleanSignalEntries({ paths }), 2);
   } finally {
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -51,7 +51,7 @@ export function readActivityEvents(activityLogPath: string): ActivityEvent[] {
     .filter((line) => line.trim().length > 0)
     .flatMap((line): ActivityEvent[] => {
       try {
-        return [normalizeActivityEvent(JSON.parse(line) as Partial<ActivityEvent>)];
+        return [normalizeActivityEvent(JSON.parse(line) as Record<string, unknown>)];
       } catch {
         return [];
       }
@@ -73,16 +73,55 @@ export function summarizeActivity(events: ActivityEvent[], deployId = events[0]?
   return { deployId, total: events.length, byKind, bySource, firstTimestamp: sorted[0]?.timestamp, lastTimestamp: sorted.at(-1)?.timestamp };
 }
 
-export function normalizeActivityEvent(raw: Partial<ActivityEvent>): ActivityEvent {
-  const kind = raw.kind ?? "text";
-  if (!ACTIVITY_KINDS.includes(kind)) throw new Error(`Invalid activity kind: ${kind}`);
-  if (!raw.deployId) throw new Error("Activity event missing deployId");
+const PLUGIN_KIND_MAP: Record<string, ActivityKind> = {
+  tool_call: "tool_use",
+  tool_use: "tool_use",
+  tool_success: "tool_result",
+  tool_result: "tool_result",
+  tool_error: "error",
+  session_error: "error",
+  error: "error",
+  thinking: "thinking",
+};
+
+function mapPluginKind(raw: Record<string, unknown>): ActivityKind {
+  const kind = typeof raw["kind"] === "string" ? raw["kind"] : undefined;
+  if (kind && (ACTIVITY_KINDS as string[]).includes(kind)) return kind as ActivityKind;
+  const event = typeof raw["event"] === "string" ? raw["event"].toLowerCase() : undefined;
+  if (event && PLUGIN_KIND_MAP[event]) return PLUGIN_KIND_MAP[event];
+  return "text";
+}
+
+function summarizePluginEvent(raw: Record<string, unknown>): string {
+  const event = typeof raw["event"] === "string" ? raw["event"] : "";
+  const data = raw["data"];
+  if (data && typeof data === "object") {
+    const summary = JSON.stringify(data);
+    return event ? `${event}: ${summary}` : summary;
+  }
+  return event;
+}
+
+export function normalizeActivityEvent(raw: Record<string, unknown>): ActivityEvent {
+  const deployId = (raw["deployId"] ?? raw["deploy_id"]) as string | undefined;
+  if (!deployId) throw new Error("Activity event missing deployId");
+  const kind = mapPluginKind(raw);
+  const timestampRaw = raw["timestamp"] ?? raw["ts"];
+  const timestamp = typeof timestampRaw === "string"
+    ? timestampRaw
+    : typeof timestampRaw === "number" && Number.isFinite(timestampRaw)
+      ? new Date(timestampRaw).toISOString()
+      : new Date().toISOString();
+  const source = (raw["source"] ?? raw["agent"] ?? "unknown") as string;
+  const bodyRaw = raw["body"] ?? (raw["event"] !== undefined ? summarizePluginEvent(raw) : "");
+  const body = typeof bodyRaw === "string" ? bodyRaw : JSON.stringify(bodyRaw);
+  const metadata = (raw["metadata"] ?? raw["data"]) as Record<string, unknown> | undefined;
   return {
-    deployId: raw.deployId,
-    timestamp: raw.timestamp ?? new Date().toISOString(),
+    deployId,
+    timestamp,
     kind,
-    source: raw.source ?? "unknown",
-    body: raw.body ?? "",
-    ...(raw.metadata ? { metadata: raw.metadata } : {}),
+    source,
+    body,
+    ...(metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { metadata } : {}),
   };
 }

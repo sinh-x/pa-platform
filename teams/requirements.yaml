@@ -209,6 +209,27 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-self-improvement
         inject-as: shared-skill
+  - id: analyze-auto-openai
+    label: Analyze (Auto) (OpenAI)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: openai
+    model: gpt-5.5
+    objective: skills/requirements/analyze-auto-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
 context:
   organization: sinh-x
   notes: "Solo agent (team manager does the work directly). Always run with --interactive for analyze and review modes."

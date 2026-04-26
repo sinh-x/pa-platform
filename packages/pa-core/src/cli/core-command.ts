@@ -32,6 +32,7 @@ export interface RunCoreCommandOptions {
   hooks?: CoreExecutionHooks;
   io?: CliIo;
   now?: Date;
+  binaryName?: string;
 }
 
 export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions = {}): Promise<number> {
@@ -39,7 +40,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
   const [command, ...rest] = argv;
   try {
     if (!command || command === "help" || command === "--help" || command === "-h") {
-      printHelp(io);
+      printHelp(io, opts.binaryName ?? "pa-core");
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
@@ -59,7 +60,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "timers") return runTimersCommand(io);
     if (command === "signal") return runSignalCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
-    printHelp(io);
+    printHelp(io, opts.binaryName ?? "pa-core");
     return 1;
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
@@ -516,6 +517,8 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
     io.stderr(validated.error);
     return 1;
   }
+  if (validated.request.listModes) return printDeployModes(validated.request.team, io);
+  if (validated.request.validate) return validateDeployConfig(validated.request.team, io);
   if (!hooks.deploy) {
     io.stderr("Deployment execution requires an adapter hook");
     return 1;
@@ -526,7 +529,8 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
     io.stderr(result.reason ?? "Deployment failed");
     return 1;
   }
-  io.stdout(`Deployment pending: ${result.deploymentId ?? "(adapter-managed)"}`);
+  const label = result.status === "success" ? "completed" : "pending";
+  io.stdout(`Deployment ${label}: ${result.deploymentId ?? "(adapter-managed)"}`);
   return 0;
 }
 
@@ -780,17 +784,44 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
   const [team, ...rest] = argv;
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
-  const flagMap: Record<string, keyof DeployRequest> = { "--mode": "mode", "--objective": "objective", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout" };
+  const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--interactive": "interactive", "--direct": "direct", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
+    const booleanKey = booleanMap[arg];
+    if (booleanKey) {
+      fields[booleanKey] = true;
+      continue;
+    }
     const key = flagMap[arg];
     if (!key) return { error: `Unsupported deploy option: ${arg}` };
     const value = rest[i + 1];
     if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
-    fields[key] = key === "timeout" ? Number(value) : value;
+    if (key === "objectiveFile") fields.objective = readFileSync(resolve(value), "utf-8");
+    else fields[key] = key === "timeout" ? Number(value) : value;
     i += 1;
   }
   return { fields };
+}
+
+function printDeployModes(team: string, io: Required<CliIo>): number {
+  const config = loadTeamConfig(team);
+  const modes = config.deploy_modes ?? [];
+  if (modes.length === 0) {
+    io.stdout(`No deploy modes configured for ${team}.`);
+    return 0;
+  }
+  io.stdout(`Deploy modes for ${team}:`);
+  for (const mode of modes) io.stdout(`  ${mode.id.padEnd(18)} ${mode.label}`);
+  return 0;
+}
+
+function validateDeployConfig(team: string, io: Required<CliIo>): number {
+  const config = loadTeamConfig(team);
+  io.stdout(`Valid team config: ${config.name}`);
+  io.stdout(`Agents: ${config.agents.length}`);
+  io.stdout(`Modes: ${(config.deploy_modes ?? []).length}`);
+  return 0;
 }
 
 function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } | { error: string } {
@@ -1533,13 +1564,13 @@ function printError(error: string, io: Required<CliIo>): number {
 }
 
 function printDeploymentList(deployments: DeploymentStatus[], io: Required<CliIo>): void {
-  io.stdout(`${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(20)} ${"ENDED".padEnd(20)} SUMMARY`);
-  io.stdout(`${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------".padEnd(20)} ${"-------------------".padEnd(20)} -------`);
+  io.stdout(`${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(26)} ${"ENDED".padEnd(26)} SUMMARY`);
+  io.stdout(`${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------------".padEnd(26)} ${"-------------------------".padEnd(26)} -------`);
   for (const deployment of deployments) {
     const started = shortTs(deployment.started_at);
     const ended = deployment.completed_at ? shortTs(deployment.completed_at) : "-";
     const summary = truncate(deployment.summary ?? "", 50);
-    io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${started.padEnd(20)} ${ended.padEnd(20)} ${summary}`);
+    io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${started.padEnd(26)} ${ended.padEnd(26)} ${summary}`);
   }
 }
 
@@ -1550,6 +1581,9 @@ function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>
   io.stdout(`  Started:  ${shortTs(deployment.started_at)}`);
   if (deployment.completed_at) io.stdout(`  Ended:    ${shortTs(deployment.completed_at)}`);
   if (deployment.runtime) io.stdout(`  Runtime:  ${deployment.runtime}`);
+  if (deployment.provider) io.stdout(`  Provider: ${deployment.provider}`);
+  if (deployment.models?.["team"]) io.stdout(`  Model:    ${deployment.models["team"]}`);
+  if (deployment.models?.["agents"]) io.stdout(`  Agents Model: ${deployment.models["agents"]}`);
   if (deployment.agents.length > 0) io.stdout(`  Agents:   ${deployment.agents.join(",")}`);
   if (deployment.pid !== undefined) io.stdout(`  PID:      ${deployment.pid}`);
   if (deployment.summary) io.stdout(`  Summary:  ${deployment.summary}`);
@@ -1557,8 +1591,8 @@ function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>
   io.stdout(`  Events:   ${eventCount}`);
 }
 
-function printHelp(io: Required<CliIo>): void {
-  io.stdout("Usage: pa-core <command> [options]");
+function printHelp(io: Required<CliIo>, binaryName: string): void {
+  io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
 }
 
@@ -1567,7 +1601,17 @@ function normalizeIo(io: CliIo = {}): Required<CliIo> {
 }
 
 function shortTs(timestamp: string): string {
-  return timestamp.replace("T", " ").slice(0, 19);
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp.replace("T", " ").slice(0, 19);
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad2(Math.floor(absOffset / 60))}:${pad2(absOffset % 60)}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${offset}`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function localDate(timestamp: string): string {

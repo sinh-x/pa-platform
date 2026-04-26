@@ -31,10 +31,14 @@ export interface ResumeOpts extends SpawnOpts {
 }
 
 export interface SpawnResult {
-  sessionId: string;
+  // Optional: foreground TUI runs cannot capture an opencode session id without
+  // breaking the inherited-stdio TUI. Adapters return undefined when no real
+  // token was observed; consumers must not write that as a resumable session id.
+  sessionId?: string;
   exitCode: number;
   logFile?: string;
   metadata?: Record<string, unknown>;
+  errorMessage?: string;
 }
 
 export interface RuntimeAdapter {
