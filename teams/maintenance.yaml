@@ -1,0 +1,151 @@
+# Ported from frozen PA teams/maintenance.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: maintenance
+model: sonnet
+description: "System maintenance — health checks, repo scanning, repo health analysis, and issue remediation"
+default_mode: housekeeping
+terse_mode: true
+
+deploy_modes:
+  - id: housekeeping
+    label: Housekeeping
+    phone_visible: true
+    mode_type: housekeeping
+    provider: minimax
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: health-check
+    label: Health Check
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    solo: true
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: repo-scan
+    label: Repo Scan
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    solo: true
+    objective: skills/maintenance/repo-scan-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: repo-health
+    label: Repo Health
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    solo: true
+    objective: skills/maintenance/repo-health-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: fix
+    label: Fix
+    phone_visible: false
+    mode_type: interactive
+    provider: minimax
+    solo: true
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+context:
+  organization: sinh-x
+  notes: >
+    Maintenance team for system health, repo scanning, and issue remediation.
+    Absorbed from sprint-master's maintenance domain.
+    Workspace: agent-teams/maintenance/
+
+agents:
+  - name: team-manager
+    role: "Solo maintenance operator — runs health checks, repo scans, and applies fixes"
+    skill: skills/maintenance.md
+
+  - name: mechanic
+    role: "Investigate issues, apply fixes, run health checks on the personal-assistant system"
+    skill: skills/maintenance.md
+
+objective: |
+  You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
+
+  You are the maintenance team manager. You own system health, repo scanning,
+  and issue remediation for the personal-assistant system.
+
+  ## Mode-Specific Objectives
+
+  - **health-check** — Run a full system health check. Follow skills/maintenance.md:
+    syntax-check scripts, verify systemd timers, check registry for stuck deployments,
+    verify folder structure, review self-improvement suggestions, apply safe fixes.
+  - **repo-scan** — Scan repositories for issues. Follow skills/maintenance/repo-scan-objective.md.
+  - **repo-health** — Repo health analysis. Follow skills/maintenance/repo-health-objective.md.
+  - **fix** — Interactive diagnostic and fix for a specific issue.
+
+  See the skill files in `skills/maintenance/` for detailed instructions per mode.
+
+  ## Workflow
+
+  1. Identify the current mode from `<deployment-context>`
+  2. Follow the corresponding skill file
+  3. Execute the mode's workflow
+  4. Add completion comment on the working ticket (or create FYI ticket if no working ticket)
+  5. Log session per global standards

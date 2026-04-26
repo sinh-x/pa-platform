@@ -1,0 +1,231 @@
+# Ported from frozen PA teams/requirements.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: requirements
+model: opus # requirements sessions involve interactive reasoning and structured analysis
+description: "Requirements gathering and analysis — structured planning before implementation"
+default_mode: analyze
+deploy_modes:
+  - id: analyze
+    label: Analyze
+    phone_visible: true
+    mode_type: interactive
+    agents: [analyst]
+    objective: skills/requirements/analyze-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: review
+    label: Review
+    phone_visible: false
+    mode_type: interactive
+    agents: [reviewer]
+    objective: skills/requirements/review-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/review-code-quality.md
+      - skills/requirements/review-security.md
+      - skills/requirements/review-ops.md
+      - skills/requirements/review-ui-uat.md
+  - id: review-auto
+    label: Review (Auto)
+    phone_visible: true
+    mode_type: work
+    agents: [reviewer]
+    provider: minimax
+    objective: skills/requirements/review-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/review-code-quality.md
+      - skills/requirements/review-security.md
+      - skills/requirements/review-ops.md
+      - skills/requirements/review-ui-uat.md
+  - id: review-auto-anthropic
+    label: Review (Auto) (Anthropic)
+    phone_visible: true
+    mode_type: work
+    agents: [reviewer]
+    provider: anthropic
+    objective: skills/requirements/review-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/review-code-quality.md
+      - skills/requirements/review-security.md
+      - skills/requirements/review-ops.md
+      - skills/requirements/review-ui-uat.md
+  - id: focus
+    label: Focus Report
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: minimax
+    objective: skills/requirements/focus-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: focus-anthropic
+    label: Focus Report (Anthropic)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: anthropic
+    objective: skills/requirements/focus-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: spike
+    label: Spike Research
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: minimax
+    objective: skills/requirements/spike-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: spike-anthropic
+    label: Spike Research (Anthropic)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: anthropic
+    objective: skills/requirements/spike-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: analyze-auto
+    label: Analyze (Auto)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: minimax
+    objective: skills/requirements/analyze-auto-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: analyze-auto-anthropic
+    label: Analyze (Auto) (Anthropic)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: anthropic
+    objective: skills/requirements/analyze-auto-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+context:
+  organization: sinh-x
+  notes: "Solo agent (team manager does the work directly). Always run with --interactive for analyze and review modes."
+agents:
+  - name: analyst
+    role: "Gather requirements through structured conversation, explore codebase, produce a plan covering the standard checklist"
+    instruction: skills/requirements/analyze.md
+  - name: reviewer
+    role: "Review existing system against structured checklist, produce severity-rated findings report"
+    instruction: skills/requirements/review.md
+  - name: researcher
+    role: "Autonomous spike researcher — run non-interactive research on a topic, explore the codebase and web, produce a spike report or full requirements doc"
+    instruction: skills/requirements/spike.md
+objective: |
+  You are running as a solo requirements analyst — do NOT spawn sub-agents.
+
+  Wait for the user to describe what they want to build or change.
+  Then follow the relevant skill from `## Agents` to gather requirements interactively.
+
+  Save the final requirements document to your workspace.

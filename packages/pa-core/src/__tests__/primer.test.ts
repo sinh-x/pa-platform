@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { generatePrimer, parseTeamYamlContent } from "../index.js";
 
 const team = parseTeamYamlContent(`
@@ -29,4 +32,23 @@ test("generatePrimer renders claude-specific tool guidance", () => {
   assert.match(primer, /Runtime: claude/);
   assert.match(primer, /TeamCreate/);
   assert.match(primer, /Write clear requirements/);
+});
+
+test("generatePrimer reads mode objective files and applies template vars", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-"));
+  try {
+    const objectivePath = join(root, "objective.md");
+    writeFileSync(objectivePath, "Plan for {{TODAY}} using {{TEAM_NAME}}\n");
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: team,
+      mode: "plan",
+      resolveFile: (relativePath) => (relativePath === "Plan the work" ? objectivePath : undefined),
+      templateVars: { TODAY: "2026-04-26", TEAM_NAME: "requirements" },
+    });
+    assert.match(primer, /Plan for 2026-04-26 using requirements/);
+    assert.doesNotMatch(primer, /\{\{TODAY\}\}/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

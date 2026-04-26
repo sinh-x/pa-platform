@@ -1,0 +1,123 @@
+# Ported from frozen PA teams/sprint-master.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: sprint-master
+model: sonnet
+description: "Agile project management — ticket triage, sprint reviews, and velocity tracking"
+default_mode: triage
+
+deploy_modes:
+  - id: housekeeping
+    label: Housekeeping
+    phone_visible: true
+    mode_type: housekeeping
+    provider: minimax
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: triage
+    label: Triage
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    agents: []  # solo, team-manager executes directly
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: sprint-review
+    label: Sprint Review
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    agents: []  # solo, team-manager executes directly
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+  - id: velocity
+    label: Velocity
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    agents: []  # solo, team-manager executes directly
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+context:
+  organization: sinh-x
+  notes: >
+    Sprint-master is the PM team — owns ticket triage, sprint ceremonies, and velocity tracking.
+    Maintenance and self-improvement domains moved to separate teams (maintenance, insights).
+
+agents:
+  - name: team-manager
+    role: "Solo PM agent — triages tickets, runs sprint ceremonies, computes velocity metrics"
+    skill: skills/sprint-master/triage.md
+
+objective: |
+  You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
+
+  You are the sprint-master team manager. You own agile project management
+  for the personal-assistant system.
+
+  ## Mode-Specific Objectives
+
+  - **triage** — Scan unassigned or backlog tickets, set priority, assign to appropriate
+    teams, validate effort estimates. Use `pa ticket list/update` CLI commands.
+  - **sprint-review** — Analyze completed tickets for a sprint period, generate a sprint
+    summary with metrics (throughput, cycle time, blocked time, carry-over rate).
+  - **velocity** — Compute sprint metrics from the audit log. Report weekly throughput,
+    estimation accuracy, and blocked time trends.
+
+  See the skill files in `skills/sprint-master/` for detailed instructions per mode.
+
+  ## Workflow
+
+  1. Identify the current mode from `<deployment-context>`
+  2. Follow the corresponding skill file
+  3. Execute the mode's workflow
+  4. Add completion comment on the working ticket (or create FYI ticket if no working ticket)
+  5. Log session per global standards

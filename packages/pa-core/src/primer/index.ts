@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getSkillsDir } from "../paths.js";
+import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { ToolReference } from "../runtime-api/types.js";
 
@@ -9,6 +9,8 @@ export interface GeneratePrimerOptions {
   teamConfig: TeamConfig;
   mode?: string;
   objective?: string;
+  resolveFile?: (relativePath: string) => string | undefined;
+  templateVars?: Record<string, string>;
   skillsDir?: string;
   extraInstructions?: string;
   toolReference?: ToolReference;
@@ -18,7 +20,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const mode = selectMode(options.teamConfig, options.mode);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
-  const objective = options.objective ?? mode?.objective ?? options.teamConfig.objective;
+  const objective = resolveObjective(options, mode);
 
   return [
     `# PA Deployment Primer`,
@@ -43,6 +45,23 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     renderSkills(skills, options.skillsDir ?? getSkillsDir()),
     options.extraInstructions ? `\n## Extra Instructions\n${options.extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
+}
+
+function resolveObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
+  const rawObjective = options.objective ?? mode?.objective ?? options.teamConfig.objective;
+  if (!mode?.objective || options.objective) return applyTemplateVars(rawObjective, options.templateVars ?? {});
+
+  const resolved = options.resolveFile?.(mode.objective) ?? resolve(getPlatformHomeDir(), mode.objective);
+  if (!existsSync(resolved)) return applyTemplateVars(rawObjective, options.templateVars ?? {});
+  return applyTemplateVars(readFileSync(resolved, "utf-8"), options.templateVars ?? {});
+}
+
+function applyTemplateVars(content: string, vars: Record<string, string>): string {
+  let result = content;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replaceAll(`{{${key}}}`, value);
+  }
+  return result;
 }
 
 function selectMode(teamConfig: TeamConfig, requestedMode?: string): DeployMode | undefined {

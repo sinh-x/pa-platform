@@ -1,0 +1,50 @@
+# Example team definition
+# Copy this and customize for your use case
+
+name: example-team
+description: An example agent team
+default_mode: background
+
+deploy_modes:
+  - id: housekeeping
+    label: Housekeeping
+    phone_visible: true
+    mode_type: housekeeping
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+  - id: background
+    label: Background
+    phone_visible: true
+    mode_type: work
+  - id: foreground
+    label: Foreground
+    phone_visible: true
+    mode_type: work
+  - id: interactive
+    label: Interactive
+    phone_visible: false
+    mode_type: interactive
+
+# Optional context passed to all agents
+context:
+  organization: sinh-x
+  notes: "This is a template — replace with your actual team"
+
+# Variables available to all agents in this team
+variables:
+  project_root: /home/sinh/git-repos/sinh-x/tools/personal-assistant
+
+# Agents in this team
+agents:
+  - name: researcher
+    role: "Research topics and gather information"
+    skill: skills/research.md
+
+  - name: implementer
+    role: "Write code based on research findings"
+    skill: skills/implement.md
+
+# The objective — what this team should accomplish when deployed
+objective: |
+  Research the given topic, then implement the findings.
+  Coordinate between researcher and implementer.

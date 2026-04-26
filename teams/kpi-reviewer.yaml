@@ -1,0 +1,139 @@
+# Ported from frozen PA teams/kpi-reviewer.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: kpi-reviewer
+model: opus # evaluation requires judgment and nuanced assessment
+description: "Evaluate requirements team deployments against defined KPI framework — produces scored reports for quality assurance"
+default_mode: single
+deploy_modes:
+  - id: single
+    label: Single Deployment
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/single-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+  - id: ticket
+    label: Ticket Scope
+    phone_visible: false
+    mode_type: work
+    provider: minimax
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/ticket-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+  - id: daily
+    label: Daily Scope
+    phone_visible: false
+    mode_type: work
+    provider: minimax
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/daily-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+  - id: single-anthropic
+    label: Single Deployment (Anthropic)
+    phone_visible: true
+    mode_type: work
+    provider: anthropic
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/single-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+  - id: ticket-anthropic
+    label: Ticket Scope (Anthropic)
+    phone_visible: false
+    mode_type: work
+    provider: anthropic
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/ticket-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+  - id: daily-anthropic
+    label: Daily Scope (Anthropic)
+    phone_visible: false
+    mode_type: work
+    provider: anthropic
+    agents: [evaluator]
+    objective: skills/kpi-reviewer/daily-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+    global_docs:
+      - skills/requirements/kpi-definitions.md
+context:
+  organization: sinh-x
+  notes: "Solo agent (team manager does the work directly). Evaluates requirements team deployments. Use haiku for data gathering phases, opus for evaluation phases."
+agents:
+  - name: evaluator
+    role: "Evaluate requirements team deployments against KPI framework — read session logs, artifacts, and ticket history; score criteria; produce structured KPI reports"
+    instruction: skills/kpi-reviewer/evaluate.md
+objective: |
+  You are running as a solo KPI reviewer — do NOT spawn sub-agents.
+
+  Your job is to evaluate requirements team deployments against the KPI framework defined in skills/requirements/kpi-definitions.md.
+
+  Follow the evaluator instruction skill (embedded above in ## Agents) exactly — it defines the evaluation phases.

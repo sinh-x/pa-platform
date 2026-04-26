@@ -1,0 +1,226 @@
+# Ported from frozen PA teams/builder.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: builder
+description: "Execute multi-phase implementation projects for the personal-assistant system"
+default_mode: implement
+terse_mode: true
+
+deploy_modes:
+  - id: housekeeping
+    label: Housekeeping
+    phone_visible: true
+    mode_type: housekeeping
+    model: opus
+    provider: minimax
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: implement
+    label: Implement
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: minimax
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/implement.md
+    global_docs:
+      - knowledge-base/codebase/personal-assistant.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: worker
+    label: Worker
+    phone_visible: false
+    mode_type: interactive
+    model: opus
+    provider: minimax
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/worker.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: orchestrator
+    label: Orchestrator
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: minimax
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/orchestrator.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: routine
+    label: Routine
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: minimax
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/routine.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+  - id: housekeeping-anthropic
+    label: Housekeeping (Anthropic)
+    phone_visible: true
+    mode_type: housekeeping
+    model: opus
+    provider: anthropic
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: implement-anthropic
+    label: Implement (Anthropic)
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: anthropic
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/implement.md
+    global_docs:
+      - knowledge-base/codebase/personal-assistant.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: worker-anthropic
+    label: Worker (Anthropic)
+    phone_visible: false
+    mode_type: interactive
+    model: opus
+    provider: anthropic
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/worker.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: orchestrator-anthropic
+    label: Orchestrator (Anthropic)
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: anthropic
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/orchestrator.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: routine-anthropic
+    label: Routine (Anthropic)
+    phone_visible: true
+    mode_type: work
+    model: opus
+    provider: anthropic
+    agents: []  # solo, no sub-agents
+    objective: teams/builder/modes/routine.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+
+context:
+  organization: sinh-x
+  notes: >
+    Solo agent team. Three execution modes:
+    - worker: interactive session awaiting user instructions
+    - implement: autonomous ticket-driven execution (one phase per deployment)
+    - orchestrator: cross-team pipeline manager launching builder/implement via pa deploy
+    Increase PA_MAX_RUNTIME to 3600 (1 hour) for builder deployments.
+
+agents:
+  - name: builder-agent
+    role: "Executes implementation work: interactive (worker), autonomous (implement), or orchestration (orchestrator)"
+    instruction: teams/builder/modes/implement.md
+
+objective: |
+  You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
+
+  You are the builder agent. Run with --mode worker (interactive), --mode implement (autonomous), or --mode orchestrator (launcher).
+
+  Default mode: implement. Use --mode worker for interactive sessions or --mode orchestrator for pipeline coordination.

@@ -1,0 +1,224 @@
+# Ported from frozen PA teams/learner.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
+name: learner
+model: sonnet  # synthesis and analysis require judgment
+description: Learning, research & intel team — multi-source knowledge ingestion, curation, interactive learning, and Johari blind-spot analysis
+default_mode: background
+
+deploy_modes:
+  - id: housekeeping
+    label: Housekeeping
+    phone_visible: true
+    mode_type: housekeeping
+    provider: minimax
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: background
+    label: Background
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: foreground
+    label: Foreground
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: interactive
+    label: Interactive
+    phone_visible: false
+    mode_type: interactive
+    provider: minimax
+
+  - id: spike
+    label: Spike
+    phone_visible: true
+    mode_type: interactive
+    provider: minimax
+    agents: [facilitator]
+  - id: housekeeping-anthropic
+    label: Housekeeping (Anthropic)
+    phone_visible: true
+    mode_type: housekeeping
+    provider: anthropic
+    agents: []
+    objective: skills/global/housekeeping-objective.md
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: background-anthropic
+    label: Background (Anthropic)
+    phone_visible: true
+    mode_type: work
+    provider: anthropic
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: foreground-anthropic
+    label: Foreground (Anthropic)
+    phone_visible: true
+    mode_type: work
+    provider: anthropic
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
+  - id: interactive-anthropic
+    label: Interactive (Anthropic)
+    phone_visible: false
+    mode_type: interactive
+    provider: anthropic
+  - id: spike-anthropic
+    label: Spike (Anthropic)
+    phone_visible: true
+    mode_type: interactive
+    provider: anthropic
+    agents: [facilitator]
+
+context:
+  organization: sinh-x
+  notes: "Unified learning hub: YouTube, RSS, podcasts, system logs, and Johari blind-spot tracking. Absorbs youtube-processor team. Renamed from knowledge-hub."
+
+variables:
+  project_root: /home/sinh/git-repos/sinh-x/tools/personal-assistant
+  anytype_space_id: bafyreifs6whb7td4qfzyqx5nh6krdmxosvbzxwnpn5eqeepivm3tc7ps6i.2eaoxbxt3otui
+
+  # YouTube queue (absorbed from youtube-processor team — path unchanged for compatibility)
+  youtube_queue: ~/Documents/ai-usage/queue/youtube-video-queue.txt
+
+  # RSS feeds — remove # from a line to activate that feed
+  # Lines starting with # are comments/suggestions and will be skipped by the gatherer
+  rss_feeds: |
+    # --- AI / LLM / Tech ---
+    # https://simonwillison.net/atom/everything/             # Simon Willison (AI/LLM commentary)
+    # https://huggingface.co/blog/feed.xml                   # Hugging Face blog
+    # https://rss.arxiv.org/rss/cs.AI                       # arXiv CS.AI daily papers
+    # https://www.deeplearning.ai/the-batch/feed/            # The Batch (deeplearning.ai)
+
+    # --- Learning Science ---
+    # https://www.learningscientists.org/feed                # The Learning Scientists blog
+    # https://www.edutopia.org/rss.xml                       # Edutopia (education research)
+    # https://www.cultofpedagogy.com/feed/                   # Cult of Pedagogy
+
+    # --- Personal Development ---
+    # https://jamesclear.com/feed                            # James Clear (Atomic Habits)
+    # https://waitbutwhy.com/feed                            # Wait But Why (long-form thinking)
+
+    # --- Add your feeds below ---
+
+  # Podcast feeds — remove # from a line to activate that feed
+  # Lines starting with # are comments/suggestions and will be skipped by the gatherer
+  podcast_feeds: |
+    # --- Science & Learning ---
+    # https://feeds.megaphone.fm/hubermanlab                            # Huberman Lab
+    # https://feeds.simplecast.com/54nAGcIl                             # Hidden Brain (NPR)
+
+    # --- AI / Tech ---
+    # https://lexfridman.com/feed/podcast/                              # Lex Fridman Podcast
+    # https://feeds.transistor.fm/machine-learning-street-talk          # ML Street Talk
+
+    # --- Personal Development ---
+    # https://tim.blog/feed/podcast/                                    # The Tim Ferriss Show
+    # https://80000hours.org/podcast/feed/                              # 80,000 Hours Podcast
+
+    # --- Add your feeds below ---
+
+  # Topics of interest for content filtering and relevance scoring
+  topics_of_interest: |
+    Learning Science
+    AI/LLM developments
+    Agent systems
+    Personal development
+    Parenting
+    Finance
+    Vietnamese culture
+
+  # Johari window domains (suggested defaults — Sinh to revise after first report)
+  johari_domains: |
+    Learning Science
+    AI/Tech
+    Agent System Health
+    Personal Health/Wellness
+    Parenting
+    Finance
+    Vietnamese/Culture
+
+agents:
+  - name: gatherer
+    role: "Multi-source content ingestion: YouTube videos (7-phase pipeline), RSS feeds, podcasts, and system log scanning"
+    skill: skills/knowledge-hub/gather.md
+
+  - name: curator
+    role: "Knowledge connection and curation: read recent gatherer outputs, surface cross-references, update knowledge base"
+    skill: skills/knowledge-hub/curate.md
+
+  - name: facilitator
+    role: "Interactive learning sessions: quiz mode, Q&A, briefing, and live learning support"
+    skill: skills/knowledge-hub/facilitate.md
+
+  - name: analyst
+    role: "Blind-spot analysis and Johari window tracking at daily/weekly/monthly/quarterly/yearly cadences"
+    skill: skills/knowledge-hub/analyze.md
+
+objective: |
+  ## Autonomous daily mode (cron / pa deploy learner)
+
+  Run phases in order. Each agent produces a report to its deployment workspace.
+
+  1. gatherer:
+     - Process YouTube queue (~/Documents/ai-usage/queue/youtube-video-queue.txt)
+     - Scan RSS feeds defined in team variables
+     - Scan recent agent system logs (sessions/, deployments/registry.db, daily/ summaries)
+     - Output: ingestion report listing what was processed + system anomalies found
+
+  2. curator:
+     - Read gatherer's ingestion report
+     - Cross-reference new content with existing knowledge base (~/Documents/ai-usage/knowledge-base/)
+     - Add cross-reference notes to knowledge-base/learning/ and knowledge-base/intel/
+     - Output: curation report with new connections found
+
+  3. analyst:
+     - Read johari-tracker.md (~/Documents/ai-usage/agent-teams/learner/johari-tracker.md)
+     - Read gatherer and curator reports
+     - Determine cadence (daily micro / weekly / monthly / etc.) from tracker timestamps
+     - Update johari-tracker.md with today's engagement data
+     - Output: cadence-appropriate Johari analysis
+
+  4. Synthesize into intel digest → save to team artifacts + notify via FYI ticket
+     - File: ~/Documents/ai-usage/agent-teams/learner/artifacts/YYYY-MM-DD-daily-digest.md
+     - Contains: N items processed, system flags, daily Johari micro-note
+     - Notify: `pa ticket create --type fyi --assignee sinh --priority low --estimate XS --title "FYI: Learner digest YYYY-MM-DD" --summary "<N items processed, key topics, any flags>"`
+
+  Empty queue / no new content: exit cleanly with "Nothing new to process" and minimal digest confirming the run.
+
+  ## Interactive mode (pa deploy learner --interactive)
+
+  Determine user intent from context:
+  - "quiz me on <topic>": facilitator reads knowledge base → generates ≥5 questions → interactive quiz
+  - "brief me on <topic>": facilitator reads recent gatherer output → structured briefing
+  - "Q&A" / "what do you know about X": facilitator answers from ingested content
+  - "join my learning session": facilitator loads relevant notes → assists live
+
+  ## Spike mode (pa deploy learner --mode spike)
+
+  Focused, time-boxed exploration of a single topic provided by Sinh.
+
+  1. facilitator reads the knowledge base for existing context on the topic
+  2. Conducts a targeted Q&A / briefing session with Sinh
+  3. At end of session, saves a brief spike summary:
+     - File: ~/Documents/ai-usage/knowledge-base/learning/YYYY-MM-DD-spike-<topic>.md
+     - Contains: key takeaways, open questions, suggested follow-up resources
+
+  ## Key invariants
+
+  - YouTube queue file path must remain ~/Documents/ai-usage/queue/youtube-video-queue.txt (backward compatible)
+  - Knowledge base: ~/Documents/ai-usage/knowledge-base/learning/ and knowledge-base/intel/
+  - Johari tracker: ~/Documents/ai-usage/agent-teams/learner/johari-tracker.md
+  - Intel digest: ~/Documents/ai-usage/agent-teams/learner/artifacts/ + FYI ticket per global standards §4
+  - Session logs per global standards §4 (all agents log before shutting down)
