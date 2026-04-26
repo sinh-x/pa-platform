@@ -53,13 +53,13 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = pkgs.lib.fakeHash;
+            hash = "sha256-PcBA+6qozxVeAxOO0B5nG8oi169wVmVUNh7JOiEuPlI=";
             fetcherVersion = 3;
           };
 
           buildPhase = ''
             runHook preBuild
-            pnpm build
+            pnpm -r build
             runHook postBuild
           '';
 
@@ -73,11 +73,21 @@
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
 
+            install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
+            import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";
+
+            process.exitCode = await runCoreCommand(process.argv.slice(2));
+            EOF
+
             for dir in docs skills teams; do
               [ -d "$dir" ] && cp -r "$dir" "$share/"
             done
 
             cp -r node_modules $share/node_modules
+
+            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-core \
+              --add-flags "$share/pa-core-cli.mjs" \
+              --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
               --prefix PATH : "${runtimePath}"
