@@ -3,6 +3,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync }
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai";
 
@@ -83,8 +84,8 @@ export class OpencodeAdapter implements RuntimeAdapter {
     return events;
   }
 
-  installHooks(_targetDir: string, _config: HookConfig): void {
-    // opencode uses global/local JS plugins; PAP-002 only needs the adapter env contract.
+  installHooks(_targetDir: string, config: HookConfig): void {
+    installPaSafetyActivityPlugin({ ...this.env, ...config.env });
   }
 
   describeTools() {

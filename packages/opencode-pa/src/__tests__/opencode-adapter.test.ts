@@ -6,6 +6,7 @@ import test from "node:test";
 import { closeDb, queryDeploymentStatuses, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
+import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -384,6 +385,43 @@ test("opa deploy --resume fails fast when no session id was recorded", async () 
     assert.notEqual(code, 0);
     assert.match(stderr.join("\n"), /no opencode session id recorded/);
   });
+});
+
+test("opencode installHooks installs repo-managed activity plugin", () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-"));
+  try {
+    const env = { HOME: root } as NodeJS.ProcessEnv;
+    const adapter = new OpencodeAdapter({ env, runCommand: () => { throw new Error("should not spawn"); } });
+    const activityLogPath = join(root, "deployments", "d-plugin", "activity.jsonl");
+
+    adapter.installHooks(join(root, "deployments", "d-plugin"), { deploymentId: "d-plugin", deploymentDir: join(root, "deployments", "d-plugin"), activityLogPath, env: { PA_DEPLOYMENT_ID: "d-plugin", PA_ACTIVITY_LOG: activityLogPath } });
+
+    const pluginPath = resolvePaSafetyActivityPluginPath(env);
+    assert.equal(readFileSync(pluginPath, "utf-8"), PA_SAFETY_ACTIVITY_PLUGIN_SOURCE);
+    assert.match(readFileSync(pluginPath, "utf-8"), /PA_DEPLOYMENT_ID/);
+    assert.match(readFileSync(pluginPath, "utf-8"), /PA_ACTIVITY_LOG/);
+    assert.match(readFileSync(pluginPath, "utf-8"), /message\.part\.updated/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("opencode installHooks refreshes stale activity plugin content", () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-stale-"));
+  try {
+    const env = { XDG_CONFIG_HOME: join(root, "xdg") } as NodeJS.ProcessEnv;
+    const pluginPath = resolvePaSafetyActivityPluginPath(env);
+    mkdirSync(dirname(pluginPath), { recursive: true });
+    writeFileSync(pluginPath, "// stale plugin\n", "utf-8");
+
+    const adapter = new OpencodeAdapter({ env, runCommand: () => { throw new Error("should not spawn"); } });
+    const activityLogPath = join(root, "deployments", "d-refresh", "activity.jsonl");
+    adapter.installHooks(join(root, "deployments", "d-refresh"), { deploymentId: "d-refresh", deploymentDir: join(root, "deployments", "d-refresh"), activityLogPath, env: { PA_DEPLOYMENT_ID: "d-refresh", PA_ACTIVITY_LOG: activityLogPath } });
+
+    assert.equal(readFileSync(pluginPath, "utf-8"), PA_SAFETY_ACTIVITY_PLUGIN_SOURCE);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("createOpencodeSessionIdParser handles chunks split mid-line", () => {
