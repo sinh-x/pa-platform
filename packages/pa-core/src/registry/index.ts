@@ -50,6 +50,11 @@ export function queryDeploymentStatus(deployId: string): DeploymentStatus | null
   return row ? deploymentFromRow(row) : null;
 }
 
+export function getDeploymentsByTicketId(ticketId: string): DeploymentStatus[] {
+  const db = getDb();
+  return (db.prepare("SELECT * FROM deployments WHERE ticket_id = ? ORDER BY started_at DESC").all(ticketId) as Record<string, unknown>[]).map(deploymentFromRow);
+}
+
 export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentStatus[] {
   const grouped = new Map<string, RegistryEvent[]>();
   for (const event of events) grouped.set(event.deployment_id, [...(grouped.get(event.deployment_id) ?? []), event]);
