@@ -29,7 +29,7 @@ const PROVIDER_DEFAULT_MODELS: Record<OpencodeProvider, string> = {
 
 export class OpencodeAdapter implements RuntimeAdapter {
   readonly name = "opencode" as const;
-  readonly defaultModel = PROVIDER_DEFAULT_MODELS.minimax;
+  readonly defaultModel = PROVIDER_DEFAULT_MODELS.openai;
   readonly sessionFileName = "session-id-opencode.txt";
 
   private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
@@ -93,7 +93,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
       markdown: [
         "Runtime: opencode via `opa`.",
         "Use opencode tools exposed in the current session; do not assume Claude-only TeamCreate, SendMessage, Agent, AskUserQuestion, or ScheduleWakeup tools exist.",
-        "Supported providers for `opa deploy`: `minimax` (default) and `openai`.",
+        "Supported providers for `opa deploy`: `minimax` and `openai` (default).",
       ].join("\n"),
     };
   }

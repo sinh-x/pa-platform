@@ -20,7 +20,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider ?? "minimax";
+  const provider = request.provider ?? "openai";
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : request.interactive ? "interactive" : request.direct ? "direct" : "foreground";
   const paths = getDeployPaths(deploymentId);
