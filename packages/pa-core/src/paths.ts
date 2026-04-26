@@ -24,6 +24,10 @@ export function getUserConfigPath(): string {
   return resolve(getConfigDir(), "config.yaml");
 }
 
+export function getHealthConfigPath(): string {
+  return resolve(getConfigDir(), "health.yaml");
+}
+
 export function getDataDir(): string {
   return expandHome(process.env["PA_PLATFORM_DATA"] ?? "~/.local/share/pa-platform");
 }

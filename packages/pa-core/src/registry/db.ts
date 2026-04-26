@@ -82,6 +82,16 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
     CREATE INDEX IF NOT EXISTS idx_deployments_started_at ON deployments(started_at);
     CREATE INDEX IF NOT EXISTS idx_deployments_ticket_id ON deployments(ticket_id);
+    CREATE TABLE IF NOT EXISTS health_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      overall_score INTEGER NOT NULL,
+      window_since TEXT NOT NULL,
+      window_until TEXT NOT NULL,
+      categories TEXT NOT NULL,
+      findings_summary TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_health_timestamp ON health_snapshots(timestamp);
   `);
 
   addColumn(db, "registry_events", "fallback", "INTEGER DEFAULT 0");
