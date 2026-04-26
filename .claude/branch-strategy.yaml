@@ -1,0 +1,15 @@
+# Branch Strategy — pa-platform
+#
+# base_branch: integration branch where feature branches are merged into
+# release_branch: production branch, only receives merges from base_branch
+# feature_branch_pattern: naming convention for feature branches
+
+base_branch: develop
+release_branch: main
+feature_branch_pattern: "feature/<ticket>-<topic>"
+
+# Rules:
+# - Never work directly on main or develop
+# - Feature branches are created from develop
+# - develop is merged into main for releases only
+# - Hotfixes: branch from main, merge into both main and develop

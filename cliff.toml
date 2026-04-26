@@ -1,0 +1,76 @@
+# git-cliff configuration for pa-platform
+# Generates changelogs in Keep a Changelog format using conventional commits.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+          {{ commit.message | upper_first }}\
+          {% if commit.breaking %} [**BREAKING**]{% endif %}\
+          {% if commit.id %} ([`{{ commit.id | truncate(length=7, end="") }}`]){% endif %}\
+    {% endfor %}
+{% endfor %}\n
+"""
+footer = """
+{% for release in releases %}\
+    {% if release.version %}\
+        {% if release.previous.version %}\
+            [`{{ release.previous.version | trim_start_matches(pat="v") }}...{{ release.version | trim_start_matches(pat="v") }}`]: \
+            https://github.com/sinh-x/pa-platform/compare/v{{ release.previous.version | trim_start_matches(pat="v") }}...v{{ release.version | trim_start_matches(pat="v") }}
+        {% endif %}\
+    {% else %}\
+        [`{{ release.previous.version | trim_start_matches(pat="v") }}...HEAD`]: \
+        https://github.com/sinh-x/pa-platform/compare/v{{ release.previous.version | trim_start_matches(pat="v") }}...HEAD
+    {% endif %}\
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+
+commit_preprocessors = [
+  { pattern = "\\(PAP-\\d+\\)", replace = "" },
+  { pattern = " +", replace = " " },
+]
+
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^style", skip = true },
+  { message = "^test", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore\\(deps\\)", group = "Dependencies" },
+  { message = "^chore", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^revert", group = "Reverted" },
+  { body = ".*security", group = "Security" },
+]
+
+protect_breaking_commits = false
+filter_commits = true
+tag_pattern = "v[0-9].*"
+ignore_tags = ""
+topo_order = false
+sort_commits = "oldest"

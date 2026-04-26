@@ -1,0 +1,39 @@
+name: Nix Build
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'package.json'
+      - 'packages/**/package.json'
+      - 'pnpm-lock.yaml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'completions/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'package.json'
+      - 'packages/**/package.json'
+      - 'pnpm-lock.yaml'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'completions/**'
+
+jobs:
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build pa-platform
+        run: |
+          if ! nix build .#pa-platform --print-build-logs; then
+            echo "::error::nix build failed. If the error mentions ERR_PNPM_NO_OFFLINE_TARBALL or a hash mismatch,"
+            echo "::error::run \`bash scripts/dev/version_bump.sh --refresh-hash\` locally, commit flake.nix, and re-push."
+            exit 1
+          fi

@@ -6,7 +6,11 @@
   "scripts": {
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
-    "typecheck": "corepack pnpm -r typecheck"
+    "typecheck": "corepack pnpm -r typecheck",
+    "bump:patch": "bash scripts/dev/version_bump.sh patch",
+    "bump:minor": "bash scripts/dev/version_bump.sh minor",
+    "bump:major": "bash scripts/dev/version_bump.sh major",
+    "bump:refresh-hash": "bash scripts/dev/version_bump.sh --refresh-hash"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
