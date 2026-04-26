@@ -103,6 +103,35 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
   });
 });
 
+test("agent API exposes deploy control hooks and deployment status events", async () => {
+  await withApiEnv(async () => {
+    const missingHooks = createAgentApiApp();
+    const missingDeploy = await missingHooks.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
+    assert.equal(missingDeploy.status, 501);
+    assert.equal((await missingDeploy.json() as { code: string }).code, "NOT_IMPLEMENTED");
+    assert.equal((await missingHooks.app.request("/api/self-update", { method: "POST" })).status, 501);
+    assert.equal((await missingHooks.app.request("/api/self-update/status")).status, 501);
+
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => ({ status: "pending", team: request.team, mode: request.mode ?? null, deploymentId: "d-hook" }),
+      selfUpdate: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: [] }),
+      getSelfUpdateStatus: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] }),
+    } });
+    const deploy = await app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }) });
+    assert.equal(deploy.status, 202);
+    assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deploymentId: "d-hook" });
+    assert.equal((await app.request("/api/self-update", { method: "POST" })).status, 202);
+    assert.deepEqual(await (await app.request("/api/self-update/status")).json(), { status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] });
+
+    const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deploymentId: "d-status", team: "builder", runtime: "opencode" }) });
+    assert.equal(started.status, 200);
+    const status = await app.request("/api/deploy/status/d-status");
+    assert.equal(status.status, 200);
+    assert.equal((await status.json() as { status: { deploy_id: string; status: string } }).status.deploy_id, "d-status");
+    assert.equal((await app.request("/api/deploy/events/d-status")).status, 200);
+  });
+});
+
 test("agent API exposes repo commits and repo deployment filters", async () => {
   await withApiEnv(async (root) => {
     const repo = join(root, "repo");

@@ -17,6 +17,7 @@ export * from "./activity/index.js";
 export * from "./signal/index.js";
 export * from "./repo-health/index.js";
 export * from "./cli/index.js";
+export * from "./deploy/index.js";
 export * from "./agent-api/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";
