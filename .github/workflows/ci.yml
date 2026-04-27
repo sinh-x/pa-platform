@@ -48,6 +48,9 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: read
