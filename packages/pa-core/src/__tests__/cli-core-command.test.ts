@@ -51,7 +51,23 @@ test("runCoreCommand exposes repos list", async () => {
     assert.match(captured.stdout.join("\n"), /pa-platform/);
     assert.match(captured.stdout.join("\n"), /Test repo/);
     assert.deepEqual(captured.stderr, []);
+
+    const json = capture();
+    assert.equal(await runCoreCommand(["repos", "list", "--json"], { io: json.io }), 0);
+    assert.equal(JSON.parse(json.stdout.join("\n"))[0].name, "pa-platform");
   });
+});
+
+test("runCoreCommand help uses invoking binary fallback", async () => {
+  const captured = capture();
+  const previousArgv = process.argv[1];
+  process.argv[1] = "/nix/store/bin/opa";
+  try {
+    assert.equal(await runCoreCommand(["help"], { io: captured.io }), 0);
+  } finally {
+    process.argv[1] = previousArgv;
+  }
+  assert.match(captured.stdout.join("\n"), /Usage: opa /);
 });
 
 test("runCoreCommand exposes status list and detail", async () => {
@@ -105,6 +121,10 @@ test("runCoreCommand exposes registry list, show, and complete", async () => {
     assert.equal(await runCoreCommand(["registry", "list", "--team", "builder", "--limit", "1"], { io: list.io }), 0);
     assert.match(list.stdout.join("\n"), /d-reg-1/);
 
+    const listJson = capture();
+    assert.equal(await runCoreCommand(["registry", "list", "--team", "builder", "--json"], { io: listJson.io }), 0);
+    assert.equal(JSON.parse(listJson.stdout.join("\n"))[0].deploy_id, "d-reg-1");
+
     const complete = capture();
     assert.equal(await runCoreCommand(["registry", "complete", "d-reg-1", "--status", "success", "--summary", "done"], { io: complete.io }), 0);
     assert.match(complete.stdout.join("\n"), /Completed d-reg-1/);
@@ -113,6 +133,10 @@ test("runCoreCommand exposes registry list, show, and complete", async () => {
     assert.equal(await runCoreCommand(["registry", "show", "d-reg-1"], { io: show.io }), 0);
     assert.match(show.stdout.join("\n"), /Status:\s+success/);
     assert.match(show.stdout.join("\n"), /Summary:\s+done/);
+
+    const showJson = capture();
+    assert.equal(await runCoreCommand(["registry", "show", "d-reg-1", "--json"], { io: showJson.io }), 0);
+    assert.equal(JSON.parse(showJson.stdout.join("\n")).status, "success");
   });
 });
 
@@ -190,6 +214,10 @@ test("runCoreCommand exposes schedule and remove-timer dry-runs", async () => {
     const remove = capture();
     assert.equal(await runCoreCommand(["remove-timer", "builder-daily", "--dry-run"], { io: remove.io }), 0);
     assert.match(remove.stdout.join("\n"), /Would remove timer: pa-builder-daily/);
+
+    const missingYes = capture();
+    assert.equal(await runCoreCommand(["remove-timer", "builder-daily"], { io: missingYes.io }), 1);
+    assert.match(missingYes.stderr.join("\n"), /--yes/);
   });
 });
 
@@ -222,6 +250,10 @@ test("runCoreCommand exposes board and teams views", async () => {
     assert.match(teams.stdout.join("\n"), /builder/);
     assert.match(teams.stdout.join("\n"), /sonnet/);
 
+    const teamsJson = capture();
+    assert.equal(await runCoreCommand(["teams", "--json"], { io: teamsJson.io }), 0);
+    assert.equal(JSON.parse(teamsJson.stdout.join("\n"))[0].name, "builder");
+
     const teamDetail = capture();
     assert.equal(await runCoreCommand(["teams", "builder"], { io: teamDetail.io }), 0);
     assert.match(teamDetail.stdout.join("\n"), /Build core CLI/);
@@ -237,6 +269,10 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
     const listTicket = capture();
     assert.equal(await runCoreCommand(["ticket", "list", "--project", "pa-platform"], { io: listTicket.io }), 0);
     assert.match(listTicket.stdout.join("\n"), /CLI ticket/);
+
+    const listTicketJson = capture();
+    assert.equal(await runCoreCommand(["ticket", "list", "--project", "pa-platform", "--json"], { io: listTicketJson.io }), 0);
+    assert.equal(JSON.parse(listTicketJson.stdout.join("\n"))[0].id, "PAP-001");
 
     const updateTicket = capture();
     assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "implementing", "--doc-ref", "implementation:agent-teams/builder/artifacts/example.md"], { io: updateTicket.io }), 0);
@@ -276,6 +312,10 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
     assert.equal(await runCoreCommand(["bulletin", "list"], { io: listBulletins.io }), 0);
     assert.match(listBulletins.stdout.join("\n"), /Pause/);
 
+    const listBulletinsJson = capture();
+    assert.equal(await runCoreCommand(["bulletin", "list", "--json"], { io: listBulletinsJson.io }), 0);
+    assert.equal(JSON.parse(listBulletinsJson.stdout.join("\n"))[0].id, "B-001");
+
     const resolveBulletin = capture();
     assert.equal(await runCoreCommand(["bulletin", "resolve", "B-001"], { io: resolveBulletin.io }), 0);
     assert.match(resolveBulletin.stdout.join("\n"), /Resolved B-001/);
@@ -301,12 +341,16 @@ test("runCoreCommand exposes health, trash, and codectx commands", async () => {
     const filePath = join(root, "old.md");
     writeFileSync(filePath, "old");
     const trash = capture();
-    assert.equal(await runCoreCommand(["trash", "move", filePath, "--reason", "test", "--actor", "builder/team-manager", "--type", "other"], { io: trash.io }), 0);
+    assert.equal(await runCoreCommand(["trash", "move", filePath, "--reason", "test", "--actor", "builder/team-manager", "--type", "other", "--yes"], { io: trash.io }), 0);
     assert.match(trash.stdout.join("\n"), /Trashed T-001/);
 
     const trashList = capture();
     assert.equal(await runCoreCommand(["trash", "list"], { io: trashList.io }), 0);
     assert.match(trashList.stdout.join("\n"), /old.md/);
+
+    const trashListJson = capture();
+    assert.equal(await runCoreCommand(["trash", "list", "--json"], { io: trashListJson.io }), 0);
+    assert.equal(JSON.parse(trashListJson.stdout.join("\n"))[0].id, "T-001");
 
     const sourceDir = join(root, "source");
     mkdirSync(sourceDir, { recursive: true });

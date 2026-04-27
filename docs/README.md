@@ -9,3 +9,7 @@ Active runtime configuration stays outside this directory:
 - `skills/global/*/SKILL.md` contains active global skill definitions used by primer generation.
 
 Examples and explanatory docs live under `docs/` so they are not accidentally loaded as active team configuration.
+
+## Operational Docs
+
+- `release-process.md` documents version bumping, tagging, and CI release expectations.

@@ -124,16 +124,16 @@ complete -c opa -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subc
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l mode -d 'Deploy mode' -r -a '(__opa_modes)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l objective -d 'Deployment objective' -r
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l list-modes -d 'List available deploy modes' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l validate -d 'Validate without deploying' -r
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l list-modes -d 'List available deploy modes'
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l validate -d 'Validate without deploying'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l provider -d 'Provider' -r -a 'openai minimax'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l model -d 'Model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Team model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
 
 complete -c opa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from (__opa_deployments)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
@@ -153,6 +153,7 @@ complete -c opa -n '__fish_seen_subcommand_from schedule' -l command -d 'Command
 complete -c opa -n '__fish_seen_subcommand_from schedule' -l dry-run -d 'Preview systemd units without writing'
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -a '(__opa_timer_names)' -d 'Timer name'
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Preview removal'
+complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
 complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__opa_assignees)'
@@ -252,6 +253,7 @@ complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcomman
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l reason -d 'Reason' -r
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l actor -d 'Actor' -r
+complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l yes -d 'Confirm trash move'
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from restore' -l force -d 'Overwrite existing destination'
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l days -d 'Minimum age days' -r
 complete -c opa -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l dry-run -d 'Preview purge'

@@ -25,11 +25,16 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
+      - name: Build
+        run: pnpm run build
+
       - name: Test
         run: pnpm run test
 
-      - name: Build
-        run: pnpm run build
+      - name: Check generated completions
+        run: |
+          pnpm run completions
+          git diff --exit-code -- completions/pa-core.fish completions/opa.fish
 
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
