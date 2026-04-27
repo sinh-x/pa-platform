@@ -204,7 +204,7 @@ If the ticket context is too sparse for a full 13-section requirements doc, prod
 ## What Sinh Needs To Do
 - [ ] Add more context to the ticket (summary, description, doc_refs)
 - [ ] Re-run with `pa deploy requirements --mode analyze-auto` after enriching
-- [ ] Or run interactive: `pa deploy requirements --interactive --objective "<topic>"`
+- [ ] Or run interactive: `pa deploy requirements --objective "<topic>"`
 ```
 
 After producing the light spike, skip to Phase 8 (Save Outputs).
@@ -357,7 +357,7 @@ Write the full 13-section requirements document.
 
 ## Suggested Next Steps
 - If approved: assign ticket to builder team for implementation
-- If changes needed: re-run `pa deploy requirements --interactive --objective "<topic>"`
+- If changes needed: re-run `pa deploy requirements --objective "<topic>"`
 ```
 
 **Gate Criteria:** Do not save until: (1) all 13 sections present, (2) no placeholder text, (3) confidence levels on every section, (4) From/To fields populated, (5) Decisions Needed section present.

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { appendRegistryEvent, closeDb, runCoreCommand, TicketStore } from "../index.js";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));
@@ -44,6 +47,15 @@ function capture() {
   return { stdout, stderr, io: { stdout: (line: string) => stdout.push(line), stderr: (line: string) => stderr.push(line) } };
 }
 
+function listPackageGuidanceFiles(dir: string): string[] {
+  const entries = readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) return listPackageGuidanceFiles(path);
+    return /\.(md|yaml)$/.test(path) ? [path] : [];
+  });
+  return entries;
+}
+
 test("runCoreCommand exposes repos list", async () => {
   await withCliEnv(async () => {
     const captured = capture();
@@ -68,6 +80,15 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
     process.argv[1] = previousArgv;
   }
   assert.match(captured.stdout.join("\n"), /Usage: opa /);
+});
+
+test("packaged team and skill guidance avoids removed deploy mode flags", () => {
+  const files = [...listPackageGuidanceFiles(join(REPO_ROOT, "teams")), ...listPackageGuidanceFiles(join(REPO_ROOT, "skills"))];
+  const offenders = files.flatMap((file) => {
+    const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(REPO_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
+    return matches;
+  });
+  assert.deepEqual(offenders, []);
 });
 
 test("runCoreCommand exposes status list and detail", async () => {
