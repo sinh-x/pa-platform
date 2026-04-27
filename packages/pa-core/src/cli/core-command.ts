@@ -418,6 +418,10 @@ function runReposCommand(argv: string[], io: Required<CliIo>): number {
 }
 
 async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printDeployHelp(io);
+    return 0;
+  }
   const parsed = parseDeployArgs(argv);
   if ("error" in parsed) {
     io.stderr(parsed.error);
@@ -698,7 +702,7 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
   const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume" };
-  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--interactive": "interactive", "--direct": "direct", "--list-modes": "listModes", "--validate": "validate" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     const booleanKey = booleanMap[arg];
@@ -707,6 +711,7 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
       continue;
     }
     const key = flagMap[arg];
+    if (!key && (arg === "--interactive" || arg === "--direct")) return { error: `${arg} was removed. Foreground TUI is now the default; use --background for detached runs or --dry-run to preview.` };
     if (!key) return { error: `Unsupported deploy option: ${arg}` };
     const value = rest[i + 1];
     if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
@@ -1291,6 +1296,14 @@ function printError(error: string, io: Required<CliIo>): number {
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+}
+
+function printDeployHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: deploy <team> [options]");
+  io.stdout("Mode flags:");
+  io.stdout("  --background        Run detached/headless");
+  io.stdout("  --dry-run           Generate primer and plan without invoking opencode");
+  io.stdout("Other options: --mode, --objective, --objective-file, --repo, --ticket, --timeout, --provider, --model, --team-model, --agent-model, --resume, --list-modes, --validate");
 }
 
 function defaultBinaryName(): string {

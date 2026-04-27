@@ -18,14 +18,14 @@ All agents have access to the `pa` CLI. Use these commands for ticket management
 |---------|---------|-----------|
 | `pa teams [name]` | Show team workflow status; detail with name | `--all` |
 | `pa board` | Show kanban board grouped by status — scoped to current repo by default | `--project`, `--all`, `--assignee` |
-| `pa deploy <team>` | Deploy an agent team | `--objective`, `--objective-file`, `--content-file`, `--mode`, `--dry-run`, `--background`, `--interactive`, `--direct`, `--ticket`, `--repo`, `--team-model`, `--agent-model`, `--validate`, `--provider` |
-| `pa daily <mode> [date]` | Daily lifecycle: plan / progress / end | `--dry-run`, `--background`, `--interactive`, `--review` |
+| `pa deploy <team>` | Deploy an agent team | `--objective`, `--objective-file`, `--content-file`, `--mode`, `--dry-run`, `--background`, `--ticket`, `--repo`, `--team-model`, `--agent-model`, `--validate`, `--provider` |
+| `pa daily <mode> [date]` | Daily lifecycle: plan / progress / end | `--dry-run`, `--background`, `--review` |
 | `pa status [deploy-id]` | Show deployment status | `--running`, `--team`, `--wait`, `--report`, `--artifacts`, `--activity`, `--recent`, `--today` |
 | `pa health [category]` | System health check: deployment health, agent behavior, compliance, infrastructure | `--json`, `--days`, `--since`, `--primer-summary`, `--history` (category: `deployments` \| `agents` \| `tickets` \| `compliance` \| `schedules` \| `infrastructure`) |
 | `pa schedule <spec> <repeat> [times...]` | Schedule a team with systemd timers | — |
 | `pa timers` | List scheduled timers | — |
 | `pa remove-timer <team-name>` | Remove a scheduled timer | — |
-| `pa requirements <mode>` | Requirements lifecycle (ideas) | `--force`, `--dry-run`, `--background`, `--interactive` |
+| `pa requirements <mode>` | Requirements lifecycle (ideas) | `--force`, `--dry-run`, `--background` |
 | `pa idea` | Log an idea interactively | — |
 | `pa report` | Submit a bug/feature/agent self-report | — |
 | `pa repos list` | List repository registry | — |

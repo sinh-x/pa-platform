@@ -198,7 +198,7 @@ Write the chosen output format.
 - [ ] Decide: proceed to full requirements session or defer?
 
 ## Suggested Next Steps
-- If proceed: run `pa deploy requirements --interactive --objective "<topic>"`
+- If proceed: run `pa deploy requirements --objective "<topic>"`
 - If defer: move to `ideas/` for future triage
 ```
 
@@ -322,7 +322,7 @@ Success looks like: <user-facing description of the working feature>
 
 ## Suggested Next Steps
 - If approved: assign ticket to builder team for implementation
-- If changes needed: re-run `pa deploy requirements --interactive --objective "<topic>"`
+- If changes needed: re-run `pa deploy requirements --objective "<topic>"`
 ```
 
 ---
@@ -392,7 +392,7 @@ Template for the inline review-request summary (include as `--description` or as
 
 ## Suggested Next Steps
 - If approved: assign ticket to builder team for implementation
-- If interactive follow-up needed: `pa deploy requirements --interactive --objective "<topic>"`
+- If interactive follow-up needed: `pa deploy requirements --objective "<topic>"`
 
 ## Also Saved At
 - **Artifacts:** ~/Documents/ai-usage/agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md

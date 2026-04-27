@@ -10,8 +10,6 @@ export interface DeployRequest {
   timeout?: number;
   dryRun?: boolean;
   background?: boolean;
-  interactive?: boolean;
-  direct?: boolean;
   provider?: string;
   model?: string;
   teamModel?: string;
@@ -62,8 +60,6 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   const timeout = typeof rawTimeout === "number" ? rawTimeout : undefined;
   const dryRun = booleanField(body, "dryRun");
   const background = booleanField(body, "background");
-  const interactive = booleanField(body, "interactive");
-  const direct = booleanField(body, "direct");
   const listModes = booleanField(body, "listModes");
   const validate = booleanField(body, "validate");
 
@@ -83,6 +79,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
     if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f`$\\;&|><]/.test(objective)) return { error: "objective contains invalid characters" };
   }
+  if (dryRun && background) return { error: "--background and --dry-run are mutually exclusive" };
 
   const request: DeployRequest = { team };
   if (mode) request.mode = mode;
@@ -92,8 +89,6 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (timeout !== undefined) request.timeout = timeout;
   if (dryRun !== undefined) request.dryRun = dryRun;
   if (background !== undefined) request.background = background;
-  if (interactive !== undefined) request.interactive = interactive;
-  if (direct !== undefined) request.direct = direct;
   if (provider) request.provider = provider;
   if (model) request.model = model;
   if (teamModel) request.teamModel = teamModel;

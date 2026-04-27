@@ -197,7 +197,7 @@ objective: |
 
   Empty queue / no new content: exit cleanly with "Nothing new to process" and minimal digest confirming the run.
 
-  ## Interactive mode (pa deploy learner --interactive)
+  ## Interactive mode (pa deploy learner)
 
   Determine user intent from context:
   - "quiz me on <topic>": facilitator reads knowledge base → generates ≥5 questions → interactive quiz
