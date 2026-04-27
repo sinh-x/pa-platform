@@ -145,6 +145,7 @@ complete -c pa-core -n '__fish_seen_subcommand_from schedule' -l command -d 'Com
 complete -c pa-core -n '__fish_seen_subcommand_from schedule' -l dry-run -d 'Preview systemd units without writing'
 complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -a '(__pa_core_timer_names)' -d 'Timer name'
 complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Preview removal'
+complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__pa_core_assignees)'
@@ -208,10 +209,20 @@ complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subc
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from attach' -l file -d 'File or doc-ref path' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l author -d 'Comment author' -r -a '(__pa_core_assignees)'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l content -d 'Comment content' -r
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l content-file -d 'Content from file' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from move check-refs' -l project -d 'Target project' -r -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from delete' -l force -d 'Hard delete'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from delete' -l yes -d 'Confirm hard delete'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket; and not __fish_seen_subcommand_from create update complete list' -a 'create update complete list'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l title -d 'Subticket title' -r
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l parent -d 'Parent ticket ID' -r -a '(__pa_core_ticket_ids)'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l assignee -d 'Assignee' -r -a '(__pa_core_assignees)'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l priority -d 'Priority' -r -a 'critical high medium low'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l estimate -d 'Estimate' -r -a 'XS S M L XL'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l type -d 'Subticket type' -r -a 'feature bug task review-request work-report fyi idea question'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket update' -a '(__pa_core_ticket_ids)' -d 'Subticket ID'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket complete' -a '(__pa_core_ticket_ids)' -d 'Subticket ID'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket list' -a '(__pa_core_ticket_ids)' -d 'Parent ticket ID'
 
 complete -c pa-core -n '__fish_seen_subcommand_from bulletin; and not __fish_seen_subcommand_from list create resolve' -a 'list create resolve'
 complete -c pa-core -n '__fish_seen_subcommand_from bulletin; and __fish_seen_subcommand_from resolve' -a '(__pa_core_bulletin_ids)' -d 'Bulletin ID'
@@ -234,6 +245,7 @@ complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subco
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l reason -d 'Reason' -r
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l actor -d 'Actor' -r
+complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from move' -l yes -d 'Confirm trash move'
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from restore' -l force -d 'Overwrite existing destination'
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l days -d 'Minimum age days' -r
 complete -c pa-core -n '__fish_seen_subcommand_from trash; and __fish_seen_subcommand_from purge' -l dry-run -d 'Preview purge'

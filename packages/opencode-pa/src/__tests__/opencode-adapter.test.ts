@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
+import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -156,14 +158,16 @@ test("opa deploy supports pa deploy compatibility flags", async () => {
   });
 });
 
-test("opa default deploy opens opencode TUI and records registry", async () => {
+test("opa foreground deploy streams JSON output and records activity", async () => {
   await withOpaEnv(async (root) => {
     const bin = join(root, "bin");
     const argsPath = join(root, "opencode-args.json");
     mkdirSync(bin, { recursive: true });
     const opencode = join(bin, "opencode");
     writeFileSync(opencode, `#!/usr/bin/env node
-require("node:fs").writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+const fs = require("node:fs");
+fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({ type: "text", timestamp: 1777213628268, sessionID: "ses_foreground_real_token", part: { type: "text", text: "hello from stream" } }) + "\\n");
 `, "utf-8");
     chmodSync(opencode, 0o755);
     const previousPath = process.env["PATH"];
@@ -176,19 +180,20 @@ require("node:fs").writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(proce
       assert.equal(code, 0);
       assert.match(stdout.join("\n"), /Deployment completed: d-[a-f0-9]{6}/);
       const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
-      assert.equal(args[0], "-m");
-      assert.ok(!args.includes("run"));
-      assert.ok(!args.includes("--format"));
-      assert.ok(!args.includes("--dangerously-skip-permissions"));
-      assert.ok(args.includes("--prompt"));
+      assert.equal(args[0], "run");
+      assert.ok(args.includes("--format"));
+      assert.ok(args.includes("json"));
+      assert.ok(args.includes("--dangerously-skip-permissions"));
+      assert.ok(!args.includes("--prompt"));
       const deployments = queryDeploymentStatuses();
       assert.equal(deployments.length, 1);
       assert.equal(deployments[0]?.runtime, "opencode");
       assert.equal(deployments[0]?.provider, "minimax");
       const deployId = deployments[0]!.deploy_id;
-      // Foreground TUI runs are not resumable — adapter no longer writes a fake session
-      // file (deploy id != opencode token). resume() throws an actionable error instead.
-      assert.equal(existsSync(join(root, "deployments", deployId, "session-id-opencode.txt")), false);
+      assert.equal(readFileSync(join(root, "deployments", deployId, "session-id-opencode.txt"), "utf-8"), "ses_foreground_real_token");
+      assert.match(readFileSync(join(root, "deployments", deployId, "opencode-output.jsonl"), "utf-8"), /hello from stream/);
+      const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
+      assert.ok(activity.some((event) => event.kind === "text" && event.body === "hello from stream"));
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
@@ -205,7 +210,10 @@ test("opa direct mode opens opencode TUI with prompt", async () => {
     mkdirSync(bin, { recursive: true });
     const opencode = join(bin, "opencode");
     writeFileSync(opencode, `#!/usr/bin/env node
-require("node:fs").writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+const fs = require("node:fs");
+fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_dir", event: "message.updated", data: { message: { role: "assistant" }, text: "assistant visible text" } }) + "\\n");
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:01.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_dir", event: "message.part.updated", data: { part: { type: "thinking", thinking: "private reasoning" } } }) + "\\n");
 `, "utf-8");
     chmodSync(opencode, 0o755);
     const previousPath = process.env["PATH"];
@@ -221,11 +229,44 @@ require("node:fs").writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(proce
       assert.ok(!args.includes("--dangerously-skip-permissions"));
       assert.ok(!args.includes("--format"));
       assert.ok(args.includes("--prompt"));
+      const deployment = queryDeploymentStatuses()[0]!;
+      assert.equal(existsSync(join(root, "deployments", deployment.deploy_id, "opencode-output.jsonl")), false);
+      const activity = readActivityEvents(join(root, "deployments", deployment.deploy_id, "activity.jsonl"));
+      assert.ok(activity.some((event) => event.kind === "text" && /assistant visible text/.test(event.body)));
+      assert.ok(activity.some((event) => event.kind === "thinking" && /private reasoning/.test(event.body)));
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
       if (previousArgsPath === undefined) delete process.env["OPA_ARGS_PATH"];
       else process.env["OPA_ARGS_PATH"] = previousArgsPath;
+    }
+  });
+});
+
+test("opa interactive mode captures plugin message activity", async () => {
+  await withOpaEnv(async (root) => {
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const opencode = join(bin, "opencode");
+    writeFileSync(opencode, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_int", event: "message.updated", data: { message: { role: "assistant" }, text: "interactive visible text" } }) + "\\n");
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:01.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_int", event: "message.part.updated", data: { part: { type: "thinking", thinking: "interactive reasoning" } } }) + "\\n");
+`, "utf-8");
+    chmodSync(opencode, 0o755);
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
+    try {
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--interactive"], { hooks: createOpencodeHooks(new OpencodeAdapter()), io: { stdout: () => {}, stderr: () => {} } });
+      assert.equal(code, 0);
+      const deployment = queryDeploymentStatuses()[0]!;
+      assert.equal(existsSync(join(root, "deployments", deployment.deploy_id, "opencode-output.jsonl")), false);
+      const activity = readActivityEvents(join(root, "deployments", deployment.deploy_id, "activity.jsonl"));
+      assert.ok(activity.some((event) => event.kind === "text" && /interactive visible text/.test(event.body)));
+      assert.ok(activity.some((event) => event.kind === "thinking" && /interactive reasoning/.test(event.body)));
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
     }
   });
 });
@@ -264,7 +305,35 @@ test("opencode JSONL maps to useful live activity events", () => {
   assert.equal(event.timestamp, "2026-04-26T14:30:40.082Z");
   assert.equal(event.source, "ses_235d");
   assert.equal(event.kind, "tool_result");
+  assert.equal(event.partType, "tool");
   assert.match(event.body, /task completed Gather today's session logs/);
+});
+
+test("opencode JSONL masks and truncates stream activity bodies", () => {
+  const longSecretText = `Bearer abc123 ${"x".repeat(700)}`;
+  const event = opencodeJsonToActivityEvent({
+    type: "reasoning",
+    timestamp: 1777213840082,
+    part: { type: "reasoning", thinking: longSecretText },
+  }, "d-live");
+
+  assert.equal(event.kind, "thinking");
+  assert.match(event.body, /\[REDACTED\]/);
+  assert.equal(event.body.includes("abc123"), false);
+  assert.ok(event.body.length <= 500);
+});
+
+test("opencode JSONL maps step and tool result stream events", () => {
+  const stepStart = opencodeJsonToActivityEvent({ type: "step_start", message: "step 1" }, "d-live");
+  const stepFinish = opencodeJsonToActivityEvent({ type: "step_finish", message: "done" }, "d-live");
+  const failedTool = opencodeJsonToActivityEvent({ type: "tool_use", part: { type: "tool", tool: "bash", state: { status: "failed", input: { command: "exit 1" } } } }, "d-live");
+
+  assert.equal(stepStart.kind, "text");
+  assert.equal(stepStart.body, "step 1");
+  assert.equal(stepFinish.kind, "text");
+  assert.equal(stepFinish.body, "done");
+  assert.equal(failedTool.kind, "error");
+  assert.match(failedTool.body, /bash failed exit 1/);
 });
 
 test("opencode activity writer appends split JSONL chunks", () => {
@@ -280,6 +349,7 @@ test("opencode activity writer appends split JSONL chunks", () => {
     const rows = readFileSync(activityPath, "utf-8").trim().split("\n").map((row) => JSON.parse(row) as Record<string, unknown>);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]?.["kind"], "text");
+    assert.equal(rows[0]?.["partType"], "text");
     assert.equal(rows[0]?.["source"], "ses_235d");
     assert.equal(rows[0]?.["body"], "hello");
   } finally {
@@ -384,6 +454,133 @@ test("opa deploy --resume fails fast when no session id was recorded", async () 
     assert.notEqual(code, 0);
     assert.match(stderr.join("\n"), /no opencode session id recorded/);
   });
+});
+
+test("opencode installHooks installs repo-managed activity plugin", () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-"));
+  try {
+    const env = { HOME: root } as NodeJS.ProcessEnv;
+    const adapter = new OpencodeAdapter({ env, runCommand: () => { throw new Error("should not spawn"); } });
+    const activityLogPath = join(root, "deployments", "d-plugin", "activity.jsonl");
+
+    adapter.installHooks(join(root, "deployments", "d-plugin"), { deploymentId: "d-plugin", deploymentDir: join(root, "deployments", "d-plugin"), activityLogPath, env: { PA_DEPLOYMENT_ID: "d-plugin", PA_ACTIVITY_LOG: activityLogPath } });
+
+    const pluginPath = resolvePaSafetyActivityPluginPath(env);
+    assert.equal(readFileSync(pluginPath, "utf-8"), PA_SAFETY_ACTIVITY_PLUGIN_SOURCE);
+    assert.match(readFileSync(pluginPath, "utf-8"), /PA_DEPLOYMENT_ID/);
+    assert.match(readFileSync(pluginPath, "utf-8"), /PA_ACTIVITY_LOG/);
+    assert.match(readFileSync(pluginPath, "utf-8"), /message\.part\.updated/);
+    for (const eventName of [
+      "message.part.updated",
+      "message.updated",
+      "message.part.removed",
+      "message.removed",
+      "tool.execute.before",
+      "tool.execute.after",
+      "session.created",
+      "session.updated",
+      "session.status",
+      "session.idle",
+      "session.compacted",
+      "session.diff",
+      "session.deleted",
+      "session.error",
+      "permission.asked",
+      "permission.replied",
+      "todo.updated",
+      "command.executed",
+      "file.edited",
+      "file.watcher.updated",
+      "lsp.client.diagnostics",
+      "lsp.updated",
+      "installation.updated",
+      "server.connected",
+      "tui.prompt.append",
+      "tui.command.execute",
+      "tui.toast.show",
+    ]) {
+      assert.match(readFileSync(pluginPath, "utf-8"), new RegExp(eventName.replaceAll(".", "\\.")), eventName);
+    }
+    assert.match(readFileSync(pluginPath, "utf-8"), /dedupeKey/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("opencode installHooks refreshes stale activity plugin content", () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-stale-"));
+  try {
+    const env = { XDG_CONFIG_HOME: join(root, "xdg") } as NodeJS.ProcessEnv;
+    const pluginPath = resolvePaSafetyActivityPluginPath(env);
+    mkdirSync(dirname(pluginPath), { recursive: true });
+    writeFileSync(pluginPath, "// stale plugin\n", "utf-8");
+
+    const adapter = new OpencodeAdapter({ env, runCommand: () => { throw new Error("should not spawn"); } });
+    const activityLogPath = join(root, "deployments", "d-refresh", "activity.jsonl");
+    adapter.installHooks(join(root, "deployments", "d-refresh"), { deploymentId: "d-refresh", deploymentDir: join(root, "deployments", "d-refresh"), activityLogPath, env: { PA_DEPLOYMENT_ID: "d-refresh", PA_ACTIVITY_LOG: activityLogPath } });
+
+    assert.equal(readFileSync(pluginPath, "utf-8"), PA_SAFETY_ACTIVITY_PLUGIN_SOURCE);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pa safety activity plugin does not enforce guards outside PA deployments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-non-pa-"));
+  const originalActivityLog = process.env.PA_ACTIVITY_LOG;
+  const originalDeploymentDir = process.env.PA_DEPLOYMENT_DIR;
+  try {
+    delete process.env.PA_ACTIVITY_LOG;
+    delete process.env.PA_DEPLOYMENT_DIR;
+    const pluginPath = join(root, "pa-safety-activity.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(pathToFileURL(pluginPath).href);
+    const plugin = await module.PaSafetyActivityPlugin();
+
+    await plugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "rm .env" } });
+    await plugin["tool.execute.before"]({ tool: "read" }, { args: { filePath: ".env" } });
+  } finally {
+    restore("PA_ACTIVITY_LOG", originalActivityLog);
+    restore("PA_DEPLOYMENT_DIR", originalDeploymentDir);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pa safety activity plugin masks bash activity without mutating execution args", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-mask-"));
+  const originalActivityLog = process.env.PA_ACTIVITY_LOG;
+  const originalDeploymentDir = process.env.PA_DEPLOYMENT_DIR;
+  const originalDeploymentId = process.env.PA_DEPLOYMENT_ID;
+  const originalHome = process.env.HOME;
+  try {
+    const hooksDir = join(root, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(join(hooksDir, "sensitive-patterns.conf"), "API_KEY|sk-[A-Za-z0-9]+\n", "utf-8");
+    process.env.HOME = root;
+    process.env.PA_DEPLOYMENT_ID = "d-mask";
+    process.env.PA_DEPLOYMENT_DIR = join(root, "deployments", "d-mask");
+    process.env.PA_ACTIVITY_LOG = join(process.env.PA_DEPLOYMENT_DIR, "activity.jsonl");
+
+    const pluginPath = join(root, "pa-safety-activity.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(pathToFileURL(pluginPath).href);
+    const plugin = await module.PaSafetyActivityPlugin();
+    const args = { command: "printf sk-secret123" };
+
+    await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses-mask" }, { args });
+
+    assert.equal(args.command, "printf sk-secret123");
+    const activity = readFileSync(process.env.PA_ACTIVITY_LOG, "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { event?: string; data?: { args?: { command?: string }; summary?: string } });
+    const before = activity.find((row) => row.event === "tool.execute.before");
+    assert.equal(before?.data?.args?.command, "printf ***API_KEY_MASKED***");
+    assert.equal(before?.data?.summary, "printf ***API_KEY_MASKED***");
+  } finally {
+    restore("PA_ACTIVITY_LOG", originalActivityLog);
+    restore("PA_DEPLOYMENT_DIR", originalDeploymentDir);
+    restore("PA_DEPLOYMENT_ID", originalDeploymentId);
+    restore("HOME", originalHome);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("createOpencodeSessionIdParser handles chunks split mid-line", () => {

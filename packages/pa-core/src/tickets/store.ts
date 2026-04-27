@@ -68,8 +68,8 @@ export class TicketStore {
     if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
     if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
     if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
-    next = this.applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor);
-    next = this.applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor);
+    next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, this.appendAudit.bind(this));
+    next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, this.appendAudit.bind(this));
 
     const changes = diffTicket(current, next);
     this.writeTicket(next);
@@ -215,38 +215,6 @@ export class TicketStore {
     return next;
   }
 
-  private applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string): Ticket {
-    let linkedBranches = ticket.linkedBranches;
-    if (remove) {
-      const before = linkedBranches;
-      linkedBranches = linkedBranches.filter((branch) => `${branch.repo}:${branch.branch}` !== remove);
-      if (linkedBranches.length !== before.length) this.appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
-    }
-    if (add) {
-      const newBranch = resolveLinkedBranch(add, actor);
-      const before = linkedBranches;
-      linkedBranches = upsertLinkedBranch(linkedBranches, newBranch);
-      this.appendAudit(id, "branch_link_added", actor, { branch: [before.find((branch) => branch.repo === newBranch.repo && branch.branch === newBranch.branch) ?? null, newBranch] });
-    }
-    return linkedBranches === ticket.linkedBranches ? ticket : { ...ticket, linkedBranches };
-  }
-
-  private applyLinkedCommitMutation(id: string, ticket: Ticket, add: AddLinkedCommitInput | undefined, remove: string | undefined, actor: string): Ticket {
-    let linkedCommits = ticket.linkedCommits;
-    if (remove) {
-      const before = linkedCommits;
-      linkedCommits = linkedCommits.filter((commit) => commit.sha !== remove);
-      if (linkedCommits.length !== before.length) this.appendAudit(id, "commit_link_removed", actor, { sha: [remove, null] });
-    }
-    if (add) {
-      const newCommit = resolveLinkedCommit(add, actor);
-      const before = linkedCommits;
-      linkedCommits = upsertLinkedCommit(linkedCommits, newCommit);
-      this.appendAudit(id, "commit_link_added", actor, { commit: [before.find((commit) => commit.sha === newCommit.sha) ?? null, newCommit] });
-    }
-    return linkedCommits === ticket.linkedCommits ? ticket : { ...ticket, linkedCommits };
-  }
-
   private writeTicket(ticket: Ticket): void {
     writeFileSync(this.ticketPath(ticket.id), JSON.stringify(ticket, null, 2));
   }
@@ -279,6 +247,40 @@ function diffTicket(before: Ticket, after: Ticket): Record<string, [unknown, unk
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changes[key] = [before[key], after[key]];
   }
   return changes;
+}
+
+type AuditAppender = (ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]) => void;
+
+function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
+  let linkedBranches = ticket.linkedBranches;
+  if (remove) {
+    const before = linkedBranches;
+    linkedBranches = linkedBranches.filter((branch) => `${branch.repo}:${branch.branch}` !== remove);
+    if (linkedBranches.length !== before.length) appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
+  }
+  if (add) {
+    const newBranch = resolveLinkedBranch(add, actor);
+    const before = linkedBranches;
+    linkedBranches = upsertLinkedBranch(linkedBranches, newBranch);
+    appendAudit(id, "branch_link_added", actor, { branch: [before.find((branch) => branch.repo === newBranch.repo && branch.branch === newBranch.branch) ?? null, newBranch] });
+  }
+  return linkedBranches === ticket.linkedBranches ? ticket : { ...ticket, linkedBranches };
+}
+
+function applyLinkedCommitMutation(id: string, ticket: Ticket, add: AddLinkedCommitInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
+  let linkedCommits = ticket.linkedCommits;
+  if (remove) {
+    const before = linkedCommits;
+    linkedCommits = linkedCommits.filter((commit) => commit.sha !== remove);
+    if (linkedCommits.length !== before.length) appendAudit(id, "commit_link_removed", actor, { sha: [remove, null] });
+  }
+  if (add) {
+    const newCommit = resolveLinkedCommit(add, actor);
+    const before = linkedCommits;
+    linkedCommits = upsertLinkedCommit(linkedCommits, newCommit);
+    appendAudit(id, "commit_link_added", actor, { commit: [before.find((commit) => commit.sha === newCommit.sha) ?? null, newCommit] });
+  }
+  return linkedCommits === ticket.linkedCommits ? ticket : { ...ticket, linkedCommits };
 }
 
 function upsertLinkedBranch(branches: LinkedBranch[], next: LinkedBranch): LinkedBranch[] {

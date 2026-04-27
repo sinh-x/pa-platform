@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { readActivityEvents } from "../activity/index.js";
 import { BulletinStore } from "../bulletins/index.js";
 import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
@@ -15,13 +16,14 @@ import { listRepos } from "../repos.js";
 import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
 import { routeMessage } from "../signal/router.js";
 import { cleanSignalEntries, writeRoutedMessage } from "../signal/writers.js";
-import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries, TicketStore } from "../tickets/index.js";
-import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../tickets/index.js";
+import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries } from "../tickets/index.js";
 import { listSystemdTimers } from "../timers.js";
 import { getTeamRuntimeStatus, listTeamConfigs, loadTeamConfig } from "../teams/index.js";
 import { TrashStore } from "../trash/index.js";
 import type { TrashFileType, TrashStatus } from "../trash/index.js";
 import type { DeploymentStatus } from "../types.js";
+import { runTicketCommand } from "./commands/ticket.js";
+import { formatBulletinList, formatRegistryList, formatRegistryShow, formatReposList, formatTeamDetail, formatTeamList, formatTeamsJson, formatTimers, formatTrashList, formatTrashShow } from "./formatters.js";
 
 export interface CliIo {
   stdout?: (text: string) => void;
@@ -40,7 +42,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
   const [command, ...rest] = argv;
   try {
     if (!command || command === "help" || command === "--help" || command === "-h") {
-      printHelp(io, opts.binaryName ?? "pa-core");
+      printHelp(io, opts.binaryName ?? defaultBinaryName());
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
@@ -57,10 +59,10 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "health") return runHealthCommand(rest, io);
     if (command === "trash") return runTrashCommand(rest, io);
     if (command === "codectx") return runCodeCtxCommand(rest, io);
-    if (command === "timers") return runTimersCommand(io);
+    if (command === "timers") return runTimersCommand(rest, io);
     if (command === "signal") return runSignalCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
-    printHelp(io, opts.binaryName ?? "pa-core");
+    printHelp(io, opts.binaryName ?? defaultBinaryName());
     return 1;
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
@@ -68,11 +70,13 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
   }
 }
 
-function runTimersCommand(io: Required<CliIo>): number {
+function runTimersCommand(argv: string[], io: Required<CliIo>): number {
+  const json = consumeJsonFlag(argv);
+  if ("error" in json) return printError(json.error, io);
   try {
+    io.stderr("Reading systemd timers...");
     const { timers } = listSystemdTimers();
-    for (const timer of timers) io.stdout(`${timer.unit.padEnd(28)} ${timer.team.padEnd(20)} ${timer.next_in}`);
-    io.stdout(`Count: ${timers.length}`);
+    io.stdout(json.json ? JSON.stringify(timers, null, 2) : formatTimers(timers));
     return 0;
   } catch (error) {
     io.stderr(`Failed to list timers: ${error instanceof Error ? error.message : String(error)}`);
@@ -113,11 +117,13 @@ function runScheduleCommand(argv: string[], io: Required<CliIo>): number {
 function runRemoveTimerCommand(argv: string[], io: Required<CliIo>): number {
   const parsed = parseRemoveTimerArgs(argv);
   if ("error" in parsed) return printError(parsed.error, io);
+  if (!parsed.dryRun && !parsed.yes) return printError("remove-timer is destructive; rerun with --yes to confirm", io);
   const unitName = parsed.name.startsWith("pa-") ? parsed.name : `pa-${parsed.name}`;
   const systemdDir = resolve(process.env["XDG_CONFIG_HOME"] ?? resolve(homedir(), ".config"), "systemd/user");
   const timerPath = resolve(systemdDir, `${unitName}.timer`);
   const servicePath = resolve(systemdDir, `${unitName}.service`);
   if (!parsed.dryRun) {
+    io.stderr(`Removing timer ${unitName}...`);
     tryExecSystemctl(["--user", "stop", `${unitName}.timer`]);
     tryExecSystemctl(["--user", "disable", `${unitName}.timer`]);
     if (existsSync(timerPath)) unlinkSync(timerPath);
@@ -141,104 +147,14 @@ function runSignalCommand(argv: string[], io: Required<CliIo>): number {
   return runSignalCollect(opts, io);
 }
 
-function runTicketCommand(argv: string[], io: Required<CliIo>): number {
-  const [subcommand, ...rest] = argv;
-  const store = new TicketStore();
-  if (subcommand === "list") {
-    const opts = parseTicketListArgs(rest);
-    if ("error" in opts) return printError(opts.error, io);
-    const tickets = store.list(opts);
-    for (const ticket of tickets) io.stdout(`${ticket.id.padEnd(8)} ${ticket.status.padEnd(22)} ${ticket.priority.padEnd(8)} ${ticket.assignee.padEnd(22)} ${ticket.title}`);
-    io.stdout(`Count: ${tickets.length}`);
-    return 0;
-  }
-  if (subcommand === "show") {
-    const id = rest[0];
-    if (!id) return printError("ticket show requires id", io);
-    const ticket = store.get(id);
-    if (!ticket) return printError(`Ticket not found: ${id}`, io);
-    if (rest.includes("--json")) {
-      io.stdout(JSON.stringify(ticket, null, 2));
-      return 0;
-    }
-    io.stdout(`${ticket.id} | ${ticket.status} | ${ticket.priority} | ${ticket.assignee}`);
-    io.stdout(ticket.title);
-    if (ticket.summary) io.stdout(`Summary: ${ticket.summary}`);
-    if (ticket.doc_refs.length > 0) io.stdout(`Doc refs: ${ticket.doc_refs.map((ref) => ref.path).join(", ")}`);
-    if (ticket.comments.length > 0) io.stdout(`Comments: ${ticket.comments.length}`);
-    return 0;
-  }
-  if (subcommand === "create") {
-    const parsed = parseTicketCreateArgs(rest);
-    if ("error" in parsed) return printError(parsed.error, io);
-    const ticket = store.create(parsed.input, parsed.actor);
-    io.stdout(`Created ${ticket.id}: ${ticket.title}`);
-    return 0;
-  }
-  if (subcommand === "update") {
-    const id = rest[0];
-    if (!id) return printError("ticket update requires id", io);
-    const parsed = parseTicketUpdateArgs(rest.slice(1));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const ticket = store.update(id, parsed.input, parsed.actor);
-    io.stdout(`Updated ${ticket.id}: ${ticket.status}`);
-    return 0;
-  }
-  if (subcommand === "comment") {
-    const id = rest[0];
-    if (!id) return printError("ticket comment requires id", io);
-    const parsed = parseTicketCommentArgs(rest.slice(1));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const comment = store.comment(id, parsed.author, parsed.content);
-    io.stdout(`Commented ${id}: ${comment.id}`);
-    return 0;
-  }
-  if (subcommand === "attach") {
-    const id = rest[0];
-    if (!id) return printError("ticket attach requires id", io);
-    const parsed = parseFlagPairs(rest.slice(1), new Set(["--file", "--actor"]));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const file = parsed.values["--file"];
-    if (!file) return printError("--file is required", io);
-    const ticket = store.attach(id, file, parsed.values["--actor"] ?? "pa-core");
-    io.stdout(`Attached to ${ticket.id}: ${file}`);
-    return 0;
-  }
-  if (subcommand === "move") {
-    const id = rest[0];
-    if (!id) return printError("ticket move requires id", io);
-    const parsed = parseFlagPairs(rest.slice(1), new Set(["--project", "--actor"]));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const project = parsed.values["--project"];
-    if (!project) return printError("--project is required", io);
-    const ticket = store.move(id, project, parsed.values["--actor"] ?? "pa-core");
-    io.stdout(`Moved: ${id} -> ${ticket.id}`);
-    return 0;
-  }
-  if (subcommand === "delete") {
-    const id = rest[0];
-    if (!id) return printError("ticket delete requires id", io);
-    const opts = parseTicketDeleteArgs(rest.slice(1));
-    if ("error" in opts) return printError(opts.error, io);
-    if (opts.force && !opts.yes) return printError("--force requires --yes in pa-core non-interactive mode", io);
-    store.delete(id, opts.actor, opts.force);
-    io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
-    return 0;
-  }
-  if (subcommand === "check-refs") return runTicketCheckRefs(rest, io, store);
-  if (subcommand === "subticket") return runSubTicketCommand(rest, io, store);
-  io.stderr(`Unknown ticket subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, check-refs, subticket");
-  return 1;
-}
-
 function runBulletinCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
   const store = new BulletinStore();
   if (subcommand === "list") {
+    const json = consumeJsonFlag(rest);
+    if ("error" in json) return printError(json.error, io);
     const bulletins = store.readActive();
-    for (const bulletin of bulletins) io.stdout(`${bulletin.id.padEnd(6)} ${String(bulletin.block).padEnd(16)} ${bulletin.title}`);
-    io.stdout(`Count: ${bulletins.length}`);
+    io.stdout(json.json ? JSON.stringify(bulletins, null, 2) : formatBulletinList(bulletins));
     return 0;
   }
   if (subcommand === "create") {
@@ -286,9 +202,9 @@ function runTrashCommand(argv: string[], io: Required<CliIo>): number {
   if (subcommand === "list") {
     const opts = parseTrashListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
-    const entries = store.list(opts);
-    for (const entry of entries) io.stdout(`${entry.id.padEnd(6)} ${entry.status.padEnd(9)} ${entry.fileType.padEnd(8)} ${entry.originalPath}`);
-    io.stdout(`Count: ${entries.length}`);
+    const { json, ...filters } = opts;
+    const entries = store.list(filters);
+    io.stdout(json ? JSON.stringify(entries, null, 2) : formatTrashList(entries));
     return 0;
   }
   if (subcommand === "move") {
@@ -296,6 +212,8 @@ function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     if (!path) return printError("trash move requires path", io);
     const parsed = parseTrashMoveArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
+    if (!parsed.yes) return printError("trash move is destructive; rerun with --yes to confirm", io);
+    io.stderr(`Moving to trash: ${path}`);
     const entry = store.move({ path, reason: parsed.reason, actor: parsed.actor, fileType: parsed.fileType });
     io.stdout(`Trashed ${entry.id}: ${entry.originalPath}`);
     return 0;
@@ -305,9 +223,9 @@ function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("trash show requires id", io);
     const entry = store.get(id);
     if (!entry) return printError(`Trash entry not found: ${id}`, io);
-    io.stdout(`${entry.id} | ${entry.status} | ${entry.fileType}`);
-    io.stdout(`Original: ${entry.originalPath}`);
-    io.stdout(`Reason: ${entry.reason}`);
+    const json = consumeJsonFlag(rest.slice(1));
+    if ("error" in json) return printError(json.error, io);
+    io.stdout(json.json ? JSON.stringify(entry, null, 2) : formatTrashShow(entry));
     return 0;
   }
   if (subcommand === "restore") {
@@ -408,7 +326,8 @@ function runRegistryCommand(argv: string[], io: Required<CliIo>): number {
     if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
     if (opts.status) deployments = deployments.filter((deployment) => deployment.status === opts.status);
     if (opts.since) deployments = deployments.filter((deployment) => deployment.started_at >= opts.since!);
-    printDeploymentList(deployments.slice(0, opts.limit ?? 20), io);
+    const rows = deployments.slice(0, opts.limit ?? 20);
+    io.stdout(opts.json ? JSON.stringify(rows, null, 2) : formatRegistryList(rows));
     return 0;
   }
   if (subcommand === "show") {
@@ -422,7 +341,9 @@ function runRegistryCommand(argv: string[], io: Required<CliIo>): number {
       io.stderr(`Deployment not found: ${deployId}`);
       return 1;
     }
-    printDeploymentDetail(deployment, io);
+    const json = consumeJsonFlag(rest.slice(1));
+    if ("error" in json) return printError(json.error, io);
+    io.stdout(json.json ? JSON.stringify(deployment, null, 2) : formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length));
     return 0;
   }
   if (subcommand === "complete") return runRegistryComplete(rest, io);
@@ -463,25 +384,22 @@ function runTeamsCommand(argv: string[], io: Required<CliIo>): number {
   }
   if (opts.name) {
     const board = getTeamBoard(opts.name, { excludeTags: opts.all ? undefined : ["backlog", "archived"] });
-    io.stdout(`${opts.name} (${board.total} tickets)`);
-    for (const column of board.columns) {
-      if (column.count === 0) continue;
-      io.stdout(`\n${column.status} (${column.count})`);
-      for (const ticket of column.tickets) io.stdout(`  ${ticket.id.padEnd(8)} [${ticket.priority}] ${ticket.title}`);
-    }
     const running = getTeamRuntimeStatus(opts.name).runningDeployments;
-    io.stdout(running.length > 0 ? `\ndeployments: ${running.join(", ")}` : "\ndeployments: none running");
+    io.stdout(opts.json ? JSON.stringify({ name: opts.name, board, runningDeployments: running }, null, 2) : formatTeamDetail(opts.name, board, running));
     return 0;
   }
 
   const summaries = new Map(getTeamStatusSummaries(undefined, opts.all ? {} : { excludeTags: ["backlog", "archived"] }).map((summary) => [summary.assignee, summary]));
-  io.stdout(`${"TEAM".padEnd(18)} ${"MODEL".padEnd(8)} ${BOARD_COLUMNS.map((status) => status.slice(0, 4).toUpperCase().padEnd(5)).join("")} DEPLOY`);
-  for (const team of listTeamConfigs()) {
+  const teams = listTeamConfigs();
+  const statuses = [];
+  const rows = [];
+  for (const team of teams) {
     const status = getTeamRuntimeStatus(team.name);
+    statuses.push({ name: team.name, model: status.model, runningDeployments: status.runningDeployments });
     const summary = summaries.get(team.name);
-    const counts = BOARD_COLUMNS.map((column) => String(summary?.counts[column] ?? 0).padEnd(5)).join("");
-    io.stdout(`${team.name.padEnd(18)} ${status.model.padEnd(8)} ${counts} ${(status.runningDeployments[0] ?? "-")}`);
+    rows.push({ name: team.name, model: status.model, counts: BOARD_COLUMNS.map((column) => String(summary?.counts[column] ?? 0).padEnd(5)), deployment: status.runningDeployments[0] ?? "-" });
   }
+  io.stdout(opts.json ? JSON.stringify(formatTeamsJson(teams, statuses, rows), null, 2) : formatTeamList(rows));
   return 0;
 }
 
@@ -493,16 +411,9 @@ function runReposCommand(argv: string[], io: Required<CliIo>): number {
     return 1;
   }
   const repos = listRepos();
-  if (repos.length === 0) {
-    io.stdout("No repos configured.");
-    return 0;
-  }
-  const nameW = Math.max(4, ...repos.map((repo) => repo.name.length));
-  const pathW = Math.max(4, ...repos.map((repo) => repo.path.length));
-  const pad = (value: string, width: number) => value.padEnd(width);
-  io.stdout(`  ${pad("NAME", nameW)}  ${pad("PATH", pathW)}  DESCRIPTION`);
-  io.stdout(`  ${"-".repeat(nameW)}  ${"-".repeat(pathW)}  -----------`);
-  for (const repo of repos) io.stdout(`  ${pad(repo.name, nameW)}  ${pad(repo.path, pathW)}  ${repo.description ?? ""}`);
+  const json = consumeJsonFlag(argv.slice(1));
+  if ("error" in json) return printError(json.error, io);
+  io.stdout(json.json ? JSON.stringify(repos, null, 2) : formatReposList(repos));
   return 0;
 }
 
@@ -572,16 +483,18 @@ function isRepeatValue(value: string): value is "hourly" | "daily" | "weekly" | 
   return value === "hourly" || value === "daily" || value === "weekly" || value === "monthly";
 }
 
-function parseRemoveTimerArgs(argv: string[]): { name: string; dryRun: boolean } | { error: string } {
+function parseRemoveTimerArgs(argv: string[]): { name: string; dryRun: boolean; yes: boolean } | { error: string } {
   let name = "";
   let dryRun = false;
+  let yes = false;
   for (const arg of argv) {
     if (arg === "--dry-run") dryRun = true;
+    else if (arg === "--yes") yes = true;
     else if (arg.startsWith("-")) return { error: `Unsupported remove-timer option: ${arg}` };
     else if (!name) name = arg;
     else return { error: `Unexpected remove-timer argument: ${arg}` };
   }
-  return name ? { name, dryRun } : { error: "remove-timer requires timer name" };
+  return name ? { name, dryRun, yes } : { error: "remove-timer requires timer name" };
 }
 
 function resolveSchedule(spec: string, repeat: "hourly" | "daily" | "weekly" | "monthly", times: string[], command: string): { unitName: string; description: string; execCommand: string; onCalendarLines: string[]; timeDisplay: string } | { error: string } {
@@ -767,7 +680,7 @@ function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): numbe
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
     if (opts.activity) return showDeploymentActivity(opts.deployId, io);
-    printDeploymentDetail(deployment, io);
+    io.stdout(formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length));
     return 0;
   }
 
@@ -776,7 +689,7 @@ function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): numbe
   if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
   if (opts.today) deployments = deployments.filter((deployment) => localDate(deployment.started_at) === localDate(now.toISOString()));
   if (opts.recent !== undefined) deployments = deployments.slice(0, opts.recent);
-  printDeploymentList(deployments, io);
+  io.stdout(formatRegistryList(deployments));
   return 0;
 }
 
@@ -908,18 +821,13 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
     io.stdout(`Activity log is empty: ${activityFile}`);
     return 0;
   }
-  io.stdout(`Activity timeline - ${deployId} (${lines.length} events)`);
-  for (const line of lines) {
-    try {
-      const event = JSON.parse(line) as Record<string, unknown>;
-      const ts = String(event["timestamp"] ?? event["ts"] ?? "").slice(11, 19);
-      const source = String(event["source"] ?? event["agent"] ?? "unknown");
-      const kind = String(event["kind"] ?? event["event"] ?? "event");
-      const body = String(event["body"] ?? event["summary"] ?? "").slice(0, 100);
-      io.stdout(`${ts.padEnd(9)} ${source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
-    } catch {
-      // Skip malformed activity rows.
-    }
+  const events = readActivityEvents(activityFile);
+  io.stdout(`Activity timeline - ${deployId} (${events.length} events)`);
+  for (const event of events) {
+    const ts = event.timestamp.slice(11, 19);
+    const kind = event.partType ? `${event.kind}/${event.partType}` : event.kind;
+    const body = event.body.slice(0, 100);
+    io.stdout(`${ts.padEnd(9)} ${event.source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
   }
   return 0;
 }
@@ -967,10 +875,11 @@ function parseBoardArgs(argv: string[]): { project?: string; assignee?: string }
   return opts;
 }
 
-function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean } | { error: string } {
-  const opts: { name?: string; all?: boolean } = {};
+function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean; json?: boolean } | { error: string } {
+  const opts: { name?: string; all?: boolean; json?: boolean } = {};
   for (const arg of argv) {
     if (arg === "--all") opts.all = true;
+    else if (arg === "--json") opts.json = true;
     else if (arg.startsWith("-")) return { error: `Unsupported teams option: ${arg}` };
     else if (!opts.name) opts.name = arg;
     else return { error: `Unexpected teams argument: ${arg}` };
@@ -978,11 +887,12 @@ function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean } | { er
   return opts;
 }
 
-function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string } | { error: string } {
-  const opts: { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string } = {};
+function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string; json?: boolean } | { error: string } {
+  const opts: { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string; json?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === "--team") {
+    if (arg === "--json") opts.json = true;
+    else if (arg === "--team") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: "--team requires a value" };
       opts.team = value;
@@ -1127,7 +1037,7 @@ function runRegistrySearch(argv: string[], io: Required<CliIo>): number {
     io.stdout("No results found.");
     return 0;
   }
-  printDeploymentList(matches, io);
+  io.stdout(formatRegistryList(matches));
   return 0;
 }
 
@@ -1196,178 +1106,6 @@ function runRegistrySweep(argv: string[], io: Required<CliIo>): number {
   return 0;
 }
 
-function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[] } | { error: string } {
-  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[] } = {};
-  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags"]));
-  if ("error" in result) return result;
-  if (result.values["--project"]) opts.project = result.values["--project"];
-  if (result.values["--status"]) opts.status = result.values["--status"] as TicketStatus;
-  if (result.values["--assignee"]) opts.assignee = result.values["--assignee"];
-  if (result.values["--priority"]) opts.priority = result.values["--priority"] as TicketPriority;
-  if (result.values["--type"]) opts.type = result.values["--type"] as TicketType;
-  if (result.values["--search"]) opts.search = result.values["--search"];
-  if (result.values["--tags"]) opts.tags = splitCsv(result.values["--tags"]);
-  if (result.values["--exclude-tags"]) opts.excludeTags = splitCsv(result.values["--exclude-tags"]);
-  return opts;
-}
-
-function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; actor: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--project", "--title", "--type", "--priority", "--estimate", "--assignee", "--summary", "--description", "--status", "--from", "--to", "--tags", "--doc-ref", "--actor"]));
-  if ("error" in result) return result;
-  const values = result.values;
-  for (const flag of ["--project", "--title", "--type", "--priority", "--estimate", "--assignee"] as const) {
-    if (!values[flag]) return { error: `${flag} is required` };
-  }
-  const actor = values["--actor"] ?? "pa-core";
-  const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
-  return {
-    actor,
-    input: {
-      project: values["--project"]!,
-      title: values["--title"]!,
-      summary: values["--summary"] ?? "",
-      description: values["--description"] ?? "",
-      status: (values["--status"] ?? "idea") as TicketStatus,
-      priority: values["--priority"] as TicketPriority,
-      type: values["--type"] as TicketType,
-      assignee: values["--assignee"]!,
-      estimate: values["--estimate"] as Estimate,
-      from: values["--from"] ?? "",
-      to: values["--to"] ?? "",
-      tags: splitCsv(values["--tags"]),
-      blockedBy: [],
-      doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: new Date().toISOString(), addedBy: actor }] : [],
-      comments: [],
-    },
-  };
-}
-
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string } | { error: string } {
-  const result = parseTicketUpdateFlagPairs(argv);
-  if ("error" in result) return result;
-  const values = result.values;
-  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
-  if (values["--status"]) input.status = values["--status"] as TicketStatus;
-  if (values["--assignee"]) input.assignee = values["--assignee"];
-  if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
-  if (values["--tags"]) input.tags = splitCsv(values["--tags"]);
-  if (values["--blocked-by"] !== undefined) input.blockedBy = splitCsv(values["--blocked-by"]);
-  if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
-  if (values["--doc-ref"]) input.add_doc_ref = { ...parseDocRefFlag(values["--doc-ref"]!), primary: result.booleans.has("--doc-ref-primary") };
-  if (values["--remove-doc-ref"]) input.remove_doc_ref = values["--remove-doc-ref"];
-  if (values["--linked-branch"]) input.add_linked_branch = parseLinkedBranchFlag(values["--linked-branch"]!);
-  if (values["--remove-linked-branch"]) input.remove_linked_branch = values["--remove-linked-branch"];
-  if (values["--linked-commit"]) input.add_linked_commit = parseLinkedCommitFlag(values["--linked-commit"]!);
-  if (values["--remove-linked-commit"]) input.remove_linked_commit = values["--remove-linked-commit"];
-  return { input, actor: values["--actor"] ?? "pa-core" };
-}
-
-function parseTicketCommentArgs(argv: string[]): { author: string; content: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--author", "--content", "--content-file"]));
-  if ("error" in result) return result;
-  if (!result.values["--author"]) return { error: "--author is required" };
-  if (result.values["--content"] && result.values["--content-file"]) return { error: "Use only one of --content or --content-file" };
-  if (!result.values["--content"] && !result.values["--content-file"]) return { error: "one of --content or --content-file is required" };
-  const content = result.values["--content-file"] ? readFileSync(resolve(result.values["--content-file"]!), "utf-8") : result.values["--content"]!;
-  return { author: result.values["--author"]!, content };
-}
-
-function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
-  const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor"]);
-  const booleanFlags = new Set(["--doc-ref-primary", "--force"]);
-  const values: Record<string, string> = {};
-  const booleans = new Set<string>();
-  for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i]!;
-    if (booleanFlags.has(flag)) {
-      booleans.add(flag);
-      continue;
-    }
-    if (!valueFlags.has(flag)) return { error: `Unsupported option: ${flag}` };
-    const value = argv[i + 1];
-    if (value === undefined || value.startsWith("-")) return { error: `${flag} requires a value` };
-    values[flag] = value;
-    i += 1;
-  }
-  return { values, booleans };
-}
-
-function parseTicketDeleteArgs(argv: string[]): { force: boolean; yes: boolean; actor: string } | { error: string } {
-  const opts = { force: false, yes: false, actor: "pa-core" };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]!;
-    if (arg === "--force") opts.force = true;
-    else if (arg === "--yes") opts.yes = true;
-    else if (arg === "--actor") {
-      const value = argv[i + 1];
-      if (!value || value.startsWith("-")) return { error: "--actor requires a value" };
-      opts.actor = value;
-      i += 1;
-    } else return { error: `Unsupported ticket delete option: ${arg}` };
-  }
-  return opts;
-}
-
-function runTicketCheckRefs(argv: string[], io: Required<CliIo>, store: TicketStore): number {
-  const parsed = parseFlagPairs(argv, new Set(["--project"]));
-  if ("error" in parsed) return printError(parsed.error, io);
-  const project = parsed.values["--project"];
-  if (!project) return printError("--project is required", io);
-  const orphans: Array<{ ticketId: string; type: string; path: string; addedAt: string }> = [];
-  for (const ticket of store.list({ project })) {
-    for (const ref of ticket.doc_refs) {
-      if (ref.type === "url" || ref.path.startsWith("http://") || ref.path.startsWith("https://")) continue;
-      if (!existsSync(resolve(ref.path))) orphans.push({ ticketId: ticket.id, type: ref.type, path: ref.path, addedAt: ref.addedAt });
-    }
-  }
-  if (orphans.length === 0) {
-    io.stdout(`All doc_refs in project '${project}' are valid.`);
-    return 0;
-  }
-  io.stdout(`Orphaned doc_refs (${orphans.length}):`);
-  for (const orphan of orphans) io.stdout(`${orphan.ticketId.padEnd(10)} ${orphan.type.padEnd(12)} ${orphan.path}`);
-  return 1;
-}
-
-function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketStore): number {
-  const [subcommand, parentId, maybeSubId, ...rest] = argv;
-  if (!subcommand) return printError("ticket subticket requires subcommand", io);
-  if (!parentId) return printError("ticket subticket requires parent id", io);
-  if (subcommand === "create") {
-    const parsed = parseFlagPairs([maybeSubId, ...rest].filter((value): value is string => !!value), new Set(["--title", "--summary", "--assignee", "--priority", "--estimate", "--actor"]));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const title = parsed.values["--title"];
-    if (!title) return printError("--title is required", io);
-    const result = store.addSubTicket(parentId, { title, summary: parsed.values["--summary"] ?? "", assignee: parsed.values["--assignee"] ?? "", priority: (parsed.values["--priority"] ?? "medium") as TicketPriority, estimate: (parsed.values["--estimate"] ?? "S") as Estimate }, parsed.values["--actor"] ?? "pa-core");
-    io.stdout(`Created sub-ticket: ${result.subTicket.id}`);
-    return 0;
-  }
-  if (subcommand === "list") {
-    const subTickets = store.listSubTickets(parentId);
-    for (const sub of subTickets) io.stdout(`${sub.id.padEnd(18)} ${sub.status.padEnd(12)} ${sub.priority.padEnd(8)} ${sub.title}`);
-    io.stdout(`Count: ${subTickets.length}`);
-    return 0;
-  }
-  if (subcommand === "update" || subcommand === "complete") {
-    const subTicketId = maybeSubId;
-    if (!subTicketId) return printError(`ticket subticket ${subcommand} requires sub-ticket id`, io);
-    const parsed = subcommand === "complete" ? { values: { "--status": "done" } } : parseFlagPairs(rest, new Set(["--status", "--assignee", "--title", "--summary", "--priority", "--estimate", "--actor"]));
-    if ("error" in parsed) return printError(parsed.error, io);
-    const values = parsed.values;
-    const input: { status?: SubTicketStatus; assignee?: string; title?: string; summary?: string; priority?: TicketPriority; estimate?: Estimate } = {};
-    if (values["--status"]) input.status = values["--status"] as SubTicketStatus;
-    if (values["--assignee"]) input.assignee = values["--assignee"];
-    if (values["--title"]) input.title = values["--title"];
-    if (values["--summary"]) input.summary = values["--summary"];
-    if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
-    if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
-    const result = store.updateSubTicket(parentId, subTicketId, input, values["--actor"] ?? "pa-core");
-    io.stdout(`${subcommand === "complete" ? "Completed" : "Updated"}: ${result.subTicket.id}`);
-    return 0;
-  }
-  return printError(`Unknown ticket subticket subcommand: ${subcommand}`, io);
-}
-
 function parseBulletinCreateArgs(argv: string[]): { title: string; block: BulletinBlock; except?: string[]; body: string } | { error: string } {
   const result = parseFlagPairs(argv, new Set(["--title", "--block", "--except", "--message"]));
   if ("error" in result) return result;
@@ -1405,17 +1143,17 @@ function parseHealthArgs(argv: string[]): { category?: HealthCategory; days?: nu
   return opts;
 }
 
-function parseTrashListArgs(argv: string[]): { status?: TrashStatus; fileType?: TrashFileType; search?: string } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--status", "--type", "--search"]));
+function parseTrashListArgs(argv: string[]): { status?: TrashStatus; fileType?: TrashFileType; search?: string; json?: boolean } | { error: string } {
+  const result = parseFlagPairs(argv, new Set(["--status", "--type", "--search", "--json"]), new Set(["--json"]));
   if ("error" in result) return result;
-  return { status: result.values["--status"] as TrashStatus | undefined, fileType: result.values["--type"] as TrashFileType | undefined, search: result.values["--search"] };
+  return { status: result.values["--status"] as TrashStatus | undefined, fileType: result.values["--type"] as TrashFileType | undefined, search: result.values["--search"], json: result.booleans.has("--json") };
 }
 
-function parseTrashMoveArgs(argv: string[]): { reason: string; actor: string; fileType?: TrashFileType } | { error: string } {
-  const result = parseFlagPairs(argv, new Set(["--reason", "--actor", "--type"]));
+function parseTrashMoveArgs(argv: string[]): { reason: string; actor: string; fileType?: TrashFileType; yes: boolean } | { error: string } {
+  const result = parseFlagPairs(argv, new Set(["--reason", "--actor", "--type", "--yes"]), new Set(["--yes"]));
   if ("error" in result) return result;
   if (!result.values["--reason"]) return { error: "--reason is required" };
-  return { reason: result.values["--reason"]!, actor: result.values["--actor"] ?? "pa-core", fileType: result.values["--type"] as TrashFileType | undefined };
+  return { reason: result.values["--reason"]!, actor: result.values["--actor"] ?? "pa-core", fileType: result.values["--type"] as TrashFileType | undefined, yes: result.booleans.has("--yes") };
 }
 
 function parseTrashPurgeArgs(argv: string[]): { days?: number; dryRun?: boolean } | { error: string } {
@@ -1435,35 +1173,22 @@ function parseTrashPurgeArgs(argv: string[]): { days?: number; dryRun?: boolean 
   return opts;
 }
 
-function parseFlagPairs(argv: string[], allowed: Set<string>): { values: Record<string, string> } | { error: string } {
+function parseFlagPairs(argv: string[], allowed: Set<string>, booleanFlags = new Set<string>()): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
   const values: Record<string, string> = {};
+  const booleans = new Set<string>();
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]!;
     if (!allowed.has(flag)) return { error: `Unsupported option: ${flag}` };
+    if (booleanFlags.has(flag)) {
+      booleans.add(flag);
+      continue;
+    }
     const value = argv[i + 1];
     if (!value || value.startsWith("-")) return { error: `${flag} requires a value` };
     values[flag] = value;
     i += 1;
   }
-  return { values };
-}
-
-function parseDocRefFlag(value: string): { path: string; type?: string; primary?: boolean } {
-  const index = value.indexOf(":");
-  if (index > 0 && !value.slice(0, index).includes("/")) return { type: value.slice(0, index), path: value.slice(index + 1) };
-  return { path: value };
-}
-
-function parseLinkedBranchFlag(value: string): { repo: string; branch: string; sha?: string } {
-  const parts = value.split("|");
-  if (parts.length < 2) throw new Error(`Invalid --linked-branch format "${value}". Expected: repo|branch|sha`);
-  return { repo: parts[0]!, branch: parts.length > 2 ? parts.slice(1, -1).join("|") : parts.slice(1).join("|"), sha: parts.length > 2 ? parts.at(-1) : undefined };
-}
-
-function parseLinkedCommitFlag(value: string): { repo: string; sha: string; message?: string; author?: string; timestamp?: string } {
-  const parts = value.split("|");
-  if (parts.length < 2) throw new Error(`Invalid --linked-commit format "${value}". Expected: repo|sha|message|author|timestamp`);
-  return { repo: parts[0]!, sha: parts[1]!, message: parts[2], author: parts[3], timestamp: parts[4] };
+  return { values, booleans };
 }
 
 function splitCsv(value: string | undefined): string[] {
@@ -1563,61 +1288,24 @@ function printError(error: string, io: Required<CliIo>): number {
   return 1;
 }
 
-function printDeploymentList(deployments: DeploymentStatus[], io: Required<CliIo>): void {
-  io.stdout(`${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(26)} ${"ENDED".padEnd(26)} SUMMARY`);
-  io.stdout(`${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------------".padEnd(26)} ${"-------------------------".padEnd(26)} -------`);
-  for (const deployment of deployments) {
-    const started = shortTs(deployment.started_at);
-    const ended = deployment.completed_at ? shortTs(deployment.completed_at) : "-";
-    const summary = truncate(deployment.summary ?? "", 50);
-    io.stdout(`${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${started.padEnd(26)} ${ended.padEnd(26)} ${summary}`);
-  }
-}
-
-function printDeploymentDetail(deployment: DeploymentStatus, io: Required<CliIo>): void {
-  io.stdout(`Deployment: ${deployment.deploy_id}`);
-  io.stdout(`  Team:     ${deployment.team}`);
-  io.stdout(`  Status:   ${deployment.status}`);
-  io.stdout(`  Started:  ${shortTs(deployment.started_at)}`);
-  if (deployment.completed_at) io.stdout(`  Ended:    ${shortTs(deployment.completed_at)}`);
-  if (deployment.runtime) io.stdout(`  Runtime:  ${deployment.runtime}`);
-  if (deployment.provider) io.stdout(`  Provider: ${deployment.provider}`);
-  if (deployment.models?.["team"]) io.stdout(`  Model:    ${deployment.models["team"]}`);
-  if (deployment.models?.["agents"]) io.stdout(`  Agents Model: ${deployment.models["agents"]}`);
-  if (deployment.agents.length > 0) io.stdout(`  Agents:   ${deployment.agents.join(",")}`);
-  if (deployment.pid !== undefined) io.stdout(`  PID:      ${deployment.pid}`);
-  if (deployment.summary) io.stdout(`  Summary:  ${deployment.summary}`);
-  const eventCount = getDeploymentEvents(deployment.deploy_id).length;
-  io.stdout(`  Events:   ${eventCount}`);
-}
-
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+}
+
+function defaultBinaryName(): string {
+  return basename(process.argv[1] ?? "") || "pa-core";
+}
+
+function consumeJsonFlag(argv: string[]): { json: boolean } | { error: string } {
+  const unsupported = argv.find((arg) => arg !== "--json");
+  return unsupported ? { error: `Unsupported option: ${unsupported}` } : { json: argv.includes("--json") };
 }
 
 function normalizeIo(io: CliIo = {}): Required<CliIo> {
   return { stdout: io.stdout ?? ((text) => process.stdout.write(`${text}\n`)), stderr: io.stderr ?? ((text) => process.stderr.write(`${text}\n`)) };
 }
 
-function shortTs(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return timestamp.replace("T", " ").slice(0, 19);
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absOffset = Math.abs(offsetMinutes);
-  const offset = `${sign}${pad2(Math.floor(absOffset / 60))}:${pad2(absOffset % 60)}`;
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${offset}`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
 function localDate(timestamp: string): string {
   return new Date(timestamp).toLocaleDateString("en-CA");
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }
