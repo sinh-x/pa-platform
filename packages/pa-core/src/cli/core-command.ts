@@ -20,6 +20,7 @@ import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries } f
 import { listSystemdTimers } from "../timers.js";
 import { getTeamRuntimeStatus, listTeamConfigs, loadTeamConfig } from "../teams/index.js";
 import { TrashStore } from "../trash/index.js";
+import { formatLocal, formatLocalShort, nowUtc, parseTimestamp } from "../time.js";
 import type { TrashFileType, TrashStatus } from "../trash/index.js";
 import type { DeploymentStatus } from "../types.js";
 import { runTicketCommand } from "./commands/ticket.js";
@@ -600,7 +601,7 @@ function parseSignalCollectArgs(argv: string[]): { dryRun: boolean; skipRoute: b
 function runSignalCollect(opts: { dryRun: boolean; skipRoute: boolean; conversationId?: string }, io: Required<CliIo>): number {
   const state = readCollectorState();
   io.stdout("=== Signal Note to Self Collector ===");
-  io.stdout(`Last processed: ${state.lastProcessedAt > 0 ? new Date(state.lastProcessedAt).toISOString() : "never"}`);
+  io.stdout(`Last processed: ${state.lastProcessedAt > 0 ? formatLocal(nowUtc(new Date(state.lastProcessedAt))) : "never"}`);
   io.stdout(`Total processed: ${state.totalProcessed}`);
   let conversationId = opts.conversationId;
   if (!conversationId) {
@@ -614,7 +615,7 @@ function runSignalCollect(opts: { dryRun: boolean; skipRoute: boolean; conversat
   if (opts.dryRun) {
     const messages = fetchNotesSince(conversationId, state.lastProcessedAt);
     io.stdout(messages.length === 0 ? "No new messages found." : `Would extract ${messages.length} new message(s).`);
-    for (const msg of messages) io.stdout(`  [${new Date(msg.sent_at).toISOString()}] ${(msg.body ?? "(no text body)").slice(0, 80).replace(/\n/g, " ")}`);
+    for (const msg of messages) io.stdout(`  [${formatLocal(nowUtc(new Date(msg.sent_at)))}] ${(msg.body ?? "(no text body)").slice(0, 80).replace(/\n/g, " ")}`);
     return 0;
   }
   const result = extractNotesSinceLastRun(conversationId);
@@ -648,7 +649,7 @@ function routeSignalFiles(files: string[], dryRun: boolean, io: Required<CliIo>)
     try {
       const result = routeMessage(file);
       const sentAt = extractSentAtFromFile(file);
-      if (dryRun) io.stdout(`  [${new Date(sentAt).toISOString().slice(0, 10)}] ${result.destination} <- ${basename(file)}`);
+      if (dryRun) io.stdout(`  [${localDate(nowUtc(new Date(sentAt)))}] ${result.destination} <- ${basename(file)}`);
       else {
         const writeResult = writeRoutedMessage(result, sentAt);
         markSignalNoteAsProcessed(file);
@@ -691,7 +692,7 @@ function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): numbe
   let deployments = queryDeploymentStatuses();
   if (opts.running) deployments = deployments.filter((deployment) => deployment.status === "running");
   if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
-  if (opts.today) deployments = deployments.filter((deployment) => localDate(deployment.started_at) === localDate(now.toISOString()));
+  if (opts.today) deployments = deployments.filter((deployment) => localDate(deployment.started_at) === localDate(nowUtc(now)));
   if (opts.recent !== undefined) deployments = deployments.slice(0, opts.recent);
   io.stdout(formatRegistryList(deployments));
   return 0;
@@ -829,10 +830,10 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
   const events = readActivityEvents(activityFile);
   io.stdout(`Activity timeline - ${deployId} (${events.length} events)`);
   for (const event of events) {
-    const ts = event.timestamp.slice(11, 19);
+    const ts = formatLocalShort(event.timestamp);
     const kind = event.partType ? `${event.kind}/${event.partType}` : event.kind;
     const body = event.body.slice(0, 100);
-    io.stdout(`${ts.padEnd(9)} ${event.source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
+    io.stdout(`${ts.padEnd(26)} ${event.source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
   }
   return 0;
 }
@@ -946,7 +947,7 @@ function runRegistryComplete(argv: string[], io: Required<CliIo>): number {
     io.stdout("Skipping: deployment already has terminal event");
     return 0;
   }
-  appendRegistryEvent({ deployment_id: deployId, team: deployment.team, event: "completed", timestamp: new Date().toISOString(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, fallback: parsed.fallback });
+  appendRegistryEvent({ deployment_id: deployId, team: deployment.team, event: "completed", timestamp: nowUtc(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, fallback: parsed.fallback });
   io.stdout(`Completed ${deployId} with status ${parsed.status}`);
   return 0;
 }
@@ -993,7 +994,7 @@ function runRegistryUpdate(argv: string[], io: Required<CliIo>, deprecatedAlias:
   const parsed = parseRegistryUpdateArgs(rest);
   if ("error" in parsed) return printError(parsed.error, io);
   if (deprecatedAlias) io.stderr("Warning: `pa registry amend` is deprecated. Use `pa registry update` instead.");
-  appendRegistryEvent({ deployment_id: deployId, team: started.team, event: "updated", timestamp: new Date().toISOString(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, note: parsed.note });
+  appendRegistryEvent({ deployment_id: deployId, team: started.team, event: "updated", timestamp: nowUtc(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, note: parsed.note });
   io.stdout(`${deprecatedAlias ? "Amended" : "Updated"}: ${deployId} - ${parsed.summary ?? parsed.note ?? "update recorded"}`);
   return 0;
 }
@@ -1076,7 +1077,7 @@ function runRegistryClean(argv: string[], io: Required<CliIo>): number {
   if ("error" in opts) return printError(opts.error, io);
   const thresholdMs = opts.thresholdHours * 60 * 60 * 1000;
   const now = Date.now();
-  const orphans = queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && now - new Date(deployment.started_at).getTime() > thresholdMs);
+  const orphans = queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && now - parseTimestamp(deployment.started_at).getTime() > thresholdMs);
   if (orphans.length === 0) {
     io.stdout("No orphaned deployments found.");
     return 0;
@@ -1087,7 +1088,7 @@ function runRegistryClean(argv: string[], io: Required<CliIo>): number {
     io.stdout("Dry-run: no changes made. Use --mark-dead to mark them as crashed.");
     return 0;
   }
-  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "crashed", timestamp: new Date().toISOString(), exit_code: -1, summary: "Marked as dead by registry clean" });
+  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "crashed", timestamp: nowUtc(), exit_code: -1, summary: "Marked as dead by registry clean" });
   return 0;
 }
 
@@ -1106,7 +1107,7 @@ function runRegistrySweep(argv: string[], io: Required<CliIo>): number {
     io.stdout("Dry-run: no changes made. Use --fix to write fallback markers.");
     return 0;
   }
-  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "completed", timestamp: new Date().toISOString(), status: "partial", summary: "Resolved by pa registry sweep (fallback)", fallback: true });
+  for (const deployment of orphans) appendRegistryEvent({ deployment_id: deployment.deploy_id, team: deployment.team, event: "completed", timestamp: nowUtc(), status: "partial", summary: "Resolved by pa registry sweep (fallback)", fallback: true });
   io.stdout(`Swept ${orphans.length} orphaned deployment(s).`);
   return 0;
 }
@@ -1320,5 +1321,5 @@ function normalizeIo(io: CliIo = {}): Required<CliIo> {
 }
 
 function localDate(timestamp: string): string {
-  return new Date(timestamp).toLocaleDateString("en-CA");
+  return parseTimestamp(timestamp).toLocaleDateString("en-CA");
 }

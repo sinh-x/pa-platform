@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getDeploymentDir } from "../paths.js";
+import { nowUtc, parseTimestamp } from "../time.js";
 import type { RuntimeName } from "../types.js";
 
 export type ActivityKind = "thinking" | "text" | "tool_use" | "tool_result" | "error";
@@ -32,7 +33,7 @@ export function getActivityLogPath(deployId: string, deploymentDir = getDeployme
 
 export function createActivityEvent(input: Omit<ActivityEvent, "timestamp"> & { timestamp?: string }): ActivityEvent {
   if (!ACTIVITY_KINDS.includes(input.kind)) throw new Error(`Invalid activity kind: ${input.kind}`);
-  return { ...input, timestamp: input.timestamp ?? new Date().toISOString() };
+  return { ...input, timestamp: input.timestamp ? parseTimestamp(input.timestamp).toISOString() : nowUtc() };
 }
 
 export function appendActivityEvent(event: ActivityEvent, activityLogPath = getActivityLogPath(event.deployId)): void {
@@ -363,10 +364,10 @@ export function normalizeActivityEvent(raw: Record<string, unknown>): ActivityEv
   const kind = mapPluginKind(raw);
   const timestampRaw = raw["timestamp"] ?? raw["ts"];
   const timestamp = typeof timestampRaw === "string"
-    ? timestampRaw
+    ? parseTimestamp(timestampRaw).toISOString()
     : typeof timestampRaw === "number" && Number.isFinite(timestampRaw)
-      ? new Date(timestampRaw).toISOString()
-      : new Date().toISOString();
+      ? nowUtc(new Date(timestampRaw))
+      : nowUtc();
   const source = (raw["source"] ?? raw["agent"] ?? "unknown") as string;
   const bodyRaw = raw["body"] ?? (raw["event"] !== undefined ? summarizePluginEvent(raw) : "");
   const body = truncateBody(maskSecrets(typeof bodyRaw === "string" ? bodyRaw : JSON.stringify(bodyRaw)));

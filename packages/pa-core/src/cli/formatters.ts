@@ -4,6 +4,7 @@ import type { TeamConfigSummary } from "../teams/index.js";
 import type { DeploymentStatus } from "../types.js";
 import type { Ticket } from "../tickets/index.js";
 import type { TrashEntry } from "../trash/index.js";
+import { formatLocal, formatLocalShort } from "../time.js";
 
 export interface TimerRow {
   unit: string;
@@ -29,6 +30,9 @@ export function formatTicketList(tickets: Ticket[]): string {
 export function formatTicketShow(ticket: Ticket): string {
   const lines = [`${ticket.id} | ${ticket.status} | ${ticket.priority} | ${ticket.assignee}`, ticket.title];
   if (ticket.summary) lines.push(`Summary: ${ticket.summary}`);
+  lines.push(`Created: ${formatLocal(ticket.createdAt)}`);
+  lines.push(`Updated: ${formatLocal(ticket.updatedAt)}`);
+  if (ticket.resolvedAt) lines.push(`Resolved: ${formatLocal(ticket.resolvedAt)}`);
   if (ticket.doc_refs.length > 0) lines.push(`Doc refs: ${ticket.doc_refs.map((ref) => ref.path).join(", ")}`);
   if (ticket.comments.length > 0) lines.push(`Comments: ${ticket.comments.length}`);
   return renderLines(lines);
@@ -100,17 +104,11 @@ export function formatTeamsJson(teams: TeamConfigSummary[], statuses: Array<{ na
 }
 
 function shortTs(timestamp: string): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return timestamp.replace("T", " ").slice(0, 19);
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absOffset = Math.abs(offsetMinutes);
-  const offset = `${sign}${pad2(Math.floor(absOffset / 60))}:${pad2(absOffset % 60)}`;
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${offset}`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
+  try {
+    return formatLocalShort(timestamp);
+  } catch {
+    return timestamp.replace("T", " ").slice(0, 19);
+  }
 }
 
 function truncate(value: string, max: number): string {

@@ -124,7 +124,15 @@ test("runCoreCommand exposes status list and detail", async () => {
     assert.match(artifacts.stdout.join("\n"), /artifact\.txt/);
 
     const activity = capture();
-    assert.equal(await runCoreCommand(["status", "d-cli-1", "--activity"], { io: activity.io }), 0);
+    const previousTz = process.env["TZ"];
+    try {
+      process.env["TZ"] = "Asia/Bangkok";
+      assert.equal(await runCoreCommand(["status", "d-cli-1", "--activity"], { io: activity.io }), 0);
+    } finally {
+      if (previousTz === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = previousTz;
+    }
+    assert.match(activity.stdout.join("\n"), /2026-04-26 07:00:01 \+07:00/);
     assert.match(activity.stdout.join("\n"), /text\/text/);
     assert.match(activity.stdout.join("\n"), /hello/);
 

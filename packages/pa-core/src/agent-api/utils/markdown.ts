@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { nowUtc } from "../../time.js";
 
 export interface HumanFeedback {
   action: string;
@@ -226,7 +227,7 @@ function applyAnnotation(content: string, yamlBlock: string, humanReviewSection:
 }
 
 export function writeFeedbackAnnotation(content: string, annotation: FeedbackAnnotation): string {
-  const now = new Date().toISOString();
+  const now = nowUtc();
   const by = "Sinh";
   if (annotation.kind === "approve") {
     const chips = annotation.chips ?? [];

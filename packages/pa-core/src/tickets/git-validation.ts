@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { loadRepoEntry, listRepos } from "../repos.js";
+import { nowUtc } from "../time.js";
 import type { AddLinkedBranchInput, AddLinkedCommitInput, LinkedBranch, LinkedCommit } from "./types.js";
 
 function validateRepoKey(repo: string): { name: string; path: string } {
@@ -29,7 +30,7 @@ export function resolveLinkedBranch(input: AddLinkedBranchInput, actor: string):
   } catch {
     throw new Error(`Branch "${input.branch}" not found in repo "${input.repo}". Hint: local branches only. Run "git fetch" first if the branch exists on a remote.`);
   }
-  return { repo: input.repo, branch: input.branch, sha, linkedAt: new Date().toISOString(), linkedBy: input.linkedBy ?? actor };
+  return { repo: input.repo, branch: input.branch, sha, linkedAt: nowUtc(), linkedBy: input.linkedBy ?? actor };
 }
 
 export function resolveLinkedCommit(input: AddLinkedCommitInput, actor: string): LinkedCommit {
@@ -54,5 +55,5 @@ export function resolveLinkedCommit(input: AddLinkedCommitInput, actor: string):
     if (!author) author = logAuthor ?? "";
     if (!timestamp) timestamp = logTimestamp ?? "";
   }
-  return { repo: input.repo, sha: input.sha, message, author, timestamp, linkedAt: new Date().toISOString(), linkedBy: input.linkedBy ?? actor };
+  return { repo: input.repo, sha: input.sha, message, author, timestamp, linkedAt: nowUtc(), linkedBy: input.linkedBy ?? actor };
 }

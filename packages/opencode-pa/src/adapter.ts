@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai";
@@ -388,8 +388,8 @@ function extractPartType(raw: Record<string, unknown>): string | undefined {
 }
 
 function normalizeTimestamp(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "string") return parseTimestamp(value).toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) return nowUtc(new Date(value));
   return undefined;
 }
 

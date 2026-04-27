@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getDeployPaths, loadTeamConfig, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getDeployPaths, loadTeamConfig, nowUtc, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -13,7 +13,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket;
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd() });
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
@@ -164,7 +164,7 @@ function resolveRepoRoot(repo: string | undefined, cwd: string, relativePath: st
 
 function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const home = homedir();
-  const now = new Date().toISOString();
+  const now = nowUtc();
   const registryDb = process.env["PA_REGISTRY_DB"] ?? resolve(home, "Documents/ai-usage/deployments/registry.db");
   const workspaceBase = resolve(home, "Documents/ai-usage/deployments", opts.deploymentId);
   const teamWorkspace = resolve(home, "Documents/ai-usage/agent-teams", opts.teamConfig.name);

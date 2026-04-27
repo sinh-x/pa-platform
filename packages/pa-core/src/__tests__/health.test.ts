@@ -30,7 +30,7 @@ function withHealthEnv(fn: (root: string) => void): void {
 
 test("health deployment checks and snapshots use registry state", () => {
   withHealthEnv((root) => {
-    const now = new Date().toISOString();
+    const now = new Date(1714000000000).toISOString();
     const logFile = join(root, "session.md");
     writeFileSync(logFile, "## Session Rating\n## Timeline\n## What Happened\n");
     appendRegistryEvent({ deployment_id: "d-health", team: "builder", event: "started", timestamp: now, log_file: logFile });
