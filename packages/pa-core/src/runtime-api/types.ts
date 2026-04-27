@@ -19,7 +19,7 @@ export interface ToolReference {
 export interface SpawnOpts {
   primerPath: string;
   deployId: string;
-  mode: "foreground" | "background" | "direct" | "interactive" | "dry-run";
+  mode: "foreground" | "background" | "dry-run";
   model?: string;
   env?: Record<string, string>;
   timeoutMs?: number;

@@ -158,7 +158,7 @@ test("opa deploy supports pa deploy compatibility flags", async () => {
   });
 });
 
-test("opa foreground deploy streams JSON output and records activity", async () => {
+test("opa default deploy opens opencode TUI with prompt", async () => {
   await withOpaEnv(async (root) => {
     const bin = join(root, "bin");
     const argsPath = join(root, "opencode-args.json");
@@ -167,7 +167,8 @@ test("opa foreground deploy streams JSON output and records activity", async () 
     writeFileSync(opencode, `#!/usr/bin/env node
 const fs = require("node:fs");
 fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
-process.stdout.write(JSON.stringify({ type: "text", timestamp: 1777213628268, sessionID: "ses_foreground_real_token", part: { type: "text", text: "hello from stream" } }) + "\\n");
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_tui", event: "message.updated", data: { message: { role: "assistant" }, text: "default visible text" } }) + "\\n");
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:01.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_tui", event: "message.part.updated", data: { part: { type: "thinking", thinking: "default reasoning" } } }) + "\\n");
 `, "utf-8");
     chmodSync(opencode, 0o755);
     const previousPath = process.env["PATH"];
@@ -180,60 +181,21 @@ process.stdout.write(JSON.stringify({ type: "text", timestamp: 1777213628268, se
       assert.equal(code, 0);
       assert.match(stdout.join("\n"), /Deployment completed: d-[a-f0-9]{6}/);
       const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
-      assert.equal(args[0], "run");
-      assert.ok(args.includes("--format"));
-      assert.ok(args.includes("json"));
-      assert.ok(args.includes("--dangerously-skip-permissions"));
-      assert.ok(!args.includes("--prompt"));
-      const deployments = queryDeploymentStatuses();
-      assert.equal(deployments.length, 1);
-      assert.equal(deployments[0]?.runtime, "opencode");
-      assert.equal(deployments[0]?.provider, "minimax");
-      const deployId = deployments[0]!.deploy_id;
-      assert.equal(readFileSync(join(root, "deployments", deployId, "session-id-opencode.txt"), "utf-8"), "ses_foreground_real_token");
-      assert.match(readFileSync(join(root, "deployments", deployId, "opencode-output.jsonl"), "utf-8"), /hello from stream/);
-      const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
-      assert.ok(activity.some((event) => event.kind === "text" && event.body === "hello from stream"));
-    } finally {
-      if (previousPath === undefined) delete process.env["PATH"];
-      else process.env["PATH"] = previousPath;
-      if (previousArgsPath === undefined) delete process.env["OPA_ARGS_PATH"];
-      else process.env["OPA_ARGS_PATH"] = previousArgsPath;
-    }
-  });
-});
-
-test("opa direct mode opens opencode TUI with prompt", async () => {
-  await withOpaEnv(async (root) => {
-    const bin = join(root, "bin");
-    const argsPath = join(root, "opencode-args.json");
-    mkdirSync(bin, { recursive: true });
-    const opencode = join(bin, "opencode");
-    writeFileSync(opencode, `#!/usr/bin/env node
-const fs = require("node:fs");
-fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
-fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_dir", event: "message.updated", data: { message: { role: "assistant" }, text: "assistant visible text" } }) + "\\n");
-fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:01.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_dir", event: "message.part.updated", data: { part: { type: "thinking", thinking: "private reasoning" } } }) + "\\n");
-`, "utf-8");
-    chmodSync(opencode, 0o755);
-    const previousPath = process.env["PATH"];
-    const previousArgsPath = process.env["OPA_ARGS_PATH"];
-    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
-    process.env["OPA_ARGS_PATH"] = argsPath;
-    try {
-      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--direct"], { hooks: createOpencodeHooks(new OpencodeAdapter()), io: { stdout: () => {}, stderr: () => {} } });
-      assert.equal(code, 0);
-      const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
       assert.equal(args[0], "-m");
       assert.ok(!args.includes("run"));
       assert.ok(!args.includes("--dangerously-skip-permissions"));
       assert.ok(!args.includes("--format"));
       assert.ok(args.includes("--prompt"));
-      const deployment = queryDeploymentStatuses()[0]!;
-      assert.equal(existsSync(join(root, "deployments", deployment.deploy_id, "opencode-output.jsonl")), false);
-      const activity = readActivityEvents(join(root, "deployments", deployment.deploy_id, "activity.jsonl"));
-      assert.ok(activity.some((event) => event.kind === "text" && /assistant visible text/.test(event.body)));
-      assert.ok(activity.some((event) => event.kind === "thinking" && /private reasoning/.test(event.body)));
+      const deployments = queryDeploymentStatuses();
+      assert.equal(deployments.length, 1);
+      assert.equal(deployments[0]?.runtime, "opencode");
+      assert.equal(deployments[0]?.provider, "minimax");
+      const deployId = deployments[0]!.deploy_id;
+      assert.equal(existsSync(join(root, "deployments", deployId, "session-id-opencode.txt")), false);
+      assert.equal(existsSync(join(root, "deployments", deployId, "opencode-output.jsonl")), false);
+      const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
+      assert.ok(activity.some((event) => event.kind === "text" && /default visible text/.test(event.body)));
+      assert.ok(activity.some((event) => event.kind === "thinking" && /default reasoning/.test(event.body)));
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
@@ -243,31 +205,24 @@ fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T
   });
 });
 
-test("opa interactive mode captures plugin message activity", async () => {
-  await withOpaEnv(async (root) => {
-    const bin = join(root, "bin");
-    mkdirSync(bin, { recursive: true });
-    const opencode = join(bin, "opencode");
-    writeFileSync(opencode, `#!/usr/bin/env node
-const fs = require("node:fs");
-fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_int", event: "message.updated", data: { message: { role: "assistant" }, text: "interactive visible text" } }) + "\\n");
-fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-04-26T00:00:01.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_int", event: "message.part.updated", data: { part: { type: "thinking", thinking: "interactive reasoning" } } }) + "\\n");
-`, "utf-8");
-    chmodSync(opencode, 0o755);
-    const previousPath = process.env["PATH"];
-    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
-    try {
-      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--interactive"], { hooks: createOpencodeHooks(new OpencodeAdapter()), io: { stdout: () => {}, stderr: () => {} } });
-      assert.equal(code, 0);
-      const deployment = queryDeploymentStatuses()[0]!;
-      assert.equal(existsSync(join(root, "deployments", deployment.deploy_id, "opencode-output.jsonl")), false);
-      const activity = readActivityEvents(join(root, "deployments", deployment.deploy_id, "activity.jsonl"));
-      assert.ok(activity.some((event) => event.kind === "text" && /interactive visible text/.test(event.body)));
-      assert.ok(activity.some((event) => event.kind === "thinking" && /interactive reasoning/.test(event.body)));
-    } finally {
-      if (previousPath === undefined) delete process.env["PATH"];
-      else process.env["PATH"] = previousPath;
+test("opa deploy rejects removed TUI flags", async () => {
+  await withOpaEnv(async () => {
+    for (const removedFlag of ["--direct", "--interactive"]) {
+      const stderr: string[] = [];
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", removedFlag], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+      assert.equal(code, 1);
+      assert.match(stderr.join("\n"), new RegExp(`${removedFlag} was removed`));
+      assert.match(stderr.join("\n"), /Foreground TUI is now the default/);
     }
+  });
+});
+
+test("opa deploy rejects mutually exclusive background and dry-run flags", async () => {
+  await withOpaEnv(async () => {
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--background", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.equal(code, 1);
+    assert.match(stderr.join("\n"), /mutually exclusive/);
   });
 });
 

@@ -22,7 +22,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
 
   const provider = request.provider ?? "openai";
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel);
-  const mode = request.dryRun ? "dry-run" : request.background ? "background" : request.interactive ? "interactive" : request.direct ? "direct" : "foreground";
+  const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
   const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name };
   process.stdout.write(`Deployment: ${deploymentId}\n`);

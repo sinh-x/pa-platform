@@ -168,6 +168,12 @@ test("runCoreCommand exposes registry update, search, analytics, clean, and swee
 
 test("runCoreCommand routes deploy through adapter hook", async () => {
   await withCliEnv(async () => {
+    const help = capture();
+    assert.equal(await runCoreCommand(["deploy", "--help"], { io: help.io }), 0);
+    assert.match(help.stdout.join("\n"), /--background/);
+    assert.match(help.stdout.join("\n"), /--dry-run/);
+    assert.doesNotMatch(help.stdout.join("\n"), /--interactive|--direct/);
+
     const missing = capture();
     assert.equal(await runCoreCommand(["deploy", "builder"], { io: missing.io }), 1);
     assert.match(missing.stderr.join("\n"), /adapter hook/);

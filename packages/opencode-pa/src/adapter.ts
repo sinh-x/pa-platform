@@ -106,7 +106,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
     const primer = readFileSync(opts.primerPath, "utf-8");
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
-    if (opts.mode === "direct" || opts.mode === "interactive") {
+    if (opts.mode === "foreground") {
       const args = ["-m", opts.model ?? this.defaultModel];
       if (sessionId) args.push("--session", sessionId);
       args.push("--prompt", primer);

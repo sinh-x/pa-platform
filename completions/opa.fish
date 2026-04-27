@@ -151,6 +151,8 @@ complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l provider -d 'Provi
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l model -d 'Model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Team model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
