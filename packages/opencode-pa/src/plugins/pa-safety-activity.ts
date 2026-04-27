@@ -209,10 +209,11 @@ export const PaSafetyActivityPlugin = async () => {
     "tool.execute.before": async (input, output) => {
       const tool = input?.tool || output?.tool || "unknown"
       const args = output?.args || input?.args || {}
+      const activityArgs = { ...args }
       if (isPaDeployment()) {
         if (tool === "bash") {
           guardBash(args.command || "")
-          if (typeof args.command === "string") args.command = maskSensitiveText(args.command)
+          if (typeof activityArgs.command === "string") activityArgs.command = maskSensitiveText(activityArgs.command)
         }
         if (["read", "write", "edit"].includes(tool)) {
           const filePath = args.filePath || args.file_path
@@ -220,7 +221,7 @@ export const PaSafetyActivityPlugin = async () => {
         }
         if (tool === "apply_patch") guardPatch(args)
       }
-      appendActivity({ agent: sessionId(input), event: "tool.execute.before", data: { tool, args, summary: summarizeTool(tool, args) } })
+      appendActivity({ agent: sessionId(input), event: "tool.execute.before", data: { tool, args: activityArgs, summary: summarizeTool(tool, activityArgs) } })
     },
 
     "tool.execute.after": async (input, output) => {

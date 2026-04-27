@@ -546,6 +546,43 @@ test("pa safety activity plugin does not enforce guards outside PA deployments",
   }
 });
 
+test("pa safety activity plugin masks bash activity without mutating execution args", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-mask-"));
+  const originalActivityLog = process.env.PA_ACTIVITY_LOG;
+  const originalDeploymentDir = process.env.PA_DEPLOYMENT_DIR;
+  const originalDeploymentId = process.env.PA_DEPLOYMENT_ID;
+  const originalHome = process.env.HOME;
+  try {
+    const hooksDir = join(root, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(join(hooksDir, "sensitive-patterns.conf"), "API_KEY|sk-[A-Za-z0-9]+\n", "utf-8");
+    process.env.HOME = root;
+    process.env.PA_DEPLOYMENT_ID = "d-mask";
+    process.env.PA_DEPLOYMENT_DIR = join(root, "deployments", "d-mask");
+    process.env.PA_ACTIVITY_LOG = join(process.env.PA_DEPLOYMENT_DIR, "activity.jsonl");
+
+    const pluginPath = join(root, "pa-safety-activity.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(pathToFileURL(pluginPath).href);
+    const plugin = await module.PaSafetyActivityPlugin();
+    const args = { command: "printf sk-secret123" };
+
+    await plugin["tool.execute.before"]({ tool: "bash", sessionID: "ses-mask" }, { args });
+
+    assert.equal(args.command, "printf sk-secret123");
+    const activity = readFileSync(process.env.PA_ACTIVITY_LOG, "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { event?: string; data?: { args?: { command?: string }; summary?: string } });
+    const before = activity.find((row) => row.event === "tool.execute.before");
+    assert.equal(before?.data?.args?.command, "printf ***API_KEY_MASKED***");
+    assert.equal(before?.data?.summary, "printf ***API_KEY_MASKED***");
+  } finally {
+    restore("PA_ACTIVITY_LOG", originalActivityLog);
+    restore("PA_DEPLOYMENT_DIR", originalDeploymentDir);
+    restore("PA_DEPLOYMENT_ID", originalDeploymentId);
+    restore("HOME", originalHome);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("createOpencodeSessionIdParser handles chunks split mid-line", () => {
   const line = JSON.stringify({ type: "session", sessionID: "ses_chunkstraddle_real_token" });
   const parser = createOpencodeSessionIdParser();
