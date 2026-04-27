@@ -135,8 +135,16 @@ function mapPluginKind(raw: Record<string, unknown>): ActivityKind {
 
 function resolveToolExecuteAfterKind(raw: Record<string, unknown>): ActivityKind {
   const data = recordValue(raw["data"]);
-  if (data && (hasNonEmptyValue(data["error"]) || hasNonZeroExitCode(data["exitCode"]) || hasNonZeroExitCode(data["exit_code"]))) return "error";
+  if (data && hasToolFailure(data)) return "error";
   return "tool_result";
+}
+
+function hasToolFailure(data: Record<string, unknown>): boolean {
+  if (hasNonEmptyValue(data["error"]) || hasNonZeroExitCode(data["exitCode"]) || hasNonZeroExitCode(data["exit_code"])) return true;
+  const result = recordValue(data["result"]);
+  if (result && (hasNonEmptyValue(result["error"]) || hasNonZeroExitCode(result["exitCode"]) || hasNonZeroExitCode(result["exit_code"]))) return true;
+  const metadata = recordValue(data["metadata"]) ?? recordValue(result?.["metadata"]);
+  return !!metadata && (hasNonZeroExitCode(metadata["exitCode"]) || hasNonZeroExitCode(metadata["exit_code"]));
 }
 
 function hasNonEmptyValue(value: unknown): boolean {
@@ -267,7 +275,9 @@ function summarizeMessageData(data: Record<string, unknown>): string {
 
 function summarizeToolData(data: Record<string, unknown>, includeResult: boolean): string {
   const tool = firstString(data["tool"], data["name"], recordValue(data["part"])?.["tool"]);
-  const status = firstString(data["status"], data["state"], data["exitCode"], data["exit_code"]);
+  const resultRecord = recordValue(data["result"]);
+  const metadataRecord = recordValue(data["metadata"]) ?? recordValue(resultRecord?.["metadata"]);
+  const status = firstString(data["status"], data["state"], data["exitCode"], data["exit_code"], resultRecord?.["exitCode"], resultRecord?.["exit_code"], metadataRecord?.["exitCode"], metadataRecord?.["exit_code"]);
   const args = recordValue(data["args"]) ?? recordValue(data["input"]);
   const summary = firstString(data["summary"], data["description"], data["command"], data["error"], data["message"]);
   const argSummary = args ? summarizeFields(args, ["command", "description", "filePath", "file_path", "pattern", "url"]) : "";

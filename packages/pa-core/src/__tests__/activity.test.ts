@@ -143,13 +143,19 @@ test("normalizeActivityEvent maps tool error to error kind", () => {
       JSON.stringify({ ts: 1714000000000, deploy_id: "d-tool-err", agent: "opencode", event: "tool_error", data: { tool: "Bash", message: "command failed" } }),
       JSON.stringify({ ts: 1714000001000, deploy_id: "d-tool-err", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", error: "exit code 1" } }),
       JSON.stringify({ ts: 1714000002000, deploy_id: "d-tool-err", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", exitCode: 1 } }),
+      JSON.stringify({ ts: 1714000003000, deploy_id: "d-tool-err", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { exitCode: 1 } } }),
+      JSON.stringify({ ts: 1714000004000, deploy_id: "d-tool-err", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { exit_code: "2" } } }),
+      JSON.stringify({ ts: 1714000005000, deploy_id: "d-tool-err", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { metadata: { exitCode: 1 } } } }),
     ].join("\n") + "\n";
     writeFileSync(logPath, lines);
     const events = readActivityEvents(logPath);
-    assert.equal(events.length, 3);
+    assert.equal(events.length, 6);
     assert.equal(events[0]?.kind, "error");
     assert.equal(events[1]?.kind, "error");
     assert.equal(events[2]?.kind, "error");
+    assert.equal(events[3]?.kind, "error");
+    assert.equal(events[4]?.kind, "error");
+    assert.equal(events[5]?.kind, "error");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -162,12 +168,18 @@ test("normalizeActivityEvent maps zero exit codes to tool_result", () => {
     const lines = [
       JSON.stringify({ ts: 1714000000000, deploy_id: "d-tool-zero", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", exitCode: 0, result: "ok" } }),
       JSON.stringify({ ts: 1714000001000, deploy_id: "d-tool-zero", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", exit_code: 0, result: "ok" } }),
+      JSON.stringify({ ts: 1714000002000, deploy_id: "d-tool-zero", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { exitCode: 0, output: "ok" } } }),
+      JSON.stringify({ ts: 1714000003000, deploy_id: "d-tool-zero", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { exit_code: "0", output: "ok" } } }),
+      JSON.stringify({ ts: 1714000004000, deploy_id: "d-tool-zero", agent: "opencode", event: "tool.execute.after", data: { tool: "Bash", result: { metadata: { exitCode: 0 }, output: "ok" } } }),
     ].join("\n") + "\n";
     writeFileSync(logPath, lines);
     const events = readActivityEvents(logPath);
-    assert.equal(events.length, 2);
+    assert.equal(events.length, 5);
     assert.equal(events[0]?.kind, "tool_result");
     assert.equal(events[1]?.kind, "tool_result");
+    assert.equal(events[2]?.kind, "tool_result");
+    assert.equal(events[3]?.kind, "tool_result");
+    assert.equal(events[4]?.kind, "tool_result");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
