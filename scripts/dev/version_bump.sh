@@ -88,7 +88,7 @@ fi
 
 node -e "
 const fs = require('fs');
-for (const file of ['package.json', 'packages/pa-core/package.json']) {
+for (const file of ['package.json', 'packages/pa-core/package.json', 'packages/opencode-pa/package.json']) {
   const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
   pkg.version = '$NEW';
   fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
@@ -110,7 +110,7 @@ if [[ "$NO_EDIT" == false ]]; then
   read -r -p "Press Enter to continue (Ctrl+C to abort)..."
 fi
 
-git add package.json packages/pa-core/package.json flake.nix
+git add package.json packages/pa-core/package.json packages/opencode-pa/package.json flake.nix
 [[ -f CHANGELOG.md ]] && git add CHANGELOG.md
 git commit -m "chore: bump version to $NEW"
 git tag -a "v$NEW" -m "Release v$NEW ($(date +%Y-%m-%d))"
