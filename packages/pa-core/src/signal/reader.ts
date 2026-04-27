@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { getSignalDir } from "../paths.js";
+import { nowUtc } from "../time.js";
 import type { AttachmentMeta, NoteToSelfMessage, SignalAccountIdentity, SignalCollectorState, SignalConversation, SignalMessage } from "./types.js";
 
 const DEFAULT_DB_PATH = resolve(homedir(), ".config/Signal/sql/db.sqlite");
@@ -179,7 +180,7 @@ export function saveRawNote(note: NoteToSelfMessage, copiedAttachmentPaths: stri
     `id: ${note.id}`,
     `conversationId: ${note.conversationId}`,
     `sentAt: ${note.sentAt}`,
-    `sentAtISO: ${new Date(note.sentAt).toISOString()}`,
+    `sentAtISO: ${nowUtc(new Date(note.sentAt))}`,
     `hasAttachments: ${note.attachments.length > 0}`,
     attachmentPaths.length > 0 ? "attachments:" : null,
     ...attachmentPaths.map((path) => `  - ${path}`),
@@ -205,7 +206,7 @@ export function extractNotesSinceLastRun(conversationId: string, opts: ExtractNo
   ensureSignalFolderStructure(paths.baseDir);
   const now = opts.now ?? (() => new Date());
   if (messages.length === 0) {
-    writeCollectorState({ ...state, lastRunAt: now().toISOString() }, paths.stateFilePath);
+    writeCollectorState({ ...state, lastRunAt: nowUtc(now()) }, paths.stateFilePath);
     return { count: 0, files: [], lastTimestamp: state.lastProcessedAt };
   }
   const files: string[] = [];
@@ -216,7 +217,7 @@ export function extractNotesSinceLastRun(conversationId: string, opts: ExtractNo
     files.push(saveRawNote(note, copiedPaths, paths.rawDir));
     lastTimestamp = Math.max(lastTimestamp, msg.sent_at);
   }
-  writeCollectorState({ lastProcessedAt: lastTimestamp, lastRunAt: now().toISOString(), totalProcessed: state.totalProcessed + messages.length }, paths.stateFilePath);
+  writeCollectorState({ lastProcessedAt: lastTimestamp, lastRunAt: nowUtc(now()), totalProcessed: state.totalProcessed + messages.length }, paths.stateFilePath);
   return { count: messages.length, files, lastTimestamp };
 }
 

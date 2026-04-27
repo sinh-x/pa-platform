@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { TicketStore } from "../../tickets/index.js";
+import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
 import type { CliIo } from "../core-command.js";
 import { formatTicketList, formatTicketShow } from "../formatters.js";
@@ -113,7 +114,7 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   for (const flag of ["--project", "--title", "--type", "--priority", "--estimate", "--assignee"] as const) if (!values[flag]) return { error: `${flag} is required` };
   const actor = values["--actor"] ?? "pa-core";
   const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
-  return { actor, input: { project: values["--project"]!, title: values["--title"]!, summary: values["--summary"] ?? "", description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: new Date().toISOString(), addedBy: actor }] : [], comments: [] } };
+  return { actor, input: { project: values["--project"]!, title: values["--title"]!, summary: values["--summary"] ?? "", description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
 }
 
 function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string } | { error: string } {

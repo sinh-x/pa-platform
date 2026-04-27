@@ -50,6 +50,10 @@ function truncate(value, max = 400) {
   return text.length > max ? text.slice(0, max) : text
 }
 
+function nowUtc(date = new Date()) {
+  return date.toISOString()
+}
+
 function appendActivity(event) {
   if (!isPaDeployment()) return
   const path = activityLogPath()
@@ -60,7 +64,7 @@ function appendActivity(event) {
   lastActivityKey = dedupeKey
   lastActivityAt = now
   mkdirSync(dirname(path), { recursive: true })
-  appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), deploy_id: deploymentId(), ...event }) + "\n")
+  appendFileSync(path, JSON.stringify({ ts: nowUtc(), deploy_id: deploymentId(), ...event }) + "\n")
 }
 
 function sessionId(input) {

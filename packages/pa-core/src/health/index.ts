@@ -1,4 +1,5 @@
 import { getDb } from "../registry/index.js";
+import { nowUtc, parseTimestamp } from "../time.js";
 import { checkAgents, checkCompliance, checkDeployments, checkInfrastructure, checkSchedules, checkTickets } from "./checks.js";
 import { computeOverallScore, getScoreLabel, loadHealthConfig } from "./score.js";
 import type { CategoryResult, HealthCategory, HealthReport, HealthSnapshot, HealthWindow } from "./types.js";
@@ -10,10 +11,14 @@ export type * from "./types.js";
 
 export function parseHealthWindow(opts: { since?: string; days?: number } = {}): HealthWindow {
   const until = new Date();
-  const start = opts.since ? new Date(opts.since) : new Date(until);
-  if (opts.since && Number.isNaN(start.getTime())) throw new Error(`Invalid date: ${opts.since}`);
+  let start: Date;
+  try {
+    start = opts.since ? parseTimestamp(opts.since) : new Date(until);
+  } catch {
+    throw new Error(`Invalid date: ${opts.since}`);
+  }
   if (!opts.since) start.setDate(start.getDate() - (opts.days && opts.days > 0 ? opts.days : 1));
-  return { since: start.toISOString(), until: until.toISOString() };
+  return { since: nowUtc(start), until: nowUtc(until) };
 }
 
 export function generateHealthReport(opts: { category?: HealthCategory; window?: HealthWindow; days?: number; since?: string } = {}): HealthReport {
@@ -21,7 +26,7 @@ export function generateHealthReport(opts: { category?: HealthCategory; window?:
   const window = opts.window ?? parseHealthWindow({ days: opts.days, since: opts.since });
   const categories = opts.category ? [runCategory(opts.category, window)] : [checkDeployments(window), checkAgents(window), checkTickets(window), checkCompliance(window), checkSchedules(), checkInfrastructure(window)];
   const overallScore = computeOverallScore(categories, config.weights);
-  return { overallScore, scoreLabel: getScoreLabel(overallScore, config.thresholds), categories, window, generatedAt: new Date().toISOString() };
+  return { overallScore, scoreLabel: getScoreLabel(overallScore, config.thresholds), categories, window, generatedAt: nowUtc() };
 }
 
 export function saveHealthSnapshot(report: HealthReport): void {

@@ -1,5 +1,6 @@
 import { TicketStore } from "./store.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
+import { nowUtc, parseTimestamp } from "../time.js";
 import type { AuditEntry, Estimate, Ticket } from "./types.js";
 
 // Ported from PA tickets/metrics.ts at frozen PA source on 2026-04-26.
@@ -40,8 +41,8 @@ export function computeSprintMetrics(startDate: string, endDate: string, project
   const audit = store.readAudit();
   const start = new Date(startDate);
   const end = new Date(endDate);
-  const completed = tickets.filter((ticket) => TERMINAL_STATUSES.includes(ticket.status) && ticket.resolvedAt && new Date(ticket.resolvedAt) >= start && new Date(ticket.resolvedAt) <= end);
-  const activeAtEnd = tickets.filter((ticket) => ACTIVE_STATUSES.includes(ticket.status) && new Date(ticket.createdAt) <= end);
+  const completed = tickets.filter((ticket) => TERMINAL_STATUSES.includes(ticket.status) && ticket.resolvedAt && parseTimestamp(ticket.resolvedAt) >= start && parseTimestamp(ticket.resolvedAt) <= end);
+  const activeAtEnd = tickets.filter((ticket) => ACTIVE_STATUSES.includes(ticket.status) && parseTimestamp(ticket.createdAt) <= end);
   const cycleTimes = completed.map((ticket) => cycleTimeHours(ticket, audit)).filter((value): value is number => value !== undefined);
   const avgCycleTimeHours = average(cycleTimes);
   const accurateEstimates = completed.filter((ticket) => {
@@ -73,20 +74,20 @@ export function computeWeeklyThroughput(weeks: number, project?: string, store =
     weekEnd.setDate(weekEnd.getDate() - (weeks - 1 - index) * 7);
     const weekStart = new Date(weekEnd);
     weekStart.setDate(weekStart.getDate() - 7);
-    const completed = tickets.filter((ticket) => TERMINAL_STATUSES.includes(ticket.status) && ticket.resolvedAt && new Date(ticket.resolvedAt) >= weekStart && new Date(ticket.resolvedAt) <= weekEnd);
-    return { weekStart: weekStart.toISOString().slice(0, 10), throughput: completed.length, velocityPoints: completed.reduce((sum, ticket) => sum + ESTIMATE_POINTS[ticket.estimate], 0) };
+    const completed = tickets.filter((ticket) => TERMINAL_STATUSES.includes(ticket.status) && ticket.resolvedAt && parseTimestamp(ticket.resolvedAt) >= weekStart && parseTimestamp(ticket.resolvedAt) <= weekEnd);
+    return { weekStart: nowUtc(weekStart).slice(0, 10), throughput: completed.length, velocityPoints: completed.reduce((sum, ticket) => sum + ESTIMATE_POINTS[ticket.estimate], 0) };
   });
 }
 
 function cycleTimeHours(ticket: Ticket, audit: AuditEntry[]): number | undefined {
   const start = findStatusEntryTime(ticket.id, "pending-implementation", audit);
   if (!start || !ticket.resolvedAt) return undefined;
-  return (new Date(ticket.resolvedAt).getTime() - start.getTime()) / 36e5;
+  return (parseTimestamp(ticket.resolvedAt).getTime() - start.getTime()) / 36e5;
 }
 
 function findStatusEntryTime(ticketId: string, status: string, audit: AuditEntry[]): Date | undefined {
   const entry = audit.filter((item) => item.ticket_id === ticketId).sort((a, b) => a.timestamp.localeCompare(b.timestamp)).find((item) => item.changes["status"]?.[1] === status);
-  return entry ? new Date(entry.timestamp) : undefined;
+  return entry ? parseTimestamp(entry.timestamp) : undefined;
 }
 
 function estimateToCycleTimeBucket(estimate: Estimate): [number, number] {

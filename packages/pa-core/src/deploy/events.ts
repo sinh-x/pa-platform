@@ -1,4 +1,5 @@
 import { appendRegistryEvent } from "../registry/index.js";
+import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
 
 export interface StartDeploymentOpts {
@@ -24,7 +25,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "started",
-    timestamp: new Date().toISOString(),
+    timestamp: nowUtc(),
     primer: opts.primer,
     agents: opts.agents,
     models: opts.models,
@@ -52,7 +53,7 @@ export function emitPidEvent(opts: PidEventOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "pid",
-    timestamp: new Date().toISOString(),
+    timestamp: nowUtc(),
     pid: opts.pid,
   });
 }
@@ -76,7 +77,7 @@ export function emitCompletedEvent(opts: CompletedEventOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "completed",
-    timestamp: new Date().toISOString(),
+    timestamp: nowUtc(),
     status: opts.status,
     summary: opts.summary,
     log_file: opts.logFile,
@@ -101,7 +102,7 @@ export function emitCrashedEvent(opts: CrashedEventOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "crashed",
-    timestamp: new Date().toISOString(),
+    timestamp: nowUtc(),
     error: opts.error,
     exit_code: opts.exitCode,
   });
@@ -123,7 +124,7 @@ export function emitAmendedEvent(opts: AmendedEventOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "amended",
-    timestamp: new Date().toISOString(),
+    timestamp: nowUtc(),
     note: opts.note,
     status: opts.status,
     summary: opts.summary,

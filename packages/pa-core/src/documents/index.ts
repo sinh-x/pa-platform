@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { basename, dirname, extname, resolve } from "node:path";
 import { detectDocumentType, parseMarkdownMetadata, type MarkdownMetadata } from "../agent-api/utils/markdown.js";
 import { getAgentTeamsDir, getAiUsageDir, getDailyDir, getDeploymentsDir, getKnowledgeBaseDir, getSessionsDir, getSinhInputsDir, getTrashDir } from "../paths.js";
+import { nowUtc } from "../time.js";
 
 export type DocumentArea = "agent-teams" | "sinh-inputs" | "daily" | "sessions" | "knowledge-base" | "deployments" | "trash";
 
@@ -111,7 +112,7 @@ export function listMarkdownFiles(dirPath: string): MarkdownFileItem[] {
       const content = readFileSync(filePath, "utf-8");
       const metadata = parseMarkdownMetadata(content, filename);
       const stat = statSync(filePath);
-      items.push({ id: filename, title: metadata.title, date: metadata.date, type: detectDocumentType(content, filename), size: stat.size, modified: stat.mtime.toISOString() });
+      items.push({ id: filename, title: metadata.title, date: metadata.date, type: detectDocumentType(content, filename), size: stat.size, modified: nowUtc(stat.mtime) });
     } catch {
       // Skip unreadable files to match route-list behavior.
     }
@@ -145,7 +146,7 @@ function markdownDocumentFromContent(path: string, content: string): MarkdownDoc
   const filename = basename(path);
   const stat = statSync(path);
   const metadata = parseMarkdownMetadata(content, filename);
-  return { path, content, metadata: { ...metadata, type: detectDocumentType(content, filename), size: stat.size, modified: stat.mtime.toISOString() } };
+  return { path, content, metadata: { ...metadata, type: detectDocumentType(content, filename), size: stat.size, modified: nowUtc(stat.mtime) } };
 }
 
 function documentInsertPosition(lines: string[], location: number | undefined, lineText: string | undefined): { insertPos: number; insertedAt: string; lineNumber: number } {

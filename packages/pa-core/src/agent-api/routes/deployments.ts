@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { getDeploymentDir } from "../../paths.js";
 import { computeDeploymentStatuses, getDeploymentEvents, getDeploymentsByTicketId, readRegistry } from "../../registry/index.js";
 import { readDeploymentActivity } from "../../activity/index.js";
+import { nowUtc } from "../../time.js";
 import type { DeploymentStatus } from "../../types.js";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
@@ -19,7 +20,7 @@ export function getTodayDateString(now = new Date()): string {
 export function get48HoursAgoISO(now = new Date()): string {
   const then = new Date(now);
   then.setUTCHours(then.getUTCHours() - 48);
-  return then.toISOString();
+  return nowUtc(then);
 }
 
 export function deploymentsRoutes(): Hono {

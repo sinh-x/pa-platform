@@ -1,10 +1,11 @@
 import { SCHEMA_VERSION } from "./types.js";
+import { nowUtc } from "../time.js";
 import type { CodeGraph, GraphEdge, GraphNode, GraphStats } from "./types.js";
 
 // Ported from PA codectx/graph-builder.ts at frozen PA source on 2026-04-26.
 
 export function createEmptyGraph(repo: string): CodeGraph {
-  return { schemaVersion: SCHEMA_VERSION, repo, generatedAt: new Date().toISOString(), nodeCount: 0, edgeCount: 0, nodes: {}, edges: {}, fileIndex: {} };
+  return { schemaVersion: SCHEMA_VERSION, repo, generatedAt: nowUtc(), nodeCount: 0, edgeCount: 0, nodes: {}, edges: {}, fileIndex: {} };
 }
 
 export function addNode(graph: CodeGraph, node: GraphNode): void {

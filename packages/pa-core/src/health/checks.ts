@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { getDeploymentDir } from "../paths.js";
 import { queryDeploymentStatuses } from "../registry/index.js";
 import { TicketStore } from "../tickets/index.js";
+import { parseTimestamp } from "../time.js";
 import { parseActivityLog } from "./activity.js";
 import { scoreFindings } from "./score.js";
 import type { CategoryResult, HealthCategory, HealthFinding, HealthWindow } from "./types.js";
@@ -69,11 +70,11 @@ export function checkTickets(window: HealthWindow, store = new TicketStore()): C
   const tickets = store.list();
   const handoffStatuses = new Set(["pending-approval", "review-uat"]);
   const now = Date.now();
-  const windowStart = new Date(window.since).getTime();
+  const windowStart = parseTimestamp(window.since).getTime();
   let staleCount = 0;
   let missingDocRefCount = 0;
   for (const ticket of tickets) {
-    const updatedAt = new Date(ticket.updatedAt).getTime();
+    const updatedAt = parseTimestamp(ticket.updatedAt).getTime();
     if (updatedAt >= windowStart && now - updatedAt > 7 * 86400000 && !["done", "rejected", "cancelled"].includes(ticket.status)) {
       staleCount++;
       findings.push(makeFinding("fail", category, `Stale ticket: ${ticket.id}`));

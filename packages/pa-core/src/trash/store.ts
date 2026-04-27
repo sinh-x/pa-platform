@@ -1,6 +1,7 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { getTrashDir } from "../paths.js";
+import { nowUtc, parseTimestamp } from "../time.js";
 import type { TrashEntry, TrashFileType, TrashStatus } from "./types.js";
 
 // Ported from PA trash/store.ts at frozen PA source on 2026-04-26; locking is delegated to adapter/CLI call sites for now.
@@ -21,7 +22,7 @@ export class TrashStore {
     const originalPath = resolve(opts.path);
     if (!existsSync(originalPath)) throw new Error(`File not found: ${originalPath}`);
     const id = this.allocateId();
-    const trashedAt = new Date().toISOString();
+    const trashedAt = nowUtc();
     const subDir = `${trashedAt.slice(0, 10)}-${id.split("-")[1]}`;
     const fileName = basename(originalPath);
     const trashPath = `${subDir}/${fileName}`;
@@ -61,7 +62,7 @@ export class TrashStore {
     if (existsSync(entry.originalPath) && !opts.force) throw new Error(`Original path already exists: ${entry.originalPath}. Use force to overwrite.`);
     mkdirSync(dirname(entry.originalPath), { recursive: true });
     movePath(trashFilePath, entry.originalPath, opts.force);
-    entries[index] = { ...entry, status: "restored", restoredAt: new Date().toISOString() };
+    entries[index] = { ...entry, status: "restored", restoredAt: nowUtc() };
     this.writeManifest(entries);
     return entries[index];
   }
@@ -70,9 +71,9 @@ export class TrashStore {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - (opts.days ?? 30));
     const entries = this.readManifest();
-    const toPurge = entries.filter((entry) => entry.status === "trashed" && new Date(entry.trashedAt) <= cutoff);
+    const toPurge = entries.filter((entry) => entry.status === "trashed" && parseTimestamp(entry.trashedAt) <= cutoff);
     if (opts.dryRun || toPurge.length === 0) return toPurge;
-    const purgedAt = new Date().toISOString();
+    const purgedAt = nowUtc();
     for (const entry of toPurge) {
       const trashFilePath = resolve(this.filesDir, entry.trashPath);
       if (existsSync(trashFilePath)) rmSync(trashFilePath, { recursive: true, force: true });
