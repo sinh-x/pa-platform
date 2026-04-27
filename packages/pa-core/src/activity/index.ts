@@ -135,8 +135,20 @@ function mapPluginKind(raw: Record<string, unknown>): ActivityKind {
 
 function resolveToolExecuteAfterKind(raw: Record<string, unknown>): ActivityKind {
   const data = recordValue(raw["data"]);
-  if (data && (data["error"] !== undefined || data["exitCode"] !== undefined || data["exit_code"] !== undefined)) return "error";
+  if (data && (hasNonEmptyValue(data["error"]) || hasNonZeroExitCode(data["exitCode"]) || hasNonZeroExitCode(data["exit_code"]))) return "error";
   return "tool_result";
+}
+
+function hasNonEmptyValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  return true;
+}
+
+function hasNonZeroExitCode(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : Number.NaN;
+  return Number.isFinite(numberValue) && numberValue !== 0;
 }
 
 function resolveMessagePartKind(raw: Record<string, unknown>): ActivityKind {

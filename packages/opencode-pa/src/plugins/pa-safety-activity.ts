@@ -209,15 +209,17 @@ export const PaSafetyActivityPlugin = async () => {
     "tool.execute.before": async (input, output) => {
       const tool = input?.tool || output?.tool || "unknown"
       const args = output?.args || input?.args || {}
-      if (tool === "bash") {
-        guardBash(args.command || "")
-        if (typeof args.command === "string") args.command = maskSensitiveText(args.command)
+      if (isPaDeployment()) {
+        if (tool === "bash") {
+          guardBash(args.command || "")
+          if (typeof args.command === "string") args.command = maskSensitiveText(args.command)
+        }
+        if (["read", "write", "edit"].includes(tool)) {
+          const filePath = args.filePath || args.file_path
+          if (isBlockedFilePath(filePath)) throw new Error("BLOCKED: sensitive file access is not allowed: " + filePath)
+        }
+        if (tool === "apply_patch") guardPatch(args)
       }
-      if (["read", "write", "edit"].includes(tool)) {
-        const filePath = args.filePath || args.file_path
-        if (isBlockedFilePath(filePath)) throw new Error("BLOCKED: sensitive file access is not allowed: " + filePath)
-      }
-      if (tool === "apply_patch") guardPatch(args)
       appendActivity({ agent: sessionId(input), event: "tool.execute.before", data: { tool, args, summary: summarizeTool(tool, args) } })
     },
 

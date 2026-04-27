@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
@@ -520,6 +521,27 @@ test("opencode installHooks refreshes stale activity plugin content", () => {
 
     assert.equal(readFileSync(pluginPath, "utf-8"), PA_SAFETY_ACTIVITY_PLUGIN_SOURCE);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pa safety activity plugin does not enforce guards outside PA deployments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-non-pa-"));
+  const originalActivityLog = process.env.PA_ACTIVITY_LOG;
+  const originalDeploymentDir = process.env.PA_DEPLOYMENT_DIR;
+  try {
+    delete process.env.PA_ACTIVITY_LOG;
+    delete process.env.PA_DEPLOYMENT_DIR;
+    const pluginPath = join(root, "pa-safety-activity.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(pathToFileURL(pluginPath).href);
+    const plugin = await module.PaSafetyActivityPlugin();
+
+    await plugin["tool.execute.before"]({ tool: "bash" }, { args: { command: "rm .env" } });
+    await plugin["tool.execute.before"]({ tool: "read" }, { args: { filePath: ".env" } });
+  } finally {
+    restore("PA_ACTIVITY_LOG", originalActivityLog);
+    restore("PA_DEPLOYMENT_DIR", originalDeploymentDir);
     rmSync(root, { recursive: true, force: true });
   }
 });
