@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
@@ -149,7 +149,7 @@ const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "O
 const MAX_MEMORY_DOC_CHARS = 20000;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
-  const sections = [buildMemoryDocsBlock(opts), opts.ticketId ? buildDeploymentContextBlock(opts) : undefined].filter(Boolean);
+  const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
@@ -164,7 +164,7 @@ function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
 }
 
 function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {
-  const roots = [resolve(homedir(), ".claude/CLAUDE.md"), ...MEMORY_DOC_CANDIDATES.map((candidate) => resolveRepoRoot(opts.repo, opts.cwd, candidate))];
+  const roots = [resolve(homedir(), ".claude/CLAUDE.md"), ...MEMORY_DOC_CANDIDATES.map((candidate) => resolve(resolveRepoRoot(opts.repo, opts.cwd), candidate))];
   const seen = new Set<string>();
   const docs: Array<{ path: string; content: string }> = [];
   for (const path of roots) {
@@ -176,12 +176,14 @@ function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; c
   return docs;
 }
 
-function resolveRepoRoot(repo: string | undefined, cwd: string, relativePath: string): string {
-  if (!repo) return resolve(cwd, relativePath);
+function resolveRepoRoot(repo: string | undefined, cwd: string): string {
+  if (!repo) return cwd;
+  const repoPath = repo.startsWith("~/") ? resolve(homedir(), repo.slice(2)) : repo;
+  if (isAbsolute(repoPath)) return repoPath;
   try {
-    return resolve(resolveRepo(repo).path, relativePath);
+    return resolveRepo(repoPath).path;
   } catch {
-    return resolve(cwd, relativePath);
+    return resolve(cwd, repoPath);
   }
 }
 
@@ -199,7 +201,7 @@ registry_db: ${registryDb}
 workspace_base: ${workspaceBase}
 team_workspace: ${teamWorkspace}
 cwd: ${opts.cwd}
-repo_root: ${opts.repo ? resolve(opts.cwd, opts.repo) : opts.cwd}
+repo_root: ${resolveRepoRoot(opts.repo, opts.cwd)}
 ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}

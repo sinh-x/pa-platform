@@ -1,6 +1,8 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
 export type RuntimeName = "claude" | "opencode";
+export type ProviderName = "anthropic" | "minimax" | "openai";
+export type ModelName = "haiku" | "sonnet" | "opus" | "gpt-5.5";
 
 export interface SkillEntry {
   name: string;
@@ -16,8 +18,8 @@ export interface DeployMode {
   skills?: SkillEntry[];
   mode_type?: "housekeeping" | "work" | "interactive";
   solo?: boolean;
-  model?: "haiku" | "sonnet" | "opus";
-  provider?: "anthropic" | "minimax";
+  model?: ModelName;
+  provider?: ProviderName;
   timeout?: number;
   global_docs?: string[];
 }
@@ -37,7 +39,7 @@ export interface Agent {
   role: string;
   instruction?: string;
   skill?: string;
-  model?: "haiku" | "sonnet" | "opus";
+  model?: ModelName;
 }
 
 export interface TeamConfig {
@@ -50,7 +52,7 @@ export interface TeamConfig {
   variables?: Record<string, string>;
   agents: Agent[];
   objective: string;
-  model?: "haiku" | "sonnet" | "opus";
+  model?: ModelName;
   deploy_modes?: DeployMode[];
   default_mode?: string;
   hierarchy?: Hierarchy;
@@ -123,11 +125,12 @@ export interface ProviderModelTier {
 }
 
 export interface ProviderDefaults {
-  default_provider?: "anthropic" | "minimax";
-  default_model?: "haiku" | "sonnet" | "opus";
+  default_provider?: ProviderName;
+  default_model?: ModelName;
   providers?: {
     anthropic?: { base_url?: string; models?: ProviderModelTier };
     minimax?: { base_url?: string; models?: ProviderModelTier };
+    openai?: { base_url?: string; models?: ProviderModelTier };
   };
 }
 

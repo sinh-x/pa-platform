@@ -66,7 +66,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (!team?.trim()) return { error: "team is required" };
   if (!isSafeIdentifier(team)) return { error: "Invalid team name" };
   if (mode && !isSafeIdentifier(mode)) return { error: "Invalid mode name" };
-  if (repo && !isSafeIdentifier(repo)) return { error: "Invalid repo name" };
+  if (repo && !isSafeRepoSpecifier(repo)) return { error: "Invalid repo name" };
   if (ticket && !/^[A-Z][A-Z0-9]+-[0-9]+$/.test(ticket)) return { error: "Invalid ticket ID" };
   if (provider && !/^[a-zA-Z0-9_-]+$/.test(provider)) return { error: "Invalid provider name" };
   if (model && !/^[a-zA-Z0-9_.\/-]+$/.test(model)) return { error: "Invalid model name" };
@@ -111,4 +111,10 @@ function booleanField(body: Record<string, unknown>, key: string): boolean | und
 
 function isSafeIdentifier(value: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(value);
+}
+
+function isSafeRepoSpecifier(value: string): boolean {
+  if (isSafeIdentifier(value)) return true;
+  if (value.includes("..")) return false;
+  return /^(?:~\/|\/)[a-zA-Z0-9_./-]+$/.test(value);
 }

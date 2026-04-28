@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -75,6 +75,10 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   });
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", undefined), "minimax-coding-plan/MiniMax-M2.7");
   assert.equal(resolveOpencodeModel("openai", undefined), "openai/gpt-5.5");
@@ -131,6 +135,39 @@ test("opa deploy includes repo memory docs in generated primer", async () => {
     assert.match(primer, /Always follow repo-specific memory/);
     assert.match(primer, /Use nested Claude memory too/);
     assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+  });
+});
+
+test("opa deploy preserves absolute repo path in deployment context", async () => {
+  await withOpaEnv(async (root) => {
+    const repo = join(root, "repo");
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--repo", repo], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /<deployment-context>/);
+    assert.match(primer, new RegExp(`repo_root: ${escapeRegExp(repo)}`));
+    assert.doesNotMatch(primer, new RegExp(`${escapeRegExp(process.cwd())}.+${escapeRegExp(repo)}`));
+  });
+});
+
+test("opa deploy expands tilde repo path in deployment context", async () => {
+  await withOpaEnv(async (root) => {
+    const repo = "~/opa-tilde-repo";
+    const expandedRepo = join(homedir(), "opa-tilde-repo");
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--repo", repo], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /<deployment-context>/);
+    assert.match(primer, new RegExp(`repo_root: ${escapeRegExp(expandedRepo)}`));
+    assert.doesNotMatch(primer, new RegExp(`${escapeRegExp(process.cwd())}.+${escapeRegExp(repo)}`));
   });
 });
 
