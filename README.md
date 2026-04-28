@@ -9,6 +9,7 @@ Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 | Package | Description |
 |---|---|
 | `@pa-platform/pa-core` | Runtime-neutral PA core library, shared CLI dispatcher, and Agent API app |
+| `@pa-platform/opencode-pa` | OpenCode adapter that provides the `opa` CLI and runtime hooks |
 
 ## CLI
 
@@ -59,7 +60,16 @@ corepack pnpm build
 nix flake show --no-write-lock-file
 ```
 
-Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`.
+Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish` and `completions/opa.fish`.
+
+Regenerate adapter completions and run the staged secret scanner with:
+
+```bash
+corepack pnpm completions
+corepack pnpm secrets:scan
+```
+
+Release notes and tagging workflow are documented in `docs/release-process.md`.
 
 ## Branch Strategy
 

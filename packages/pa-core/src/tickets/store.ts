@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFile
 import { resolve } from "node:path";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
+import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
 import { matchAssignee } from "./validate.js";
@@ -20,7 +21,7 @@ export class TicketStore {
   create(input: CreateTicketInput, actor = "pa-core"): Ticket {
     const { key, prefix } = resolveProject(input.project);
     const id = this.allocateId(prefix);
-    const now = new Date().toISOString();
+    const now = nowUtc();
     const ticket = this.normalizeTicket({
       ...input,
       id,
@@ -63,13 +64,13 @@ export class TicketStore {
       remove_linked_commit: removeLinkedCommit,
       ...rest
     } = input;
-    let next: Ticket = { ...current, ...rest, updatedAt: new Date().toISOString() };
+    let next: Ticket = { ...current, ...rest, updatedAt: nowUtc() };
     if (input.status && TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = next.resolvedAt ?? next.updatedAt;
     if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
     if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
     if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
-    next = this.applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor);
-    next = this.applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor);
+    next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, this.appendAudit.bind(this));
+    next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, this.appendAudit.bind(this));
 
     const changes = diffTicket(current, next);
     this.writeTicket(next);
@@ -80,7 +81,7 @@ export class TicketStore {
   comment(id: string, author: string, content: string): Comment {
     const ticket = this.get(id);
     if (!ticket) throw new Error(`Ticket not found: ${id}`);
-    const now = new Date().toISOString();
+    const now = nowUtc();
     const comment: Comment = { id: `c-${now.replace(/[^0-9]/g, "")}`, author, content, timestamp: now };
     this.writeTicket({ ...ticket, comments: [...ticket.comments, comment], updatedAt: now });
     this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
@@ -96,7 +97,7 @@ export class TicketStore {
     if (!current) throw new Error(`Ticket not found: ${id}`);
     const { key, prefix } = resolveProject(project);
     const newId = this.allocateId(prefix);
-    const now = new Date().toISOString();
+    const now = nowUtc();
     const moved = this.normalizeTicket({ ...current, id: newId, project: key, updatedAt: now });
     this.writeTicket(moved);
     writeFileSync(this.ticketPath(id), JSON.stringify({ _alias: true, movedTo: newId, movedAt: now, movedBy: actor }, null, 2));
@@ -120,7 +121,7 @@ export class TicketStore {
   addSubTicket(parentId: string, input: Pick<SubTicket, "title" | "summary" | "assignee" | "priority" | "estimate">, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
     const ticket = this.get(parentId);
     if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
-    const now = new Date().toISOString();
+    const now = nowUtc();
     const nextCounter = ticket.nextSubTicketCounter + 1;
     const subTicket: SubTicket = { id: `${ticket.id}-ST-${nextCounter}`, title: input.title, summary: input.summary, assignee: input.assignee, priority: input.priority, estimate: input.estimate, status: "open", createdAt: now, updatedAt: now };
     const next = { ...ticket, subTickets: [...ticket.subTickets, subTicket], nextSubTicketCounter: nextCounter, updatedAt: now };
@@ -134,7 +135,7 @@ export class TicketStore {
     if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
     const index = ticket.subTickets.findIndex((sub) => sub.id === subTicketId);
     if (index < 0) throw new Error(`Sub-ticket not found: ${subTicketId}`);
-    const now = new Date().toISOString();
+    const now = nowUtc();
     const subTicket = { ...ticket.subTickets[index]!, ...input, updatedAt: now };
     const subTickets = ticket.subTickets.map((sub, i) => (i === index ? subTicket : sub));
     const next = { ...ticket, subTickets, updatedAt: now };
@@ -197,15 +198,15 @@ export class TicketStore {
       to: String(raw["to"] ?? ""),
       tags: (raw["tags"] as string[] | undefined) ?? [],
       blockedBy: (raw["blockedBy"] as string[] | undefined) ?? [],
-      doc_refs: (raw["doc_refs"] as DocRef[] | undefined) ?? [],
-      linkedBranches: (raw["linkedBranches"] as Ticket["linkedBranches"] | undefined) ?? [],
-      linkedCommits: (raw["linkedCommits"] as Ticket["linkedCommits"] | undefined) ?? [],
-      comments: (raw["comments"] as Comment[] | undefined) ?? [],
-      subTickets: (raw["subTickets"] as Ticket["subTickets"] | undefined) ?? [],
+      doc_refs: normalizeDocRefs((raw["doc_refs"] as DocRef[] | undefined) ?? []),
+      linkedBranches: normalizeLinkedBranches((raw["linkedBranches"] as Ticket["linkedBranches"] | undefined) ?? []),
+      linkedCommits: normalizeLinkedCommits((raw["linkedCommits"] as Ticket["linkedCommits"] | undefined) ?? []),
+      comments: normalizeComments((raw["comments"] as Comment[] | undefined) ?? []),
+      subTickets: normalizeSubTickets((raw["subTickets"] as Ticket["subTickets"] | undefined) ?? []),
       nextSubTicketCounter: Number(raw["nextSubTicketCounter"] ?? 0),
-      createdAt: String(raw["createdAt"] ?? new Date().toISOString()),
-      updatedAt: String(raw["updatedAt"] ?? new Date().toISOString()),
-      resolvedAt: (raw["resolvedAt"] as string | null | undefined) ?? null,
+      createdAt: normalizeTimestamp(raw["createdAt"]),
+      updatedAt: normalizeTimestamp(raw["updatedAt"]),
+      resolvedAt: normalizeOptionalTimestamp(raw["resolvedAt"]),
     };
   }
 
@@ -215,46 +216,42 @@ export class TicketStore {
     return next;
   }
 
-  private applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string): Ticket {
-    let linkedBranches = ticket.linkedBranches;
-    if (remove) {
-      const before = linkedBranches;
-      linkedBranches = linkedBranches.filter((branch) => `${branch.repo}:${branch.branch}` !== remove);
-      if (linkedBranches.length !== before.length) this.appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
-    }
-    if (add) {
-      const newBranch = resolveLinkedBranch(add, actor);
-      const before = linkedBranches;
-      linkedBranches = upsertLinkedBranch(linkedBranches, newBranch);
-      this.appendAudit(id, "branch_link_added", actor, { branch: [before.find((branch) => branch.repo === newBranch.repo && branch.branch === newBranch.branch) ?? null, newBranch] });
-    }
-    return linkedBranches === ticket.linkedBranches ? ticket : { ...ticket, linkedBranches };
-  }
-
-  private applyLinkedCommitMutation(id: string, ticket: Ticket, add: AddLinkedCommitInput | undefined, remove: string | undefined, actor: string): Ticket {
-    let linkedCommits = ticket.linkedCommits;
-    if (remove) {
-      const before = linkedCommits;
-      linkedCommits = linkedCommits.filter((commit) => commit.sha !== remove);
-      if (linkedCommits.length !== before.length) this.appendAudit(id, "commit_link_removed", actor, { sha: [remove, null] });
-    }
-    if (add) {
-      const newCommit = resolveLinkedCommit(add, actor);
-      const before = linkedCommits;
-      linkedCommits = upsertLinkedCommit(linkedCommits, newCommit);
-      this.appendAudit(id, "commit_link_added", actor, { commit: [before.find((commit) => commit.sha === newCommit.sha) ?? null, newCommit] });
-    }
-    return linkedCommits === ticket.linkedCommits ? ticket : { ...ticket, linkedCommits };
-  }
-
   private writeTicket(ticket: Ticket): void {
     writeFileSync(this.ticketPath(ticket.id), JSON.stringify(ticket, null, 2));
   }
 
   private appendAudit(ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]): void {
-    const entry: AuditEntry = { ticket_id: ticketId, action, actor, timestamp: new Date().toISOString(), changes };
+    const entry: AuditEntry = { ticket_id: ticketId, action, actor, timestamp: nowUtc(), changes };
     writeFileSync(resolve(this.dir, "audit.jsonl"), `${JSON.stringify(entry)}\n`, { flag: "a" });
   }
+}
+
+function normalizeTimestamp(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? parseTimestamp(value).toISOString() : nowUtc();
+}
+
+function normalizeOptionalTimestamp(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? parseTimestamp(value).toISOString() : null;
+}
+
+function normalizeDocRefs(refs: DocRef[]): DocRef[] {
+  return refs.map((ref) => ({ ...ref, addedAt: normalizeTimestamp(ref.addedAt) }));
+}
+
+function normalizeComments(comments: Comment[]): Comment[] {
+  return comments.map((comment) => ({ ...comment, timestamp: normalizeTimestamp(comment.timestamp), ...(comment.editedAt ? { editedAt: normalizeTimestamp(comment.editedAt) } : {}) }));
+}
+
+function normalizeSubTickets(subTickets: SubTicket[]): SubTicket[] {
+  return subTickets.map((subTicket) => ({ ...subTicket, createdAt: normalizeTimestamp(subTicket.createdAt), updatedAt: normalizeTimestamp(subTicket.updatedAt) }));
+}
+
+function normalizeLinkedBranches(branches: LinkedBranch[]): LinkedBranch[] {
+  return branches.map((branch) => ({ ...branch, linkedAt: normalizeTimestamp(branch.linkedAt) }));
+}
+
+function normalizeLinkedCommits(commits: LinkedCommit[]): LinkedCommit[] {
+  return commits.map((commit) => ({ ...commit, timestamp: normalizeTimestamp(commit.timestamp), linkedAt: normalizeTimestamp(commit.linkedAt) }));
 }
 
 function matchesFilters(ticket: Ticket, filters: TicketListFilters): boolean {
@@ -279,6 +276,40 @@ function diffTicket(before: Ticket, after: Ticket): Record<string, [unknown, unk
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changes[key] = [before[key], after[key]];
   }
   return changes;
+}
+
+type AuditAppender = (ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]) => void;
+
+function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
+  let linkedBranches = ticket.linkedBranches;
+  if (remove) {
+    const before = linkedBranches;
+    linkedBranches = linkedBranches.filter((branch) => `${branch.repo}:${branch.branch}` !== remove);
+    if (linkedBranches.length !== before.length) appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
+  }
+  if (add) {
+    const newBranch = resolveLinkedBranch(add, actor);
+    const before = linkedBranches;
+    linkedBranches = upsertLinkedBranch(linkedBranches, newBranch);
+    appendAudit(id, "branch_link_added", actor, { branch: [before.find((branch) => branch.repo === newBranch.repo && branch.branch === newBranch.branch) ?? null, newBranch] });
+  }
+  return linkedBranches === ticket.linkedBranches ? ticket : { ...ticket, linkedBranches };
+}
+
+function applyLinkedCommitMutation(id: string, ticket: Ticket, add: AddLinkedCommitInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
+  let linkedCommits = ticket.linkedCommits;
+  if (remove) {
+    const before = linkedCommits;
+    linkedCommits = linkedCommits.filter((commit) => commit.sha !== remove);
+    if (linkedCommits.length !== before.length) appendAudit(id, "commit_link_removed", actor, { sha: [remove, null] });
+  }
+  if (add) {
+    const newCommit = resolveLinkedCommit(add, actor);
+    const before = linkedCommits;
+    linkedCommits = upsertLinkedCommit(linkedCommits, newCommit);
+    appendAudit(id, "commit_link_added", actor, { commit: [before.find((commit) => commit.sha === newCommit.sha) ?? null, newCommit] });
+  }
+  return linkedCommits === ticket.linkedCommits ? ticket : { ...ticket, linkedCommits };
 }
 
 function upsertLinkedBranch(branches: LinkedBranch[], next: LinkedBranch): LinkedBranch[] {

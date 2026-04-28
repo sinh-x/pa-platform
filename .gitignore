@@ -3,3 +3,8 @@ dist/
 coverage/
 *.tsbuildinfo
 .direnv/
+
+# PA Platform local state
+registry.db
+deployments/
+/.claude/ai-sessions.md

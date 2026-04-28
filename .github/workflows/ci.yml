@@ -25,14 +25,100 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
+      - name: Build
+        run: pnpm run build
+
       - name: Test
         run: pnpm run test
 
-      - name: Build
-        run: pnpm run build
+      - name: Check generated completions
+        run: |
+          pnpm run completions
+          git diff --exit-code -- completions/pa-core.fish completions/opa.fish
 
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
 
       - name: Check fish completions
-        run: fish --no-execute completions/pa-core.fish
+        run: |
+          fish --no-execute completions/pa-core.fish
+          fish --no-execute completions/opa.fish
+
+  version-bump:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Explain bump decision
+        id: bump-decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          HEAD_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [[ "$HEAD_MESSAGE" == *"[skip version-bump]"* ]]; then
+            echo "Version bump skipped: head commit contains [skip version-bump]."
+            echo "should-bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [[ "$ACTOR" == *"[bot]" ]]; then
+            echo "Version bump skipped: actor $ACTOR is a bot."
+            echo "should-bump=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          associated_pr_count="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.base.ref == "develop" and .merged_at != null)] | length')"
+
+          if [[ "$associated_pr_count" == "0" ]]; then
+            echo "Version bump skipped: pushed commit is not associated with a merged PR targeting develop."
+            echo "should-bump=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version bump will run: successful CI validation completed for a PR-originated push to develop."
+            echo "should-bump=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.bump-decision.outputs.should-bump == 'true'
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        if: steps.bump-decision.outputs.should-bump == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.bump-decision.outputs.should-bump == 'true'
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Configure git identity
+        if: steps.bump-decision.outputs.should-bump == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump patch version
+        if: steps.bump-decision.outputs.should-bump == 'true'
+        run: pnpm run bump:patch:ci
+
+      - name: Commit and push version bump
+        if: steps.bump-decision.outputs.should-bump == 'true'
+        run: |
+          git add package.json packages/pa-core/package.json packages/opencode-pa/package.json
+          if git diff --cached --quiet; then
+            echo "Version bump skipped: helper produced no changes."
+            exit 0
+          fi
+          git commit -m "chore: bump patch version [skip version-bump]"
+          git push origin HEAD:develop

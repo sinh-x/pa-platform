@@ -1,5 +1,6 @@
 import type { Ticket, TicketPriority, TicketStatus } from "./types.js";
 import { TicketStore } from "./store.js";
+import { parseTimestamp } from "../time.js";
 
 // Ported from PA tickets/focus.ts at frozen PA source on 2026-04-26; report-cache reading omitted from core slice.
 
@@ -46,7 +47,7 @@ export function buildFocusList(filters: FocusFilters = {}, store = new TicketSto
 }
 
 export function calculateStaleness(ticket: Ticket, now = new Date()): number {
-  const days = Math.floor((now.getTime() - new Date(ticket.updatedAt).getTime()) / 86400000);
+  const days = Math.floor((now.getTime() - parseTimestamp(ticket.updatedAt).getTime()) / 86400000);
   return Math.max(0, days - (STALENESS_THRESHOLDS[ticket.status] ?? 999));
 }
 

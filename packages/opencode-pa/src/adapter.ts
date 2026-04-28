@@ -2,7 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai";
 
@@ -14,6 +15,8 @@ export interface OpencodeCommandResult {
 }
 
 const STDERR_TAIL_BYTES = 2000;
+const STREAM_BODY_MAX_CHARS = 500;
+const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)key(?:\b|_)/i, /bearer\s+\S+/i, /sk-\S+/i];
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
@@ -74,6 +77,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
           kind: normalizeKind(raw),
           source: extractSource(raw),
           body: extractBody(raw),
+          partType: extractPartType(raw),
           metadata: raw,
         }));
       } catch {
@@ -83,8 +87,8 @@ export class OpencodeAdapter implements RuntimeAdapter {
     return events;
   }
 
-  installHooks(_targetDir: string, _config: HookConfig): void {
-    // opencode uses global/local JS plugins; PAP-002 only needs the adapter env contract.
+  installHooks(_targetDir: string, config: HookConfig): void {
+    installPaSafetyActivityPlugin({ ...this.env, ...config.env });
   }
 
   describeTools() {
@@ -92,6 +96,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
       runtime: this.name,
       markdown: [
         "Runtime: opencode via `opa`.",
+        "Use `opa` for PA platform commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
         "Use opencode tools exposed in the current session; do not assume Claude-only TeamCreate, SendMessage, Agent, AskUserQuestion, or ScheduleWakeup tools exist.",
         "Supported providers for `opa deploy`: `minimax` and `openai` (default).",
       ].join("\n"),
@@ -101,7 +106,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
     const primer = readFileSync(opts.primerPath, "utf-8");
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
-    if (opts.mode === "foreground" || opts.mode === "direct" || opts.mode === "interactive") {
+    if (opts.mode === "foreground") {
       const args = ["-m", opts.model ?? this.defaultModel];
       if (sessionId) args.push("--session", sessionId);
       args.push("--prompt", primer);
@@ -268,6 +273,7 @@ export function opencodeJsonToActivityEvent(raw: Record<string, unknown>, deploy
     kind: normalizeKind(raw),
     source: extractSource(raw),
     body: extractBody(raw),
+    partType: extractPartType(raw),
     metadata: raw,
   });
 }
@@ -359,10 +365,16 @@ function extractBody(raw: Record<string, unknown>): string {
   if (tool) {
     const status = stringValue(state?.["status"]);
     const description = stringValue(input?.["description"] ?? input?.["command"] ?? input?.["filePath"] ?? input?.["file_path"] ?? input?.["pattern"] ?? input?.["url"]);
-    return [tool, status, description].filter(Boolean).join(" ");
+    return sanitizeStreamBody([tool, status, description].filter(Boolean).join(" "));
   }
   const body = part?.["text"] ?? part?.["thinking"] ?? raw["text"] ?? raw["content"] ?? raw["message"] ?? raw["body"] ?? raw["type"] ?? "";
-  return typeof body === "string" ? body : JSON.stringify(body);
+  return sanitizeStreamBody(typeof body === "string" ? body : JSON.stringify(body));
+}
+
+function sanitizeStreamBody(value: string): string {
+  let result = value;
+  for (const pattern of STREAM_SECRET_PATTERNS) result = result.replace(pattern, "[REDACTED]");
+  return result.length > STREAM_BODY_MAX_CHARS ? `${result.slice(0, STREAM_BODY_MAX_CHARS - 3)}...` : result;
 }
 
 function extractSource(raw: Record<string, unknown>): string {
@@ -370,9 +382,14 @@ function extractSource(raw: Record<string, unknown>): string {
   return sessionId ? sessionId.slice(0, 8) : "opencode";
 }
 
+function extractPartType(raw: Record<string, unknown>): string | undefined {
+  const part = recordValue(raw["part"]);
+  return stringValue(raw["partType"] ?? raw["part_type"] ?? part?.["type"] ?? raw["type"]);
+}
+
 function normalizeTimestamp(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "string") return parseTimestamp(value).toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) return nowUtc(new Date(value));
   return undefined;
 }
 

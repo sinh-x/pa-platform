@@ -1,5 +1,6 @@
 import { getDb } from "./db.js";
 import type { DeploymentStatus, RegistryEvent } from "../types.js";
+import { parseTimestamp } from "../time.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
@@ -41,7 +42,7 @@ export function getDeploymentEvents(deployId: string): RegistryEvent[] {
 
 export function queryDeploymentStatuses(): DeploymentStatus[] {
   const db = getDb();
-  return (db.prepare("SELECT * FROM deployments ORDER BY started_at DESC").all() as Record<string, unknown>[]).map(deploymentFromRow);
+  return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments").all() as Record<string, unknown>[]).map(deploymentFromRow));
 }
 
 export function queryDeploymentStatus(deployId: string): DeploymentStatus | null {
@@ -52,13 +53,13 @@ export function queryDeploymentStatus(deployId: string): DeploymentStatus | null
 
 export function getDeploymentsByTicketId(ticketId: string): DeploymentStatus[] {
   const db = getDb();
-  return (db.prepare("SELECT * FROM deployments WHERE ticket_id = ? ORDER BY started_at DESC").all(ticketId) as Record<string, unknown>[]).map(deploymentFromRow);
+  return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments WHERE ticket_id = ?").all(ticketId) as Record<string, unknown>[]).map(deploymentFromRow));
 }
 
 export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentStatus[] {
   const grouped = new Map<string, RegistryEvent[]>();
   for (const event of events) grouped.set(event.deployment_id, [...(grouped.get(event.deployment_id) ?? []), event]);
-  return [...grouped.entries()].map(([deployId, deploymentEvents]) => {
+  return sortDeploymentsByStartedAt([...grouped.entries()].map(([deployId, deploymentEvents]) => {
     const started = deploymentEvents.find((event) => event.event === "started");
     const completed = deploymentEvents.find((event) => event.event === "completed");
     const crashed = deploymentEvents.find((event) => event.event === "crashed");
@@ -84,7 +85,11 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       runtime: started?.runtime,
       binary: started?.binary,
     };
-  }).sort((a, b) => b.started_at.localeCompare(a.started_at));
+  }));
+}
+
+function sortDeploymentsByStartedAt(deployments: DeploymentStatus[]): DeploymentStatus[] {
+  return deployments.sort((a, b) => parseTimestamp(b.started_at).getTime() - parseTimestamp(a.started_at).getTime());
 }
 
 function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): void {
@@ -130,7 +135,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     deployment_id: event.deployment_id,
     team: event.team,
     event: event.event,
-    timestamp: event.timestamp,
+    timestamp: normalizeTimestamp(event.timestamp),
     pid: event.pid ?? null,
     status: event.status ?? null,
     summary: event.summary ?? null,
@@ -158,7 +163,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     deployment_id: String(row["deployment_id"]),
     team: String(row["team"]),
     event: row["event"] as RegistryEvent["event"],
-    timestamp: String(row["timestamp"]),
+    timestamp: normalizeTimestamp(row["timestamp"]),
     pid: optionalNumber(row["pid"]),
     status: row["status"] as RegistryEvent["status"],
     summary: optionalString(row["summary"]),
@@ -186,8 +191,8 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     deploy_id: String(row["deployment_id"]),
     team: String(row["team"]),
     status: row["status"] as DeploymentStatus["status"],
-    started_at: String(row["started_at"] ?? ""),
-    completed_at: optionalString(row["completed_at"]),
+    started_at: normalizeTimestamp(row["started_at"]),
+    completed_at: optionalTimestamp(row["completed_at"]),
     pid: optionalNumber(row["pid"]),
     agents: parseJson<string[]>(row["agents"]) ?? [],
     summary: optionalString(row["summary"]),
@@ -207,6 +212,14 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeTimestamp(value: unknown): string {
+  return parseTimestamp(String(value ?? "")).toISOString();
+}
+
+function optionalTimestamp(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? parseTimestamp(value).toISOString() : undefined;
 }
 
 function optionalNumber(value: unknown): number | undefined {

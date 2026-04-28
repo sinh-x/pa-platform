@@ -232,7 +232,7 @@ deploy_modes:
         inject-as: shared-skill
 context:
   organization: sinh-x
-  notes: "Solo agent (team manager does the work directly). Always run with --interactive for analyze and review modes."
+  notes: "Solo agent (team manager does the work directly). Foreground TUI is the default for analyze and review modes."
 agents:
   - name: analyst
     role: "Gather requirements through structured conversation, explore codebase, produce a plan covering the standard checklist"

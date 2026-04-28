@@ -1,16 +1,19 @@
 {
   "name": "pa-platform",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
     "typecheck": "corepack pnpm -r typecheck",
+    "bump:patch:ci": "node scripts/dev/ci_patch_bump.mjs",
     "bump:patch": "bash scripts/dev/version_bump.sh patch",
     "bump:minor": "bash scripts/dev/version_bump.sh minor",
     "bump:major": "bash scripts/dev/version_bump.sh major",
-    "bump:refresh-hash": "bash scripts/dev/version_bump.sh --refresh-hash"
+    "bump:refresh-hash": "bash scripts/dev/version_bump.sh --refresh-hash",
+    "completions": "bash scripts/dev/generate_completions.sh",
+    "secrets:scan": "bash scripts/hooks/pre-commit-secret-scan.sh"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

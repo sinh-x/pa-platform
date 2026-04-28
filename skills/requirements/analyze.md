@@ -314,7 +314,7 @@ Include in the ticket's summary: what Sinh needs to do (approve, feedback, open 
 - **Ambiguity halts work** — when any Ambiguity Protocol trigger fires, you MUST pause and ask Sinh before continuing. Do NOT silently assume. Auto modes log the unresolved item and tag the ticket `needs-clarification` instead.
 - **Self-review is mandatory** — every draft must pass the 8-check Quality Bar (Phase 6.5) before reaching Sinh. No exceptions.
 - **Sign-off before save** — never save the final requirements or UAT documents without explicit Sinh approval in Phase 6.6. "Yes" or equivalent — silence is not consent.
-- **Always interactive** — interactive modes use `--interactive`; ask, don't guess. Auto modes skip walkthroughs but still apply the Ambiguity Protocol via open-questions logging.
+- **Always interactive** — foreground TUI is the default for interactive modes; ask, don't guess. Auto modes skip walkthroughs but still apply the Ambiguity Protocol via open-questions logging.
 - **Explore before proposing** — read the codebase in Phase 3 before suggesting a technical approach.
 - **No section left behind** — every checklist section must be addressed. "N/A" requires a 1-sentence justification (Quality Bar #6).
 - **Priority labels** — use MoSCoW: Must / Should / Could / Won't.

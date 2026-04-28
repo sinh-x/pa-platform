@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getBulletinsDir } from "../paths.js";
+import { nowUtc } from "../time.js";
 import { parseBulletin, serializeBulletin } from "./types.js";
 import type { Bulletin, BulletinBlock } from "./types.js";
 
@@ -29,7 +30,7 @@ export class BulletinStore {
 
   create(opts: { title: string; block: BulletinBlock; except?: string[]; body: string }): Bulletin {
     const id = this.allocateId();
-    const created = new Date().toISOString();
+    const created = nowUtc();
     const filename = `${created.slice(0, 10)}-${slugify(opts.title)}.md`;
     const bulletin = {
       id,

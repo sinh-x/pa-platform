@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -13,16 +13,16 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd() });
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
   const provider = request.provider ?? "openai";
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel);
-  const mode = request.dryRun ? "dry-run" : request.background ? "background" : request.interactive ? "interactive" : request.direct ? "direct" : "foreground";
+  const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
   const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
@@ -142,6 +142,7 @@ interface DeploymentContextOpts {
   ticketId?: string;
   repo?: string;
   cwd: string;
+  mode?: string;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
@@ -185,10 +186,10 @@ function resolveRepoRoot(repo: string | undefined, cwd: string, relativePath: st
 }
 
 function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
-  const now = new Date().toISOString();
   const registryDb = getRegistryDbPath();
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
+  const now = nowUtc();
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
@@ -202,6 +203,6 @@ repo_root: ${opts.repo ? resolve(opts.cwd, opts.repo) : opts.cwd}
 ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
-mode: ${"analyze"}
+mode: ${opts.mode ?? "default"}
 </deployment-context>`;
 }
