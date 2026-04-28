@@ -23,9 +23,31 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
   assert.match(primer, /Runtime: opencode/);
   assert.match(primer, /updated pa-core command set/);
-  assert.match(primer, /Task tool/);
-  assert.match(primer, /Do not assume Claude-only TeamCreate/);
+  assert.match(primer, /Task-style delegation/);
+  assert.match(primer, /Do not assume Claude-only operational tools exist/);
+  assert.match(primer, /## Active Bulletins/);
+  assert.match(primer, /opa bulletin list/);
+  assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /Plan the work/);
+  assert.doesNotMatch(primer, /TeamCreate|SendMessage|AskUserQuestion|ScheduleWakeup/);
+});
+
+test("generatePrimer skips missing terse-mode until pa-platform source exists", () => {
+  const terseTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+terse_mode: true
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: terseTeam, mode: "implement" });
+  assert.doesNotMatch(primer, /terse-mode/);
+  assert.doesNotMatch(primer, /missing skill/);
 });
 
 test("generatePrimer adapts PA CLI references to opa for opencode", () => {
@@ -151,6 +173,9 @@ deploy_modes:
     assert.match(primer, /Always interactive/);
     assert.match(primer, /Run opa ticket list before handoff\./);
     assert.match(primer, /Use opa ticket update only after approval\./);
+    assert.match(primer, /## Active Bulletins/);
+    assert.match(primer, /## Available Procedures/);
+    assert.match(primer, /## Deployment Instructions/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
