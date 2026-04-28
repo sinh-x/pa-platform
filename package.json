@@ -13,6 +13,7 @@
     "bump:major": "bash scripts/dev/version_bump.sh major",
     "bump:refresh-hash": "bash scripts/dev/version_bump.sh --refresh-hash",
     "completions": "bash scripts/dev/generate_completions.sh",
+    "completions:timing": "fish scripts/dev/check_fish_completion_timing.fish",
     "secrets:scan": "bash scripts/hooks/pre-commit-secret-scan.sh"
   },
   "devDependencies": {
