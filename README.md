@@ -75,7 +75,7 @@ Check representative `opa` fish completion latency locally with:
 corepack pnpm completions:timing
 ```
 
-The timing check sources generated `completions/opa.fish`, performs one warm-up run plus the median of three timed `complete -C` runs per scenario, and enforces default thresholds for `opa `, `opa deploy `, `opa status `, `opa ticket show `, and `opa board --assignee `. Configure stricter thresholds without editing the script by setting millisecond environment variables, for example:
+The timing check sources generated `completions/opa.fish`, performs one warm-up run plus the median of three timed `complete -C` runs per scenario, and enforces default thresholds for `opa ` (1000ms), `opa deploy ` (5000ms), `opa status ` (2500ms), `opa ticket show ` (2000ms), and `opa board --assignee ` (3000ms). Configure stricter thresholds without editing the script by setting millisecond environment variables, for example:
 
 ```bash
 OPA_FISH_COMPLETION_THRESHOLD_TOP_LEVEL_MS=500 corepack pnpm completions:timing

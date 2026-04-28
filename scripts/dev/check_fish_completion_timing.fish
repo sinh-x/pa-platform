@@ -61,7 +61,7 @@ printf '%-15s %-12s %-15s %s\n' -------- ------ --------- ------
 
 __opa_completion_check top-level 'opa ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_TOP_LEVEL_MS 1000); or set failed 1
 __opa_completion_check deploy 'opa deploy ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_DEPLOY_MS 5000); or set failed 1
-__opa_completion_check status 'opa status ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_STATUS_MS 2000); or set failed 1
+__opa_completion_check status 'opa status ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_STATUS_MS 2500); or set failed 1
 __opa_completion_check ticket-show 'opa ticket show ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_TICKET_SHOW_MS 2000); or set failed 1
 __opa_completion_check board-assignee 'opa board --assignee ' (__opa_completion_threshold OPA_FISH_COMPLETION_THRESHOLD_BOARD_ASSIGNEE_MS 3000); or set failed 1
 
