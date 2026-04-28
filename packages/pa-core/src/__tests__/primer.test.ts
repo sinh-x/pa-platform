@@ -1,9 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generatePrimer, parseTeamYamlContent } from "../index.js";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+function repoPath(...parts: string[]): string {
+  return join(repoRoot, ...parts);
+}
+
+function resolveRepoFile(relativePath: string): string | undefined {
+  return repoPath(relativePath);
+}
+
+function assertNoBannedOpencodeOperationalReferences(primer: string): void {
+  assert.doesNotMatch(primer, /(^|[\s`'"(=:{])pa\s+(board|bulletin|daily|deploy|health|idea|registry|remove-timer|report|repos|requirements|schedule|serve|status|teams|ticket|timers|trash)\b/m);
+  assert.doesNotMatch(primer, /\.claude\/skills|~\/\.claude\/skills|\/home\/[^\s"`<>]+\/\.claude\/skills/);
+  assert.doesNotMatch(primer, /TeamCreate|SendMessage|AskUserQuestion|ScheduleWakeup/);
+  assert.doesNotMatch(primer, /Claude Code team deployments may use|\buse\s+Agent\b|\bAgent\b\s+tool/i);
+  assert.doesNotMatch(primer, /--interactive\b/);
+}
 
 const team = parseTeamYamlContent(`
 name: requirements
@@ -29,7 +48,7 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   assert.match(primer, /opa bulletin list/);
   assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /Plan the work/);
-  assert.doesNotMatch(primer, /TeamCreate|SendMessage|AskUserQuestion|ScheduleWakeup/);
+  assertNoBannedOpencodeOperationalReferences(primer);
 });
 
 test("generatePrimer skips missing terse-mode until pa-platform source exists", () => {
@@ -48,6 +67,7 @@ deploy_modes:
   const primer = generatePrimer({ runtime: "opencode", teamConfig: terseTeam, mode: "implement" });
   assert.doesNotMatch(primer, /terse-mode/);
   assert.doesNotMatch(primer, /missing skill/);
+  assertNoBannedOpencodeOperationalReferences(primer);
 });
 
 test("generatePrimer adapts PA CLI references to opa for opencode", () => {
@@ -90,10 +110,77 @@ deploy_modes:
     assert.match(primer, /opa registry complete d-123456/);
     assert.match(primer, /Project key `pa` remains unchanged/);
     assert.doesNotMatch(primer, /CLAUDECODE/);
-    assert.doesNotMatch(primer, /(^|[\s`'"(=:{])pa\s+(deploy|ticket|registry)\b/m);
+    assertNoBannedOpencodeOperationalReferences(primer);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", () => {
+  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: requirements,
+    mode: "analyze",
+    objective: "Analyze opencode primer parity for PAP-022.",
+    resolveFile: resolveRepoFile,
+    skillsDir: repoPath("skills", "global"),
+    extraInstructions: [
+      "<deployment-context>",
+      "deployment_id: d-test00",
+      "repo_root: /tmp/example-repo",
+      "ticket_id: PAP-022",
+      "</deployment-context>",
+    ].join("\n"),
+  });
+
+  assert.match(primer, /Runtime: opencode/);
+  assert.match(primer, /## Active Bulletins/);
+  assert.match(primer, /Before starting work, run `opa bulletin list`/);
+  assert.match(primer, /ticket\/objective alignment/);
+  assert.match(primer, /## AMBIGUITY PROTOCOL/);
+  assert.match(primer, /\[Ambiguity detected/);
+  assert.match(primer, /## PHASE CHECKLIST/);
+  assert.match(primer, /Phase 0: Validate Codebase Assumptions/);
+  assert.match(primer, /Gate Criteria/);
+  assert.match(primer, /Phase 6\.5: Self-Review Against Quality Bar/);
+  assert.match(primer, /Self-review passed all 8 checks/);
+  assert.match(primer, /Phase 6\.6: Sinh Walkthrough & Sign-off/);
+  assert.match(primer, /Explicit "yes" or equivalent from Sinh/);
+  assert.match(primer, /Sign-off before save/);
+  assert.match(primer, /doc-ref handling/);
+  assert.match(primer, /Attach both doc-refs before advancing ticket status/);
+  assert.match(primer, /Generate UAT Document/);
+  assert.match(primer, /one test scenario per Acceptance Criteria item/i);
+  assert.match(primer, /pa-session-log/);
+  assert.match(primer, /Save session logs under `sessions\/YYYY\/MM\/agent-team\/`/);
+  assert.match(primer, /Session logs, artifact finalization, shutdown, and registry completion/i);
+  assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
+  assert.match(primer, /uat:agent-teams\/requirements\/artifacts/);
+  assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);
+  assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
+  assert.match(primer, /path=".*skills\/global\/pa-session-log\/SKILL\.md"/);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
+test("generatePrimer representative builder fixture stays free of legacy opencode references", () => {
+  const builder = parseTeamYamlContent(readFileSync(repoPath("teams", "builder.yaml"), "utf-8"));
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: builder,
+    mode: "implement",
+    objective: "Implement PAP-022 phase 4.4.",
+    resolveFile: resolveRepoFile,
+    skillsDir: repoPath("skills", "global"),
+  });
+
+  assert.match(primer, /Runtime: opencode/);
+  assert.match(primer, /Use `opa` for all PA platform commands/);
+  assert.match(primer, /## Active Bulletins/);
+  assert.match(primer, /## Deployment Instructions/);
+  assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
+  assert.doesNotMatch(primer, /missing skill/);
+  assertNoBannedOpencodeOperationalReferences(primer);
 });
 
 test("generatePrimer renders claude-specific tool guidance", () => {

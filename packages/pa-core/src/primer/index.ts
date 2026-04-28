@@ -208,6 +208,7 @@ const PA_CLI_SUBCOMMANDS = [
 const PA_CLI_COMMAND_RE = new RegExp(`(^|[\\s\`'"(=:{])pa(?=\\s+(?:${PA_CLI_SUBCOMMANDS})\\b)`, "gm");
 const CLAUDECODE_COMMAND_PREFIX_RE = new RegExp(`(^|[\\s\`'"(=:{])(?:unset\\s+CLAUDECODE|CLAUDECODE=(?:"[^"]*"|'[^']*'|\\S+))\\s*(?:&&\\s*)?(?=pa\\s+(?:${PA_CLI_SUBCOMMANDS})\\b)`, "gm");
 const CLAUDECODE_PROSE_LINE_RE = /^.*CLAUDECODE.*(?:\n|$)/gm;
+const EXTERNAL_CLAUDE_SKILLS_PATH_RE = /(?:~|\/home\/[^\s"`<>]+)\/\.claude\/skills/g;
 
 function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
   if (runtime !== "opencode") return content;
@@ -220,6 +221,7 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
     .replace(/\bpa CLI\b/g, "opa CLI")
     .replace(/\bpa commands\b/g, "opa commands")
     .replace(/\bpa command\b/g, "opa command")
+    .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
     .replace(/\bAskUserQuestion\b/g, "direct user question")
     .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "opencode-exposed tools");
 }
