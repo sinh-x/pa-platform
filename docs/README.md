@@ -13,3 +13,4 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 ## Operational Docs
 
 - `release-process.md` documents version bumping, tagging, and CI release expectations.
+- `opencode-primer-parity-matrix.md` records the PAP-022 Old PA versus pa-platform primer-generation audit.
