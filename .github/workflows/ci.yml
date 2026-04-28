@@ -44,6 +44,9 @@ jobs:
           fish --no-execute completions/pa-core.fish
           fish --no-execute completions/opa.fish
 
+      - name: Check fish completion timing
+        run: pnpm run completions:timing
+
   version-bump:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
