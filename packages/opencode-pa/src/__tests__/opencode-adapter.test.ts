@@ -383,6 +383,23 @@ test("opa deploy --resume fails fast when no session id was recorded", async () 
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", priorId], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.notEqual(code, 0);
     assert.match(stderr.join("\n"), /no opencode session id recorded/);
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa deploy --resume fails clearly on claude session files without registering", async () => {
+  await withOpaEnv(async (root) => {
+    const priorId = "d-claude";
+    const priorDir = join(root, "deployments", priorId);
+    mkdirSync(priorDir, { recursive: true });
+    writeFileSync(join(priorDir, "session-id-claude.txt"), "claude-session-token");
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", priorId], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.notEqual(code, 0);
+    assert.match(stderr.join("\n"), /was launched by claude/);
+    assert.match(stderr.join("\n"), /cpa deploy --resume d-claude/);
+    assert.equal(queryDeploymentStatuses().length, 0);
   });
 });
 

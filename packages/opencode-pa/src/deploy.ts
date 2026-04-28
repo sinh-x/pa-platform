@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getDeployPaths, loadTeamConfig, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -32,11 +32,17 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
 
+  let priorSession: string | undefined;
+  try {
+    priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
+  } catch (error) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+  }
+
   emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume });
 
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
       : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env });
@@ -81,8 +87,13 @@ function firstLine(text: string): string {
 }
 
 function readPriorSession(deploymentId: string, sessionFileName: string): string {
-  const sessionPath = resolve(getDeployPaths(deploymentId).deployDir, sessionFileName);
+  const deployDir = getDeployPaths(deploymentId).deployDir;
+  const sessionPath = resolve(deployDir, sessionFileName);
   if (!existsSync(sessionPath)) {
+    const otherRuntime = detectOtherRuntimeSession(deployDir, sessionFileName);
+    if (otherRuntime) {
+      throw new Error(`cannot resume: deploy ${deploymentId} was launched by ${otherRuntime.runtime}; use '${otherRuntime.binary} deploy --resume ${deploymentId}'`);
+    }
     throw new Error(`no opencode session id recorded for ${deploymentId} — cannot resume (foreground TUI runs are not resumable)`);
   }
   const value = readFileSync(sessionPath, "utf-8").trim();
@@ -92,21 +103,32 @@ function readPriorSession(deploymentId: string, sessionFileName: string): string
   return value;
 }
 
+function detectOtherRuntimeSession(deployDir: string, expectedSessionFileName: string): { runtime: string; binary: string } | undefined {
+  const knownSessions: Record<string, { runtime: string; binary: string }> = {
+    "session-id-claude.txt": { runtime: "claude", binary: "cpa" },
+    "session-id-opencode.txt": { runtime: "opencode", binary: "opa" },
+  };
+  for (const [fileName, runtime] of Object.entries(knownSessions)) {
+    if (fileName !== expectedSessionFileName && existsSync(resolve(deployDir, fileName))) return runtime;
+  }
+  return undefined;
+}
+
 function computePlannerVars(team: string, mode: string | undefined, today: string): Record<string, string> {
   if (team !== "planner" || !mode || !new Set(["plan", "plan-review", "progress", "end", "end-review"]).has(mode)) return {};
   const home = homedir();
   const year = today.slice(0, 4);
   const month = today.slice(5, 7);
-  const outputDir = resolve(home, "Documents/ai-usage/daily", year, month);
-  const dailyInbox = resolve(home, "Documents/ai-usage/agent-teams/planner/inbox");
+  const outputDir = resolve(getDailyDir(), year, month);
+  const dailyInbox = resolve(getAgentTeamsDir(), "planner", "inbox");
   return {
     TODAY: today,
     YEAR: year,
     MONTH: month,
     OUTPUT_DIR: outputDir,
     HOME: home,
-    INPUT_NOTES: resolve(home, "Documents/ai-usage/sinh-inputs/daily-plan", today),
-    RPM_BLOCKS: resolve(home, "Documents/ai-usage/agent-teams/rpm/rpm-blocks.yaml"),
+    INPUT_NOTES: resolve(getSinhInputsDir(), "daily-plan", today),
+    RPM_BLOCKS: resolve(getAgentTeamsDir(), "rpm", "rpm-blocks.yaml"),
     DAILY_INBOX: dailyInbox,
     GATHER_REPORT: resolve(dailyInbox, `${today}-end-gather.md`),
     READY_MARKER: resolve(dailyInbox, `${today}-end-ready.md`),
@@ -163,11 +185,10 @@ function resolveRepoRoot(repo: string | undefined, cwd: string, relativePath: st
 }
 
 function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
-  const home = homedir();
   const now = new Date().toISOString();
-  const registryDb = process.env["PA_REGISTRY_DB"] ?? resolve(home, "Documents/ai-usage/deployments/registry.db");
-  const workspaceBase = resolve(home, "Documents/ai-usage/deployments", opts.deploymentId);
-  const teamWorkspace = resolve(home, "Documents/ai-usage/agent-teams", opts.teamConfig.name);
+  const registryDb = getRegistryDbPath();
+  const workspaceBase = getDeploymentDir(opts.deploymentId);
+  const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
