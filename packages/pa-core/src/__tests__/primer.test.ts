@@ -99,3 +99,59 @@ test("generatePrimer reads mode objective files and applies template vars", () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("generatePrimer preserves interactive mode instructions when user objective is supplied", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-"));
+  try {
+    const objectivePath = join(root, "analyze-objective.md");
+    const instructionPath = join(root, "analyze.md");
+    writeFileSync(objectivePath, [
+      "Your job is to gather requirements interactively with the user.",
+      "Sign-off before save.",
+      "Run pa ticket list before handoff.",
+    ].join("\n"));
+    writeFileSync(instructionPath, [
+      "This is an interactive session.",
+      "Always interactive — ask the user, don't assume.",
+      "Use pa ticket update only after approval.",
+    ].join("\n"));
+
+    const requirements = parseTeamYamlContent(`
+name: requirements
+description: Requirements team
+objective: Team fallback objective
+agents:
+  - name: analyst
+    role: Gathers requirements
+    instruction: skills/requirements/analyze.md
+deploy_modes:
+  - id: analyze
+    label: Analyze
+    mode_type: interactive
+    agents: [analyst]
+    objective: skills/requirements/analyze-objective.md
+`);
+
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: requirements,
+      mode: "analyze",
+      objective: "Build a daily instructor performance table",
+      resolveFile: (relativePath) => {
+        if (relativePath === "skills/requirements/analyze-objective.md") return objectivePath;
+        if (relativePath === "skills/requirements/analyze.md") return instructionPath;
+        return undefined;
+      },
+    });
+
+    assert.match(primer, /## Objective\nYour job is to gather requirements interactively with the user\./);
+    assert.match(primer, /Sign-off before save\./);
+    assert.match(primer, /## User Objective\nBuild a daily instructor performance table/);
+    assert.match(primer, /<instruction-file name="analyst">/);
+    assert.match(primer, /Always interactive/);
+    assert.match(primer, /Run opa ticket list before handoff\./);
+    assert.match(primer, /Use opa ticket update only after approval\./);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

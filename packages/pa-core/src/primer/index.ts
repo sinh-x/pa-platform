@@ -20,7 +20,8 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const mode = selectMode(options.teamConfig, options.mode);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
-  const objective = adaptContentForRuntime(resolveObjective(options, mode), options.runtime);
+  const objective = adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime);
+  const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
   const toolReference = adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime);
   const extraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
 
@@ -33,12 +34,15 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     `## Objective`,
     objective,
+    userObjective ? `
+## User Objective
+${userObjective}` : "",
     ``,
     `## Team`,
     options.teamConfig.description,
     ``,
     `## Agents`,
-    ...agents.map((agent) => `- ${agent.name}: ${agent.role}`),
+    renderAgents(agents, options, options.runtime),
     ``,
     `## Runtime Tools`,
     toolReference,
@@ -49,9 +53,9 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   ].filter((part) => part !== "").join("\n");
 }
 
-function resolveObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
-  const rawObjective = options.objective ?? mode?.objective ?? options.teamConfig.objective;
-  if (!mode?.objective || options.objective) return applyTemplateVars(rawObjective, options.templateVars ?? {});
+function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
+  const rawObjective = mode?.objective ?? options.teamConfig.objective;
+  if (!mode?.objective) return applyTemplateVars(rawObjective, options.templateVars ?? {});
 
   const resolved = options.resolveFile?.(mode.objective) ?? resolve(getPlatformHomeDir(), mode.objective);
   if (!existsSync(resolved)) return applyTemplateVars(rawObjective, options.templateVars ?? {});
@@ -82,6 +86,24 @@ function collectSkills(teamConfig: TeamConfig, mode: DeployMode | undefined): Sk
   if (teamConfig.terse_mode) skills.push({ name: "terse-mode", "inject-as": "global-skill" });
   skills.push(...(mode?.skills ?? []));
   return skills;
+}
+
+function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptions, runtime: RuntimeName): string {
+  return agents.map((agent) => {
+    const lines = [`### Agent: ${agent.name}`, `Role: ${agent.role}`];
+    if (agent.model) lines.push(`Model: ${agent.model}`);
+    if (agent.instruction) {
+      const content = resolveInstruction(options, agent.instruction);
+      lines.push("", `<instruction-file name="${agent.name}">`, adaptContentForRuntime(content, runtime), `</instruction-file>`);
+    }
+    return lines.join("\n");
+  }).join("\n\n");
+}
+
+function resolveInstruction(options: GeneratePrimerOptions, instruction: string): string {
+  const resolved = options.resolveFile?.(instruction) ?? resolve(getPlatformHomeDir(), instruction);
+  if (!existsSync(resolved)) return `(missing instruction: ${instruction})`;
+  return applyTemplateVars(readFileSync(resolved, "utf-8"), options.templateVars ?? {});
 }
 
 function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {

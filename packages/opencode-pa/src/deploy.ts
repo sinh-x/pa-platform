@@ -15,7 +15,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const teamConfig = loadTeamConfig(request.team);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd() });
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
@@ -120,6 +120,7 @@ interface DeploymentContextOpts {
   ticketId?: string;
   repo?: string;
   cwd: string;
+  mode?: string;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
@@ -181,6 +182,6 @@ repo_root: ${opts.repo ? resolve(opts.cwd, opts.repo) : opts.cwd}
 ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
-mode: ${"analyze"}
+mode: ${opts.mode ?? "default"}
 </deployment-context>`;
 }
