@@ -178,11 +178,12 @@ function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; c
 
 function resolveRepoRoot(repo: string | undefined, cwd: string): string {
   if (!repo) return cwd;
-  if (isAbsolute(repo)) return repo;
+  const repoPath = repo.startsWith("~/") ? resolve(homedir(), repo.slice(2)) : repo;
+  if (isAbsolute(repoPath)) return repoPath;
   try {
-    return resolveRepo(repo).path;
+    return resolveRepo(repoPath).path;
   } catch {
-    return resolve(cwd, repo);
+    return resolve(cwd, repoPath);
   }
 }
 
