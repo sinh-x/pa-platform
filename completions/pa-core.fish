@@ -1,11 +1,6 @@
 # Fish completions for pa-core
 
-function __pa_core_teams
-    if command -q pa-core
-        pa-core teams 2>/dev/null | awk 'NR>1 && NF>0 && $1 != "TEAM" && $1 !~ /^-+$/ {print $1}'
-        return
-    end
-
+function __pa_core_team_dirs
     set -l dirs
     if set -q PA_PLATFORM_TEAMS; and test -d "$PA_PLATFORM_TEAMS"
         set -a dirs "$PA_PLATFORM_TEAMS"
@@ -13,9 +8,33 @@ function __pa_core_teams
     if set -q PA_PLATFORM_HOME; and test -d "$PA_PLATFORM_HOME/teams"
         set -a dirs "$PA_PLATFORM_HOME/teams"
     end
+
+    set -l source_teams (dirname (status filename))/../teams
+    if test -d "$source_teams"
+        set -a dirs "$source_teams"
+    end
+
+    set -l config_dir ~/.config/sinh-x/pa-platform
+    if set -q PA_PLATFORM_CONFIG
+        set config_dir "$PA_PLATFORM_CONFIG"
+    end
+    set -l config_file "$config_dir/config.yaml"
+    if test -f "$config_file"
+        set -l configured_teams (string match -r '^\s*teams_dir:\s*.+$' < "$config_file" | string replace -r '^\s*teams_dir:\s*' '' | string trim -c ' "' | string replace -r '^~(?=/|$)' "$HOME")
+        if test -d "$configured_teams"
+            set -a dirs "$configured_teams"
+        end
+    end
+
     if test -d ~/.config/sinh-x/pa-platform/teams
         set -a dirs ~/.config/sinh-x/pa-platform/teams
     end
+
+    printf '%s\n' $dirs | sort -u
+end
+
+function __pa_core_teams
+    set -l dirs (__pa_core_team_dirs)
     for dir in $dirs
         for file in $dir/*.yaml
             if test -f "$file"
