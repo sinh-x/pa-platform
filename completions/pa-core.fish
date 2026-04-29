@@ -44,6 +44,20 @@ function __pa_core_teams
     end | sort -u
 end
 
+function __pa_core_team_file
+    set -l team_name $argv[1]
+    test -z "$team_name"; and return
+
+    set -l dirs (__pa_core_team_dirs)
+    for dir in $dirs
+        set -l file "$dir/$team_name.yaml"
+        if test -f "$file"
+            printf '%s\n' "$file"
+            return
+        end
+    end
+end
+
 function __pa_core_modes
     set -l cmdline (string split ' ' (commandline -p))
     set -l team_name ""
@@ -61,26 +75,19 @@ function __pa_core_modes
     end
     test -z "$team_name"; and return
 
-    if command -q pa-core
-        set -l modes (pa-core deploy "$team_name" --list-modes 2>/dev/null | awk 'NR>1 && $1 != "" {id=$1; $1=""; sub(/^[[:space:]]+/, ""); print id "\t" $0}')
+    set -l team_file (__pa_core_team_file "$team_name")
+    if test -n "$team_file"
+        set -l modes (string match -r '^\s+-\s+id:\s*.+$' < "$team_file" | string replace -r '^\s+-\s+id:\s*' '' | string trim -c ' "')
         if test (count $modes) -gt 0
             printf '%s\n' $modes
             return
         end
     end
 
-    set -l candidates
-    if set -q PA_PLATFORM_TEAMS
-        set -a candidates "$PA_PLATFORM_TEAMS/$team_name.yaml"
-    end
-    if set -q PA_PLATFORM_HOME
-        set -a candidates "$PA_PLATFORM_HOME/teams/$team_name.yaml"
-    end
-    set -a candidates ~/.config/sinh-x/pa-platform/teams/$team_name.yaml
-
-    for file in $candidates
-        if test -f "$file"
-            string match -r '^\s+- id:\s*(.+)' < "$file" | string replace -r '^\s+- id:\s*' ''
+    if command -q pa-core
+        set -l modes (pa-core deploy "$team_name" --list-modes 2>/dev/null | awk 'NR>1 && $1 != "" {id=$1; $1=""; sub(/^[[:space:]]+/, ""); print id "\t" $0}')
+        if test (count $modes) -gt 0
+            printf '%s\n' $modes
             return
         end
     end
