@@ -179,12 +179,15 @@ complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Tea
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
+complete -c opa -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l repo' -a '(__opa_projects)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
+complete -c opa -f -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l ticket' -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
+complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r
+complete -c opa -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l resume' -a '(__opa_deployments)'
 
-complete -c opa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from (__opa_deployments)' -a '(__opa_deployments)' -d 'Deployment'
+complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
 complete -c opa -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
 complete -c opa -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__opa_teams)'
@@ -204,7 +207,8 @@ complete -c opa -n '__fish_seen_subcommand_from remove-timer' -a '(__opa_timer_n
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Preview removal'
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
-complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r
+complete -c opa -n '__fish_seen_subcommand_from board; and __fish_seen_argument -l project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__opa_assignees)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
 

@@ -172,11 +172,13 @@ complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l mode -d 'Deplo
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l objective -d 'Deployment objective' -r
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
+complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
+complete -c pa-core -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l repo' -a '(__pa_core_projects)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l ticket' -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
 
-complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from (__pa_core_deployments)' -a '(__pa_core_deployments)' -d 'Deployment'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__pa_core_teams)'
@@ -196,7 +198,8 @@ complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -a '(__pa_core
 complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Preview removal'
 complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
-complete -c pa-core -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r
+complete -c pa-core -n '__fish_seen_subcommand_from board; and __fish_seen_argument -l project' -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__pa_core_assignees)'
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
 

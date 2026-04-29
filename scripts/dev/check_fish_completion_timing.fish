@@ -9,6 +9,7 @@ if not test -f "$completion_file"
     exit 1
 end
 
+complete -c opa -e
 source "$completion_file"
 
 function __opa_completion_threshold --argument-names env_name default_ms
