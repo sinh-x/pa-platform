@@ -1,11 +1,6 @@
 # Fish completions for opa (opencode-pa adapter)
 
-function __opa_teams
-    if command -q opa
-        opa teams 2>/dev/null | awk 'NR>1 && NF>0 && $1 != "TEAM" && $1 !~ /^-+$/ {print $1}'
-        return
-    end
-
+function __opa_team_dirs
     set -l dirs
     if set -q PA_PLATFORM_TEAMS; and test -d "$PA_PLATFORM_TEAMS"
         set -a dirs "$PA_PLATFORM_TEAMS"
@@ -13,9 +8,33 @@ function __opa_teams
     if set -q PA_PLATFORM_HOME; and test -d "$PA_PLATFORM_HOME/teams"
         set -a dirs "$PA_PLATFORM_HOME/teams"
     end
+
+    set -l source_teams (dirname (status filename))/../teams
+    if test -d "$source_teams"
+        set -a dirs "$source_teams"
+    end
+
+    set -l config_dir ~/.config/sinh-x/pa-platform
+    if set -q PA_PLATFORM_CONFIG
+        set config_dir "$PA_PLATFORM_CONFIG"
+    end
+    set -l config_file "$config_dir/config.yaml"
+    if test -f "$config_file"
+        set -l configured_teams (string match -r '^\s*teams_dir:\s*.+$' < "$config_file" | string replace -r '^\s*teams_dir:\s*' '' | string trim -c ' "' | string replace -r '^~(?=/|$)' "$HOME")
+        if test -d "$configured_teams"
+            set -a dirs "$configured_teams"
+        end
+    end
+
     if test -d ~/.config/sinh-x/pa-platform/teams
         set -a dirs ~/.config/sinh-x/pa-platform/teams
     end
+
+    printf '%s\n' $dirs | sort -u
+end
+
+function __opa_teams
+    set -l dirs (__opa_team_dirs)
     for dir in $dirs
         for file in $dir/*.yaml
             if test -f "$file"
@@ -23,6 +42,20 @@ function __opa_teams
             end
         end
     end | sort -u
+end
+
+function __opa_team_file
+    set -l team_name $argv[1]
+    test -z "$team_name"; and return
+
+    set -l dirs (__opa_team_dirs)
+    for dir in $dirs
+        set -l file "$dir/$team_name.yaml"
+        if test -f "$file"
+            printf '%s\n' "$file"
+            return
+        end
+    end
 end
 
 function __opa_modes
@@ -42,26 +75,19 @@ function __opa_modes
     end
     test -z "$team_name"; and return
 
-    if command -q opa
-        set -l modes (opa deploy "$team_name" --list-modes 2>/dev/null | awk 'NR>1 && $1 != "" {id=$1; $1=""; sub(/^[[:space:]]+/, ""); print id "\t" $0}')
+    set -l team_file (__opa_team_file "$team_name")
+    if test -n "$team_file"
+        set -l modes (string match -r '^\s+-\s+id:\s*.+$' < "$team_file" | string replace -r '^\s+-\s+id:\s*' '' | string trim -c ' "')
         if test (count $modes) -gt 0
             printf '%s\n' $modes
             return
         end
     end
 
-    set -l candidates
-    if set -q PA_PLATFORM_TEAMS
-        set -a candidates "$PA_PLATFORM_TEAMS/$team_name.yaml"
-    end
-    if set -q PA_PLATFORM_HOME
-        set -a candidates "$PA_PLATFORM_HOME/teams/$team_name.yaml"
-    end
-    set -a candidates ~/.config/sinh-x/pa-platform/teams/$team_name.yaml
-
-    for file in $candidates
-        if test -f "$file"
-            string match -r '^\s+- id:\s*(.+)' < "$file" | string replace -r '^\s+- id:\s*' ''
+    if command -q opa
+        set -l modes (opa deploy "$team_name" --list-modes 2>/dev/null | awk 'NR>1 && $1 != "" {id=$1; $1=""; sub(/^[[:space:]]+/, ""); print id "\t" $0}')
+        if test (count $modes) -gt 0
+            printf '%s\n' $modes
             return
         end
     end
@@ -116,6 +142,13 @@ function __opa_assignees
     printf '%s\n' (__opa_teams) sinh builder/team-manager | sort -u
 end
 
+function __opa_completing_option_value
+    set -l option $argv[1]
+    set -l tokens (commandline -opc)
+    test (count $tokens) -gt 0; or return 1
+    test "$tokens[-1]" = "$option"
+end
+
 complete -c opa -f
 
 complete -c opa -n __fish_use_subcommand -a repos -d 'Manage repositories'
@@ -153,12 +186,12 @@ complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Tea
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
 
-complete -c opa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from (__opa_deployments)' -a '(__opa_deployments)' -d 'Deployment'
+complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
 complete -c opa -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
 complete -c opa -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__opa_teams)'
@@ -178,7 +211,8 @@ complete -c opa -n '__fish_seen_subcommand_from remove-timer' -a '(__opa_timer_n
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Preview removal'
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
-complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r
+complete -c opa -n '__fish_seen_subcommand_from board; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__opa_assignees)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
 
@@ -223,12 +257,14 @@ complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create' -l description -d 'Description' -r
 complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l status -d 'Status' -r -a 'idea requirement-review pending-approval pending-implementation implementing review-uat done rejected cancelled'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l tags -d 'Tags' -r
-complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
-complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r -a '(__opa_ticket_ids)'
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
+complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __opa_completing_option_value --blocked-by' -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref -d 'Add doc reference' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref-primary -d 'Make doc-ref primary'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-doc-ref -d 'Remove doc reference' -r
