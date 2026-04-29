@@ -186,13 +186,10 @@ complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Tea
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --repo' -a '(__opa_projects)'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
-complete -c opa -f -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --ticket' -a '(__opa_ticket_ids)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --resume' -a '(__opa_deployments)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
 
 complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

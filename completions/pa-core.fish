@@ -179,10 +179,8 @@ complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l mode -d 'Deplo
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l objective -d 'Deployment objective' -r
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
-complete -c pa-core -n '__fish_seen_subcommand_from deploy; and __pa_core_completing_option_value --repo' -a '(__pa_core_projects)'
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy; and __pa_core_completing_option_value --ticket' -a '(__pa_core_ticket_ids)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
 
 complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
