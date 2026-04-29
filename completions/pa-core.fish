@@ -142,6 +142,13 @@ function __pa_core_assignees
     printf '%s\n' (__pa_core_teams) sinh builder/team-manager | sort -u
 end
 
+function __pa_core_completing_option_value
+    set -l option $argv[1]
+    set -l tokens (commandline -opc)
+    test (count $tokens) -gt 0; or return 1
+    test "$tokens[-1]" = "$option"
+end
+
 complete -c pa-core -f
 
 complete -c pa-core -n __fish_use_subcommand -a repos -d 'Manage repositories'
@@ -173,9 +180,9 @@ complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l objective -d 'Dep
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
-complete -c pa-core -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l repo' -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from deploy; and __pa_core_completing_option_value --repo' -a '(__pa_core_projects)'
 complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l ticket' -a '(__pa_core_ticket_ids)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy; and __pa_core_completing_option_value --ticket' -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
 
 complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
@@ -199,7 +206,7 @@ complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 
 complete -c pa-core -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r
-complete -c pa-core -n '__fish_seen_subcommand_from board; and __fish_seen_argument -l project' -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from board; and __pa_core_completing_option_value --project' -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__pa_core_assignees)'
 complete -c pa-core -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
 
@@ -244,12 +251,14 @@ complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subc
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create' -l description -d 'Description' -r
 complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l status -d 'Status' -r -a 'idea requirement-review pending-approval pending-implementation implementing review-uat done rejected cancelled'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l tags -d 'Tags' -r
-complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __pa_core_completing_option_value --project' -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
-complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r -a '(__pa_core_ticket_ids)'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __pa_core_completing_option_value --blocked-by' -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref -d 'Add doc reference' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref-primary -d 'Make doc-ref primary'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-doc-ref -d 'Remove doc reference' -r

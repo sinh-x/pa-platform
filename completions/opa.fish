@@ -142,6 +142,13 @@ function __opa_assignees
     printf '%s\n' (__opa_teams) sinh builder/team-manager | sort -u
 end
 
+function __opa_completing_option_value
+    set -l option $argv[1]
+    set -l tokens (commandline -opc)
+    test (count $tokens) -gt 0; or return 1
+    test "$tokens[-1]" = "$option"
+end
+
 complete -c opa -f
 
 complete -c opa -n __fish_use_subcommand -a repos -d 'Manage repositories'
@@ -180,12 +187,12 @@ complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Ag
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l repo' -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --repo' -a '(__opa_projects)'
 complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r
-complete -c opa -f -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l ticket' -a '(__opa_ticket_ids)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --ticket' -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
 complete -c opa -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy; and __fish_seen_argument -l resume' -a '(__opa_deployments)'
+complete -c opa -n '__fish_seen_subcommand_from deploy; and __opa_completing_option_value --resume' -a '(__opa_deployments)'
 
 complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
@@ -208,7 +215,7 @@ complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l dry-run -d 'Pre
 complete -c opa -n '__fish_seen_subcommand_from remove-timer' -l yes -d 'Confirm removal'
 
 complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by project' -r
-complete -c opa -n '__fish_seen_subcommand_from board; and __fish_seen_argument -l project' -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from board; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__opa_assignees)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
 
@@ -253,12 +260,14 @@ complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create' -l description -d 'Description' -r
 complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l status -d 'Status' -r -a 'idea requirement-review pending-approval pending-implementation implementing review-uat done rejected cancelled'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list update' -l tags -d 'Tags' -r
-complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l project -d 'Project' -r
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
-complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r -a '(__opa_ticket_ids)'
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
+complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __opa_completing_option_value --blocked-by' -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref -d 'Add doc reference' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref-primary -d 'Make doc-ref primary'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-doc-ref -d 'Remove doc reference' -r
