@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { TicketStore } from "../../tickets/index.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
@@ -143,7 +144,7 @@ function parseTicketCommentArgs(argv: string[]): { author: string; content: stri
   if (!result.values["--author"]) return { error: "--author is required" };
   if (result.values["--content"] && result.values["--content-file"]) return { error: "Use only one of --content or --content-file" };
   if (!result.values["--content"] && !result.values["--content-file"]) return { error: "one of --content or --content-file is required" };
-  const content = result.values["--content-file"] ? readFileSync(resolve(result.values["--content-file"]!), "utf-8") : result.values["--content"]!;
+  const content = result.values["--content-file"] ? readGuardedLocalTextFile(result.values["--content-file"]!) : result.values["--content"]!;
   return { author: result.values["--author"]!, content };
 }
 

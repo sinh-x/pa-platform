@@ -16,6 +16,7 @@ import { listRepos, resolveProject, resolveProjectFromCwd } from "../repos.js";
 import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
 import { routeMessage } from "../signal/router.js";
 import { cleanSignalEntries, writeRoutedMessage } from "../signal/writers.js";
+import { readGuardedLocalTextFile } from "../sensitive-patterns.js";
 import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries } from "../tickets/index.js";
 import { listSystemdTimers } from "../timers.js";
 import { getTeamRuntimeStatus, listTeamConfigs, loadTeamConfig } from "../teams/index.js";
@@ -737,7 +738,13 @@ function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | 
     if (!key) return { error: `Unsupported deploy option: ${arg}` };
     const value = rest[i + 1];
     if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
-    if (key === "objectiveFile") fields.objective = readFileSync(resolve(value), "utf-8");
+    if (key === "objectiveFile") {
+      try {
+        fields.objective = readGuardedLocalTextFile(value);
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    }
     else fields[key] = key === "timeout" ? Number(value) : value;
     i += 1;
   }

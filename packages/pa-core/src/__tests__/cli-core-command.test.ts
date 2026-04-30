@@ -228,6 +228,33 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
   });
 });
 
+test("deploy objective-file uses guarded local text-file reader", async () => {
+  await withCliEnv(async (root) => {
+    const objectiveFile = join(root, "objective.md");
+    writeFileSync(objectiveFile, "Ship a normal objective from a local file.");
+
+    const seen: unknown[] = [];
+    const allowed = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
+      io: allowed.io,
+      hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-objective-file" }; } },
+    }), 0);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship a normal objective from a local file.", dryRun: true, timeout: 1800 }]);
+
+    writeFileSync(join(process.env["PA_PLATFORM_CONFIG"]!, "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_PRIVATE_OBJECTIVE_[0-9]+'", ""].join("\n"));
+    writeFileSync(objectiveFile, "contains FAKE_PRIVATE_OBJECTIVE_123 only");
+
+    const blocked = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
+      io: blocked.io,
+      hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-blocked" }; } },
+    }), 1);
+    assert.match(blocked.stderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(blocked.stderr.join("\n"), /FAKE_PRIVATE_OBJECTIVE|123/);
+    assert.equal(seen.length, 1);
+  });
+});
+
 test("runCoreCommand resolves deploy timeout from flag, PA_MAX_RUNTIME, then default", async () => {
   await withCliEnv(async () => {
     const seen: unknown[] = [];
@@ -629,6 +656,28 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
     const resolveBulletin = capture();
     assert.equal(await runCoreCommand(["bulletin", "resolve", "B-001"], { io: resolveBulletin.io }), 0);
     assert.match(resolveBulletin.stdout.join("\n"), /Resolved B-001/);
+  });
+});
+
+test("ticket comment content-file uses guarded local text-file reader", async () => {
+  await withCliEnv(async () => {
+    const createTicket = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Guarded comment", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: createTicket.io }), 0);
+
+    const commentFile = join(process.env["PA_AI_USAGE_HOME"]!, "comment.md");
+    writeFileSync(commentFile, "Normal file comment");
+    const allowed = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content-file", commentFile], { io: allowed.io }), 0);
+
+    const blockedFile = join(process.env["PA_AI_USAGE_HOME"]!, ".env");
+    const blocked = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content-file", blockedFile], { io: blocked.io }), 1);
+    assert.match(blocked.stderr.join("\n"), /Blocked sensitive filename input/);
+    assert.doesNotMatch(blocked.stderr.join("\n"), /ENOENT|\.env/);
+
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.comments.length, 1);
+    assert.equal(ticket?.comments[0]?.content, "Normal file comment");
   });
 });
 
