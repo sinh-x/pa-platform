@@ -2,11 +2,34 @@
 
 set -g __opa_completion_dir (dirname (status filename))
 
+function __opa_config_value --argument-names key
+    set -l config_dir ~/.config/sinh-x/pa-platform
+    if set -q PA_PLATFORM_CONFIG
+        set config_dir "$PA_PLATFORM_CONFIG"
+    end
+
+    set -l config_file "$config_dir/config.yaml"
+    if test -f "$config_file"
+        string match -r "^\\s*$key:\\s*.+\$" < "$config_file" | string replace -r "^\\s*$key:\\s*" '' | string trim -c ' "' | string replace -r '^~(?=/|$)' "$HOME"
+    end
+end
+
 function __opa_team_dirs
     set -l dirs
     if set -q PA_PLATFORM_TEAMS; and test -d "$PA_PLATFORM_TEAMS"
         set -a dirs "$PA_PLATFORM_TEAMS"
     end
+
+    set -l configured_teams (__opa_config_value teams_dir)
+    if test -d "$configured_teams"
+        set -a dirs "$configured_teams"
+    end
+
+    set -l configured_home (__opa_config_value config_dir)
+    if test -d "$configured_home/teams"
+        set -a dirs "$configured_home/teams"
+    end
+
     if set -q PA_PLATFORM_HOME; and test -d "$PA_PLATFORM_HOME/teams"
         set -a dirs "$PA_PLATFORM_HOME/teams"
     end
@@ -21,54 +44,15 @@ function __opa_team_dirs
         set -a dirs "$installed_teams"
     end
 
-    set -l config_dir ~/.config/sinh-x/pa-platform
-    if set -q PA_PLATFORM_CONFIG
-        set config_dir "$PA_PLATFORM_CONFIG"
-    end
-    set -l config_file "$config_dir/config.yaml"
-    if test -f "$config_file"
-        set -l configured_teams (string match -r '^\s*teams_dir:\s*.+$' < "$config_file" | string replace -r '^\s*teams_dir:\s*' '' | string trim -c ' "' | string replace -r '^~(?=/|$)' "$HOME")
-        if test -d "$configured_teams"
-            set -a dirs "$configured_teams"
-        end
-    end
-
     if test -d ~/.config/sinh-x/pa-platform/teams
         set -a dirs ~/.config/sinh-x/pa-platform/teams
     end
 
-    printf '%s\n' $dirs | sort -u
+    printf '%s\n' $dirs
 end
 
 function __opa_teams
-    set -l dirs
-    if set -q PA_PLATFORM_TEAMS; and test -d "$PA_PLATFORM_TEAMS"
-        set -a dirs "$PA_PLATFORM_TEAMS"
-    end
-    if set -q PA_PLATFORM_HOME; and test -d "$PA_PLATFORM_HOME/teams"
-        set -a dirs "$PA_PLATFORM_HOME/teams"
-    end
-    if test -d "$__opa_completion_dir/../teams"
-        set -a dirs "$__opa_completion_dir/../teams"
-    end
-    if test -d "$__opa_completion_dir/../../pa-platform/teams"
-        set -a dirs "$__opa_completion_dir/../../pa-platform/teams"
-    end
-
-    set -l config_dir ~/.config/sinh-x/pa-platform
-    if set -q PA_PLATFORM_CONFIG
-        set config_dir "$PA_PLATFORM_CONFIG"
-    end
-    set -l config_file "$config_dir/config.yaml"
-    if test -f "$config_file"
-        set -l configured_teams (string match -r '^\s*teams_dir:\s*.+$' < "$config_file" | string replace -r '^\s*teams_dir:\s*' '' | string trim -c ' "' | string replace -r '^~(?=/|$)' "$HOME")
-        if test -d "$configured_teams"
-            set -a dirs "$configured_teams"
-        end
-    end
-    if test -d ~/.config/sinh-x/pa-platform/teams
-        set -a dirs ~/.config/sinh-x/pa-platform/teams
-    end
+    set -l dirs (__opa_team_dirs)
 
     for dir in $dirs
         for file in $dir/*.yaml
