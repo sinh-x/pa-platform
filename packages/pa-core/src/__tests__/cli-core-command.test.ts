@@ -314,21 +314,35 @@ test("runCoreCommand status wait supports override timeout without mutating stor
 test("runCoreCommand status wait rejects invalid override timeout", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-wait-invalid", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 1800 });
-    process.env["PA_STATUS_WAIT_TIMEOUT"] = "59";
-    const captured = capture();
+    for (const value of ["abc", "59", "7201", "120.5"]) {
+      process.env["PA_STATUS_WAIT_TIMEOUT"] = value;
+      const captured = capture();
 
-    assert.equal(await runCoreCommand(["status", "d-wait-invalid", "--wait"], { io: captured.io }), 1);
-    assert.match(captured.stderr.join("\n"), /PA_STATUS_WAIT_TIMEOUT must be between 60 and 7200 seconds/);
-    assert.deepEqual(captured.stdout, []);
+      assert.equal(await runCoreCommand(["status", "d-wait-invalid", "--wait"], { io: captured.io }), 1);
+      assert.match(captured.stderr.join("\n"), /PA_STATUS_WAIT_TIMEOUT must be between 60 and 7200 seconds/);
+      assert.deepEqual(captured.stdout, []);
+    }
   });
 });
 
-test("runCoreCommand status wait returns nonzero for failed and crashed final states", async () => {
+test("runCoreCommand status wait returns final-state exit codes", async () => {
   await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-wait-success", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    appendRegistryEvent({ deployment_id: "d-wait-success", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "success", summary: "done" });
+    appendRegistryEvent({ deployment_id: "d-wait-partial", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    appendRegistryEvent({ deployment_id: "d-wait-partial", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "partial", summary: "usable with warnings" });
     appendRegistryEvent({ deployment_id: "d-wait-failed", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
     appendRegistryEvent({ deployment_id: "d-wait-failed", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "failed", summary: "verification failed" });
     appendRegistryEvent({ deployment_id: "d-wait-crashed", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
     appendRegistryEvent({ deployment_id: "d-wait-crashed", team: "builder", event: "crashed", timestamp: "2026-04-26T00:00:10.000Z", error: "runtime exited" });
+
+    const success = capture();
+    assert.equal(await runCoreCommand(["status", "d-wait-success", "--wait"], { io: success.io }), 0);
+    assert.match(success.stdout.join("\n"), /success - done/);
+
+    const partial = capture();
+    assert.equal(await runCoreCommand(["status", "d-wait-partial", "--wait"], { io: partial.io }), 0);
+    assert.match(partial.stdout.join("\n"), /partial - usable with warnings/);
 
     const failed = capture();
     assert.equal(await runCoreCommand(["status", "d-wait-failed", "--wait"], { io: failed.io }), 1);
@@ -337,6 +351,21 @@ test("runCoreCommand status wait returns nonzero for failed and crashed final st
     const crashed = capture();
     assert.equal(await runCoreCommand(["status", "d-wait-crashed", "--wait"], { io: crashed.io }), 1);
     assert.match(crashed.stdout.join("\n"), /crashed - crashed/);
+  });
+});
+
+test("runCoreCommand status wait reports not found without polling", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    let slept = false;
+
+    assert.equal(await runCoreCommand(["status", "d-missing", "--wait"], {
+      io: captured.io,
+      sleep: async () => { slept = true; },
+    }), 1);
+    assert.equal(slept, false);
+    assert.match(captured.stderr.join("\n"), /Deployment not found: d-missing/);
+    assert.deepEqual(captured.stdout, []);
   });
 });
 
