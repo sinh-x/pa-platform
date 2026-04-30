@@ -1,10 +1,10 @@
 # Sanitization And File Input Policy
 
 > Date: 2026-04-30
-> Status: current-state documentation and recommended policy
+> Status: current-state documentation and policy
 > Scope: `pa-core` CLI/API validation, OpenCode adapter redaction, ticket file inputs, doc refs, and Signal sensitive routing.
 
-This document records the current sanitization and file-input behavior in `pa-platform`, then defines the recommended policy for future changes. The goal is to protect model prompts, logs, API file reads, and workflow state without adding unnecessary friction to trusted local CLI workflows.
+This document records the current sanitization and file-input behavior in `pa-platform`. The goal is to protect model prompts, logs, API file reads, and workflow state without adding unnecessary friction to trusted local CLI workflows.
 
 ## Summary
 
@@ -14,17 +14,17 @@ This document records the current sanitization and file-input behavior in `pa-pl
 - Agent API document/folder/image routes sandbox user-provided paths to `~/Documents/ai-usage`.
 - Activity and OpenCode stream summaries redact common secret indicators and truncate output.
 - Signal note routing classifies obvious sensitive text before normal workflow routing.
-- Local CLI file inputs such as `opa deploy --objective-file` and `opa ticket comment --content-file` are trusted local convenience inputs: their paths are not sandboxed before reading.
+- Local CLI file inputs such as `opa deploy --objective-file` and `opa ticket comment --content-file` are trusted local convenience inputs: their paths are not sandboxed, but sensitive filename, path, and content guardrails run before the input is accepted.
 
-The main policy gap is not whether `--objective-file` should exist. It should. The gap is that files whose contents become model-visible prompt content should have clear guardrails for obvious sensitive files and secret-like content.
+`--objective-file` remains supported for local workflows, but files whose contents become model-visible prompt content must pass sensitive filename, path, and content guardrails first.
 
 ## Current Deploy Workflow
 
 `opa deploy` is split between shared `pa-core` command parsing and the OpenCode adapter runtime hook.
 
 1. `packages/pa-core/src/cli/core-command.ts` parses `opa deploy` arguments.
-2. If `--objective-file <path>` is passed, the CLI reads `readFileSync(resolve(value), "utf-8")` immediately.
-3. The file contents become the deploy `objective` field.
+2. If `--objective-file <path>` is passed, the CLI checks the resolved path and basename before reading, then checks file contents before accepting them as the deploy `objective` field.
+3. Inline `--objective <text>` values are checked for sensitive content before deploy execution.
 4. `packages/pa-core/src/deploy/control.ts` validates the deploy request fields.
 5. `packages/opencode-pa/src/deploy.ts` generates the OpenCode primer and writes it to `~/Documents/ai-usage/deployments/<deploy-id>/primer.md`.
 6. The OpenCode adapter launches or resumes the runtime using that primer.
@@ -37,8 +37,8 @@ For API deploys, `packages/pa-core/src/agent-api/routes/deploy-control.ts` accep
 |---|---|---|
 | Deploy field validation | `packages/pa-core/src/deploy/control.ts` | Validates `team`, `mode`, `repo`, `ticket`, provider/model names, `resume`, `timeout`, and objective content. |
 | Objective content validation | `packages/pa-core/src/deploy/control.ts` | Rejects objectives over 10000 characters and rejects control characters plus `` ` $ \\ ; & \| > < ``. |
-| Objective file path handling | `packages/pa-core/src/cli/core-command.ts` | Resolves and reads the path directly; no path sandbox is applied. |
-| Ticket comment file input | `packages/pa-core/src/cli/commands/ticket.ts` | `--content-file` resolves and reads the path directly; no path sandbox is applied. |
+| Objective file path handling | `packages/pa-core/src/cli/core-command.ts` | Resolves local paths without API-style sandboxing; sensitive filename, path, and content guardrails block before deploy execution. |
+| Ticket comment file input | `packages/pa-core/src/cli/commands/ticket.ts` | Resolves local paths without API-style sandboxing; sensitive filename, path, and content guardrails block before comment creation. |
 | Agent API path sandbox | `packages/pa-core/src/agent-api/utils/sandbox.ts` | Ensures API document/folder/image paths resolve inside `~/Documents/ai-usage`. |
 | API documents/images | `packages/pa-core/src/agent-api/routes/documents.ts` | Reads only after sandbox validation. |
 | Activity summaries | `packages/pa-core/src/activity/index.ts` | Masks token/secret/password/key indicators, bearer tokens, `sk-*`, sensitive file paths, and truncates event bodies. |
@@ -60,14 +60,14 @@ Different inputs need different rules because they have different trust boundari
 
 ## Recommended Policy
 
-The recommended policy is permissive for trusted local CLI use and strict for remote/API reads.
+The policy is permissive for trusted local CLI use and strict for remote/API reads.
 
 | Input type | Policy |
 |---|---|
 | `opa deploy --objective-file` | Keep allowed. It is a useful local workflow for multi-line objectives and should not be repo-only or ai-usage-only by default. |
 | `opa ticket comment --content-file` | Keep allowed, with the same local-trusted posture. |
 | API path inputs | Keep strict sandboxing to `~/Documents/ai-usage`; do not allow arbitrary absolute file reads through API routes. |
-| Model-visible file contents | Add guardrails against obvious secret files and obvious secret content before sending to a model. |
+| Model-visible file contents | Apply guardrails against obvious secret files and obvious secret content before sending to a model. |
 | Activity and stream summaries | Continue redacting and truncating; keep these checks independent from deploy validation. |
 | Doc refs | Encourage relative ai-usage paths in docs and examples; treat absolute paths as local references that may not be readable through API document routes. |
 
@@ -75,7 +75,9 @@ The recommended policy is permissive for trusted local CLI use and strict for re
 
 For local file inputs whose contents may enter model context or persistent workflow state, prefer guardrails over hard sandboxing.
 
-Guardrails should reject obviously sensitive file paths before reading when feasible:
+Optional local custom filename, path, and content patterns are loaded from `~/.config/sinh-x/pa-platform/sensitive-patterns.yaml`. Keep custom patterns local-only and out of repository docs, tests, fixtures, logs, output, and errors.
+
+Guardrails reject obviously sensitive file paths before reading when feasible. Built-in defaults cover generic sensitive filename and path shapes such as:
 
 - `.env`, `.env.*`
 - `.npmrc`, `.pypirc`, `.netrc`
@@ -85,7 +87,7 @@ Guardrails should reject obviously sensitive file paths before reading when feas
 - `*token*.json`
 - `*api-key*.json`, `*api_key*.json`
 
-Guardrails should reject or require explicit confirmation for obvious sensitive content after reading:
+Guardrails reject obvious sensitive content after reading, before the content is accepted:
 
 - Seed phrases.
 - SSH private or public key material.
@@ -93,7 +95,7 @@ Guardrails should reject or require explicit confirmation for obvious sensitive 
 - `sk-*` style provider keys.
 - Bot/API token patterns already covered by Signal sensitive routing.
 
-Non-interactive `opa` commands should fail closed with a clear error instead of prompting for confirmation. If a bypass is ever needed, add an explicit flag such as `--allow-sensitive-file` rather than weakening the default.
+Non-interactive `opa` commands fail closed with a clear, non-revealing error.
 
 ## Why Not Sandbox `--objective-file` By Default
 
@@ -110,23 +112,20 @@ The better tradeoff is:
 
 | Gap | Risk | Recommended action |
 |---|---|---|
-| `--objective-file` has no sensitive path/content check | A local operator can accidentally pass a credentials file into a model-visible primer. | Add a shared helper for safe local content-file reads used by deploy objective files. |
-| `--content-file` has no sensitive path/content check | A sensitive file can be persisted into ticket comments. | Reuse the same helper for ticket comment file reads. |
-| Objective validation is content-shape focused, not secret focused | Secret-looking strings may pass if they avoid rejected characters. | Add sensitive-content detection before accepting objective text from file or inline objective. |
+| Local custom patterns are private operator config | Publishing private patterns would disclose local detection logic. | Keep custom patterns only in `~/.config/sinh-x/pa-platform/sensitive-patterns.yaml`; do not copy them into tracked docs, code, tests, fixtures, logs, output, or errors. |
 | Doc refs can store absolute local paths | CLI can record references that the API document route will not serve because of sandboxing. | Prefer docs/examples that use ai-usage-relative doc refs; optionally warn on absolute non-URL doc refs. |
 | Redaction patterns are duplicated | Activity and OpenCode stream redaction use similar but separate pattern lists. | Consider a shared redaction utility if patterns diverge or more sinks are added. |
 
-## Implementation Notes For Future Work
+## Implementation Notes
 
-Future implementation should keep the change small:
+Implementation should stay small and preserve existing trust boundaries:
 
-- Add one shared helper in `pa-core` for reading trusted local text inputs with sensitive path/content checks.
-- Use it for `--objective-file` and `--content-file` first.
+- Use the shared guarded local text-input helpers for `--objective-file`, inline `--objective`, and `--content-file`.
 - Keep API sandboxing unchanged.
 - Keep activity/stream redaction unchanged unless adding a shared utility is part of the same scoped task.
 - Add tests for allowed normal files and rejected sensitive-looking files.
 
-Suggested acceptance checks for a future implementation:
+Suggested acceptance checks:
 
 - `opa deploy <team> --objective-file objective.md --dry-run` accepts a normal objective file.
 - `opa deploy <team> --objective-file .env --dry-run` fails with a clear sensitive-file error.
