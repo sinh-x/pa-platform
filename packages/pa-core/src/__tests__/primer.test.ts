@@ -24,6 +24,11 @@ function assertNoBannedOpencodeOperationalReferences(primer: string): void {
   assert.doesNotMatch(primer, /--interactive\b/);
 }
 
+function assertNoLegacyPaCliExamples(primer: string): void {
+  assert.doesNotMatch(primer, /`pa (deploy|bulletin|status|ticket|registry|report|daily|idea|serve|health|teams|requirements|search|create|update|list|remove-timer)\b/);
+  assert.doesNotMatch(primer, /\bpa (deploy|bulletin|status|ticket|registry|report|daily|idea|serve|health|teams|requirements|search|create|update|list|remove-timer)\b/);
+}
+
 const team = parseTeamYamlContent(`
 name: requirements
 description: Requirements team
@@ -201,6 +206,7 @@ test("generatePrimer requirements spike fixture keeps ticket-driven orchestratio
   assert.match(primer, /spike:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /attachment:learning-management\/areas\/spike-research\/YYYY-MM-DD-<topic-slug>\.md/);
   assert.match(primer, /Add completion comment first|completion comment/);
+  assertNoLegacyPaCliExamples(primer);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
