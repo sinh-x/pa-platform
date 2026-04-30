@@ -25,11 +25,13 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
   const previousMaxRuntime = process.env["PA_MAX_RUNTIME"];
+  const previousStatusWaitTimeout = process.env["PA_STATUS_WAIT_TIMEOUT"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   delete process.env["PA_MAX_RUNTIME"];
+  delete process.env["PA_STATUS_WAIT_TIMEOUT"];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -42,6 +44,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
     if (previousMaxRuntime === undefined) delete process.env["PA_MAX_RUNTIME"];
     else process.env["PA_MAX_RUNTIME"] = previousMaxRuntime;
+    if (previousStatusWaitTimeout === undefined) delete process.env["PA_STATUS_WAIT_TIMEOUT"];
+    else process.env["PA_STATUS_WAIT_TIMEOUT"] = previousStatusWaitTimeout;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -256,6 +260,83 @@ test("runCoreCommand rejects invalid PA_MAX_RUNTIME before deployment hook", asy
       assert.equal(called, false);
       assert.match(captured.stderr.join("\n"), /PA_MAX_RUNTIME must be between 60 and 7200 seconds/);
     }
+  });
+});
+
+test("runCoreCommand status wait polls until deployment reaches terminal status", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-wait-poll", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-poll", "--wait"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        appendRegistryEvent({ deployment_id: "d-wait-poll", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "partial", summary: "usable with warnings" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 1);
+    assert.match(captured.stdout.join("\n"), /Waiting for deployment: d-wait-poll/);
+    assert.match(captured.stdout.join("\n"), /Wait timeout: 120s/);
+    assert.match(captured.stdout.join("\n"), /Poll interval: 10s/);
+    assert.match(captured.stdout.join("\n"), /Override env: PA_STATUS_WAIT_TIMEOUT/);
+    assert.match(captured.stdout.join("\n"), /partial - usable with warnings/);
+  });
+});
+
+test("runCoreCommand status wait supports override timeout without mutating stored timeout", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-wait-override", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 1800 });
+    process.env["PA_STATUS_WAIT_TIMEOUT"] = "60";
+    const captured = capture();
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-override", "--wait"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => { nowMs += ms; },
+    });
+
+    assert.equal(code, 1);
+    assert.match(captured.stdout.join("\n"), /Wait timeout: 60s/);
+    assert.match(captured.stderr.join("\n"), /Timed out waiting for deployment d-wait-override after 60s/);
+
+    const detail = capture();
+    assert.equal(await runCoreCommand(["status", "d-wait-override"], { io: detail.io }), 0);
+    assert.match(detail.stdout.join("\n"), /Timeout:\s+1800s/);
+  });
+});
+
+test("runCoreCommand status wait rejects invalid override timeout", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-wait-invalid", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 1800 });
+    process.env["PA_STATUS_WAIT_TIMEOUT"] = "59";
+    const captured = capture();
+
+    assert.equal(await runCoreCommand(["status", "d-wait-invalid", "--wait"], { io: captured.io }), 1);
+    assert.match(captured.stderr.join("\n"), /PA_STATUS_WAIT_TIMEOUT must be between 60 and 7200 seconds/);
+    assert.deepEqual(captured.stdout, []);
+  });
+});
+
+test("runCoreCommand status wait returns nonzero for failed and crashed final states", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-wait-failed", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    appendRegistryEvent({ deployment_id: "d-wait-failed", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "failed", summary: "verification failed" });
+    appendRegistryEvent({ deployment_id: "d-wait-crashed", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    appendRegistryEvent({ deployment_id: "d-wait-crashed", team: "builder", event: "crashed", timestamp: "2026-04-26T00:00:10.000Z", error: "runtime exited" });
+
+    const failed = capture();
+    assert.equal(await runCoreCommand(["status", "d-wait-failed", "--wait"], { io: failed.io }), 1);
+    assert.match(failed.stdout.join("\n"), /failed - verification failed/);
+
+    const crashed = capture();
+    assert.equal(await runCoreCommand(["status", "d-wait-crashed", "--wait"], { io: crashed.io }), 1);
+    assert.match(crashed.stdout.join("\n"), /crashed - crashed/);
   });
 });
 
