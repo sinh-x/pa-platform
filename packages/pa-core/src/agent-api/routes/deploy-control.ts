@@ -18,6 +18,7 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
       const response = toPhoneDeployResponse({ team: deployRequest.team, mode: deployRequest.mode ?? null, ...result });
       return c.json(response, 202);
     } catch (error) {
+      // PAP-042 AC2 phone contract: always 202 with structured failed JSON — never 500, never throws
       return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: resolved.request.team, mode: resolved.request.mode ?? null }, 202);
     }
   });
