@@ -112,7 +112,7 @@ export function ticketRoutes(store = new TicketStore()): Hono {
     const assignee = c.req.query("assignee") || undefined;
     const excludeTagsInput = c.req.query("excludeTags");
     const excludeTypesInput = c.req.query("excludeTypes");
-    const excludeTags = excludeTagsInput ? excludeTagsInput.split(",").map((tag) => tag.trim()).filter(Boolean) : BOARD_DEFAULT_EXCLUDE_TAGS;
+    const excludeTags = excludeTagsInput !== undefined ? excludeTagsInput.split(",").map((tag) => tag.trim()).filter(Boolean) : BOARD_DEFAULT_EXCLUDE_TAGS;
     const excludeTypes = excludeTypesInput !== undefined ? parseTicketTypes(excludeTypesInput) : BOARD_DEFAULT_EXCLUDE_TYPES;
 
     try {

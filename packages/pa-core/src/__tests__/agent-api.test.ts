@@ -115,7 +115,7 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     assert.equal(emptyExclusionsResponse.status, 200);
     const emptyExclusionsBoard = await emptyExclusionsResponse.json() as typeof allBoard;
     const emptyExclusionTitles = emptyExclusionsBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
-    assert.doesNotMatch(emptyExclusionTitles.join("\n"), /API backlog/);
+    assert.match(emptyExclusionTitles.join("\n"), /API backlog/);
     assert.match(emptyExclusionTitles.join("\n"), /API FYI/);
 
     const unknownResponse = await app.request("/api/board?project=unknown");
