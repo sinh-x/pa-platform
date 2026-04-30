@@ -790,6 +790,7 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else if (!opts.deployId) opts.deployId = arg;
     else return { error: `Unexpected status argument: ${arg}` };
   }
+  if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
   return opts;
 }
 

@@ -290,6 +290,16 @@ test("runCoreCommand status wait polls until deployment reaches terminal status"
   });
 });
 
+test("runCoreCommand status wait requires deployment id", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+
+    assert.equal(await runCoreCommand(["status", "--wait"], { io: captured.io }), 1);
+    assert.match(captured.stderr.join("\n"), /status --wait requires deploy-id/);
+    assert.deepEqual(captured.stdout, []);
+  });
+});
+
 test("runCoreCommand status wait supports override timeout without mutating stored timeout", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-wait-override", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 1800 });
