@@ -194,6 +194,36 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
   });
 });
 
+test("agent API deploy validates requests and routes through deploy hook without serve hook", async () => {
+  await withApiEnv(async () => {
+    const received: unknown[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request);
+        return { status: "pending", deploymentId: "d-default-adapter" };
+      },
+    } });
+
+    const valid = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", provider: "openai", teamModel: "gpt-5.5", timeout: 120 }),
+    });
+    assert.equal(valid.status, 202);
+    assert.deepEqual(await valid.json(), { team: "builder", mode: "plan", status: "pending", deploymentId: "d-default-adapter" });
+    assert.deepEqual(received, [{ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120, provider: "openai", teamModel: "gpt-5.5" }]);
+
+    const invalid = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "../builder" }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(await invalid.json(), { error: "Invalid team name", code: "BAD_REQUEST" });
+    assert.equal(received.length, 1);
+  });
+});
+
 test("agent API exposes repo commits and repo deployment filters", async () => {
   await withApiEnv(async (root) => {
     const repo = join(root, "repo");

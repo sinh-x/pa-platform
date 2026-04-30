@@ -4,9 +4,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, createAgentApiApp, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
-import { createOpencodeHooks } from "../deploy.js";
+import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
@@ -102,6 +102,31 @@ test("opa dry-run generates primer and does not spawn opencode", async () => {
     assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /Runtime: opencode/);
     assert.equal(queryDeploymentStatuses().length, 0);
   });
+});
+
+test("opa default hooks route agent API deploy requests through opencode adapter", async () => {
+  await withOpaEnv(async () => {
+    const { app } = createAgentApiApp({ hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })) });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "daily", mode: "plan", background: true, provider: "openai", timeout: 120 }),
+    });
+
+    assert.equal(response.status, 202);
+    const body = await response.json() as { team: string; mode: string | null; status: string; deploymentId?: string };
+    assert.equal(body.team, "daily");
+    assert.equal(body.mode, "plan");
+    assert.equal(body.status, "pending");
+    assert.match(body.deploymentId ?? "", /^d-[a-f0-9]{6}$/);
+    assert.equal(queryDeploymentStatuses()[0]?.runtime, "opencode");
+  });
+});
+
+test("opa exposes an explicit default hook boundary for core-owned serve", () => {
+  const hooks = createDefaultOpencodeHooks();
+  assert.equal(typeof hooks.deploy, "function");
+  assert.equal(hooks.serve, undefined);
 });
 
 test("opa planner daily modes resolve dynamic template variables", async () => {

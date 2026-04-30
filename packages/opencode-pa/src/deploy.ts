@@ -9,6 +9,10 @@ export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapte
   return { deploy: (request) => deployWithOpencode(request, adapter) };
 }
 
+export function createDefaultOpencodeHooks(): CoreExecutionHooks {
+  return createOpencodeHooks();
+}
+
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter()) {
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
