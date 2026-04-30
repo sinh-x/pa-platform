@@ -14,8 +14,9 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  writeFileSync(join(config, "config.yaml"), `defaults:\n  runtime: opencode\n  opencode:\n    provider: openai\n    model: gpt-5.5\nprovider_defaults:\n  providers:\n    minimax:\n      models:\n        opus: minimax-coding-plan/MiniMax-M2.7\n    openai:\n      models:\n        opus: openai/gpt-5.5\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n  - id: chat\n    label: Chat\n    mode_type: interactive\n`);
+  writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\ndefault_mode: plan\ntimeout: 600\nobjective: Build\nagents:\n  - name: implementer\n    role: Writes code\n    model: opus\ndeploy_modes:\n  - id: plan\n    label: Plan\n    mode_type: work\n    provider: minimax\n    model: opus\n    timeout: 900\n  - id: hidden\n    label: Hidden\n    mode_type: work\n    phone_visible: false\n  - id: chat\n    label: Chat\n    mode_type: interactive\n`);
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
@@ -60,11 +61,35 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     assert.equal(bulletin.status, 201);
     assert.equal((await app.request("/api/bulletin")).status, 200);
 
+    mkdirSync(join(root, "agent-teams", "builder", "inbox"), { recursive: true });
+    mkdirSync(join(root, "agent-teams", "builder", "waiting-for-response"), { recursive: true });
+    writeFileSync(join(root, "agent-teams", "builder", "inbox", "request.md"), "request");
+
+    const workspaces = await app.request("/api/teams");
+    const workspaceBody = await workspaces.json() as { teams: Array<{ name: string; inbox_count: number; wfr_count: number; waiting_for_response_count: number; path: string }> };
+    assert.equal(workspaceBody.teams[0]?.name, "builder");
+    assert.equal(workspaceBody.teams[0]?.inbox_count, 1);
+    assert.equal(workspaceBody.teams[0]?.wfr_count, 0);
+    assert.equal(workspaceBody.teams[0]?.waiting_for_response_count, 0);
+
     const teams = await app.request("/api/pa-teams");
-    assert.equal((await teams.json() as { teams: Array<{ name: string }> }).teams[0]?.name, "builder");
+    const teamsBody = await teams.json() as { teams: Array<{ name: string; default_mode: string; timeout: number; agents: Array<{ name: string; role: string; model: string }>; deploy_modes: Array<{ id: string; mode_type?: string; provider?: string; model?: string; timeout?: number }> }> };
+    assert.equal(teamsBody.teams[0]?.name, "builder");
+    assert.equal(teamsBody.teams[0]?.default_mode, "plan");
+    assert.equal(teamsBody.teams[0]?.timeout, 600);
+    assert.deepEqual(teamsBody.teams[0]?.agents, [{ name: "implementer", role: "Writes code", model: "opus" }]);
+    assert.deepEqual(teamsBody.teams[0]?.deploy_modes.map((mode) => mode.id), ["plan", "chat"]);
+    assert.equal(teamsBody.teams[0]?.deploy_modes[0]?.provider, "minimax");
 
     const routing = await app.request("/api/deploy-routing");
-    assert.deepEqual(await routing.json(), { teams: [{ name: "builder", description: "Builder", modes: [{ id: "plan", label: "Plan", modeType: null }] }], repos: [{ name: "pa-platform", path: join(root, "repo"), description: "Test repo" }] });
+    assert.deepEqual(await routing.json(), {
+      teams: [{ name: "builder", description: "Builder", defaultMode: "plan", modes: [{ id: "plan", label: "Plan", modeType: "work", phoneVisible: true, provider: "minimax", model: "opus", timeout: 900 }] }],
+      repos: [{ name: "pa-platform", path: join(root, "repo"), description: "Test repo" }],
+      routing: { defaultRuntime: "opencode", defaultAdapter: "opa", defaultProvider: "openai", defaultModel: "gpt-5.5", supportedProviders: ["minimax", "openai"], providerDefaults: { minimax: { models: { opus: "minimax-coding-plan/MiniMax-M2.7" } }, openai: { models: { opus: "openai/gpt-5.5" } } }, modelFields: ["provider", "model", "teamModel", "agentModel"], defaultTimeoutSeconds: 1800 },
+    });
+
+    const agentTeams = await app.request("/api/agent-teams");
+    assert.deepEqual((await agentTeams.json() as { teams: Array<{ name: string; inbox_exists: boolean; inbox_count: number }> }).teams.map((team) => ({ name: team.name, inbox_exists: team.inbox_exists, inbox_count: team.inbox_count })), [{ name: "builder", inbox_exists: true, inbox_count: 1 }]);
 
     mkdirSync(join(root, "agent-teams", "builder", "artifacts"), { recursive: true });
     writeFileSync(join(root, "agent-teams", "builder", "artifacts", "note.md"), "# Note\n\nBody");
@@ -146,22 +171,37 @@ test("agent API document, image, and folder routes reject outside-root paths wit
 
 test("agent API exposes deployment lists, detail, and activity", async () => {
   await withApiEnv(async () => {
-    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001", agents: ["team-manager"] });
+    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001", agents: ["team-manager"], provider: "openai", models: { team: "openai/gpt-5.5" }, runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200 });
     appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done" });
     appendActivityEvent(createActivityEvent({ deployId: "d-api-1", timestamp: "2026-04-26T00:00:30.000Z", kind: "text", source: "opencode", body: "hello" }));
     const { app } = createAgentApiApp();
     const list = await app.request("/api/deployments?all=true&ticket_id=PAP-001");
     assert.equal(list.status, 200);
-    const listBody = await list.json() as { deployments: Array<{ deploy_id: string }>; total: number };
+    const listBody = await list.json() as { deployments: Array<{ deploy_id: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number; models?: Record<string, string> }>; total: number; filter: { ticket_id: string | null } };
     assert.equal(listBody.total, 1);
     assert.equal(listBody.deployments[0]?.deploy_id, "d-api-1");
+    assert.equal(listBody.deployments[0]?.provider, "openai");
+    assert.equal(listBody.deployments[0]?.runtime, "opencode");
+    assert.equal(listBody.deployments[0]?.binary, "opa");
+    assert.equal(listBody.deployments[0]?.effective_timeout_seconds, 1200);
+    assert.deepEqual(listBody.deployments[0]?.models, { team: "openai/gpt-5.5" });
+    assert.equal(listBody.filter.ticket_id, "PAP-001");
     const detail = await app.request("/api/deployments/d-api-1");
     assert.equal(detail.status, 200);
-    const detailBody = await detail.json() as { deployment: { status: string }; activity_events: unknown[] };
+    const detailBody = await detail.json() as { deployment: { status: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number }; activity_events: unknown[] };
     assert.equal(detailBody.deployment.status, "success");
+    assert.equal(detailBody.deployment.provider, "openai");
+    assert.equal(detailBody.deployment.runtime, "opencode");
+    assert.equal(detailBody.deployment.binary, "opa");
+    assert.equal(detailBody.deployment.effective_timeout_seconds, 1200);
     assert.equal(detailBody.activity_events.length, 1);
     const activity = await app.request("/api/deployments/d-api-1/activity");
     assert.equal((await activity.json() as { events: unknown[]; activity_events: unknown[] }).events.length, 2);
+    const filteredActivity = await app.request("/api/deployments/d-api-1/activity?since=2026-04-26T00:00:00.000Z");
+    assert.equal((await filteredActivity.json() as { activity_events: unknown[] }).activity_events.length, 1);
+
+    assert.equal((await app.request("/api/deployments?since=not-a-date")).status, 400);
+    assert.equal((await app.request("/api/deployments/d_bad")).status, 400);
   });
 });
 
@@ -184,6 +224,11 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deploymentId: "d-hook" });
     assert.equal((await app.request("/api/self-update", { method: "POST" })).status, 202);
     assert.deepEqual(await (await app.request("/api/self-update/status")).json(), { status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] });
+
+    const failing = createAgentApiApp({ hooks: { deploy: () => { throw new Error("adapter unavailable"); } } });
+    const failedDeploy = await failing.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan" }) });
+    assert.equal(failedDeploy.status, 202);
+    assert.deepEqual(await failedDeploy.json(), { status: "failed", reason: "adapter unavailable", team: "builder", mode: "plan" });
 
     const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deploymentId: "d-status", team: "builder", runtime: "opencode" }) });
     assert.equal(started.status, 200);

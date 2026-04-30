@@ -3,13 +3,16 @@ import { join, resolve } from "node:path";
 import { getAgentTeamsDir, getTeamsDir } from "../paths.js";
 import { queryDeploymentStatuses } from "../registry/index.js";
 import { parseTeamYaml } from "../yaml-parser.js";
-import type { DeployMode, TeamConfig } from "../types.js";
+import type { Agent, DeployMode, TeamConfig } from "../types.js";
 
 export interface TeamConfigSummary {
   name: string;
   description: string;
   model?: TeamConfig["model"];
-  deploy_modes: Array<Pick<DeployMode, "id" | "label" | "phone_visible" | "mode_type">>;
+  default_mode?: string;
+  timeout?: number;
+  agents: Array<Pick<Agent, "name" | "role" | "model">>;
+  deploy_modes: Array<Pick<DeployMode, "id" | "label" | "phone_visible" | "mode_type" | "model" | "provider" | "timeout" | "solo" | "agents">>;
   filePath: string;
 }
 
@@ -59,7 +62,10 @@ export function listTeamConfigs(teamsDir = getTeamsDir()): TeamConfigSummary[] {
         name: config.name,
         description: config.description ?? "",
         model: config.model,
-        deploy_modes: (config.deploy_modes ?? []).filter((mode) => mode.phone_visible !== false).map((mode) => ({ id: mode.id, label: mode.label, phone_visible: mode.phone_visible, mode_type: mode.mode_type })),
+        default_mode: config.default_mode,
+        timeout: config.timeout,
+        agents: config.agents.map((agent) => ({ name: agent.name, role: agent.role, model: agent.model })),
+        deploy_modes: (config.deploy_modes ?? []).filter((mode) => mode.phone_visible !== false).map((mode) => ({ id: mode.id, label: mode.label, phone_visible: mode.phone_visible, mode_type: mode.mode_type, model: mode.model, provider: mode.provider, timeout: mode.timeout, solo: mode.solo, agents: mode.agents })),
         filePath,
       });
     } catch {
