@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendRegistryEvent, closeDb, runCoreCommand, TicketStore } from "../index.js";
+import { appendRegistryEvent, closeDb, getServePidFilePath, runCoreCommand, TicketStore } from "../index.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -549,21 +550,55 @@ test("runCoreCommand status wait reports not found without polling", async () =>
   });
 });
 
-test("runCoreCommand routes serve process management through adapter hook", async () => {
+test("runCoreCommand owns serve status and stale PID cleanup without adapter hook", async () => {
   await withCliEnv(async () => {
-    const missing = capture();
-    assert.equal(await runCoreCommand(["serve"], { io: missing.io }), 1);
-    assert.match(missing.stderr.join("\n"), /adapter hook/);
+    const stopped = capture();
+    assert.equal(await runCoreCommand(["serve", "status"], { io: stopped.io }), 0);
+    assert.match(stopped.stdout.join("\n"), /Status: stopped \(no PID file\)/);
 
-    const seen: string[] = [];
-    const served = capture();
-    assert.equal(await runCoreCommand(["restart"], { io: served.io, hooks: { serve: (action) => { seen.push(action); return { status: "ok", message: `served ${action}` }; } } }), 0);
-    assert.deepEqual(seen, ["restart"]);
-    assert.match(served.stdout.join("\n"), /served restart/);
+    const pidFile = getServePidFilePath();
+    mkdirSync(dirname(pidFile), { recursive: true });
+    writeFileSync(pidFile, "999999:9848", "utf-8");
 
-    const nested = capture();
-    assert.equal(await runCoreCommand(["serve", "status"], { io: nested.io, hooks: { serve: (action) => ({ status: "ok", message: `served ${action}` }) } }), 0);
-    assert.match(nested.stdout.join("\n"), /served status/);
+    const stale = capture();
+    assert.equal(await runCoreCommand(["serve-status"], { io: stale.io }), 0);
+    assert.match(stale.stdout.join("\n"), /Status: stopped \(stale PID 999999\)/);
+    assert.equal(existsSync(pidFile), false);
+  });
+});
+
+test("runCoreCommand serve uses old host and port defaults in PID semantics", async () => {
+  await withCliEnv(async () => {
+    const pidFile = getServePidFilePath();
+    mkdirSync(dirname(pidFile), { recursive: true });
+    writeFileSync(pidFile, "not-a-pid", "utf-8");
+
+    const stopped = capture();
+    assert.equal(await runCoreCommand(["stop"], { io: stopped.io }), 0);
+    assert.match(stopped.stdout.join("\n"), /No PID file found/);
+
+    writeFileSync(pidFile, "999999", "utf-8");
+    const stale = capture();
+    assert.equal(await runCoreCommand(["serve", "status"], { io: stale.io }), 0);
+    assert.match(stale.stdout.join("\n"), /stale PID 999999/);
+  });
+});
+
+test("runCoreCommand serve reports unknown port conflict without PID file", async () => {
+  await withCliEnv(async () => {
+    const server = createServer();
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const port = address.port;
+    try {
+      const captured = capture();
+      assert.equal(await runCoreCommand(["serve", "--port", String(port), "--host", "127.0.0.1"], { io: captured.io }), 1);
+      assert.match(captured.stderr.join("\n"), new RegExp(`Port ${port} in use by unknown process`));
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   });
 });
 
