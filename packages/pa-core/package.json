@@ -21,6 +21,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "@hono/node-ws": "^1.2.0",
     "better-sqlite3": "11.6.0",
     "hono": "^4.12.15",
     "js-yaml": "^4.1.0",

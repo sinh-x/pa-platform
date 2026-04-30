@@ -74,23 +74,55 @@ This prevents requirements docs from claiming something is missing when it alrea
 
 Report findings: "Validation check complete. Found: [X exists, Y is missing as expected]."
 
+### OpenCode Question Tool Flow (applies to all interactive phases)
+
+For every user interaction in this skill, use the OpenCode question tool flow.
+
+- Ask one question at a time.
+- Use pre-defined option sets (short, relevant labels) for every ask.
+- Always include a custom/free-form path so the user can provide uncaptured answers.
+- Set `multiple` to `false` for all prompts unless you explicitly need multi-select.
+
+```json
+{
+  "question": "<question text>",
+  "header": "<short label>",
+  "options": ["<pre-defined option 1>", "<pre-defined option 2>", "<custom / other>"],
+  "multiple": false
+}
+```
+
 ### Phase 1: Understand the Problem (2-3 questions)
 
 Start by understanding what the user wants at a high level:
 
 1. **What** — "What are you trying to do? Describe the end result you want."
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 2. **Why** — "Why is this needed? What problem does it solve or what value does it add?"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 3. **Current state** — "What exists today? What's the starting point?"
 
-Use `AskUserQuestion` for structured input, but allow free-form answers too.
+- Ask via OpenCode question tool with pre-defined options + custom option.
 
 ### Phase 2: Scope & Boundaries (2-3 questions)
 
 Narrow down what's in and out:
 
 1. **In scope** — "What specific things should this include?"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 2. **Out of scope** — "What should this explicitly NOT do? Any boundaries?"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 3. **Users/audience** — "Who uses this? Just you, a team, public?"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
 
 ### Phase 3: Technical Exploration (do this yourself)
 
@@ -108,13 +140,19 @@ Before asking more questions, **explore the codebase and existing systems yourse
 Report back to the user: "Here's what I found in the codebase..." — then ask:
 
 1. **Constraints** — "Are there any technical constraints I should know about? (performance, compatibility, etc.)"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 2. **Dependencies** — "Does this depend on anything else being done first?"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
 
 ### Phase 4: Acceptance Criteria (collaborative)
 
 Work with the user to define when the task is "done":
 
-1. Ask: "How will you know this is working correctly? What would you test?"
+1. Ask via OpenCode question tool with pre-defined options + custom option.
+
 2. Propose specific acceptance criteria based on what you've learned
 3. Let the user confirm, adjust, or add criteria
 
@@ -123,7 +161,13 @@ Work with the user to define when the task is "done":
 Surface anything unclear:
 
 1. List unknowns or assumptions you've made
-2. Ask the user to confirm or clarify each one
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+2. Ask the user to confirm, clarify, or reject each one
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 3. Flag risks: "This could be tricky because..."
 
 ### Phase 6: Produce Draft Plan Document
@@ -161,13 +205,33 @@ Before saving, walk Sinh through the draft section-by-section. This is the final
 
 **Procedure:**
 
-1. **§1 Title + §2 Summary** — show, ask: "Does this title and summary capture what you want? (yes / correction)"
-2. **§3 Goals / Non-Goals** — show, same ask.
-3. **§4 In Scope + §5 Out of Scope** — show together, ask: "Are these scope boundaries right?"
-4. **§10 Acceptance Criteria** — show, ask: "Will these ACs prove the work is done? Any missing?"
-5. **§9 Risks** — show, ask: "Any risks I missed?"
-6. **§11 Open Questions** — show, ask: "Can we resolve any of these now?"
+1. **§1 Title + §2 Summary** — show, then ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+2. **§3 Goals / Non-Goals** — show, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+3. **§4 In Scope + §5 Out of Scope** — show together, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+4. **§10 Acceptance Criteria** — show, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+5. **§9 Risks** — show, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+6. **§11 Open Questions** — show, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
 7. **Final ask:** "Approve this draft for save? (yes / list changes)"
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
 
 **Save (Phase 7) only after Sinh says "yes" or equivalent.** If Sinh requests changes, apply them, re-run Phase 6.5 (Self-Review), then re-walk only the changed sections.
 

@@ -28,8 +28,8 @@ deploy_modes:
     label: Implement
     phone_visible: true
     mode_type: work
-    model: opus
-    provider: minimax
+    model: gpt-5.3-codex-spark
+    provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/implement.md
     global_docs:
@@ -104,106 +104,6 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-registry
         inject-as: shared-skill
-  - id: housekeeping-anthropic
-    label: Housekeeping (Anthropic)
-    phone_visible: true
-    mode_type: housekeeping
-    model: opus
-    provider: anthropic
-    agents: []
-    objective: skills/global/housekeeping-objective.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
-  - id: implement-anthropic
-    label: Implement (Anthropic)
-    phone_visible: true
-    mode_type: work
-    model: opus
-    provider: anthropic
-    agents: []  # solo, no sub-agents
-    objective: teams/builder/modes/implement.md
-    global_docs:
-      - knowledge-base/codebase/personal-assistant.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
-  - id: worker-anthropic
-    label: Worker (Anthropic)
-    phone_visible: false
-    mode_type: interactive
-    model: opus
-    provider: anthropic
-    agents: []  # solo, no sub-agents
-    objective: teams/builder/modes/worker.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
-  - id: orchestrator-anthropic
-    label: Orchestrator (Anthropic)
-    phone_visible: true
-    mode_type: work
-    model: opus
-    provider: anthropic
-    agents: []  # solo, no sub-agents
-    objective: teams/builder/modes/orchestrator.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
-  - id: routine-anthropic
-    label: Routine (Anthropic)
-    phone_visible: true
-    mode_type: work
-    model: opus
-    provider: anthropic
-    agents: []  # solo, no sub-agents
-    objective: teams/builder/modes/routine.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
-      - name: pa-registry
-        inject-as: shared-skill
-
 context:
   organization: sinh-x
   notes: >

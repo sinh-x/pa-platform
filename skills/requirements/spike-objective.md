@@ -8,7 +8,7 @@ Your job is to autonomously research a topic, explore the codebase, and produce 
 
 Follow each phase in order. Log gate status after each phase before proceeding.
 
-**Important:** This is a **non-interactive** skill. Do NOT use `AskUserQuestion`. Decide and act autonomously.
+**Important:** This is a **non-interactive** skill. Decide and act autonomously.
 
 ---
 
@@ -185,7 +185,7 @@ On failure/abort: add `--tags failed` + comment + create FYI ticket.
 
 ## RULES
 
-- **Non-interactive** — do NOT use AskUserQuestion
+- **Non-interactive** — decide and act autonomously
 - **From/To fields** — every output document MUST have these
 - **Confidence per section** — every section MUST include confidence level
 - **Grounded findings** — always anchor web research to codebase context

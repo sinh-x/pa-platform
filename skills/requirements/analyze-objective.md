@@ -29,6 +29,15 @@ Question: <specific question>
 
 See `skills/requirements/analyze.md` → "Ambiguity Protocol" for the full rules.
 
+### OpenCode Question Tool Flow (applies to all interactive phases)
+
+For every user interaction in this skill, use the OpenCode question tool flow.
+
+- Ask one question at a time.
+- Use pre-defined option sets (short, relevant labels) for every ask.
+- Always include a custom/free-form option so the user can provide uncaptured answers.
+- Set `multiple` to `false` for all prompts unless you explicitly need multi-select.
+
 ---
 
 ## PHASE CHECKLIST
@@ -54,9 +63,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Establish what, why, and current state through user conversation.
 
 **Actions:**
-- [ ] Ask "What are you trying to do? Describe the end result you want."
-- [ ] Ask "Why is this needed? What problem does it solve?"
-- [ ] Ask "What exists today? What's the starting point?"
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
 
 **Gate Criteria:** Do not proceed until you have documented: problem statement (what), motivation (why), and current state. User has confirmed your understanding.
 
@@ -68,9 +79,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Define in-scope and out-of-scope items.
 
 **Actions:**
-- [ ] Ask "What specific things should this include?"
-- [ ] Ask "What should this explicitly NOT do?"
-- [ ] Ask "Who uses this?"
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
 
 **Gate Criteria:** Do not proceed until you have a written list of in-scope items AND out-of-scope items. User has confirmed.
 
@@ -98,8 +111,10 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Define "done" collaboratively with user.
 
 **Actions:**
-- [ ] Ask "How will you know this is working correctly?"
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+
 - [ ] Propose specific acceptance criteria based on Phase 1-3 learning
+
 - [ ] Let user confirm, adjust, or add criteria
 
 **Gate Criteria:** Do not proceed until you have 3+ acceptance criteria, each confirmed by user.
@@ -113,7 +128,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Actions:**
 - [ ] List assumptions made during requirements gathering
-- [ ] Ask user to confirm or clarify each assumption
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
 - [ ] Flag technical or scope risks
 
 **Gate Criteria:** Do not proceed until you have documented: (1) open questions with user answers, (2) risks identified.
@@ -165,13 +180,13 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Get explicit section-by-section approval from Sinh before saving.
 
 **Actions:**
-- [ ] §1 Title + §2 Summary — show, ask "captures what you want?"
-- [ ] §3 Goals / Non-Goals — show, confirm
-- [ ] §4 In Scope + §5 Out of Scope — show together, confirm boundaries
-- [ ] §10 Acceptance Criteria — show, ask "will these prove it's done?"
-- [ ] §9 Risks — show, ask "any risks I missed?"
-- [ ] §11 Open Questions — show, ask "can we resolve any now?"
-- [ ] Final ask: "Approve this draft for save? (yes / list changes)"
+- [ ] §1 Title + §2 Summary — show, then ask via OpenCode question tool.
+- [ ] §3 Goals / Non-Goals — show, ask via OpenCode question tool.
+- [ ] §4 In Scope + §5 Out of Scope — show together, ask via OpenCode question tool.
+- [ ] §10 Acceptance Criteria — show, ask via OpenCode question tool.
+- [ ] §9 Risks — show, ask via OpenCode question tool.
+- [ ] §11 Open Questions — show, ask via OpenCode question tool.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
 
 **Gate Criteria:** Explicit "yes" or equivalent from Sinh. Silence is not consent. If changes requested, apply them, re-run Phase 6.5, re-walk only changed sections.
 

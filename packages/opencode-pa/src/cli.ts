@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCoreCommand } from "@pa-platform/pa-core";
-import { createOpencodeHooks } from "./deploy.js";
+import { createDefaultOpencodeHooks } from "./deploy.js";
 
 if (process.argv.includes("--version") || process.argv.includes("-V")) {
   const packagePath = resolve(dirname(fileURLToPath(import.meta.url)), "../package.json");
@@ -12,5 +12,5 @@ if (process.argv.includes("--version") || process.argv.includes("-V")) {
   process.exit(0);
 }
 
-const code = await runCoreCommand(process.argv.slice(2), { hooks: createOpencodeHooks(), binaryName: "opa" });
+const code = await runCoreCommand(process.argv.slice(2), { hooks: createDefaultOpencodeHooks(), binaryName: "opa" });
 process.exitCode = code;

@@ -1,66 +1,64 @@
 ---
 name: pa-cli
 description: >
-  PA CLI reference for all agents. This skill should be used by all PA agents
-  to understand the available pa commands, ticket subcommands, bulletin subcommands,
+  OPA CLI reference for all agents. This skill should be used by all PA agents
+  to understand the available opa commands, ticket subcommands, bulletin subcommands,
   and enum values. Provides a quick reference for day-to-day agent operations.
 pa-tier: 2
 pa-inject-as: shared-skill
 ---
 
-# PA CLI Reference
+# OPA CLI Reference
 
-All agents have access to the `pa` CLI. Use these commands for ticket management, deployment, and system operations.
+All agents have access to the `opa` CLI for PA platform workflow and deployment commands. `opa` is the default OpenCode deployment adapter and invokes the shared `pa-core` command set. Use `pa-core serve` for Agent API server lifecycle; `opa` does not own the server lifecycle.
 
 ## Commands
 
 | Command | Purpose | Key Flags |
 |---------|---------|-----------|
-| `pa teams [name]` | Show team workflow status; detail with name | `--all` |
-| `pa board` | Show kanban board grouped by status — scoped to current repo by default | `--project`, `--all`, `--assignee` |
-| `pa deploy <team>` | Deploy an agent team | `--objective`, `--objective-file`, `--content-file`, `--mode`, `--dry-run`, `--background`, `--ticket`, `--repo`, `--team-model`, `--agent-model`, `--validate`, `--provider` |
-| `pa daily <mode> [date]` | Daily lifecycle: plan / progress / end | `--dry-run`, `--background`, `--review` |
-| `pa status [deploy-id]` | Show deployment status | `--running`, `--team`, `--wait`, `--report`, `--artifacts`, `--activity`, `--recent`, `--today` |
-| `pa health [category]` | System health check: deployment health, agent behavior, compliance, infrastructure | `--json`, `--days`, `--since`, `--primer-summary`, `--history` (category: `deployments` \| `agents` \| `tickets` \| `compliance` \| `schedules` \| `infrastructure`) |
-| `pa schedule <spec> <repeat> [times...]` | Schedule a team with systemd timers | — |
-| `pa timers` | List scheduled timers | — |
-| `pa remove-timer <team-name>` | Remove a scheduled timer | — |
-| `pa requirements <mode>` | Requirements lifecycle (ideas) | `--force`, `--dry-run`, `--background` |
-| `pa idea` | Log an idea interactively | — |
-| `pa report` | Submit a bug/feature/agent self-report | — |
-| `pa repos list` | List repository registry | — |
-| `pa serve` | Start the agent API server | `--port`, `--host`, `--background`, `--cors` |
-| `pa ticket <sub>` | Manage tickets (see §Ticket) | — |
-| `pa bulletin <sub>` | Manage bulletins (see §Bulletin) | — |
-| `pa registry <sub>` | Manage deployment registry (see §Registry) | — |
-| `pa trash <sub>` | Soft-delete PA project files (see §Trash) | — |
+| `opa teams [name]` | Show team workflow status; detail with name | `--all` |
+| `opa board` | Show kanban board grouped by status — scoped to current repo by default | `--project`, `--all`, `--assignee` |
+| `opa deploy <team>` | Deploy an agent team through the default OpenCode adapter | `--objective`, `--objective-file`, `--content-file`, `--mode`, `--dry-run`, `--background`, `--ticket`, `--repo`, `--team-model`, `--agent-model`, `--validate`, `--provider` |
+| `opa status [deploy-id]` | Show deployment status | `--running`, `--team`, `--wait`, `--report`, `--artifacts`, `--activity`, `--recent`, `--today` |
+| `opa health [category]` | System health check: deployment health, agent behavior, compliance, infrastructure | `--json`, `--days`, `--since`, `--primer-summary`, `--history` (category: `deployments` \| `agents` \| `tickets` \| `compliance` \| `schedules` \| `infrastructure`) |
+| `opa schedule <spec> <repeat> [times...]` | Schedule a team with systemd timers | — |
+| `opa timers` | List scheduled timers | — |
+| `opa remove-timer <team-name>` | Remove a scheduled timer | — |
+| `opa repos list` | List repository registry | — |
+| `pa-core serve` | Start, stop, restart, and inspect the core-owned Agent API server | `--port`, `--host`, `--background`, `--cors`, `--force` |
+| `opa ticket <sub>` | Manage tickets (see §Ticket) | — |
+| `opa bulletin <sub>` | Manage bulletins (see §Bulletin) | — |
+| `opa registry <sub>` | Manage deployment registry (see §Registry) | — |
+| `opa trash <sub>` | Soft-delete PA project files (see §Trash) | — |
 
-`pa status <deploy-id> --wait` polls until the deployment reaches a terminal status. It uses the deployment's recorded timeout by default; set `PA_STATUS_WAIT_TIMEOUT` to override the wait duration for that command only.
+Daily planning, requirements analysis, ideas, and reports are handled through tickets plus `opa deploy <team> --mode <mode>` workflows rather than restored as required direct `daily`, `requirements`, `idea`, or `report` CLI commands.
 
-### `pa board` — CWD-Aware Scoping
+`opa status <deploy-id> --wait` polls until the deployment reaches a terminal status. It uses the deployment's recorded timeout by default; set `PA_STATUS_WAIT_TIMEOUT` to override the wait duration for that command only.
 
-`pa board` defaults to the current repository's project if you're in a git repo registered in `repos.yaml`. Use flags to override:
+### `opa board` — CWD-Aware Scoping
+
+`opa board` defaults to the current repository's project if you're in a git repo registered in `repos.yaml`. Use flags to override:
 
 - **No flags** — show tickets for current repo's project (error if outside registered repo)
 - **`--all`** — show all projects (equivalent to old behavior)
 - **`--project <input>`** — filter by project, with flexible resolution:
-  - Exact key: `pa board --project pa`
-  - Prefix (case-insensitive): `pa board --project PA`
-  - Path basename: `pa board --project personal-assistant`
+  - Exact key: `opa board --project pa`
+  - Prefix (case-insensitive): `opa board --project PA`
+  - Path basename: `opa board --project personal-assistant`
 - **`--assignee <name>`** — further filter by assignee (works with any of above)
 
 **Examples:**
 
 ```bash
 # In ~/git-repos/sinh-x/tools/personal-assistant/ repo:
-pa board                          # Shows PA tickets (CWD-detected)
-pa board --assignee sinh          # PA tickets assigned to sinh
-pa board --all                    # All projects' tickets
+opa board                         # Shows PA tickets (CWD-detected)
+opa board --assignee sinh         # PA tickets assigned to sinh
+opa board --all                   # All projects' tickets
 
 # Outside registered repos or to override CWD:
-pa board --project PA             # PA tickets (prefix resolved)
-pa board --project avodah --all   # --all takes precedence, shows all projects
-pa board --all --assignee sinh    # All projects, assigned to sinh
+opa board --project PA            # PA tickets (prefix resolved)
+opa board --project avodah --all  # --all takes precedence, shows all projects
+opa board --all --assignee sinh   # All projects, assigned to sinh
 ```
 
 ## Ticket Subcommands
@@ -98,27 +96,27 @@ See **`pa-ticket-workflow` skill** — Appendix: Ticket CLI Examples for the ful
 
 ```bash
 # Check for blockers on startup (always do this first)
-pa bulletin list
+opa bulletin list
 
 # Create a bulletin that blocks all teams
-pa bulletin create \
+opa bulletin create \
   --title "Schema migration in progress — do not deploy" \
   --block all \
   --message "Wait for PA-100 to complete before deploying any team."
 
 # Create a bulletin that blocks specific teams, exempting maintenance
-pa bulletin create \
+opa bulletin create \
   --title "Builder paused for audit" \
   --block builder,requirements \
   --except maintenance
 
 # Resolve after the issue is cleared
-pa bulletin resolve B-007
+opa bulletin resolve B-007
 ```
 
 ## Registry Subcommand
 
-Agents use `pa registry complete` to write their completion marker at shutdown, and `pa registry update` to record a post-completion correction if extra work is done after the initial marker.
+Agents use `opa registry complete` to write their completion marker at shutdown, and `opa registry update` to record a post-completion correction if extra work is done after the initial marker.
 
 | Subcommand | Purpose | Flags |
 |-----------|---------|-------|
@@ -131,7 +129,7 @@ Agents use `pa registry complete` to write their completion marker at shutdown, 
 | `registry clean` | Detect orphaned deployments | — |
 | `registry sweep` | Resolve orphaned deployments with fallback completion | — |
 
-> **Deprecated alias:** `pa registry amend <deploy-id>` is a deprecated alias for `pa registry update` (supports `--summary` and `--log-file` only). It still works today but will be removed ~2026-07-22. Prefer `update` in all new documentation and scripts.
+> **Deprecated alias:** `opa registry amend <deploy-id>` is a deprecated alias for `opa registry update` (supports `--summary` and `--log-file` only). It still works today but will be removed ~2026-07-22. Prefer `update` in all new documentation and scripts.
 
 `--status` values: `success` `partial` `failed`
 `--rating-source` values: `agent` `system` `user` (rating source; defaults to `agent` when any rating option is provided)
@@ -141,19 +139,19 @@ Rating values (`--rating-overall`, `--rating-productivity`, `--rating-quality`, 
 
 ```bash
 # Write a success completion marker (team manager calls this at shutdown)
-pa registry complete d-769bf8 \
+opa registry complete d-769bf8 \
   --status success \
   --summary "PA-959 pa-cli skill audit complete. Updated SKILL.md with examples and missing commands." \
   --log-file ~/Documents/ai-usage/sessions/2026/03/agent-team/2026-03-26-abc123-builder--team-manager--PA-959--pa-cli-audit.md
 
 # Write a partial completion marker
-pa registry complete d-769bf8 --status partial --summary "Completed phases 1-3, phase 4 skipped due to missing data."
+opa registry complete d-769bf8 --status partial --summary "Completed phases 1-3, phase 4 skipped due to missing data."
 
 # Write a failed completion marker
-pa registry complete d-769bf8 --status failed --summary "Could not access target repo. Permissions error."
+opa registry complete d-769bf8 --status failed --summary "Could not access target repo. Permissions error."
 
 # Write a completion marker with session rating (from pa-session-log self-evaluation)
-pa registry complete d-769bf8 \
+opa registry complete d-769bf8 \
   --status success \
   --summary "Skill consolidation complete. Merged pa-session-log into ai-usage-log." \
   --log-file ~/Documents/ai-usage/sessions/2026/03/agent-team/2026-03-26-35fb9f-builder--team-manager--skill-consolidation.md \
@@ -165,7 +163,7 @@ pa registry complete d-769bf8 \
   --rating-insight 4
 
 # Record a post-completion update after follow-up work
-pa registry update d-769bf8 \
+opa registry update d-769bf8 \
   --status success \
   --summary "Skill consolidation complete. Follow-up: fixed edge case in Phase 2." \
   --note "User requested tweak after initial completion marker"
@@ -173,7 +171,7 @@ pa registry update d-769bf8 \
 
 ## Trash Subcommands
 
-Use `pa trash move` instead of deleting PA project files (skills, teams, objectives, modes). Trashed files are retained for 30 days.
+Use `opa trash move` instead of deleting PA project files (skills, teams, objectives, modes). Trashed files are retained for 30 days.
 
 | Subcommand | Purpose | Flags |
 |-----------|---------|-------|
@@ -189,19 +187,19 @@ Use `pa trash move` instead of deleting PA project files (skills, teams, objecti
 
 ```bash
 # Soft-delete a skill file
-pa trash move ~/.claude/skills/old-skill/SKILL.md \
+opa trash move packaged pa-platform skills/old-skill/SKILL.md \
   --reason "Replaced by pa-cli skill" \
   --actor builder/team-manager \
   --type skill
 
 # List all trashed items
-pa trash list
+opa trash list
 
 # Restore a trashed item
-pa trash restore T-003
+opa trash restore T-003
 
 # Preview what purge would delete (dry run)
-pa trash purge --days 30 --dry-run
+opa trash purge --days 30 --dry-run
 ```
 
 ## Enum Values
@@ -231,7 +229,7 @@ The `--project` flag accepts canonical keys from `repos.yaml`. Resolution order:
 
 Common keys: `pa` (PA·), `avodah` (AVO·), `ai-usage-log` (AUL·), `nixos` (NX·), `dot-files` (DOT·)
 
-Run `pa repos list` to see all configured project keys.
+Run `opa repos list` to see all configured project keys.
 
 ## Assignee Convention
 

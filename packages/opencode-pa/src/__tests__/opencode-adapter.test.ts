@@ -4,9 +4,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, createAgentApiApp, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
-import { createOpencodeHooks } from "../deploy.js";
+import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
@@ -81,11 +81,49 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function writeBuilderTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "builder.yaml"), [
+    "name: builder",
+    "description: Builder",
+    "default_mode: implement",
+    "objective: Build",
+    "agents:",
+    "  - name: builder-agent",
+    "    role: Builds things",
+    "deploy_modes:",
+    "  - id: implement",
+    "    label: Implement",
+    "    mode_type: work",
+    "    provider: openai",
+    "    model: gpt-5.3-codex-spark",
+    "  - id: routine",
+    "    label: Routine",
+    "    mode_type: work",
+    "    provider: minimax",
+    "    model: opus",
+  ].join("\n"));
+}
+
+function readDryRunBody(root: string, stdout: string[]): string {
+  const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+  assert.ok(deployId);
+  const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
+  return activity.map((event) => event.body).join("\n");
+}
+
 test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", undefined), "minimax-coding-plan/MiniMax-M2.7");
   assert.equal(resolveOpencodeModel("openai", undefined), "openai/gpt-5.5");
   assert.equal(resolveOpencodeModel("openai", "openai/gpt-5.5-fast"), "openai/gpt-5.5-fast");
   assert.equal(resolveOpencodeModel("minimax", "MiniMax-M2.7-highspeed"), "minimax-coding-plan/MiniMax-M2.7-highspeed");
+});
+
+test("opa tool guidance keeps pa-core serve as server owner", () => {
+  const guidance = new OpencodeAdapter().describeTools().markdown;
+  assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(guidance, /`opa` is the default deployment adapter, not the server owner/);
+  assert.match(guidance, /Supported providers for `opa deploy`: `minimax` and `openai`/);
+  assert.doesNotMatch(guidance, /opa serve/);
 });
 
 test("opa dry-run generates primer and does not spawn opencode", async () => {
@@ -102,6 +140,73 @@ test("opa dry-run generates primer and does not spawn opencode", async () => {
     assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /Runtime: opencode/);
     assert.equal(queryDeploymentStatuses().length, 0);
   });
+});
+
+test("opa dry-run applies builder implement YAML provider and model", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    assert.match(readDryRunBody(root, stdout), /using openai\/gpt-5\.3-codex-spark/);
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa dry-run defaults builder to implement mode YAML model", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    assert.match(readDryRunBody(root, stdout), /using openai\/gpt-5\.3-codex-spark/);
+  });
+});
+
+test("opa dry-run CLI provider and team model override builder YAML defaults", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--provider", "minimax", "--team-model", "MiniMax-M2.7", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    const dryRunBody = readDryRunBody(root, stdout);
+    assert.match(dryRunBody, /using minimax-coding-plan\/MiniMax-M2\.7/);
+    assert.doesNotMatch(dryRunBody, /openai\/gpt-5\.3-codex-spark/);
+  });
+});
+
+test("opa default hooks route agent API deploy requests through opencode adapter", async () => {
+  await withOpaEnv(async () => {
+    const { app } = createAgentApiApp({ hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })) });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "daily", mode: "plan", background: true, provider: "openai", timeout: 120 }),
+    });
+
+    assert.equal(response.status, 202);
+    const body = await response.json() as { team: string; mode: string | null; status: string; deployment_id?: string };
+    assert.equal(body.team, "daily");
+    assert.equal(body.mode, "plan");
+    assert.equal(body.status, "pending");
+    assert.match(body.deployment_id ?? "", /^d-[a-f0-9]{6}$/);
+    assert.equal(queryDeploymentStatuses()[0]?.runtime, "opencode");
+  });
+});
+
+test("opa exposes an explicit default hook boundary for core-owned serve", () => {
+  const hooks = createDefaultOpencodeHooks();
+  assert.equal(typeof hooks.deploy, "function");
+  assert.equal(hooks.serve, undefined);
 });
 
 test("opa planner daily modes resolve dynamic template variables", async () => {

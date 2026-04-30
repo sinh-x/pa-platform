@@ -122,7 +122,7 @@ Measures whether the agent followed the required phases and protocols.
 - 1: Output not saved or not retrievable
 
 ### PA-5: Interactive Mode Fidelity (analyze/review only)
-**What:** Agent properly engaged with user through AskUserQuestion.
+**What:** Agent properly engaged with the user through the interactive question flow.
 **Scoring:**
 - 5: All decisions confirmed with user; no assumptions made
 - 4: User engaged appropriately; minor self-decisions that should have been user-confirmed
