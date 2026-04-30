@@ -111,9 +111,20 @@ function __opa_teams
 end
 
 set -l custom_team_dir (mktemp -d)
+set -l custom_platform_dir (mktemp -d)
+set -l custom_config_dir (mktemp -d)
 function __completion_cleanup_custom_team --on-event fish_exit --inherit-variable custom_team_dir
     command rm -rf "$custom_team_dir"
 end
+function __completion_cleanup_custom_platform --on-event fish_exit --inherit-variable custom_platform_dir --inherit-variable custom_config_dir
+    command rm -rf "$custom_platform_dir" "$custom_config_dir"
+end
+mkdir -p "$custom_platform_dir/teams"
+printf '%s\n' 'name: configteam' 'description: Config team' 'objective: Config' 'agents: []' > "$custom_platform_dir/teams/configteam.yaml"
+printf 'config_dir: %s\n' "$custom_platform_dir" > "$custom_config_dir/config.yaml"
+set -gx PA_PLATFORM_CONFIG "$custom_config_dir"
+__completion_expect_contains opa-deploy-config 'opa deploy ' configteam; or set failed 1
+
 printf '%s\n' 'modes:' '  - id: implement' '  - id: custom-mode' > "$custom_team_dir/customteam.yaml"
 set -gx PA_PLATFORM_TEAMS "$custom_team_dir"
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import yaml from "js-yaml";
-import { getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
+import { expandHome, getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
 import type { PlatformConfig, ProviderDefaults } from "./types.js";
 
 interface RawConfig {
@@ -17,12 +18,16 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
     ? (yaml.load(readFileSync(configPath, "utf-8")) as RawConfig | undefined) ?? {}
     : {};
 
+  const homeDir = process.env["PA_PLATFORM_HOME"] ? expandHome(process.env["PA_PLATFORM_HOME"]) : raw.config_dir ? expandHome(raw.config_dir) : getPlatformHomeDir();
+  const teamsDir = process.env["PA_PLATFORM_TEAMS"] ? expandHome(process.env["PA_PLATFORM_TEAMS"]) : raw.teams_dir ? expandHome(raw.teams_dir) : raw.config_dir ? resolve(homeDir, "teams") : getTeamsDir();
+  const skillsDir = process.env["PA_PLATFORM_SKILLS"] ? expandHome(process.env["PA_PLATFORM_SKILLS"]) : raw.skills_dir ? expandHome(raw.skills_dir) : raw.config_dir ? resolve(homeDir, "skills/global") : getSkillsDir();
+
   return {
-    configDir: process.env["PA_PLATFORM_CONFIG"] ?? raw.config_dir ?? getConfigDir(),
+    configDir: process.env["PA_PLATFORM_CONFIG"] ?? getConfigDir(),
     dataDir: process.env["PA_PLATFORM_DATA"] ?? raw.data_dir ?? getDataDir(),
-    homeDir: process.env["PA_PLATFORM_HOME"] ?? getPlatformHomeDir(),
-    teamsDir: process.env["PA_PLATFORM_TEAMS"] ?? raw.teams_dir ?? getTeamsDir(),
-    skillsDir: process.env["PA_PLATFORM_SKILLS"] ?? raw.skills_dir ?? getSkillsDir(),
+    homeDir,
+    teamsDir,
+    skillsDir,
     provider_defaults: raw.provider_defaults,
     defaults: raw.defaults,
   };

@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
 
 // Ported from PA paths.ts at frozen PA source on 2026-04-26; pa-platform owns future changes.
 
@@ -10,9 +12,23 @@ export function expandHome(path: string): string {
   return path;
 }
 
+interface RawPathConfig {
+  config_dir?: string;
+  teams_dir?: string;
+  skills_dir?: string;
+}
+
+function readPathConfig(): RawPathConfig {
+  const path = getUserConfigPath();
+  if (!existsSync(path)) return {};
+  return (yaml.load(readFileSync(path, "utf-8")) as RawPathConfig | undefined) ?? {};
+}
+
 export function getPlatformHomeDir(): string {
   const fromEnv = process.env["PA_PLATFORM_HOME"];
   if (fromEnv) return expandHome(fromEnv);
+  const fromConfig = readPathConfig().config_dir;
+  if (fromConfig) return expandHome(fromConfig);
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 }
 
@@ -33,11 +49,13 @@ export function getDataDir(): string {
 }
 
 export function getTeamsDir(): string {
-  return expandHome(process.env["PA_PLATFORM_TEAMS"] ?? resolve(getPlatformHomeDir(), "teams"));
+  const config = readPathConfig();
+  return expandHome(process.env["PA_PLATFORM_TEAMS"] ?? config.teams_dir ?? resolve(getPlatformHomeDir(), "teams"));
 }
 
 export function getSkillsDir(): string {
-  return expandHome(process.env["PA_PLATFORM_SKILLS"] ?? resolve(getPlatformHomeDir(), "skills/global"));
+  const config = readPathConfig();
+  return expandHome(process.env["PA_PLATFORM_SKILLS"] ?? config.skills_dir ?? resolve(getPlatformHomeDir(), "skills/global"));
 }
 
 export function getPrimersDir(): string {
