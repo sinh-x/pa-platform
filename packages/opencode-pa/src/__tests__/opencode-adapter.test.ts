@@ -88,6 +88,14 @@ test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", "MiniMax-M2.7-highspeed"), "minimax-coding-plan/MiniMax-M2.7-highspeed");
 });
 
+test("opa tool guidance keeps pa-core serve as server owner", () => {
+  const guidance = new OpencodeAdapter().describeTools().markdown;
+  assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(guidance, /`opa` is the default deployment adapter, not the server owner/);
+  assert.match(guidance, /Supported providers for `opa deploy`: `minimax` and `openai`/);
+  assert.doesNotMatch(guidance, /opa serve/);
+});
+
 test("opa dry-run generates primer and does not spawn opencode", async () => {
   await withOpaEnv(async (root) => {
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });

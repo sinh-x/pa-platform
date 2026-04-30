@@ -170,7 +170,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
   const executionStyle = mode?.solo || (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
   const lines = [
     "## Deployment Instructions",
-    "Use `opa` for all PA platform commands. Use only tools exposed in the current opencode session.",
+    "Use `opa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use only tools exposed in the current opencode session.",
     "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
     "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
     "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `opa registry complete` or `opa registry update` when the run finishes.",
@@ -230,7 +230,8 @@ function defaultToolReference(runtime: RuntimeName): string {
   if (runtime === "opencode") {
     return [
       "Runtime: opencode via `opa`.",
-      "Use `opa` for PA platform commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
+      "Use `opa` for PA platform deployment and workflow commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
+      "Use `pa-core serve` for Agent API server lifecycle; `opa` is the default deployment adapter, not the server owner.",
       "Use opencode tools exposed in the current session.",
       "Task-style delegation is only available when exposed by the current opencode session.",
       "Do not assume Claude-only operational tools exist.",

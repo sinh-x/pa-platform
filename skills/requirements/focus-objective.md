@@ -16,7 +16,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Get the current GTD focus list with all context.
 
 **Actions:**
-- [ ] Run: `pa requirements focus --enrich` to get the focus list with cached suggestions
+- [ ] Run: `opa board --all --assignee requirements` to get the current requirements focus list
 - [ ] Parse the output to understand: total items, WIP by project, WIP by status
 - [ ] Identify the oldest and most stale items
 - [ ] Note any blocked items and their blockers

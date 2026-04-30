@@ -2,7 +2,7 @@
 
 Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 
-`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters such as `cpa` and `opa` can then provide execution hooks without duplicating core behavior.
+`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters such as `cpa` and `opa` can then provide execution hooks without duplicating core behavior. `opa` is the default OpenCode deployment adapter; `pa-core` still owns runtime-neutral server lifecycle behavior.
 
 ## Packages
 
@@ -23,14 +23,19 @@ pa-core ticket list --project pa-platform
 pa-core status
 ```
 
-Execution commands are deliberately adapter-hooked:
+Deployment execution is adapter-hooked, with `opa` as the default OpenCode adapter:
 
 ```bash
-pa-core deploy builder --mode daily
+opa deploy builder --mode implement
+```
+
+The Agent API server is core-owned:
+
+```bash
 pa-core serve
 ```
 
-Without an adapter hook, these return explicit errors instead of invoking a runtime directly.
+Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
 ## Shared State
 

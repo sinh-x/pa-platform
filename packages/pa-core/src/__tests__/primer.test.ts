@@ -42,6 +42,8 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
   assert.match(primer, /Runtime: opencode/);
   assert.match(primer, /updated pa-core command set/);
+  assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(primer, /`opa` is the default deployment adapter, not the server owner/);
   assert.match(primer, /Task-style delegation/);
   assert.match(primer, /Do not assume Claude-only operational tools exist/);
   assert.match(primer, /## Active Bulletins/);
@@ -175,7 +177,9 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   });
 
   assert.match(primer, /Runtime: opencode/);
-  assert.match(primer, /Use `opa` for all PA platform commands/);
+  assert.match(primer, /Use `opa` for PA platform workflow commands/);
+  assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(primer, /`opa` is the default deployment adapter/);
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);

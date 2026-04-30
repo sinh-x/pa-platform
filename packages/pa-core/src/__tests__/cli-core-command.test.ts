@@ -123,6 +123,17 @@ test("packaged team and skill guidance avoids removed deploy mode flags", () => 
   assert.deepEqual(offenders, []);
 });
 
+test("packaged PA CLI guidance describes opa adapter and core-owned serve", () => {
+  const guidance = readFileSync(join(REPO_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
+  assert.match(guidance, /# OPA CLI Reference/);
+  assert.match(guidance, /`opa` is the default OpenCode deployment adapter/);
+  assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(guidance, /\| `pa-core serve` \| Start, stop, restart, and inspect the core-owned Agent API server/);
+  assert.match(guidance, /rather than restored as required direct `daily`, `requirements`, `idea`, or `report` CLI commands/);
+  assert.doesNotMatch(guidance, /\| `(?:pa|opa) (?:daily|requirements|idea|report)\b/);
+  assert.doesNotMatch(guidance, /`opa serve`|`pa serve`/);
+});
+
 test("runCoreCommand exposes status list and detail", async () => {
   await withCliEnv(async (root) => {
     appendRegistryEvent({ deployment_id: "d-cli-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", agents: ["team-manager"], runtime: "opencode", provider: "minimax", models: { team: "minimax-coding-plan/MiniMax-M2.7" } });

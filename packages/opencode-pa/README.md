@@ -9,7 +9,7 @@ OpenCode runtime adapter for PA platform.
 ## Runtime Notes
 
 - `opa deploy` starts PA team deployments through OpenCode.
-- `opa serve` manages the OpenCode-backed Agent API process.
+- `pa-core serve` manages the core-owned Agent API process; `opa` supplies the default OpenCode deployment adapter used by that server.
 - OpenCode activity capture installs repo-managed hooks from this package during deployment setup.
 
 ## Development
