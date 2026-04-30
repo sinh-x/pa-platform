@@ -97,7 +97,7 @@ function createBuiltInSensitivePatterns(): SensitivePattern[] {
     filename(/^.*api-key.*\.json$/i),
     filename(/^.*api_key.*\.json$/i),
     pathPattern(/(?:^|[/\\])\.ssh[/\\]id[^/\\]*$/i),
-    content(/(?:^|\n)\s*[a-z]+(?:\s+[a-z]+){11,}\s*(?:$|\n)/i),
+    content(/(?:^|\n)\s*(?:(?:seed|mnemonic|recovery)\s+(?:phrase|words?)|backup\s+(?:phrase|words?))\s*[:=-]\s*[a-z]+(?:\s+[a-z]+){11}(?:(?:\s+[a-z]+){3}){0,4}\s*(?:$|\n)/i),
     content(/-----BEGIN [A-Z ]*PRIVATE KEY-----/),
     content(/(?:^|\n)\s*ssh-(?:ed25519|rsa|ecdsa)\s+[A-Za-z0-9+/=]+(?:\s+[^\n]*)?(?:$|\n)/),
     content(/\bbearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i),

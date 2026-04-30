@@ -37,7 +37,7 @@ test("built-in content defaults catch documented sensitive classes", () => {
   withConfigDir(() => {
     const patternSet = loadSensitivePatterns();
     const cases = [
-      { name: "seed phrase", value: "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima" },
+      { name: "seed phrase", value: "seed phrase: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima" },
       { name: "ssh private key", value: "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEKEYDATA\n-----END OPENSSH PRIVATE KEY-----" },
       { name: "ssh public key", value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyOnly test@example" },
       { name: "bearer token", value: "Authorization: Bearer FAKE_TOKEN_VALUE_1234567890" },
@@ -123,6 +123,7 @@ test("normal non-sensitive text does not match defaults", () => {
     assert.equal(findSensitiveMatch("filename", "objective.md", patternSet), undefined);
     assert.equal(findSensitiveMatch("path", "/repo/docs/objective.md", patternSet), undefined);
     assert.equal(findSensitiveMatch("content", "Write a normal local objective for the builder team.", patternSet), undefined);
+    assert.equal(findSensitiveMatch("content", "Fix review findings for sensitive file guardrails on the current feature branch without changing ticket status.", patternSet), undefined);
   });
 });
 
