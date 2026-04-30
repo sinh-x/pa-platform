@@ -197,6 +197,41 @@ test("opa deploy supports pa deploy compatibility flags", async () => {
   });
 });
 
+test("opa dry-run objective-file includes allowed content and blocks sensitive local content before primer generation", async () => {
+  await withOpaEnv(async (root) => {
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const objectiveFile = join(root, "objective.md");
+    writeFileSync(objectiveFile, "Ship allowed objective from dry-run file.");
+
+    const allowedStdout: string[] = [];
+    const allowedStderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
+      hooks: createOpencodeHooks(adapter),
+      io: { stdout: (line) => allowedStdout.push(line), stderr: (line) => allowedStderr.push(line) },
+    }), 0);
+    assert.deepEqual(allowedStderr, []);
+    const deployId = allowedStdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /Ship allowed objective from dry-run file/);
+
+    writeFileSync(join(root, "config", "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_DRY_RUN_PRIVATE_[0-9]+'", ""].join("\n"));
+    writeFileSync(objectiveFile, "contains FAKE_DRY_RUN_PRIVATE_123 only");
+    const blockedStdout: string[] = [];
+    const blockedStderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
+      hooks: createOpencodeHooks(adapter),
+      io: { stdout: (line) => blockedStdout.push(line), stderr: (line) => blockedStderr.push(line) },
+    }), 1);
+    assert.deepEqual(blockedStdout, []);
+    assert.match(blockedStderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(blockedStderr.join("\n"), /FAKE_DRY_RUN_PRIVATE|123/);
+
+    for (const file of [join(root, "deployments", deployId, "primer.md")]) {
+      assert.doesNotMatch(readFileSync(file, "utf-8"), /FAKE_DRY_RUN_PRIVATE|123/);
+    }
+  });
+});
+
 test("opa default deploy opens opencode TUI with prompt", async () => {
   await withOpaEnv(async (root) => {
     const bin = join(root, "bin");
