@@ -16,6 +16,11 @@ function __opa_team_dirs
         set -a dirs "$source_teams"
     end
 
+    set -l installed_teams $__opa_completion_dir/../../pa-platform/teams
+    if test -d "$installed_teams"
+        set -a dirs "$installed_teams"
+    end
+
     set -l config_dir ~/.config/sinh-x/pa-platform
     if set -q PA_PLATFORM_CONFIG
         set config_dir "$PA_PLATFORM_CONFIG"
@@ -45,6 +50,9 @@ function __opa_teams
     end
     if test -d "$__opa_completion_dir/../teams"
         set -a dirs "$__opa_completion_dir/../teams"
+    end
+    if test -d "$__opa_completion_dir/../../pa-platform/teams"
+        set -a dirs "$__opa_completion_dir/../../pa-platform/teams"
     end
 
     set -l config_dir ~/.config/sinh-x/pa-platform
