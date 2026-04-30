@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -381,6 +381,106 @@ test("agent API watchers emit deployment, ticket, bulletin, and inbox events and
     writeFileSync(join(root, "sinh-inputs", "inbox", "after-cleanup.md"), "# After\n");
     await sleep(50);
     assert.equal(events.length, countAfterCleanup);
+  });
+});
+
+test("agent API action routes mutate inbox, sinh-inputs, ideas, tickets, and attachments safely", async () => {
+  await withApiEnv(async (root) => {
+    const personalRepo = join(root, "personal-assistant");
+    mkdirSync(personalRepo, { recursive: true });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${join(root, "repo")}\n    description: Test repo\n    prefix: PAP\n  personal:\n    path: ${personalRepo}\n    description: Personal repo\n    prefix: PA\n`);
+    mkdirSync(join(root, "sinh-inputs", "inbox"), { recursive: true });
+    mkdirSync(join(root, "sinh-inputs", "approved"), { recursive: true });
+    writeFileSync(join(root, "sinh-inputs", "inbox", "request.md"), "# Request\n");
+    writeFileSync(join(root, "sinh-inputs", "approved", "approved.md"), "# Approved\n");
+
+    const events: WsEvent[] = [];
+    const watchers = startWatchers({ broadcast: (event) => events.push(event) }, { debounceMs: 5, pollIntervalMs: 10, ensureDirs: true });
+    try {
+      const { app } = createAgentApiApp();
+      const inboxList = await app.request("/api/inbox");
+      assert.equal(inboxList.status, 200);
+      assert.equal((await inboxList.json() as { items: unknown[]; count_by_type: Record<string, number> }).items.length, 1);
+
+      const append = await app.request("/api/inbox/request.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "append-section", title: "Decision", content: "Approved" }) });
+      assert.equal(append.status, 200);
+      assert.match(readFileSync(join(root, "sinh-inputs", "inbox", "request.md"), "utf-8"), /### Decision/);
+
+      const approve = await app.request("/api/inbox/request.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "approve", note: "ok" }) });
+      assert.equal(approve.status, 200);
+      assert.equal(existsSync(join(root, "sinh-inputs", "approved", "request.md")), true);
+      await waitFor(() => events.find((event) => event.type === "inbox-item-moved"));
+
+      const requeue = await app.request("/api/sinh-inputs/approved/approved.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "requeue" }) });
+      assert.equal(requeue.status, 200);
+      assert.match(readFileSync(join(root, "sinh-inputs", "inbox", "approved.md"), "utf-8"), /requeued_from: approved/);
+
+      const idea = await app.request("/api/ideas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Phone idea", what: "Build it", tags: ["mobile"] }) });
+      assert.equal(idea.status, 201);
+      const ideaBody = await idea.json() as { ticket: { id: string; type: string; status: string; assignee: string; tags: string[] } };
+      assert.match(ideaBody.ticket.id, /^PAP-/);
+      assert.equal(ideaBody.ticket.type, "idea");
+      assert.equal(ideaBody.ticket.status, "idea");
+      assert.equal(ideaBody.ticket.assignee, "requirements");
+      assert.deepEqual(ideaBody.ticket.tags, ["mobile"]);
+
+      const store = new TicketStore();
+      const ticket = store.create({ project: "pa-platform", title: "Action ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+      const addedComment = await app.request(`/api/tickets/${ticket.id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ author: "builder/team-manager", content: "Original" }) });
+      assert.equal(addedComment.status, 201);
+      const commentId = (await addedComment.json() as { comment: { id: string } }).comment.id;
+      const edited = await app.request(`/api/tickets/${ticket.id}/comments/${commentId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "Edited" }) });
+      assert.equal(edited.status, 200);
+      assert.equal((await edited.json() as { comment: { content: string; editedAt?: string } }).comment.content, "Edited");
+      const deleted = await app.request(`/api/tickets/${ticket.id}/comments/${commentId}`, { method: "DELETE" });
+      assert.equal(deleted.status, 204);
+
+      const attached = await app.request(`/api/tickets/${ticket.id}/attachments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "attachments/existing.png" }) });
+      assert.equal(attached.status, 200);
+      assert.equal((await attached.json() as { ticket: { doc_refs: Array<{ type: string; path: string }> } }).ticket.doc_refs[0]?.type, "attachment");
+
+      const data = new FormData();
+      data.set("file", new File([new Uint8Array([1, 2, 3])], "screen shot.png", { type: "image/png" }));
+      const uploaded = await app.request(`/api/tickets/${ticket.id}/attachments/upload`, { method: "POST", body: data });
+      assert.equal(uploaded.status, 201);
+      const uploadBody = await uploaded.json() as { docRef: string };
+      assert.match(uploadBody.docRef, new RegExp(`^attachments/${ticket.id}/\\d+-screen_shot\\.png$`));
+      assert.equal(existsSync(join(root, uploadBody.docRef)), true);
+
+      const moved = await app.request(`/api/tickets/${ticket.id}/move`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: "personal" }) });
+      assert.equal(moved.status, 200);
+      assert.match((await moved.json() as { ticket: { id: string; project: string } }).ticket.id, /^PA-/);
+    } finally {
+      watchers.cleanup();
+    }
+  });
+});
+
+test("agent API action routes reject traversal, unsafe filenames, invalid actions, identifiers, and bodies", async () => {
+  await withApiEnv(async (root) => {
+    mkdirSync(join(root, "sinh-inputs", "inbox"), { recursive: true });
+    mkdirSync(join(root, "sinh-inputs", "approved"), { recursive: true });
+    writeFileSync(join(root, "sinh-inputs", "inbox", "request.md"), "# Request\n");
+    writeFileSync(join(root, "sinh-inputs", "approved", "approved.md"), "# Approved\n");
+    const { app } = createAgentApiApp();
+
+    assert.equal((await app.request("/api/inbox/.hidden.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "approve" }) })).status, 403);
+    assert.equal((await app.request("/api/inbox/request.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "unknown" }) })).status, 400);
+    assert.equal((await app.request("/api/inbox/request.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "reject" }) })).status, 400);
+    assert.equal((await app.request("/api/sinh-inputs/approved/.hidden.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "archive" }) })).status, 403);
+    assert.equal((await app.request("/api/sinh-inputs/done/approved.md/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "save-for-later" }) })).status, 404);
+    assert.equal((await app.request("/api/ideas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "Missing title" }) })).status, 400);
+
+    const store = new TicketStore();
+    const ticket = store.create({ project: "pa-platform", title: "Negative ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/comments/nope`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "Edited" }) })).status, 404);
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/comments/nope`, { method: "DELETE" })).status, 404);
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/attachments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "../secret.png" }) })).status, 403);
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/attachments/upload`, { method: "POST", body: new FormData() })).status, 400);
+    const badUpload = new FormData();
+    badUpload.set("file", new File(["<svg />"], "vector.svg", { type: "image/svg+xml" }));
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/attachments/upload`, { method: "POST", body: badUpload })).status, 400);
+    assert.equal((await app.request(`/api/tickets/${ticket.id}/move`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: "unknown" }) })).status, 400);
   });
 });
 

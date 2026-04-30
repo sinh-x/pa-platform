@@ -88,6 +88,31 @@ export class TicketStore {
     return comment;
   }
 
+  editComment(id: string, commentId: string, content: string, actor = "pa-core"): { ticket: Ticket; comment: Comment } {
+    const ticket = this.get(id);
+    if (!ticket) throw new Error(`Ticket not found: ${id}`);
+    const index = ticket.comments.findIndex((comment) => comment.id === commentId);
+    if (index < 0) throw new Error(`Comment not found: ${commentId}`);
+    const now = nowUtc();
+    const comment: Comment = { ...ticket.comments[index]!, content, editedAt: now };
+    const comments = ticket.comments.map((existing, existingIndex) => existingIndex === index ? comment : existing);
+    const next = { ...ticket, comments, updatedAt: now };
+    this.writeTicket(next);
+    this.appendAudit(id, "updated", actor, { comment: [ticket.comments[index], comment] });
+    return { ticket: next, comment };
+  }
+
+  deleteComment(id: string, commentId: string, actor = "pa-core"): Ticket {
+    const ticket = this.get(id);
+    if (!ticket) throw new Error(`Ticket not found: ${id}`);
+    const comments = ticket.comments.filter((comment) => comment.id !== commentId);
+    if (comments.length === ticket.comments.length) throw new Error(`Comment not found: ${commentId}`);
+    const next = { ...ticket, comments, updatedAt: nowUtc() };
+    this.writeTicket(next);
+    this.appendAudit(id, "updated", actor, { comments: [ticket.comments.length, comments.length] });
+    return next;
+  }
+
   attach(id: string, path: string, actor = "pa-core"): Ticket {
     return this.update(id, { add_doc_ref: { type: "attachment", path } }, actor);
   }
