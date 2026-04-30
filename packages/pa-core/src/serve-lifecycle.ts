@@ -127,11 +127,13 @@ async function serveStartCommand(opts: ServeLifecycleOptions): Promise<number> {
   });
   process.once("exit", cleanupPid);
 
-  const { app } = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks });
+  const api = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks, enableLiveUpdates: true });
   opts.io.stdout(`[pa-core serve] Starting agent API on http://${opts.host}:${opts.port}`);
-  serve({ fetch: app.fetch, port: opts.port, hostname: opts.host }, (info) => {
+  const server = serve({ fetch: api.app.fetch, port: opts.port, hostname: opts.host }, (info) => {
     opts.io.stdout(`[pa-core serve] Listening on http://${info.address}:${info.port}`);
   });
+  api.injectWebSocket(server);
+  process.once("exit", () => api.cleanup());
   return 0;
 }
 

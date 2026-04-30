@@ -1,10 +1,42 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendActivityEvent, appendRegistryEvent, closeDb, createActivityEvent, createAgentApiApp, TicketStore } from "../index.js";
+import { serve } from "@hono/node-server";
+import { appendActivityEvent, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
+import type { WsClient, WsEvent } from "../index.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function waitFor<T>(fn: () => T | undefined, timeoutMs = 1500): Promise<T> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const value = fn();
+    if (value !== undefined) return value;
+    await sleep(20);
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
+class FakeWsClient implements WsClient {
+  readyState = 1;
+  readonly messages: string[] = [];
+  closed = false;
+
+  send(message: string): void {
+    this.messages.push(message);
+  }
+
+  close(): void {
+    this.closed = true;
+    this.readyState = 3;
+  }
+}
 
 function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-agent-api-"));
@@ -266,6 +298,89 @@ test("agent API deploy validates requests and routes through deploy hook without
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { error: "Invalid team name", code: "BAD_REQUEST" });
     assert.equal(received.length, 1);
+  });
+});
+
+test("agent API exposes /ws and broadcasts typed events to connected clients", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp({ enableLiveUpdates: true });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const address = server.address();
+      assert.equal(typeof address, "object");
+      assert.ok(address);
+      const port = address.port;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("websocket connection failed")), { once: true });
+      });
+      const received = new Promise<WsEvent>((resolveMessage) => {
+        ws.addEventListener("message", (event) => resolveMessage(JSON.parse(String(event.data)) as WsEvent), { once: true });
+      });
+      hub.broadcast({ type: "ticket-changed", data: { ticketId: "PAP-005" }, timestamp: "2026-04-30T00:00:00.000Z" });
+      assert.deepEqual(await received, { type: "ticket-changed", data: { ticketId: "PAP-005" }, timestamp: "2026-04-30T00:00:00.000Z" });
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+});
+
+test("WebSocket hub sends ping heartbeats and honors pong compatibility", async () => {
+  const ws = new FakeWsClient();
+  const hubForTest = new WsHub({ pingIntervalMs: 5, pongTimeoutMs: 50 });
+  hubForTest.addClient(ws);
+  hubForTest.startPing();
+  await waitFor(() => ws.messages.some((message) => (JSON.parse(message) as WsEvent).type === "ping") ? true : undefined);
+  hubForTest.recordPong(ws);
+  assert.equal(hubForTest.size, 1);
+  hubForTest.cleanup();
+  assert.equal(ws.closed, true);
+});
+
+test("WebSocket hub closes clients that miss pong timeout", async () => {
+  let now = 0;
+  const ws = new FakeWsClient();
+  const hubForTest = new WsHub({ pingIntervalMs: 5, pongTimeoutMs: 10, now: () => now });
+  hubForTest.addClient(ws);
+  now = 20;
+  hubForTest.startPing();
+  await waitFor(() => ws.closed ? true : undefined);
+  assert.equal(hubForTest.size, 0);
+  hubForTest.cleanup();
+});
+
+test("agent API watchers emit deployment, ticket, bulletin, and inbox events and clean up", async () => {
+  await withApiEnv(async (root) => {
+    mkdirSync(join(root, "sinh-inputs", "inbox"), { recursive: true });
+    const events: WsEvent[] = [];
+    const watchers = startWatchers({ broadcast: (event) => events.push(event) }, { debounceMs: 5, pollIntervalMs: 10, ensureDirs: true });
+    try {
+      writeFileSync(join(root, "sinh-inputs", "inbox", "hello.md"), "# Hello\n");
+      await waitFor(() => events.find((event) => event.type === "new-inbox-item"));
+
+      new TicketStore().create({ project: "pa-platform", title: "Watcher ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+      await waitFor(() => events.find((event) => event.type === "ticket-changed"));
+
+      new BulletinStore().create({ title: "Watcher bulletin", block: "all", body: "Pause" });
+      await waitFor(() => events.find((event) => event.type === "bulletin-update"));
+
+      appendRegistryEvent({ deployment_id: "d-watch", team: "builder", event: "started", timestamp: "2026-04-30T00:00:00.000Z" });
+      await waitFor(() => events.find((event) => event.type === "deployment-status-change"));
+    } finally {
+      watchers.cleanup();
+    }
+
+    const countAfterCleanup = events.length;
+    writeFileSync(join(root, "sinh-inputs", "inbox", "after-cleanup.md"), "# After\n");
+    await sleep(50);
+    assert.equal(events.length, countAfterCleanup);
   });
 });
 
