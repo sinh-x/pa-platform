@@ -6,7 +6,11 @@ import { TicketStore } from "../../tickets/store.js";
 import type { CreateTicketInput, TicketListFilters, UpdateTicketInput } from "../../tickets/types.js";
 import { validateAssignee, validateAuthor } from "../../tickets/validate.js";
 import { getDeploymentsByTicketId } from "../../registry/index.js";
-import { listRepos } from "../../repos.js";
+import { listRepos, resolveProject } from "../../repos.js";
+
+const BOARD_DEFAULT_EXCLUDE_TAGS = ["backlog", "archived"];
+const BOARD_DEFAULT_EXCLUDE_TYPES: TicketListFilters["excludeTypes"] = ["fyi", "work-report"];
+const TICKET_TYPES = new Set(["feature", "bug", "task", "review-request", "work-report", "fyi", "idea", "question"]);
 
 export function ticketRoutes(store = new TicketStore()): Hono {
   const app = new Hono();
@@ -103,8 +107,26 @@ export function ticketRoutes(store = new TicketStore()): Hono {
     }
   });
 
-  app.get("/api/board", (c) => c.json({ board: buildBoardView(c.req.query("project") ?? undefined) }));
+  app.get("/api/board", (c) => {
+    const projectInput = c.req.query("project") || undefined;
+    const assignee = c.req.query("assignee") || undefined;
+    const excludeTagsInput = c.req.query("excludeTags");
+    const excludeTypesInput = c.req.query("excludeTypes");
+    const excludeTags = excludeTagsInput ? excludeTagsInput.split(",").map((tag) => tag.trim()).filter(Boolean) : BOARD_DEFAULT_EXCLUDE_TAGS;
+    const excludeTypes = excludeTypesInput !== undefined ? parseTicketTypes(excludeTypesInput) : BOARD_DEFAULT_EXCLUDE_TYPES;
+
+    try {
+      const project = projectInput ? resolveProject(projectInput).key : undefined;
+      return c.json({ board: buildBoardView(project, { assignee, excludeTags, excludeTypes }) });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error), code: "BOARD_FAILED" }, 400);
+    }
+  });
   app.get("/api/projects", (c) => c.json({ projects: listRepos().map((repo) => ({ ...repo, active_ticket_count: store.list({ project: repo.name }).filter((ticket) => !["done", "rejected", "cancelled"].includes(ticket.status)).length })) }));
 
   return app;
+}
+
+function parseTicketTypes(input: string): TicketListFilters["excludeTypes"] {
+  return input.split(",").map((type) => type.trim()).filter((type): type is NonNullable<TicketListFilters["excludeTypes"]>[number] => TICKET_TYPES.has(type));
 }

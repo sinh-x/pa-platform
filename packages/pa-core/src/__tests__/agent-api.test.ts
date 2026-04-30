@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendActivityEvent, appendRegistryEvent, closeDb, createActivityEvent, createAgentApiApp } from "../index.js";
+import { appendActivityEvent, appendRegistryEvent, closeDb, createActivityEvent, createAgentApiApp, TicketStore } from "../index.js";
 
 function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-agent-api-"));
@@ -71,6 +71,59 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     const doc = await app.request("/api/documents?path=agent-teams/builder/artifacts/note.md");
     assert.equal(doc.status, 200);
     assert.equal((await doc.json() as { metadata: { title: string } }).metadata.title, "Note");
+  });
+});
+
+test("agent API board resolves projects, applies legacy filters, and includes doc ref titles", async () => {
+  await withApiEnv(async (root) => {
+    const personalRepo = join(root, "personal-assistant");
+    mkdirSync(personalRepo, { recursive: true });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${join(root, "repo")}\n    description: Test repo\n    prefix: PAP\n  personal:\n    path: ${personalRepo}\n    description: Personal repo\n    prefix: PA\n`);
+    const store = new TicketStore();
+    store.create({ project: "pa-platform", title: "API visible", summary: "Summary", description: "", status: "implementing", priority: "high", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [{ type: "requirements", path: "agent-teams/requirements/artifacts/2026-04-27-api-visible.md", primary: true, addedAt: "2026-04-27T00:00:00.000Z", addedBy: "test" }], comments: [] }, "test");
+    store.create({ project: "pa-platform", title: "API backlog", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: ["backlog"], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    store.create({ project: "pa-platform", title: "API FYI", summary: "Summary", description: "", status: "idea", priority: "medium", type: "fyi", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    store.create({ project: "personal", title: "API personal", summary: "Summary", description: "", status: "idea", priority: "low", type: "task", assignee: "sinh", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+
+    const { app } = createAgentApiApp();
+    const allResponse = await app.request("/api/board");
+    assert.equal(allResponse.status, 200);
+    const allBoard = await allResponse.json() as { board: { project: string; total: number; columns: Array<{ tickets: Array<{ title: string; doc_refs: Array<{ title?: string }> }> }> } };
+    const allTitles = allBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
+    assert.equal(allBoard.board.project, "all");
+    assert.match(allTitles.join("\n"), /API visible/);
+    assert.match(allTitles.join("\n"), /API personal/);
+    assert.doesNotMatch(allTitles.join("\n"), /API backlog|API FYI/);
+    assert.equal(allBoard.board.columns.flatMap((column) => column.tickets.flatMap((ticket) => ticket.doc_refs))[0]?.title, "api-visible");
+
+    const prefixResponse = await app.request("/api/board?project=PAP");
+    assert.equal(prefixResponse.status, 200);
+    const prefixBoard = await prefixResponse.json() as typeof allBoard;
+    assert.equal(prefixBoard.board.project, "pa-platform");
+    assert.deepEqual(prefixBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title)), ["API visible"]);
+
+    const canonicalResponse = await app.request("/api/board?project=pa-platform");
+    assert.equal(canonicalResponse.status, 200);
+    assert.deepEqual(await canonicalResponse.json(), prefixBoard);
+
+    const assigneeResponse = await app.request("/api/board?project=PAP&assignee=builder");
+    assert.equal(assigneeResponse.status, 200);
+    const assigneeBoard = await assigneeResponse.json() as typeof allBoard;
+    assert.deepEqual(assigneeBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title)), ["API visible"]);
+
+    const emptyExclusionsResponse = await app.request("/api/board?excludeTags=&excludeTypes=");
+    assert.equal(emptyExclusionsResponse.status, 200);
+    const emptyExclusionsBoard = await emptyExclusionsResponse.json() as typeof allBoard;
+    const emptyExclusionTitles = emptyExclusionsBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
+    assert.doesNotMatch(emptyExclusionTitles.join("\n"), /API backlog/);
+    assert.match(emptyExclusionTitles.join("\n"), /API FYI/);
+
+    const unknownResponse = await app.request("/api/board?project=unknown");
+    assert.equal(unknownResponse.status, 400);
+    const unknownBody = await unknownResponse.json() as { error: string; code: string };
+    assert.equal(unknownBody.code, "BOARD_FAILED");
+    assert.match(unknownBody.error, /Unknown project "unknown"/);
+    assert.match(unknownBody.error, /Valid project keys: pa-platform, personal/);
   });
 });
 

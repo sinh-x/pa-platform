@@ -12,7 +12,7 @@ import { formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, s
 import type { HealthCategory } from "../health/index.js";
 import { getAiUsageDir, getDeploymentDir, getSignalDir } from "../paths.js";
 import { appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../registry/index.js";
-import { listRepos } from "../repos.js";
+import { listRepos, resolveProject, resolveProjectFromCwd } from "../repos.js";
 import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
 import { routeMessage } from "../signal/router.js";
 import { cleanSignalEntries, writeRoutedMessage } from "../signal/writers.js";
@@ -364,7 +364,9 @@ function runBoardCommand(argv: string[], io: Required<CliIo>): number {
     io.stderr(opts.error);
     return 1;
   }
-  const board = buildBoardView(opts.project, { assignee: opts.assignee, excludeTags: ["backlog", "archived"], excludeTypes: ["fyi", "work-report"] });
+  const resolved = resolveBoardProject(opts);
+  if ("error" in resolved) return printError(resolved.error, io);
+  const board = buildBoardView(resolved.project, { assignee: opts.assignee, excludeTags: ["backlog", "archived"], excludeTypes: ["fyi", "work-report"] });
   io.stdout(`Board: ${board.project} (${board.total} tickets)`);
   for (const column of board.columns) {
     io.stdout(`\n${column.status} (${column.count})`);
@@ -860,8 +862,8 @@ function listFilesRecursive(dir: string): string[] {
   return results;
 }
 
-function parseBoardArgs(argv: string[]): { project?: string; assignee?: string } | { error: string } {
-  const opts: { project?: string; assignee?: string } = {};
+function parseBoardArgs(argv: string[]): { project?: string; assignee?: string; all?: boolean } | { error: string } {
+  const opts: { project?: string; assignee?: string; all?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--project") {
@@ -875,10 +877,23 @@ function parseBoardArgs(argv: string[]): { project?: string; assignee?: string }
       opts.assignee = value;
       i += 1;
     } else if (arg === "--all") {
-      // Accepted for compatibility; no filter is applied by default.
+      opts.all = true;
     } else return { error: `Unsupported board option: ${arg}` };
   }
   return opts;
+}
+
+function resolveBoardProject(opts: { project?: string; all?: boolean }): { project?: string } | { error: string } {
+  if (opts.all) return { project: undefined };
+  if (opts.project) return { project: resolveProject(opts.project).key };
+  const cwdProject = resolveProjectFromCwd();
+  if (cwdProject) return { project: cwdProject.key };
+  return { error: `Not in a registered repo. Use --all or --project name.${availableProjectGuidance()}` };
+}
+
+function availableProjectGuidance(): string {
+  const available = listRepos().filter((repo) => repo.prefix).map((repo) => repo.name).join(", ");
+  return available ? ` Available projects: ${available}` : "";
 }
 
 function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean; json?: boolean } | { error: string } {

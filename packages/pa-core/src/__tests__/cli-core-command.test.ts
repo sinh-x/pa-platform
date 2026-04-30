@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -256,7 +257,124 @@ test("runCoreCommand exposes schedule and remove-timer dry-runs", async () => {
   });
 });
 
-test("runCoreCommand exposes board and teams views", async () => {
+test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", async () => {
+  await withCliEnv(async (root) => {
+    const repo = join(root, "repo");
+    const personalRepo = join(root, "personal-assistant");
+    mkdirSync(personalRepo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n  personal:\n    path: ${personalRepo}\n    description: Personal repo\n    prefix: PA\n`);
+    const store = new TicketStore();
+    store.create({
+      project: "pa-platform",
+      title: "Build core CLI",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "high",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    store.create({
+      project: "pa-platform",
+      title: "Builder scoped task",
+      summary: "Summary",
+      description: "",
+      status: "pending-implementation",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    store.create({
+      project: "personal",
+      title: "Personal assistant ticket",
+      summary: "Summary",
+      description: "",
+      status: "idea",
+      priority: "low",
+      type: "task",
+      assignee: "sinh",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(repo);
+
+      const cwdBoard = capture();
+      assert.equal(await runCoreCommand(["board"], { io: cwdBoard.io }), 0);
+      assert.match(cwdBoard.stdout.join("\n"), /Board: pa-platform/);
+      assert.match(cwdBoard.stdout.join("\n"), /Build core CLI/);
+      assert.doesNotMatch(cwdBoard.stdout.join("\n"), /Personal assistant ticket/);
+
+      const allBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--all"], { io: allBoard.io }), 0);
+      assert.match(allBoard.stdout.join("\n"), /Board: all/);
+      assert.match(allBoard.stdout.join("\n"), /Build core CLI/);
+      assert.match(allBoard.stdout.join("\n"), /Personal assistant ticket/);
+
+      const allWithProject = capture();
+      assert.equal(await runCoreCommand(["board", "--all", "--project", "PAP"], { io: allWithProject.io }), 0);
+      assert.match(allWithProject.stdout.join("\n"), /Board: all/);
+      assert.match(allWithProject.stdout.join("\n"), /Personal assistant ticket/);
+
+      const prefixBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "PAP"], { io: prefixBoard.io }), 0);
+      assert.match(prefixBoard.stdout.join("\n"), /Board: pa-platform/);
+      assert.match(prefixBoard.stdout.join("\n"), /Build core CLI/);
+      assert.doesNotMatch(prefixBoard.stdout.join("\n"), /Personal assistant ticket/);
+
+      const canonicalBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: canonicalBoard.io }), 0);
+      assert.equal(prefixBoard.stdout.join("\n"), canonicalBoard.stdout.join("\n"));
+
+      const basenameBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "personal-assistant"], { io: basenameBoard.io }), 0);
+      assert.match(basenameBoard.stdout.join("\n"), /Board: personal/);
+      assert.match(basenameBoard.stdout.join("\n"), /Personal assistant ticket/);
+
+      const assigneeBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "pa-platform", "--assignee", "builder"], { io: assigneeBoard.io }), 0);
+      assert.match(assigneeBoard.stdout.join("\n"), /Builder scoped task/);
+      assert.doesNotMatch(assigneeBoard.stdout.join("\n"), /Personal assistant ticket/);
+
+      process.chdir(root);
+      const outsideBoard = capture();
+      assert.equal(await runCoreCommand(["board"], { io: outsideBoard.io }), 1);
+      assert.match(outsideBoard.stderr.join("\n"), /Not in a registered repo\. Use --all or --project name/);
+      assert.match(outsideBoard.stderr.join("\n"), /Available projects: pa-platform, personal/);
+
+      const unknownBoard = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "unknown"], { io: unknownBoard.io }), 1);
+      assert.match(unknownBoard.stderr.join("\n"), /Unknown project "unknown"/);
+      assert.match(unknownBoard.stderr.join("\n"), /Valid project keys: pa-platform, personal/);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+});
+
+test("runCoreCommand exposes teams views", async () => {
   await withCliEnv(async () => {
     new TicketStore().create({
       project: "pa-platform",
@@ -275,10 +393,6 @@ test("runCoreCommand exposes board and teams views", async () => {
       doc_refs: [],
       comments: [],
     }, "test");
-
-    const board = capture();
-    assert.equal(await runCoreCommand(["board", "--project", "pa-platform", "--assignee", "builder"], { io: board.io }), 0);
-    assert.match(board.stdout.join("\n"), /Build core CLI/);
 
     const teams = capture();
     assert.equal(await runCoreCommand(["teams"], { io: teams.io }), 0);

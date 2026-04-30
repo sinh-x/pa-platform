@@ -1,4 +1,5 @@
 import { queryDeploymentStatuses } from "../registry/index.js";
+import { deriveDocRefTitle } from "./doc-ref.js";
 import { TicketStore } from "./store.js";
 import type { Ticket, TicketListFilters, TicketStatus } from "./types.js";
 
@@ -31,7 +32,7 @@ export function buildBoardView(project?: string, filters: Omit<TicketListFilters
   const grouped = new Map<TicketStatus, Array<Ticket & { hasRunningDeployment?: boolean }>>(BOARD_COLUMNS.map((status) => [status, []]));
   const assigneeCounts: Record<string, number> = {};
   for (const ticket of tickets) {
-    const annotated = { ...ticket, hasRunningDeployment: runningTicketIds.has(ticket.id) };
+    const annotated = { ...ticket, doc_refs: ticket.doc_refs.map((ref) => ({ ...ref, title: deriveDocRefTitle(ref) })), hasRunningDeployment: runningTicketIds.has(ticket.id) };
     (grouped.get(ticket.status) ?? grouped.get("idea")!).push(annotated);
     const assignee = ticket.assignee || "unassigned";
     assigneeCounts[assignee] = (assigneeCounts[assignee] ?? 0) + 1;
