@@ -8,7 +8,7 @@
 ```yaml
 ---
 type: spike-research
-para: area
+para: area # PARA field (classification label), not a path segment
 date: {{DATE}}
 topic: {{TOPIC}}
 slug: {{SLUG}}
@@ -87,4 +87,6 @@ related:
 - Keep `type: spike-research`, `source_doc`, `source_repo`, `source_ticket`, and `source_deployments` aligned with the parent execution context.
 - Keep all approved frontmatter fields from the requirements doc.
 - Populate `source_deployments` with a compact list of parent or child deployment IDs used for this spike.
+- `para: area` is a PARA classification value used by learning-management metadata.
+- The file path remains `/.../areas/spike-research/`; this path is not derived from the `para` frontmatter.
 - For missing repos, use `source_repo: N/A` or the explicit root that was resolved.

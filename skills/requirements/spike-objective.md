@@ -12,6 +12,20 @@ Follow the active role checklist below in order.
 
 **Required workflow:** `spike` is a ticket-driven parent orchestrator. It must validate `ticket_id` before launching any child and fails early if the ticket context is missing.
 
+Parent mode is the only mode that advances the ticket to `review-uat`.
+
+## Output Format Routing
+
+This orchestrated mode uses the consolidated report format in:
+
+- `skills/templates/spike-research-report.md`
+
+For compatibility with legacy standalone spike runs, use:
+
+- `skills/templates/spike-light-report.md` (light report)
+- `skills/templates/spike-full-requirements.md` (13-section requirements format)
+- `skills/templates/spike-learning-note.md` (retrieval learning artifact)
+
 ---
 
 ### Role: Parent (`spike`)
@@ -69,8 +83,10 @@ Required sections in the consolidated doc:
 #### Phase P5: Learning-management export
 
 - [ ] Write learning note to
-  `/home/sinh/git-repos/sinh-x/tools/learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md`
-  with approved frontmatter fields.
+   `/home/sinh/git-repos/sinh-x/tools/learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md`
+   with approved frontmatter fields.
+   - `para` in frontmatter is a PARA classification label (`area`) and does not control filesystem path.
+   - Files are stored under `areas/spike-research/` in the learning-management repository path.
 - [ ] Attach learning artifact with `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`.
 
 #### Phase P6: Handoff
