@@ -107,9 +107,22 @@ function __opa_deployments
     printf '%s\n' d-123456
 end
 function __opa_teams
-    printf '%s\n' builder
+    printf '%s\n' builder requirements
 end
 
+__completion_expect_contains opa-deploy-team 'opa deploy ' builder; or set failed 1
+__completion_expect_contains opa-deploy-req 'opa deploy ' requirements; or set failed 1
+__completion_expect_contains opa-deploy-mode 'opa deploy builder ' --mode; or set failed 1
+__completion_expect_contains opa-deploy-obj 'opa deploy builder ' --objective; or set failed 1
+__completion_expect_contains opa-deploy-repo 'opa deploy builder ' --repo; or set failed 1
+__completion_expect_contains opa-deploy-ticket 'opa deploy builder ' --ticket; or set failed 1
+__completion_expect_contains opa-deploy-dry 'opa deploy builder ' --dry-run; or set failed 1
+__completion_expect_contains opa-deploy-bg 'opa deploy builder ' --background; or set failed 1
+__completion_expect_contains opa-mode-impl 'opa deploy builder --mode ' implement; or set failed 1
+__completion_expect_contains opa-mode-orch 'opa deploy builder --mode ' orchestrator; or set failed 1
+__completion_expect_contains opa-mode-routine 'opa deploy builder --mode ' routine; or set failed 1
+__completion_expect_contains opa-team-repo-val 'opa deploy builder --repo ' pa-platform; or set failed 1
+__completion_expect_contains opa-team-ticket-val 'opa deploy builder --ticket ' PAP-016; or set failed 1
 __completion_expect_contains opa-repo-value 'opa deploy --repo ' pa-platform; or set failed 1
 __completion_expect_not_contains opa-repo-post 'opa deploy --repo pa-platform ' pa-platform; or set failed 1
 __completion_expect_contains opa-repo-post-team 'opa deploy --repo pa-platform ' builder; or set failed 1
