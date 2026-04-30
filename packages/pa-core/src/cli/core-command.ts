@@ -6,7 +6,7 @@ import { readActivityEvents } from "../activity/index.js";
 import { BulletinStore } from "../bulletins/index.js";
 import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
-import { validateDeployRequestFields } from "../deploy/index.js";
+import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../deploy/index.js";
 import { formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, saveHealthSnapshot } from "../health/index.js";
 import type { HealthCategory } from "../health/index.js";
@@ -35,8 +35,13 @@ export interface RunCoreCommandOptions {
   hooks?: CoreExecutionHooks;
   io?: CliIo;
   now?: Date;
+  sleep?: (ms: number) => Promise<void>;
+  clock?: () => number;
   binaryName?: string;
 }
+
+const STATUS_WAIT_POLL_INTERVAL_SECONDS = 10;
+const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
 
 export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions = {}): Promise<number> {
   const io = normalizeIo(opts.io);
@@ -47,7 +52,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
-    if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date());
+    if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), { sleep: opts.sleep ?? sleep, clock: opts.clock ?? Date.now });
     if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {});
     if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});
     if (command === "schedule") return runScheduleCommand(rest, io);
@@ -437,12 +442,17 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
   }
   if (validated.request.listModes) return printDeployModes(validated.request.team, io);
   if (validated.request.validate) return validateDeployConfig(validated.request.team, io);
+  const resolved = withResolvedDeployTimeout(validated.request);
+  if ("error" in resolved) {
+    io.stderr(resolved.error);
+    return 1;
+  }
   if (!hooks.deploy) {
     io.stderr("Deployment execution requires an adapter hook");
     return 1;
   }
 
-  const result = await hooks.deploy(validated.request);
+  const result = await hooks.deploy(resolved.request);
   if (result.status === "failed") {
     io.stderr(result.reason ?? "Deployment failed");
     return 1;
@@ -671,7 +681,16 @@ function extractSentAtFromFile(filePath: string): number {
   return match ? Number.parseInt(match[1]!, 10) : Date.now();
 }
 
-function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): number {
+interface StatusWaitRuntime {
+  sleep: (ms: number) => Promise<void>;
+  clock: () => number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date, runtime: StatusWaitRuntime): Promise<number> {
   const opts = parseStatusArgs(argv);
   if ("error" in opts) {
     io.stderr(opts.error);
@@ -683,7 +702,7 @@ function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date): numbe
       io.stderr(`Deployment not found: ${opts.deployId}`);
       return 1;
     }
-    if (opts.wait) return waitForDeployment(opts.deployId, io);
+    if (opts.wait) return waitForDeployment(opts.deployId, io, runtime);
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
     if (opts.activity) return showDeploymentActivity(opts.deployId, io);
@@ -771,18 +790,53 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else if (!opts.deployId) opts.deployId = arg;
     else return { error: `Unexpected status argument: ${arg}` };
   }
+  if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
   return opts;
 }
 
-function waitForDeployment(deployId: string, io: Required<CliIo>): number {
-  const deployment = queryDeploymentStatus(deployId);
-  if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
-  if (deployment.status === "running") {
-    io.stdout(`Deployment still running: ${deployId}`);
-    return 1;
+async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime): Promise<number> {
+  const initial = queryDeploymentStatus(deployId);
+  if (!initial) return printError(`Deployment not found: ${deployId}`, io);
+  const timeout = resolveStatusWaitTimeout(initial);
+  if ("error" in timeout) return printError(timeout.error, io);
+
+  io.stdout(`Waiting for deployment: ${deployId}`);
+  io.stdout(`Wait timeout: ${timeout.seconds}s`);
+  io.stdout(`Poll interval: ${STATUS_WAIT_POLL_INTERVAL_SECONDS}s`);
+  io.stdout(`Override env: ${STATUS_WAIT_OVERRIDE_ENV}`);
+
+  const startedAt = runtime.clock();
+  while (true) {
+    const deployment = queryDeploymentStatus(deployId);
+    if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
+    if (deployment.status !== "running") {
+      io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
+      return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
+    }
+    if (runtime.clock() - startedAt >= timeout.seconds * 1000) {
+      io.stderr(`Timed out waiting for deployment ${deployId} after ${timeout.seconds}s`);
+      return 1;
+    }
+    await runtime.sleep(STATUS_WAIT_POLL_INTERVAL_SECONDS * 1000);
   }
-  io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
-  return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
+}
+
+function resolveStatusWaitTimeout(deployment: DeploymentStatus): { seconds: number } | { error: string } {
+  const rawOverride = process.env[STATUS_WAIT_OVERRIDE_ENV];
+  if (rawOverride !== undefined && rawOverride !== "") {
+    const override = Number(rawOverride);
+    const error = validateTimeoutSeconds(override, STATUS_WAIT_OVERRIDE_ENV);
+    if (error) return { error };
+    return { seconds: override };
+  }
+  return { seconds: deployment.effective_timeout_seconds ?? DEFAULT_DEPLOY_TIMEOUT_SECONDS };
+}
+
+function validateTimeoutSeconds(timeout: number, label: string): string | undefined {
+  if (!Number.isInteger(timeout) || timeout < MIN_DEPLOY_TIMEOUT_SECONDS || timeout > MAX_DEPLOY_TIMEOUT_SECONDS) {
+    return `${label} must be between ${MIN_DEPLOY_TIMEOUT_SECONDS} and ${MAX_DEPLOY_TIMEOUT_SECONDS} seconds`;
+  }
+  return undefined;
 }
 
 function showDeploymentReport(deployId: string, io: Required<CliIo>): number {
@@ -1312,6 +1366,7 @@ function printError(error: string, io: Required<CliIo>): number {
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+  io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
 }
 
 function printDeployHelp(io: Required<CliIo>): void {

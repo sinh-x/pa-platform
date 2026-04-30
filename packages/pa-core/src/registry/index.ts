@@ -20,11 +20,11 @@ export function appendRegistryEvent(event: RegistryEvent): void {
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, provider, rating,
-      objective, repo, fallback, resumed_from_deployment_id, note, runtime, binary
+      objective, repo, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
-      @objective, @repo, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary
+      @objective, @repo, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds
     )
   `).run(row);
   upsertDeployment(db, event);
@@ -84,6 +84,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       resumed_from_deployment_id: started?.resumed_from_deployment_id,
       runtime: started?.runtime,
       binary: started?.binary,
+      effective_timeout_seconds: started?.effective_timeout_seconds,
     };
   }));
 }
@@ -98,10 +99,10 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare(`
       INSERT INTO deployments (
         deployment_id, team, status, started_at, pid, primer, agents, models,
-        ticket_id, objective, repo, provider, resumed_from_deployment_id, runtime, binary
+        ticket_id, objective, repo, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds
       ) VALUES (
         @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
-        @ticket_id, @objective, @repo, @provider, @resumed_from_deployment_id, @runtime, @binary
+        @ticket_id, @objective, @repo, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         status = excluded.status,
         started_at = excluded.started_at,
@@ -115,7 +116,8 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         provider = excluded.provider,
         resumed_from_deployment_id = excluded.resumed_from_deployment_id,
         runtime = excluded.runtime,
-        binary = excluded.binary
+        binary = excluded.binary,
+        effective_timeout_seconds = excluded.effective_timeout_seconds
     `).run(row);
   } else if (event.event === "pid") {
     db.prepare("UPDATE deployments SET pid = ? WHERE deployment_id = ?").run(event.pid ?? null, event.deployment_id);
@@ -155,6 +157,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     note: event.note ?? null,
     runtime: event.runtime ?? null,
     binary: event.binary ?? null,
+    effective_timeout_seconds: event.effective_timeout_seconds ?? null,
   };
 }
 
@@ -183,6 +186,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     note: optionalString(row["note"]),
     runtime: row["runtime"] as RegistryEvent["runtime"],
     binary: optionalString(row["binary"]),
+    effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
   };
 }
 
@@ -207,6 +211,7 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     resumed_from_deployment_id: optionalString(row["resumed_from_deployment_id"]),
     runtime: row["runtime"] as DeploymentStatus["runtime"],
     binary: optionalString(row["binary"]),
+    effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
   };
 }
 

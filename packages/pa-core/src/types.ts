@@ -94,6 +94,7 @@ export interface RegistryEvent {
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;
   binary?: string;
+  effective_timeout_seconds?: number;
 }
 
 export interface DeploymentStatus {
@@ -116,6 +117,7 @@ export interface DeploymentStatus {
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;
   binary?: string;
+  effective_timeout_seconds?: number;
 }
 
 export interface ProviderModelTier {

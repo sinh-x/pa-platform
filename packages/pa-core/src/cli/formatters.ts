@@ -66,6 +66,7 @@ export function formatRegistryShow(deployment: DeploymentStatus, eventCount: num
   if (deployment.models?.["team"]) lines.push(`  Model:    ${deployment.models["team"]}`);
   if (deployment.models?.["agents"]) lines.push(`  Agents Model: ${deployment.models["agents"]}`);
   if (deployment.agents.length > 0) lines.push(`  Agents:   ${deployment.agents.join(",")}`);
+  if (deployment.effective_timeout_seconds !== undefined) lines.push(`  Timeout:  ${deployment.effective_timeout_seconds}s`);
   if (deployment.pid !== undefined) lines.push(`  PID:      ${deployment.pid}`);
   if (deployment.summary) lines.push(`  Summary:  ${deployment.summary}`);
   lines.push(`  Events:   ${eventCount}`);

@@ -60,17 +60,19 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(repo, { recursive: true });
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
-  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"] };
+  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"] };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  delete process.env["PA_MAX_RUNTIME"];
   return fn(root).finally(() => {
     closeDb();
     restore("PA_PLATFORM_CONFIG", previous.config);
     restore("PA_PLATFORM_TEAMS", previous.teams);
     restore("PA_REGISTRY_DB", previous.registry);
     restore("PA_AI_USAGE_HOME", previous.aiUsage);
+    restore("PA_MAX_RUNTIME", previous.maxRuntime);
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -281,7 +283,68 @@ test("opa background deploy records running registry state and pid", async () =>
     const deployment = queryDeploymentStatuses()[0]!;
     assert.equal(deployment.status, "running");
     assert.equal(deployment.pid, 4242);
+    assert.equal(deployment.effective_timeout_seconds, 1800);
     assert.equal(readFileSync(join(root, "deployments", deployment.deploy_id, "session-id-opencode.txt"), "utf-8"), "sess-bg");
+  });
+});
+
+test("opa foreground deploy records flag effective timeout metadata", async () => {
+  await withOpaEnv(async () => {
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax", "--timeout", "1200"], { hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployment = queryDeploymentStatuses()[0]!;
+    assert.equal(deployment.status, "success");
+    assert.equal(deployment.effective_timeout_seconds, 1200);
+    const statusOut: string[] = [];
+    assert.equal(await runCoreCommand(["status", deployment.deploy_id], { io: { stdout: (line) => statusOut.push(line), stderr: () => {} } }), 0);
+    assert.match(statusOut.join("\n"), /Timeout:\s+1200s/);
+  });
+});
+
+test("opa deploy timeout flag takes precedence over PA_MAX_RUNTIME", async () => {
+  await withOpaEnv(async () => {
+    process.env["PA_MAX_RUNTIME"] = "2400";
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax", "--timeout", "1200"], { hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployment = queryDeploymentStatuses()[0]!;
+    assert.equal(deployment.status, "success");
+    assert.equal(deployment.effective_timeout_seconds, 1200);
+  });
+});
+
+test("opa deploy rejects invalid PA_MAX_RUNTIME before spawning opencode", async () => {
+  await withOpaEnv(async () => {
+    for (const value of ["abc", "59", "7201", "120.5"]) {
+      process.env["PA_MAX_RUNTIME"] = value;
+      let spawned = false;
+      const stderr: string[] = [];
+      const adapter = new OpencodeAdapter({
+        runCommand: () => { spawned = true; return { exitCode: 0 }; },
+        runBackgroundCommand: () => { spawned = true; return { pid: 4242 }; },
+      });
+
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+      assert.equal(code, 1);
+      assert.equal(spawned, false);
+      assert.match(stderr.join("\n"), /PA_MAX_RUNTIME must be between 60 and 7200 seconds/);
+      assert.equal(queryDeploymentStatuses().length, 0);
+    }
+  });
+});
+
+test("opa background deploy records PA_MAX_RUNTIME effective timeout metadata", async () => {
+  await withOpaEnv(async () => {
+    process.env["PA_MAX_RUNTIME"] = "2400";
+    const adapter = new OpencodeAdapter({
+      runCommand: () => { throw new Error("foreground should not run"); },
+      runBackgroundCommand: () => ({ pid: 4242 }),
+    });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--background", "--provider", "openai"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployment = queryDeploymentStatuses()[0]!;
+    assert.equal(deployment.status, "running");
+    assert.equal(deployment.provider, "openai");
+    assert.equal(deployment.effective_timeout_seconds, 2400);
   });
 });
 

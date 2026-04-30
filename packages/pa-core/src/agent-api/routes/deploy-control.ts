@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { validateDeployRequestFields } from "../../deploy/index.js";
+import { validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
 
 export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
@@ -8,12 +8,14 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
   app.post("/api/deploy", async (c) => {
     const parsed = await parseDeployRequest(c.req.json.bind(c.req));
     if ("error" in parsed) return c.json({ error: parsed.error, code: "BAD_REQUEST" }, 400);
+    const resolved = withResolvedDeployTimeout(parsed.request);
+    if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
     if (!hooks.deploy) return c.json({ error: "Deployment execution requires an adapter hook", code: "NOT_IMPLEMENTED" }, 501);
     try {
-      const result = await hooks.deploy(parsed.request);
-      return c.json({ team: parsed.request.team, mode: parsed.request.mode ?? null, ...result }, 202);
+      const result = await hooks.deploy(resolved.request);
+      return c.json({ team: resolved.request.team, mode: resolved.request.mode ?? null, ...result }, 202);
     } catch (error) {
-      return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: parsed.request.team, mode: parsed.request.mode ?? null }, 202);
+      return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: resolved.request.team, mode: resolved.request.mode ?? null }, 202);
     }
   });
 

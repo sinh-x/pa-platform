@@ -1,5 +1,7 @@
-const MIN_TIMEOUT_SECONDS = 60;
-const MAX_TIMEOUT_SECONDS = 7200;
+export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
+export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
+export const MAX_DEPLOY_TIMEOUT_SECONDS = 7200;
+const PA_MAX_RUNTIME_ENV = "PA_MAX_RUNTIME";
 
 export interface DeployRequest {
   team: string;
@@ -17,6 +19,11 @@ export interface DeployRequest {
   resume?: string;
   listModes?: boolean;
   validate?: boolean;
+}
+
+export interface DeployTimeoutResolutionInput {
+  timeout?: number;
+  env?: Record<string, string | undefined>;
 }
 
 export interface DeployHookResult {
@@ -74,7 +81,8 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (agentModel && !/^[a-zA-Z0-9_.\/-]+$/.test(agentModel)) return { error: "Invalid agent model name" };
   if (resume && !/^[a-zA-Z0-9-]+$/.test(resume)) return { error: "Invalid resume deployment id" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
-  if (timeout !== undefined && (!Number.isInteger(timeout) || timeout < MIN_TIMEOUT_SECONDS || timeout > MAX_TIMEOUT_SECONDS)) return { error: `timeout must be between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS} seconds` };
+  const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");
+  if (timeoutValidation) return { error: timeoutValidation };
   if (objective && objective.trim()) {
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
     if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f`$\\;&|><]/.test(objective)) return { error: "objective contains invalid characters" };
@@ -97,6 +105,36 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (listModes !== undefined) request.listModes = listModes;
   if (validate !== undefined) request.validate = validate;
   return { request };
+}
+
+export function resolveDeployTimeoutSeconds(input: DeployTimeoutResolutionInput = {}): { timeout: number } | { error: string } {
+  const explicitTimeoutError = validateDeployTimeoutSeconds(input.timeout, "timeout");
+  if (explicitTimeoutError) return { error: explicitTimeoutError };
+  if (input.timeout !== undefined) return { timeout: input.timeout };
+
+  const rawEnvTimeout = (input.env ?? process.env)[PA_MAX_RUNTIME_ENV];
+  if (rawEnvTimeout !== undefined && rawEnvTimeout !== "") {
+    const envTimeout = Number(rawEnvTimeout);
+    const envTimeoutError = validateDeployTimeoutSeconds(envTimeout, PA_MAX_RUNTIME_ENV);
+    if (envTimeoutError) return { error: envTimeoutError };
+    return { timeout: envTimeout };
+  }
+
+  return { timeout: DEFAULT_DEPLOY_TIMEOUT_SECONDS };
+}
+
+export function withResolvedDeployTimeout(request: DeployRequest, env: Record<string, string | undefined> = process.env): { request: DeployRequest } | { error: string } {
+  const resolved = resolveDeployTimeoutSeconds({ timeout: request.timeout, env });
+  if ("error" in resolved) return resolved;
+  return { request: { ...request, timeout: resolved.timeout } };
+}
+
+function validateDeployTimeoutSeconds(timeout: number | undefined, label: string): string | undefined {
+  if (timeout === undefined) return undefined;
+  if (!Number.isInteger(timeout) || timeout < MIN_DEPLOY_TIMEOUT_SECONDS || timeout > MAX_DEPLOY_TIMEOUT_SECONDS) {
+    return `${label} must be between ${MIN_DEPLOY_TIMEOUT_SECONDS} and ${MAX_DEPLOY_TIMEOUT_SECONDS} seconds`;
+  }
+  return undefined;
 }
 
 function stringField(body: Record<string, unknown>, key: string): string | undefined {
