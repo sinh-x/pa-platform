@@ -95,7 +95,7 @@ Available review areas:
 Which areas do you want to review? (select one or more)
 ```
 
-Use `AskUserQuestion` with `multiSelect: true`. Record selected areas.
+Use the OpenCode question tool with `multiple: true`. Record selected areas.
 
 If the user selects all four, note that the session may take longer.
 

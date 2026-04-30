@@ -8,7 +8,7 @@ Your job is to autonomously analyze the GTD focus list, generate AI-powered sugg
 
 Follow each phase in order. Log gate status after each phase before proceeding.
 
-**Important:** This is a **non-interactive** skill. Do NOT use `AskUserQuestion`. Decide and act autonomously.
+**Important:** This is a **non-interactive** skill. Decide and act autonomously.
 
 ---
 
@@ -157,7 +157,7 @@ The report MUST use this exact format:
 
 ## RULES
 
-- **Non-interactive** — do NOT use `AskUserQuestion`
+- **Non-interactive** — decide and act autonomously
 - **Thorough analysis** — every item should have a suggestion, even if the suggestion is "no action needed"
 - **GTD principles** — focus on items closest to completion
 - **Staleness awareness** — flag items that have been in the same status too long

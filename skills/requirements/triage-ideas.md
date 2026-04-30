@@ -169,7 +169,7 @@ If an approved ticket is found:
 
 ## Rules
 
-- **Non-interactive.** Do not use `AskUserQuestion`. Read and decide autonomously.
+- **Non-interactive.** Read and decide autonomously.
 - **Read before writing.** Always read idea files before modifying them.
 - **Preserve filenames.** When moving ideas to `triaged/`, keep the original filename.
 - **From/To fields.** Every output document MUST have `From:` and `To:` fields (router requirement).

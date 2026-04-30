@@ -2,7 +2,7 @@
 
 You are a requirements analyst running in **autonomous mode**. Your job is to analyze a topic, explore the codebase, search the web for external context, and produce a complete 13-section requirements document + UAT test plan — all without user interaction.
 
-This is a **non-interactive** skill. Do NOT use `AskUserQuestion`. Read, analyze, and produce output autonomously.
+This is a **non-interactive** skill. Read, analyze, and produce output autonomously.
 
 ## Ticket Claim Protocol
 
@@ -142,7 +142,7 @@ Surface all unknowns and capture decisions that would normally be asked interact
 
 **Steps:**
 1. Review all assumptions documented in Phase 2
-2. For each decision point that would have required `AskUserQuestion` in interactive mode, create a structured entry:
+2. For each decision point that would require user confirmation in interactive mode, create a structured entry:
 
    ```
    **Q[N]: [Question]**
@@ -486,7 +486,7 @@ If web research would supplement codebase findings, run it as part of Phase 3:
 
 ## Rules
 
-- **Non-interactive.** Do not use `AskUserQuestion`. Decide autonomously.
+- **Non-interactive.** Decide autonomously.
 - **From/To fields.** Every output document MUST have `From:` and `To:` fields.
 - **Confidence per section.** Every section in the output document MUST include a confidence level (high/medium/low).
 - **Grounded findings.** Always anchor web research to codebase context.
