@@ -184,6 +184,19 @@ export class TicketStore {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  getProjectCounts(): Array<{ key: string; count: number }> {
+    const tickets = this.list({ excludeTags: ["archived", "backlog"] });
+    const counts = new Map<string, number>();
+    for (const ticket of tickets) {
+      if (TERMINAL_STATUSES.includes(ticket.status)) continue;
+      counts.set(ticket.project, (counts.get(ticket.project) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
   readAudit(): AuditEntry[] {
     const path = resolve(this.dir, "audit.jsonl");
     if (!existsSync(path)) return [];

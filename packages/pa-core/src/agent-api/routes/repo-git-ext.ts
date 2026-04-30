@@ -6,7 +6,7 @@ import { loadRepoEntry } from "../../repos.js";
 
 const REPO_KEY_REGEX = /^[a-zA-Z0-9-]+$/;
 const REF_REGEX = /^[a-zA-Z0-9._\-/]+$/;
-const SHA_REGEX = /^[a-fA-F0-9]{7,40}$/;
+const SHA_REGEX = /^[a-fA-F0-9]{40}$/;
 
 export function repoGitExtRoutes(): Hono {
   const app = new Hono();
@@ -14,29 +14,36 @@ export function repoGitExtRoutes(): Hono {
     const repo = validatedRepo(c.req.param("key"));
     if (!repo.ok) return c.json({ error: repo.error, code: repo.code }, repo.status);
     const commit = c.req.query("commit");
-    if (!commit || !SHA_REGEX.test(commit)) return c.json({ error: "commit query param must be a SHA", code: "BAD_REQUEST" }, 400);
-    if (!gitRun(["rev-parse", "--verify", commit], repo.path)) return c.json({ error: "Commit not found", code: "NOT_FOUND" }, 404);
-    const diff = parseUnifiedDiff(gitRun(["show", commit, "-m", "--first-parent", "-p", "--format="], repo.path));
-    return c.json({ repo: { key: repo.name, path: repo.path }, commit, ...diff });
+    if (!commit) return c.json({ error: "commit query param is required", code: "BAD_REQUEST" }, 400);
+    if (!SHA_REGEX.test(commit)) return c.json({ error: "Invalid SHA format. Must be 40-character hex string", code: "BAD_REQUEST" }, 400);
+    if (gitRun(["rev-parse", "--verify", "--quiet", commit], repo.path) !== commit) return c.json({ error: `Commit SHA not found: ${commit}`, code: "NOT_FOUND" }, 404);
+    const diff = parseUnifiedDiff(gitRun(["show", commit, "-m", "--first-parent", "-p", "--format=", "--numstat"], repo.path));
+    return c.json({ repo: { key: repo.name, path: repo.path }, commit, diff_entries: diff.diffEntries, meta: { commit, files_changed: diff.filesChanged, insertions: diff.insertions, deletions: diff.deletions } });
   });
   app.get("/api/repos/:key/branches/remote", (c) => {
     const repo = validatedRepo(c.req.param("key"));
     if (!repo.ok) return c.json({ error: repo.error, code: repo.code }, repo.status);
     const branches = gitRun(["branch", "-r", "--format", "%(refname:short)"], repo.path).split("\n").filter((name) => name && !name.includes("HEAD")).map((name) => ({ name, tracking_local: null, latest_commit: latestCommit(name, repo.path) ?? { hash_short: "", message: "", date: "", author: "" } }));
-    return c.json({ repo: { key: repo.name, path: repo.path }, branches });
+    return c.json({ repo: { key: repo.name, path: repo.path }, remote_branches: branches });
   });
   app.get("/api/repos/:key/compare", (c) => {
     const repo = validatedRepo(c.req.param("key"));
     if (!repo.ok) return c.json({ error: repo.error, code: repo.code }, repo.status);
     const from = c.req.query("from");
     const to = c.req.query("to");
-    if (!from || !to || !REF_REGEX.test(from) || !REF_REGEX.test(to)) return c.json({ error: "from and to query params must be valid refs", code: "BAD_REQUEST" }, 400);
-    const output = gitRun(["log", `${from}..${to}`, "--format=%H%n%h%n%an%n%ae%n%ci%n%s%x1e"], repo.path);
+    if (!from) return c.json({ error: "from query param is required", code: "BAD_REQUEST" }, 400);
+    if (!to) return c.json({ error: "to query param is required", code: "BAD_REQUEST" }, 400);
+    if (!REF_REGEX.test(from)) return c.json({ error: `Invalid branch name: ${from}`, code: "BAD_REQUEST" }, 400);
+    if (!REF_REGEX.test(to)) return c.json({ error: `Invalid branch name: ${to}`, code: "BAD_REQUEST" }, 400);
+    const limit = Math.min(Math.max(Number.parseInt(c.req.query("limit") ?? "50", 10) || 50, 1), 200);
+    const offset = Math.max(Number.parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
+    const total = Number.parseInt(gitRun(["rev-list", "--count", `${from}..${to}`], repo.path), 10) || 0;
+    const output = gitRun(["log", `${from}..${to}`, "--format=%H%n%h%n%an%n%ae%n%ci%n%s%x1e", `-${limit}`, `--skip=${offset}`], repo.path);
     const commits = output.split("\x1e").map((entry) => entry.trim()).filter(Boolean).map((entry) => {
       const [hash, hashShort, authorName, authorEmail, date, ...message] = entry.split("\n");
       return { hash, hash_short: hashShort, author_name: authorName, author_email: authorEmail, date, message: message.join("\n") };
     });
-    return c.json({ repo: { key: repo.name, path: repo.path }, from, to, commits, count: commits.length });
+    return c.json({ repo: { key: repo.name, path: repo.path }, from, to, commits, count: commits.length, meta: { from, to, total, limit, offset } });
   });
   return app;
 }
@@ -71,16 +78,26 @@ function parseUnifiedDiff(diffOutput: string): { diffEntries: Array<Record<strin
     const hunks: Array<Record<string, unknown>> = [];
     let changeType = "modified";
     let binary = false;
-    for (let i = 1; i < lines.length; i++) {
+    let i = 1;
+    while (i < lines.length) {
       const line = lines[i] ?? "";
-      if (line.startsWith("Binary files")) binary = true;
-      if (line.includes("new file mode")) changeType = "added";
-      if (line.includes("deleted file mode")) changeType = "deleted";
-      if (line.includes("rename from")) changeType = "renamed";
-      if (line.startsWith("+") && !line.startsWith("+++")) insertions++;
-      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+      if (line.startsWith("Binary files")) { binary = true; i++; continue; }
+      if (line.includes("new file mode")) { changeType = "added"; i++; continue; }
+      if (line.includes("deleted file mode")) { changeType = "deleted"; i++; continue; }
+      if (line.includes("rename from")) { changeType = "renamed"; i++; continue; }
       const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-      if (hunk) hunks.push({ old_start: Number(hunk[1]), old_lines: Number(hunk[2] ?? 1), new_start: Number(hunk[3]), new_lines: Number(hunk[4] ?? 1), lines: [] });
+      if (!hunk) { i++; continue; }
+      const hunkLines: Array<Record<string, string>> = [];
+      i++;
+      while (i < lines.length) {
+        const hunkLine = lines[i] ?? "";
+        if (hunkLine.startsWith("@@") || hunkLine.startsWith("diff --git")) break;
+        if (hunkLine.startsWith("+") && !hunkLine.startsWith("+++")) { hunkLines.push({ type: "add", content: hunkLine.slice(1) }); insertions++; }
+        else if (hunkLine.startsWith("-") && !hunkLine.startsWith("---")) { hunkLines.push({ type: "del", content: hunkLine.slice(1) }); deletions++; }
+        else if (hunkLine.startsWith(" ") || hunkLine === "") hunkLines.push({ type: "context", content: hunkLine.slice(1) || "" });
+        i++;
+      }
+      hunks.push({ old_start: Number(hunk[1]), old_lines: Number(hunk[2] ?? 1), new_start: Number(hunk[3]), new_lines: Number(hunk[4] ?? 1), lines: hunkLines });
     }
     if (!binary) filesChanged++;
     diffEntries.push({ old_path: header[1], new_path: header[2], change_type: changeType, hunks, binary });

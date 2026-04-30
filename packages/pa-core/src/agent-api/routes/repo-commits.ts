@@ -19,11 +19,12 @@ export function repoCommitsRoutes(): Hono {
   app.get("/api/repos/:key/commits", (c) => {
     const repo = validatedRepo(c.req.param("key"));
     if (!repo.ok) return c.json({ error: repo.error, code: repo.code }, repo.status);
-    const branch = c.req.query("branch") || gitRun(["branch", "--show-current"], repo.path) || "HEAD";
-    if (!BRANCH_NAME_REGEX.test(branch)) return c.json({ error: "Invalid branch name", code: "BAD_REQUEST" }, 400);
-    const limit = Math.min(Number.parseInt(c.req.query("limit") ?? "20", 10) || 20, 100);
+    const branch = c.req.query("branch") || "HEAD";
+    if (!BRANCH_NAME_REGEX.test(branch)) return c.json({ error: `Invalid branch name: ${branch}`, code: "BAD_REQUEST" }, 400);
+    const limit = Math.min(Math.max(Number.parseInt(c.req.query("limit") ?? "50", 10) || 50, 1), 200);
     const offset = Math.max(Number.parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
-    return c.json({ repo: { key: repo.name, path: repo.path }, branch, commits: commitHistory(branch, limit, offset, repo.path), pagination: { limit, offset, total: Number.parseInt(gitRun(["rev-list", "--count", branch], repo.path), 10) || 0 } });
+    const meta = { branch, total: Number.parseInt(gitRun(["rev-list", "--count", branch], repo.path), 10) || 0, limit, offset };
+    return c.json({ repo: { key: repo.name, path: repo.path }, branch, commits: commitHistory(branch, limit, offset, repo.path), meta });
   });
   return app;
 }

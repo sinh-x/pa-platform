@@ -24,7 +24,13 @@ export interface AgentApiInstance {
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
-  if (opts.enableCors) app.use("*", cors());
+  if (opts.enableCors) app.use("*", cors({
+    origin: "*",
+    allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id"],
+    exposeHeaders: ["Content-Length", "Content-Type"],
+    maxAge: 600,
+  }));
   app.use("*", async (c: Context, next: Next) => {
     const pathParam = c.req.query("path");
     if (pathParam !== undefined && !isInsideSandbox(normalizeSandboxPath(pathParam))) return c.json({ error: "Path traversal denied", code: "SANDBOX_VIOLATION" }, 403);

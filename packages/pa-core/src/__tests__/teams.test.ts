@@ -1,9 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig } from "../index.js";
+import { getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent } from "../index.js";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 test("teams module lists and loads team configs", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-teams-"));
@@ -35,6 +38,20 @@ test("teams module lists and loads team configs", () => {
     assert.equal(getTeamModel("missing", teamsDir), "-");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("builder team config has no Anthropic deploy modes", () => {
+  const builder = parseTeamYamlContent(readFileSync(join(repoRoot, "teams", "builder.yaml"), "utf-8"));
+  const modeIds = builder.deploy_modes?.map((mode) => mode.id) ?? [];
+
+  assert.ok(modeIds.length > 0);
+  assert.equal(builder.default_mode, "implement");
+  assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider, "openai");
+  assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.model, "gpt-5.3-codex-spark");
+  assert.deepEqual(modeIds.filter((id) => id.includes("anthropic")), []);
+  for (const removedMode of ["housekeeping-anthropic", "implement-anthropic", "worker-anthropic", "orchestrator-anthropic", "routine-anthropic"]) {
+    assert.equal(modeIds.includes(removedMode), false);
   }
 });
 

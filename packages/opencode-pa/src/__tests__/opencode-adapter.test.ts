@@ -81,6 +81,36 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function writeBuilderTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "builder.yaml"), [
+    "name: builder",
+    "description: Builder",
+    "default_mode: implement",
+    "objective: Build",
+    "agents:",
+    "  - name: builder-agent",
+    "    role: Builds things",
+    "deploy_modes:",
+    "  - id: implement",
+    "    label: Implement",
+    "    mode_type: work",
+    "    provider: openai",
+    "    model: gpt-5.3-codex-spark",
+    "  - id: routine",
+    "    label: Routine",
+    "    mode_type: work",
+    "    provider: minimax",
+    "    model: opus",
+  ].join("\n"));
+}
+
+function readDryRunBody(root: string, stdout: string[]): string {
+  const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+  assert.ok(deployId);
+  const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
+  return activity.map((event) => event.body).join("\n");
+}
+
 test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", undefined), "minimax-coding-plan/MiniMax-M2.7");
   assert.equal(resolveOpencodeModel("openai", undefined), "openai/gpt-5.5");
@@ -109,6 +139,48 @@ test("opa dry-run generates primer and does not spawn opencode", async () => {
     assert.ok(existsSync(join(root, "deployments", deployId, "primer.md")));
     assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /Runtime: opencode/);
     assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa dry-run applies builder implement YAML provider and model", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    assert.match(readDryRunBody(root, stdout), /using openai\/gpt-5\.3-codex-spark/);
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa dry-run defaults builder to implement mode YAML model", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    assert.match(readDryRunBody(root, stdout), /using openai\/gpt-5\.3-codex-spark/);
+  });
+});
+
+test("opa dry-run CLI provider and team model override builder YAML defaults", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--provider", "minimax", "--team-model", "MiniMax-M2.7", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+
+    assert.equal(code, 0);
+    const dryRunBody = readDryRunBody(root, stdout);
+    assert.match(dryRunBody, /using minimax-coding-plan\/MiniMax-M2\.7/);
+    assert.doesNotMatch(dryRunBody, /openai\/gpt-5\.3-codex-spark/);
   });
 });
 

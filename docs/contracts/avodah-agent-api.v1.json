@@ -1,0 +1,130 @@
+{
+  "contract": "avodah-agent-api",
+  "version": 1,
+  "status": "active",
+  "purpose": "Compatibility contract between the Avodah phone app and the PA agent API served by pa-core.",
+  "basePath": "/api",
+  "client": {
+    "name": "avodah-phone",
+    "source": "tools/avodah/phone/lib/services/agent_api_client.dart"
+  },
+  "server": {
+    "name": "pa-core agent API",
+    "source": "tools/pa-platform/packages/pa-core/src/agent-api/routes"
+  },
+  "cors": {
+    "enabledWhenServedWith": "--cors",
+    "allowOrigin": "*",
+    "allowMethods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    "allowHeaders": ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id"],
+    "exposeHeaders": ["Content-Length", "Content-Type"],
+    "maxAgeSeconds": 600,
+    "credentials": false
+  },
+  "compatibilityRules": [
+    "Fields listed as required must not be removed or renamed without a new contract version.",
+    "Responses should include only fields read by Avodah phone models, plus small metadata required for screen behavior.",
+    "New optional fields may be added without changing this contract.",
+    "Snake_case and camelCase aliases are intentional where older phone code and newer server code differ."
+  ],
+  "endpoints": {
+    "GET /api/projects": {
+      "response": {
+        "required": ["projects"],
+        "projects.item.required": ["key", "path", "description", "prefix", "activeTicketCount"]
+      }
+    },
+    "GET /api/board": {
+      "response": {
+        "required": ["board"],
+        "board.required": ["project", "columns", "total", "assigneeCounts"],
+        "board.columns.item.required": ["status", "tickets", "count"],
+        "board.columns.item.tickets.item.required": ["id", "project", "title", "status", "priority", "assignee", "tags", "blockedBy", "doc_refs", "comments", "subTickets", "createdAt", "updatedAt"]
+      }
+    },
+    "GET /api/tickets": {
+      "response": {
+        "required": ["tickets", "count"],
+        "tickets.item.required": ["id", "project", "title", "status", "priority", "assignee", "tags", "blockedBy", "doc_refs", "comments", "subTickets", "createdAt", "updatedAt"]
+      }
+    },
+    "GET /api/tickets/:id": {
+      "response": {
+        "required": ["ticket"],
+        "ticket.required": ["id", "project", "title", "status", "priority", "assignee", "tags", "blockedBy", "doc_refs", "comments", "subTickets", "createdAt", "updatedAt"],
+        "optional": ["deployments"]
+      }
+    },
+    "POST /api/deploy": {
+      "request": {
+        "required": ["team"],
+        "optional": ["mode", "objective", "repo", "ticket", "provider", "team_model", "teamModel", "timeout"]
+      },
+      "response": {
+        "required": ["team", "mode", "status", "deployment_id"]
+      }
+    },
+    "GET /api/deployments": {
+      "response": {
+        "required": ["deployments", "total", "filter"],
+        "deployments.item.required": ["deploy_id", "team", "status", "started_at", "agents"],
+        "deployments.item.optional": ["completed_at", "summary", "error", "exit_code", "log_file", "rating", "primer", "provider", "pid", "ticket_id", "objective", "repo", "runtime", "binary", "effective_timeout_seconds"]
+      }
+    },
+    "GET /api/deployments/:id": {
+      "response": {
+        "required": ["deploy_id", "team", "status", "started_at", "agents"],
+        "optional": ["completed_at", "summary", "error", "exit_code", "log_file", "rating", "primer", "primer_path", "provider", "pid", "ticket_id", "objective", "repo", "runtime", "binary", "effective_timeout_seconds"]
+      }
+    },
+    "GET /api/deployments/:id/activity": {
+      "response": {
+        "required": ["activity_events"],
+        "activity_events.item.required": ["ts", "deploy_id", "agent", "event", "data"]
+      }
+    },
+    "GET /api/deploy-routing": {
+      "response": {
+        "required": ["teams", "repos"],
+        "teams.item.required": ["name", "description", "default_provider", "default_model", "modes"],
+        "teams.item.modes.item.required": ["id", "label", "modeType"],
+        "repos.item.required": ["name", "path", "description"]
+      }
+    },
+    "GET /api/repos/:key/git-info": {
+      "response": {
+        "required": ["repo", "current_branch", "main_branch", "develop_branch", "main_vs_develop", "feature_branches", "working_directory"],
+        "optional": ["errors"],
+        "repo.required": ["key", "path", "description", "prefix"],
+        "main_branch.required": ["name", "exists"],
+        "develop_branch.required": ["name", "exists"],
+        "main_vs_develop.required": ["main_ahead", "develop_ahead", "diverged"],
+        "working_directory.required": ["clean", "uncommitted_count"]
+      }
+    },
+    "GET /api/repos/:key/branches": {
+      "response": {
+        "required": ["repo", "branches"],
+        "branches.item.required": ["name", "is_current", "latest_commit"]
+      }
+    },
+    "GET /api/repos/:key/commits": {
+      "response": {
+        "required": ["repo", "branch", "commits", "meta"],
+        "commits.item.required": ["hash", "hash_short", "author_name", "author_email", "date", "message", "diff_summary"]
+      }
+    },
+    "GET /api/repos/:key/diff": {
+      "response": {
+        "required": ["repo", "commit", "diff_entries", "meta"]
+      }
+    },
+    "GET /api/focus": {
+      "response": {
+        "required": ["focus", "wip"],
+        "focus.item.required": ["id", "title", "project", "status", "priority", "staleDays", "isBlocked", "blockerIds", "updatedAt"],
+        "wip.required": ["byStatus", "byProject", "total"]
+      }
+    }
+  }
+}

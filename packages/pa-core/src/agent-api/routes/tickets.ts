@@ -122,7 +122,21 @@ export function ticketRoutes(store = new TicketStore()): Hono {
       return c.json({ error: error instanceof Error ? error.message : String(error), code: "BOARD_FAILED" }, 400);
     }
   });
-  app.get("/api/projects", (c) => c.json({ projects: listRepos().map((repo) => ({ ...repo, active_ticket_count: store.list({ project: repo.name }).filter((ticket) => !["done", "rejected", "cancelled"].includes(ticket.status)).length })) }));
+  app.get("/api/projects", (c) => {
+    try {
+      const countMap = new Map(store.getProjectCounts().map(({ key, count }) => [key, count]));
+      const projects = listRepos()
+        .filter((repo) => repo.prefix)
+        .map((repo) => {
+          const activeTicketCount = countMap.get(repo.name) ?? 0;
+          return { key: repo.name, prefix: repo.prefix!, description: repo.description ?? "", path: repo.path, activeTicketCount };
+        })
+        .sort((a, b) => a.key.localeCompare(b.key));
+      return c.json({ projects });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error), code: "PROJECTS_FAILED" }, 500);
+    }
+  });
 
   return app;
 }

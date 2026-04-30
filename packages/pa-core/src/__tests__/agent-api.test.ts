@@ -115,9 +115,8 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
 
     const routing = await app.request("/api/deploy-routing");
     assert.deepEqual(await routing.json(), {
-      teams: [{ name: "builder", description: "Builder", defaultMode: "plan", modes: [{ id: "plan", label: "Plan", modeType: "work", phoneVisible: true, provider: "minimax", model: "opus", timeout: 900 }] }],
+      teams: [{ name: "builder", description: "Builder", default_provider: "openai", default_model: "gpt-5.5", modes: [{ id: "plan", label: "Plan", modeType: "work" }] }],
       repos: [{ name: "pa-platform", path: join(root, "repo"), description: "Test repo" }],
-      routing: { defaultRuntime: "opencode", defaultAdapter: "opa", defaultProvider: "openai", defaultModel: "gpt-5.5", supportedProviders: ["minimax", "openai"], providerDefaults: { minimax: { models: { opus: "minimax-coding-plan/MiniMax-M2.7" } }, openai: { models: { opus: "openai/gpt-5.5" } } }, modelFields: ["provider", "model", "teamModel", "agentModel"], defaultTimeoutSeconds: 1800 },
     });
 
     const agentTeams = await app.request("/api/agent-teams");
@@ -129,6 +128,27 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     assert.equal(doc.status, 200);
     assert.equal((await doc.json() as { metadata: { title: string } }).metadata.title, "Note");
   });
+});
+
+test("agent API CORS matches Avodah phone proxy contract", async () => {
+  const { app } = createAgentApiApp({ enableCors: true });
+  const preflight = await app.request("/api/projects", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://drgnfly.tail10c2c6.ts.net",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "content-type,x-av-pair-token,x-av-node-id",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+  assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /OPTIONS/);
+  assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /X-Av-Pair-Token/);
+  assert.equal(preflight.headers.get("access-control-max-age"), "600");
+
+  const get = await app.request("/api/health", { headers: { origin: "https://drgnfly.tail10c2c6.ts.net" } });
+  assert.equal(get.headers.get("access-control-allow-origin"), "*");
+  assert.match(get.headers.get("access-control-expose-headers") ?? "", /Content-Length/);
 });
 
 test("agent API board resolves projects, applies legacy filters, and includes doc ref titles", async () => {
@@ -162,6 +182,13 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     const canonicalResponse = await app.request("/api/board?project=pa-platform");
     assert.equal(canonicalResponse.status, 200);
     assert.deepEqual(await canonicalResponse.json(), prefixBoard);
+
+    const projectsResponse = await app.request("/api/projects");
+    assert.equal(projectsResponse.status, 200);
+    const projectsBody = await projectsResponse.json() as { projects: Array<{ key: string; activeTicketCount: number; active_ticket_count?: number }> };
+    const paPlatformProject = projectsBody.projects.find((project) => project.key === "pa-platform");
+    assert.equal(paPlatformProject?.activeTicketCount, 2);
+    assert.equal(paPlatformProject?.active_ticket_count, undefined);
 
     const assigneeResponse = await app.request("/api/board?project=PAP&assignee=builder");
     assert.equal(assigneeResponse.status, 200);
@@ -220,15 +247,22 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
     assert.equal(listBody.filter.ticket_id, "PAP-001");
     const detail = await app.request("/api/deployments/d-api-1");
     assert.equal(detail.status, 200);
-    const detailBody = await detail.json() as { deployment: { status: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number }; activity_events: unknown[] };
-    assert.equal(detailBody.deployment.status, "success");
-    assert.equal(detailBody.deployment.provider, "openai");
-    assert.equal(detailBody.deployment.runtime, "opencode");
-    assert.equal(detailBody.deployment.binary, "opa");
-    assert.equal(detailBody.deployment.effective_timeout_seconds, 1200);
-    assert.equal(detailBody.activity_events.length, 1);
+    const detailBody = await detail.json() as { status: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number; deployment?: unknown; activity_events?: unknown[] };
+    assert.equal(detailBody.status, "success");
+    assert.equal(detailBody.provider, "openai");
+    assert.equal(detailBody.runtime, "opencode");
+    assert.equal(detailBody.binary, "opa");
+    assert.equal(detailBody.effective_timeout_seconds, 1200);
+    assert.equal(detailBody.deployment, undefined);
+    assert.equal(detailBody.activity_events, undefined);
     const activity = await app.request("/api/deployments/d-api-1/activity");
-    assert.equal((await activity.json() as { events: unknown[]; activity_events: unknown[] }).events.length, 2);
+    const activityBody = await activity.json() as { events?: unknown[]; activity_events: Array<{ ts: string; deploy_id: string; agent: string; event: string; data: { body?: string } }> };
+    assert.equal(activityBody.events, undefined);
+    assert.equal(activityBody.activity_events[0]?.ts, "2026-04-26T00:00:30.000Z");
+    assert.equal(activityBody.activity_events[0]?.deploy_id, "d-api-1");
+    assert.equal(activityBody.activity_events[0]?.agent, "opencode");
+    assert.equal(activityBody.activity_events[0]?.event, "text");
+    assert.equal(activityBody.activity_events[0]?.data.body, "hello");
     const filteredActivity = await app.request("/api/deployments/d-api-1/activity?since=2026-04-26T00:00:00.000Z");
     assert.equal((await filteredActivity.json() as { activity_events: unknown[] }).activity_events.length, 1);
 
@@ -253,7 +287,7 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     } });
     const deploy = await app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }) });
     assert.equal(deploy.status, 202);
-    assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deploymentId: "d-hook" });
+    assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-hook" });
     assert.equal((await app.request("/api/self-update", { method: "POST" })).status, 202);
     assert.deepEqual(await (await app.request("/api/self-update/status")).json(), { status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] });
 
@@ -287,7 +321,7 @@ test("agent API deploy validates requests and routes through deploy hook without
       body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", provider: "openai", teamModel: "gpt-5.5", timeout: 120 }),
     });
     assert.equal(valid.status, 202);
-    assert.deepEqual(await valid.json(), { team: "builder", mode: "plan", status: "pending", deploymentId: "d-default-adapter" });
+    assert.deepEqual(await valid.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-default-adapter" });
     assert.deepEqual(received, [{ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120, provider: "openai", teamModel: "gpt-5.5" }]);
 
     const invalid = await app.request("/api/deploy", {
@@ -494,11 +528,23 @@ test("agent API exposes repo commits and repo deployment filters", async () => {
     appendRegistryEvent({ deployment_id: "d-repo-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", repo: "pa-platform" });
     appendRegistryEvent({ deployment_id: "d-repo-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success" });
     const { app } = createAgentApiApp();
+    const gitInfo = await app.request("/api/repos/pa-platform/git-info");
+    assert.equal(gitInfo.status, 200);
+    const gitInfoBody = await gitInfo.json() as { repo: { key: string; description: string; prefix: string }; main_branch: { name: string }; develop_branch: { exists: boolean }; main_vs_develop: { diverged: boolean }; feature_branches: unknown[] };
+    assert.equal(gitInfoBody.repo.key, "pa-platform");
+    assert.equal(gitInfoBody.repo.description, "Test repo");
+    assert.equal(gitInfoBody.repo.prefix, "PAP");
+    assert.equal(gitInfoBody.main_branch.name, "main");
+    assert.equal(gitInfoBody.develop_branch.exists, false);
+    assert.equal(gitInfoBody.main_vs_develop.diverged, false);
+    assert.ok(Array.isArray(gitInfoBody.feature_branches));
     const branches = await app.request("/api/repos/pa-platform/branches");
     assert.equal(branches.status, 200);
     assert.equal((await branches.json() as { branches: unknown[] }).branches.length, 1);
     const commits = await app.request("/api/repos/pa-platform/commits?limit=5");
-    assert.equal((await commits.json() as { commits: Array<{ message: string }> }).commits[0]?.message, "initial");
+    const commitsBody = await commits.json() as { commits: Array<{ message: string }>; meta: { limit: number; offset: number; total: number }; pagination?: unknown };
+    assert.equal(commitsBody.commits[0]?.message, "initial");
+    assert.equal(commitsBody.pagination, undefined);
     const deployments = await app.request("/api/repos/pa-platform/deployments?all=true");
     assert.equal((await deployments.json() as { total: number }).total, 1);
   });
@@ -520,7 +566,11 @@ test("agent API exposes repo diff and compare routes", async () => {
     const { app } = createAgentApiApp();
     const diff = await app.request(`/api/repos/pa-platform/diff?commit=${head}`);
     assert.equal(diff.status, 200);
-    assert.equal((await diff.json() as { filesChanged: number }).filesChanged, 1);
+    const diffBody = await diff.json() as { filesChanged?: number; diff_entries: unknown[]; meta: { commit: string; files_changed: number } };
+    assert.equal(diffBody.filesChanged, undefined);
+    assert.equal(diffBody.diff_entries.length, 1);
+    assert.equal(diffBody.meta.commit, head);
+    assert.equal(diffBody.meta.files_changed, 1);
     const compare = await app.request(`/api/repos/pa-platform/compare?from=${base}&to=${head}`);
     assert.equal((await compare.json() as { count: number }).count, 1);
     const remote = await app.request("/api/repos/pa-platform/branches/remote");

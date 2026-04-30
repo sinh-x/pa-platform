@@ -13,7 +13,8 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
     if (!hooks.deploy) return c.json({ error: "Deployment execution requires an adapter hook", code: "NOT_IMPLEMENTED" }, 501);
     try {
       const result = await hooks.deploy(resolved.request);
-      return c.json({ team: resolved.request.team, mode: resolved.request.mode ?? null, ...result }, 202);
+      const response = toPhoneDeployResponse({ team: resolved.request.team, mode: resolved.request.mode ?? null, ...result });
+      return c.json(response, 202);
     } catch (error) {
       return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: resolved.request.team, mode: resolved.request.mode ?? null }, 202);
     }
@@ -43,4 +44,14 @@ async function parseDeployRequest(readJson: () => Promise<unknown>): Promise<{ r
   }
 
   return validateDeployRequestFields(body);
+}
+
+function toPhoneDeployResponse(response: Record<string, unknown>): Record<string, unknown> {
+  const deploymentId = stringValue(response["deploymentId"]) ?? stringValue(response["deployment_id"]) ?? stringValue(response["deploy_id"]);
+  const { deploymentId: _deploymentId, deploy_id: _deployId, ...rest } = response;
+  return deploymentId ? { ...rest, deployment_id: deploymentId } : rest;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
