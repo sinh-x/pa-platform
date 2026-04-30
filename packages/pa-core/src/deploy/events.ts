@@ -15,6 +15,7 @@ export interface StartDeploymentOpts {
   runtime?: RuntimeName;
   binary?: string;
   resumedFromDeploymentId?: string;
+  effectiveTimeoutSeconds?: number;
 }
 
 /**
@@ -36,6 +37,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     runtime: opts.runtime,
     binary: opts.binary,
     resumed_from_deployment_id: opts.resumedFromDeploymentId,
+    effective_timeout_seconds: opts.effectiveTimeoutSeconds,
   });
 }
 
