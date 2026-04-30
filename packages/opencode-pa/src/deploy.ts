@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployRequest, type RuntimeAdapter } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -10,6 +10,9 @@ export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapte
 }
 
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter()) {
+  const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
+  if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
+  const effectiveTimeoutSeconds = resolvedTimeout.timeout;
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
@@ -39,13 +42,13 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume });
+  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
 
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: request.timeout ? request.timeout * 1000 : undefined, logFile: resolve(deployDir, "opencode.log"), env });
+      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env });
     // Only persist a session file when a real opencode session token was captured.
     // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
     // the deploy id as a placeholder, which silently broke `opa deploy --resume`.
