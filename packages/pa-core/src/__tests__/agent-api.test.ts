@@ -127,11 +127,20 @@ test("agent API board resolves projects, applies legacy filters, and includes do
   });
 });
 
-test("agent API rejects path traversal query params", async () => {
+test("agent API document, image, and folder routes reject outside-root paths with sandbox violations", async () => {
   await withApiEnv(async () => {
     const { app } = createAgentApiApp();
-    const response = await app.request("/api/documents?path=/tmp/outside.md");
-    assert.equal(response.status, 403);
+    const documentResponse = await app.request("/api/documents?path=/tmp/outside.md");
+    assert.equal(documentResponse.status, 403);
+    assert.equal((await documentResponse.json() as { code: string }).code, "SANDBOX_VIOLATION");
+
+    const imageResponse = await app.request("/api/images?path=/tmp/outside.png");
+    assert.equal(imageResponse.status, 403);
+    assert.equal((await imageResponse.json() as { code: string }).code, "SANDBOX_VIOLATION");
+
+    const folderResponse = await app.request("/api/folders/teams/builder/inbox%2Foutside");
+    assert.equal(folderResponse.status, 403);
+    assert.equal((await folderResponse.json() as { code: string }).code, "SANDBOX_VIOLATION");
   });
 });
 
