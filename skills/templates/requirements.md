@@ -1,21 +1,21 @@
 # Template: Requirements
 
 > **Template:** requirements
-> **Version:** 2.0
-> **Last Updated:** 2026-04-28
+> **Version:** 3.0
+> **Last Updated:** 2026-04-30
 > **Used by:** Requirements team analyze modes
 > **Produces:** Requirements document and implementation checklist
 > **Consumed by:** Builder team and UAT reviewers
 
 ## Purpose
 
-Canonical 13-section requirements checklist for pa-platform requirements analysis. Use this template when producing a requirements artifact that will be attached to a ticket and handed to builder.
+Canonical requirements document template for pa-platform requirements analysis. Uses FR table / NFR table format to mirror old `pa requirements` output. Use this template when producing a requirements artifact that will be attached to a ticket and handed to builder.
 
 ## When to Use
 
 - When starting requirements analysis from an assigned ticket.
 - When producing a requirements document for an approved idea, feature, bug, or task.
-- When an analyze-mode skill says to use the standard 13-section checklist.
+- When an analyze-mode skill says to use the standard checklist.
 
 ## Template
 
@@ -35,30 +35,41 @@ Canonical 13-section requirements checklist for pa-platform requirements analysi
 ## 2. Summary
 <What is being requested, why it matters, and the expected outcome.>
 
-## 3. Goals and Non-Goals
-Goals:
-- <Goal 1>
-- <Goal 2>
+## 3. Functional Requirements
 
-Non-goals:
-- <Boundary 1>
-- <Boundary 2>
+| # | Requirement | Priority | Notes |
+|---|-------------|----------|-------|
+| F1 | <requirement text> | Must / Should / Could | <context or rationale> |
+| F2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
-## 4. In Scope
-- [ ] <Concrete in-scope item 1>
-- [ ] <Concrete in-scope item 2>
+## 4. Non-Functional Requirements
 
-## 5. Out of Scope
-- <Concrete out-of-scope item and reason>
-- <Concrete out-of-scope item and reason>
+| # | Requirement | Priority | Notes |
+|---|-------------|----------|-------|
+| NF1 | <requirement text> | Must / Should / Could | <context or rationale> |
+| NF2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
-## 6. Users and Stakeholders
-- <User, reviewer, downstream team, or affected system>
+## 5. Acceptance Criteria
 
-## 7. Dependencies and Prerequisites
+- [ ] AC1: Given <context>, when <action>, then <observable result>.
+- [ ] AC2: Given <context>, when <action>, then <observable result>.
+
+## 6. Dependencies
+
 - <Named dependency and status, or N/A with reason>
 
-## 8. Technical Approach
+## 7. Stakeholders
+
+- <User, reviewer, downstream team, or affected system>
+
+## 8. Risks
+
+| Risk | Impact | Likelihood | Mitigation |
+|---|---:|---:|---|
+| <risk> | High / Medium / Low | High / Medium / Low | <mitigation or open question> |
+
+## 9. Technical Approach
+
 Files and areas to inspect or modify:
 - `<path>`: <why it matters>
 
@@ -68,29 +79,8 @@ Existing patterns to reuse:
 Flow:
 - <implementation or analysis flow>
 
-## 9. Risks
-| Risk | Impact | Likelihood | Mitigation |
-|---|---:|---:|---|
-| <risk> | High / Medium / Low | High / Medium / Low | <mitigation or open question> |
+## 10. Implementation Plan
 
-## 10. Acceptance Criteria
-- [ ] AC1: Given <context>, when <action>, then <observable result>.
-- [ ] AC2: Given <context>, when <action>, then <observable result>.
-
-## 11. Open Questions
-- None, or list each unresolved question with `[BLOCKING]` or `[NON-BLOCKING]`.
-
-## 12. Impact Analysis
-Expected impacted surfaces:
-- <surface or N/A with reason>
-
-Downstream consumers:
-- <consumer or N/A with reason>
-
-Risk level:
-- High / Medium / Low, with reason.
-
-## 13. Implementation Plan and Follow-up
 Recommended order:
 - [ ] Phase 1 - <description>
 - [ ] Phase 2 - <description>
@@ -107,14 +97,13 @@ Follow-up:
 ## Guidance Notes
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
-- Keep `## 4. In Scope`, `## 10. Acceptance Criteria`, and `## 13. Implementation Plan and Follow-up` phase items as checkboxes. Builder updates these during implementation.
+- Keep `## 5. Acceptance Criteria` and `## 10. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.
-- If the originating ticket has `doc_refs`, fill `## 12. Impact Analysis` with change surface, downstream consumers, and risk level.
 - Use `opa ticket` commands in opencode deployments. Do not depend on external Claude Code skill folders.
 
 ## What the Next Stage Needs
 
-- **Builder** needs: repo path, branch, scope, acceptance criteria, implementation phases, and verification steps.
+- **Builder** needs: repo path, branch, scope (FR/NFR tables), acceptance criteria, implementation phases, and verification steps.
 - **Sinh / UAT reviewer** needs: testable acceptance criteria, risks, caveats, and explicit deferred work.
 - **Future agents** need: doc_refs on the ticket and enough impact context to resume without re-discovering the whole task.
 
