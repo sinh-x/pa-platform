@@ -93,7 +93,8 @@ Guardrails reject obvious sensitive content after reading, before the content is
 - SSH private or public key material.
 - Bearer tokens.
 - `sk-*` style provider keys.
-- Bot/API token patterns already covered by Signal sensitive routing.
+- Bot/API token patterns matching Signal sensitive routing.
+- Assignment-style `api_key`, `access_token`, and `secret_key` values.
 
 Non-interactive `opa` commands fail closed with a clear, non-revealing error.
 

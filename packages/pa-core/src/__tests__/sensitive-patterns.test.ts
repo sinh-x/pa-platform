@@ -33,6 +33,25 @@ test("loads built-in defaults when local sensitive pattern config is missing", (
   });
 });
 
+test("built-in content defaults catch documented sensitive classes", () => {
+  withConfigDir(() => {
+    const patternSet = loadSensitivePatterns();
+    const cases = [
+      { name: "seed phrase", value: "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima" },
+      { name: "ssh private key", value: "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEKEYDATA\n-----END OPENSSH PRIVATE KEY-----" },
+      { name: "ssh public key", value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakePublicKeyOnly test@example" },
+      { name: "bearer token", value: "Authorization: Bearer FAKE_TOKEN_VALUE_1234567890" },
+      { name: "provider key", value: "provider key sk-fakeProviderKeyValue1234567890" },
+      { name: "bot token", value: "bot token 123456:FAKE_BOT_TOKEN_VALUE_12345678901234567890" },
+      { name: "api token assignment", value: "api_key = FAKE_API_KEY_VALUE_1234567890" },
+    ];
+
+    for (const item of cases) {
+      assert.equal(findSensitiveMatch("content", item.value, patternSet)?.source, "built-in", item.name);
+    }
+  });
+});
+
 test("loads fake local filename, path, and content patterns", () => {
   withConfigDir((configDir) => {
     writeFileSync(getSensitivePatternsConfigPath(), ["filenames:", "  - '^fake-sensitive-name\\.txt$'", "paths:", "  - 'fake-sensitive-dir'", "contents:", "  - 'FAKE_LOCAL_MARKER_[0-9]+'", ""].join("\n"));
@@ -58,6 +77,24 @@ test("sensitive match errors do not include regex strings or matched content", (
         assert.equal((error as Error).message.includes("123"), false);
         assert.match((error as Error).message, /Blocked sensitive content input/);
         assert.match((error as Error).message, /local sensitive pattern config/);
+        return true;
+      },
+    );
+  });
+});
+
+test("built-in sensitive content errors do not include matched content", () => {
+  withConfigDir(() => {
+    const patternSet = loadSensitivePatterns();
+
+    assert.throws(
+      () => assertNoSensitiveMatch("content", "Authorization: Bearer FAKE_TOKEN_VALUE_1234567890", patternSet),
+      (error: unknown) => {
+        assert.equal(error instanceof SensitiveInputBlockedError, true);
+        assert.equal((error as Error).message.includes("FAKE_TOKEN_VALUE"), false);
+        assert.equal((error as Error).message.includes("1234567890"), false);
+        assert.match((error as Error).message, /Blocked sensitive content input/);
+        assert.match((error as Error).message, /built-in sensitive defaults/);
         return true;
       },
     );
