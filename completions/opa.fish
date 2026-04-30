@@ -72,9 +72,12 @@ function __opa_teams
 end
 
 function __opa_deploy_team_candidates
-    for file in $__opa_completion_dir/../teams/*.yaml
-        if test -f "$file"
-            basename "$file" .yaml
+    set -l dirs (__opa_team_dirs)
+    for dir in $dirs
+        for file in $dir/*.yaml
+            if test -f "$file"
+                basename "$file" .yaml
+            end
         end
     end | sort -u
 end

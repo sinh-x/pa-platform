@@ -72,9 +72,12 @@ function __pa_core_teams
 end
 
 function __pa_core_deploy_team_candidates
-    for file in $__pa_core_completion_dir/../teams/*.yaml
-        if test -f "$file"
-            basename "$file" .yaml
+    set -l dirs (__pa_core_team_dirs)
+    for dir in $dirs
+        for file in $dir/*.yaml
+            if test -f "$file"
+                basename "$file" .yaml
+            end
         end
     end | sort -u
 end

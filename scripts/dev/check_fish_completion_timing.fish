@@ -110,9 +110,18 @@ function __opa_teams
     printf '%s\n' builder requirements
 end
 
+set -l custom_team_dir (mktemp -d)
+function __completion_cleanup_custom_team --on-event fish_exit --inherit-variable custom_team_dir
+    command rm -rf "$custom_team_dir"
+end
+printf '%s\n' 'modes:' '  - id: implement' '  - id: custom-mode' > "$custom_team_dir/customteam.yaml"
+set -gx PA_PLATFORM_TEAMS "$custom_team_dir"
+
 __completion_expect_contains opa-deploy-team 'opa deploy ' builder; or set failed 1
 __completion_expect_contains opa-deploy-req 'opa deploy ' requirements; or set failed 1
+__completion_expect_contains opa-deploy-custom 'opa deploy ' customteam; or set failed 1
 __completion_expect_contains opa-deploy-mode 'opa deploy builder ' --mode; or set failed 1
+__completion_expect_contains opa-custom-mode-opt 'opa deploy customteam ' --mode; or set failed 1
 __completion_expect_contains opa-deploy-obj 'opa deploy builder ' --objective; or set failed 1
 __completion_expect_contains opa-deploy-repo 'opa deploy builder ' --repo; or set failed 1
 __completion_expect_contains opa-deploy-ticket 'opa deploy builder ' --ticket; or set failed 1
@@ -157,6 +166,8 @@ end
 __completion_expect_contains pa-repo-value 'pa-core deploy --repo ' pa-platform; or set failed 1
 __completion_expect_not_contains pa-repo-post 'pa-core deploy --repo pa-platform ' pa-platform; or set failed 1
 __completion_expect_contains pa-repo-post-team 'pa-core deploy --repo pa-platform ' builder; or set failed 1
+__completion_expect_contains pa-deploy-custom 'pa-core deploy ' customteam; or set failed 1
+__completion_expect_contains pa-custom-mode-opt 'pa-core deploy customteam ' --mode; or set failed 1
 __completion_expect_contains pa-ticket-value 'pa-core deploy --ticket ' PAP-016; or set failed 1
 __completion_expect_not_contains pa-ticket-post 'pa-core deploy --ticket PAP-016 ' PAP-016; or set failed 1
 __completion_expect_contains pa-ticket-post-team 'pa-core deploy --ticket PAP-016 ' builder; or set failed 1
