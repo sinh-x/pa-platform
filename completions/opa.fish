@@ -94,20 +94,7 @@ function __opa_team_file
 end
 
 function __opa_modes
-    set -l cmdline (string split ' ' (commandline -p))
-    set -l team_name ""
-    set -l found_deploy false
-    for token in $cmdline
-        if $found_deploy
-            if not string match -q -- '-*' $token
-                set team_name $token
-                break
-            end
-        end
-        if test "$token" = deploy
-            set found_deploy true
-        end
-    end
+    set -l team_name (__opa_deploy_team_name)
     test -z "$team_name"; and return
 
     set -l team_file (__opa_team_file "$team_name")
@@ -193,19 +180,19 @@ function __opa_deploy_option_expects_value
     return 1
 end
 
-function __opa_deploy_has_team
+function __opa_deploy_is_context
     set -l tokens (commandline -opc)
-    set -l found_deploy false
+    test (count $tokens) -ge 2; or return 1
+    test "$tokens[2]" = deploy
+end
+
+function __opa_deploy_team_name
+    __opa_deploy_is_context; or return 1
+
+    set -l tokens (commandline -opc)
     set -l expecting_value false
 
-    for token in $tokens
-        if test "$found_deploy" = false
-            if test "$token" = deploy
-                set found_deploy true
-            end
-            continue
-        end
-
+    for token in $tokens[3..-1]
         if test "$expecting_value" = true
             set expecting_value false
             continue
@@ -218,31 +205,43 @@ function __opa_deploy_has_team
             continue
         end
 
-        contains -- "$token" (__opa_deploy_team_candidates)
-        return $status
+        printf '%s\n' "$token"
+        return 0
     end
 
     return 1
 end
 
+function __opa_deploy_has_team
+    set -l team_name (__opa_deploy_team_name)
+    test -n "$team_name"; or return 1
+    contains -- "$team_name" (__opa_deploy_team_candidates)
+end
+
 function __opa_deploy_completing_option_value
+    __opa_deploy_is_context; or return 1
+
     set -l tokens (commandline -opc)
     test (count $tokens) -gt 0; or return 1
     __opa_deploy_option_expects_value "$tokens[-1]"
 end
 
 function __opa_deploy_needs_team
-    set -l tokens (commandline -opc)
-    contains -- deploy $tokens; or return 1
+    __opa_deploy_is_context; or return 1
     __opa_deploy_completing_option_value; and return 1
     __opa_deploy_has_team; and return 1
     return 0
 end
 
 function __opa_deploy_should_offer_options
+    __opa_deploy_is_context; or return 1
     __opa_deploy_has_team; or return 1
     __opa_deploy_completing_option_value; and return 1
     return 0
+end
+
+function __opa_deploy_completing
+    __opa_deploy_is_context
 end
 
 complete -c opa -f
@@ -272,21 +271,21 @@ complete -c opa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subco
 
 complete -c opa -n __opa_deploy_needs_team -a '(__opa_deploy_team_candidates)' -d 'Team name'
 complete -c opa -f -n __opa_deploy_should_offer_options -a '--mode --objective --objective-file --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l mode -d 'Deploy mode' -r -a '(__opa_modes)'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l objective -d 'Deployment objective' -r
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l list-modes -d 'List available deploy modes'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l validate -d 'Validate without deploying'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l provider -d 'Provider' -r -a 'openai minimax'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l model -d 'Model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l team-model -d 'Team model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__opa_projects)'
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
-complete -c opa -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
-complete -c opa -f -n '__fish_seen_subcommand_from deploy' -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
+complete -c opa -f -n __opa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__opa_modes)'
+complete -c opa -n __opa_deploy_completing -l objective -d 'Deployment objective' -r
+complete -c opa -n __opa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
+complete -c opa -n __opa_deploy_completing -l list-modes -d 'List available deploy modes'
+complete -c opa -n __opa_deploy_completing -l validate -d 'Validate without deploying'
+complete -c opa -f -n __opa_deploy_completing -l provider -d 'Provider' -r -a 'openai minimax'
+complete -c opa -f -n __opa_deploy_completing -l model -d 'Model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
+complete -c opa -f -n __opa_deploy_completing -l team-model -d 'Team model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
+complete -c opa -f -n __opa_deploy_completing -l agent-model -d 'Agent model' -r -a 'gpt-5.5 MiniMax-M2.7 openai/gpt-5.5 minimax-coding-plan/MiniMax-M2.7'
+complete -c opa -n __opa_deploy_completing -l background -d 'Run detached/headless'
+complete -c opa -n __opa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
+complete -c opa -f -n __opa_deploy_completing -l repo -d 'Repository name' -r -a '(__opa_projects)'
+complete -c opa -f -n __opa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
+complete -c opa -n __opa_deploy_completing -l timeout -d 'Timeout seconds' -r
+complete -c opa -f -n __opa_deploy_completing -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
 
 complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

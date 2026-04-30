@@ -121,6 +121,8 @@ __completion_expect_contains opa-deploy-bg 'opa deploy builder ' --background; o
 __completion_expect_contains opa-mode-impl 'opa deploy builder --mode ' implement; or set failed 1
 __completion_expect_contains opa-mode-orch 'opa deploy builder --mode ' orchestrator; or set failed 1
 __completion_expect_contains opa-mode-routine 'opa deploy builder --mode ' routine; or set failed 1
+__completion_expect_contains opa-mode-repo-pre 'opa deploy --repo pa-platform builder --mode ' implement; or set failed 1
+__completion_expect_not_contains opa-status-deploy-arg 'opa status deploy ' builder; or set failed 1
 __completion_expect_contains opa-team-repo-val 'opa deploy builder --repo ' pa-platform; or set failed 1
 __completion_expect_contains opa-team-ticket-val 'opa deploy builder --ticket ' PAP-016; or set failed 1
 __completion_expect_contains opa-repo-value 'opa deploy --repo ' pa-platform; or set failed 1

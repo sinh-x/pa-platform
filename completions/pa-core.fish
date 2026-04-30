@@ -94,20 +94,7 @@ function __pa_core_team_file
 end
 
 function __pa_core_modes
-    set -l cmdline (string split ' ' (commandline -p))
-    set -l team_name ""
-    set -l found_deploy false
-    for token in $cmdline
-        if $found_deploy
-            if not string match -q -- '-*' $token
-                set team_name $token
-                break
-            end
-        end
-        if test "$token" = deploy
-            set found_deploy true
-        end
-    end
+    set -l team_name (__pa_core_deploy_team_name)
     test -z "$team_name"; and return
 
     set -l team_file (__pa_core_team_file "$team_name")
@@ -193,19 +180,19 @@ function __pa_core_deploy_option_expects_value
     return 1
 end
 
-function __pa_core_deploy_has_team
+function __pa_core_deploy_is_context
     set -l tokens (commandline -opc)
-    set -l found_deploy false
+    test (count $tokens) -ge 2; or return 1
+    test "$tokens[2]" = deploy
+end
+
+function __pa_core_deploy_team_name
+    __pa_core_deploy_is_context; or return 1
+
+    set -l tokens (commandline -opc)
     set -l expecting_value false
 
-    for token in $tokens
-        if test "$found_deploy" = false
-            if test "$token" = deploy
-                set found_deploy true
-            end
-            continue
-        end
-
+    for token in $tokens[3..-1]
         if test "$expecting_value" = true
             set expecting_value false
             continue
@@ -218,31 +205,43 @@ function __pa_core_deploy_has_team
             continue
         end
 
-        contains -- "$token" (__pa_core_deploy_team_candidates)
-        return $status
+        printf '%s\n' "$token"
+        return 0
     end
 
     return 1
 end
 
+function __pa_core_deploy_has_team
+    set -l team_name (__pa_core_deploy_team_name)
+    test -n "$team_name"; or return 1
+    contains -- "$team_name" (__pa_core_deploy_team_candidates)
+end
+
 function __pa_core_deploy_completing_option_value
+    __pa_core_deploy_is_context; or return 1
+
     set -l tokens (commandline -opc)
     test (count $tokens) -gt 0; or return 1
     __pa_core_deploy_option_expects_value "$tokens[-1]"
 end
 
 function __pa_core_deploy_needs_team
-    set -l tokens (commandline -opc)
-    contains -- deploy $tokens; or return 1
+    __pa_core_deploy_is_context; or return 1
     __pa_core_deploy_completing_option_value; and return 1
     __pa_core_deploy_has_team; and return 1
     return 0
 end
 
 function __pa_core_deploy_should_offer_options
+    __pa_core_deploy_is_context; or return 1
     __pa_core_deploy_has_team; or return 1
     __pa_core_deploy_completing_option_value; and return 1
     return 0
+end
+
+function __pa_core_deploy_completing
+    __pa_core_deploy_is_context
 end
 
 complete -c pa-core -f
@@ -272,13 +271,13 @@ complete -c pa-core -n '__fish_seen_subcommand_from repos; and not __fish_seen_s
 
 complete -c pa-core -n __pa_core_deploy_needs_team -a '(__pa_core_deploy_team_candidates)' -d 'Team name'
 complete -c pa-core -f -n __pa_core_deploy_should_offer_options -a '--mode --objective --background --dry-run --repo --ticket --timeout' -d 'Deploy option'
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l mode -d 'Deploy mode' -r -a '(__pa_core_modes)'
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l objective -d 'Deployment objective' -r
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l background -d 'Run detached/headless'
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l dry-run -d 'Generate primer without invoking runtime'
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
-complete -c pa-core -f -n '__fish_seen_subcommand_from deploy' -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
-complete -c pa-core -n '__fish_seen_subcommand_from deploy' -l timeout -d 'Timeout seconds' -r
+complete -c pa-core -f -n __pa_core_deploy_completing -l mode -d 'Deploy mode' -r -a '(__pa_core_modes)'
+complete -c pa-core -n __pa_core_deploy_completing -l objective -d 'Deployment objective' -r
+complete -c pa-core -n __pa_core_deploy_completing -l background -d 'Run detached/headless'
+complete -c pa-core -n __pa_core_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
+complete -c pa-core -f -n __pa_core_deploy_completing -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
+complete -c pa-core -f -n __pa_core_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
+complete -c pa-core -n __pa_core_deploy_completing -l timeout -d 'Timeout seconds' -r
 
 complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
