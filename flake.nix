@@ -154,6 +154,59 @@
             fi
             exec pnpm "$@"
           '';
+          # dev-pa-serve: dev-shell convenience wrapper for phone/Tailscale access.
+          # Bakes in --host 0.0.0.0 --cors so the API is reachable from non-loopback
+          # peers (e.g. iPhone via Tailscale). Uses dtach for backgrounding —
+          # do NOT pass --background to the inner CLI or it will double-detach.
+          # pa-core defaults remain 127.0.0.1 / CORS off; this wrapper is opt-in.
+          dev-pa-serve = pkgs.writeShellScriptBin "dev-pa-serve" ''
+            set -euo pipefail
+            PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+            cd "$PROJECT_ROOT"
+
+            DTACH_SOCKET="/tmp/pa-platform-serve.dtach"
+            CLI="$PROJECT_ROOT/packages/opencode-pa/dist/cli.js"
+            HOST="0.0.0.0"
+            PORT="9848"
+
+            case "''${1:-}" in
+              stop|status)
+                exec node "$CLI" serve "$@"
+                ;;
+              restart)
+                pnpm build
+                node "$CLI" serve stop 2>/dev/null || true
+                sleep 1
+                ${pkgs.dtach}/bin/dtach -n "$DTACH_SOCKET" \
+                  node "$CLI" serve --port "$PORT" --host "$HOST" --cors
+                echo "[dev-pa-serve] Restarted on $HOST:$PORT (CORS on). Attach: dtach -a $DTACH_SOCKET"
+                ;;
+              -h|--help|help)
+                cat <<'USAGE'
+            dev-pa-serve — pa-platform dev API server (phone/Tailscale-friendly)
+
+            Usage:
+              dev-pa-serve [extra-args...]   Start serve in background via dtach
+                                             (defaults: --host 0.0.0.0 --port 9848 --cors)
+              dev-pa-serve stop              Stop the running server
+              dev-pa-serve status            Show running server status
+              dev-pa-serve restart           Stop, rebuild, and start fresh
+
+            Notes:
+              - Wrapper bakes in --host 0.0.0.0 --cors for LAN/Tailscale access.
+              - pa-core defaults remain 127.0.0.1 + CORS off — only this wrapper opts in.
+              - dtach socket: /tmp/pa-platform-serve.dtach (attach with `dtach -a`)
+              - Pass extra flags after `dev-pa-serve` to override (e.g. `--port 19848`).
+            USAGE
+                ;;
+              *)
+                pnpm build
+                ${pkgs.dtach}/bin/dtach -n "$DTACH_SOCKET" \
+                  node "$CLI" serve --port "$PORT" --host "$HOST" --cors "$@"
+                echo "[dev-pa-serve] Started on $HOST:$PORT (CORS on). Attach: dtach -a $DTACH_SOCKET"
+                ;;
+            esac
+          '';
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -172,6 +225,7 @@
               node-gyp
               sqlcipher
               dev-pa-platform
+              dev-pa-serve
             ];
           };
         });

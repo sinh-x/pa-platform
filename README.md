@@ -37,6 +37,28 @@ pa-core serve
 
 Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
+## Dev server access from phone/Tailscale
+
+`pa-core serve` defaults to `--host 127.0.0.1` with CORS off — safe for production but unreachable from a Tailscale peer (e.g. iPhone). The Nix dev shell ships a `dev-pa-serve` wrapper that bakes in phone-friendly defaults and runs the server backgrounded under `dtach`:
+
+```bash
+nix develop
+dev-pa-serve            # runs `serve --host 0.0.0.0 --port 9848 --cors` under dtach
+dev-pa-serve status     # check the running server
+dev-pa-serve stop       # stop the server, remove pid file
+dev-pa-serve restart    # rebuild + cycle cleanly
+dev-pa-serve --port 19848   # override flags via "$@" passthrough
+dtach -a /tmp/pa-platform-serve.dtach   # attach to the live log stream
+```
+
+Without Nix (or to bind explicitly), invoke the server directly:
+
+```bash
+node packages/opencode-pa/dist/cli.js serve --host 0.0.0.0 --cors
+```
+
+Production defaults remain `127.0.0.1` and CORS off — only the wrapper opts in to LAN/Tailscale exposure. The dtach socket `/tmp/pa-platform-serve.dtach` is distinct from the legacy `personal-assistant` wrapper's `/tmp/pa-serve.dtach` so the two can coexist.
+
 ## Shared State
 
 By default, `pa-core` uses the same on-disk workflow state as old `pa`:
