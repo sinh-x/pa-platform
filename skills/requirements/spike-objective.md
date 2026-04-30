@@ -1,193 +1,128 @@
-You are running as a solo spike researcher — do NOT spawn sub-agents.
+You are an orchestrated spike researcher.
 
-Your job is to autonomously research a topic, explore the codebase, and produce a structured spike or requirements document without user interaction.
-
----
+This skill serves both parent and child modes:
+- `spike` (parent orchestrator)
+- `spike-minimax` and `spike-openai` (provider children)
 
 ## PHASE CHECKLIST
 
-Follow each phase in order. Log gate status after each phase before proceeding.
+Follow the active role checklist below in order.
 
 **Important:** This is a **non-interactive** skill. Decide and act autonomously.
 
----
+**Required workflow:** `spike` is a ticket-driven parent orchestrator. It must validate `ticket_id` before launching any child and fails early if the ticket context is missing.
 
-### Phase S1: Input Resolution
-**Goal:** Resolve the topic and repo context.
+Parent mode is the only mode that advances the ticket to `review-uat`.
 
-**Actions:**
-- [ ] Check `## Additional Instructions` in primer for `--objective` text
-- [ ] Check `pa ticket list --assignee requirements --status requirement-review` for claimed ticket
-- [ ] Extract topic from available sources
+## Output Format Routing
 
-**Gate Criteria:** Do not proceed until topic is resolved and documented. If no topic found: create failed FYI ticket and stop.
+This orchestrated mode uses the consolidated report format in:
 
-**Output Expectation:** `Topic: <resolved topic>` and `Repo: <repo_path>` logged.
+- `skills/templates/spike-research-report.md`
 
----
+For compatibility with legacy standalone spike runs, use:
 
-### Phase S2: Codebase Exploration
-**Goal:** Explore repo to understand how topic relates to existing system.
-
-**Actions:**
-- [ ] List top-level directory structure for orientation
-- [ ] Read key configs: package.json, flake.nix, README.md (if present)
-- [ ] Use Glob to find files by name patterns relevant to topic
-- [ ] Use Grep to find code patterns, imports, function names
-- [ ] Read 5-10 most relevant files
-- [ ] Identify: existing patterns, dependencies, integration points, constraints
-
-**Gate Criteria:** Do not proceed until you have: (1) orientation from top-level listing, (2) 5+ files read, (3) documented patterns, dependencies, integration points, constraints.
-
-**Output Expectation:** Files read list + findings summary in Phase S2 section.
+- `skills/templates/spike-light-report.md` (light report)
+- `skills/templates/spike-full-requirements.md` (13-section requirements format)
+- `skills/templates/spike-learning-note.md` (retrieval learning artifact)
 
 ---
 
-### Phase S2b: Data Validation
-**Goal:** Validate data files referenced in the ticket before research proceeds. Note: Agents cannot read raw data files directly due to security controls (claudeignore/sanitize). Validation uses user-provided metadata/schema summaries only.
+### Role: Parent (`spike`)
 
-**Actions:**
-- [ ] Scan ticket title, summary, description, and doc_refs for data file references (`.xlsx`, `.csv`, `.json`, `.yaml`, `.tsv`, `.parquet`, `.db`, `.sqlite`)
-- [ ] If no data files found: log "No data files referenced — skipping S2b" and proceed to S3
-- [ ] If data files found: check if metadata/schema summary is available (user-provided or pre-existing)
-- [ ] If summary available: validate against schema/summary, log validation status
-- [ ] If no summary available: flag as risk per security policy, log "skipped — no schema summary available"
-- [ ] Flag issues as risks for S4 complexity assessment
-- [ ] Add "Data Files Validated" section to spike report with findings and security notes
+#### Phase P1: Validate inputs
 
-**Gate Criteria:** Do not proceed until: (1) data file scan complete, (2) all referenced files validated against summary or skipped per security policy, (3) findings documented in report.
+- [ ] Confirm deployment context has `ticket_id` and fail if absent.
+- [ ] Confirm `repo_root` and topic are resolved.
+- [ ] Claim the source ticket with `opa ticket update <ticket-id> --assignee requirements/team-manager`.
+- [ ] Parent deploy should be launched with default timeout `3600` unless overridden by caller.
 
-**Output Expectation:** `Data Files Validated` section in spike report with files checked, validation status, and security notes.
+Gate: do not launch children until all items are complete.
 
----
+#### Phase P2: Launch two children
 
-### Phase S3: Web Research
-**Goal:** Search web for external context.
+- [ ] Launch MiniMax child with a 1200-second timeout using background mode.
+- [ ] Launch OpenAI child with a 1200-second timeout using background mode.
+- [ ] Record deploy IDs and start times, and write them to the parent report immediately.
+- [ ] Parent should record launch errors and continue with consolidated reporting for any successful children.
 
-**Actions:**
-- [ ] Formulate 2-4 targeted search queries based on topic and codebase findings
-- [ ] Run each search using WebSearch tool
-- [ ] Extract relevant findings from search results
-- [ ] Anchor web findings to codebase context
+Parent command examples:
+`opa deploy requirements --mode spike-minimax --ticket <ticket-id> --repo <repo_root> --timeout 1200 --background`
+`opa deploy requirements --mode spike-openai --ticket <ticket-id> --repo <repo_root> --timeout 1200 --background`
 
-**Gate Criteria:** Do not proceed until: (1) at least 2 searches run, (2) findings documented with relevance to codebase. If search fails: continue with codebase-only and note fallback.
+#### Phase P3: Track child completion
 
-**Output Expectation:** External findings with relevance assessment.
+- [ ] Wait on both deployments with `opa status <deploy-id> --wait`.
+- [ ] Record final status, failure details, and report artifact paths.
+- [ ] Keep a consolidated sub-deploy status table in the parent report with: provider, deploy id, status, artifact path, and failure/uncertainty note.
+- [ ] Continue consolidation if at least one child succeeds.
+- [ ] Represent any failed or timed-out provider as an explicit uncertainty.
 
----
+#### Phase P4: Consolidate outputs
 
-### Phase S4: Complexity Assessment
-**Goal:** Decide output format based on topic complexity.
+- [ ] Build one consolidated spike artifact at:
+  - `~/Documents/ai-usage/deployments/<deployment_id>/researcher/spike-<topic-slug>.md`
+  - `~/Documents/ai-usage/agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md`
+- [ ] Include provider perspectives, contradictions/uncertainties, and open questions.
 
-**Actions:**
-- [ ] Score using heuristic:
-  - Codebase has clear integration points: +1
-  - Web research found established patterns: +1
-  - Scope spans 3+ files or components: +1
-  - No major unknowns remain: +1
-  - Topic is a feature (not exploration): +1
-- [ ] Score ≥ 3 → produce Full Requirements Doc
-- [ ] Score < 3 → produce Light Spike Report
-- [ ] Document decision and reasoning
+Required sections in the consolidated doc:
+`# Spike Research: <topic>`
+`## Objective`
+`## Quick Answer`
+`## Key Takeaways`
+`## What The Spike Found`
+`## Provider Perspectives`
+`## External Sources`
+`## Codebase Findings`
+`## Contradictions Or Uncertainties`
+`## Recommended Follow-Up`
+`## Open Questions`
+`## Resources Used`
+`## Retrieval Notes`
 
-**Gate Criteria:** Do not proceed until complexity decision is made and documented with scoring rationale.
+#### Phase P5: Learning-management export
 
-**Output Expectation:** `Decision: [Full Requirements Doc | Light Spike Report]` with scoring breakdown.
+- [ ] Write learning note to
+   `/home/sinh/git-repos/sinh-x/tools/learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md`
+   with approved frontmatter fields.
+   - `para` in frontmatter is a PARA classification label (`area`) and does not control filesystem path.
+   - Files are stored under `areas/spike-research/` in the learning-management repository path.
+- [ ] Attach learning artifact with `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`.
 
----
+#### Phase P6: Handoff
 
-### Phase S5: Document Production
-**Goal:** Write the chosen output format.
-
-**For Light Spike Report:**
-- [ ] Write Topic section (1-2 sentences)
-- [ ] Write Research Summary (3-5 bullets)
-- [ ] Write Codebase Findings with confidence level
-- [ ] Write External Findings with confidence level
-- [ ] Write Complexity Assessment
-- [ ] Write Recommendations and Open Questions
-- [ ] Write What Sinh Needs To Do section
-
-**For Full Requirements Doc (13 sections):**
-- [ ] Write all 13 sections per spike.md template
-- [ ] Include confidence levels per section
-- [ ] Include implementation plan with steps
-- [ ] Include acceptance criteria as `- [ ]` checkboxes
-
-**Gate Criteria:** Do not save until: document matches chosen format template, all sections present, no placeholder text.
-
-**Output Expectation:** Complete document in correct format.
+- [ ] Add spike artifact doc ref before status handoff:
+  `opa ticket update <ticket-id> --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
+- [ ] Add completion comment after attachment steps with child deploy IDs, artifact paths, provider statuses, and partial/failure notes.
+- [ ] Attach learning artifact reference before status handoff:
+  `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`
+- [ ] Update ticket to `review-uat` and assign to `sinh` after doc_refs are attached:
+  `opa ticket update <ticket-id> --status review-uat --assignee sinh --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
 
 ---
 
-### Phase S6: Save Outputs
-**Goal:** Save document to 3 destinations and update ticket.
+### Role: Child (`spike-minimax` or `spike-openai`)
 
-**Actions:**
-- [ ] Save to deployment workspace: `~/Documents/ai-usage/deployments/<deployment_id>/researcher/spike-<topic-slug>.md`
-- [ ] Save to team artifacts: `~/Documents/ai-usage/agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md`
-- [ ] Add doc_ref on ticket: `pa ticket update <ticket-id> --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
+#### Phase C1: Validate child input
 
-**If working on existing ticket:**
-- [ ] Advance: `pa ticket update <ticket-id> --status pending-approval --assignee sinh --doc-ref "req:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
+- [ ] Confirm `ticket_id` and `repo_root`.
+- [ ] Confirm `topic` from objective or ticket context.
+- [ ] Confirm child mode output is report-only; child mode must not update ticket status or advance the source ticket.
 
-**If standalone (no ticket):**
-- [ ] Create review-request ticket per spike.md instructions
+#### Phase C2: Research
 
-- [ ] Write session log to `~/Documents/ai-usage/sessions/YYYY/MM/agent-team/`
+- [ ] Explore codebase context under `repo_root`.
+- [ ] Run web searches relevant to the topic.
+- [ ] Log source links, findings, and blockers.
 
-**Gate Criteria:** Do not mark complete until: (1) document in all 3 destinations, (2) doc_ref added, (3) ticket advanced or new ticket created, (4) session log written.
+#### Phase C3: Write child output
 
-**Output Expectation:** Confirmation of save locations and ticket status.
+- [ ] Save child report to:
+  `~/Documents/ai-usage/deployments/<deployment_id>/researcher/spike-child-<provider>-<topic-slug>.md`
+- [ ] Include confidence score and provider-specific findings.
+- [ ] Keep sections for `External Sources` and `Codebase Findings`.
 
----
+#### Phase C4: Return to parent
 
-## OUTPUT FORMATS
-
-### Light Spike Report Sections
-- Topic
-- Research Summary
-- Codebase Findings (with confidence)
-- External Findings (with confidence)
-- Complexity Assessment
-- Recommendations
-- Open Questions
-- What Sinh Needs To Do
-- Suggested Next Steps
-
-### Full Requirements Doc Sections (13)
-1. Context & Background (with confidence)
-2. Problem Statement (with confidence)
-3. Goals & Success Criteria (with confidence)
-4. Scope (with confidence)
-5. Users & Stakeholders (with confidence)
-6. Requirements — Functional & Non-Functional (with confidence)
-7. Dependencies & Prerequisites (with confidence)
-8. Technical Approach (with confidence)
-9. Risks & Unknowns + Open Questions
-10. Acceptance Criteria (with confidence)
-11. Effort Estimate (with confidence)
-12. Implementation Plan (with confidence)
-13. Follow-up / Future Work
-
----
-
-## TICKET PROTOCOL
-
-When you pick up a ticket for work:
-1. Claim it: `pa ticket update <id> --assignee requirements/team-manager` (keep status as `requirement-review`)
-2. Work through phases S1-S6
-3. Mark complete: `pa ticket update <id> --status pending-approval --assignee sinh --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
-
-On failure/abort: add `--tags failed` + comment + create FYI ticket.
-
----
-
-## RULES
-
-- **Non-interactive** — decide and act autonomously
-- **From/To fields** — every output document MUST have these
-- **Confidence per section** — every section MUST include confidence level
-- **Grounded findings** — always anchor web research to codebase context
-- **Graceful web fallback** — if search fails, continue with codebase-only
-- **Gate criteria are soft** — log status but continue if reasonable
+- [ ] Ensure output includes deploy id, provider, status, and artifact path for consolidation.
+- [ ] Do not update ticket status in child mode.
