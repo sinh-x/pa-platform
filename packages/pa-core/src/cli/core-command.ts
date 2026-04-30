@@ -16,7 +16,7 @@ import { listRepos, resolveProject, resolveProjectFromCwd } from "../repos.js";
 import { extractNotesSinceLastRun, fetchNotesSince, findNoteToSelfConversation, getOwnIdentity, getSignalPaths, markSignalNoteAsProcessed, readCollectorState } from "../signal/reader.js";
 import { routeMessage } from "../signal/router.js";
 import { cleanSignalEntries, writeRoutedMessage } from "../signal/writers.js";
-import { readGuardedLocalTextFile } from "../sensitive-patterns.js";
+import { assertNoSensitiveMatch, readGuardedLocalTextFile } from "../sensitive-patterns.js";
 import { BOARD_COLUMNS, buildBoardView, getTeamBoard, getTeamStatusSummaries } from "../tickets/index.js";
 import { listSystemdTimers } from "../timers.js";
 import { getTeamRuntimeStatus, listTeamConfigs, loadTeamConfig } from "../teams/index.js";
@@ -440,6 +440,14 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
   if ("error" in validated) {
     io.stderr(validated.error);
     return 1;
+  }
+  if (validated.request.objective) {
+    try {
+      assertNoSensitiveMatch("content", validated.request.objective);
+    } catch (error) {
+      io.stderr(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
   }
   if (validated.request.listModes) return printDeployModes(validated.request.team, io);
   if (validated.request.validate) return validateDeployConfig(validated.request.team, io);

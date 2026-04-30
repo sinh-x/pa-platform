@@ -255,6 +255,41 @@ test("deploy objective-file uses guarded local text-file reader", async () => {
   });
 });
 
+test("deploy inline objective uses sensitive content guard after objective validation", async () => {
+  await withCliEnv(async () => {
+    const seen: unknown[] = [];
+    const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-inline-objective" }; } };
+
+    const allowed = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship a normal inline objective.", "--dry-run"], { io: allowed.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship a normal inline objective.", dryRun: true, timeout: 1800 });
+
+    const blockedBuiltIn = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop", "--dry-run"], { io: blockedBuiltIn.io, hooks }), 1);
+    assert.match(blockedBuiltIn.stderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(blockedBuiltIn.stderr.join("\n"), /abcdefghijklmnop|api_key/);
+    assert.equal(seen.length, 0);
+
+    writeFileSync(join(process.env["PA_PLATFORM_CONFIG"]!, "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_INLINE_OBJECTIVE_[0-9]+'", ""].join("\n"));
+
+    const blockedLocal = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "contains FAKE_INLINE_OBJECTIVE_123 only", "--dry-run"], { io: blockedLocal.io, hooks }), 1);
+    assert.match(blockedLocal.stderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(blockedLocal.stderr.join("\n"), /FAKE_INLINE_OBJECTIVE|123/);
+    assert.equal(seen.length, 0);
+
+    const invalidCharacter = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", "api_key=abcdefghijklmnop;"], { io: invalidCharacter.io, hooks }), 1);
+    assert.match(invalidCharacter.stderr.join("\n"), /objective contains invalid characters/);
+    assert.doesNotMatch(invalidCharacter.stderr.join("\n"), /Blocked sensitive content input/);
+
+    const tooLong = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}api_key=abcdefghijklmnop`], { io: tooLong.io, hooks }), 1);
+    assert.match(tooLong.stderr.join("\n"), /objective exceeds max length of 10000 characters/);
+    assert.doesNotMatch(tooLong.stderr.join("\n"), /Blocked sensitive content input/);
+  });
+});
+
 test("runCoreCommand resolves deploy timeout from flag, PA_MAX_RUNTIME, then default", async () => {
   await withCliEnv(async () => {
     const seen: unknown[] = [];
