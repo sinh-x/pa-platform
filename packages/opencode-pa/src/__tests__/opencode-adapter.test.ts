@@ -194,11 +194,11 @@ test("opa default hooks route agent API deploy requests through opencode adapter
     });
 
     assert.equal(response.status, 202);
-    const body = await response.json() as { team: string; mode: string | null; status: string; deploymentId?: string };
+    const body = await response.json() as { team: string; mode: string | null; status: string; deployment_id?: string };
     assert.equal(body.team, "daily");
     assert.equal(body.mode, "plan");
     assert.equal(body.status, "pending");
-    assert.match(body.deploymentId ?? "", /^d-[a-f0-9]{6}$/);
+    assert.match(body.deployment_id ?? "", /^d-[a-f0-9]{6}$/);
     assert.equal(queryDeploymentStatuses()[0]?.runtime, "opencode");
   });
 });
