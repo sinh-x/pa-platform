@@ -1365,6 +1365,7 @@ function printError(error: string, io: Required<CliIo>): number {
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+  io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
 }
 
 function printDeployHelp(io: Required<CliIo>): void {

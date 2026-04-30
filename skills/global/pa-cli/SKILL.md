@@ -35,6 +35,8 @@ All agents have access to the `pa` CLI. Use these commands for ticket management
 | `pa registry <sub>` | Manage deployment registry (see §Registry) | — |
 | `pa trash <sub>` | Soft-delete PA project files (see §Trash) | — |
 
+`pa status <deploy-id> --wait` polls until the deployment reaches a terminal status. It uses the deployment's recorded timeout by default; set `PA_STATUS_WAIT_TIMEOUT` to override the wait duration for that command only.
+
 ### `pa board` — CWD-Aware Scoping
 
 `pa board` defaults to the current repository's project if you're in a git repo registered in `repos.yaml`. Use flags to override:
