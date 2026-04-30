@@ -24,10 +24,12 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
+  const previousMaxRuntime = process.env["PA_MAX_RUNTIME"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  delete process.env["PA_MAX_RUNTIME"];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -38,6 +40,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_REGISTRY_DB"] = previousRegistry;
     if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
+    if (previousMaxRuntime === undefined) delete process.env["PA_MAX_RUNTIME"];
+    else process.env["PA_MAX_RUNTIME"] = previousMaxRuntime;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -216,6 +220,42 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     }), 0);
     assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
+  });
+});
+
+test("runCoreCommand resolves deploy timeout from flag, PA_MAX_RUNTIME, then default", async () => {
+  await withCliEnv(async () => {
+    const seen: unknown[] = [];
+    const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-timeout" }; } };
+
+    const defaultTimeout = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan"], { io: defaultTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 1800 });
+
+    process.env["PA_MAX_RUNTIME"] = "2400";
+    const envTimeout = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan"], { io: envTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 2400 });
+
+    const flagTimeout = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--timeout", "120"], { io: flagTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 120 });
+  });
+});
+
+test("runCoreCommand rejects invalid PA_MAX_RUNTIME before deployment hook", async () => {
+  await withCliEnv(async () => {
+    for (const value of ["abc", "59", "7201", "120.5"]) {
+      process.env["PA_MAX_RUNTIME"] = value;
+      let called = false;
+      const captured = capture();
+      assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan"], {
+        io: captured.io,
+        hooks: { deploy: () => { called = true; return { status: "pending" as const, deploymentId: "d-invalid" }; } },
+      }), 1);
+      assert.equal(called, false);
+      assert.match(captured.stderr.join("\n"), /PA_MAX_RUNTIME must be between 60 and 7200 seconds/);
+    }
   });
 });
 

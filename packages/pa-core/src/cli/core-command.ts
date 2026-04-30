@@ -6,7 +6,7 @@ import { readActivityEvents } from "../activity/index.js";
 import { BulletinStore } from "../bulletins/index.js";
 import type { BulletinBlock } from "../bulletins/index.js";
 import { analyzeRepo, formatClassResult, formatExportsResult, formatFileResult, formatFunctionResult, generateSummary, graphExists, loadGraph, queryClass, queryExports, queryFile, queryFunction, saveGraph } from "../codectx/index.js";
-import { validateDeployRequestFields } from "../deploy/index.js";
+import { validateDeployRequestFields, withResolvedDeployTimeout } from "../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../deploy/index.js";
 import { formatPrimerHealthSummary, generateHealthReport, listHealthSnapshots, saveHealthSnapshot } from "../health/index.js";
 import type { HealthCategory } from "../health/index.js";
@@ -437,12 +437,17 @@ async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: Core
   }
   if (validated.request.listModes) return printDeployModes(validated.request.team, io);
   if (validated.request.validate) return validateDeployConfig(validated.request.team, io);
+  const resolved = withResolvedDeployTimeout(validated.request);
+  if ("error" in resolved) {
+    io.stderr(resolved.error);
+    return 1;
+  }
   if (!hooks.deploy) {
     io.stderr("Deployment execution requires an adapter hook");
     return 1;
   }
 
-  const result = await hooks.deploy(validated.request);
+  const result = await hooks.deploy(resolved.request);
   if (result.status === "failed") {
     io.stderr(result.reason ?? "Deployment failed");
     return 1;
