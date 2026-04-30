@@ -165,6 +165,45 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", () => {
+  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: requirements,
+    mode: "spike",
+    objective: "Research spike for PAP-030",
+    resolveFile: resolveRepoFile,
+    skillsDir: repoPath("skills", "global"),
+    extraInstructions: [
+      "<deployment-context>",
+      "deployment_id: d-test00",
+      "repo_root: /tmp/example-repo",
+      "ticket_id: PAP-030",
+      "topic: API timeout and retry",
+      "</deployment-context>",
+    ].join("\n"),
+  });
+
+  assert.match(primer, /You are an orchestrated spike researcher/);
+  assert.match(primer, /`?spike`? is a ticket-driven parent orchestrator/);
+  assert.match(primer, /Parent mode is the only mode that advances the ticket to `review-uat`/);
+  assert.match(primer, /spike-minimax/);
+  assert.match(primer, /spike-openai/);
+  assert.match(primer, /3600/);
+  assert.match(primer, /1200/);
+  assert.match(primer, /--ticket <ticket-id>/);
+  assert.match(primer, /sub-deploy/i);
+  assert.match(primer, /--status review-uat/);
+  assert.match(primer, /child mode output is report-only/);
+  assert.match(primer, /uncertainty/i);
+  assert.match(primer, /spike-research-report\.md/);
+  assert.match(primer, /spike-learning-note\.md/);
+  assert.match(primer, /spike:agent-teams\/requirements\/artifacts/);
+  assert.match(primer, /attachment:learning-management\/areas\/spike-research\/YYYY-MM-DD-<topic-slug>\.md/);
+  assert.match(primer, /Add completion comment first|completion comment/);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
 test("generatePrimer representative builder fixture stays free of legacy opencode references", () => {
   const builder = parseTeamYamlContent(readFileSync(repoPath("teams", "builder.yaml"), "utf-8"));
   const primer = generatePrimer({

@@ -29,7 +29,7 @@ Gate: do not launch children until all items are complete.
 
 - [ ] Launch MiniMax child with a 1200-second timeout using background mode.
 - [ ] Launch OpenAI child with a 1200-second timeout using background mode.
-- [ ] Record deploy IDs and start times.
+- [ ] Record deploy IDs and start times, and write them to the parent report immediately.
 - [ ] Parent should record launch errors and continue with consolidated reporting for any successful children.
 
 Parent command examples:
@@ -40,8 +40,9 @@ Parent command examples:
 
 - [ ] Wait on both deployments with `opa status <deploy-id> --wait`.
 - [ ] Record final status, failure details, and report artifact paths.
-- [ ] Keep a consolidated child status table in the parent report (provider, deploy id, status).
+- [ ] Keep a consolidated sub-deploy status table in the parent report with: provider, deploy id, status, artifact path, and failure/uncertainty note.
 - [ ] Continue consolidation if at least one child succeeds.
+- [ ] Represent any failed or timed-out provider as an explicit uncertainty.
 
 #### Phase P4: Consolidate outputs
 
@@ -70,14 +71,16 @@ Required sections in the consolidated doc:
 - [ ] Write learning note to
   `/home/sinh/git-repos/sinh-x/tools/learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md`
   with approved frontmatter fields.
-- [ ] Attach learning artifact as doc-ref with `opa ticket update`.
+- [ ] Attach learning artifact with `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`.
 
 #### Phase P6: Handoff
 
-- [ ] Add spike doc ref before status handoff:
+- [ ] Add spike artifact doc ref before status handoff:
   `opa ticket update <ticket-id> --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
-- [ ] Comment with child deploy IDs, artifact paths, and partial/failure summary.
-- [ ] Update ticket to `review-uat` and assign to `sinh`:
+- [ ] Add completion comment after attachment steps with child deploy IDs, artifact paths, provider statuses, and partial/failure notes.
+- [ ] Attach learning artifact reference before status handoff:
+  `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`
+- [ ] Update ticket to `review-uat` and assign to `sinh` after doc_refs are attached:
   `opa ticket update <ticket-id> --status review-uat --assignee sinh --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
 
 ---

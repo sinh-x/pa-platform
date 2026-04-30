@@ -43,8 +43,11 @@ Start exactly two background children with a 1200-second timeout:
 - `opa deploy requirements --mode spike-minimax --ticket <ticket-id> --repo <repo-root> --timeout 1200 --background`
 - `opa deploy requirements --mode spike-openai --ticket <ticket-id> --repo <repo-root> --timeout 1200 --background`
 
+Launch these as the only direct children so exactly two providers run.
+
 For each child launch:
 - Capture deploy ID, mode, provider, and started time in the orchestration report.
+- Capture the launch command output for each child in case a launch failure needs to be replayed.
 - Keep an explicit failure path for launch errors.
 
 ### Phase S3: Track Child Execution
@@ -57,6 +60,7 @@ For each child launch:
   - start/end times when available
 - Keep a consolidated child status map in the parent artifact.
 - Preserve successful findings even if one child fails.
+- If one child fails, record it in the parent report as an explicit uncertainty section instead of dropping it.
 
 ### Phase S4: Consolidate and Save
 
@@ -64,6 +68,8 @@ Create one consolidated spike artifact in both locations:
 
 1. `~/Documents/ai-usage/deployments/<deployment_id>/researcher/spike-<topic-slug>.md`
 2. `~/Documents/ai-usage/agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md`
+
+Use `skills/templates/spike-research-report.md` so consolidated artifacts stay machine-parseable.
 
 Required sections:
 - `# Spike Research: <topic>`
@@ -84,15 +90,21 @@ Include provider-specific findings for both MiniMax and OpenAI; explicitly note 
 
 ### Save and attach docs
 
-- Immediately add spike doc-ref:
-  `opa ticket update <ticket-id> --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
-- If a child fails, still finalize with clear partial findings.
+1. Consolidate one spike artifact in both locations:
+   - `~/Documents/ai-usage/deployments/<deployment_id>/researcher/spike-<topic-slug>.md`
+   - `~/Documents/ai-usage/agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md`
+2. Attach the consolidated spike report to the source ticket before any status change:
+   - `opa ticket update <ticket-id> --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
+3. Export the retrieval note and attach it as evidence:
+   - `opa ticket update <ticket-id> --doc-ref "attachment:learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md"`
+4. If a child fails, still finalize with clear partial findings.
 
 ### Learning-management export
 
 Write one note under:
 `/home/sinh/git-repos/sinh-x/tools/learning-management/areas/spike-research/YYYY-MM-DD-<topic-slug>.md`
 with retrieval-focused frontmatter and all required sections.
+Use `skills/templates/spike-learning-note.md` for the exact frontmatter and required structure.
 Use a retrieval-oriented frontmatter, including `type: spike-research`.
 
 Attach it as learning evidence:
@@ -100,13 +112,13 @@ Attach it as learning evidence:
 
 ### Handoff
 
-- Add comment summarizing:
-  - ticket ID
-  - parent outcome (`success`, `partial`, or `failed`)
-  - child statuses and deploy IDs
-  - any child launch or completion failures
-  - both child deploy IDs
-  - artifact and learning paths
+- Add comment first (after both doc_refs are attached), summarizing:
+   - ticket ID
+   - parent outcome (`success`, `partial`, or `failed`)
+   - child statuses and deploy IDs
+   - any child launch or completion failures
+   - both child deploy IDs
+   - artifact and learning paths
 
 Then advance the source ticket:
 `opa ticket update <ticket-id> --status review-uat --assignee sinh --doc-ref "spike:agent-teams/requirements/artifacts/YYYY-MM-DD-spike-<topic-slug>.md"`
