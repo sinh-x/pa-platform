@@ -171,15 +171,22 @@
 
             case "''${1:-}" in
               stop|status)
-                exec node "$CLI" serve "$@"
+                subcommand="$1"
+                if [ "$#" -ne 1 ]; then
+                  echo "[dev-pa-serve] Error: '$subcommand' does not accept extra arguments." >&2
+                  echo "[dev-pa-serve] Usage: dev-pa-serve $subcommand" >&2
+                  exit 64
+                fi
+                exec node "$CLI" serve "$subcommand"
                 ;;
               restart)
+                shift
                 pnpm build
                 node "$CLI" serve stop 2>/dev/null || true
                 sleep 1
                 ${pkgs.dtach}/bin/dtach -n "$DTACH_SOCKET" \
-                  node "$CLI" serve --port "$PORT" --host "$HOST" --cors
-                echo "[dev-pa-serve] Restarted on $HOST:$PORT (CORS on). Attach: dtach -a $DTACH_SOCKET"
+                  node "$CLI" serve --port "$PORT" --host "$HOST" --cors "$@"
+                echo "[dev-pa-serve] Restarted with defaults $HOST:$PORT (CORS on; caller flags may override). Attach: dtach -a $DTACH_SOCKET" >&2
                 ;;
               -h|--help|help)
                 cat <<'USAGE'
@@ -190,7 +197,8 @@
                                              (defaults: --host 0.0.0.0 --port 9848 --cors)
               dev-pa-serve stop              Stop the running server
               dev-pa-serve status            Show running server status
-              dev-pa-serve restart           Stop, rebuild, and start fresh
+              dev-pa-serve restart [extra-args...]
+                                             Stop, rebuild, and start fresh
 
             Notes:
               - Wrapper bakes in --host 0.0.0.0 --cors for LAN/Tailscale access.
@@ -203,7 +211,7 @@
                 pnpm build
                 ${pkgs.dtach}/bin/dtach -n "$DTACH_SOCKET" \
                   node "$CLI" serve --port "$PORT" --host "$HOST" --cors "$@"
-                echo "[dev-pa-serve] Started on $HOST:$PORT (CORS on). Attach: dtach -a $DTACH_SOCKET"
+                echo "[dev-pa-serve] Started with defaults $HOST:$PORT (CORS on; caller flags may override). Attach: dtach -a $DTACH_SOCKET" >&2
                 ;;
             esac
           '';

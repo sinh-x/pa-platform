@@ -57,7 +57,7 @@ Without Nix (or to bind explicitly), invoke the server directly:
 node packages/opencode-pa/dist/cli.js serve --host 0.0.0.0 --cors
 ```
 
-Production defaults remain `127.0.0.1` and CORS off — only the wrapper opts in to LAN/Tailscale exposure. The dtach socket `/tmp/pa-platform-serve.dtach` is distinct from the legacy `personal-assistant` wrapper's `/tmp/pa-serve.dtach` so the two can coexist.
+Production defaults remain `127.0.0.1` and CORS off — only the wrapper opts in to LAN/Tailscale exposure. The dtach socket `/tmp/pa-platform-serve.dtach` is distinct from the legacy `personal-assistant` wrapper's `/tmp/pa-serve.dtach` so the two can coexist. The legacy path reference documents the current known convention and is not auto-synced with the external wrapper.
 
 ## Shared State
 
