@@ -130,7 +130,7 @@ deploy_modes:
       - name: pa-self-improvement
         inject-as: shared-skill
   - id: spike
-    label: Spike Research
+    label: Spike Research (Orchestrator)
     phone_visible: true
     mode_type: work
     agents: [researcher]
@@ -149,12 +149,32 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-self-improvement
         inject-as: shared-skill
-  - id: spike-anthropic
-    label: Spike Research (Anthropic)
+  - id: spike-minimax
+    label: Spike Research (MiniMax)
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: anthropic
+    provider: minimax
+    objective: skills/requirements/spike-objective.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-registry
+        inject-as: shared-skill
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-self-improvement
+        inject-as: shared-skill
+  - id: spike-openai
+    label: Spike Research (OpenAI)
+    phone_visible: true
+    mode_type: work
+    agents: [researcher]
+    provider: openai
     objective: skills/requirements/spike-objective.md
     skills:
       - name: pa-cli
