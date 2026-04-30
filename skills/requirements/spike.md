@@ -9,15 +9,15 @@ This workflow is non-interactive and should complete on its own.
 
 ## Runtime Roles
 
-- **Parent mode (`spike`)**: run orchestration, launch children, merge findings, and hand off to ticket review.
-- **Child mode (`spike-minimax`, `spike-openai`)**: run provider-specific research and return a structured provider report.
+- **Parent mode (`spike`)**: validate ticket and repo context, launch children, wait for them, consolidate findings, export artifacts, and hand off the source ticket.
+- **Child mode (`spike-minimax`, `spike-openai`)**: run provider-specific research only and return a structured report; children must not modify ticket status or make product changes.
 - Do not keep running once the role is identified.
 
 ## Required Ticket Rule
 
 - Parent mode must fail immediately if `ticket_id` is not available in deployment context.
 - Parent mode should enforce a `3600` second timeout when launched by default.
-- Child modes should also require `ticket_id` and stop if it is missing.
+- Parent mode must fail before child launch when `ticket_id` is missing, and child modes must fail immediately if required context is missing.
 - Parent mode is the only mode that advances the ticket to `review-uat`.
 
 ---

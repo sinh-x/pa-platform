@@ -10,6 +10,8 @@ Follow the active role checklist below in order.
 
 **Important:** This is a **non-interactive** skill. Decide and act autonomously.
 
+**Required workflow:** `spike` is a ticket-driven parent orchestrator. It must validate `ticket_id` before launching any child and fails early if the ticket context is missing.
+
 ---
 
 ### Role: Parent (`spike`)
@@ -86,6 +88,7 @@ Required sections in the consolidated doc:
 
 - [ ] Confirm `ticket_id` and `repo_root`.
 - [ ] Confirm `topic` from objective or ticket context.
+- [ ] Confirm child mode output is report-only; child mode must not update ticket status or advance the source ticket.
 
 #### Phase C2: Research
 
