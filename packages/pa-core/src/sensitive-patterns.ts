@@ -74,6 +74,16 @@ export function assertNoSensitiveMatch(inputClass: SensitiveInputClass, value: s
   if (match) throw new SensitiveInputBlockedError(match);
 }
 
+export function readGuardedLocalTextFile(filePath: string, patternSet = loadSensitivePatterns()): string {
+  const resolvedPath = resolve(filePath);
+  assertNoSensitiveMatch("path", resolvedPath, patternSet);
+  assertNoSensitiveMatch("filename", getSensitiveFilename(resolvedPath), patternSet);
+
+  const content = readFileSync(resolvedPath, "utf-8");
+  assertNoSensitiveMatch("content", content, patternSet);
+  return content;
+}
+
 function createBuiltInSensitivePatterns(): SensitivePattern[] {
   return [
     filename(/^\.env(?:\..*)?$/i),

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertNoSensitiveMatch, findSensitiveMatch, getSensitivePatternsConfigPath, loadSensitivePatterns, SensitiveInputBlockedError } from "../sensitive-patterns.js";
+import { assertNoSensitiveMatch, findSensitiveMatch, getSensitivePatternsConfigPath, loadSensitivePatterns, readGuardedLocalTextFile, SensitiveInputBlockedError } from "../sensitive-patterns.js";
 
 function withConfigDir(fn: (configDir: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-sensitive-patterns-"));
@@ -86,5 +86,66 @@ test("normal non-sensitive text does not match defaults", () => {
     assert.equal(findSensitiveMatch("filename", "objective.md", patternSet), undefined);
     assert.equal(findSensitiveMatch("path", "/repo/docs/objective.md", patternSet), undefined);
     assert.equal(findSensitiveMatch("content", "Write a normal local objective for the builder team.", patternSet), undefined);
+  });
+});
+
+test("guarded local text-file reader preserves normal local text reads", () => {
+  withConfigDir((configDir) => {
+    const objectivePath = join(configDir, "objective.md");
+    const content = "Write a normal local objective for the builder team.";
+    writeFileSync(objectivePath, content);
+
+    assert.equal(readGuardedLocalTextFile(objectivePath), content);
+  });
+});
+
+test("guarded local text-file reader blocks sensitive filename before reading", () => {
+  withConfigDir((configDir) => {
+    const missingSensitivePath = join(configDir, ".env");
+
+    assert.throws(
+      () => readGuardedLocalTextFile(missingSensitivePath),
+      (error: unknown) => {
+        assert.equal(error instanceof SensitiveInputBlockedError, true);
+        assert.match((error as Error).message, /Blocked sensitive filename input/);
+        assert.doesNotMatch((error as Error).message, /ENOENT|\.env/);
+        return true;
+      },
+    );
+  });
+});
+
+test("guarded local text-file reader blocks sensitive path before reading", () => {
+  withConfigDir((configDir) => {
+    writeFileSync(getSensitivePatternsConfigPath(), ["paths:", "  - 'fake-sensitive-dir'", ""].join("\n"));
+    const missingSensitivePath = join(configDir, "fake-sensitive-dir", "objective.md");
+
+    assert.throws(
+      () => readGuardedLocalTextFile(missingSensitivePath),
+      (error: unknown) => {
+        assert.equal(error instanceof SensitiveInputBlockedError, true);
+        assert.match((error as Error).message, /Blocked sensitive path input/);
+        assert.doesNotMatch((error as Error).message, /ENOENT|fake-sensitive-dir/);
+        return true;
+      },
+    );
+  });
+});
+
+test("guarded local text-file reader blocks sensitive content after reading", () => {
+  withConfigDir((configDir) => {
+    writeFileSync(getSensitivePatternsConfigPath(), ["contents:", "  - 'FAKE_PRIVATE_MARKER_[0-9]+'", ""].join("\n"));
+    const objectivePath = join(configDir, "objective.md");
+    writeFileSync(objectivePath, "contains FAKE_PRIVATE_MARKER_123 only");
+
+    assert.throws(
+      () => readGuardedLocalTextFile(objectivePath),
+      (error: unknown) => {
+        assert.equal(error instanceof SensitiveInputBlockedError, true);
+        assert.match((error as Error).message, /Blocked sensitive content input/);
+        assert.doesNotMatch((error as Error).message, /FAKE_PRIVATE_MARKER|123/);
+        return true;
+      },
+    );
   });
 });
