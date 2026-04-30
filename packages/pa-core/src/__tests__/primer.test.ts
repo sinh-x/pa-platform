@@ -167,6 +167,32 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);
   assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
   assert.match(primer, /path=".*skills\/global\/pa-session-log\/SKILL\.md"/);
+  assertNoLegacyPaCliExamples(primer);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
+test("generatePrimer requirements analyze-auto fixture remains valid under opencode", () => {
+  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: requirements,
+    mode: "analyze-auto",
+    objective: "Auto-run requirements analysis for PAP-030",
+    resolveFile: resolveRepoFile,
+    skillsDir: repoPath("skills", "global"),
+  });
+
+  assert.match(primer, /Runtime: opencode/);
+  assert.match(primer, /## Active Bulletins/);
+  assert.match(primer, /Before starting work, run `opa bulletin list`/);
+  assert.match(primer, /## TICKET PROTOCOL/);
+  assert.match(primer, /Claim it: `opa ticket update <id> --assignee requirements\/team-manager`/);
+  assert.match(primer, /Mark complete: `opa ticket update <id> --status pending-approval --assignee sinh/);
+  assert.match(primer, /## OUTPUT FORMATS/);
+  assert.match(primer, /## RULES/);
+  assert.match(primer, /Non-interactive/);
+  assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
+  assertNoLegacyPaCliExamples(primer);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
