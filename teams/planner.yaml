@@ -2,7 +2,6 @@
 name: planner
 description: "Daily lifecycle & RPM personal planning — plan, track progress, close the day, manage RPM blocks, and weekly reviews"
 default_mode: plan
-
 hierarchy:
   team-manager:
     role: "Orchestrate daily lifecycle and RPM planning"
@@ -16,7 +15,6 @@ hierarchy:
       participates_in: [progress, end]
     - name: synthesizer
       participates_in: [progress, end-review]
-
 deploy_modes:
   # --- Daily lifecycle modes ---
   - id: housekeeping
@@ -77,7 +75,6 @@ deploy_modes:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
   # --- RPM planning modes ---
   - id: weekly-gather
     label: Weekly Gather
@@ -107,17 +104,14 @@ deploy_modes:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
 context:
   organization: sinh-x
   notes: "Merged daily lifecycle + RPM personal planning. 9 modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage"
-
 variables:
   project_root: /home/sinh/git-repos/sinh-x/tools/personal-assistant
   output_dir: ~/Documents/ai-usage/daily
   rpm_blocks: ~/Documents/ai-usage/agent-teams/rpm/rpm-blocks.yaml
   anytype_space: bafyreifs6whb7td4qfzyqx5nh6krdmxosvbzxwnpn5eqeepivm3tc7ps6i.2eaoxbxt3otui
-
 agents:
   # Daily lifecycle agents
   - name: session-gatherer
@@ -135,7 +129,6 @@ agents:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
   # RPM planning agents
   - name: planner
     role: "Create and update RPM blocks via guided conversation, sync to Anytype"
@@ -146,7 +139,6 @@ agents:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
 objective: |
   See teams/daily/modes/ for daily mode-specific objectives.
 
