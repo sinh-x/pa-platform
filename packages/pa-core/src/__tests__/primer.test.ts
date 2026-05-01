@@ -147,6 +147,11 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /ticket\/objective alignment/);
   assert.match(primer, /## AMBIGUITY PROTOCOL/);
   assert.match(primer, /\[Ambiguity detected/);
+  assert.match(primer, /OpenCode Question Tool Flow/);
+  assert.match(primer, /list-building[\s\S]{0,160}`multiple: true`|`multiple: true`[\s\S]{0,160}list-building/);
+  assert.match(primer, /scope items|out-of-scope boundaries|affected users|risks|unknowns|dependencies|acceptance criteria candidates/);
+  assert.match(primer, /confirmation|approval|sign-off/);
+  assert.match(primer, /`multiple: false`/);
   assert.match(primer, /## PHASE CHECKLIST/);
   assert.match(primer, /Phase 0: Validate Codebase Assumptions/);
   assert.match(primer, /Gate Criteria/);
