@@ -81,7 +81,10 @@ For every user interaction in this skill, use the OpenCode question tool flow.
 - Ask one question at a time.
 - Use pre-defined option sets (short, relevant labels) for every ask.
 - Always include a custom/free-form path so the user can provide uncaptured answers.
-- Set `multiple` to `false` for all prompts unless you explicitly need multi-select.
+- Choose `multiple` from the question type:
+  - Use `multiple: true` for list-building questions where more than one predefined answer can apply, such as scope items, out-of-scope boundaries, affected users, risks, unknowns, dependencies, or acceptance criteria candidates.
+  - Use `multiple: false` for confirmation, approval, sign-off, ranking, and single-decision questions where the user should choose one path.
+- Preserve existing single-select behavior by defaulting to `multiple: false` unless the prompt is explicitly list-building.
 
 ```json
 {
@@ -89,6 +92,17 @@ For every user interaction in this skill, use the OpenCode question tool flow.
   "header": "<short label>",
   "options": ["<pre-defined option 1>", "<pre-defined option 2>", "<custom / other>"],
   "multiple": false
+}
+```
+
+Example list-building prompt:
+
+```json
+{
+  "question": "Which items should be in scope for this requirements doc?",
+  "header": "In-scope items",
+  "options": ["CLI behavior", "Generated primer content", "Regression tests", "Custom / other"],
+  "multiple": true
 }
 ```
 
