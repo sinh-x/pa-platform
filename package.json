@@ -7,6 +7,7 @@
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
     "typecheck": "corepack pnpm -r typecheck",
+    "bump:ci-patch": "node scripts/dev/ci_patch_bump.mjs",
     "bump:patch:ci": "node scripts/dev/ci_patch_bump.mjs",
     "bump:patch": "bash scripts/dev/version_bump.sh patch",
     "bump:minor": "bash scripts/dev/version_bump.sh minor",

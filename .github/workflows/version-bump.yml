@@ -1,0 +1,67 @@
+name: Version Bump
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-patch:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump-develop
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Check whether this PR was already bumped
+        id: rerun-guard
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          marker="Version-Bump-Source: PR #${PR_NUMBER} ${MERGE_SHA}"
+          existing_bump="$(git log --fixed-strings --grep="${marker}" -n 1 --format=%H)"
+          if [[ -n "${existing_bump}" ]]; then
+            echo "Version bump skipped: ${marker} already exists on develop."
+            echo "should-bump=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-bump=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump patch version
+        if: steps.rerun-guard.outputs.should-bump == 'true'
+        run: corepack pnpm run bump:ci-patch
+
+      - name: Commit and push version bump
+        if: steps.rerun-guard.outputs.should-bump == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          git add package.json packages/pa-core/package.json packages/opencode-pa/package.json
+          if git diff --cached --quiet; then
+            echo "Version bump skipped: helper produced no changes."
+            exit 0
+          fi
+
+          next_version="$(node -p "require('./package.json').version")"
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(release): bump version to v${next_version}" \
+            -m "Version-Bump-Source: PR #${PR_NUMBER} ${MERGE_SHA}"
+          git push origin HEAD:develop
