@@ -3,7 +3,6 @@ name: builder
 description: "Execute multi-phase implementation projects for the personal-assistant system"
 default_mode: implement
 terse_mode: true
-
 deploy_modes:
   - id: housekeeping
     label: Housekeeping
@@ -28,7 +27,8 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    agents: []  # solo, no sub-agents
+    model: gpt-5.3-codex-spark
+    agents: [] # solo, no sub-agents
     objective: teams/builder/modes/implement.md
     global_docs:
       - knowledge-base/codebase/personal-assistant.md
@@ -48,7 +48,7 @@ deploy_modes:
     phone_visible: false
     mode_type: interactive
     provider: openai
-    agents: []  # solo, no sub-agents
+    agents: [] # solo, no sub-agents
     objective: teams/builder/modes/worker.md
     skills:
       - name: pa-cli
@@ -66,7 +66,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    agents: []  # solo, no sub-agents
+    agents: [] # solo, no sub-agents
     objective: teams/builder/modes/orchestrator.md
     skills:
       - name: pa-cli
@@ -84,7 +84,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    agents: []  # solo, no sub-agents
+    agents: [] # solo, no sub-agents
     objective: teams/builder/modes/routine.md
     skills:
       - name: pa-cli
@@ -102,17 +102,12 @@ deploy_modes:
 context:
   organization: sinh-x
   notes: >
-    Solo agent team. Three execution modes:
-    - worker: interactive session awaiting user instructions
-    - implement: autonomous ticket-driven execution (one phase per deployment)
-    - orchestrator: cross-team pipeline manager launching builder/implement via pa deploy
-    Increase PA_MAX_RUNTIME to 3600 (1 hour) for builder deployments.
+    Solo agent team. Three execution modes: - worker: interactive session awaiting user instructions - implement: autonomous ticket-driven execution (one phase per deployment) - orchestrator: cross-team pipeline manager launching builder/implement via pa deploy Increase PA_MAX_RUNTIME to 3600 (1 hour) for builder deployments.
 
 agents:
   - name: builder-agent
     role: "Executes implementation work: interactive (worker), autonomous (implement), or orchestration (orchestrator)"
     instruction: teams/builder/modes/implement.md
-
 objective: |
   You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
 
