@@ -9,7 +9,6 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    model: gpt-5.5
     provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
@@ -28,7 +27,6 @@ deploy_modes:
     label: Implement
     phone_visible: true
     mode_type: work
-    model: gpt-5.5
     provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/implement.md
@@ -49,7 +47,6 @@ deploy_modes:
     label: Worker
     phone_visible: false
     mode_type: interactive
-    model: gpt-5.5
     provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/worker.md
@@ -68,7 +65,6 @@ deploy_modes:
     label: Orchestrator
     phone_visible: true
     mode_type: work
-    model: gpt-5.5
     provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/orchestrator.md
@@ -87,7 +83,6 @@ deploy_modes:
     label: Routine
     phone_visible: true
     mode_type: work
-    model: gpt-5.5
     provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/routine.md

@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/insights.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: insights
-model: gpt-5.5
 description: "Knowledge organization and self-improvement analysis — knowledge base curation, session log analysis, and improvement extraction"
 default_mode: housekeeping
 

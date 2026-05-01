@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/requirements.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: requirements
-model: gpt-5.5 # requirements sessions involve interactive reasoning and structured analysis
 description: "Requirements gathering and analysis — structured planning before implementation"
 default_mode: analyze
 deploy_modes:
@@ -72,7 +71,6 @@ deploy_modes:
     mode_type: work
     agents: [reviewer]
     provider: openai
-    model: gpt-5.5
     objective: skills/requirements/review-objective.md
     skills:
       - name: pa-cli
@@ -116,7 +114,6 @@ deploy_modes:
     mode_type: work
     agents: [researcher]
     provider: openai
-    model: gpt-5.5
     objective: skills/requirements/focus-objective.md
     skills:
       - name: pa-cli
@@ -211,34 +208,12 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-self-improvement
         inject-as: shared-skill
-  - id: analyze-auto-openai-gpt-5-5
-    label: Analyze (Auto) (OpenAI GPT-5.5)
-    phone_visible: true
-    mode_type: work
-    agents: [researcher]
-    provider: openai
-    model: gpt-5.5
-    objective: skills/requirements/analyze-auto-objective.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-registry
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
   - id: analyze-auto-openai
     label: Analyze (Auto) (OpenAI)
     phone_visible: true
     mode_type: work
     agents: [researcher]
     provider: openai
-    model: gpt-5.5
     objective: skills/requirements/analyze-auto-objective.md
     skills:
       - name: pa-cli

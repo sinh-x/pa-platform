@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/learner.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: learner
-model: gpt-5.5  # synthesis and analysis require judgment
 description: Learning, research & intel team — multi-source knowledge ingestion, curation, interactive learning, and Johari blind-spot analysis
 default_mode: background
 
@@ -48,7 +47,6 @@ deploy_modes:
     phone_visible: true
     mode_type: housekeeping
     provider: openai
-    model: gpt-5.5
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -59,7 +57,6 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    model: gpt-5.5
     skills:
       - name: pa-session-log
         inject-as: shared-skill
@@ -68,7 +65,6 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    model: gpt-5.5
     skills:
       - name: pa-session-log
         inject-as: shared-skill
@@ -77,13 +73,11 @@ deploy_modes:
     phone_visible: false
     mode_type: interactive
     provider: openai
-    model: gpt-5.5
   - id: spike-openai
     label: Spike (OpenAI)
     phone_visible: true
     mode_type: interactive
     provider: openai
-    model: gpt-5.5
     agents: [facilitator]
 
 context:
