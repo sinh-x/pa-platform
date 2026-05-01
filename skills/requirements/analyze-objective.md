@@ -36,7 +36,10 @@ For every user interaction in this skill, use the OpenCode question tool flow.
 - Ask one question at a time.
 - Use pre-defined option sets (short, relevant labels) for every ask.
 - Always include a custom/free-form option so the user can provide uncaptured answers.
-- Set `multiple` to `false` for all prompts unless you explicitly need multi-select.
+- Choose `multiple` from the question type:
+  - Use `multiple: true` for list-building questions where more than one predefined answer can apply, such as scope items, out-of-scope boundaries, affected users, risks, unknowns, dependencies, or acceptance criteria candidates.
+  - Use `multiple: false` for confirmation, approval, sign-off, ranking, and single-decision questions where the user should choose one path.
+- Preserve existing single-select behavior by defaulting to `multiple: false` unless the prompt is explicitly list-building.
 
 ---
 
@@ -63,11 +66,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Establish what, why, and current state through user conversation.
 
 **Actions:**
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` when gathering problem details where multiple predefined labels can apply; use `multiple: false` for a single framing choice.
 
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` when gathering motivations or value drivers where multiple predefined labels can apply; use `multiple: false` for a single primary driver.
 
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` when gathering current-state facts where multiple predefined labels can apply; use `multiple: false` for a single current-state category.
 
 **Gate Criteria:** Do not proceed until you have documented: problem statement (what), motivation (why), and current state. User has confirmed your understanding.
 
@@ -79,11 +82,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Define in-scope and out-of-scope items.
 
 **Actions:**
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` for in-scope list-building.
 
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` for out-of-scope boundary list-building.
 
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` when more than one user/audience option can apply; use `multiple: false` only when choosing a single primary audience.
 
 **Gate Criteria:** Do not proceed until you have a written list of in-scope items AND out-of-scope items. User has confirmed.
 
@@ -111,11 +114,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Define "done" collaboratively with user.
 
 **Actions:**
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` for acceptance criteria candidate list-building.
 
 - [ ] Propose specific acceptance criteria based on Phase 1-3 learning
 
-- [ ] Let user confirm, adjust, or add criteria
+- [ ] Let user confirm, adjust, or add criteria. Use `multiple: false` for a single confirmation/adjustment decision; use `multiple: true` only if asking which multiple criteria need changes.
 
 **Gate Criteria:** Do not proceed until you have 3+ acceptance criteria, each confirmed by user.
 
@@ -128,7 +131,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Actions:**
 - [ ] List assumptions made during requirements gathering
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] Ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: true` for unknowns, assumptions, risks, or dependencies list-building.
 - [ ] Flag technical or scope risks
 
 **Gate Criteria:** Do not proceed until you have documented: (1) open questions with user answers, (2) risks identified.
@@ -180,13 +183,13 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Get explicit section-by-section approval from Sinh before saving.
 
 **Actions:**
-- [ ] §1 Title + §2 Summary — show, then ask via OpenCode question tool.
-- [ ] §3 Goals / Non-Goals — show, ask via OpenCode question tool.
-- [ ] §4 In Scope + §5 Out of Scope — show together, ask via OpenCode question tool.
-- [ ] §10 Acceptance Criteria — show, ask via OpenCode question tool.
-- [ ] §9 Risks — show, ask via OpenCode question tool.
-- [ ] §11 Open Questions — show, ask via OpenCode question tool.
-- [ ] Ask via OpenCode question tool with pre-defined options + custom option.
+- [ ] §1 Title + §2 Summary — show, then ask via OpenCode question tool. Use `multiple: false` for approval/sign-off.
+- [ ] §3 Goals / Non-Goals — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off.
+- [ ] §4 In Scope + §5 Out of Scope — show together, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple scope items need changes, use `multiple: true`.
+- [ ] §10 Acceptance Criteria — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple criteria need changes, use `multiple: true`.
+- [ ] §9 Risks — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple risks need changes, use `multiple: true`.
+- [ ] §11 Open Questions — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple questions remain unresolved, use `multiple: true`.
+- [ ] Final ask: ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: false` for the single approval decision.
 
 **Gate Criteria:** Explicit "yes" or equivalent from Sinh. Silence is not consent. If changes requested, apply them, re-run Phase 6.5, re-walk only changed sections.
 
