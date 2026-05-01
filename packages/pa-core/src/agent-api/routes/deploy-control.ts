@@ -11,11 +11,14 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
     const resolved = withResolvedDeployTimeout(parsed.request);
     if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
     if (!hooks.deploy) return c.json({ error: "Deployment execution requires an adapter hook", code: "NOT_IMPLEMENTED" }, 501);
+
     try {
-      const result = await hooks.deploy(resolved.request);
-      const response = toPhoneDeployResponse({ team: resolved.request.team, mode: resolved.request.mode ?? null, ...result });
+      const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
+      const result = await hooks.deploy(deployRequest);
+      const response = toPhoneDeployResponse({ team: deployRequest.team, mode: deployRequest.mode ?? null, ...result });
       return c.json(response, 202);
     } catch (error) {
+      // PAP-042 AC2 phone contract: always 202 with structured failed JSON — never 500, never throws
       return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: resolved.request.team, mode: resolved.request.mode ?? null }, 202);
     }
   });

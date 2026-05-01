@@ -322,7 +322,17 @@ test("agent API deploy validates requests and routes through deploy hook without
     });
     assert.equal(valid.status, 202);
     assert.deepEqual(await valid.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-default-adapter" });
-    assert.deepEqual(received, [{ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120, provider: "openai", teamModel: "gpt-5.5" }]);
+    assert.deepEqual(received, [{
+      team: "builder",
+      mode: "plan",
+      objective: "Ship route",
+      repo: "pa-platform",
+      ticket: "PAP-001",
+      timeout: 120,
+      provider: "openai",
+      teamModel: "gpt-5.5",
+      background: true,
+    }]);
 
     const invalid = await app.request("/api/deploy", {
       method: "POST",
@@ -332,6 +342,28 @@ test("agent API deploy validates requests and routes through deploy hook without
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { error: "Invalid team name", code: "BAD_REQUEST" });
     assert.equal(received.length, 1);
+  });
+});
+
+test("agent API defaults deploy requests to background mode when omitted", async () => {
+  await withApiEnv(async () => {
+    const received: unknown[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request);
+        return { status: "pending", deploymentId: "d-fg-fallback" };
+      },
+    } });
+
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "plan", timeout: 120 }),
+    });
+
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-fg-fallback" });
+    assert.deepEqual(received, [{ team: "builder", mode: "plan", timeout: 120, background: true }]);
   });
 });
 
