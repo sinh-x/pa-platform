@@ -25,12 +25,14 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
+  const previousData = process.env["PA_PLATFORM_DATA"];
   const previousMaxRuntime = process.env["PA_MAX_RUNTIME"];
   const previousStatusWaitTimeout = process.env["PA_STATUS_WAIT_TIMEOUT"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  process.env["PA_PLATFORM_DATA"] = join(root, "data");
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_STATUS_WAIT_TIMEOUT"];
   return fn(root).finally(() => {
@@ -43,6 +45,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_REGISTRY_DB"] = previousRegistry;
     if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
+    if (previousData === undefined) delete process.env["PA_PLATFORM_DATA"];
+    else process.env["PA_PLATFORM_DATA"] = previousData;
     if (previousMaxRuntime === undefined) delete process.env["PA_MAX_RUNTIME"];
     else process.env["PA_MAX_RUNTIME"] = previousMaxRuntime;
     if (previousStatusWaitTimeout === undefined) delete process.env["PA_STATUS_WAIT_TIMEOUT"];

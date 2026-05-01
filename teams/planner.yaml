@@ -1,6 +1,6 @@
 # Ported from frozen PA teams/planner.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: planner
-model: sonnet # default for synthesis; read-only agents overridden to haiku below
+model: gpt-5.5 # default OpenAI model for synthesis and agent work
 description: "Daily lifecycle & RPM personal planning — plan, track progress, close the day, manage RPM blocks, and weekly reviews"
 default_mode: plan
 
@@ -44,8 +44,8 @@ deploy_modes:
     label: Plan Review
     phone_visible: false
     mode_type: work
-    provider: anthropic
-    model: opus
+    provider: openai
+    model: gpt-5.5
     agents: [] # solo, no sub-agents
     objective: teams/daily/modes/plan-review.md
     skills:
@@ -73,8 +73,8 @@ deploy_modes:
     label: End Review
     phone_visible: false
     mode_type: work
-    provider: anthropic
-    model: opus
+    provider: openai
+    model: gpt-5.5
     agents: [] # TM spawns synthesizer interactively after Sinh confirms
     objective: teams/daily/modes/end-review.md
     skills:
@@ -126,19 +126,19 @@ agents:
   - name: session-gatherer
     role: "Gather session logs from ai-usage folder (human + agent team)"
     skill: skills/daily-summary/gather-sessions.md
-    model: haiku # read-only file scan; cost optimization
+    model: gpt-5.5 # read-only file scan
   - name: jsonl-analyst
     role: "Analyze Claude JSONL session files for stats"
     skill: skills/daily-summary/gather-jsonl-stats.md
-    model: haiku # structured data extraction; no synthesis
+    model: gpt-5.5 # structured data extraction
   - name: time-tracker
     role: "Gather avo time tracking data"
     skill: skills/daily-summary/gather-avo.md
-    model: haiku # reads avo output; no synthesis
+    model: gpt-5.5 # reads avo output
   - name: synthesizer
     role: "Combine gathered data and produce the output document"
     skill: skills/daily-summary/synthesize.md
-    # inherits team-level: sonnet — synthesis requires judgment
+    # inherits team-level: gpt-5.5 — synthesis requires judgment
     skills:
       - name: pa-session-log
         inject-as: shared-skill

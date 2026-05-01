@@ -1,6 +1,6 @@
 # Ported from frozen PA teams/kpi-reviewer.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: kpi-reviewer
-model: opus # evaluation requires judgment and nuanced assessment
+model: gpt-5.5 # evaluation requires judgment and nuanced assessment
 description: "Evaluate requirements team deployments against defined KPI framework — produces scored reports for quality assurance"
 default_mode: single
 deploy_modes:
@@ -64,11 +64,12 @@ deploy_modes:
         inject-as: shared-skill
     global_docs:
       - skills/requirements/kpi-definitions.md
-  - id: single-anthropic
-    label: Single Deployment (Anthropic)
+  - id: single-openai
+    label: Single Deployment (OpenAI)
     phone_visible: true
     mode_type: work
-    provider: anthropic
+    provider: openai
+    model: gpt-5.5
     agents: [evaluator]
     objective: skills/kpi-reviewer/single-objective.md
     skills:
@@ -84,11 +85,12 @@ deploy_modes:
         inject-as: shared-skill
     global_docs:
       - skills/requirements/kpi-definitions.md
-  - id: ticket-anthropic
-    label: Ticket Scope (Anthropic)
+  - id: ticket-openai
+    label: Ticket Scope (OpenAI)
     phone_visible: false
     mode_type: work
-    provider: anthropic
+    provider: openai
+    model: gpt-5.5
     agents: [evaluator]
     objective: skills/kpi-reviewer/ticket-objective.md
     skills:
@@ -104,11 +106,12 @@ deploy_modes:
         inject-as: shared-skill
     global_docs:
       - skills/requirements/kpi-definitions.md
-  - id: daily-anthropic
-    label: Daily Scope (Anthropic)
+  - id: daily-openai
+    label: Daily Scope (OpenAI)
     phone_visible: false
     mode_type: work
-    provider: anthropic
+    provider: openai
+    model: gpt-5.5
     agents: [evaluator]
     objective: skills/kpi-reviewer/daily-objective.md
     skills:
@@ -126,7 +129,7 @@ deploy_modes:
       - skills/requirements/kpi-definitions.md
 context:
   organization: sinh-x
-  notes: "Solo agent (team manager does the work directly). Evaluates requirements team deployments. Use haiku for data gathering phases, opus for evaluation phases."
+  notes: "Solo agent (team manager does the work directly). Evaluates requirements team deployments. Uses OpenAI gpt-5.5 for evaluation phases."
 agents:
   - name: evaluator
     role: "Evaluate requirements team deployments against KPI framework — read session logs, artifacts, and ticket history; score criteria; produce structured KPI reports"

@@ -9,8 +9,8 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    model: opus
-    provider: minimax
+    model: gpt-5.5
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -28,7 +28,7 @@ deploy_modes:
     label: Implement
     phone_visible: true
     mode_type: work
-    model: gpt-5.3-codex-spark
+    model: gpt-5.5
     provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/implement.md
@@ -49,8 +49,8 @@ deploy_modes:
     label: Worker
     phone_visible: false
     mode_type: interactive
-    model: opus
-    provider: minimax
+    model: gpt-5.5
+    provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/worker.md
     skills:
@@ -68,8 +68,8 @@ deploy_modes:
     label: Orchestrator
     phone_visible: true
     mode_type: work
-    model: opus
-    provider: minimax
+    model: gpt-5.5
+    provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/orchestrator.md
     skills:
@@ -87,8 +87,8 @@ deploy_modes:
     label: Routine
     phone_visible: true
     mode_type: work
-    model: opus
-    provider: minimax
+    model: gpt-5.5
+    provider: openai
     agents: []  # solo, no sub-agents
     objective: teams/builder/modes/routine.md
     skills:
