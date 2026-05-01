@@ -1,8 +1,8 @@
 # Template: Requirements
 
 > **Template:** requirements
-> **Version:** 3.0
-> **Last Updated:** 2026-04-30
+> **Version:** 4.0
+> **Last Updated:** 2026-05-01
 > **Used by:** Requirements team analyze modes
 > **Produces:** Requirements document and implementation checklist
 > **Consumed by:** Builder team and UAT reviewers
@@ -28,6 +28,7 @@ Canonical requirements document template for pa-platform requirements analysis. 
 > Deployment: <deployment_id>
 > Repository: <repo_path or N/A with reason>
 > Ticket: <ticket-id or none>
+> Feature Branch: feature/<ticket-id>-<topic-slug> or N/A with reason
 
 ## 1. Title
 <Short human-readable title.>
@@ -35,40 +36,58 @@ Canonical requirements document template for pa-platform requirements analysis. 
 ## 2. Summary
 <What is being requested, why it matters, and the expected outcome.>
 
-## 3. Functional Requirements
+## 3. Goals / Non-Goals
+
+Goals:
+- <what this feature/change aims to achieve>
+
+Non-Goals:
+- <what this feature/change explicitly does NOT aim to achieve>
+
+## 4. In Scope
+
+- <item 1>
+- <item 2>
+
+## 5. Out of Scope
+
+- <item 1>
+- <item 2>
+
+## 6. Functional Requirements
 
 | # | Requirement | Priority | Notes |
 |---|-------------|----------|-------|
 | F1 | <requirement text> | Must / Should / Could | <context or rationale> |
 | F2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
-## 4. Non-Functional Requirements
+## 7. Non-Functional Requirements
 
 | # | Requirement | Priority | Notes |
 |---|-------------|----------|-------|
 | NF1 | <requirement text> | Must / Should / Could | <context or rationale> |
 | NF2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
-## 5. Acceptance Criteria
+## 8. Dependencies
+
+- <Named dependency and status, or N/A with reason>
+
+## 9. Stakeholders
+
+- <User, reviewer, downstream team, or affected system>
+
+## 10. Acceptance Criteria
 
 - [ ] AC1: Given <context>, when <action>, then <observable result>.
 - [ ] AC2: Given <context>, when <action>, then <observable result>.
 
-## 6. Dependencies
-
-- <Named dependency and status, or N/A with reason>
-
-## 7. Stakeholders
-
-- <User, reviewer, downstream team, or affected system>
-
-## 8. Risks
+## 11. Risks
 
 | Risk | Impact | Likelihood | Mitigation |
 |---|---:|---:|---|
 | <risk> | High / Medium / Low | High / Medium / Low | <mitigation or open question> |
 
-## 9. Technical Approach
+## 12. Technical Approach
 
 Files and areas to inspect or modify:
 - `<path>`: <why it matters>
@@ -79,29 +98,48 @@ Existing patterns to reuse:
 Flow:
 - <implementation or analysis flow>
 
-## 10. Implementation Plan
+## 13. Implementation Plan
+
+Feature branch:
+- `feature/<ticket-id>-<topic-slug>`
 
 Recommended order:
-- [ ] Phase 1 - <description>
-- [ ] Phase 2 - <description>
+- [ ] Phase 1 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
+- [ ] Phase 2 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
 
 Effort estimate:
 - Size: XS / S / M / L / XL
 - Estimated implementation sessions: <N>
 - Key files: `<paths>`
 
-Follow-up:
-- <deferred work or None>
+## 14. Open Questions
+
+<Open questions, blockers, or items needing clarification. N/A if none.>
+
+## 15. Impact Analysis
+
+<Change surface, downstream consumers, risk level. N/A with reason if originating ticket had no doc_refs.>
+
+## 16. Follow-up / Future Work
+
+<Deferred work or None>
 ```
 
-## Guidance Notes
+## 17. Guidance Notes
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
-- Keep `## 5. Acceptance Criteria` and `## 10. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
+- Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
+- Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.
 - Use `opa ticket` commands in opencode deployments. Do not depend on external Claude Code skill folders.
 
-## What the Next Stage Needs
+## 18. What the Next Stage Needs
 
 - **Builder** needs: repo path, branch, scope (FR/NFR tables), acceptance criteria, implementation phases, and verification steps.
 - **Sinh / UAT reviewer** needs: testable acceptance criteria, risks, caveats, and explicit deferred work.

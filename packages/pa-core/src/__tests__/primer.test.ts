@@ -156,7 +156,10 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /Phase 0: Validate Codebase Assumptions/);
   assert.match(primer, /Gate Criteria/);
   assert.match(primer, /Phase 6\.5: Self-Review Against Quality Bar/);
-  assert.match(primer, /Self-review passed all 8 checks/);
+  assert.match(primer, /Self-review passed all 9 checks/);
+  assert.match(primer, /Builder handoff is executable/);
+  assert.match(primer, /Feature Branch \+ Implementation Plan/);
+  assert.match(primer, /per-phase deliverables, FR\/NFR\/AC traceability, and verification steps/);
   assert.match(primer, /Phase 6\.6: Sinh Walkthrough & Sign-off/);
   assert.match(primer, /Explicit "yes" or equivalent from Sinh/);
   assert.match(primer, /Sign-off before save/);
@@ -194,6 +197,8 @@ test("generatePrimer requirements analyze-auto fixture remains valid under openc
   assert.match(primer, /Claim it: `opa ticket update <id> --assignee requirements\/team-manager`/);
   assert.match(primer, /Mark complete: `opa ticket update <id> --status pending-approval --assignee sinh/);
   assert.match(primer, /## OUTPUT FORMATS/);
+  assert.match(primer, /Feature Branch/);
+  assert.match(primer, /per-phase deliverables, FR\/NFR\/AC traceability, and verification steps/);
   assert.match(primer, /## RULES/);
   assert.match(primer, /Non-interactive/);
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);

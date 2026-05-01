@@ -851,6 +851,42 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
   });
 });
 
+test("runCoreCommand infers ticket project from CWD", async () => {
+  await withCliEnv(async (root) => {
+    const repo = join(root, "repo");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(repo);
+
+      const inferred = capture();
+      assert.equal(await runCoreCommand(["ticket", "create", "--title", "CWD ticket", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "CWD inferred"], { io: inferred.io }), 0);
+      assert.match(inferred.stdout.join("\n"), /Created PAP-001/);
+      const inferredTicket = new TicketStore().get("PAP-001");
+      assert.equal(inferredTicket?.project, "pa-platform");
+
+      process.chdir(root);
+      const explicit = capture();
+      assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Explicit ticket", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Explicit override"], { io: explicit.io }), 0);
+      assert.match(explicit.stdout.join("\n"), /Created PAP-002/);
+      const explicitTicket = new TicketStore().get("PAP-002");
+      assert.equal(explicitTicket?.project, "pa-platform");
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+});
+
+test("runCoreCommand errors on ticket create outside registered repo without project", async () => {
+  await withCliEnv(async () => {
+    const missingProject = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--title", "No project", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Missing project"], { io: missingProject.io }), 1);
+    assert.match(missingProject.stderr.join("\n"), /Not in a registered repo\. Use --project name\./);
+    assert.match(missingProject.stderr.join("\n"), /Available projects: pa-platform/);
+  });
+});
+
 test("ticket comment content-file uses guarded local text-file reader", async () => {
   await withCliEnv(async () => {
     const createTicket = capture();
