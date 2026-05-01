@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/learner.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: learner
-model: sonnet  # synthesis and analysis require judgment
 description: Learning, research & intel team — multi-source knowledge ingestion, curation, interactive learning, and Johari blind-spot analysis
 default_mode: background
 
@@ -43,42 +42,42 @@ deploy_modes:
     mode_type: interactive
     provider: minimax
     agents: [facilitator]
-  - id: housekeeping-anthropic
-    label: Housekeeping (Anthropic)
+  - id: housekeeping-openai
+    label: Housekeeping (OpenAI)
     phone_visible: true
     mode_type: housekeeping
-    provider: anthropic
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-  - id: background-anthropic
-    label: Background (Anthropic)
+  - id: background-openai
+    label: Background (OpenAI)
     phone_visible: true
     mode_type: work
-    provider: anthropic
+    provider: openai
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-  - id: foreground-anthropic
-    label: Foreground (Anthropic)
+  - id: foreground-openai
+    label: Foreground (OpenAI)
     phone_visible: true
     mode_type: work
-    provider: anthropic
+    provider: openai
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-  - id: interactive-anthropic
-    label: Interactive (Anthropic)
+  - id: interactive-openai
+    label: Interactive (OpenAI)
     phone_visible: false
     mode_type: interactive
-    provider: anthropic
-  - id: spike-anthropic
-    label: Spike (Anthropic)
+    provider: openai
+  - id: spike-openai
+    label: Spike (OpenAI)
     phone_visible: true
     mode_type: interactive
-    provider: anthropic
+    provider: openai
     agents: [facilitator]
 
 context:

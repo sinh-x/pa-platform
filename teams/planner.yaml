@@ -1,9 +1,7 @@
 # Ported from frozen PA teams/planner.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: planner
-model: sonnet # default for synthesis; read-only agents overridden to haiku below
 description: "Daily lifecycle & RPM personal planning — plan, track progress, close the day, manage RPM blocks, and weekly reviews"
 default_mode: plan
-
 hierarchy:
   team-manager:
     role: "Orchestrate daily lifecycle and RPM planning"
@@ -17,7 +15,6 @@ hierarchy:
       participates_in: [progress, end]
     - name: synthesizer
       participates_in: [progress, end-review]
-
 deploy_modes:
   # --- Daily lifecycle modes ---
   - id: housekeeping
@@ -44,8 +41,7 @@ deploy_modes:
     label: Plan Review
     phone_visible: false
     mode_type: work
-    provider: anthropic
-    model: opus
+    provider: openai
     agents: [] # solo, no sub-agents
     objective: teams/daily/modes/plan-review.md
     skills:
@@ -73,14 +69,12 @@ deploy_modes:
     label: End Review
     phone_visible: false
     mode_type: work
-    provider: anthropic
-    model: opus
+    provider: openai
     agents: [] # TM spawns synthesizer interactively after Sinh confirms
     objective: teams/daily/modes/end-review.md
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
   # --- RPM planning modes ---
   - id: weekly-gather
     label: Weekly Gather
@@ -110,39 +104,31 @@ deploy_modes:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
 context:
   organization: sinh-x
   notes: "Merged daily lifecycle + RPM personal planning. 9 modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage"
-
 variables:
   project_root: /home/sinh/git-repos/sinh-x/tools/personal-assistant
   output_dir: ~/Documents/ai-usage/daily
   rpm_blocks: ~/Documents/ai-usage/agent-teams/rpm/rpm-blocks.yaml
   anytype_space: bafyreifs6whb7td4qfzyqx5nh6krdmxosvbzxwnpn5eqeepivm3tc7ps6i.2eaoxbxt3otui
-
 agents:
   # Daily lifecycle agents
   - name: session-gatherer
     role: "Gather session logs from ai-usage folder (human + agent team)"
     skill: skills/daily-summary/gather-sessions.md
-    model: haiku # read-only file scan; cost optimization
   - name: jsonl-analyst
     role: "Analyze Claude JSONL session files for stats"
     skill: skills/daily-summary/gather-jsonl-stats.md
-    model: haiku # structured data extraction; no synthesis
   - name: time-tracker
     role: "Gather avo time tracking data"
     skill: skills/daily-summary/gather-avo.md
-    model: haiku # reads avo output; no synthesis
   - name: synthesizer
     role: "Combine gathered data and produce the output document"
     skill: skills/daily-summary/synthesize.md
-    # inherits team-level: sonnet — synthesis requires judgment
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
   # RPM planning agents
   - name: planner
     role: "Create and update RPM blocks via guided conversation, sync to Anytype"
@@ -153,7 +139,6 @@ agents:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
-
 objective: |
   See teams/daily/modes/ for daily mode-specific objectives.
 

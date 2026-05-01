@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/sprint-master.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: sprint-master
-model: sonnet
 description: "Agile project management — ticket triage, sprint reviews, and velocity tracking"
 default_mode: triage
 

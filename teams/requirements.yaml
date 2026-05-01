@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/requirements.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: requirements
-model: opus # requirements sessions involve interactive reasoning and structured analysis
 description: "Requirements gathering and analysis — structured planning before implementation"
 default_mode: analyze
 deploy_modes:
@@ -66,12 +65,12 @@ deploy_modes:
       - skills/requirements/review-security.md
       - skills/requirements/review-ops.md
       - skills/requirements/review-ui-uat.md
-  - id: review-auto-anthropic
-    label: Review (Auto) (Anthropic)
+  - id: review-auto-openai
+    label: Review (Auto) (OpenAI)
     phone_visible: true
     mode_type: work
     agents: [reviewer]
-    provider: anthropic
+    provider: openai
     objective: skills/requirements/review-objective.md
     skills:
       - name: pa-cli
@@ -109,12 +108,12 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-self-improvement
         inject-as: shared-skill
-  - id: focus-anthropic
-    label: Focus Report (Anthropic)
+  - id: focus-openai
+    label: Focus Report (OpenAI)
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: anthropic
+    provider: openai
     objective: skills/requirements/focus-objective.md
     skills:
       - name: pa-cli
@@ -209,33 +208,12 @@ deploy_modes:
         inject-as: shared-skill
       - name: pa-self-improvement
         inject-as: shared-skill
-  - id: analyze-auto-anthropic
-    label: Analyze (Auto) (Anthropic)
-    phone_visible: true
-    mode_type: work
-    agents: [researcher]
-    provider: anthropic
-    objective: skills/requirements/analyze-auto-objective.md
-    skills:
-      - name: pa-cli
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-registry
-        inject-as: shared-skill
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-self-improvement
-        inject-as: shared-skill
   - id: analyze-auto-openai
     label: Analyze (Auto) (OpenAI)
     phone_visible: true
     mode_type: work
     agents: [researcher]
     provider: openai
-    model: gpt-5.5
     objective: skills/requirements/analyze-auto-objective.md
     skills:
       - name: pa-cli

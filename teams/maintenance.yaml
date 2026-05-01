@@ -1,6 +1,5 @@
 # Ported from frozen PA teams/maintenance.yaml on 2026-04-26; do not auto-sync, frozen PA is the spec.
 name: maintenance
-model: sonnet
 description: "System maintenance — health checks, repo scanning, repo health analysis, and issue remediation"
 default_mode: housekeeping
 terse_mode: true
