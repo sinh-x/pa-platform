@@ -65,7 +65,7 @@ opa board --all --assignee sinh   # All projects, assigned to sinh
 
 | Subcommand | Purpose | Flags |
 |-----------|---------|-------|
-| `ticket create` | Create a ticket | `--project`* `--title`* `--type`* `--priority`* `--estimate`* `--assignee`* `--summary` `--doc-ref` `--tags` `--from` `--to` `--actor` |
+| `ticket create` | Create a ticket | `--project` `--title`* `--type`* `--priority`* `--estimate`* `--assignee`* `--summary` `--doc-ref` `--tags` `--from` `--to` `--actor` |
 | `ticket update <id>` | Update ticket fields | `--status` `--assignee` `--priority` `--tags` `--blocked-by` `--doc-ref` `--doc-ref-primary` `--remove-doc-ref` `--estimate` `--actor` |
 | `ticket list` | List/filter tickets | `--project` `--status` `--assignee` `--priority` `--type` `--tags` `--exclude-tags` `--search` |
 | `ticket show <id>` | Show full ticket details | — |
@@ -73,6 +73,8 @@ opa board --all --assignee sinh   # All projects, assigned to sinh
 | `ticket comment <id>` | Add a comment | `--author`* `--content`* |
 
 ### Ticket Examples
+
+For `ticket create`, `--project` is optional when running inside a registered repo: the command infers project from the current working directory. Use `--project` explicitly to override this inference. Outside a registered repo, `--project` is required.
 
 See **`pa-ticket-workflow` skill** — Appendix: Ticket CLI Examples for the full reference:
 - Discovery & search
