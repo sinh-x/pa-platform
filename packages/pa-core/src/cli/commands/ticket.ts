@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { TicketStore } from "../../tickets/index.js";
 import { nowUtc } from "../../time.js";
@@ -112,10 +113,19 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   const result = parseFlagPairs(argv, new Set(["--project", "--title", "--type", "--priority", "--estimate", "--assignee", "--summary", "--description", "--status", "--from", "--to", "--tags", "--doc-ref", "--actor"]));
   if ("error" in result) return result;
   const values = result.values;
-  for (const flag of ["--project", "--title", "--type", "--priority", "--estimate", "--assignee"] as const) if (!values[flag]) return { error: `${flag} is required` };
+  for (const flag of ["--title", "--type", "--priority", "--estimate", "--assignee"] as const) if (!values[flag]) return { error: `${flag} is required` };
+  const project = values["--project"] ?? resolveProjectFromCwd()?.key;
+  if (!project) {
+    return { error: `Not in a registered repo. Use --project name.${availableProjectGuidance()}` };
+  }
   const actor = values["--actor"] ?? "pa-core";
   const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
-  return { actor, input: { project: values["--project"]!, title: values["--title"]!, summary: values["--summary"] ?? "", description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
+  return { actor, input: { project, title: values["--title"]!, summary: values["--summary"] ?? "", description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
+}
+
+function availableProjectGuidance(): string {
+  const available = listRepos().filter((repo) => repo.prefix).map((repo) => repo.name).join(", ");
+  return available ? ` Available projects: ${available}` : "";
 }
 
 function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string } | { error: string } {
