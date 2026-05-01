@@ -28,6 +28,7 @@ Canonical requirements document template for pa-platform requirements analysis. 
 > Deployment: <deployment_id>
 > Repository: <repo_path or N/A with reason>
 > Ticket: <ticket-id or none>
+> Feature Branch: feature/<ticket-id>-<topic-slug> or N/A with reason
 
 ## 1. Title
 <Short human-readable title.>
@@ -81,9 +82,18 @@ Flow:
 
 ## 10. Implementation Plan
 
+Feature branch:
+- `feature/<ticket-id>-<topic-slug>`
+
 Recommended order:
-- [ ] Phase 1 - <description>
-- [ ] Phase 2 - <description>
+- [ ] Phase 1 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
+- [ ] Phase 2 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
 
 Effort estimate:
 - Size: XS / S / M / L / XL
@@ -98,6 +108,7 @@ Follow-up:
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
 - Keep `## 5. Acceptance Criteria` and `## 10. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
+- Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.
 - Use `opa ticket` commands in opencode deployments. Do not depend on external Claude Code skill folders.
 

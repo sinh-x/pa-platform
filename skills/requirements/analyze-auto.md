@@ -220,7 +220,8 @@ Write the full 13-section requirements document.
 2. Include confidence levels per section
 3. Leave §4 In Scope and §10 Acceptance Criteria items as `- [ ]` checkboxes
 4. In §9 Open Questions, use the structured format from Phase 5
-5. Add a `## Decisions Needed` summary section at the end of the document:
+5. For builder-bound work, include `Feature Branch` plus an ordered implementation phase checklist with per-phase deliverables, FR/NFR/AC traceability, and verification steps
+6. Add a `## Decisions Needed` summary section at the end of the document:
 
    ```markdown
    ## Decisions Needed (Quick Review)
@@ -244,6 +245,7 @@ Write the full 13-section requirements document.
 > **Status:** Draft
 > **Deployment:** <deployment_id>
 > **Repository:** <repo_root>
+> **Feature Branch:** feature/<ticket-id>-<topic-slug> or N/A with reason
 > **From:** requirements / researcher
 > **To:** sinh
 
@@ -330,8 +332,18 @@ Write the full 13-section requirements document.
 ## 12. Implementation Plan
 **Confidence:** high / medium / low
 
+### Feature Branch
+- `feature/<ticket-id>-<topic-slug>`
+
 ### Steps
-1. <step>
+- [ ] Phase 1 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
+- [ ] Phase 2 - <short title>
+  - Deliverables: <specific files, commands, or behavior changes>
+  - Traceability: <FR/NFR/AC IDs this phase addresses>
+  - Verification: <phase-specific checks such as typecheck, targeted tests, build, completions>
 
 ### Order of Operations
 1. <step> — reason
@@ -360,7 +372,7 @@ Write the full 13-section requirements document.
 - If changes needed: re-run `pa deploy requirements --objective "<topic>"`
 ```
 
-**Gate Criteria:** Do not save until: (1) all 13 sections present, (2) no placeholder text, (3) confidence levels on every section, (4) From/To fields populated, (5) Decisions Needed section present.
+**Gate Criteria:** Do not save until: (1) all 13 sections present, (2) no placeholder text, (3) confidence levels on every section, (4) From/To fields populated, (5) Decisions Needed section present, (6) builder-bound docs include Feature Branch plus per-phase deliverables, traceability, and verification steps.
 
 ---
 

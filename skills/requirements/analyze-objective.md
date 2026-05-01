@@ -147,6 +147,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 - [ ] Write all 13 sections using the Standard Checklist in analyze.md
 - [ ] Include impact-analysis section if ticket had doc_refs
 - [ ] Leave §4 In Scope and §10 Acceptance Criteria as `- [ ]` checkboxes
+- [ ] For builder-bound work, include `Feature Branch` plus an ordered implementation phase checklist with per-phase deliverables, FR/NFR/AC traceability, and verification steps
 
 **Gate Criteria:** Draft must contain all 13 sections before advancing to Phase 6.5.
 
@@ -155,7 +156,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 ---
 
 ### Phase 6.5: Self-Review Against Quality Bar
-**Goal:** Verify the draft meets the 8-check Quality Bar before showing Sinh.
+**Goal:** Verify the draft meets the 9-check Quality Bar before showing Sinh.
 
 **Quality Bar (all must pass):**
 1. All 13 sections present
@@ -166,14 +167,15 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 6. "N/A" sections justified with a 1-sentence reason
 7. Risks have mitigations or open questions
 8. Impact analysis filled if originating ticket had `doc_refs`
+9. Builder handoff is executable: implementation-bound docs name `Feature Branch` and each implementation phase has deliverables, FR/NFR/AC traceability, and verification steps
 
 **Actions:**
-- [ ] Run all 8 checks against the draft
+- [ ] Run all 9 checks against the draft
 - [ ] Fix every failure that can be fixed from current information
 - [ ] If a fix needs more input, return to Ambiguity Protocol and ask Sinh
-- [ ] Report status: "Self-review passed all 8 checks" OR "Failed on check N: <reason>"
+- [ ] Report status: "Self-review passed all 9 checks" OR "Failed on check N: <reason>"
 
-**Gate Criteria:** All 8 checks pass (or remaining failures are logged as open questions in auto-mode).
+**Gate Criteria:** All 9 checks pass (or remaining failures are logged as open questions in auto-mode).
 
 **Output Expectation:** Draft revised to pass Quality Bar.
 
@@ -187,6 +189,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 - [ ] §3 Goals / Non-Goals — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off.
 - [ ] §4 In Scope + §5 Out of Scope — show together, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple scope items need changes, use `multiple: true`.
 - [ ] §10 Acceptance Criteria — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple criteria need changes, use `multiple: true`.
+- [ ] Feature Branch + Implementation Plan — show the branch value and phase checklist, then ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple phases need changes, use `multiple: true`.
 - [ ] §9 Risks — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple risks need changes, use `multiple: true`.
 - [ ] §11 Open Questions — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple questions remain unresolved, use `multiple: true`.
 - [ ] Final ask: ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: false` for the single approval decision.

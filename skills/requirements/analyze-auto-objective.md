@@ -124,11 +124,11 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Actions:**
 - [ ] Write all 13 sections per the standard requirements template
 - [ ] Include confidence levels per section
-- [ ] Include implementation plan with steps
+- [ ] Include `Feature Branch` plus an ordered implementation phase checklist with per-phase deliverables, FR/NFR/AC traceability, and verification steps for builder-bound work
 - [ ] Include acceptance criteria as `- [ ]` checkboxes
 - [ ] Add `## Decisions Needed` summary section at end of document
 
-**Gate Criteria:** Do not save until: (1) all 13 sections present, (2) no placeholder text, (3) confidence levels on every section.
+**Gate Criteria:** Do not save until: (1) all 13 sections present, (2) no placeholder text, (3) confidence levels on every section, (4) builder-bound docs include Feature Branch plus executable phase details.
 
 **Output Expectation:** Complete 13-section requirements document with Decisions Needed section.
 
@@ -172,6 +172,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 Full 13-section document per `skills/templates/requirements.md` template, with:
 - Confidence levels on every section
 - Structured open questions in §9
+- Feature Branch and implementation phases with deliverables, FR/NFR/AC traceability, and verification steps when the output routes to builder
 - `## Decisions Needed` summary section at end
 
 ### UAT Test Plan

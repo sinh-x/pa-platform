@@ -188,11 +188,13 @@ Surface anything unclear:
 
 Write a **draft** requirements document using the **Standard Checklist** below. This is a draft — do NOT save to disk yet. Save happens only after Phases 6.5 and 6.6 pass.
 
+**Builder handoff requirement:** If the ticket will be routed to builder, the draft MUST include a `Feature Branch` header value and an ordered implementation phase checklist. Each phase MUST include concrete deliverables, traceability to the relevant FR/NFR/AC IDs, and phase-specific verification steps. Do not rely on builder/orchestrator to derive these from prose.
+
 ### Phase 6.5: Self-Review Against Quality Bar
 
 Before showing the draft to Sinh, run it through the **Quality Bar**. Every check MUST pass. If any check fails and you can fix it from current information, fix and re-check. If a fix needs more input, return to the Ambiguity Protocol and ask Sinh.
 
-**Quality Bar (all 8 must pass):**
+**Quality Bar (all 9 must pass):**
 
 | # | Check | How to verify |
 |---|-------|---------------|
@@ -204,10 +206,11 @@ Before showing the draft to Sinh, run it through the **Quality Bar**. Every chec
 | 6 | "N/A" sections justified | Any section marked N/A has a 1-sentence reason explaining why it doesn't apply. |
 | 7 | Risks have mitigations or open questions | Every risk in §9 has either a mitigation or an open question driving toward one. |
 | 8 | Impact analysis included if doc_refs present | If the originating ticket had `doc_refs`, §12 Impact Analysis is filled with change surface, downstream consumers, and risk levels. |
+| 9 | Builder handoff is executable | Implementation-bound docs name `Feature Branch` and include ordered phase checkboxes where every phase has deliverables, FR/NFR/AC traceability, and verification steps. |
 
 Report status to Sinh:
 
-- All passed: "Self-review passed all 8 checks. Showing draft for walkthrough."
+- All passed: "Self-review passed all 9 checks. Showing draft for walkthrough."
 - Failed and resolvable: fix silently and re-check.
 - Failed and unresolvable: "Self-review failed on check N: <reason>. I need clarification before proceeding." — then trigger Ambiguity Protocol.
 
@@ -235,15 +238,19 @@ Before saving, walk Sinh through the draft section-by-section. This is the final
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
-5. **§9 Risks** — show, ask via OpenCode question tool.
+5. **Feature Branch + Implementation Plan** — show the branch value and phase checklist, then ask via OpenCode question tool.
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
-6. **§11 Open Questions** — show, ask via OpenCode question tool.
+6. **§9 Risks** — show, ask via OpenCode question tool.
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
-7. **Final ask:** "Approve this draft for save? (yes / list changes)"
+7. **§11 Open Questions** — show, ask via OpenCode question tool.
+
+- Ask via OpenCode question tool with pre-defined options + custom option.
+
+8. **Final ask:** "Approve this draft for save? (yes / list changes)"
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
@@ -390,7 +397,7 @@ Include in the ticket's summary: what Sinh needs to do (approve, feedback, open 
 ## Rules
 
 - **Ambiguity halts work** — when any Ambiguity Protocol trigger fires, you MUST pause and ask Sinh before continuing. Do NOT silently assume. Auto modes log the unresolved item and tag the ticket `needs-clarification` instead.
-- **Self-review is mandatory** — every draft must pass the 8-check Quality Bar (Phase 6.5) before reaching Sinh. No exceptions.
+- **Self-review is mandatory** — every draft must pass the 9-check Quality Bar (Phase 6.5) before reaching Sinh. No exceptions.
 - **Sign-off before save** — never save the final requirements or UAT documents without explicit Sinh approval in Phase 6.6. "Yes" or equivalent — silence is not consent.
 - **Always interactive** — foreground TUI is the default for interactive modes; ask, don't guess. Auto modes skip walkthroughs but still apply the Ambiguity Protocol via open-questions logging.
 - **Explore before proposing** — read the codebase in Phase 3 before suggesting a technical approach.
