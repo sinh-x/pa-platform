@@ -27,7 +27,6 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    model: gpt-5.3-codex-spark
     agents: [] # solo, no sub-agents
     objective: teams/builder/modes/implement.md
     global_docs:
