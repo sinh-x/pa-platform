@@ -104,14 +104,26 @@ deploy_modes:
     skills:
       - name: pa-session-log
         inject-as: shared-skill
+  # --- Daily tracking mode ---
+  - id: daily-track
+    label: Daily Track
+    phone_visible: true
+    mode_type: work
+    provider: minimax
+    agents: [] # solo, no sub-agents
+    objective: teams/daily/modes/daily-track.md
+    skills:
+      - name: pa-session-log
+        inject-as: shared-skill
 context:
   organization: sinh-x
-  notes: "Merged daily lifecycle + RPM personal planning. 9 modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage"
+  notes: "Merged daily lifecycle + RPM personal planning. 10 modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage, daily-track"
 variables:
   project_root: /home/sinh/git-repos/sinh-x/tools/personal-assistant
   output_dir: ~/Documents/ai-usage/daily
   rpm_blocks: ~/Documents/ai-usage/agent-teams/rpm/rpm-blocks.yaml
   anytype_space: bafyreifs6whb7td4qfzyqx5nh6krdmxosvbzxwnpn5eqeepivm3tc7ps6i.2eaoxbxt3otui
+  journal_root: /home/sinh/git-repos/sinh-x/tools/learning-management/journals
 agents:
   # Daily lifecycle agents
   - name: session-gatherer
@@ -149,4 +161,4 @@ objective: |
   - **rpm-manage** — Interactive RPM block management. Follow skills/rpm/manage.md.
 
   Run with: pa deploy planner --mode <mode>
-  Available modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage
+  Available modes: plan, plan-review, progress, end, end-review, housekeeping, weekly-gather, weekly-review, rpm-manage, daily-track

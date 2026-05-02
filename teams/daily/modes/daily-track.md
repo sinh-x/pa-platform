@@ -35,20 +35,27 @@ When Sinh says "check in", "midday", "log", "capture", or similar:
    ```markdown
    ## Check-In — {{TIME}}
    ```
-2. Capture whatever Sinh provides — tag each line:
+2. Show current focus item status — read the journal's ## Focus section and display each item's state:
+   - Items marked `- [ ]` are `planned`
+   - Items Sinh marks as in-progress are updated to `in-progress`
+   - Items Sinh marks done are updated to `- [x]` with `done` annotation
+   - Items marked blocked stay with `#focus #blocked`
+   - Unchecked items at end of day are `carryover` candidates
+3. Ask Sinh to update focus item states as needed before capturing new entries.
+4. Capture whatever Sinh provides — tag each line:
    - Notes: `- <note> #note`
    - Todos: `- [ ] <todo> #todo`
    - Issues: `- <issue> #issue`
    - Reminders: `- <reminder> #reminder`
    - Worklog entries: `- <entry> #worklog`
-3. Include source references when available:
+5. Include source references when available:
    - Repo path/name
    - Ticket ID (e.g., PAP-026)
    - Deployment ID (e.g., d-abc123)
    - Artifact path
    - File path
-4. If Sinh requests Avo summary, run read-only commands and optionally append as `#worklog` bullets.
-5. Never start, stop, pause, or resume Avo timers unless Sinh explicitly asks for that specific action.
+6. If Sinh requests Avo summary, run read-only commands and optionally append as `#worklog` bullets.
+7. Never start, stop, pause, or resume Avo timers unless Sinh explicitly asks for that specific action.
 
 ## End-of-Day Flow
 
@@ -59,10 +66,11 @@ When Sinh says "end day", "wrap up", "eod", "daily track end", or similar:
    ## End-of-Day Summary — {{TIME}}
    ```
 3. Include:
-   - Completed focus items (changed to `- [x]` in journal)
-   - Open todos and issues
-   - Avo worklog summary (run `avo worklog today` as read-only)
-   - Carryover candidates for tomorrow (items still unchecked)
+   - **Completed focus items** — items marked `- [x]` with `done` annotation; state: `done`
+   - **Open todos and issues** — unchecked items tagged `#todo` or `#issue`
+   - **Focus-item outcomes** — each focus item shown with final state: `planned`, `in-progress`, `done`, `blocked`, or `carryover`
+   - **Avo worklog summary** (run `avo worklog today` as read-only; write "No Avo worklog data found for today #worklog" if none)
+   - **Carryover candidates for tomorrow** — unchecked focus items and open todos/issues that should roll forward
 4. Ask Sinh to confirm the summary before finalizing.
 5. Carryover items remain as `- [ ] <item> #todo` in the journal for the next day.
 
