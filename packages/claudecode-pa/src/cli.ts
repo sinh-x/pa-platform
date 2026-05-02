@@ -2,13 +2,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, type CoreExecutionHooks } from "@pa-platform/pa-core";
-
-// TODO(PAP-051 Phase 2): replace this stub with deploy hooks that wire
-// ClaudeCodeAdapter into runCoreCommand (parallel to createDefaultOpencodeHooks).
-function createDefaultClaudeHooks(): CoreExecutionHooks {
-  return {};
-}
+import { runCoreCommand } from "@pa-platform/pa-core";
+import { createDefaultClaudeHooks } from "./deploy.js";
 
 if (process.argv.includes("--version") || process.argv.includes("-V")) {
   const packagePath = resolve(dirname(fileURLToPath(import.meta.url)), "../package.json");
