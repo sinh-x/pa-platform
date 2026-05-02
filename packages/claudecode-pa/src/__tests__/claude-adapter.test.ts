@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { spawnSync } from "node:child_process";
 import { ClaudeCodeAdapter, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
+import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -50,11 +52,15 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     aiUsage: process.env["PA_AI_USAGE_HOME"],
     maxRuntime: process.env["PA_MAX_RUNTIME"],
     cpaModel: process.env["PA_CPA_DEFAULT_MODEL"],
+    home: process.env["HOME"],
   };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  // Pin HOME to the tmpdir so adapter.installHooks writes its hook artifacts under
+  // <root>/.claude rather than the operator's real ~/.claude/settings.json.
+  process.env["HOME"] = root;
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_CPA_DEFAULT_MODEL"];
   return fn(root).finally(() => {
@@ -65,6 +71,7 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     restore("PA_AI_USAGE_HOME", previous.aiUsage);
     restore("PA_MAX_RUNTIME", previous.maxRuntime);
     restore("PA_CPA_DEFAULT_MODEL", previous.cpaModel);
+    restore("HOME", previous.home);
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -426,6 +433,244 @@ test("createClaudeSessionIdParser ignores partial session_id matches across chun
   parser.write('{"session_id":"ses_par');
   parser.write('tial_complete"}\n');
   assert.equal(parser.flush(), "ses_partial_complete");
+});
+
+function withTempHome(fn: (home: string) => void): void {
+  const home = mkdtempSync(join(tmpdir(), "cpa-hooks-"));
+  try {
+    fn(home);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function readSettingsJson(home: string): { hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string }> }>> } & Record<string, unknown> {
+  const raw = readFileSync(join(home, ".claude", "settings.json"), "utf-8");
+  return JSON.parse(raw) as { hooks: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string }> }>> } & Record<string, unknown>;
+}
+
+function countEntriesWithCommand(entries: Array<{ hooks?: Array<{ command?: string }> }> | undefined, command: string): number {
+  if (!entries) return 0;
+  let count = 0;
+  for (const entry of entries) {
+    const inner = entry.hooks ?? [];
+    if (inner.some((h) => h.command === command)) count += 1;
+  }
+  return count;
+}
+
+function runHandlerSubprocess(handlerPath: string, payload: unknown, env: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(payload),
+    env,
+    encoding: "utf-8",
+  });
+  return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("installPaClaudeHooks idempotency over 5 consecutive runs", () => {
+  withTempHome((home) => {
+    for (let i = 0; i < 5; i++) installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    assert.equal(handlerPath, join(home, ".claude", "hooks", PA_CLAUDE_HOOKS_HANDLER_FILENAME));
+    assert.ok(existsSync(handlerPath));
+    const settings = readSettingsJson(home);
+    for (const eventName of PA_CLAUDE_HOOK_EVENTS) {
+      assert.equal(countEntriesWithCommand(settings.hooks?.[eventName], handlerPath), 1, `expected exactly one ${eventName} entry for cpa handler after 5 runs`);
+    }
+  });
+});
+
+test("installPaClaudeHooks preserves pre-existing user hooks and unrelated keys", () => {
+  withTempHome((home) => {
+    const settingsPath = resolvePaClaudeSettingsPath({ HOME: home });
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({
+      theme: "dark",
+      hooks: {
+        PreToolUse: [
+          { matcher: "Bash", hooks: [{ type: "command", command: "/usr/local/bin/audit.sh" }] },
+        ],
+        UserPromptSubmit: [
+          { hooks: [{ type: "command", command: "/usr/local/bin/log-prompt.sh" }] },
+        ],
+      },
+    }, null, 2));
+    installPaClaudeHooks({ HOME: home });
+    const settings = readSettingsJson(home);
+    assert.equal(settings["theme"], "dark");
+    const userPreEntry = settings.hooks?.PreToolUse?.find((entry) => (entry.hooks ?? []).some((h) => h.command === "/usr/local/bin/audit.sh"));
+    assert.ok(userPreEntry, "pre-existing PreToolUse user hook must be retained");
+    const userPromptEntry = (settings.hooks?.["UserPromptSubmit"] ?? []).find((entry) => (entry.hooks ?? []).some((h) => h.command === "/usr/local/bin/log-prompt.sh"));
+    assert.ok(userPromptEntry, "unrelated UserPromptSubmit hook must be retained");
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    assert.equal(countEntriesWithCommand(settings.hooks?.PreToolUse, handlerPath), 1);
+    assert.equal(countEntriesWithCommand(settings.hooks?.PostToolUse, handlerPath), 1);
+    assert.equal(countEntriesWithCommand(settings.hooks?.Stop, handlerPath), 1);
+  });
+});
+
+test("installPaClaudeHooks creates handler script with shebang for node invocation", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    const source = readFileSync(handlerPath, "utf-8");
+    assert.ok(source.startsWith("#!/usr/bin/env node"), "handler must be self-executable via env-resolved node");
+    assert.equal(source, PA_CLAUDE_HOOKS_HANDLER_SOURCE);
+  });
+});
+
+test("installPaClaudeHooks rejects malformed settings.json instead of clobbering", () => {
+  withTempHome((home) => {
+    const settingsPath = resolvePaClaudeSettingsPath({ HOME: home });
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, "{ this is not json", "utf-8");
+    assert.throws(() => installPaClaudeHooks({ HOME: home }), /cannot parse/);
+    // The original file must remain untouched so the operator can fix it manually.
+    assert.equal(readFileSync(settingsPath, "utf-8"), "{ this is not json");
+  });
+});
+
+test("pa-activity handler appends tool.execute.before with masked command and preserves payload-shape", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    const deployDir = join(home, "deploy");
+    mkdirSync(deployDir, { recursive: true });
+    const activityPath = join(deployDir, "activity.jsonl");
+    const command = "curl -H 'Authorization: Bearer sk-ant-secrettoken' https://api.example.com";
+    const payload = {
+      hook_event_name: "PreToolUse",
+      session_id: "abcdef12-3456-7890-abcd-ef1234567890",
+      tool_name: "Bash",
+      tool_input: { command },
+    };
+    const result = runHandlerSubprocess(handlerPath, payload, {
+      ...process.env,
+      HOME: home,
+      PA_DEPLOYMENT_ID: "d-test1",
+      PA_ACTIVITY_LOG: activityPath,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "", "handler must not write to stdout — would mutate Claude Code's tool stream");
+    const lines = readFileSync(activityPath, "utf-8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    const event = JSON.parse(lines[0]!) as { event: string; agent: string; deploy_id: string; data: { tool: string; args: { command: string }; summary: string } };
+    assert.equal(event.event, "tool.execute.before");
+    assert.equal(event.agent, "abcdef12");
+    assert.equal(event.deploy_id, "d-test1");
+    assert.equal(event.data.tool, "Bash");
+    assert.match(event.data.args.command, /\*\*\*BEARER_MASKED\*\*\*/);
+    assert.equal(event.data.args.command.includes("sk-ant-secrettoken"), false);
+    assert.match(event.data.summary, /\*\*\*BEARER_MASKED\*\*\*/);
+    // The handler reads the raw payload via stdin and writes a *derived* log entry. The
+    // payload that Claude Code actually executes is unaffected — assert by checking we
+    // never echoed the input back on stdout (which would mutate the tool stream).
+  });
+});
+
+test("pa-activity handler appends tool.execute.after with masked result", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    const activityPath = join(home, "deploy", "activity.jsonl");
+    const payload = {
+      hook_event_name: "PostToolUse",
+      session_id: "abcdef12",
+      tool_name: "Bash",
+      tool_use_id: "tool_use_42",
+      tool_response: { exitCode: 0, output: "Authorization: Bearer sk-ant-leaked" },
+    };
+    const result = runHandlerSubprocess(handlerPath, payload, {
+      ...process.env,
+      HOME: home,
+      PA_DEPLOYMENT_ID: "d-test2",
+      PA_ACTIVITY_LOG: activityPath,
+    });
+    assert.equal(result.status, 0);
+    const event = JSON.parse(readFileSync(activityPath, "utf-8").trim()) as { event: string; data: { tool: string; tool_use_id: string; summary: string } };
+    assert.equal(event.event, "tool.execute.after");
+    assert.equal(event.data.tool_use_id, "tool_use_42");
+    assert.match(event.data.summary, /exit_code=0/);
+  });
+});
+
+test("pa-activity handler emits session.stop record on Stop event (registry completion path)", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    const activityPath = join(home, "deploy", "activity.jsonl");
+    const result = runHandlerSubprocess(handlerPath, {
+      hook_event_name: "Stop",
+      session_id: "abcdef12",
+      stop_hook_active: false,
+      transcript_path: "/tmp/transcript.jsonl",
+    }, { ...process.env, HOME: home, PA_DEPLOYMENT_ID: "d-stop", PA_ACTIVITY_LOG: activityPath });
+    assert.equal(result.status, 0);
+    const event = JSON.parse(readFileSync(activityPath, "utf-8").trim()) as { event: string; agent: string; data: { transcript_path: string; stop_hook_active: boolean } };
+    assert.equal(event.event, "session.stop");
+    assert.equal(event.agent, "abcdef12");
+    assert.equal(event.data.transcript_path, "/tmp/transcript.jsonl");
+    assert.equal(event.data.stop_hook_active, false);
+  });
+});
+
+test("pa-activity handler tolerates missing sensitive-patterns.conf with built-in fallback", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    // No sensitive-patterns.conf present in <home>/.claude/hooks/.
+    assert.equal(existsSync(join(home, ".claude", "hooks", "sensitive-patterns.conf")), false);
+    const activityPath = join(home, "deploy", "activity.jsonl");
+    const command = "echo Authorization: Bearer sk-ant-fallback-only";
+    const result = runHandlerSubprocess(handlerPath, {
+      hook_event_name: "PreToolUse",
+      session_id: "abcdef12",
+      tool_name: "Bash",
+      tool_input: { command },
+    }, { ...process.env, HOME: home, PA_DEPLOYMENT_ID: "d-fb", PA_ACTIVITY_LOG: activityPath });
+    assert.equal(result.status, 0);
+    const event = JSON.parse(readFileSync(activityPath, "utf-8").trim()) as { data: { args: { command: string }; summary: string } };
+    assert.match(event.data.args.command, /\*\*\*BEARER_MASKED\*\*\*/);
+    assert.equal(event.data.args.command.includes("sk-ant-fallback-only"), false);
+  });
+});
+
+test("pa-activity handler honors operator's sensitive-patterns.conf overrides", () => {
+  withTempHome((home) => {
+    installPaClaudeHooks({ HOME: home });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: home });
+    const patternsPath = join(home, ".claude", "hooks", "sensitive-patterns.conf");
+    writeFileSync(patternsPath, [
+      "# operator-defined patterns",
+      "CUSTOM|MY_SECRET=[A-Za-z0-9]+",
+      "BEARER|Authorization: Bearer [^ ]+",
+    ].join("\n"));
+    const activityPath = join(home, "deploy", "activity.jsonl");
+    const result = runHandlerSubprocess(handlerPath, {
+      hook_event_name: "PreToolUse",
+      session_id: "abcdef12",
+      tool_name: "Bash",
+      tool_input: { command: "MY_SECRET=Abc123XYZ run-app" },
+    }, { ...process.env, HOME: home, PA_DEPLOYMENT_ID: "d-cfg", PA_ACTIVITY_LOG: activityPath });
+    assert.equal(result.status, 0);
+    const event = JSON.parse(readFileSync(activityPath, "utf-8").trim()) as { data: { args: { command: string } } };
+    assert.match(event.data.args.command, /\*\*\*CUSTOM_MASKED\*\*\*/);
+    assert.equal(event.data.args.command.includes("Abc123XYZ"), false);
+  });
+});
+
+test("ClaudeCodeAdapter.installHooks invokes installPaClaudeHooks on real adapter", async () => {
+  await withCpaEnv(async (root) => {
+    const adapter = new ClaudeCodeAdapter({ env: { ...process.env, HOME: root } as NodeJS.ProcessEnv });
+    adapter.installHooks(join(root, "deploy"), { deploymentId: "d-wire", deploymentDir: join(root, "deploy"), activityLogPath: join(root, "deploy", "activity.jsonl") });
+    const handlerPath = resolvePaClaudeHooksHandlerPath({ HOME: root });
+    assert.ok(existsSync(handlerPath));
+    const settings = readSettingsJson(root);
+    for (const eventName of PA_CLAUDE_HOOK_EVENTS) {
+      assert.equal(countEntriesWithCommand(settings.hooks?.[eventName], handlerPath), 1);
+    }
+  });
 });
 
 function restore(key: string, value: string | undefined): void {

@@ -3,6 +3,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync }
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { installPaClaudeHooks } from "./plugins/pa-claude-hooks.js";
 
 export type ClaudeProvider = "anthropic";
 
@@ -75,9 +76,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   installHooks(_targetDir: string, _config: HookConfig): void {
-    // TODO(PAP-051 Phase 3): install ~/.claude/settings.json PreToolUse/PostToolUse/Stop entries
-    // via installPaClaudeHooks(env). Phase 2 leaves this a no-op so activity ingestion relies
-    // solely on the stream-json parser for background mode.
+    // Idempotent merge into <HOME>/.claude/settings.json — running cpa repeatedly does
+    // not duplicate entries. The deployment-scoped env (PA_DEPLOYMENT_ID, PA_ACTIVITY_LOG)
+    // reaches the hook handler at runtime via the spawned claude process inheriting opts.env.
+    installPaClaudeHooks(this.env);
   }
 
   describeTools(): ToolReference {
