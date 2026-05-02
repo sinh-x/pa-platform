@@ -2,7 +2,7 @@
 
 > **Template:** requirements
 > **Version:** 4.1
-> **Last Updated:** 2026-05-01
+> **Last Updated:** 2026-05-02
 > **Used by:** Requirements team analyze modes
 > **Produces:** Requirements document and implementation checklist
 > **Consumed by:** Builder team and UAT reviewers
@@ -144,7 +144,7 @@ Blast Radius:
 ## 17. Guidance Notes
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
-- Shape-Conformance is a deterministic pass/fail count across 13 Quality Bar checks. Use `N/13`; do not apply weighting.
+- The requirements document has 16 numbered document sections. Shape-Conformance is a deterministic pass/fail count across 13 Quality Bar checks. Use `N/13`; do not apply weighting.
 - Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
 - Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.

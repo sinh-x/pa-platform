@@ -25,7 +25,7 @@ Question: <specific question>
 
 **Vague Term Watchlist:** `fast`, `slow`, `easy`, `simple`, `intuitive`, `user-friendly`, `robust`, `clean`, `nice`, `better`, `improved`, `optimized`, `scalable`, `secure` (without standard), `seamless`, `modern`, `lightweight`, `performant`, `flexible`, `polished`, `solid`.
 
-**Auto-mode (`analyze-auto*`):** Do NOT fabricate. Log the unresolved item in §11 Open Questions, tag the ticket `needs-clarification`, do NOT advance status. See `analyze.md` for full procedure.
+**Auto-mode (`analyze-auto*`):** Do NOT fabricate. Log the unresolved item in §14 Open Questions, tag the ticket `needs-clarification`, do NOT advance status. See `analyze.md` for full procedure.
 
 See `skills/requirements/analyze.md` → "Ambiguity Protocol" for the full rules.
 
@@ -144,12 +144,12 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Write a draft requirements document. Do NOT save yet.
 
 **Actions:**
-- [ ] Write all 13 sections using the Standard Checklist in analyze.md
+- [ ] Write all 16 document sections using the Standard Checklist in analyze.md
 - [ ] Include impact-analysis section if ticket had doc_refs
 - [ ] Leave §4 In Scope and §10 Acceptance Criteria as `- [ ]` checkboxes
 - [ ] For builder-bound work, include `Feature Branch` plus an ordered implementation phase checklist with per-phase deliverables, FR/NFR/AC traceability, and verification steps
 
-**Gate Criteria:** Draft must contain all 13 sections before advancing to Phase 6.5.
+**Gate Criteria:** Draft must contain all 16 document sections before advancing to Phase 6.5.
 
 **Output Expectation:** In-memory draft (not yet on disk).
 
@@ -159,7 +159,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 **Goal:** Verify the draft meets the 13-check Quality Bar before showing Sinh.
 
 **Quality Bar (all must pass):**
-1. All 13 sections present
+1. All 16 document sections present
 2. No placeholder text (`<...>`, `TBD`, `TODO`, `lorem`, `xxx`, `???`)
 3. Acceptance criteria are testable (no Vague Term Watchlist words without measurable definition)
 4. In-scope and out-of-scope each have ≥ 2 concrete items
@@ -197,7 +197,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 - [ ] §10 Acceptance Criteria — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple criteria need changes, use `multiple: true`.
 - [ ] Feature Branch + Implementation Plan — show the branch value and phase checklist, then ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple phases need changes, use `multiple: true`.
 - [ ] §9 Risks — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple risks need changes, use `multiple: true`.
-- [ ] §11 Open Questions — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple questions remain unresolved, use `multiple: true`.
+- [ ] §14 Open Questions — show, ask via OpenCode question tool. Use `multiple: false` for approval/sign-off; if asking which multiple questions remain unresolved, use `multiple: true`.
 - [ ] Final ask: ask via OpenCode question tool with pre-defined options + custom option. Use `multiple: false` for the single approval decision.
 
 **Gate Criteria:** Explicit "yes" or equivalent from Sinh. Silence is not consent. If changes requested, apply them, re-run Phase 6.5, re-walk only changed sections.

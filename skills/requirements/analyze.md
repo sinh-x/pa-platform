@@ -54,7 +54,7 @@ When any appear, ask: "What does '<term>' mean measurably here? (e.g., 'fast' = 
 
 **Auto-mode exception (`analyze-auto*` non-interactive variants):** When a hard pause trigger fires, do NOT fabricate an answer. Instead:
 
-1. Record the unresolved item verbatim in **§11 Open Questions** of the requirements doc, tagged `[BLOCKING]` or `[NON-BLOCKING]`.
+1. Record the unresolved item verbatim in **§14 Open Questions** of the requirements doc, tagged `[BLOCKING]` or `[NON-BLOCKING]`.
 2. After saving the doc, run `pa ticket update <ticket_id> --tags needs-clarification`.
 3. Add a `pa ticket comment` listing each unresolved item with the assumption you would have made.
 4. Do NOT advance the ticket to `pending-approval`. Hand back to Sinh for resolution.
@@ -200,7 +200,7 @@ Before showing the draft to Sinh, run it through the **Quality Bar**. Every chec
 
 | # | Check | How to verify |
 |---|-------|---------------|
-| 1 | All 13 sections present | Scan for each section header. Zero missing. |
+| 1 | All 16 document sections present | Scan for each numbered document section header in the requirements template. Zero missing. |
 | 2 | No placeholder text | Search for `<...>`, `TBD`, `TODO`, `lorem`, `xxx`, `???`. Zero matches outside intentional template guidance. |
 | 3 | Acceptance criteria are testable | Every AC has an observable pass/fail condition. No Vague Term Watchlist words without measurable definition. |
 | 4 | In-scope and out-of-scope balanced | Both lists have ≥ 2 concrete items. Out-of-scope is not empty. |
@@ -222,7 +222,7 @@ Report status to Sinh:
 
 Compute Shape-Conformance as a deterministic pass/fail count across checks 1-13 with no weighting. Report `Shape-Conformance: N/13` to Sinh and embed the same value in the saved requirements doc header as `> Shape-Conformance: N/13`.
 
-**Auto-mode exception:** Auto modes still run Self-Review. Failed checks that cannot be auto-fixed must be logged in §11 Open Questions and tagged `needs-clarification` per Ambiguity Protocol — do NOT proceed to save with failed checks except as flagged open questions.
+**Auto-mode exception:** Auto modes still run Self-Review. Failed checks that cannot be auto-fixed must be logged in §14 Open Questions and tagged `needs-clarification` per Ambiguity Protocol — do NOT proceed to save with failed checks except as flagged open questions.
 
 ### Phase 6.6: Sinh Walkthrough & Sign-off
 
@@ -254,7 +254,7 @@ Before saving, walk Sinh through the draft section-by-section. This is the final
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
-7. **§11 Open Questions** — show, ask via OpenCode question tool.
+7. **§14 Open Questions** — show, ask via OpenCode question tool.
 
 - Ask via OpenCode question tool with pre-defined options + custom option.
 
@@ -321,7 +321,7 @@ For each Acceptance Criteria item from the requirements doc, produce a test scen
 
 ## Standard Checklist
 
-> **Template:** Read `skills/templates/requirements.md` for the standard 13-section checklist.
+> **Template:** Read `skills/templates/requirements.md` for the standard 16-section requirements document.
 > Every requirements document MUST follow this template.
 
 ## Output
