@@ -156,7 +156,8 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /Phase 0: Validate Codebase Assumptions/);
   assert.match(primer, /Gate Criteria/);
   assert.match(primer, /Phase 6\.5: Self-Review Against Quality Bar/);
-  assert.match(primer, /Self-review passed all 9 checks/);
+  assert.match(primer, /Self-review passed all 13 checks/);
+  assert.match(primer, /Shape-Conformance: 13\/13/);
   assert.match(primer, /Builder handoff is executable/);
   assert.match(primer, /Feature Branch \+ Implementation Plan/);
   assert.match(primer, /per-phase deliverables, FR\/NFR\/AC traceability, and verification steps/);
@@ -199,6 +200,9 @@ test("generatePrimer requirements analyze-auto fixture remains valid under openc
   assert.match(primer, /## OUTPUT FORMATS/);
   assert.match(primer, /Feature Branch/);
   assert.match(primer, /per-phase deliverables, FR\/NFR\/AC traceability, and verification steps/);
+  assert.match(primer, /13-check Quality Bar/);
+  assert.match(primer, /Shape-Conformance: N\/13/);
+  assert.match(primer, /failed checks that cannot be auto-fixed in §14 Open Questions/);
   assert.match(primer, /## RULES/);
   assert.match(primer, /Non-interactive/);
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
