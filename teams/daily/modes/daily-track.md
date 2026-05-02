@@ -68,10 +68,49 @@ When Sinh says "end day", "wrap up", "eod", "daily track end", or similar:
 
 ## Cross-Repo Capture
 
-When Sinh mentions work from another repo:
-- Always include: repo name/path
-- When available: ticket ID, deployment ID, artifact path, file path
-- Format: `- <description> #<tag> [src:<repo-name>] [ticket:<id>] [dep:<deploy-id>] [art:<path>]`
+When Sinh mentions work from another repo or work that belongs to a different source system:
+- **Always ask for and record**: source repo name or path
+- **When available, record**: ticket ID, deployment ID, artifact path, file path
+- **When unavailable**: omit the field entirely — do not fabricate or mark as unavailable
+
+### Cross-Repo Reference Format
+
+Use this format for cross-repo entries:
+
+```
+- <description> #<tag> [src:<repo-name-or-path>] [ticket:<id>] [dep:<deploy-id>] [art:<path>] [file:<path>]
+```
+
+Examples:
+```
+- Worked on auth refactor in pa-platform #worklog [src:pa-platform] [ticket:PAP-026] [dep:d-6357a7]
+- Fixed login bug in personal-assistant #issue [src:personal-assistant] [ticket:PA-042] [file:src/auth/login.ts]
+- Reviewed PR artifact for AVO-028 #note [src:avodah] [art:agent-teams/builder/artifacts/2026-05-02-pr-review.md]
+```
+
+### Long Artifact Content
+
+For large artifact content, link by path instead of copying content into the journal:
+```
+- See artifact: [src:<repo-name>]/<artifact-path>
+```
+
+Example:
+```
+- Full implementation report: see artifact [src:pa-platform]/agent-teams/builder/artifacts/2026-05-02-daily-track-mode-orchestration-report.md
+```
+
+### Fields Availability Rules
+
+| Field | Required | Behavior when unavailable |
+|-------|----------|--------------------------|
+| `src:<repo>` | **Yes** (always) | Ask Sinh if not volunteered |
+| `ticket:<id>` | No | Omit if not known |
+| `dep:<deploy-id>` | No | Omit if not known |
+| `art:<path>` | No | Omit unless Sinh provides it |
+| `file:<path>` | No | Omit unless Sinh provides it |
+
+**Never fabricate values.** If Sinh doesn't know the ticket ID, deployment ID, or artifact path, simply omit those fields. The `[src:]` field is mandatory for cross-repo entries.
 
 ## Avo Integration Rules
 
