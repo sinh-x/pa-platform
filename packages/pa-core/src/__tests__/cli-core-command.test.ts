@@ -790,9 +790,7 @@ test("runCoreCommand honors NO_COLOR and tty settings for board colors", async (
       assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: withoutColorFromNoColor.io }), 0);
       assert.equal(/\[[0-9;]*m/.test(withoutColorFromNoColor.stdout.join("\n")), false);
 
-      if (originalIsTtyDescriptor) {
-        Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
-      }
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
       const withoutColorFromTty = capture();
       assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: withoutColorFromTty.io }), 0);
       assert.equal(/\[[0-9;]*m/.test(withoutColorFromTty.stdout.join("\n")), false);
@@ -801,6 +799,8 @@ test("runCoreCommand honors NO_COLOR and tty settings for board colors", async (
       else process.env["NO_COLOR"] = originalNoColor;
       if (originalIsTtyDescriptor) {
         Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      } else {
+        delete (process.stdout as { isTTY?: boolean }).isTTY;
       }
     }
   });
