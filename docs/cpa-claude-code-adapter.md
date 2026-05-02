@@ -43,6 +43,8 @@ cpa deploy <team> --validate                   # parse + check team config witho
 
 Re-running the installer is idempotent: deduplication is by handler command path, and pre-existing user hooks under unrelated keys are preserved.
 
+> **Note:** `cpa` overwrites `~/.claude/hooks/pa-activity.mjs` on every deploy. Operators who need custom redaction logic should keep it in `~/.claude/hooks/sensitive-patterns.conf` (which the bundled handler reads with the built-in patterns as fallback) or in a sibling hook script registered separately under its own entry in `~/.claude/settings.json`.
+
 ## Session resume + cross-runtime guard
 
 A `cpa` deploy writes `session-id-claude.txt` after the first stream-json `system.init` event. `cpa deploy --resume <id>` reads that file and passes `--resume <session-id>` to `claude` (positional prompt argument follows). If only `session-id-opencode.txt` is present, the resume errors with `cannot resume: deploy <id> was launched by opencode; use 'opa deploy --resume <id>'`.

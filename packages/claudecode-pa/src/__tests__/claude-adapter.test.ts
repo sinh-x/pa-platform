@@ -6,6 +6,7 @@ import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { spawnSync } from "node:child_process";
 import { ClaudeCodeAdapter, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
+import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
 
@@ -400,6 +401,37 @@ test("claude JSONL masks sensitive tokens in stream bodies", () => {
   assert.ok(event.body.length <= 500);
 });
 
+function bodyForText(text: string): string {
+  return claudeJsonToActivityEvent({
+    type: "assistant",
+    session_id: "ses1",
+    message: { content: [{ type: "text", text }] },
+  }, "d-live").body;
+}
+
+test("sanitizeStreamBody preserves prose containing the word 'key'", () => {
+  // Prior regex `/(?:\b|_)key(?:\b|_)/i` redacted any standalone "key", which
+  // mangled routine prose. The tightened pattern only fires for assignment-shaped
+  // tokens like api_key / access-key / secret_key.
+  assert.equal(bodyForText("primary key"), "primary key");
+  assert.equal(bodyForText("key idea"), "key idea");
+  assert.equal(bodyForText("the public key fingerprint is stable"), "the public key fingerprint is stable");
+});
+
+test("sanitizeStreamBody still redacts assignment-shaped key tokens", () => {
+  const redacted = bodyForText("config api_key=sk-test rest");
+  assert.match(redacted, /\[REDACTED\]/);
+  assert.equal(redacted.includes("api_key"), false);
+
+  const dashed = bodyForText("access-key=AKIA123");
+  assert.match(dashed, /\[REDACTED\]/);
+  assert.equal(dashed.includes("access-key"), false);
+
+  const secret = bodyForText("SECRET_KEY=hunter2");
+  assert.match(secret, /\[REDACTED\]/);
+  assert.equal(secret.includes("SECRET_KEY"), false);
+});
+
 test("createClaudeActivityWriter appends split JSONL chunks", () => {
   const root = mkdtempSync(join(tmpdir(), "cpa-activity-"));
   try {
@@ -658,6 +690,30 @@ test("pa-activity handler honors operator's sensitive-patterns.conf overrides", 
     assert.match(event.data.args.command, /\*\*\*CUSTOM_MASKED\*\*\*/);
     assert.equal(event.data.args.command.includes("Abc123XYZ"), false);
   });
+});
+
+test("loadBackgroundConfig parses the file and unlinks it", () => {
+  const root = mkdtempSync(join(tmpdir(), "cpa-runner-cfg-"));
+  try {
+    const configPath = join(root, "claude-background.json");
+    writeFileSync(configPath, JSON.stringify({
+      args: ["-p", "stub"],
+      cwd: root,
+      env: { ANTHROPIC_API_KEY: "sk-test-anthropic" },
+      logFile: join(root, "claude.log"),
+      deploymentId: "d-runner-cfg",
+      team: "test-team",
+      sessionFileName: "session-id-claude.txt",
+    }));
+    assert.ok(existsSync(configPath));
+    const config = loadBackgroundConfig(configPath);
+    assert.deepEqual(config.args, ["-p", "stub"]);
+    assert.equal(config.deploymentId, "d-runner-cfg");
+    // The credential-bearing JSON must not linger after the runner ingests it.
+    assert.equal(existsSync(configPath), false, "config file must be unlinked after parse");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("ClaudeCodeAdapter.installHooks invokes installPaClaudeHooks on real adapter", async () => {

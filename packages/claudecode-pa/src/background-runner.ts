@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, getDeployPaths } from "@pa-platform/pa-core";
 import { createClaudeActivityWriter, createClaudeSessionIdParser } from "./adapter.js";
+import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
 interface BackgroundConfig {
   args: string[];
@@ -14,37 +16,53 @@ interface BackgroundConfig {
   sessionFileName: string;
 }
 
-const configPath = process.argv[2];
-if (!configPath) throw new Error("Missing background config path");
-const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
+// Reads the background config and removes the on-disk file. The runner only
+// needs the JSON once at startup; unlinking immediately keeps the credential
+// material from lingering at rest. A missing file (e.g., a second resume of
+// the same deploy) is tolerated and does not crash the runner.
+export function loadBackgroundConfig(configPath: string): BackgroundConfig {
+  const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
+  try { unlinkSync(configPath); } catch { /* missing file is acceptable */ }
+  return config;
+}
 
-const STDERR_TAIL_BYTES = 2000;
+export async function runBackgroundEntry(configPath: string): Promise<void> {
+  const config = loadBackgroundConfig(configPath);
+  try {
+    const result = await runClaude(config);
 
-try {
-  const result = await runClaude(config);
-
-  // Only persist a session file when the runner observed a real claude session token.
-  // Falling back to deployment id silently broke `cpa deploy --resume`.
-  if (result.sessionId) {
-    writeFileSync(resolve(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
+    // Only persist a session file when the runner observed a real claude session token.
+    // Falling back to deployment id silently broke `cpa deploy --resume`.
+    if (result.sessionId) {
+      writeFileSync(resolvePath(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
+    }
+    const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
+    if (result.exitCode === 0) {
+      appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: "cpa background deploy completed" }), activityLogPath);
+      emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "cpa background deploy completed", logFile: config.logFile, exitCode: 0 });
+    } else {
+      const errorBody = result.stderrTail || (result.spawnError ? result.spawnError.message : `claude exited with code ${result.exitCode}`);
+      appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "error", source: "claude", body: errorBody }), activityLogPath);
+      appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: `cpa background deploy failed with exit code ${result.exitCode}` }), activityLogPath);
+      const summaryError = firstLine(result.spawnError?.message ?? result.stderrTail);
+      const summary = summaryError
+        ? `cpa background deploy failed (exit ${result.exitCode}): ${summaryError}`
+        : `cpa background deploy failed (exit ${result.exitCode})`;
+      emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
+    }
+  } catch (error) {
+    emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
+    throw error;
   }
-  const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
-  if (result.exitCode === 0) {
-    appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: "cpa background deploy completed" }), activityLogPath);
-    emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "cpa background deploy completed", logFile: config.logFile, exitCode: 0 });
-  } else {
-    const errorBody = result.stderrTail || (result.spawnError ? result.spawnError.message : `claude exited with code ${result.exitCode}`);
-    appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "error", source: "claude", body: errorBody }), activityLogPath);
-    appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: `cpa background deploy failed with exit code ${result.exitCode}` }), activityLogPath);
-    const summaryError = firstLine(result.spawnError?.message ?? result.stderrTail);
-    const summary = summaryError
-      ? `cpa background deploy failed (exit ${result.exitCode}): ${summaryError}`
-      : `cpa background deploy failed (exit ${result.exitCode})`;
-    emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
-  }
-} catch (error) {
-  emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
-  throw error;
+}
+
+// Standard ESM main-module guard so test files can import `loadBackgroundConfig`
+// without triggering the deploy lifecycle.
+const isMainModule = !!process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1]);
+if (isMainModule) {
+  const configPath = process.argv[2];
+  if (!configPath) throw new Error("Missing background config path");
+  await runBackgroundEntry(configPath);
 }
 
 interface BackgroundRunResult {
@@ -57,7 +75,7 @@ interface BackgroundRunResult {
 function runClaude(config: BackgroundConfig): Promise<BackgroundRunResult> {
   mkdirSync(dirname(config.logFile), { recursive: true });
   const log = createWriteStream(config.logFile, { flags: "a" });
-  const jsonl = createWriteStream(resolve(dirname(config.logFile), "claude-output.jsonl"), { flags: "a" });
+  const jsonl = createWriteStream(resolvePath(dirname(config.logFile), "claude-output.jsonl"), { flags: "a" });
   // Both this writer and the (Phase 3) claude settings.json hook will append to
   // activity.jsonl concurrently. appendFileSync({flag:"a"}) line-flushed writes are
   // atomic for sub-PIPE_BUF (4096-byte) lines; STDERR_TAIL_BYTES = 2000 guarantees that.
@@ -100,18 +118,4 @@ function runClaude(config: BackgroundConfig): Promise<BackgroundRunResult> {
       resolvePromise({ exitCode: code ?? 1, ...(sessionId ? { sessionId } : {}), stderrTail, ...(spawnError ? { spawnError } : {}) });
     });
   });
-}
-
-
-// Truncates from the end by UTF-16 code units, not Unicode codepoints.
-// For typical claude stderr (ASCII + UTF-8) this is exact; multi-byte
-// characters near the 2000-char boundary may be approximated.
-function tailString(text: string, max: number): string {
-  if (!text) return "";
-  return text.length <= max ? text : text.slice(text.length - max);
-}
-
-function firstLine(text: string): string {
-  if (!text) return "";
-  return text.split("\n", 1)[0] ?? "";
 }

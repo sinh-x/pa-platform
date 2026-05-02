@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { installPaClaudeHooks } from "./plugins/pa-claude-hooks.js";
+import { STDERR_TAIL_BYTES, tailString } from "./util.js";
 
 export type ClaudeProvider = "anthropic";
 
@@ -15,9 +16,10 @@ export interface ClaudeCommandResult {
 }
 
 export const CLAUDE_DEFAULT_MODEL = "claude-opus-4-7";
-const STDERR_TAIL_BYTES = 2000;
 const STREAM_BODY_MAX_CHARS = 500;
-const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)key(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
+// Assignment-context regex: catches `api_key`, `access-key`, `secret_key`, etc.,
+// but lets routine prose like "primary key" or "key idea" pass through.
+const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
 
 export interface ClaudeCodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => ClaudeCommandResult;
@@ -45,6 +47,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "claude-background.json");
       writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
+      // Owner-only at-rest perms. The file carries ANTHROPIC_API_KEY/AUTH_TOKEN
+      // and is consumed once at startup, then unlinked by the runner.
+      chmodSync(configPath, 0o600);
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
       child.unref();
@@ -177,13 +182,6 @@ function adapterErrorMessage(result: ClaudeCommandResult, exitCode: number): str
   if (exitCode === 0) return undefined;
   const tail = tailString(result.stderr, STDERR_TAIL_BYTES);
   return tail.length > 0 ? tail : `claude exited with code ${exitCode}`;
-}
-
-// Truncates from the end by UTF-16 code units, not Unicode codepoints. Acceptable
-// for diagnostic logs — same approximation opa uses for stderr tails.
-function tailString(text: string, max: number): string {
-  if (!text) return "";
-  return text.length <= max ? text : text.slice(text.length - max);
 }
 
 interface StreamingCommandOpts {
