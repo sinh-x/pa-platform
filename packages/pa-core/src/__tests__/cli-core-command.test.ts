@@ -754,6 +754,58 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
   });
 });
 
+test("runCoreCommand honors NO_COLOR and tty settings for board colors", async () => {
+  await withCliEnv(async () => {
+    const store = new TicketStore();
+    store.create({
+      project: "pa-platform",
+      title: "Colorized board entry",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "high",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+
+    const originalNoColor = process.env["NO_COLOR"];
+    const originalIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+      delete process.env["NO_COLOR"];
+
+      const withColor = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: withColor.io }), 0);
+      assert.equal(/\[[0-9;]*m/.test(withColor.stdout.join("\n")), true);
+
+      process.env["NO_COLOR"] = "1";
+      const withoutColorFromNoColor = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: withoutColorFromNoColor.io }), 0);
+      assert.equal(/\[[0-9;]*m/.test(withoutColorFromNoColor.stdout.join("\n")), false);
+
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+      const withoutColorFromTty = capture();
+      assert.equal(await runCoreCommand(["board", "--project", "pa-platform"], { io: withoutColorFromTty.io }), 0);
+      assert.equal(/\[[0-9;]*m/.test(withoutColorFromTty.stdout.join("\n")), false);
+    } finally {
+      if (originalNoColor === undefined) delete process.env["NO_COLOR"];
+      else process.env["NO_COLOR"] = originalNoColor;
+      if (originalIsTtyDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      } else {
+        delete (process.stdout as { isTTY?: boolean }).isTTY;
+      }
+    }
+  });
+});
+
 test("runCoreCommand exposes teams views", async () => {
   await withCliEnv(async () => {
     new TicketStore().create({

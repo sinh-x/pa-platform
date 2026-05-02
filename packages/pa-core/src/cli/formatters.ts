@@ -2,7 +2,7 @@ import type { Bulletin } from "../bulletins/index.js";
 import type { RepoEntry } from "../repos.js";
 import type { TeamConfigSummary } from "../teams/index.js";
 import type { DeploymentStatus } from "../types.js";
-import type { Ticket } from "../tickets/index.js";
+import type { BoardView, Ticket } from "../tickets/index.js";
 import type { TrashEntry } from "../trash/index.js";
 import { formatLocal, formatLocalShort } from "../time.js";
 
@@ -17,6 +17,45 @@ export interface TeamStatusRow {
   model: string;
   counts: string[];
   deployment: string;
+}
+
+export interface BoardFormatOptions {
+  colorEnabled?: boolean;
+}
+
+const ANSI_RESET = "\u001b[0m";
+
+const ANSI_COLORS = {
+  statusHeader: "\u001b[1;36m",
+  critical: "\u001b[31m",
+  high: "\u001b[33m",
+  medium: "\u001b[34m",
+  low: "\u001b[32m",
+  normal: "\u001b[90m",
+  unknownPriority: "\u001b[90m",
+  deploying: "\u001b[35m",
+} as const;
+
+function withAnsi(enabled: boolean, ansiCode: string, text: string): string {
+  if (!enabled || text === "") return text;
+  return `${ansiCode}${text}${ANSI_RESET}`;
+}
+
+function priorityColor(priority: string): string {
+  switch (priority) {
+    case "critical":
+      return ANSI_COLORS.critical;
+    case "high":
+      return ANSI_COLORS.high;
+    case "medium":
+      return ANSI_COLORS.medium;
+    case "low":
+      return ANSI_COLORS.low;
+    case "normal":
+      return ANSI_COLORS.normal;
+    default:
+      return ANSI_COLORS.unknownPriority;
+  }
 }
 
 export function renderLines(lines: string[]): string {
@@ -85,6 +124,35 @@ export function formatTeamDetail(name: string, board: { total: number; columns: 
     for (const ticket of column.tickets) lines.push(`  ${ticket.id.padEnd(8)} [${ticket.priority}] ${ticket.title}`);
   }
   lines.push(runningDeployments.length > 0 ? `\ndeployments: ${runningDeployments.join(", ")}` : "\ndeployments: none running");
+  return renderLines(lines);
+}
+
+export function formatBoard(board: BoardView, options: BoardFormatOptions = {}): string {
+  const lines: string[] = [`Board: ${board.project} (${board.total} tickets)`];
+  const allTickets = board.columns.flatMap((column) => column.tickets);
+  const idWidth = Math.max(8, ...allTickets.map((ticket) => ticket.id.length));
+  const priorityWidth = Math.max(10, ...allTickets.map((ticket) => `[${ticket.priority}]`.length));
+  const assigneeWidth = Math.max(10, ...allTickets.map((ticket) => (ticket.assignee || "unassigned").length));
+  const prefix = "  ";
+  const colorEnabled = options.colorEnabled ?? false;
+
+  for (const column of board.columns) {
+    lines.push(`\n${withAnsi(colorEnabled, ANSI_COLORS.statusHeader, `${column.status} (${column.count})`)}`);
+    if (column.tickets.length === 0) {
+      lines.push(`${prefix}(empty)`);
+      continue;
+    }
+
+    for (const ticket of column.tickets) {
+      const assignee = ticket.assignee || "unassigned";
+      const statusLabel = ticket.hasRunningDeployment ? " [deploying]" : "";
+      const priority = `[${ticket.priority}]`;
+      const statusMarker = withAnsi(colorEnabled, ANSI_COLORS.deploying, statusLabel);
+      lines.push(
+        `${prefix}${ticket.id.padEnd(idWidth)} ${withAnsi(colorEnabled, priorityColor(ticket.priority), priority.padEnd(priorityWidth))} ${assignee.padEnd(assigneeWidth)} ${ticket.title}${statusMarker}`,
+      );
+    }
+  }
   return renderLines(lines);
 }
 
