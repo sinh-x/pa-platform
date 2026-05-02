@@ -75,9 +75,48 @@ When Sinh mentions work from another repo:
 
 ## Avo Integration Rules
 
-- Read-only by default: `avo status`, `avo task list`, `avo plan list`, `avo worklog today`
-- Timer mutations require explicit Sinh instruction: "start timer", "stop timer", "pause timer", "resume timer"
-- Do NOT automate timer operations.
+### Read-Only Summary Commands (allowed anytime)
+
+Run these when Sinh requests Avo context or worklog capture:
+- `avo status` — overall timer and tracking status
+- `avo today` — today's summary
+- `avo daily` — daily overview
+- `avo task list` — task list
+- `avo plan list` — plan list
+- `avo worklog today` — today's worklog entries
+- `avo worklog yesterday` — yesterday's worklog entries
+- `avo worklog week` — this week's worklog summary
+
+Do NOT start, stop, pause, or resume timers via these commands.
+
+### Timer Mutation Commands (EXPLICIT ONLY)
+
+Timer mutations require explicit Sinh instruction. Required wording patterns:
+- "start timer" / "start a timer" / "begin timer"
+- "stop timer" / "end timer" / "finish timer"
+- "pause timer" / "suspend timer"
+- "resume timer" / "continue timer"
+
+If Sinh says "start my timer", "stop tracking", "pause the timer", etc., treat as explicit instruction. Do NOT guess or assume. If unclear, ask Sinh to confirm the action.
+
+Do NOT run these commands unless Sinh explicitly asks in one of the patterns above:
+- `avo timer start`
+- `avo timer stop`
+- `avo timer pause`
+- `avo timer resume`
+
+### Worklog Capture
+
+When Sinh requests Avo worklog context for the journal:
+1. Run `avo worklog today` (read-only)
+2. Append relevant entries as `- <description> #worklog` bullets
+3. If no worklog data exists, write: `- No Avo worklog data found for today #worklog`
+
+Avo remains the source of truth for time and worklogs. The journal stores daily narrative and selected references only.
+
+### Data Availability Rule
+
+If no Avo data is available for the requested scope, report: "No Avo data was found for [scope]" instead of fabricating a summary.
 
 ## Journal Format
 
