@@ -156,7 +156,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 ---
 
 ### Phase 6.5: Self-Review Against Quality Bar
-**Goal:** Verify the draft meets the 9-check Quality Bar before showing Sinh.
+**Goal:** Verify the draft meets the 13-check Quality Bar before showing Sinh.
 
 **Quality Bar (all must pass):**
 1. All 13 sections present
@@ -168,14 +168,20 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 7. Risks have mitigations or open questions
 8. Impact analysis filled if originating ticket had `doc_refs`
 9. Builder handoff is executable: implementation-bound docs name `Feature Branch` and each implementation phase has deliverables, FR/NFR/AC traceability, and verification steps
+10. Functional Requirements table is populated: §6 Functional Requirements has at least one non-placeholder row. Empty `N/A` requires a 1-sentence reason naming why no functional behavior changes.
+11. Non-Functional Requirements table is quantitative: §7 Non-Functional Requirements has at least one row and at least one quantitative row with a numeric budget, named standard, or measurable threshold. If no runtime impact exists, use `N/A — purely structural change with no runtime impact`.
+12. Open Questions resolved for handoff: §14 Open Questions has zero unresolved items at handoff. Every open item is tagged `[BLOCKING]` or `[NON-BLOCKING — defer to Phase 2 because <rationale>]`; untagged or `[BLOCKING]` items block handoff until resolved or correctly tagged non-blocking with rationale.
+13. Blast Radius documented: §12 Technical Approach or §15 Impact Analysis includes Blast Radius with estimated LoC touched, existing module count, new module count, and rewrite justification when proposing a rewrite. Rewrites over 200 LoC without this fail.
 
 **Actions:**
-- [ ] Run all 9 checks against the draft
+- [ ] Run all 13 checks against the draft
 - [ ] Fix every failure that can be fixed from current information
 - [ ] If a fix needs more input, return to Ambiguity Protocol and ask Sinh
-- [ ] Report status: "Self-review passed all 9 checks" OR "Failed on check N: <reason>"
+- [ ] Report status: "Self-review passed all 13 checks. Shape-Conformance: 13/13. Showing draft for walkthrough." OR "Self-review failed on check N: <reason>. Shape-Conformance: X/13. I need clarification before proceeding."
+- [ ] Compute Shape-Conformance as a deterministic pass/fail count across checks 1-13 with no weighting
+- [ ] Report `Shape-Conformance: N/13` to Sinh and embed the same value in the saved requirements doc header as `> Shape-Conformance: N/13`
 
-**Gate Criteria:** All 9 checks pass (or remaining failures are logged as open questions in auto-mode).
+**Gate Criteria:** All 13 checks pass. Untagged or `[BLOCKING]` Open Questions block save and handoff until resolved, or correctly tagged `[NON-BLOCKING — defer to Phase 2 because <rationale>]`.
 
 **Output Expectation:** Draft revised to pass Quality Bar.
 

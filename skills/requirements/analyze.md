@@ -188,13 +188,15 @@ Surface anything unclear:
 
 Write a **draft** requirements document using the **Standard Checklist** below. This is a draft — do NOT save to disk yet. Save happens only after Phases 6.5 and 6.6 pass.
 
+**Reuse-first requirement:** Default to additive change. Before proposing new modules, data sources, or rewrites, identify reusable existing modules and data sources, then document why each will be extended or rejected.
+
 **Builder handoff requirement:** If the ticket will be routed to builder, the draft MUST include a `Feature Branch` header value and an ordered implementation phase checklist. Each phase MUST include concrete deliverables, traceability to the relevant FR/NFR/AC IDs, and phase-specific verification steps. Do not rely on builder/orchestrator to derive these from prose.
 
 ### Phase 6.5: Self-Review Against Quality Bar
 
 Before showing the draft to Sinh, run it through the **Quality Bar**. Every check MUST pass. If any check fails and you can fix it from current information, fix and re-check. If a fix needs more input, return to the Ambiguity Protocol and ask Sinh.
 
-**Quality Bar (all 9 must pass):**
+**Quality Bar (all 13 must pass):**
 
 | # | Check | How to verify |
 |---|-------|---------------|
@@ -207,12 +209,18 @@ Before showing the draft to Sinh, run it through the **Quality Bar**. Every chec
 | 7 | Risks have mitigations or open questions | Every risk in §9 has either a mitigation or an open question driving toward one. |
 | 8 | Impact analysis included if doc_refs present | If the originating ticket had `doc_refs`, §12 Impact Analysis is filled with change surface, downstream consumers, and risk levels. |
 | 9 | Builder handoff is executable | Implementation-bound docs name `Feature Branch` and include ordered phase checkboxes where every phase has deliverables, FR/NFR/AC traceability, and verification steps. |
+| 10 | Functional Requirements table is populated | §6 Functional Requirements has at least one non-placeholder row. Empty `N/A` requires a 1-sentence reason naming why no functional behavior changes. |
+| 11 | Non-Functional Requirements table is quantitative | §7 Non-Functional Requirements has at least one row and at least one quantitative row with a numeric budget, named standard, or measurable threshold. If no runtime impact exists, use `N/A — purely structural change with no runtime impact`. |
+| 12 | Open Questions resolved for handoff | §14 Open Questions has zero unresolved items at handoff. Every open item is tagged `[BLOCKING]` or `[NON-BLOCKING — defer to Phase 2 because <rationale>]`; `[BLOCKING]` items must be resolved before save or `pending-approval`. |
+| 13 | Blast Radius documented | §12 Technical Approach or §15 Impact Analysis includes Blast Radius with estimated LoC touched, existing module count, new module count, and rewrite justification when proposing a rewrite. Rewrites over 200 LoC without this fail. |
 
 Report status to Sinh:
 
-- All passed: "Self-review passed all 9 checks. Showing draft for walkthrough."
+- All passed: "Self-review passed all 13 checks. Shape-Conformance: 13/13. Showing draft for walkthrough."
 - Failed and resolvable: fix silently and re-check.
-- Failed and unresolvable: "Self-review failed on check N: <reason>. I need clarification before proceeding." — then trigger Ambiguity Protocol.
+- Failed and unresolvable: "Self-review failed on check N: <reason>. Shape-Conformance: X/13. I need clarification before proceeding." — then trigger Ambiguity Protocol.
+
+Compute Shape-Conformance as a deterministic pass/fail count across checks 1-13 with no weighting. Report `Shape-Conformance: N/13` to Sinh and embed the same value in the saved requirements doc header as `> Shape-Conformance: N/13`.
 
 **Auto-mode exception:** Auto modes still run Self-Review. Failed checks that cannot be auto-fixed must be logged in §11 Open Questions and tagged `needs-clarification` per Ambiguity Protocol — do NOT proceed to save with failed checks except as flagged open questions.
 
@@ -397,7 +405,8 @@ Include in the ticket's summary: what Sinh needs to do (approve, feedback, open 
 ## Rules
 
 - **Ambiguity halts work** — when any Ambiguity Protocol trigger fires, you MUST pause and ask Sinh before continuing. Do NOT silently assume. Auto modes log the unresolved item and tag the ticket `needs-clarification` instead.
-- **Self-review is mandatory** — every draft must pass the 9-check Quality Bar (Phase 6.5) before reaching Sinh. No exceptions.
+- **Self-review is mandatory** — every draft must pass the 13-check Quality Bar (Phase 6.5) before reaching Sinh. No exceptions.
+- **Open Questions gate handoff** — before save or `pending-approval`, §14 Open Questions must contain no unresolved `[BLOCKING]` items, and every remaining open item must be tagged `[NON-BLOCKING — defer to Phase 2 because <rationale>]`. Untagged open questions block handoff.
 - **Sign-off before save** — never save the final requirements or UAT documents without explicit Sinh approval in Phase 6.6. "Yes" or equivalent — silence is not consent.
 - **Always interactive** — foreground TUI is the default for interactive modes; ask, don't guess. Auto modes skip walkthroughs but still apply the Ambiguity Protocol via open-questions logging.
 - **Explore before proposing** — read the codebase in Phase 3 before suggesting a technical approach.
