@@ -92,8 +92,8 @@ Use this format for cross-repo entries:
 Examples:
 ```
 - Worked on auth refactor in pa-platform #worklog [src:pa-platform] [ticket:PAP-026] [dep:d-6357a7]
-- Fixed login bug in personal-assistant #issue [src:personal-assistant] [ticket:PA-042] [file:src/auth/login.ts]
-- Reviewed PR artifact for AVO-028 #note [src:avodah] [art:agent-teams/builder/artifacts/2026-05-02-pr-review.md]
+- Fixed login bug in personal-assistant #issue [src:personal-assistant] [ticket:PA-042]
+- Reviewed PR artifact for AVO-028 #note [src:avodah]
 ```
 
 ### Long Artifact Content
