@@ -27,7 +27,7 @@ import { formatLocal, formatLocalShort, nowUtc, parseTimestamp } from "../time.j
 import type { TrashFileType, TrashStatus } from "../trash/index.js";
 import type { DeploymentStatus } from "../types.js";
 import { runTicketCommand } from "./commands/ticket.js";
-import { formatBulletinList, formatRegistryList, formatRegistryShow, formatReposList, formatTeamDetail, formatTeamList, formatTeamsJson, formatTimers, formatTrashList, formatTrashShow } from "./formatters.js";
+import { formatBoard, formatBulletinList, formatRegistryList, formatRegistryShow, formatReposList, formatTeamDetail, formatTeamList, formatTeamsJson, formatTimers, formatTrashList, formatTrashShow } from "./formatters.js";
 
 export interface CliIo {
   stdout?: (text: string) => void;
@@ -418,16 +418,13 @@ function runBoardCommand(argv: string[], io: Required<CliIo>): number {
   const resolved = resolveBoardProject(opts);
   if ("error" in resolved) return printError(resolved.error, io);
   const board = buildBoardView(resolved.project, { assignee: opts.assignee, excludeTags: ["backlog", "archived"], excludeTypes: ["fyi", "work-report"] });
-  io.stdout(`Board: ${board.project} (${board.total} tickets)`);
-  for (const column of board.columns) {
-    io.stdout(`\n${column.status} (${column.count})`);
-    if (column.tickets.length === 0) {
-      io.stdout("  (empty)");
-      continue;
-    }
-    for (const ticket of column.tickets) io.stdout(`  ${ticket.id.padEnd(8)} [${ticket.priority}] ${ticket.title}${ticket.hasRunningDeployment ? " [deploying]" : ""}`);
-  }
+  io.stdout(formatBoard(board, { colorEnabled: shouldUseBoardColors() }));
   return 0;
+}
+
+function shouldUseBoardColors(): boolean {
+  if (process.env["NO_COLOR"]) return false;
+  return process.stdout.isTTY === true;
 }
 
 function runTeamsCommand(argv: string[], io: Required<CliIo>): number {
