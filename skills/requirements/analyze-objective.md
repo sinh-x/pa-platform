@@ -248,6 +248,6 @@ When you pick up a ticket for work:
 - **Sign-off before save** — never save without explicit Sinh approval in Phase 6.6.
 - **Always interactive** — ask the user, don't assume.
 - **Explore before proposing** — read the codebase in Phase 3.
-- **No section left behind** — all 13 checklist sections must be addressed; "N/A" requires a 1-sentence justification.
+- **No section left behind** — every checklist section must be addressed; "N/A" requires a 1-sentence justification.
 - **Gates are firm for ambiguity, soft for pacing** — never skip an Ambiguity Protocol pause; you may continue past completeness gates if remaining work is genuinely minor.
 - **Keep it scannable** — tables, checkboxes, short bullets.
