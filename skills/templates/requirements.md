@@ -1,7 +1,7 @@
 # Template: Requirements
 
 > **Template:** requirements
-> **Version:** 4.0
+> **Version:** 4.1
 > **Last Updated:** 2026-05-01
 > **Used by:** Requirements team analyze modes
 > **Produces:** Requirements document and implementation checklist
@@ -29,6 +29,7 @@ Canonical requirements document template for pa-platform requirements analysis. 
 > Repository: <repo_path or N/A with reason>
 > Ticket: <ticket-id or none>
 > Feature Branch: feature/<ticket-id>-<topic-slug> or N/A with reason
+> Shape-Conformance: N/13
 
 ## 1. Title
 <Short human-readable title.>
@@ -56,17 +57,17 @@ Non-Goals:
 
 ## 6. Functional Requirements
 
+Required: include at least one real Functional Requirement row with non-placeholder content, or write `N/A - <one-sentence reason>` if no functional requirements apply. Do not leave placeholder rows in saved documents.
+
 | # | Requirement | Priority | Notes |
 |---|-------------|----------|-------|
-| F1 | <requirement text> | Must / Should / Could | <context or rationale> |
-| F2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
 ## 7. Non-Functional Requirements
 
+Required: include at least one Non-Functional Requirement row and at least one quantitative row with a numeric budget, named standard, or measurable threshold. If the work is purely structural with no runtime impact, write exactly `N/A — purely structural change with no runtime impact` instead of table rows.
+
 | # | Requirement | Priority | Notes |
 |---|-------------|----------|-------|
-| NF1 | <requirement text> | Must / Should / Could | <context or rationale> |
-| NF2 | <requirement text> | Must / Should / Could | <context or rationale> |
 
 ## 8. Dependencies
 
@@ -94,6 +95,9 @@ Files and areas to inspect or modify:
 
 Existing patterns to reuse:
 - <pattern>
+
+Reuse Analysis:
+- Identify existing modules, data sources, templates, commands, or patterns to extend before proposing new ones. If rejecting reuse, state why.
 
 Flow:
 - <implementation or analysis flow>
@@ -126,6 +130,12 @@ Effort estimate:
 
 <Change surface, downstream consumers, risk level. N/A with reason if originating ticket had no doc_refs.>
 
+Blast Radius:
+- Estimated LoC touched: <number or bounded estimate>
+- Existing modules extended: <count and names>
+- New modules created: <count and names, or 0>
+- Rewrite justification: <required if replacing or rewriting an existing module; otherwise N/A with reason>
+
 ## 16. Follow-up / Future Work
 
 <Deferred work or None>
@@ -134,6 +144,7 @@ Effort estimate:
 ## 17. Guidance Notes
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
+- Shape-Conformance is a deterministic pass/fail count across 13 Quality Bar checks. Use `N/13`; do not apply weighting.
 - Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
 - Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.
