@@ -279,6 +279,90 @@ test("generatePrimer renders claude-specific tool guidance", () => {
   assert.match(primer, /Write clear requirements/);
 });
 
+test("generatePrimer renders claude active bulletins, procedures, and deployment instructions", () => {
+  const claudeTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: shared-skill
+`);
+  const primer = generatePrimer({ runtime: "claude", teamConfig: claudeTeam, mode: "implement" });
+  assert.match(primer, /Runtime: claude/);
+  assert.match(primer, /## Active Bulletins/);
+  assert.match(primer, /Before starting work, run `cpa bulletin list`/);
+  assert.match(primer, /## Available Procedures/);
+  assert.match(primer, /pa-startup: startup order/);
+  assert.match(primer, /pa-ticket-workflow: ticket claim/);
+  assert.match(primer, /pa-session-log: session logs/);
+  assert.match(primer, /## Deployment Instructions/);
+  assert.match(primer, /Use `cpa` for PA platform workflow commands/);
+  assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
+  assert.match(primer, /Skill \(slash commands\), AskUserQuestion, Agent, TeamCreate, SendMessage, and ScheduleWakeup/);
+  assert.match(primer, /finalize registry state with `cpa registry complete`/);
+  // claude branch must NOT swap in opa idioms
+  assert.doesNotMatch(primer, /opa bulletin list/);
+  assert.doesNotMatch(primer, /Use `opa` for PA platform workflow commands/);
+  assert.doesNotMatch(primer, /opa registry complete/);
+});
+
+test("generatePrimer adapts PA CLI references to cpa for claude runtime", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-claude-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), [
+      "# PA CLI Reference",
+      "All agents have access to the `pa` CLI.",
+      "Run `pa deploy builder` and `pa ticket list`.",
+      "Project key `pa` remains unchanged.",
+    ].join("\n"));
+    const teamWithSkill = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Run pa deploy builder and pa ticket list
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+
+    const primer = generatePrimer({ runtime: "claude", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    assert.match(primer, /# CPA CLI Reference/);
+    assert.match(primer, /`cpa` CLI/);
+    assert.match(primer, /Run cpa deploy builder and cpa ticket list/);
+    assert.match(primer, /Project key `pa` remains unchanged/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("createMockRuntimeAdapter supplies claude defaults", async () => {
+  const { createMockRuntimeAdapter } = await import("../cli/run.js");
+  const claudeMock = createMockRuntimeAdapter("claude");
+  assert.equal(claudeMock.name, "claude");
+  assert.equal(claudeMock.defaultModel, "claude-opus-4-7");
+  assert.equal(claudeMock.sessionFileName, "session-id-claude.txt");
+  const opencodeMock = createMockRuntimeAdapter("opencode");
+  assert.equal(opencodeMock.defaultModel, "sonnet");
+  assert.equal(opencodeMock.sessionFileName, "session-id-opencode.txt");
+});
+
 test("generatePrimer reads mode objective files and applies template vars", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-"));
   try {

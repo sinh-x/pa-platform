@@ -6,11 +6,11 @@ Team YAML files are active shared configuration and should remain structurally c
 
 Runtime selection is handled by the adapter CLI:
 
-- `cpa` interprets shared team config for Claude Code execution.
-- `opa` is the default OpenCode adapter and interprets shared team config for opencode execution.
+- `cpa` (`@pa-platform/claudecode-pa`) interprets shared team config for Claude Code execution. Implemented; default model `claude-opus-4-7`; `--provider` accepts only `anthropic`. See `docs/cpa-claude-code-adapter.md` for the operator overview.
+- `opa` (`@pa-platform/opencode-pa`) is the OpenCode adapter and interprets shared team config for opencode execution.
 - Adapter config decides how provider/model hints are mapped, overridden, or ignored for that runtime.
 
-Use `pa-core serve` for the Agent API server lifecycle. `opa` should provide deployment execution hooks; it should not own the server lifecycle.
+Use `pa-core serve` for the Agent API server lifecycle. Adapters provide deployment execution hooks; they should not own the server lifecycle.
 
 Team YAML and mode objective files should not require Claude Code or opencode-specific tools directly. Runtime-specific tool guidance is injected by `pa-core` primer generation from the active adapter's runtime metadata.
 

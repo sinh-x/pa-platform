@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PA_CORE="$ROOT/completions/pa-core.fish"
 OPA="$ROOT/completions/opa.fish"
+CPA="$ROOT/completions/cpa.fish"
 
 if [[ ! -f "$PA_CORE" ]]; then
   echo "Missing source completions: $PA_CORE" >&2
@@ -26,3 +27,20 @@ perl \
   "$PA_CORE" > "$OPA"
 
 echo "Generated completions/opa.fish from completions/pa-core.fish"
+
+perl \
+  -e '
+    local $/;
+    $_ = <>;
+    s/Fish completions for pa-core/Fish completions for cpa (claudecode-pa adapter)/;
+    s/__pa_core_/__cpa_/g;
+    s/\bpa-core\b/cpa/g;
+    s/case --mode --objective --repo --ticket --timeout/case --mode --objective --objective-file --provider --model --team-model --agent-model --repo --ticket --timeout --resume/;
+    s/--mode --objective --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
+    s/(complete -c cpa -n __cpa_deploy_completing -l objective -d '\''Deployment objective'\'' -r\n)/$1complete -c cpa -n __cpa_deploy_completing -l objective-file -d '\''Objective from file'\'' -r -a '\''(complete -C "echo " | string match -r "^[^ ]+")'\''\ncomplete -c cpa -n __cpa_deploy_completing -l list-modes -d '\''List available deploy modes'\''\ncomplete -c cpa -n __cpa_deploy_completing -l validate -d '\''Validate without deploying'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l model -d '\''Model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l team-model -d '\''Team model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l agent-model -d '\''Agent model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\n/;
+    s/(complete -c cpa -n __cpa_deploy_completing -l timeout -d '\''Timeout seconds'\'' -r\n)/$1complete -c cpa -f -n __cpa_deploy_completing -l resume -d '\''Resume from deployment ID'\'' -r -a '\''(__cpa_deployments)'\''\n/;
+    print;
+  ' \
+  "$PA_CORE" > "$CPA"
+
+echo "Generated completions/cpa.fish from completions/pa-core.fish"

@@ -2,7 +2,7 @@
 
 Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 
-`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters such as `cpa` and `opa` can then provide execution hooks without duplicating core behavior. `opa` is the default OpenCode deployment adapter; `pa-core` still owns runtime-neutral server lifecycle behavior.
+`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters such as `cpa` and `opa` provide execution hooks without duplicating core behavior. `opa` is the OpenCode deployment adapter; `cpa` is the Claude Code adapter (anthropic-only); `pa-core` still owns runtime-neutral server lifecycle behavior.
 
 ## Packages
 
@@ -10,6 +10,7 @@ Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 |---|---|
 | `@pa-platform/pa-core` | Runtime-neutral PA core library, shared CLI dispatcher, and Agent API app |
 | `@pa-platform/opencode-pa` | OpenCode adapter that provides the `opa` CLI and runtime hooks |
+| `@pa-platform/claudecode-pa` | Claude Code adapter that provides the `cpa` CLI, settings.json hooks, and stream-json activity capture |
 
 ## CLI
 
@@ -23,11 +24,14 @@ pa-core ticket list --project pa-platform
 pa-core status
 ```
 
-Deployment execution is adapter-hooked, with `opa` as the default OpenCode adapter:
+Deployment execution is adapter-hooked. Use `opa` for OpenCode runs and `cpa` for Claude Code runs:
 
 ```bash
 opa deploy builder --mode implement
+cpa deploy builder --mode implement
 ```
+
+`cpa` defaults to model `claude-opus-4-7` and `--provider anthropic`; see `docs/cpa-claude-code-adapter.md` for the full adapter overview.
 
 The Agent API server is core-owned:
 
@@ -87,7 +91,7 @@ corepack pnpm build
 nix flake show --no-write-lock-file
 ```
 
-Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish` and `completions/opa.fish`.
+Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`, `completions/opa.fish`, and `completions/cpa.fish`.
 
 Regenerate adapter completions and run the staged secret scanner with:
 
