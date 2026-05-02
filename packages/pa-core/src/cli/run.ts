@@ -63,10 +63,15 @@ function resolveBinary(binaryName: string): string {
 }
 
 export function createMockRuntimeAdapter(name: RuntimeName = "opencode"): RuntimeAdapter {
+  const defaults: Record<RuntimeName, { defaultModel: string; sessionFileName: string }> = {
+    opencode: { defaultModel: "sonnet", sessionFileName: "session-id-opencode.txt" },
+    claude: { defaultModel: "claude-opus-4-7", sessionFileName: "session-id-claude.txt" },
+  };
+  const { defaultModel, sessionFileName } = defaults[name];
   return {
     name,
-    defaultModel: name === "claude" ? "sonnet" : "sonnet",
-    sessionFileName: `.session-${name}`,
+    defaultModel,
+    sessionFileName,
     spawn: async (opts) => ({
       sessionId: opts.deployId,
       exitCode: 0,

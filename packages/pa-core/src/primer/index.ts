@@ -128,31 +128,44 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
 }
 
 function renderActiveBulletins(runtime: RuntimeName): string {
-  if (runtime !== "opencode") return "";
-  return [
-    "## Active Bulletins",
-    "Before starting work, run `opa bulletin list`.",
-    "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
-    "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
-  ].join("\n");
+  switch (runtime) {
+    case "opencode":
+      return [
+        "## Active Bulletins",
+        "Before starting work, run `opa bulletin list`.",
+        "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
+        "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
+      ].join("\n");
+    case "claude":
+      return [
+        "## Active Bulletins",
+        "Before starting work, run `cpa bulletin list`.",
+        "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
+        "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
+      ].join("\n");
+    default:
+      return "";
+  }
 }
 
+const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
+  ["pa-startup", "startup order, bulletin checks, ticket/objective alignment, and additional-instructions priority"],
+  ["pa-ticket-workflow", "ticket claim/update/handoff, doc-ref handling, and one-ticket-per-work-item rules"],
+  ["pa-session-log", "session logs, artifact finalization, shutdown, and registry completion"],
+  ["pa-self-improvement", "required self-reflection content for session logs"],
+  ["pa-registry", "deployment completion markers and post-completion updates"],
+  ["pa-communication", "cross-team and Sinh communication conventions"],
+  ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
+];
+
 function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], runtime: RuntimeName): string {
-  if (runtime !== "opencode") return "";
+  if (runtime !== "opencode" && runtime !== "claude") return "";
   const skillNames = new Set(skills.map((skill) => skill.name));
-  const procedures = [
-    ["pa-startup", "startup order, bulletin checks, ticket/objective alignment, and additional-instructions priority"],
-    ["pa-ticket-workflow", "ticket claim/update/handoff, doc-ref handling, and one-ticket-per-work-item rules"],
-    ["pa-session-log", "session logs, artifact finalization, shutdown, and registry completion"],
-    ["pa-self-improvement", "required self-reflection content for session logs"],
-    ["pa-registry", "deployment completion markers and post-completion updates"],
-    ["pa-communication", "cross-team and Sinh communication conventions"],
-    ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
-  ].filter(([name]) => skillNames.has(name));
-  const lines = [
-    "## Available Procedures",
-    "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external Claude Code skill folders.",
-  ];
+  const procedures = PROCEDURE_CATALOG.filter(([name]) => skillNames.has(name));
+  const intro = runtime === "claude"
+    ? "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content and take precedence over any Claude Code skills loaded from `~/.claude/skills`."
+    : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external Claude Code skill folders.";
+  const lines = ["## Available Procedures", intro];
   if (procedures.length > 0) {
     for (const [name, description] of procedures) lines.push(`- ${name}: ${description}.`);
   } else {
@@ -166,8 +179,24 @@ function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], r
 }
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
-  if (runtime !== "opencode") return "";
+  if (runtime !== "opencode" && runtime !== "claude") return "";
   const executionStyle = mode?.solo || (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
+  if (runtime === "claude") {
+    const lines = [
+      "## Deployment Instructions",
+      "Use `cpa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use the Claude Code tools and skills exposed in the active session — including Skill (slash commands), AskUserQuestion, Agent, TeamCreate, SendMessage, and ScheduleWakeup — when they are needed.",
+      "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
+      "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
+      "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `cpa registry complete` or `cpa registry update` when the run finishes.",
+      "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
+    ];
+    if (executionStyle === "solo") {
+      lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
+    } else {
+      lines.push("This is a team-mode deployment: spawn sub-agents via the Agent tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
+    }
+    return lines.join("\n");
+  }
   const lines = [
     "## Deployment Instructions",
     "Use `opa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use only tools exposed in the current opencode session.",
@@ -211,19 +240,31 @@ const CLAUDECODE_PROSE_LINE_RE = /^.*CLAUDECODE.*(?:\n|$)/gm;
 const EXTERNAL_CLAUDE_SKILLS_PATH_RE = /(?:~|\/home\/[^\s"`<>]+)\/\.claude\/skills/g;
 
 function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
-  if (runtime !== "opencode") return content;
-  return content
-    .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
-    .replace(PA_CLI_COMMAND_RE, "$1opa")
-    .replace(CLAUDECODE_PROSE_LINE_RE, "")
-    .replace(/`pa` CLI/g, "`opa` CLI")
-    .replace(/\bPA CLI\b/g, "OPA CLI")
-    .replace(/\bpa CLI\b/g, "opa CLI")
-    .replace(/\bpa commands\b/g, "opa commands")
-    .replace(/\bpa command\b/g, "opa command")
-    .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
-    .replace(/\bAskUserQuestion\b/g, "direct user question")
-    .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "opencode-exposed tools");
+  if (runtime === "opencode") {
+    return content
+      .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
+      .replace(PA_CLI_COMMAND_RE, "$1opa")
+      .replace(CLAUDECODE_PROSE_LINE_RE, "")
+      .replace(/`pa` CLI/g, "`opa` CLI")
+      .replace(/\bPA CLI\b/g, "OPA CLI")
+      .replace(/\bpa CLI\b/g, "opa CLI")
+      .replace(/\bpa commands\b/g, "opa commands")
+      .replace(/\bpa command\b/g, "opa command")
+      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
+      .replace(/\bAskUserQuestion\b/g, "direct user question")
+      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "opencode-exposed tools");
+  }
+  if (runtime === "claude") {
+    return content
+      .replace(PA_CLI_COMMAND_RE, "$1cpa")
+      .replace(/`pa` CLI/g, "`cpa` CLI")
+      .replace(/\bPA CLI\b/g, "CPA CLI")
+      .replace(/\bpa CLI\b/g, "cpa CLI")
+      .replace(/\bpa commands\b/g, "cpa commands")
+      .replace(/\bpa command\b/g, "cpa command")
+      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills");
+  }
+  return content;
 }
 
 function defaultToolReference(runtime: RuntimeName): string {
@@ -235,6 +276,15 @@ function defaultToolReference(runtime: RuntimeName): string {
       "Use opencode tools exposed in the current session.",
       "Task-style delegation is only available when exposed by the current opencode session.",
       "Do not assume Claude-only operational tools exist.",
+    ].join("\n");
+  }
+  if (runtime === "claude") {
+    return [
+      "Runtime: Claude Code via `cpa`.",
+      "Use `cpa` for PA platform deployment and workflow commands; it invokes the same pa-core command set `opa` uses, with anthropic-only provider resolution and Claude Code session integration.",
+      "Use `pa-core serve` for Agent API server lifecycle; `cpa` is a deployment adapter, not the server owner.",
+      "Claude Code team deployments may use Skill (slash commands), AskUserQuestion, Agent (sub-agent spawning), TeamCreate, SendMessage, and ScheduleWakeup when they are exposed by the active session.",
+      "Use tool availability from the active session as the source of truth.",
     ].join("\n");
   }
 
