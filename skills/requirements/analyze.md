@@ -6,6 +6,157 @@ You are a requirements analyst. Your job is to help the user fully understand a 
 
 This is an **interactive** session. You talk to the user, ask questions, and build the requirements document together. Do NOT assume — always ask.
 
+## Intake Classification Policy (Phase 1)
+
+Before scope finalization, classify the request into exactly one work class:
+
+- `software-dev`
+- `data-analysis/dashboard-pipeline`
+
+Do not continue to scope/profile selection without a recorded class. No unclassified documents may proceed.
+
+### Two-Step Triage for Ambiguous Requests (mandatory)
+
+If a request appears mixed, apply this deterministic sequence:
+
+1. **Primary deliverable test** — classify by what must be produced at handoff.
+   - `software-dev`: primary output is application/software behavior changes (code paths, APIs, UI, automation logic).
+   - `data-analysis/dashboard-pipeline`: primary output is analysis artifacts, dashboard/data-pipeline behavior, metrics logic, dataset transformations, or reporting logic.
+2. **Dominant verification test** — if Step 1 is still unclear, classify by the verification style that dominates acceptance:
+   - `software-dev`: dominant verification is software checks (typecheck/build/test/runtime behavior).
+   - `data-analysis/dashboard-pipeline`: dominant verification is data checks (query/data correctness, metric definitions, pipeline validation, dashboard output integrity).
+
+If both steps still tie, escalate to Sinh before proceeding.
+
+### Deterministic Routing Anchor (no ambiguous fallback)
+
+The requirements handoff must include one deterministic route based on class:
+
+- `software-dev` -> standard software implementation route (builder implementation path)
+- `data-analysis/dashboard-pipeline` -> PAP-048-gated data-analysis/dashboard-pipeline implementation semantics (do not claim an active builder mode until PAP-048 is approved)
+
+Never use "decide later" or any ambiguous fallback in the handoff route.
+
+### Routing/Handoff Map (Phase 3)
+
+When preparing handoff, record exactly one route from this table:
+
+| Class | Target team/mode | Handoff format requirements |
+|---|---|---|
+| `software-dev` | `builder` / `implement` | Requirements doc must include repo path, feature branch, ordered implementation phases, FR/NFR/AC traceability, and repository verification commands for changed files. |
+| `data-analysis/dashboard-pipeline` | PAP-048-gated `builder/data-analysis` semantics | Requirements doc must include Data Understanding, Pipeline Validation, and PAP-048 Compatibility sections plus data/pipeline verification checks. Include explicit note that mode semantics follow PAP-048, do not claim mode availability before approval, and introduce no conflicting route labels. |
+
+Handoff output format must include:
+
+- `Class:` one of the two allowed classes
+- `Route:` exactly one target `team/mode`
+- `Handoff Format:` checklist of required sections/evidence for that class
+
+Do not add a fallback route, multi-route option, or deferred routing decision.
+
+### Routing Scenario Check (Phase 3 verification)
+
+Before handoff, validate one scenario for each class:
+
+1. Software scenario -> yields only `builder/implement`.
+2. Data scenario -> yields only PAP-048-gated `builder/data-analysis` semantics with PAP-048 compatibility note and explicit no-availability-claim language.
+
+If either scenario maps to more than one route, stop and fix the routing section before handoff.
+
+### Escalation Rule
+
+Escalate classification only when both two-step tests fail to separate classes. On escalation, pause and ask Sinh with the two-step evidence and proposed default.
+
+### Compatibility Constraint (PAP-048)
+
+For `data-analysis/dashboard-pipeline` classification, keep terminology and routing compatible with PAP-048 builder data-analysis mode semantics. Do not introduce conflicting class names, route labels, or verification language.
+
+## Rollout Guardrails (Phase 4)
+
+Use this operator checklist during intake and self-review. Keep it short and deterministic.
+
+### Operator Checklist (run in order)
+
+1. **Classification gate**: record exactly one class before scope finalization (`software-dev` or `data-analysis/dashboard-pipeline`).
+2. **Profile gate**: include exactly one class-specific profile checklist in the requirements output.
+3. **Route gate**: record one deterministic class-to-route mapping (`software-dev` -> `builder/implement`; `data-analysis/dashboard-pipeline` -> PAP-048-gated `builder/data-analysis` semantics).
+4. **Verification gate**: run class-specific measurable quality checks before handoff.
+5. **Escalation gate**: if class cannot be resolved after two-step triage, pause and escalate to Sinh (no guessing, no invented class).
+
+### Fallback Guidance for Ambiguous or Blocked Classification
+
+When classification is ambiguous, apply exactly this fallback sequence:
+
+1. Apply Step 1 and Step 2 triage tests.
+2. If still unresolved, stop drafting and open a classification clarification to Sinh with:
+   - competing class candidates,
+   - Step 1 evidence,
+   - Step 2 evidence,
+   - proposed temporary default (clearly marked as unapproved).
+3. Keep the ticket/doc blocked for class decision; do not continue as unclassified and do not invent a third class.
+
+### Class-Specific Measurable Quality Gates
+
+Run these during Phase 6.5 self-review:
+
+- `software-dev`
+  - Required sections complete for software profile.
+  - Dependencies named explicitly in `## 8. Dependencies`.
+  - At least one quantified NFR or explicit justified N/A statement.
+  - Verification checklist contains software checks for changed files (typecheck/build/test/runtime as applicable).
+
+- `data-analysis/dashboard-pipeline`
+  - Required sections complete (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`).
+  - Dependencies named explicitly in `## 8. Dependencies`.
+  - At least one quantified NFR or explicit justified N/A statement.
+  - Verification checklist contains data/pipeline checks (query correctness, metric validation, output integrity).
+
+Use pass/fail outcomes for each gate and block handoff until all gates pass for the selected class.
+
+### Class-Specific Profile Split (Phase 2)
+
+After classification and before finalizing the draft, choose exactly one profile checklist and include it in the requirements output.
+
+#### Software profile (`software-dev`)
+
+Include a `## Class Profile Checklist` section with this subsection:
+
+- `### Software Profile`
+- [ ] Product behavior or system change stated in implementable terms
+- [ ] Code surface and impacted modules listed
+- [ ] FR/NFR mappings include software verification expectations (typecheck/build/test/runtime checks)
+- [ ] Acceptance criteria map to observable software behavior
+- [ ] Verification checklist names repository checks required for changed files
+
+#### Data profile (`data-analysis/dashboard-pipeline`)
+
+Include a `## Class Profile Checklist` section with these subsections:
+
+- `### Data Understanding`
+- [ ] Data entities, sources, and lineage boundaries identified
+- [ ] Metric definitions, dimensions, and aggregation semantics defined
+- [ ] Assumptions and data quality caveats captured
+
+- `### Pipeline Validation`
+- [ ] Transform/query pipeline steps listed with validation points
+- [ ] Validation includes correctness checks for joins/filters/aggregations/time windows
+- [ ] Output integrity checks defined for dashboards/reports/tables
+
+- `### PAP-048 Compatibility`
+- [ ] Explicit statement that class, route, and verification language remains compatible with PAP-048 semantics
+
+Do not collapse data-class work into generic software checklist language. The data profile must remain explicit about data-understanding and pipeline-validation.
+
+### Calibration Examples (100% single-class outcomes)
+
+Use these examples to validate triage behavior, including mixed requests:
+
+1. "Add login rate limiting middleware and tests" -> `software-dev`
+2. "Build weekly revenue dashboard with new metric definitions" -> `data-analysis/dashboard-pipeline`
+3. "Refactor API auth flow and update endpoint contracts" -> `software-dev`
+4. "Create ETL step that normalizes event schema for BI dashboards" -> `data-analysis/dashboard-pipeline`
+5. "Add feature flag and also produce dashboard to track rollout" (mixed) -> classify by dominant deliverable and dominant verification; record one final class only.
+
 ### Ticket Claim Protocol
 
 When starting a requirements session from an assigned ticket:
@@ -192,6 +343,11 @@ Write a **draft** requirements document using the **Standard Checklist** below. 
 
 **Builder handoff requirement:** If the ticket will be routed to builder, the draft MUST include a `Feature Branch` header value and an ordered implementation phase checklist. Each phase MUST include concrete deliverables, traceability to the relevant FR/NFR/AC IDs, and phase-specific verification steps. Do not rely on builder/orchestrator to derive these from prose.
 
+**Class profile requirement:** Every draft MUST include one class-specific profile checklist section:
+
+- `software-dev` -> include `Software Profile` subsection and checklist items.
+- `data-analysis/dashboard-pipeline` -> include `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` subsections and checklist items.
+
 ### Phase 6.5: Self-Review Against Quality Bar
 
 Before showing the draft to Sinh, run it through the **Quality Bar**. Every check MUST pass. If any check fails and you can fix it from current information, fix and re-check. If a fix needs more input, return to the Ambiguity Protocol and ask Sinh.
@@ -213,6 +369,19 @@ Before showing the draft to Sinh, run it through the **Quality Bar**. Every chec
 | 11 | Non-Functional Requirements table is quantitative | §7 Non-Functional Requirements has at least one row and at least one quantitative row with a numeric budget, named standard, or measurable threshold. If no runtime impact exists, use `N/A — purely structural change with no runtime impact`. |
 | 12 | Open Questions resolved for handoff | §14 Open Questions has zero unresolved items at handoff. Every open item is tagged `[BLOCKING]` or `[NON-BLOCKING — defer to Phase 2 because <rationale>]`; `[BLOCKING]` items must be resolved before save or `pending-approval`. |
 | 13 | Blast Radius documented | §12 Technical Approach or §15 Impact Analysis includes Blast Radius with estimated LoC touched, existing module count, new module count, and rewrite justification when proposing a rewrite. Rewrites over 200 LoC without this fail. |
+
+**Class-Specific Measurable Gates (apply in addition to the Quality Bar):**
+
+- `software-dev`
+  - Software profile checklist section present.
+  - At least one FR, one NFR, and one verification step explicitly references software checks (typecheck/build/test/runtime behavior).
+- `data-analysis/dashboard-pipeline`
+  - Data profile checklist section present.
+  - `Data Understanding` subsection present.
+  - `Pipeline Validation` subsection present.
+  - PAP-048 compatibility statement present and non-conflicting with class/route semantics.
+
+If class-specific gates fail, do not hand off. Fix the draft or trigger Ambiguity Protocol when clarification is required.
 
 Report status to Sinh:
 
@@ -323,6 +492,30 @@ For each Acceptance Criteria item from the requirements doc, produce a test scen
 
 > **Template:** Read `skills/templates/requirements.md` for the standard 16-section requirements document.
 > Every requirements document MUST follow this template.
+
+### Class-Specific Draft Outline Examples
+
+Use these as minimum outline checks when validating class-specific profile content in the draft:
+
+`software-dev` outline:
+
+1. `## 6. Functional Requirements` (software behavior rows)
+2. `## 7. Non-Functional Requirements` (quantified software constraints)
+3. `## 10. Acceptance Criteria` (software behavior pass/fail)
+4. `## Class Profile Checklist`
+   - `### Software Profile`
+5. `## 13. Implementation Plan` (software verification steps)
+
+`data-analysis/dashboard-pipeline` outline:
+
+1. `## 6. Functional Requirements` (data/pipeline behavior rows)
+2. `## 7. Non-Functional Requirements` (data quality/latency/freshness thresholds)
+3. `## 10. Acceptance Criteria` (data correctness/integrity pass/fail)
+4. `## Class Profile Checklist`
+   - `### Data Understanding`
+   - `### Pipeline Validation`
+   - `### PAP-048 Compatibility`
+5. `## 13. Implementation Plan` (pipeline and data validation verification steps)
 
 ## Output
 
