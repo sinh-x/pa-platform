@@ -71,6 +71,48 @@ Escalate classification only when both two-step tests fail to separate classes. 
 
 For `data-analysis/dashboard-pipeline` classification, keep terminology and routing compatible with PAP-048 builder data-analysis mode semantics. Do not introduce conflicting class names, route labels, or verification language.
 
+## Rollout Guardrails (Phase 4)
+
+Use this operator checklist during intake and self-review. Keep it short and deterministic.
+
+### Operator Checklist (run in order)
+
+1. **Classification gate**: record exactly one class before scope finalization (`software-dev` or `data-analysis/dashboard-pipeline`).
+2. **Profile gate**: include exactly one class-specific profile checklist in the requirements output.
+3. **Route gate**: record one deterministic class-to-route mapping (`software-dev` -> `builder/implement`; `data-analysis/dashboard-pipeline` -> `builder/data-analysis`).
+4. **Verification gate**: run class-specific measurable quality checks before handoff.
+5. **Escalation gate**: if class cannot be resolved after two-step triage, pause and escalate to Sinh (no guessing, no invented class).
+
+### Fallback Guidance for Ambiguous or Blocked Classification
+
+When classification is ambiguous, apply exactly this fallback sequence:
+
+1. Apply Step 1 and Step 2 triage tests.
+2. If still unresolved, stop drafting and open a classification clarification to Sinh with:
+   - competing class candidates,
+   - Step 1 evidence,
+   - Step 2 evidence,
+   - proposed temporary default (clearly marked as unapproved).
+3. Keep the ticket/doc blocked for class decision; do not continue as unclassified and do not invent a third class.
+
+### Class-Specific Measurable Quality Gates
+
+Run these during Phase 6.5 self-review:
+
+- `software-dev`
+  - Required sections complete for software profile.
+  - Dependencies named explicitly in `## 8. Dependencies`.
+  - At least one quantified NFR or explicit justified N/A statement.
+  - Verification checklist contains software checks for changed files (typecheck/build/test/runtime as applicable).
+
+- `data-analysis/dashboard-pipeline`
+  - Required sections complete (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`).
+  - Dependencies named explicitly in `## 8. Dependencies`.
+  - At least one quantified NFR or explicit justified N/A statement.
+  - Verification checklist contains data/pipeline checks (query correctness, metric validation, output integrity).
+
+Use pass/fail outcomes for each gate and block handoff until all gates pass for the selected class.
+
 ### Class-Specific Profile Split (Phase 2)
 
 After classification and before finalizing the draft, choose exactly one profile checklist and include it in the requirements output.

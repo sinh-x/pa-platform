@@ -75,6 +75,13 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Output Expectation:** Single class label + short rationale (deliverable + verification basis).
 
+**Rollout guardrails (mandatory quick check):**
+- [ ] Exactly one class recorded before scope finalization
+- [ ] Exactly one class profile selected for output
+- [ ] Exactly one deterministic class-to-route mapping recorded
+- [ ] Class-specific measurable verification gates prepared for Phase 6.5
+- [ ] If unresolved after two-step triage: escalated to Sinh, work paused (no guessing)
+
 **Deterministic route map (mandatory):**
 - `software-dev` -> `builder/implement` with software handoff format (repo + branch + phases + software verification checks).
 - `data-analysis/dashboard-pipeline` -> `builder/data-analysis` with data handoff format (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`, and data/pipeline verification checks).
@@ -208,6 +215,11 @@ Do not proceed with any ambiguous fallback route.
 **Class-Specific Gate Criteria:**
 - `software-dev`: software profile checklist exists and FR/NFR/verification entries contain software-verifiable checks.
 - `data-analysis/dashboard-pipeline`: `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` sections exist and verification entries include data/pipeline validation checks.
+
+**Measurable completion additions (Phase 4):**
+- Dependencies are named (no anonymous "another team/API" placeholders).
+- NFR is quantified or explicitly justified as N/A.
+- Selected class verification checklist is complete and pass/fail evaluable.
 
 **Output Expectation:** Draft revised to pass Quality Bar.
 

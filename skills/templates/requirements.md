@@ -182,6 +182,25 @@ For `data-analysis/dashboard-pipeline`:
 - [ ] Verification steps include data/pipeline validation checks
 - [ ] PAP-048 compatibility statement is explicit and non-conflicting
 
+## Operator Rollout Checklist (required)
+
+- [ ] Classification assigned exactly once before scope finalization (`software-dev` or `data-analysis/dashboard-pipeline`)
+- [ ] Class profile selected and completed (software profile OR data profile, never both)
+- [ ] Deterministic class-to-route mapping recorded (`builder/implement` or `builder/data-analysis`)
+- [ ] Class-specific verification gate passed for selected class
+- [ ] Ambiguous/blocked classification escalated to Sinh after two-step triage (no guessing)
+
+## Classification Fallback Record (required when ambiguous)
+
+If class remains unresolved after two-step triage, do not proceed as unclassified. Record:
+
+- Step 1 evidence (primary deliverable)
+- Step 2 evidence (dominant verification)
+- Escalation note sent to Sinh
+- Status: `blocked-pending-classification`
+
+No additional class values are allowed.
+
 ## Classification Record (required before scope finalization)
 
 - Class: `software-dev` | `data-analysis/dashboard-pipeline` (choose exactly one)
