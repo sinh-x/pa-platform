@@ -26,7 +26,7 @@ deploy_modes:
     label: Implement
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: deepseek
     agents: [] # solo, no sub-agents
     objective: teams/builder/modes/implement.md
     global_docs:

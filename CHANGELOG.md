@@ -5,34 +5,158 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- `cpa deploy` (claudecode-pa adapter) now instructs Claude to load the primer via the `Read` tool with a short wrapper prompt instead of dumping the entire primer body onto argv. Applies to foreground, background, and streaming (`-p`) modes. Matches legacy `pd` parity (PAP-052).
-- `cpa deploy` now passes `--permission-mode auto` to claude in all three modes (foreground, background, streaming `-p`), replacing `--dangerously-skip-permissions`; headless runs use the auto classifier rather than bypassing all permission checks (PAP-052).
-- Restored `opa deploy <team>` to open the opencode TUI by default and kept headless execution behind `--background`.
-
-### Removed
-
-- Removed redundant `opa deploy --interactive` and `--direct` flags; foreground TUI is now the default.
-
-## [0.1.0] - 2026-04-26
+## [0.1.0] - 2026-05-03
 
 ### Added
 
-- Initial `@pa-platform/pa-core` runtime-neutral core package.
-- Shared state modules for registry, tickets, bulletins, trash, documents, teams, health, codectx, signal, repo-health, activity, config, paths, repos, primer generation, and runtime API types.
-- Core-owned Hono Agent API routes for health, tickets, bulletins, focus, teams, repos, documents, folders, config, deployments, repo metadata, timers, deploy routing, deploy status/events, deploy control, and self-update hooks.
-- Shared `pa-core` CLI dispatcher with runtime-neutral parity for old `pa` core commands.
-- Adapter-hooked deploy and serve execution surfaces.
-- Nix flake package/devShell and `pa-core` wrapper.
-- Fish completions for `pa-core`.
-- GitHub CI, Nix build workflow, branch strategy metadata, and release tooling.
+- Add pa-core runtime-agnostic modules ([`2759659`])
+- Expand pa-core ticket and trash parity ([`3cd2446`])
+- Port pa-core codectx graph utilities ([`df552fc`])
+- Add pa-core health checks ([`b03f65c`])
+- Add pa-core team loading utilities ([`fe18f93`])
+- Add team configs and objective file primers ([`2931660`])
+- Add pa-core activity log primitives ([`2789bb6`])
+- Add pa-core signal and repo health modules ([`0345b0d`])
+- Add pa-core ticket git link validation ([`3bff948`])
+- Add pa-core CLI and API utility helpers ([`2631ff2`])
+- Add pa-core markdown feedback utilities ([`c01630e`])
+- Add pa-core interactive project selection ([`d35832b`])
+- Add pa-core document route helpers ([`b3b8677`])
+- Add pa-core agent API routes ([`5f48681`])
+- Add pa-core deployment API routes ([`3cea451`])
+- Add pa-core repo API routes ([`184bdd6`])
+- Add pa-core repo git extension routes ([`15cf33c`])
+- Add pa-core deploy routing and timer routes ([`e152b80`])
+- Add pa-core deploy CLI substrate and registry event flow ([`f5eef69`])
+- Add pa-platform flake dev shell ([`6b69f9a`])
+- Add pa-core command handler surface ([`938c38a`])
+- Expand pa-core command parity ([`0117130`])
+- Expand pa-core CLI parity and completions ([`a029723`])
+- Add opencode opa deploy adapter ([`a937352`])
+- **pa-core**: Widen DeployHookResult + show provider/model in status ([`3a113ed`])
+- **requirements**: Add analyze-auto-openai mode + skill set ([`79a30ac`])
+- **opencode-pa**: Phase 6 - finalize opa deploy resume semantics ([`4eaa517`])
+- **nix**: Expose opa flake package ([`89232df`])
+- **opa**: Add fish shell completions for opa CLI ([`18e4572`])
+- **pa-core**: Phase 1 - activity schema and normalizer foundations ([`83728ec`])
+- **opencode**: Phase 2 - manage activity plugin install ([`3de14d8`])
+- **opencode**: Phase 3 capture plugin events ([`194e5ac`])
+- **opencode**: Phase 4 preserve stream compatibility ([`6e9b344`])
+- **opencode**: Phase 5 verify activity handoff ([`8703e4b`])
+- **docs**: Phase 4.1 - record primer parity matrix ([`bba66c3`])
+- **primer**: Phase 4.2 - restore opencode-safe coverage ([`640dc13`])
+- **templates**: Phase 4.3 - restore requirements templates ([`931a1e9`])
+- **primer**: Phase 4.4 - cover opencode primer regressions ([`eb7cad2`])
+- **completions**: Phase 4.1 - add fish timing guard ([`bccc76a`])
+- **completions**: Phase 2 - filesystem team completions ([`9e886e8`])
+- **completions**: Phase 3 - yaml mode completions ([`20ca967`])
+- **completions**: Phase 5 - timing verification fixes ([`4486e83`])
+- **completions**: Phase 2 - deploy option completions ([`47f01ba`])
+- **completions**: Phase 3 - preserve generated opa deploy options ([`934e8ba`])
+- **completions**: Phase 4 - deploy completion assertions ([`9ddee27`])
+- **board**: Phase 4.1 - add CWD-aware board scoping ([`07ddebd`])
+- **pa-core**: Phase 1 - resolve deploy timeouts ([`e5419de`])
+- **pa-core**: Phase 2 - persist timeout metadata ([`6242ccb`])
+- **opencode-pa**: Phase 3 - record deploy timeouts ([`bcb2c0c`])
+- **pa-core**: Phase 4 - poll status waits ([`1c0aca9`])
+- **pa-core**: Phase 5 - strengthen wait runtime tests ([`1a191d5`])
+- **pa-core**: Phase 6 - document status wait override ([`0f744f7`])
+- **pa-core**: Phase 1 - load sensitive patterns ([`fb38136`])
+- **pa-core**: Phase 2 - guard local text file reads ([`0f91ca9`])
+- **pa-core**: Phase 3 - guard CLI file inputs ([`66b946a`])
+- **pa-core**: Phase 4 - guard inline deploy objectives ([`b34fce9`])
+- **pa-core**: Phase 5 - expand sensitive guardrail tests ([`02122f5`])
+- **docs**: Phase 6 - document sensitive guardrails ([`ee2d60f`])
+- **pa-core**: Phase 1 - own serve lifecycle ([`3c678f0`])
+- **pa-core**: Phase 2 - wire default opa deploy adapter ([`49d67fc`])
+- **pa-core**: Phase 3 - align API response shapes ([`bc6bb53`])
+- **pa-core**: Phase 4 - restore live update websocket ([`fafc02d`])
+- **pa-core**: Phase 5 - restore action APIs ([`106f066`])
+- **pa-core**: Phase 6 - update docs and api tests ([`e629ca3`])
+- **flake**: Add dev-pa-serve wrapper for phone/Tailscale dev access ([`8df4876`])
+- **agent-api**: Align phone contracts and builder defaults ([`7077515`])
+- **requirements**: Phase 1 - split spike into orchestrator and provider children ([`95a1d62`])
+- **requirements**: Finish orchestrated spike parent/child guidance ([`a3b9219`])
+- **requirements**: Phase 2 - clarify spike parent-child contract ([`87039c5`])
+- **requirements**: Phase 4 - add spike templates ([`b4b9d37`])
+- **requirements**: Phase 5 - add spike handoff rules ([`34b72a9`])
+- **requirements**: Phase 6 - add spike primer regression coverage ([`90a9396`])
+- **pa-core**: Phase 6 - add analyze-auto primer regression test ([`7301e0b`])
+- **requirements**: Restore spike legacy templates ([`fa566da`])
+- **requirements**: Trim spike compatibility stub ([`f169c64`])
+- **agent-api**: Add phone contract comment to deploy catch path ([`416b5dc`])
+- **teams**: Use openai gpt-5.5 model settings ([`dbdd366`])
+- **ci**: Phase 4.1 - automate patch version bumps ([`97a80d9`])
+- **ticket**: Phase 1 infer project in ticket create ([`48edaf0`])
+- **ticket**: Phase 3 - document ticket create project inference ([`b46690b`])
+- **requirements**: Phase 1 - update requirements template shape ([`c218cdb`])
+- **cli**: Phase 1 - fix board color tty cleanup ([`cf60c50`])
+- **cpa**: Phase 1 - scaffold claudecode-pa package + cli entry ([`4209ebc`])
+- **cpa**: Phase 2 - claude-code adapter spawn/resume/stream-json ([`ae52e6c`])
+- **cpa**: Phase 3 - settings.json hook installer + masking ([`71fa182`])
+- **cpa**: Phase 4 - primer parity + flake + completions + docs ([`7410ea7`])
+- **planner**: Phase 2 - define Logseq append protocol for daily-track ([`94e6812`])
+- **daily-track**: Phase 3 - add Avo read-only summary protocol and explicit timer mutation guardrail ([`0cb2dc8`])
+- **planner**: Phase 4 - cross-repo reference protocol for daily-track mode ([`48db25b`])
+- **planner**: Phase 5 - validate daily-track start/check-in/end flows ([`37f1095`])
+- **daily**: Standardize cross-repo field order in daily-track mode examples ([`02e209b`])
+- **cpa**: Default to --permission-mode auto for all deployments ([`045507d`])
+- **opencode**: Phase 1 - add DeepSeek provider support ([`fcc40c2`])
+- **pa-core**: Phase 2 - add deepseek to provider types and Agent API test ([`45128ef`])
+- **opa**: Phase 3 - deepseek in completions and docs ([`009d6f8`])
 
-### Changed
+### Documentation
 
-- Runtime-specific spawning/provider/model behavior is adapter-owned instead of hardcoded in core.
-- Old standalone inbox/sinh-inputs/ideas APIs are intentionally omitted in favor of ticket-based workflows.
+- Add global PA skills ([`229f79b`])
+- Add initial public release notes ([`dfb2d5e`])
+- **opencode-pa**: Document concurrent-writer + utf16 trunc ([`589fca9`])
+- Track AI session history ([`7172b2f`])
+- Document sanitize file input policy ([`c29a6b5`])
+- **requirements**: Align question flow with opencode ([`64a9fea`])
+- Add PA-1255 spike cascade artifact ([`818f1f8`])
 
-[0.1.0]: https://github.com/sinh-x/pa-platform/releases/tag/v0.1.0
+### Fixed
+
+- Wire pa-core flake package wrapper ([`e7d46d3`])
+- Close pa-core CLI compatibility gaps ([`36848b0`])
+- Use pa-core registry for deployment completions ([`1757ab4`])
+- Complete opa background deploy events ([`749553d`])
+- **pa-core**: Tolerate opencode plugin schema in activity events ([`7f89cd6`])
+- **opencode-pa**: Append terminal event instead of overwriting activity log ([`b2e9074`])
+- **opencode-pa**: Capture stderr + emit error event on opencode failure ([`1d1e800`])
+- **opencode-pa**: Default opa deploys to openai ([`9f5f99b`])
+- **opencode-pa**: Close d-f412e8 review findings  ([`d8cdc77`])
+- **ci**: Close PR 3 test and nix build failures ([`cac2424`])
+- **ci**: Remove hanging nix cache action ([`f8e9d1e`])
+- **opencode**: Address activity review findings ([`5b9cd23`])
+- **pa-core**: Classify nested tool exit codes ([`3d39e55`])
+- **opencode**: Avoid mutating masked bash args ([`c34f6cf`])
+- **pa-core**: Address review findings ([`e883511`])
+- **opa**: Tighten fish completion candidates ([`86a1d39`])
+- **opencode**: Restore deploy TUI default ([`1f5ce32`])
+- **pa**: Update deploy mode guidance ([`a6cfb92`])
+- **pa**: Normalize timestamp handling ([`d38d7d0`])
+- **deploy**: Phase 5.6 - expand tilde repo paths ([`32647d1`])
+- **completions**: Relax status timing threshold ([`f50575d`])
+- **completions**: Phase 5.6 - guard option value candidates ([`9f5275d`])
+- **completions**: Phase 5.6 cycle 2 option value candidates ([`ecf8b2b`])
+- **completions**: Phase 5.6 cycle 1 deploy context parsing ([`7c9f8e0`])
+- **completions**: Phase 5.6 cycle 2 custom deploy teams ([`e20513d`])
+- **completions**: Find teams in Nix fish layout ([`a1ba475`])
+- **config**: Derive discovery paths from config_dir ([`10968f8`])
+- **board**: Preserve empty API tag exclusions ([`c29dbd6`])
+- **pa-core**: Require deploy id for status wait ([`5576ac0`])
+- **pa-core**: Align sensitive content guardrails ([`4de33c7`])
+- **pa-core**: Narrow seed phrase heuristic ([`32c4010`])
+- **flake**: Phase 5.6 - address dev-pa-serve review findings ([`4047dc9`])
+- **ci**: Update deploy response test and nix hash ([`d40203b`])
+- **pa-core**: Default phone deploys to background mode ([`a493c40`])
+- **teams**: Defer model selection to provider defaults ([`eebd252`])
+- **builder**: Remove implement-mode model override ([`ac8f3c2`])
+- **builder**: Restore implement model expectation ([`e46b7d7`])
+- **requirements**: Address analyze shape review findings ([`4b1d1f1`])
+- **requirements**: Align analyze objective section rule ([`d1b324f`])
+- **cpa**: Cycle 1 - secure background config + tighten redaction + dedupe utils + doc handler overwrite ([`37651ab`])
+- **cpa**: Instruct Claude to read primer via Read tool ([`d4bda1b`])
+
+
