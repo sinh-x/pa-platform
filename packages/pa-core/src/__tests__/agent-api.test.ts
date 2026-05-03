@@ -345,6 +345,37 @@ test("agent API deploy validates requests and routes through deploy hook without
   });
 });
 
+test("agent API deploy routes deepseek provider and model through deploy hook", async () => {
+  await withApiEnv(async () => {
+    const received: unknown[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request);
+        return { status: "pending", deploymentId: "d-deepseek-test" };
+      },
+    } });
+
+    const deepseek = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", provider: "deepseek", teamModel: "deepseek/deepseek-v4-pro", timeout: 120 }),
+    });
+    assert.equal(deepseek.status, 202);
+    assert.deepEqual(await deepseek.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-deepseek-test" });
+    assert.deepEqual(received, [{
+      team: "builder",
+      mode: "plan",
+      objective: "Ship route",
+      repo: "pa-platform",
+      ticket: "PAP-001",
+      timeout: 120,
+      provider: "deepseek",
+      teamModel: "deepseek/deepseek-v4-pro",
+      background: true,
+    }]);
+  });
+});
+
 test("agent API defaults deploy requests to background mode when omitted", async () => {
   await withApiEnv(async () => {
     const received: unknown[] = [];
