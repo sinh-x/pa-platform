@@ -120,6 +120,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       const args: string[] = [];
       if (sessionId) args.push("--resume", sessionId);
       args.push("--model", model);
+      args.push("--permission-mode", "auto");
       args.push(wrapperPrompt);
       const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
       const exitCode = result.status ?? 1;
@@ -134,7 +135,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return { ...(sessionId ? { sessionId } : {}), exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
     }
 
-    const args: string[] = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+    const args: string[] = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"];
     if (sessionId) args.push("--resume", sessionId);
     args.push("--model", model);
     args.push(wrapperPrompt);

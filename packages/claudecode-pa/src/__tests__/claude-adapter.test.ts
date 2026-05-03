@@ -215,7 +215,12 @@ test("cpa background deploy records pid and session id", async () => {
     assert.ok(seenArgs.includes("--output-format"));
     assert.ok(seenArgs.includes("stream-json"));
     assert.ok(seenArgs.includes("--verbose"));
-    assert.ok(seenArgs.includes("--dangerously-skip-permissions"));
+    // PAP-052 phase 4.2: cpa now passes --permission-mode auto for all deployments,
+    // replacing --dangerously-skip-permissions in background and streaming modes.
+    const permIdx = seenArgs.indexOf("--permission-mode");
+    assert.notEqual(permIdx, -1, "args must include --permission-mode flag");
+    assert.equal(seenArgs[permIdx + 1], "auto", "--permission-mode must be followed by 'auto'");
+    assert.equal(seenArgs.includes("--dangerously-skip-permissions"), false, "args must NOT contain --dangerously-skip-permissions");
     assert.ok(seenArgs.includes("--model"));
     // PAP-052: background mode must pass the wrapper prompt instructing claude to
     // load the primer via the Read tool, not the primer body.
@@ -275,6 +280,12 @@ exit 0
       // Distinguishing marker from the primer template — if it leaks into argv, the
       // wrapper substitution failed for foreground.
       assert.equal(argv.some((arg) => arg.includes("Runtime: claude")), false, "primer body markers must not appear in foreground argv");
+      // PAP-052 phase 4.2: foreground argv must include --permission-mode auto as
+      // adjacent tokens, before the wrapper prompt.
+      const permIdx = argv.indexOf("--permission-mode");
+      assert.notEqual(permIdx, -1, "foreground argv must include --permission-mode flag");
+      assert.equal(argv[permIdx + 1], "auto", "--permission-mode must be followed by 'auto'");
+      assert.ok(permIdx < argv.indexOf(wrapper), "--permission-mode must appear before the wrapper prompt");
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
@@ -307,6 +318,12 @@ test("cpa streaming-mode (runCommand) passes the wrapper prompt", async () => {
     const primerBody = readFileSync(primerPath, "utf-8");
     assert.equal(seenArgs.includes(primerBody), false, "streaming args must NOT contain the primer body");
     assert.ok(seenArgs.includes("-p"), "streaming args must include the -p flag");
+    // PAP-052 phase 4.2: streaming args must include --permission-mode auto and
+    // must NOT include --dangerously-skip-permissions.
+    const permIdx = seenArgs.indexOf("--permission-mode");
+    assert.notEqual(permIdx, -1, "streaming args must include --permission-mode flag");
+    assert.equal(seenArgs[permIdx + 1], "auto", "--permission-mode must be followed by 'auto'");
+    assert.equal(seenArgs.includes("--dangerously-skip-permissions"), false, "streaming args must NOT contain --dangerously-skip-permissions");
   });
 });
 
