@@ -33,7 +33,7 @@ If both steps still tie, escalate to Sinh before proceeding.
 The requirements handoff must include one deterministic route based on class:
 
 - `software-dev` -> standard software implementation route (builder implementation path)
-- `data-analysis/dashboard-pipeline` -> data-analysis/dashboard-pipeline implementation route (aligned with PAP-048 semantics)
+- `data-analysis/dashboard-pipeline` -> PAP-048-gated data-analysis/dashboard-pipeline implementation semantics (do not claim an active builder mode until PAP-048 is approved)
 
 Never use "decide later" or any ambiguous fallback in the handoff route.
 
@@ -44,7 +44,7 @@ When preparing handoff, record exactly one route from this table:
 | Class | Target team/mode | Handoff format requirements |
 |---|---|---|
 | `software-dev` | `builder` / `implement` | Requirements doc must include repo path, feature branch, ordered implementation phases, FR/NFR/AC traceability, and repository verification commands for changed files. |
-| `data-analysis/dashboard-pipeline` | `builder` / `data-analysis` (PAP-048 semantics) | Requirements doc must include Data Understanding, Pipeline Validation, and PAP-048 Compatibility sections plus data/pipeline verification checks. Include explicit note that mode semantics follow PAP-048 and introduce no conflicting route labels. |
+| `data-analysis/dashboard-pipeline` | PAP-048-gated `builder/data-analysis` semantics | Requirements doc must include Data Understanding, Pipeline Validation, and PAP-048 Compatibility sections plus data/pipeline verification checks. Include explicit note that mode semantics follow PAP-048, do not claim mode availability before approval, and introduce no conflicting route labels. |
 
 Handoff output format must include:
 
@@ -59,7 +59,7 @@ Do not add a fallback route, multi-route option, or deferred routing decision.
 Before handoff, validate one scenario for each class:
 
 1. Software scenario -> yields only `builder/implement`.
-2. Data scenario -> yields only `builder/data-analysis` with PAP-048 compatibility note.
+2. Data scenario -> yields only PAP-048-gated `builder/data-analysis` semantics with PAP-048 compatibility note and explicit no-availability-claim language.
 
 If either scenario maps to more than one route, stop and fix the routing section before handoff.
 
@@ -79,7 +79,7 @@ Use this operator checklist during intake and self-review. Keep it short and det
 
 1. **Classification gate**: record exactly one class before scope finalization (`software-dev` or `data-analysis/dashboard-pipeline`).
 2. **Profile gate**: include exactly one class-specific profile checklist in the requirements output.
-3. **Route gate**: record one deterministic class-to-route mapping (`software-dev` -> `builder/implement`; `data-analysis/dashboard-pipeline` -> `builder/data-analysis`).
+3. **Route gate**: record one deterministic class-to-route mapping (`software-dev` -> `builder/implement`; `data-analysis/dashboard-pipeline` -> PAP-048-gated `builder/data-analysis` semantics).
 4. **Verification gate**: run class-specific measurable quality checks before handoff.
 5. **Escalation gate**: if class cannot be resolved after two-step triage, pause and escalate to Sinh (no guessing, no invented class).
 

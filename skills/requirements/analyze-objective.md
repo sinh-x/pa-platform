@@ -84,7 +84,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Deterministic route map (mandatory):**
 - `software-dev` -> `builder/implement` with software handoff format (repo + branch + phases + software verification checks).
-- `data-analysis/dashboard-pipeline` -> `builder/data-analysis` with data handoff format (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`, and data/pipeline verification checks).
+- `data-analysis/dashboard-pipeline` -> PAP-048-gated `builder/data-analysis` semantics with data handoff format (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`, and data/pipeline verification checks). Do not claim `builder/data-analysis` exists before PAP-048 approval; if current availability is unresolved, escalate to Sinh and pause handoff.
 
 Do not proceed with any ambiguous fallback route.
 
