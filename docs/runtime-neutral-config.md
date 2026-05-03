@@ -7,7 +7,7 @@ Team YAML files are active shared configuration and should remain structurally c
 Runtime selection is handled by the adapter CLI:
 
 - `cpa` (`@pa-platform/claudecode-pa`) interprets shared team config for Claude Code execution. Implemented; default model `claude-opus-4-7`; `--provider` accepts only `anthropic`. See `docs/cpa-claude-code-adapter.md` for the operator overview.
-- `opa` (`@pa-platform/opencode-pa`) is the OpenCode adapter and interprets shared team config for opencode execution.
+- `opa` (`@pa-platform/opencode-pa`) is the OpenCode adapter and interprets shared team config for opencode execution. Default provider is `deepseek` with default model `deepseek/deepseek-v4-pro`. Supported providers: `minimax`, `openai`, `deepseek`.
 - Adapter config decides how provider/model hints are mapped, overridden, or ignored for that runtime.
 
 Use `pa-core serve` for the Agent API server lifecycle. Adapters provide deployment execution hooks; they should not own the server lifecycle.
