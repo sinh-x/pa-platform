@@ -265,6 +265,32 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
   });
 });
 
+test("deploy --validate fails when team config references missing skills paths", async () => {
+  await withCliEnv(async () => {
+    const teamsDir = process.env["PA_PLATFORM_TEAMS"]!;
+    writeFileSync(join(teamsDir, "builder.yaml"), [
+      "name: builder",
+      "description: Builder",
+      "objective: Build",
+      "agents:",
+      "  - name: implementer",
+      "    role: Writes code",
+      "    instruction: skills/missing-agent-instruction.md",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    objective: skills/missing-mode-objective.md",
+    ].join("\n"));
+
+    const captured = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--validate"], { io: captured.io }), 1);
+    const stderr = captured.stderr.join("\n");
+    assert.match(stderr, /Team config validation failed/);
+    assert.match(stderr, /skills\/missing-agent-instruction\.md \(agent implementer instruction\)/);
+    assert.match(stderr, /skills\/missing-mode-objective\.md \(mode implement objective\)/);
+  });
+});
+
 test("deploy objective-file uses guarded local text-file reader", async () => {
   await withCliEnv(async (root) => {
     const objectiveFile = join(root, "objective.md");
