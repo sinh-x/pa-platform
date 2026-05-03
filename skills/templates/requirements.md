@@ -140,6 +140,48 @@ Blast Radius:
 
 <Deferred work or None>
 
+## Class Profile Checklist (required)
+
+Choose exactly one profile based on the Classification Record class.
+
+For `software-dev`:
+
+### Software Profile
+- [ ] Product behavior/system change is explicit and implementable
+- [ ] Code surface and impacted modules are named
+- [ ] FR/NFR mapping includes software verification expectations
+- [ ] Acceptance criteria map to software behavior pass/fail outcomes
+- [ ] Verification checklist includes required repository checks for changed files
+
+For `data-analysis/dashboard-pipeline`:
+
+### Data Understanding
+- [ ] Data entities, sources, and lineage boundaries are identified
+- [ ] Metric definitions, dimensions, and aggregation semantics are defined
+- [ ] Data quality assumptions and caveats are captured
+
+### Pipeline Validation
+- [ ] Pipeline/query steps are listed with validation points
+- [ ] Correctness checks cover joins/filters/aggregations/time windows
+- [ ] Output integrity checks are defined for dashboards/reports/tables
+
+### PAP-048 Compatibility
+- [ ] Requirements language is explicitly compatible with PAP-048 semantics
+- [ ] Route and verification language does not conflict with PAP-048 data mode direction
+
+## Class-Specific Verification Gates (required)
+
+`software-dev` gate:
+- [ ] Software profile section present and complete
+- [ ] FR/NFR/AC entries include software-verifiable checks
+- [ ] Verification steps include software checks (typecheck/build/test/runtime as applicable)
+
+`data-analysis/dashboard-pipeline` gate:
+- [ ] Data profile sections present (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`)
+- [ ] FR/NFR/AC entries include data-verifiable checks
+- [ ] Verification steps include data/pipeline validation checks
+- [ ] PAP-048 compatibility statement is explicit and non-conflicting
+
 ## Classification Record (required before scope finalization)
 
 - Class: `software-dev` | `data-analysis/dashboard-pipeline` (choose exactly one)
@@ -157,6 +199,8 @@ Blast Radius:
 - For ambiguous requests, use two-step triage: (1) primary deliverable, then (2) dominant verification type.
 - Handoff must include one deterministic class-to-route mapping; ambiguous fallback is not allowed.
 - Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
+- Class profile and verification gates are mandatory: every doc must include exactly one active profile (`software-dev` or `data-analysis/dashboard-pipeline`) and class-specific verification gates.
+- For `data-analysis/dashboard-pipeline`, include explicit `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` subsections.
 - Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.
 - Use `opa ticket` commands in opencode deployments. Do not depend on external Claude Code skill folders.

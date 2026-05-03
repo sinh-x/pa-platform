@@ -45,6 +45,40 @@ Escalate classification only when both two-step tests fail to separate classes. 
 
 For `data-analysis/dashboard-pipeline` classification, keep terminology and routing compatible with PAP-048 builder data-analysis mode semantics. Do not introduce conflicting class names, route labels, or verification language.
 
+### Class-Specific Profile Split (Phase 2)
+
+After classification and before finalizing the draft, choose exactly one profile checklist and include it in the requirements output.
+
+#### Software profile (`software-dev`)
+
+Include a `## Class Profile Checklist` section with this subsection:
+
+- `### Software Profile`
+- [ ] Product behavior or system change stated in implementable terms
+- [ ] Code surface and impacted modules listed
+- [ ] FR/NFR mappings include software verification expectations (typecheck/build/test/runtime checks)
+- [ ] Acceptance criteria map to observable software behavior
+- [ ] Verification checklist names repository checks required for changed files
+
+#### Data profile (`data-analysis/dashboard-pipeline`)
+
+Include a `## Class Profile Checklist` section with these subsections:
+
+- `### Data Understanding`
+- [ ] Data entities, sources, and lineage boundaries identified
+- [ ] Metric definitions, dimensions, and aggregation semantics defined
+- [ ] Assumptions and data quality caveats captured
+
+- `### Pipeline Validation`
+- [ ] Transform/query pipeline steps listed with validation points
+- [ ] Validation includes correctness checks for joins/filters/aggregations/time windows
+- [ ] Output integrity checks defined for dashboards/reports/tables
+
+- `### PAP-048 Compatibility`
+- [ ] Explicit statement that class, route, and verification language remains compatible with PAP-048 semantics
+
+Do not collapse data-class work into generic software checklist language. The data profile must remain explicit about data-understanding and pipeline-validation.
+
 ### Calibration Examples (100% single-class outcomes)
 
 Use these examples to validate triage behavior, including mixed requests:
@@ -241,6 +275,11 @@ Write a **draft** requirements document using the **Standard Checklist** below. 
 
 **Builder handoff requirement:** If the ticket will be routed to builder, the draft MUST include a `Feature Branch` header value and an ordered implementation phase checklist. Each phase MUST include concrete deliverables, traceability to the relevant FR/NFR/AC IDs, and phase-specific verification steps. Do not rely on builder/orchestrator to derive these from prose.
 
+**Class profile requirement:** Every draft MUST include one class-specific profile checklist section:
+
+- `software-dev` -> include `Software Profile` subsection and checklist items.
+- `data-analysis/dashboard-pipeline` -> include `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` subsections and checklist items.
+
 ### Phase 6.5: Self-Review Against Quality Bar
 
 Before showing the draft to Sinh, run it through the **Quality Bar**. Every check MUST pass. If any check fails and you can fix it from current information, fix and re-check. If a fix needs more input, return to the Ambiguity Protocol and ask Sinh.
@@ -262,6 +301,19 @@ Before showing the draft to Sinh, run it through the **Quality Bar**. Every chec
 | 11 | Non-Functional Requirements table is quantitative | §7 Non-Functional Requirements has at least one row and at least one quantitative row with a numeric budget, named standard, or measurable threshold. If no runtime impact exists, use `N/A — purely structural change with no runtime impact`. |
 | 12 | Open Questions resolved for handoff | §14 Open Questions has zero unresolved items at handoff. Every open item is tagged `[BLOCKING]` or `[NON-BLOCKING — defer to Phase 2 because <rationale>]`; `[BLOCKING]` items must be resolved before save or `pending-approval`. |
 | 13 | Blast Radius documented | §12 Technical Approach or §15 Impact Analysis includes Blast Radius with estimated LoC touched, existing module count, new module count, and rewrite justification when proposing a rewrite. Rewrites over 200 LoC without this fail. |
+
+**Class-Specific Measurable Gates (apply in addition to the Quality Bar):**
+
+- `software-dev`
+  - Software profile checklist section present.
+  - At least one FR, one NFR, and one verification step explicitly references software checks (typecheck/build/test/runtime behavior).
+- `data-analysis/dashboard-pipeline`
+  - Data profile checklist section present.
+  - `Data Understanding` subsection present.
+  - `Pipeline Validation` subsection present.
+  - PAP-048 compatibility statement present and non-conflicting with class/route semantics.
+
+If class-specific gates fail, do not hand off. Fix the draft or trigger Ambiguity Protocol when clarification is required.
 
 Report status to Sinh:
 
@@ -372,6 +424,30 @@ For each Acceptance Criteria item from the requirements doc, produce a test scen
 
 > **Template:** Read `skills/templates/requirements.md` for the standard 16-section requirements document.
 > Every requirements document MUST follow this template.
+
+### Class-Specific Draft Outline Examples
+
+Use these as minimum outline checks when validating class-specific profile content in the draft:
+
+`software-dev` outline:
+
+1. `## 6. Functional Requirements` (software behavior rows)
+2. `## 7. Non-Functional Requirements` (quantified software constraints)
+3. `## 10. Acceptance Criteria` (software behavior pass/fail)
+4. `## Class Profile Checklist`
+   - `### Software Profile`
+5. `## 13. Implementation Plan` (software verification steps)
+
+`data-analysis/dashboard-pipeline` outline:
+
+1. `## 6. Functional Requirements` (data/pipeline behavior rows)
+2. `## 7. Non-Functional Requirements` (data quality/latency/freshness thresholds)
+3. `## 10. Acceptance Criteria` (data correctness/integrity pass/fail)
+4. `## Class Profile Checklist`
+   - `### Data Understanding`
+   - `### Pipeline Validation`
+   - `### PAP-048 Compatibility`
+5. `## 13. Implementation Plan` (pipeline and data validation verification steps)
 
 ## Output
 

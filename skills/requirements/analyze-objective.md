@@ -160,6 +160,8 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 - [ ] Write all 16 document sections using the Standard Checklist in analyze.md
 - [ ] Include impact-analysis section if ticket had doc_refs
 - [ ] Leave §4 In Scope and §10 Acceptance Criteria as `- [ ]` checkboxes
+- [ ] Include `## Class Profile Checklist` using exactly one class profile (`software-dev` or `data-analysis/dashboard-pipeline`)
+- [ ] For `data-analysis/dashboard-pipeline`, include `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` subsections
 - [ ] For builder-bound work, include `Feature Branch` plus an ordered implementation phase checklist with per-phase deliverables, FR/NFR/AC traceability, and verification steps
 
 **Gate Criteria:** Draft must contain all 16 document sections before advancing to Phase 6.5.
@@ -188,6 +190,7 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Actions:**
 - [ ] Run all 13 checks against the draft
+- [ ] Run class-specific measurable gates based on selected class profile
 - [ ] Fix every failure that can be fixed from current information
 - [ ] If a fix needs more input, return to Ambiguity Protocol and ask Sinh
 - [ ] Report status: "Self-review passed all 13 checks. Shape-Conformance: 13/13. Showing draft for walkthrough." OR "Self-review failed on check N: <reason>. Shape-Conformance: X/13. I need clarification before proceeding."
@@ -195,6 +198,10 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 - [ ] Report `Shape-Conformance: N/13` to Sinh and embed the same value in the saved requirements doc header as `> Shape-Conformance: N/13`
 
 **Gate Criteria:** All 13 checks pass. Untagged or `[BLOCKING]` Open Questions block save and handoff until resolved, or correctly tagged `[NON-BLOCKING — defer to Phase 2 because <rationale>]`.
+
+**Class-Specific Gate Criteria:**
+- `software-dev`: software profile checklist exists and FR/NFR/verification entries contain software-verifiable checks.
+- `data-analysis/dashboard-pipeline`: `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` sections exist and verification entries include data/pipeline validation checks.
 
 **Output Expectation:** Draft revised to pass Quality Bar.
 
