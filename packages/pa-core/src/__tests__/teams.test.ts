@@ -111,6 +111,52 @@ test("validateTeamSkillReferences reports missing path with mode and agent conte
   }
 });
 
+test("validateTeamSkillReferences resolves production-style paths and reports missing references", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-prod-skill-validation-"));
+  const originalHome = process.env["PA_PLATFORM_HOME"];
+  const originalTeams = process.env["PA_PLATFORM_TEAMS"];
+  try {
+    const teamsDir = join(root, "teams");
+    mkdirSync(teamsDir, { recursive: true });
+    mkdirSync(join(root, "skills", "global", "pa-cli"), { recursive: true });
+    writeFileSync(join(root, "skills", "global", "pa-cli", "SKILL.md"), "# pa-cli\n");
+
+    writeFileSync(join(teamsDir, "builder.yaml"), [
+      "name: builder",
+      "description: Builder team",
+      "objective: skills/missing-team-objective.md",
+      "agents:",
+      "  - name: implementer",
+      "    role: Writes code",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    objective: skills/missing-mode-objective.md",
+      "    skills:",
+      "      - name: pa-cli",
+      "        inject-as: shared-skill",
+    ].join("\n"));
+
+    process.env["PA_PLATFORM_HOME"] = root;
+    process.env["PA_PLATFORM_TEAMS"] = teamsDir;
+
+    const missing = validateTeamSkillReferences();
+    assert.equal(missing.length, 2);
+    assert.deepEqual(missing.map((entry) => entry.context).sort(), ["mode implement objective", "team objective"]);
+    assert.deepEqual(missing.map((entry) => entry.resolvedPath).sort(), [
+      resolve(root, "skills", "missing-mode-objective.md"),
+      resolve(root, "skills", "missing-team-objective.md"),
+    ]);
+    assert.deepEqual(missing.map((entry) => entry.teamConfigPath), [join(teamsDir, "builder.yaml"), join(teamsDir, "builder.yaml")]);
+  } finally {
+    if (originalHome === undefined) delete process.env["PA_PLATFORM_HOME"];
+    else process.env["PA_PLATFORM_HOME"] = originalHome;
+    if (originalTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"];
+    else process.env["PA_PLATFORM_TEAMS"] = originalTeams;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("current repository team skill references resolve", () => {
   const missing = validateTeamSkillReferences(join(repoRoot, "teams"), repoRoot);
   assert.deepEqual(missing, []);

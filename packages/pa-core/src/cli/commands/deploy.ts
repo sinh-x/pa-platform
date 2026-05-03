@@ -57,6 +57,7 @@ export function validateDeployConfig(team: string, io: Required<CliIo>): number 
     for (const reference of missingReferences) {
       io.stderr(`- ${reference.reference} (${reference.context}) [${reference.teamConfigPath}]`);
     }
+    io.stderr(`Fix the missing path(s) or the team references, then rerun: opa deploy ${config.name} --validate`);
     return 1;
   }
   io.stdout(`Valid team config: ${config.name}`);
