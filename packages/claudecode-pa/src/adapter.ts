@@ -109,7 +109,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   private async runClaude(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
-    const primer = readFileSync(opts.primerPath, "utf-8");
+    // Pass a short instruction telling claude to load the primer via the Read tool
+    // rather than dumping the full primer body onto argv. Mirrors legacy `pd`
+    // (personal-assistant/src/commands/deploy.ts:1005); see PAP-052.
+    const wrapperPrompt = buildPrimerLoadPrompt(opts.primerPath);
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     const model = opts.model ?? this.defaultModel;
 
@@ -117,7 +120,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       const args: string[] = [];
       if (sessionId) args.push("--resume", sessionId);
       args.push("--model", model);
-      args.push(primer);
+      args.push("--permission-mode", "auto");
+      args.push(wrapperPrompt);
       const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
@@ -131,10 +135,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return { ...(sessionId ? { sessionId } : {}), exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
     }
 
-    const args: string[] = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+    const args: string[] = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "auto"];
     if (sessionId) args.push("--resume", sessionId);
     args.push("--model", model);
-    args.push(primer);
+    args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
       const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
@@ -273,6 +277,10 @@ export function claudeJsonToActivityEvent(raw: Record<string, unknown>, deployId
     partType: extractPartType(raw),
     metadata: raw,
   });
+}
+
+export function buildPrimerLoadPrompt(primerPath: string): string {
+  return `Read the deployment primer at '${primerPath}' using the Read tool and follow ALL instructions in it exactly. Start immediately. When finished, write the completion marker and exit.`;
 }
 
 export function resolveClaudeModel(provider: string | undefined, model: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
