@@ -1,7 +1,7 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { assertNoSensitiveMatch, readGuardedLocalTextFile } from "../../sensitive-patterns.js";
-import { loadTeamConfig } from "../../teams/index.js";
+import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
 
 const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
@@ -51,6 +51,15 @@ export function printDeployModes(team: string, io: Required<CliIo>): number {
 
 export function validateDeployConfig(team: string, io: Required<CliIo>): number {
   const config = loadTeamConfig(team);
+  const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === config.name);
+  if (missingReferences.length > 0) {
+    io.stderr(`Team config validation failed: ${missingReferences.length} missing skills path reference(s) for ${config.name}.`);
+    for (const reference of missingReferences) {
+      io.stderr(`- ${reference.reference} (${reference.context}) [${reference.teamConfigPath}]`);
+    }
+    io.stderr(`Fix the missing path(s) or the team references, then rerun: opa deploy ${config.name} --validate`);
+    return 1;
+  }
   io.stdout(`Valid team config: ${config.name}`);
   io.stdout(`Agents: ${config.agents.length}`);
   io.stdout(`Modes: ${(config.deploy_modes ?? []).length}`);

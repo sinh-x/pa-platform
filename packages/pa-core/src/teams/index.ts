@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getAgentTeamsDir, getTeamsDir } from "../paths.js";
+import { getAgentTeamsDir, getPlatformHomeDir, getTeamsDir } from "../paths.js";
 import { queryDeploymentStatuses } from "../registry/index.js";
 import { parseTeamYaml } from "../yaml-parser.js";
 import type { Agent, DeployMode, TeamConfig } from "../types.js";
@@ -29,6 +29,14 @@ export interface TeamRuntimeStatus {
   name: string;
   model: string;
   runningDeployments: string[];
+}
+
+export interface MissingTeamSkillReference {
+  team: string;
+  context: string;
+  reference: string;
+  resolvedPath: string;
+  teamConfigPath: string;
 }
 
 export function listTeamConfigFiles(teamsDir = getTeamsDir()): string[] {
@@ -102,6 +110,32 @@ export function getTeamRuntimeStatus(teamName: string, teamsDir = getTeamsDir())
   return { name: teamName, model: getTeamModel(teamName, teamsDir), runningDeployments: getRunningDeploymentsForTeam(teamName) };
 }
 
+export function validateTeamSkillReferences(teamsDir = getTeamsDir(), platformHomeDir = getPlatformHomeDir()): MissingTeamSkillReference[] {
+  const missing: MissingTeamSkillReference[] = [];
+  for (const teamConfigPath of listTeamConfigFiles(teamsDir)) {
+    let config: TeamConfig;
+    try {
+      config = parseTeamYaml(teamConfigPath);
+    } catch {
+      continue;
+    }
+
+    for (const reference of collectTeamSkillReferences(config)) {
+      const resolvedPath = resolve(platformHomeDir, reference.reference);
+      if (!existsSync(resolvedPath)) {
+        missing.push({
+          team: config.name,
+          context: reference.context,
+          reference: reference.reference,
+          resolvedPath,
+          teamConfigPath,
+        });
+      }
+    }
+  }
+  return missing;
+}
+
 function workspaceFromDir(agentTeamsDir: string, name: string): AgentTeamWorkspace | undefined {
   const path = join(agentTeamsDir, name);
   try {
@@ -129,4 +163,32 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function collectTeamSkillReferences(teamConfig: TeamConfig): Array<{ context: string; reference: string }> {
+  const refs: Array<{ context: string; reference: string }> = [];
+
+  if (isSkillPathReference(teamConfig.objective)) refs.push({ context: "team objective", reference: teamConfig.objective });
+  for (const [index, doc] of (teamConfig.global_docs ?? []).entries()) {
+    if (isSkillPathReference(doc)) refs.push({ context: `team global_docs[${index}]`, reference: doc });
+  }
+
+  for (const agent of teamConfig.agents) {
+    if (isSkillPathReference(agent.instruction)) refs.push({ context: `agent ${agent.name} instruction`, reference: agent.instruction });
+    if (isSkillPathReference(agent.skill)) refs.push({ context: `agent ${agent.name} skill`, reference: agent.skill });
+  }
+
+  for (const mode of teamConfig.deploy_modes ?? []) {
+    if (isSkillPathReference(mode.objective)) refs.push({ context: `mode ${mode.id} objective`, reference: mode.objective });
+    for (const [index, doc] of (mode.global_docs ?? []).entries()) {
+      if (isSkillPathReference(doc)) refs.push({ context: `mode ${mode.id} global_docs[${index}]`, reference: doc });
+    }
+  }
+
+  return refs;
+}
+
+function isSkillPathReference(value: string | undefined): value is string {
+  if (!value) return false;
+  return value.trim().startsWith("skills/");
 }
