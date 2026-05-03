@@ -7,4 +7,3 @@ coverage/
 # PA Platform local state
 registry.db
 deployments/
-/.claude/ai-sessions.md
