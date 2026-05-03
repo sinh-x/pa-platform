@@ -26,7 +26,8 @@ deploy_modes:
     label: Implement
     phone_visible: true
     mode_type: work
-    provider: deepseek
+    provider: openai
+    model: gpt-5.3-codex
     agents: [] # solo, no sub-agents
     objective: teams/builder/modes/implement.md
     global_docs:
