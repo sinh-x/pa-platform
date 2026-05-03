@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
-export type OpencodeProvider = "minimax" | "openai";
+export type OpencodeProvider = "minimax" | "openai" | "deepseek";
 
 export interface OpencodeCommandResult {
   status: number | null;
@@ -28,6 +28,7 @@ export interface OpencodeAdapterOptions {
 const PROVIDER_DEFAULT_MODELS: Record<OpencodeProvider, string> = {
   minimax: process.env["OPA_MINIMAX_MODEL"] ?? "minimax-coding-plan/MiniMax-M2.7",
   openai: process.env["OPA_OPENAI_MODEL"] ?? "openai/gpt-5.5",
+  deepseek: process.env["OPA_DEEPSEEK_MODEL"] ?? "deepseek/deepseek-v4-pro",
 };
 
 export class OpencodeAdapter implements RuntimeAdapter {
@@ -99,7 +100,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         "Use `opa` for PA platform deployment and workflow commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
         "Use `pa-core serve` for Agent API server lifecycle; `opa` is the default deployment adapter, not the server owner.",
         "Use opencode tools exposed in the current session; do not assume Claude-only operational tools exist.",
-        "Supported providers for `opa deploy`: `minimax` and `openai` (default).",
+        "Supported providers for `opa deploy`: `minimax`, `openai`, and `deepseek` (default).",
       ].join("\n"),
     };
   }
@@ -282,14 +283,18 @@ export function opencodeJsonToActivityEvent(raw: Record<string, unknown>, deploy
 export function resolveOpencodeModel(provider: string | undefined, model: string | undefined): string {
   if (model?.includes("/")) return model;
   const normalized = normalizeProvider(provider);
-  if (model) return `${normalized === "minimax" ? "minimax-coding-plan" : normalized}/${model}`;
+  if (model) {
+    if (normalized === "minimax") return `minimax-coding-plan/${model}`;
+    return `${normalized}/${model}`;
+  }
   return PROVIDER_DEFAULT_MODELS[normalized];
 }
 
 export function normalizeProvider(provider: string | undefined): OpencodeProvider {
   if (!provider || provider === "minimax") return "minimax";
   if (provider === "openai") return "openai";
-  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai`);
+  if (provider === "deepseek") return "deepseek";
+  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek`);
 }
 
 function writeLog(path: string, stdout: string, stderr: string): void {
