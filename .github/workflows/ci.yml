@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, feature/**]
   pull_request:
     branches: [main, develop]
 
@@ -34,7 +34,7 @@ jobs:
       - name: Check generated completions
         run: |
           pnpm run completions
-          git diff --exit-code -- completions/pa-core.fish completions/opa.fish
+          git diff --exit-code -- completions/pa-core.fish completions/opa.fish completions/cpa.fish
 
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish

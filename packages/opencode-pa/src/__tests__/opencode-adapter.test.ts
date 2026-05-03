@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, createAgentApiApp, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
-import { createOpencodeActivityWriter, createOpencodeSessionIdParser, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
+import { createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
@@ -118,11 +118,27 @@ test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", "MiniMax-M2.7-highspeed"), "minimax-coding-plan/MiniMax-M2.7-highspeed");
 });
 
+test("resolveOpencodeModel supports deepseek provider and deepseek-v4-pro default", () => {
+  assert.equal(resolveOpencodeModel("deepseek", undefined), "deepseek/deepseek-v4-pro");
+  assert.equal(resolveOpencodeModel("deepseek", "deepseek-chat"), "deepseek/deepseek-chat");
+  assert.equal(resolveOpencodeModel("deepseek", "deepseek/deepseek-reasoner"), "deepseek/deepseek-reasoner");
+  assert.equal(resolveOpencodeModel("deepseek", "deepseek-reasoner"), "deepseek/deepseek-reasoner");
+});
+
+test("normalizeProvider accepts deepseek and rejects unsupported providers", () => {
+  assert.equal(normalizeProvider("deepseek"), "deepseek");
+  assert.equal(normalizeProvider("minimax"), "minimax");
+  assert.equal(normalizeProvider("openai"), "openai");
+  assert.throws(() => normalizeProvider("anthropic"), /Supported providers: minimax, openai, deepseek/);
+  assert.throws(() => normalizeProvider("claude"), /Supported providers: minimax, openai, deepseek/);
+  assert.throws(() => normalizeProvider("unknown"), /Supported providers: minimax, openai, deepseek/);
+});
+
 test("opa tool guidance keeps pa-core serve as server owner", () => {
   const guidance = new OpencodeAdapter().describeTools().markdown;
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(guidance, /`opa` is the default deployment adapter, not the server owner/);
-  assert.match(guidance, /Supported providers for `opa deploy`: `minimax` and `openai`/);
+  assert.match(guidance, /Supported providers for `opa deploy`: `minimax`, `openai`, and `deepseek`/);
   assert.doesNotMatch(guidance, /opa serve/);
 });
 

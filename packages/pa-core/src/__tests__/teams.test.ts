@@ -47,7 +47,7 @@ test("builder team config has no Anthropic deploy modes", () => {
 
   assert.ok(modeIds.length > 0);
   assert.equal(builder.default_mode, "implement");
-  assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider, "minimax");
+  assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider, "deepseek");
   assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.model, undefined);
   assert.deepEqual(modeIds.filter((id) => id.includes("anthropic")), []);
   for (const removedMode of ["housekeeping-anthropic", "implement-anthropic", "worker-anthropic", "orchestrator-anthropic", "routine-anthropic"]) {

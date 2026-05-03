@@ -5,7 +5,7 @@ import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { TicketStore } from "../../tickets/index.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
-import type { CliIo } from "../core-command.js";
+import type { CliIo } from "../utils.js";
 import { formatTicketList, formatTicketShow } from "../formatters.js";
 
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
