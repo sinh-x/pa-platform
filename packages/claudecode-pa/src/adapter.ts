@@ -95,7 +95,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         "Use `cpa` for PA platform deployment and workflow commands; it invokes the runtime-neutral pa-core command set with Claude Code as the spawn target.",
         "Use `pa-core serve` for Agent API server lifecycle; `cpa` is the Claude Code deployment adapter, not the server owner.",
         "Use Claude-native tools exposed in the current session (Skill, AskUserQuestion, TeamCreate, ScheduleWakeup, Bash, Read, Edit, Write, Grep, Glob).",
-        "Supported provider for `cpa deploy`: `anthropic` (default and only). Default model: `claude-opus-4-7` (override via --model or PA_CPA_DEFAULT_MODEL).",
+        "Supported provider for `cpa deploy`: `anthropic` (default and only). cpa auto-sets provider to anthropic and ignores any non-anthropic `provider:` in the team-mode YAML — that field is honored only by the matching runtime adapter (e.g., opa). Default model: `claude-opus-4-7` (override via --model or PA_CPA_DEFAULT_MODEL).",
       ].join("\n"),
     };
   }
