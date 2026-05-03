@@ -37,6 +37,32 @@ The requirements handoff must include one deterministic route based on class:
 
 Never use "decide later" or any ambiguous fallback in the handoff route.
 
+### Routing/Handoff Map (Phase 3)
+
+When preparing handoff, record exactly one route from this table:
+
+| Class | Target team/mode | Handoff format requirements |
+|---|---|---|
+| `software-dev` | `builder` / `implement` | Requirements doc must include repo path, feature branch, ordered implementation phases, FR/NFR/AC traceability, and repository verification commands for changed files. |
+| `data-analysis/dashboard-pipeline` | `builder` / `data-analysis` (PAP-048 semantics) | Requirements doc must include Data Understanding, Pipeline Validation, and PAP-048 Compatibility sections plus data/pipeline verification checks. Include explicit note that mode semantics follow PAP-048 and introduce no conflicting route labels. |
+
+Handoff output format must include:
+
+- `Class:` one of the two allowed classes
+- `Route:` exactly one target `team/mode`
+- `Handoff Format:` checklist of required sections/evidence for that class
+
+Do not add a fallback route, multi-route option, or deferred routing decision.
+
+### Routing Scenario Check (Phase 3 verification)
+
+Before handoff, validate one scenario for each class:
+
+1. Software scenario -> yields only `builder/implement`.
+2. Data scenario -> yields only `builder/data-analysis` with PAP-048 compatibility note.
+
+If either scenario maps to more than one route, stop and fix the routing section before handoff.
+
 ### Escalation Rule
 
 Escalate classification only when both two-step tests fail to separate classes. On escalation, pause and ask Sinh with the two-step evidence and proposed default.

@@ -75,6 +75,12 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 **Output Expectation:** Single class label + short rationale (deliverable + verification basis).
 
+**Deterministic route map (mandatory):**
+- `software-dev` -> `builder/implement` with software handoff format (repo + branch + phases + software verification checks).
+- `data-analysis/dashboard-pipeline` -> `builder/data-analysis` with data handoff format (`Data Understanding`, `Pipeline Validation`, `PAP-048 Compatibility`, and data/pipeline verification checks).
+
+Do not proceed with any ambiguous fallback route.
+
 ### Phase 1: Understand the Problem
 **Goal:** Establish what, why, and current state through user conversation.
 

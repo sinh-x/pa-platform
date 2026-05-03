@@ -189,6 +189,20 @@ For `data-analysis/dashboard-pipeline`:
 - Rationale Step 2 (dominant verification type): <brief rationale or N/A if Step 1 was sufficient>
 - Deterministic route anchor: <single class-to-route mapping, no ambiguous fallback>
 - PAP-048 compatibility note (required for data class): <statement or N/A for software-dev>
+
+## Handoff Routing Map (required)
+
+Record exactly one deterministic route based on the selected class.
+
+| Class | Route (team/mode) | Required handoff format |
+|---|---|---|
+| `software-dev` | `builder/implement` | Include repo path, feature branch, ordered implementation phases, FR/NFR/AC traceability, and repo verification checks for changed files. |
+| `data-analysis/dashboard-pipeline` | `builder/data-analysis` (PAP-048 compatible semantics) | Include Data Understanding, Pipeline Validation, PAP-048 Compatibility, and explicit data/pipeline verification checks. |
+
+Rules:
+- Exactly one row is active for the document's selected class.
+- No "decide later", fallback, or dual-route output is allowed.
+- For data class, include explicit PAP-048 compatibility statement and avoid conflicting mode terminology.
 ```
 
 ## 17. Guidance Notes
@@ -198,6 +212,7 @@ For `data-analysis/dashboard-pipeline`:
 - Intake classification is a hard gate: assign exactly one class (`software-dev` or `data-analysis/dashboard-pipeline`) before Phase 2 scope work begins.
 - For ambiguous requests, use two-step triage: (1) primary deliverable, then (2) dominant verification type.
 - Handoff must include one deterministic class-to-route mapping; ambiguous fallback is not allowed.
+- Handoff Routing Map is mandatory and must resolve to one route (`builder/implement` or `builder/data-analysis`) based on class.
 - Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
 - Class profile and verification gates are mandatory: every doc must include exactly one active profile (`software-dev` or `data-analysis/dashboard-pipeline`) and class-specific verification gates.
 - For `data-analysis/dashboard-pipeline`, include explicit `Data Understanding`, `Pipeline Validation`, and `PAP-048 Compatibility` subsections.

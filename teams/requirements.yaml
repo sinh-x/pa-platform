@@ -230,7 +230,7 @@ deploy_modes:
         inject-as: shared-skill
 context:
   organization: sinh-x
-  notes: "Solo agent (team manager does the work directly). Foreground TUI is the default for analyze and review modes. Intake classification is mandatory: assign exactly one class (`software-dev` or `data-analysis/dashboard-pipeline`) before scope finalization, apply two-step triage for ambiguous cases, and enforce deterministic class-to-route mapping without ambiguous fallback. Requirements drafts must include class-specific profile checklists and class-specific verification gates, with explicit PAP-048 compatibility language for data-analysis/dashboard-pipeline work."
+  notes: "Solo agent (team manager does the work directly). Foreground TUI is the default for analyze and review modes. Intake classification is mandatory: assign exactly one class (`software-dev` or `data-analysis/dashboard-pipeline`) before scope finalization, apply two-step triage for ambiguous cases, and enforce deterministic class-to-route mapping without ambiguous fallback. Route map is fixed: `software-dev` -> `builder/implement`; `data-analysis/dashboard-pipeline` -> `builder/data-analysis` with PAP-048-compatible semantics. Requirements drafts must include class-specific profile checklists, class-specific verification gates, and class-specific handoff format evidence."
 agents:
   - name: analyst
     role: "Gather requirements through structured conversation, explore codebase, produce a plan covering the standard checklist"
