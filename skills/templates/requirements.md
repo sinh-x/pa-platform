@@ -139,12 +139,23 @@ Blast Radius:
 ## 16. Follow-up / Future Work
 
 <Deferred work or None>
+
+## Classification Record (required before scope finalization)
+
+- Class: `software-dev` | `data-analysis/dashboard-pipeline` (choose exactly one)
+- Rationale Step 1 (primary deliverable): <brief rationale>
+- Rationale Step 2 (dominant verification type): <brief rationale or N/A if Step 1 was sufficient>
+- Deterministic route anchor: <single class-to-route mapping, no ambiguous fallback>
+- PAP-048 compatibility note (required for data class): <statement or N/A for software-dev>
 ```
 
 ## 17. Guidance Notes
 
 - Every section must be addressed. If a section does not apply, write `N/A` with a one-sentence reason.
 - The requirements document has 16 numbered document sections. Shape-Conformance is a deterministic pass/fail count across 13 Quality Bar checks. Use `N/13`; do not apply weighting.
+- Intake classification is a hard gate: assign exactly one class (`software-dev` or `data-analysis/dashboard-pipeline`) before Phase 2 scope work begins.
+- For ambiguous requests, use two-step triage: (1) primary deliverable, then (2) dominant verification type.
+- Handoff must include one deterministic class-to-route mapping; ambiguous fallback is not allowed.
 - Keep `## 10. Acceptance Criteria` and `## 13. Implementation Plan` phase items as checkboxes. Builder updates these during implementation.
 - Every implementation-bound requirements document MUST name the feature branch and include an ordered phase checklist. Each phase MUST include deliverables, traceability to FR/NFR/AC IDs, and phase-specific verification steps.
 - Acceptance criteria must be observable pass/fail statements. Avoid vague terms unless they have a measurable definition.

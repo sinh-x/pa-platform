@@ -62,6 +62,19 @@ Follow each phase in order. Log gate status after each phase before proceeding.
 
 ---
 
+### Phase 0.5: Intake Classification Gate
+**Goal:** Assign exactly one work class before scope finalization.
+
+**Actions:**
+- [ ] Classify request as exactly one of: `software-dev` or `data-analysis/dashboard-pipeline`
+- [ ] If mixed/ambiguous, apply two-step triage from `skills/requirements/analyze.md`
+- [ ] If still unresolved after two-step triage, pause and escalate to Sinh
+- [ ] Record deterministic class-to-route anchor in notes (no ambiguous fallback)
+
+**Gate Criteria:** Do not proceed to Phase 2 until one class is explicitly recorded.
+
+**Output Expectation:** Single class label + short rationale (deliverable + verification basis).
+
 ### Phase 1: Understand the Problem
 **Goal:** Establish what, why, and current state through user conversation.
 
