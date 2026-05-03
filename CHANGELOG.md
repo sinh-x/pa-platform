@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `cpa deploy` now auto-sets `--provider anthropic` and ignores any non-anthropic `provider:` value in the team-mode YAML (the team-mode field is for the matching runtime adapter, e.g., `opa`). When the team-mode provider is not anthropic, the team-mode `model:` is also ignored and cpa falls back to the default claude model. An explicit `--provider <other>` is still rejected (PAP-054).
+
 ### Fixed
 
 - `cpa deploy` (claudecode-pa adapter) now instructs Claude to load the primer via the `Read` tool with a short wrapper prompt instead of dumping the entire primer body onto argv. Applies to foreground, background, and streaming (`-p`) modes. Matches legacy `pd` parity (PAP-052).
