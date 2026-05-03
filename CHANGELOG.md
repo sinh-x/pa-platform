@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cpa deploy` (claudecode-pa adapter) now instructs Claude to load the primer via the `Read` tool with a short wrapper prompt instead of dumping the entire primer body onto argv. Applies to foreground, background, and streaming (`-p`) modes. Matches legacy `pd` parity (PAP-052).
 - Restored `opa deploy <team>` to open the opencode TUI by default and kept headless execution behind `--background`.
 
 ### Removed

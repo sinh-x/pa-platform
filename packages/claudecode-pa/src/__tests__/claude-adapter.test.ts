@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { spawnSync } from "node:child_process";
-import { ClaudeCodeAdapter, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
+import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
@@ -217,12 +217,96 @@ test("cpa background deploy records pid and session id", async () => {
     assert.ok(seenArgs.includes("--verbose"));
     assert.ok(seenArgs.includes("--dangerously-skip-permissions"));
     assert.ok(seenArgs.includes("--model"));
+    // PAP-052: background mode must pass the wrapper prompt instructing claude to
+    // load the primer via the Read tool, not the primer body.
     const deployment = queryDeploymentStatuses()[0]!;
+    const primerPath = join(root, "deployments", deployment.deploy_id, "primer.md");
+    const wrapper = buildPrimerLoadPrompt(primerPath);
+    assert.ok(seenArgs.includes(wrapper), "args must include the primer-load wrapper prompt");
+    const primerBody = readFileSync(primerPath, "utf-8");
+    assert.equal(seenArgs.includes(primerBody), false, "args must NOT contain the full primer body");
     assert.equal(deployment.status, "running");
     assert.equal(deployment.pid, 4242);
     assert.equal(deployment.runtime, "claude");
     assert.equal(deployment.provider, "anthropic");
     assert.equal(readFileSync(join(root, "deployments", deployment.deploy_id, "session-id-claude.txt"), "utf-8"), "claude-session-bg");
+  });
+});
+
+test("buildPrimerLoadPrompt returns the verbatim wrapper string with the primer path embedded", () => {
+  // FR1 wrapper string — must match the legacy `pd` phrasing exactly so cpa and pd
+  // produce identical user-prompt-submit events. Update with care.
+  const path = "/tmp/example-deploy/primer.md";
+  const prompt = buildPrimerLoadPrompt(path);
+  assert.equal(
+    prompt,
+    `Read the deployment primer at '${path}' using the Read tool and follow ALL instructions in it exactly. Start immediately. When finished, write the completion marker and exit.`,
+  );
+  assert.ok(prompt.length < 1024, "wrapper prompt must stay well under the 1KB NFR1 budget");
+});
+
+test("cpa foreground passes the primer-load wrapper to claude (not the primer body)", async () => {
+  await withCpaEnv(async (root) => {
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const claude = join(bin, "claude");
+    const argvLog = join(root, "claude-argv.log");
+    // Fake claude prints each argv entry on its own line so the test can read them
+    // back. Exits 0 so deploy reports success.
+    writeFileSync(claude, `#!/bin/sh
+for arg in "$@"; do
+  printf '%s\\n' "$arg"
+done > '${argvLog}'
+exit 0
+`, "utf-8");
+    chmodSync(claude, 0o755);
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
+    try {
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan"], { hooks: createClaudeHooks(new ClaudeCodeAdapter()), io: { stdout: () => {}, stderr: () => {} } });
+      assert.equal(code, 0);
+      const deployment = queryDeploymentStatuses()[0]!;
+      const primerPath = join(root, "deployments", deployment.deploy_id, "primer.md");
+      const wrapper = buildPrimerLoadPrompt(primerPath);
+      const argv = readFileSync(argvLog, "utf-8").split("\n").filter(Boolean);
+      assert.ok(argv.includes(wrapper), "foreground argv must include the primer-load wrapper");
+      const primerBody = readFileSync(primerPath, "utf-8");
+      assert.equal(argv.includes(primerBody), false, "foreground argv must NOT contain the primer body");
+      // Distinguishing marker from the primer template — if it leaks into argv, the
+      // wrapper substitution failed for foreground.
+      assert.equal(argv.some((arg) => arg.includes("Runtime: claude")), false, "primer body markers must not appear in foreground argv");
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+    }
+  });
+});
+
+test("cpa streaming-mode (runCommand) passes the wrapper prompt", async () => {
+  await withCpaEnv(async (root) => {
+    let seenArgs: string[] = [];
+    const adapter = new ClaudeCodeAdapter({
+      runCommand: (args) => {
+        seenArgs = args;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      runBackgroundCommand: () => { throw new Error("background should not run"); },
+    });
+    // Drive the third runClaude branch via the adapter directly: SpawnOpts.mode
+    // accepts "foreground" | "background" | "dry-run", but the adapter falls
+    // through to runCommand when mode is anything other than the first two.
+    const deployId = "d-stream";
+    const deployDir = join(root, "deployments", deployId);
+    mkdirSync(deployDir, { recursive: true });
+    const primerPath = join(deployDir, "primer.md");
+    writeFileSync(primerPath, "# Primer\nRuntime: claude\n", "utf-8");
+    const result = await adapter.spawn({ primerPath, deployId, mode: "dry-run", model: "claude-opus-4-7", timeoutMs: 1000, env: {} });
+    assert.equal(result.exitCode, 0);
+    const wrapper = buildPrimerLoadPrompt(primerPath);
+    assert.ok(seenArgs.includes(wrapper), "streaming args must include the primer-load wrapper");
+    const primerBody = readFileSync(primerPath, "utf-8");
+    assert.equal(seenArgs.includes(primerBody), false, "streaming args must NOT contain the primer body");
+    assert.ok(seenArgs.includes("-p"), "streaming args must include the -p flag");
   });
 });
 
