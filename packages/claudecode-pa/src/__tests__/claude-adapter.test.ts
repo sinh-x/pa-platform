@@ -180,6 +180,37 @@ test("cpa rejects non-anthropic provider before spawning claude", async () => {
   });
 });
 
+test("cpa ignores non-anthropic team-mode provider and falls back to anthropic", async () => {
+  await withCpaEnv(async (root) => {
+    // Team mode declares provider: minimax + a non-claude model — these must be
+    // ignored by cpa (they belong to the opa adapter). cpa should pick anthropic
+    // and the default claude model.
+    writeFileSync(join(root, "teams", "builder.yaml"), [
+      "name: builder",
+      "description: Builder",
+      "default_mode: implement",
+      "objective: Build",
+      "agents:",
+      "  - name: builder-agent",
+      "    role: Builds things",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    mode_type: work",
+      "    provider: minimax",
+      "    model: minimax-text-01-spark",
+    ].join("\n"));
+    const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) } });
+    assert.equal(code, 0, `expected dry-run to succeed; stderr: ${stderr.join("\n")}`);
+    const body = readDryRunBody(root, stdout);
+    assert.match(body, /using claude-opus-4-7/, "must fall back to default claude model when team mode model belongs to a different provider");
+    assert.equal(/minimax/.test(body), false, "must not surface team-mode minimax model in deployment body");
+  });
+});
+
 test("cpa supports --list-modes and --validate", async () => {
   await withCpaEnv(async () => {
     const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });

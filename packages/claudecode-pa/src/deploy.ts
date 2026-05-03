@@ -28,10 +28,16 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider ?? selectedMode?.provider ?? "anthropic";
+  // cpa is anthropic-only. Ignore team-mode YAML `provider:` when it isn't anthropic
+  // so the runtime adapter (cpa) drives provider selection — the team mode setting is
+  // for opa/other adapters. An explicit `--provider <other>` from the user is still
+  // rejected by `normalizeProvider` below.
+  const teamModeProviderIsAnthropic = !selectedMode?.provider || selectedMode.provider === "anthropic";
+  const provider = request.provider ?? "anthropic";
+  const teamModeModel = teamModeProviderIsAnthropic ? selectedMode?.model : undefined;
   let model: string;
   try {
-    model = resolveClaudeModel(provider, request.model ?? request.teamModel ?? selectedMode?.model);
+    model = resolveClaudeModel(provider, request.model ?? request.teamModel ?? teamModeModel);
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
