@@ -84,6 +84,8 @@ This mode does **not** require a separate approval prompt before writing data ar
 
 If any of those three are missing, the write is **not** documented — pause and ask the user before proceeding. Framing covered the user's write expectations up front; the IPOV record is what makes that consent traceable. Do not collect a second approval for the same write when the IPOV record already captures it, and do not skip the IPOV record to avoid prompting.
 
+Documented-write allowlist. Writes covered by this rule are limited to (a) the active repo working tree, (b) the agent-teams workspace under the user ai-usage Documents folder, or (c) the system temp directory. Writes to system paths such as /etc, /var, /usr, or other users home directories require explicit user approval and cannot be covered by the documented-write rule. This is a soft guardrail enforced by the agent, and the audit trail lives in the handoff artifact write targets section plus the activity log.
+
 ### Redaction Inside the IPOV Record
 
 The IPOV record is part of the handoff evidence and follows the same redaction rules as the Privacy Baseline below. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Never paste raw rows, secrets, credentials, or other sensitive values into IPOV fields, ticket comments, or session logs. When a redacted example is necessary to communicate shape, cap it at five rows and replace identifying or sensitive columns with placeholders.
@@ -117,6 +119,10 @@ The artifact must contain:
 ### Validation Requirement (Hard)
 
 Every processing task must record either a **focused validation outcome** (schema check, row-count check, focused test, dry-run primer assertion, or equivalent) or a **named blocker** explaining why validation could not run. A silent skip is not acceptable. The validation outcome appears both inside the IPOV record and in the Write targets section of the handoff artifact for each output it covers.
+
+#### Failure handling
+
+If a processing run fails or times out mid-write, leave the partially written artifact in place rather than deleting it. Write a sidecar file alongside the artifact with the same path plus the suffix .failed.json that captures the failure reason and the IPOV row validation outcome at the moment of failure. Record the sidecar path in the IPOV record output field so downstream consumers know how to interpret a partially populated artifact and where to find the failure context. The sidecar substitutes for the focused validation outcome in this case and counts as the named blocker that the validation rule requires.
 
 ### Privacy in the Handoff Artifact
 
