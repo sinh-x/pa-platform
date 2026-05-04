@@ -44,7 +44,51 @@ Cover each of the following discovery areas. For each area, list what you inspec
 
 **Reporting current state.** When discovery completes, present a short Current State summary back to the user before processing. The summary must list the repo files, schemas/contracts, tests, datasets, and findings inspected, plus any gaps that block processing. Keep entries to paths, names, and one-line notes — do not paste raw records or sensitive values.
 
-> Forward references — IPOV evidence (stage, input path/schema, processing command, output path/schema, metadata/provenance, validation result) and the documented-write rule are added in Phase 3. Handoff artifact rules and examples are added in Phase 4. Tests are added in Phase 5. This file does not yet specify them.
+## IPOV Processing Evidence
+
+Every processing run in this mode must produce an **IPOV record** — a stage-aware checklist of the run's input, processing, output, and validation evidence. The IPOV record is the single source of truth for what changed, why, and how it was confirmed. It anchors the handoff artifact and replaces ad-hoc approval prompts before documented writes.
+
+Build the IPOV record progressively: capture the planned values during framing, fill in actual paths and outcomes as commands run, and finalize the record before handoff. The IPOV record is **mandatory for every processing run** — there is no exempted shortcut for "small" or "ad-hoc" runs.
+
+### Stage-Aware Command Protocol
+
+Treat each processing run as a sequence of stage-aware steps. For every step, name the stage explicitly and record the corresponding evidence as you go:
+
+1. **Profile** — inspect the candidate inputs (row counts, schema, sample shape, null rates) without writing data. Record the input path or schema and the profiling command used.
+2. **Process** — run the transformation, query, aggregation, or generation step. Record the command or transformation invoked and the output path or schema produced.
+3. **Validate** — run a focused validation, schema check, row-count assertion, dry-run, or focused test. Record the validation result alongside the output evidence.
+4. **Capture output** — verify that each written artifact matches the declared output expectation, that metadata or provenance sidecars are in place, and that the IPOV record is complete before handoff.
+
+When a step is genuinely not applicable (for example, no validation tests exist for a one-off inspection), record the skip reason explicitly in the IPOV record rather than omitting the field. A blocker recorded in place of a value is acceptable; a missing field is not.
+
+### Required IPOV Checklist
+
+For every processing run, fill in all six fields. Missing fields block handoff.
+
+- [ ] **Stage** — which pipeline stage this run belongs to (matches the framing field; for example, raw ingest, cleaned or typed, feature or processed, validated, reporting or dashboard, ad-hoc inspection).
+- [ ] **Input path or schema** — repo-scoped path(s) or schema/dataset name(s) the run reads. Include the source artifact and its expected shape.
+- [ ] **Processing command or transformation** — the exact command, script entrypoint, query, or transformation applied. Reference scripts by repo path; never inline secrets or credentials.
+- [ ] **Output path or schema** — repo-scoped target path(s) or schema/dataset name(s) produced or modified. Include the artifact type (for example, Feather, Parquet, JSON, Markdown report).
+- [ ] **Metadata or provenance** — sidecar paths, lineage records, manifest entries, or run logs that explain where the output came from (for example, a MetadataV2-style sidecar, run id, source commit).
+- [ ] **Validation result** — outcome of the focused validation step (pass, fail, or skip with reason), the command used, and any counts or assertions that confirm the output is fit for purpose.
+
+The six fields are mandatory. If a field cannot be filled in, record the blocker in place of the value (for example, "skipped: no schema test exists for this dataset; recommend adding one before the next run") so the gap is visible at handoff.
+
+### Documented-Write Rule
+
+This mode does **not** require a separate approval prompt before writing data artifacts when the IPOV record is filled in. A write is considered documented — and may proceed without an extra prompt — when all of the following are recorded in the IPOV record before the write completes:
+
+- Target path(s) and artifact type(s) for every file written or modified.
+- Provenance or metadata expectation for the output (sidecar path, lineage entry, run id, or equivalent).
+- Validation outcome (pass, fail, or skip with reason) for the output.
+
+If any of those three are missing, the write is **not** documented — pause and ask the user before proceeding. Framing covered the user's write expectations up front; the IPOV record is what makes that consent traceable. Do not collect a second approval for the same write when the IPOV record already captures it, and do not skip the IPOV record to avoid prompting.
+
+### Redaction Inside the IPOV Record
+
+The IPOV record is part of the handoff evidence and follows the same redaction rules as the Privacy Baseline below. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Never paste raw rows, secrets, credentials, or other sensitive values into IPOV fields, ticket comments, or session logs. When a redacted example is necessary to communicate shape, cap it at five rows and replace identifying or sensitive columns with placeholders.
+
+> Forward references — handoff artifact rules and no-ticket plus PAP-048-context examples are added in Phase 4. Tests are added in Phase 5. This file does not yet specify them.
 
 ## Privacy Baseline
 
