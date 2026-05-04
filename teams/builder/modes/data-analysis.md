@@ -88,8 +88,73 @@ If any of those three are missing, the write is **not** documented — pause and
 
 The IPOV record is part of the handoff evidence and follows the same redaction rules as the Privacy Baseline below. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Never paste raw rows, secrets, credentials, or other sensitive values into IPOV fields, ticket comments, or session logs. When a redacted example is necessary to communicate shape, cap it at five rows and replace identifying or sensitive columns with placeholders.
 
-> Forward references — handoff artifact rules and no-ticket plus PAP-048-context examples are added in Phase 4. Tests are added in Phase 5. This file does not yet specify them.
+## Handoff Artifact
+
+Every data-analysis run must produce a persistent handoff artifact that records the investigation result, the evidence behind it, and the recommended next action. The artifact is the durable trace of the run — ticket comments and registry entries link back to it but never replace it.
+
+### Storage and Naming
+
+Save the artifact to:
+
+```
+~/Documents/ai-usage/agent-teams/builder/artifacts/YYYY-MM-DD-<topic>-data-analysis.md
+```
+
+Use the same `<topic>` slug across the artifact filename, ticket comments, and session log so the artifact is easy to locate from any handoff link. Save under `agent-teams/builder/artifacts/`, never inside the per-deployment workspace under `deployments/<deploy-id>/`.
+
+### Required Sections
+
+The artifact must contain:
+
+1. **Framing** — the five confirmed framing fields (objective, pipeline stage, input candidates, output expectation, write or documentation expectations).
+2. **Discovery summary** — the Current State summary produced during repo-scoped discovery (paths, schemas, tests, datasets, gaps).
+3. **IPOV record** — the completed six-field IPOV checklist for every processing run in this session. Reference the IPOV record produced in §IPOV Processing Evidence; do not duplicate the field-by-field guidance here.
+4. **Write targets** — every file written or modified, listed with path, artifact type, provenance or metadata expectation, and validation outcome. Tie each entry to the IPOV record entry that captured it; the handoff artifact is the canonical place where the full list lives, satisfying the 100 percent write-target coverage rule.
+5. **Findings** — what the run learned, summarized as decisions, observations, or open questions. Use aggregate counts and command outcomes; do not paste raw records.
+6. **Risks and gaps** — privacy concerns, validation skips, missing inputs, or blockers that downstream work needs to know about.
+7. **Recommended next action** — concrete next step, owner, and whether it should be a follow-up ticket, a manual review, or no action.
+
+### Validation Requirement (Hard)
+
+Every processing task must record either a **focused validation outcome** (schema check, row-count check, focused test, dry-run primer assertion, or equivalent) or a **named blocker** explaining why validation could not run. A silent skip is not acceptable. The validation outcome appears both inside the IPOV record and in the Write targets section of the handoff artifact for each output it covers.
+
+### Privacy in the Handoff Artifact
+
+The handoff artifact follows the Privacy Baseline below. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Cap any redacted example at five rows and replace identifying or sensitive columns with placeholders. Never paste raw records, secrets, credentials, or sample data that would expose individuals.
+
+## Handoff Routing
+
+Two routing patterns depending on whether a ticket is in play:
+
+- **Ticket-attached run.** Add a ticket comment summarizing the run, attach the handoff artifact through `cpa ticket update --doc-ref`, and only change ticket status when the objective or existing ticket workflow requires it. The doc-ref points to the persistent artifact path under `agent-teams/builder/artifacts/`, never the ephemeral deployment path.
+- **No-ticket run.** Save the handoff artifact, write the session log under `sessions/YYYY/MM/agent-team/`, and finalize the deployment registry entry at shutdown. No ticket lifecycle changes occur. See the `pa-session-log` skill for the session log template and registry completion command.
+
+In both routing patterns the persistent artifact is mandatory; routing only changes whether the link is delivered through a ticket comment or only through the session log and registry.
+
+## Invocation Examples
+
+Keep example argument values free of backticks, dollar signs, pipes, semicolons, ampersands, angle brackets, and backslashes — the deploy CLI rejects them inside argument values.
+
+### No-ticket exploratory run
+
+Use this when the user wants an ad-hoc investigation that does not yet have a ticket lifecycle.
+
+```
+cpa deploy builder --mode data-analysis --objective "Profile cleaned studio dataset for missing metadata"
+```
+
+The run produces a handoff artifact under `agent-teams/builder/artifacts/` and a session log under `sessions/YYYY/MM/agent-team/`. No ticket is updated.
+
+### PAP-048-context ticket-attached run
+
+Use this when the run is part of an existing ticket (PAP-048 or another). The ticket id is passed so the run can attach its handoff doc-ref to the ticket without changing ticket lifecycle unless the workflow requires it.
+
+```
+cpa deploy builder --mode data-analysis --objective "Investigate metadata gaps for PAP-048 dataset audit" --ticket PAP-048
+```
+
+The run still produces the same handoff artifact under `agent-teams/builder/artifacts/`; the difference is that the team manager attaches the artifact to PAP-048 through `cpa ticket update PAP-048 --doc-ref ...` and adds a completion comment through `cpa ticket comment PAP-048 --author builder/team-manager --content ...` once the run completes.
 
 ## Privacy Baseline
 
-Handoff summaries, comments, and artifacts must avoid raw record dumps, secrets, credentials, and other sensitive values. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Detailed handoff and redaction rules arrive in Phase 4; treat this as the baseline reminder for any output produced during framing or discovery.
+Handoff summaries, comments, and artifacts must avoid raw record dumps, secrets, credentials, and other sensitive values. Use paths, schemas, aggregate counts, command outcomes, and redacted examples only. Cap redacted examples at five rows and replace identifying or sensitive columns with placeholders.
