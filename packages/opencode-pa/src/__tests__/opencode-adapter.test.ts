@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, createAgentApiApp, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
@@ -101,8 +101,15 @@ function writeBuilderTeamConfig(root: string): void {
     "    mode_type: work",
     "    provider: minimax",
     "    model: opus",
+    "  - id: data-analysis",
+    "    label: Data Analysis",
+    "    mode_type: interactive",
+    "    provider: openai",
   ].join("\n"));
 }
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+const DATA_ANALYSIS_PRIMER_PATH = join(REPO_ROOT, "teams", "builder", "modes", "data-analysis.md");
 
 function readDryRunBody(root: string, stdout: string[]): string {
   const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
@@ -827,6 +834,38 @@ test("createOpencodeSessionIdParser ignores partial sessionID matches across chu
   parser.write('{"sessionID":"ses_par');
   parser.write('tial_complete"}\n');
   assert.equal(parser.flush(), "ses_partial_complete");
+});
+
+test("opa builder --list-modes exposes data-analysis mode", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "builder", "--list-modes"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    assert.match(stdout.join("\n"), /data-analysis/);
+  });
+});
+
+test("builder data-analysis primer requires framing and IPOV checklist fields", () => {
+  const primer = readFileSync(DATA_ANALYSIS_PRIMER_PATH, "utf-8");
+  // Framing field labels (Startup Framing Protocol)
+  assert.match(primer, /Startup Framing Protocol/);
+  assert.match(primer, /\*\*Objective\*\*/);
+  assert.match(primer, /\*\*Pipeline stage\*\*/);
+  assert.match(primer, /\*\*Input candidates\*\*/);
+  assert.match(primer, /\*\*Output expectation\*\*/);
+  assert.match(primer, /\*\*Write or documentation expectations\*\*/);
+  // IPOV checklist field labels (Required IPOV Checklist)
+  assert.match(primer, /Required IPOV Checklist/);
+  assert.match(primer, /- \[ \] \*\*Stage\*\*/);
+  assert.match(primer, /- \[ \] \*\*Input path or schema\*\*/);
+  assert.match(primer, /- \[ \] \*\*Processing command or transformation\*\*/);
+  assert.match(primer, /- \[ \] \*\*Output path or schema\*\*/);
+  assert.match(primer, /- \[ \] \*\*Metadata or provenance\*\*/);
+  assert.match(primer, /- \[ \] \*\*Validation result\*\*/);
+  // Documented-write rule guards the no-extra-prompt behavior
+  assert.match(primer, /Documented-Write Rule/);
 });
 
 function restore(key: string, value: string | undefined): void {
