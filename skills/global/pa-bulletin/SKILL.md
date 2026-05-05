@@ -29,7 +29,6 @@ If a bulletin blocks your team (`block: all` or your team name in `block:`) and 
 2. Create a FYI ticket noting the block:
    ```bash
    pa ticket create \
-     --project personal-assistant \
      --title "FYI: Deployment blocked by bulletin — <bulletin title>" \
      --type fyi \
      --assignee sinh \

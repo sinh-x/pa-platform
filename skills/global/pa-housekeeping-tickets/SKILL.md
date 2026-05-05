@@ -44,7 +44,6 @@ For each review ticket >3 days old, create a reminder FYI:
 
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "FYI: Pending review >3 days — <ticket-id>" \
   --type fyi \
   --assignee sinh \

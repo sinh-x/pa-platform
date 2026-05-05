@@ -40,7 +40,6 @@ Output:
 1. Save plan draft file to: {{OUTPUT_DIR}}/{{TODAY}}-plan-draft.md
 2. Create a plan-draft ticket so Sinh sees it in his ticket queue:
    pa ticket create \
-     --project personal-assistant \
      --title "Daily Plan: {{TODAY}}" \
      --type plan-draft \
      --assignee sinh \

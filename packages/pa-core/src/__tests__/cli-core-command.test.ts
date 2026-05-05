@@ -960,7 +960,7 @@ test("runCoreCommand errors on ticket create outside registered repo without pro
   await withCliEnv(async () => {
     const missingProject = capture();
     assert.equal(await runCoreCommand(["ticket", "create", "--title", "No project", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Missing project"], { io: missingProject.io }), 1);
-    assert.match(missingProject.stderr.join("\n"), /Not in a registered repo\. Use --project name\./);
+    assert.match(missingProject.stderr.join("\n"), /Not in a registered repo\. Use --project name, or run this inside a registered repo where --project is optional\./);
     assert.match(missingProject.stderr.join("\n"), /Available projects: pa-platform/);
   });
 });

@@ -490,6 +490,8 @@ For each Acceptance Criteria item from the requirements doc, produce a test scen
 
 ## Standard Checklist
 
+**Path note:** The template lives at the repository root under `skills/templates/` (not `skills/requirements/templates/`).
+
 > **Template:** Read `skills/templates/requirements.md` for the standard 16-section requirements document.
 > Every requirements document MUST follow this template.
 
@@ -577,7 +579,7 @@ pa ticket comment <ticket_id> --author <agent_name> \
 **If NO existing ticket (standalone work):**
 Create a new review-request ticket:
 ```bash
-pa ticket create --type review-request --project personal-assistant \
+pa ticket create --type review-request \
   --title "Review: <descriptive-topic>" \
   --summary "<brief summary of what was produced>" \
   --assignee builder --priority high --estimate S \

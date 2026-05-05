@@ -306,7 +306,6 @@ cp ~/Documents/ai-usage/deployments/<deploy_id>/<agent_name>/<output>.md \
 
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "Review: <descriptive-topic>" \
   --type review-request \
   --assignee <downstream-team-if-approved> \

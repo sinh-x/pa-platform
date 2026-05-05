@@ -89,10 +89,11 @@ pa ticket update <ticket-id> --doc-ref "requirements:agent-teams/requirements/ar
 
 ## Create Tickets for Discovered Work
 
+When to use `--project`: only when creating a ticket in a project DIFFERENT from your CWD.
+
 When identifying follow-up work or issues during a task:
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "<title>" \
   --type task \
   --assignee <team> \
@@ -188,8 +189,8 @@ pa ticket update PA-042 --status done --assignee builder
 
 ```bash
 # Create a regular task
+# In-repo default: rely on CWD project inference (do not add --project pa)
 pa ticket create \
-  --project pa \
   --title "Fix login flow" \
   --type task \
   --priority medium \
@@ -200,7 +201,6 @@ pa ticket create \
 # Create a review-request ticket (for deliverables needing human review)
 # IMPORTANT: Always include --doc-ref pointing to the artifact
 pa ticket create \
-  --project personal-assistant \
   --title "Review: pa ticket show crash on old tickets" \
   --type review-request \
   --assignee builder \
