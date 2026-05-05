@@ -116,7 +116,7 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   for (const flag of ["--title", "--type", "--priority", "--estimate", "--assignee"] as const) if (!values[flag]) return { error: `${flag} is required` };
   const project = values["--project"] ?? resolveProjectFromCwd()?.key;
   if (!project) {
-    return { error: `Not in a registered repo. Use --project name.${availableProjectGuidance()}` };
+    return { error: `Not in a registered repo. Use --project name, or run this inside a registered repo where --project is optional.${availableProjectGuidance()}` };
   }
   const actor = values["--actor"] ?? "pa-core";
   const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
