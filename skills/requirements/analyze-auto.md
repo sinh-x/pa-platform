@@ -235,6 +235,8 @@ Write the full 13-section requirements document.
 
 6. Include `From:` and `To:` fields in the document header
 
+**Path note:** The template lives at the repository root under `skills/templates/` (not `skills/requirements/templates/`).
+
 **Document template:**
 
 ```markdown

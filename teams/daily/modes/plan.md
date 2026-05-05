@@ -39,8 +39,8 @@ Workflow (you do all steps directly):
 Output:
 1. Save plan draft file to: {{OUTPUT_DIR}}/{{TODAY}}-plan-draft.md
 2. Create a plan-draft ticket so Sinh sees it in his ticket queue:
-    pa ticket create \
-      --title "Daily Plan: {{TODAY}}" \
+   pa ticket create \
+     --title "Daily Plan: {{TODAY}}" \
      --type plan-draft \
      --assignee sinh \
      --priority normal \

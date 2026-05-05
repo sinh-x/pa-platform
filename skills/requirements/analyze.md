@@ -490,8 +490,9 @@ For each Acceptance Criteria item from the requirements doc, produce a test scen
 
 ## Standard Checklist
 
+**Path note:** The template lives at the repository root under `skills/templates/` (not `skills/requirements/templates/`).
+
 > **Template:** Read `skills/templates/requirements.md` for the standard 16-section requirements document.
-> **Path note:** The template lives at the repository root under `skills/templates/` (not `skills/requirements/templates/`).
 > Every requirements document MUST follow this template.
 
 ### Class-Specific Draft Outline Examples

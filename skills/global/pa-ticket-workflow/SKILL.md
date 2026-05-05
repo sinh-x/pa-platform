@@ -189,6 +189,7 @@ pa ticket update PA-042 --status done --assignee builder
 
 ```bash
 # Create a regular task
+# In-repo default: rely on CWD project inference (do not add --project pa)
 pa ticket create \
   --title "Fix login flow" \
   --type task \
