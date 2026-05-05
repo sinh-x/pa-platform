@@ -123,7 +123,7 @@ Triaged N ideas into M groups. N new ideas processed.
 
 1. **Create review-request ticket for Sinh:**
    ```
-   pa ticket create --type review-request --project personal-assistant \
+   pa ticket create --type review-request \
      --title "Ideas Triage: YYYY-MM-DD" \
      --summary "Triaged N ideas into M groups. Review groupings and priorities." \
      --assignee requirements --priority medium --estimate S \
@@ -151,7 +151,7 @@ If an approved ticket is found:
 1. Read the ticket and its doc_refs for Sinh's feedback
 2. For each group in the proposal, create an individual requirements ticket:
    ```
-   pa ticket create --type task --project personal-assistant \
+   pa ticket create --type task \
      --title "Requirements: <group-slug>" \
      --summary "<group context and ideas>" \
      --assignee requirements --priority medium --estimate M

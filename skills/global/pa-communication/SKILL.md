@@ -40,7 +40,6 @@ When work produces a **deliverable** with lasting value (requirements doc, migra
 
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "Review: <descriptive-topic>" \
   --type review-request \
   --assignee <downstream-team-or-sinh> \
@@ -60,7 +59,6 @@ For non-actionable information that Sinh or another team should know:
 
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "FYI: <descriptive-topic>" \
   --type fyi \
   --assignee <recipient-team-or-sinh> \
@@ -75,7 +73,6 @@ For daily/weekly plans emitted by the planner team:
 
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "Daily Plan: YYYY-MM-DD" \
   --type plan-draft \
   --assignee sinh \

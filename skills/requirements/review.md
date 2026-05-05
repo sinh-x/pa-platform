@@ -245,7 +245,6 @@ Prioritized list of recommendations as requirements, ready to route to builder i
 **3. Review-request ticket (for Sinh to review and route):**
 ```bash
 pa ticket create \
-  --project personal-assistant \
   --title "Review: System review findings — <system-slug>" \
   --type review-request \
   --assignee builder \

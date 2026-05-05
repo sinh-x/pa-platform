@@ -470,7 +470,7 @@ pa ticket comment <ticket_id> --author researcher \
 ### If NO existing ticket (standalone analysis):
 Create a new review-request ticket:
 ```bash
-pa ticket create --type review-request --project personal-assistant \
+pa ticket create --type review-request \
   --title "Review: <topic>" \
   --summary "Autonomous requirements analysis on <topic>. Produced full 13-section requirements doc + UAT test plan. Review and decide: approve, request interactive session, or defer." \
   --assignee builder --priority medium --estimate S \
