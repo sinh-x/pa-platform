@@ -199,7 +199,7 @@ export async function runStatusCommand(argv: string[], io: Required<CliIo>, now:
   }
 
   let deployments = queryDeploymentStatuses();
-  if (opts.running) deployments = deployments.filter((deployment) => deployment.status === "running");
+  if (opts.running) deployments = deployments.filter((deployment) => deployment.status === "running" && (!deployment.pid || isProcessAlive(deployment.pid)));
   if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
   if (opts.today) deployments = deployments.filter((deployment) => localDate(deployment.started_at) === localDate(nowUtc(now)));
   if (opts.recent !== undefined) deployments = deployments.slice(0, opts.recent);

@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/opencode-pa",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "type": "module",
   "description": "opencode runtime adapter for PA platform",
   "bin": {
