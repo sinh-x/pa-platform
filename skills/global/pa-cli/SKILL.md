@@ -65,7 +65,7 @@ opa board --all --assignee sinh   # All projects, assigned to sinh
 
 | Subcommand | Purpose | Flags |
 |-----------|---------|-------|
-| `ticket create` | Create a ticket | `--project` `--title`* `--type`* `--priority`* `--estimate`* `--assignee`* `--summary` `--doc-ref` `--tags` `--from` `--to` `--actor` |
+| `ticket create` | Create a ticket | `--project` (optional) `--title`* `--type`* `--priority`* `--estimate`* `--assignee`* `--summary` `--doc-ref` `--tags` `--from` `--to` `--actor` |
 | `ticket update <id>` | Update ticket fields | `--status` `--assignee` `--priority` `--tags` `--blocked-by` `--doc-ref` `--doc-ref-primary` `--remove-doc-ref` `--estimate` `--actor` |
 | `ticket list` | List/filter tickets | `--project` `--status` `--assignee` `--priority` `--type` `--tags` `--exclude-tags` `--search` |
 | `ticket show <id>` | Show full ticket details | — |
@@ -74,7 +74,11 @@ opa board --all --assignee sinh   # All projects, assigned to sinh
 
 ### Ticket Examples
 
-For `ticket create`, `--project` is optional when running inside a registered repo: the command infers project from the current working directory. Use `--project` explicitly to override this inference. Outside a registered repo, `--project` is required.
+For `ticket create`, the default is CWD-aware project inference: inside a registered repo, the command infers project from your current working directory.
+
+Only pass `--project` when you intentionally want a different project than your current repo. Outside a registered repo, `--project` is required.
+
+Anti-pattern: copy-pasting `--project` from examples during normal in-repo work can create tickets in the wrong project.
 
 See **`pa-ticket-workflow` skill** — Appendix: Ticket CLI Examples for the full reference:
 - Discovery & search
