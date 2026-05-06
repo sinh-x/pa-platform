@@ -2,49 +2,48 @@
 
 MODE: DAILY TRACK — interactive daily operations logging
 TARGET_DATE: {{TODAY}}
-JOURNAL_TARGET: {{JOURNAL_ROOT}}/{{TODAY_UNDERSCORED}}.md
+JOURNAL_TARGET: {{REPO_ROOT}}/journals/{{TODAY_UNDERSCORED}}.md
 
-APPEND ONLY — Never overwrite existing journal content. Always append to {{JOURNAL_ROOT}}/YYYY_MM_DD.md. Create the file if it does not exist.
+APPEND ONLY — Never overwrite existing journal content. Always append to the current repo's Logseq day journal at `journals/YYYY_MM_DD.md`. Create the file if it does not exist.
 
-This mode handles interactive daily tracking across start-of-day, check-in, and end-of-day flows. It appends Logseq-style bullets to {{JOURNAL_ROOT}}/YYYY_MM_DD.md and never automatically mutates Avo timers.
+This mode handles interactive daily tracking across start-of-day, check-in, and end-of-day flows. It appends Logseq-style bullets to the current repo's `journals/YYYY_MM_DD.md` and never automatically mutates Avo timers.
 
 Solo mode — do NOT spawn sub-agents. Handle all interaction directly.
 
 ## Start-of-Day Flow
 
 When Sinh says "start day", "good morning", "daily track start", or similar:
-1. APPEND or CREATE — never overwrite. If {{JOURNAL_ROOT}}/YYYY_MM_DD.md does not exist, create it with frontmatter:
+1. APPEND or CREATE — never overwrite. Use the current repo's Logseq day journal: `journals/YYYY_MM_DD.md`. If it does not exist, create it as a Logseq Markdown journal file.
+2. Read the file first when it exists. If a `[[Daily Track]] #daily-track` block already exists for the day, append new start-day content under it; otherwise append/create this root block:
    ```markdown
-   # {{FORMATTED_DATE}}
-
-   ## Focus
+   - [[Daily Track]] #daily-track
+   	- Focus
    ```
-   If the file exists, read it first and append new content below existing content.
-2. Ask for today's focus items — record as `#focus` bullets under ## Focus:
-   - `- [ ] <focus item> #focus`
-3. Offer to show Avo status/summary (read-only):
+3. Ask for today's focus items — record as Logseq task bullets under the `Focus` child block:
+   - `- TODO <focus item> #focus`
+4. Offer to show Avo status/summary (read-only):
    - `avo status`
    - `avo task list`
    - `avo plan list`
-4. Ask if Sinh wants Avo worklog context recorded — if yes, append relevant items as `#worklog` bullets.
+5. Ask if Sinh wants Avo worklog context recorded — if yes, append relevant items as `#worklog` bullets under the same `[[Daily Track]]` block.
 
 ## Check-In Flow
 
 When Sinh says "check in", "midday", "log", "capture", or similar:
-1. APPEND — never overwrite. Read the current {{JOURNAL_ROOT}}/YYYY_MM_DD.md first, then append a timestamped section below existing content.
+1. APPEND — never overwrite. Read the current repo's `journals/YYYY_MM_DD.md` first, then append a timestamped child block under `[[Daily Track]] #daily-track`.
    ```markdown
-   ## Check-In — {{TIME}}
+   - Check-In — {{TIME}}
    ```
-2. Show current focus item status — read the journal's ## Focus section and display each item's state:
-   - Items marked `- [ ]` are `planned`
+2. Show current focus item status — read the journal's `Focus` child block and display each item's state:
+   - Items marked `TODO` are `planned`
    - Items Sinh marks as in-progress are updated to `in-progress`
-   - Items Sinh marks done are updated to `- [x]` with `done` annotation
+   - Items Sinh marks done are updated to `DONE` with `done` annotation
    - Items marked blocked stay with `#focus #blocked`
    - Unchecked items at end of day are `carryover` candidates
 3. Ask Sinh to update focus item states as needed before capturing new entries.
 4. Capture whatever Sinh provides — tag each line:
    - Notes: `- <note> #note`
-   - Todos: `- [ ] <todo> #todo`
+   - Todos: `- TODO <todo> #todo`
    - Issues: `- <issue> #issue`
    - Reminders: `- <reminder> #reminder`
    - Worklog entries: `- <entry> #worklog`
@@ -60,19 +59,19 @@ When Sinh says "check in", "midday", "log", "capture", or similar:
 ## End-of-Day Flow
 
 When Sinh says "end day", "wrap up", "eod", "daily track end", or similar:
-1. APPEND — never overwrite. Read the current {{JOURNAL_ROOT}}/YYYY_MM_DD.md first, then append the end-of-day summary section below existing content.
-2. Produce a summary section:
+1. APPEND — never overwrite. Read the current repo's `journals/YYYY_MM_DD.md` first, then append the end-of-day summary as a child block under `[[Daily Track]] #daily-track`.
+2. Produce a Logseq child block:
    ```markdown
-   ## End-of-Day Summary — {{TIME}}
+   - End-of-Day Summary — {{TIME}}
    ```
 3. Include:
-   - **Completed focus items** — items marked `- [x]` with `done` annotation; state: `done`
+   - **Completed focus items** — items marked `DONE` with `done` annotation; state: `done`
    - **Open todos and issues** — unchecked items tagged `#todo` or `#issue`
    - **Focus-item outcomes** — each focus item shown with final state: `planned`, `in-progress`, `done`, `blocked`, or `carryover`
-   - **Avo worklog summary** (run `avo worklog today` as read-only; write "No Avo worklog data found for today #worklog" if none)
+   - **Avo worklog summary** (run `avo today` and `avo worklog list -n 50` as read-only; write "No Avo worklog data found for today #worklog" if none)
    - **Carryover candidates for tomorrow** — unchecked focus items and open todos/issues that should roll forward
 4. Ask Sinh to confirm the summary before finalizing.
-5. Carryover items remain as `- [ ] <item> #todo` in the journal for the next day.
+5. Carryover items remain as `TODO <item> #todo` in the journal for the next day.
 
 ## Cross-Repo Capture
 
@@ -130,9 +129,7 @@ Run these when Sinh requests Avo context or worklog capture:
 - `avo daily` — daily overview
 - `avo task list` — task list
 - `avo plan list` — plan list
-- `avo worklog today` — today's worklog entries
-- `avo worklog yesterday` — yesterday's worklog entries
-- `avo worklog week` — this week's worklog summary
+- `avo worklog list -n 50` — recent worklog entries; filter today's entries by timestamp/date
 
 Do NOT start, stop, pause, or resume timers via these commands.
 
@@ -155,8 +152,8 @@ Do NOT run these commands unless Sinh explicitly asks in one of the patterns abo
 ### Worklog Capture
 
 When Sinh requests Avo worklog context for the journal:
-1. Run `avo worklog today` (read-only)
-2. Append relevant entries as `- <description> #worklog` bullets
+1. Run `avo today` and `avo worklog list -n 50` (read-only)
+2. Append today's relevant entries as `- <description> #worklog` bullets
 3. If no worklog data exists, write: `- No Avo worklog data found for today #worklog`
 
 Avo remains the source of truth for time and worklogs. The journal stores daily narrative and selected references only.
@@ -167,10 +164,11 @@ If no Avo data is available for the requested scope, report: "No Avo data was fo
 
 ## Journal Format
 
-Target: {{JOURNAL_ROOT}}/YYYY_MM_DD.md
+Target: `journals/YYYY_MM_DD.md` in the current repo's Logseq graph.
 Existing journals use Logseq-style bullets with tags.
 New entries follow the same format:
-- Checkbox tasks: `- [ ] <task> #tag`
+- Daily-track root: `- [[Daily Track]] #daily-track`
+- Checkbox tasks: `- TODO <task> #tag`
 - Notes: `- <note> #note`
 - Carryover marker: `> [!CAUTION] Carried over from {{DATE}}`
 
