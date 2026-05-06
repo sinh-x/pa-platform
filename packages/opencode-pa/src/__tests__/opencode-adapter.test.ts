@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, createAgentApiApp, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
@@ -638,6 +638,50 @@ test("opa deploy registry summary includes exit code on failure", async () => {
     assert.equal(deployment.status, "failed");
     assert.match(deployment.summary ?? "", /exit 1/);
     assert.match(deployment.summary ?? "", /boom: model auth failed/);
+  });
+});
+
+test("opa foreground deploy keeps existing completed marker authoritative", async () => {
+  await withOpaEnv(async () => {
+    const adapter = createStubAdapter({ exitCode: 0 });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deploymentId = queryDeploymentStatuses()[0]?.deploy_id;
+    assert.ok(deploymentId);
+    const terminalEvents = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminalEvents.length, 1);
+    assert.equal(terminalEvents[0]?.event, "completed");
+    assert.equal(terminalEvents[0]?.fallback, false);
+  });
+});
+
+test("opa foreground deploy keeps existing crashed marker authoritative", async () => {
+  await withOpaEnv(async () => {
+    const adapter: RuntimeAdapter = {
+      name: "opencode",
+      defaultModel: "stub/model",
+      sessionFileName: "session-id-opencode.txt",
+      installHooks() {},
+      spawn() {
+        throw new Error("spawn exploded");
+      },
+      resume() {
+        throw new Error("spawn exploded");
+      },
+      extractActivity() {
+        return [];
+      },
+      describeTools() {
+        return { runtime: "opencode", markdown: "stub" };
+      },
+    };
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 1);
+    const deploymentId = queryDeploymentStatuses()[0]?.deploy_id;
+    assert.ok(deploymentId);
+    const terminalEvents = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminalEvents.length, 1);
+    assert.equal(terminalEvents[0]?.event, "crashed");
   });
 });
 
