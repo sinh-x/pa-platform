@@ -134,7 +134,6 @@ export interface ProviderDefaults {
     minimax?: { base_url?: string; models?: ProviderModelTier };
     openai?: { base_url?: string; models?: ProviderModelTier };
     deepseek?: { base_url?: string; models?: ProviderModelTier };
-    "ollama-cloud"?: { base_url?: string; models?: ProviderModelTier };
   };
 }
 
