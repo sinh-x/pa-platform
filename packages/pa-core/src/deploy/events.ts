@@ -1,6 +1,8 @@
-import { appendRegistryEvent } from "../registry/index.js";
+import { appendRegistryEvent, getDeploymentEvents } from "../registry/index.js";
 import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
+
+export const OPA_WRAPPER_FALLBACK_SUMMARY = "Automated fallback: opa wrapper wrote this partial registry marker after OpenCode exited without an agent completion marker.";
 
 export interface StartDeploymentOpts {
   deploymentId: string;
@@ -131,4 +133,32 @@ export function emitAmendedEvent(opts: AmendedEventOpts): void {
     status: opts.status,
     summary: opts.summary,
   });
+}
+
+export interface EnsureTerminalRegistryMarkerOpts {
+  deploymentId: string;
+  team: string;
+  summary?: string;
+}
+
+export interface EnsureTerminalRegistryMarkerResult {
+  wroteFallback: boolean;
+}
+
+/**
+ * Ensures a terminal marker exists. If no completed/crashed event is present,
+ * appends a fallback completed event with status=partial.
+ */
+export function ensureTerminalRegistryMarker(opts: EnsureTerminalRegistryMarkerOpts): EnsureTerminalRegistryMarkerResult {
+  const events = getDeploymentEvents(opts.deploymentId);
+  const hasTerminalEvent = events.some((event) => event.event === "completed" || event.event === "crashed");
+  if (hasTerminalEvent) return { wroteFallback: false };
+  emitCompletedEvent({
+    deploymentId: opts.deploymentId,
+    team: opts.team,
+    status: "partial",
+    summary: opts.summary ?? OPA_WRAPPER_FALLBACK_SUMMARY,
+    fallback: true,
+  });
+  return { wroteFallback: true };
 }
