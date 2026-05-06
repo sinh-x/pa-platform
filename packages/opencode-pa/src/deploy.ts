@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -81,11 +81,13 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
       ? "opa deploy completed"
       : `opa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
+    ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return result.exitCode === 0
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
   } catch (error) {
     emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
+    ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
 }

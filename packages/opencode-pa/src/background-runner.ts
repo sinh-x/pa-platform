@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, getDeployPaths } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
@@ -19,6 +19,8 @@ if (!configPath) throw new Error("Missing background config path");
 const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
 
 const STDERR_TAIL_BYTES = 2000;
+
+let fatalError: unknown;
 
 try {
   const result = await runOpencode(config);
@@ -44,8 +46,12 @@ try {
   }
 } catch (error) {
   emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
-  throw error;
+  fatalError = error;
+} finally {
+  ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
 }
+
+if (fatalError) throw fatalError;
 
 interface BackgroundRunResult {
   exitCode: number;
