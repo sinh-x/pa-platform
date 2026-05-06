@@ -1,7 +1,7 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
 export type RuntimeName = "claude" | "opencode";
-export type ProviderName = "anthropic" | "minimax" | "openai" | "deepseek";
+export type ProviderName = "anthropic" | "minimax" | "openai" | "deepseek" | "ollama-cloud";
 export type ModelName = "haiku" | "sonnet" | "opus" | "gpt-5.5";
 
 export interface SkillEntry {
@@ -134,6 +134,7 @@ export interface ProviderDefaults {
     minimax?: { base_url?: string; models?: ProviderModelTier };
     openai?: { base_url?: string; models?: ProviderModelTier };
     deepseek?: { base_url?: string; models?: ProviderModelTier };
+    "ollama-cloud"?: { base_url?: string; models?: ProviderModelTier };
   };
 }
 

@@ -85,7 +85,7 @@ export function printDeployHelp(io: Required<CliIo>): void {
   io.stdout("  --resume <id>       Resume a prior deployment");
   io.stdout("");
   io.stdout("Provider options:");
-  io.stdout("  --provider <name>   Model provider (minimax, openai, deepseek)");
+  io.stdout("  --provider <name>   Model provider (minimax, openai, deepseek, ollama-cloud)");
   io.stdout("  --model <name>      Override default model");
   io.stdout("  --team-model <name> Override team-level model");
   io.stdout("  --agent-model <name> Override agent-level model");

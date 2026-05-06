@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
-export type OpencodeProvider = "minimax" | "openai" | "deepseek";
+export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud";
 
 export interface OpencodeCommandResult {
   status: number | null;
@@ -29,6 +29,7 @@ const PROVIDER_DEFAULT_MODELS: Record<OpencodeProvider, string> = {
   minimax: process.env["OPA_MINIMAX_MODEL"] ?? "minimax-coding-plan/MiniMax-M2.7",
   openai: process.env["OPA_OPENAI_MODEL"] ?? "openai/gpt-5.5",
   deepseek: process.env["OPA_DEEPSEEK_MODEL"] ?? "deepseek/deepseek-v4-pro",
+  "ollama-cloud": process.env["OPA_OLLAMA_CLOUD_MODEL"] ?? "ollama-cloud/deepseek-v4-pro",
 };
 
 export class OpencodeAdapter implements RuntimeAdapter {
@@ -100,7 +101,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         "Use `opa` for PA platform deployment and workflow commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
         "Use `pa-core serve` for Agent API server lifecycle; `opa` is the default deployment adapter, not the server owner.",
         "Use opencode tools exposed in the current session; do not assume Claude-only operational tools exist.",
-        "Supported providers for `opa deploy`: `minimax`, `openai`, and `deepseek` (default).",
+        "Supported providers for `opa deploy`: `minimax`, `openai`, `deepseek` (default), and `ollama-cloud`.",
       ].join("\n"),
     };
   }
@@ -294,7 +295,8 @@ export function normalizeProvider(provider: string | undefined): OpencodeProvide
   if (!provider || provider === "minimax") return "minimax";
   if (provider === "openai") return "openai";
   if (provider === "deepseek") return "deepseek";
-  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek`);
+  if (provider === "ollama-cloud") return "ollama-cloud";
+  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek, ollama-cloud`);
 }
 
 function writeLog(path: string, stdout: string, stderr: string): void {
