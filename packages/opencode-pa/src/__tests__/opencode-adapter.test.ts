@@ -148,7 +148,7 @@ test("resolveOpencodeModel supports ollama-cloud provider defaults and overrides
   }
 });
 
-test("normalizeProvider accepts deepseek and rejects unsupported providers", () => {
+test("normalizeProvider accepts valid providers and rejects unsupported ones", () => {
   assert.equal(normalizeProvider("deepseek"), "deepseek");
   assert.equal(normalizeProvider("ollama-cloud"), "ollama-cloud");
   assert.equal(normalizeProvider("minimax"), "minimax");
