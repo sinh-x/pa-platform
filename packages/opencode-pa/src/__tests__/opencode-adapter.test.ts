@@ -132,20 +132,37 @@ test("resolveOpencodeModel supports deepseek provider and deepseek-v4-pro defaul
   assert.equal(resolveOpencodeModel("deepseek", "deepseek-reasoner"), "deepseek/deepseek-reasoner");
 });
 
+test("resolveOpencodeModel supports ollama-cloud provider defaults and overrides", async () => {
+  const previous = process.env["OPA_OLLAMA_CLOUD_MODEL"];
+  try {
+    delete process.env["OPA_OLLAMA_CLOUD_MODEL"];
+    assert.equal(resolveOpencodeModel("ollama-cloud", undefined), "ollama-cloud/deepseek-v4-pro");
+    assert.equal(resolveOpencodeModel("ollama-cloud", "deepseek-v3.2"), "ollama-cloud/deepseek-v3.2");
+    assert.equal(resolveOpencodeModel("ollama-cloud", "ollama-cloud/deepseek-v3.2"), "ollama-cloud/deepseek-v3.2");
+
+    process.env["OPA_OLLAMA_CLOUD_MODEL"] = "ollama-cloud/qwen3-coder-next";
+    const { resolveOpencodeModel: resolveWithOverride } = await import(`../adapter.js?ollama-cloud-env=${Date.now()}`);
+    assert.equal(resolveWithOverride("ollama-cloud", undefined), "ollama-cloud/qwen3-coder-next");
+  } finally {
+    restore("OPA_OLLAMA_CLOUD_MODEL", previous);
+  }
+});
+
 test("normalizeProvider accepts deepseek and rejects unsupported providers", () => {
   assert.equal(normalizeProvider("deepseek"), "deepseek");
+  assert.equal(normalizeProvider("ollama-cloud"), "ollama-cloud");
   assert.equal(normalizeProvider("minimax"), "minimax");
   assert.equal(normalizeProvider("openai"), "openai");
-  assert.throws(() => normalizeProvider("anthropic"), /Supported providers: minimax, openai, deepseek/);
-  assert.throws(() => normalizeProvider("claude"), /Supported providers: minimax, openai, deepseek/);
-  assert.throws(() => normalizeProvider("unknown"), /Supported providers: minimax, openai, deepseek/);
+  assert.throws(() => normalizeProvider("anthropic"), /Supported providers: minimax, openai, deepseek, ollama-cloud/);
+  assert.throws(() => normalizeProvider("claude"), /Supported providers: minimax, openai, deepseek, ollama-cloud/);
+  assert.throws(() => normalizeProvider("unknown"), /Supported providers: minimax, openai, deepseek, ollama-cloud/);
 });
 
 test("opa tool guidance keeps pa-core serve as server owner", () => {
   const guidance = new OpencodeAdapter().describeTools().markdown;
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(guidance, /`opa` is the default deployment adapter, not the server owner/);
-  assert.match(guidance, /Supported providers for `opa deploy`: `minimax`, `openai`, and `deepseek`/);
+  assert.match(guidance, /Supported providers for `opa deploy`: `minimax`, `openai`, `deepseek` \(default\), and `ollama-cloud`/);
   assert.doesNotMatch(guidance, /opa serve/);
 });
 
