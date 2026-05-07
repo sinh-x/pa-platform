@@ -8,7 +8,7 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -29,7 +29,7 @@ deploy_modes:
     label: Triage
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: []  # solo, team-manager executes directly
     skills:
       - name: pa-cli
@@ -49,7 +49,7 @@ deploy_modes:
     label: Sprint Review
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: []  # solo, team-manager executes directly
     skills:
       - name: pa-cli
@@ -69,7 +69,7 @@ deploy_modes:
     label: Velocity
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: []  # solo, team-manager executes directly
     skills:
       - name: pa-cli

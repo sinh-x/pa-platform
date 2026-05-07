@@ -21,7 +21,7 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -31,7 +31,7 @@ deploy_modes:
     label: Plan
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: [] # solo, no sub-agents
     objective: teams/daily/modes/plan.md
     skills:
@@ -51,7 +51,7 @@ deploy_modes:
     label: Progress
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     objective: teams/daily/modes/progress.md
     skills:
       - name: pa-session-log
@@ -60,7 +60,7 @@ deploy_modes:
     label: End
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     objective: teams/daily/modes/end.md
     skills:
       - name: pa-session-log
@@ -80,7 +80,7 @@ deploy_modes:
     label: Weekly Gather
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/rpm/weekly-gather.md
     skills:
@@ -90,7 +90,7 @@ deploy_modes:
     label: Weekly Review
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: []
     skills:
       - name: pa-session-log
@@ -99,7 +99,7 @@ deploy_modes:
     label: RPM Manage
     phone_visible: true
     mode_type: interactive
-    provider: minimax
+    provider: openai
     agents: []
     skills:
       - name: pa-session-log
@@ -109,7 +109,7 @@ deploy_modes:
     label: Daily Track
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     agents: [] # solo, no sub-agents
     objective: teams/daily/modes/daily-track.md
     skills:
