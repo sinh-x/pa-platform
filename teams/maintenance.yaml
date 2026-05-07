@@ -9,7 +9,7 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -30,7 +30,7 @@ deploy_modes:
     label: Health Check
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli
@@ -50,7 +50,7 @@ deploy_modes:
     label: Repo Scan
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     objective: skills/maintenance/repo-scan-objective.md
     skills:
@@ -71,7 +71,7 @@ deploy_modes:
     label: Repo Health
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     objective: skills/maintenance/repo-health-objective.md
     skills:
@@ -92,7 +92,7 @@ deploy_modes:
     label: Fix
     phone_visible: false
     mode_type: interactive
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli

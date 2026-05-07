@@ -8,7 +8,7 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -18,7 +18,7 @@ deploy_modes:
     label: Background
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     skills:
       - name: pa-session-log
         inject-as: shared-skill
@@ -26,7 +26,7 @@ deploy_modes:
     label: Foreground
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     skills:
       - name: pa-session-log
         inject-as: shared-skill
@@ -34,13 +34,13 @@ deploy_modes:
     label: Interactive
     phone_visible: false
     mode_type: interactive
-    provider: minimax
+    provider: openai
 
   - id: spike
     label: Spike
     phone_visible: true
     mode_type: interactive
-    provider: minimax
+    provider: openai
     agents: [facilitator]
   - id: housekeeping-openai
     label: Housekeeping (OpenAI)

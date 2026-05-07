@@ -8,7 +8,7 @@ deploy_modes:
     label: Housekeeping
     phone_visible: true
     mode_type: housekeeping
-    provider: minimax
+    provider: openai
     agents: []
     objective: skills/global/housekeeping-objective.md
     skills:
@@ -29,7 +29,7 @@ deploy_modes:
     label: Knowledge Org
     phone_visible: false
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli
@@ -49,7 +49,7 @@ deploy_modes:
     label: Self-Improvement Weekly
     phone_visible: true
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli
@@ -69,7 +69,7 @@ deploy_modes:
     label: Self-Improvement Daily
     phone_visible: false
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli
@@ -89,7 +89,7 @@ deploy_modes:
     label: Self-Improvement Compare
     phone_visible: false
     mode_type: work
-    provider: minimax
+    provider: openai
     solo: true
     skills:
       - name: pa-cli

@@ -47,7 +47,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     agents: [reviewer]
-    provider: minimax
+    provider: deepseek
     objective: skills/requirements/review-objective.md
     skills:
       - name: pa-cli
@@ -93,7 +93,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: minimax
+    provider: openai
     objective: skills/requirements/focus-objective.md
     skills:
       - name: pa-cli
@@ -133,7 +133,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: minimax
+    provider: openai
     objective: skills/requirements/spike-objective.md
     skills:
       - name: pa-cli
@@ -153,7 +153,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: minimax
+    provider: openai
     objective: skills/requirements/spike-objective.md
     skills:
       - name: pa-cli
@@ -193,7 +193,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     agents: [researcher]
-    provider: minimax
+    provider: openai
     objective: skills/requirements/analyze-auto-objective.md
     skills:
       - name: pa-cli
