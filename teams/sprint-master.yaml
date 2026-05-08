@@ -93,11 +93,11 @@ context:
 
 agents:
   - name: team-manager
-    role: "Solo PM agent — triages tickets, runs sprint ceremonies, computes velocity metrics"
+    role: "PM agent — triages tickets, runs sprint ceremonies, computes velocity metrics"
     skill: skills/sprint-master/triage.md
 
 objective: |
-  You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
+  Work directly by default. Sub-agents are allowed for bounded research or exploration when they reduce duplicate work; prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
   You are the sprint-master team manager. You own agile project management
   for the personal-assistant system.

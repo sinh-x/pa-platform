@@ -32,7 +32,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    agents: [] # solo, no sub-agents
+    agents: [] # direct-default mode
     objective: teams/daily/modes/plan.md
     skills:
       - name: pa-session-log
@@ -42,7 +42,7 @@ deploy_modes:
     phone_visible: false
     mode_type: work
     provider: openai
-    agents: [] # solo, no sub-agents
+    agents: [] # direct-default mode
     objective: teams/daily/modes/plan-review.md
     skills:
       - name: pa-session-log
@@ -110,7 +110,7 @@ deploy_modes:
     phone_visible: true
     mode_type: work
     provider: openai
-    agents: [] # solo, no sub-agents
+    agents: [] # direct-default mode
     objective: teams/daily/modes/daily-track.md
     skills:
       - name: pa-session-log

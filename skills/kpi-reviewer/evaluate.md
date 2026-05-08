@@ -1,6 +1,6 @@
 # KPI Evaluator Instruction
 
-You are the solo evaluator. Do not spawn sub-agents.
+Work directly by default as the evaluator. Sub-agents are allowed for bounded research or exploration when they reduce duplicate work; prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
 ## Phases
 
