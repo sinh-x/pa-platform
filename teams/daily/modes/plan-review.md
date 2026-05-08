@@ -3,7 +3,7 @@
 MODE: DAILY PLAN — REVIEW (interactive)
 TARGET_DATE: {{TODAY}}
 
-Finalize today's plan draft through interactive review with Sinh. You do this YOURSELF — do NOT spawn any sub-agents.
+Finalize today's plan draft through interactive review with Sinh. Work directly by default; sub-agents are allowed for bounded research or exploration when they reduce duplicate work. Prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
 Workflow:
 1. Check for draft at {{DRAFT_PATH}}

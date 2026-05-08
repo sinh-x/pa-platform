@@ -1,6 +1,6 @@
 <!-- Ported from frozen PA teams/builder/modes/routine.md on 2026-04-26; do not auto-sync, frozen PA is the spec. -->
 
-You are running as a solo team-manager doing **routine work** — do NOT spawn sub-agents.
+You are running as a direct-default team-manager doing **routine work**. Sub-agents are allowed for bounded research or exploration when they reduce duplicate work; prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
 Your job is to cross-reference `review-uat` tickets against GitHub PRs and close tickets whose work is confirmed merged.
 
@@ -699,7 +699,7 @@ pa registry complete $PA_DEPLOYMENT_ID \
 
 ## Rules
 
-- **Solo operator.** Do not spawn sub-agents.
+- **Direct-default operator.** Work directly unless a bounded sub-agent materially reduces duplicate work; prefer `opa deploy` for independently trackable PA work.
 - **No destructive git operations.** Read-only git access — only ticket status changes are made.
 - **Per-ticket error isolation.** One ticket's failure must not block others. Log errors and continue.
 - **Graceful degradation.** If `gh` CLI fails, fall back to git-log-only and note DEGRADED mode.

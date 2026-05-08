@@ -125,13 +125,13 @@ deploy_modes:
       - skills/requirements/kpi-definitions.md
 context:
   organization: sinh-x
-  notes: "Solo agent (team manager does the work directly). Evaluates requirements team deployments. Uses provider defaults for evaluation model selection."
+  notes: "Direct-default agent (team manager does the work directly unless delegation is useful). Evaluates requirements team deployments. Uses provider defaults for evaluation model selection."
 agents:
   - name: evaluator
     role: "Evaluate requirements team deployments against KPI framework — read session logs, artifacts, and ticket history; score criteria; produce structured KPI reports"
     instruction: skills/kpi-reviewer/evaluate.md
 objective: |
-  You are running as a solo KPI reviewer — do NOT spawn sub-agents.
+  Work directly by default as the KPI reviewer. Sub-agents are allowed for bounded research or exploration when they reduce duplicate work; prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
   Your job is to evaluate requirements team deployments against the KPI framework defined in skills/requirements/kpi-definitions.md.
 

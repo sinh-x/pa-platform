@@ -1,9 +1,9 @@
 <!-- Ported from frozen PA teams/daily/modes/plan.md on 2026-04-26; do not auto-sync, frozen PA is the spec. -->
 
-MODE: DAILY PLAN (morning) — SOLO (no sub-agents)
+MODE: DAILY PLAN (morning) — direct-default
 TARGET_DATE: {{TODAY}}
 
-Create the daily plan for {{TODAY}}. You do this YOURSELF — do NOT spawn any sub-agents.
+Create the daily plan for {{TODAY}}. Work directly by default; sub-agents are allowed for bounded research or exploration when they reduce duplicate work. Prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
 Workflow (you do all steps directly):
 1. Check for user notes at {{INPUT_NOTES}}

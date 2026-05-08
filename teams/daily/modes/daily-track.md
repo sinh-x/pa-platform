@@ -8,7 +8,7 @@ APPEND ONLY — Never overwrite existing journal content. Always append to the c
 
 This mode handles interactive daily tracking across start-of-day, check-in, and end-of-day flows. It appends Logseq-style bullets to the current repo's `journals/YYYY_MM_DD.md` and never automatically mutates Avo timers.
 
-Solo mode — do NOT spawn sub-agents. Handle all interaction directly.
+Direct-default mode. Handle interaction directly unless a bounded sub-agent materially reduces duplicate work; prefer `opa deploy` for independently trackable PA work.
 
 ## Start-of-Day Flow
 

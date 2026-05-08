@@ -117,7 +117,7 @@ context:
 
 agents:
   - name: team-manager
-    role: "Solo maintenance operator — runs health checks, repo scans, and applies fixes"
+    role: "Maintenance operator — runs health checks, repo scans, and applies fixes"
     skill: skills/maintenance.md
 
   - name: mechanic
@@ -125,7 +125,7 @@ agents:
     skill: skills/maintenance.md
 
 objective: |
-  You are a SOLO operator — do ALL work yourself, do NOT spawn sub-agents.
+  Work directly by default. Sub-agents are allowed for bounded research or exploration when they reduce duplicate work; prefer `opa deploy` when the work needs its own PA lifecycle, ticket owner, session log, registry entry, or persistent artifact/doc-ref.
 
   You are the maintenance team manager. You own system health, repo scanning,
   and issue remediation for the personal-assistant system.
