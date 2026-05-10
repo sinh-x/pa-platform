@@ -277,11 +277,11 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
 
     const captured = capture();
     const seen: unknown[] = [];
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship", "--repo", "pa-platform", "--ticket", "PAP-001", "--timeout", "120"], {
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship", "--evaluate-deployment", "d-abc123", "--repo", "pa-platform", "--ticket", "PAP-001", "--timeout", "120"], {
       io: captured.io,
       hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-hook" }; } },
     }), 0);
-    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }]);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
   });
 });

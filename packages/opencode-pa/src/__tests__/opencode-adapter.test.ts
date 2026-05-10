@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
@@ -282,6 +282,25 @@ test("opa deploy includes repo memory docs in generated primer", async () => {
     assert.match(primer, /Always follow repo-specific memory/);
     assert.match(primer, /Use nested Claude memory too/);
     assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+  });
+});
+
+test("opa deploy evaluate-deployment generates evaluator primer section with read-only constraints", async () => {
+  await withOpaEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "started", timestamp: "2026-05-10T09:00:00Z", ticket_id: "PAP-058", objective: "Build feature" });
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "completed", timestamp: "2026-05-10T09:05:00Z", status: "success" });
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--evaluate-deployment", "d-target"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /## Independent Evaluator Pass/);
+    assert.match(primer, /Target deployment: d-target/);
+    assert.match(primer, /Evaluator deployment: d-[a-f0-9]{6}/);
+    assert.match(primer, /Read-only constraints: do not mutate tickets, docs, statuses, branches, or doc refs\./);
+    assert.match(primer, /Evidence sources \(read-only\): objective, primer, activity, ticket state, doc refs, artifacts, session log, registry self-rating, registry status\./);
   });
 });
 

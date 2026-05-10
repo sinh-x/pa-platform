@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -24,7 +24,9 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket;
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
-  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
+  const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId);
+  const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
+  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
@@ -90,6 +92,26 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string): string | undefined {
+  if (!targetDeploymentId) return undefined;
+  const target = queryDeploymentStatus(targetDeploymentId);
+  const status = target?.status ?? "unknown";
+  const team = target?.team ?? "unknown";
+  const ticket = target?.ticket_id ?? "none";
+  const outputPath = `agent-teams/builder/artifacts/${nowUtc().slice(0, 10)}-${targetDeploymentId}-evaluator-report.md`;
+  return [
+    "## Independent Evaluator Pass",
+    `Target deployment: ${targetDeploymentId}`,
+    `Evaluator deployment: ${evaluatorDeploymentId}`,
+    `Target team: ${team}`,
+    `Target status: ${status}`,
+    `Target ticket: ${ticket}`,
+    "Evidence sources (read-only): objective, primer, activity, ticket state, doc refs, artifacts, session log, registry self-rating, registry status.",
+    "Read-only constraints: do not mutate tickets, docs, statuses, branches, or doc refs.",
+    `Output destination: ${outputPath}`,
+  ].join("\n");
 }
 
 function selectDeployMode(teamConfig: TeamConfig, requestedMode?: string): DeployMode | undefined {
