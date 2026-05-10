@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, runCoreCommand, nowUtc } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 import { createDefaultOpencodeHooks } from "./deploy.js";
+import { compactReason, extractEvaluatorDeploymentId, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 interface BackgroundConfig {
   args: string[];
@@ -62,8 +63,6 @@ interface BackgroundRunResult {
   spawnError?: Error;
 }
 
-type BuilderCompletionPath = "builder-implement" | "builder-orchestrator";
-
 async function maybeLaunchPostDeployEvaluation(config: BackgroundConfig): Promise<void> {
   const completionPath = resolveBuilderCompletionPath(config.team, config.env["PA_MODE"]);
   if (!completionPath) return;
@@ -99,24 +98,6 @@ async function maybeLaunchPostDeployEvaluation(config: BackgroundConfig): Promis
       ? `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=launched evaluator_deployment_id=${evaluatorDeploymentId ?? "unknown"}`
       : `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=failed reason=${compactReason(stderr.join("\n") || stdout.join("\n") || `evaluate exited ${code}`)}`,
   });
-}
-
-function resolveBuilderCompletionPath(team: string, mode?: string): BuilderCompletionPath | null {
-  if (team !== "builder") return null;
-  if (mode === "implement") return "builder-implement";
-  if (mode === "orchestrator") return "builder-orchestrator";
-  return null;
-}
-
-function extractEvaluatorDeploymentId(output: string): string | undefined {
-  const match = output.match(/Evaluation\s+(?:pending|completed):\s+(d-[a-z0-9]{6})/);
-  return match?.[1];
-}
-
-function compactReason(text: string): string {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "unknown";
-  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 239)}...`;
 }
 
 function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {

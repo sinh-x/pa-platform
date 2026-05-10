@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
+import { compactReason, extractEvaluatorDeploymentId, resolveBuilderCompletionPath, type BuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithOpencode(request, adapter) };
@@ -118,8 +119,6 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   }
 }
 
-type BuilderCompletionPath = "builder-implement" | "builder-orchestrator";
-
 interface PostDeployEvaluationOpts {
   deploymentId: string;
   team: string;
@@ -163,26 +162,8 @@ async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): 
   });
 }
 
-function resolveBuilderCompletionPath(team: string, mode?: string): BuilderCompletionPath | null {
-  if (team !== "builder") return null;
-  if (mode === "implement") return "builder-implement";
-  if (mode === "orchestrator") return "builder-orchestrator";
-  return null;
-}
-
 function isEvaluationAlreadyRecorded(deploymentId: string, completionPath: BuilderCompletionPath): boolean {
   return getDeploymentEvents(deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`));
-}
-
-function extractEvaluatorDeploymentId(output: string): string | undefined {
-  const match = output.match(/Evaluation\s+(?:pending|completed):\s+(d-[a-z0-9]{6})/);
-  return match?.[1];
-}
-
-function compactReason(text: string): string {
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "unknown";
-  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 239)}...`;
 }
 
 function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string, evaluatorTeam: string): string | undefined {
