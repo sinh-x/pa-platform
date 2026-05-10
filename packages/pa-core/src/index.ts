@@ -22,5 +22,6 @@ export * from "./cli/index.js";
 export * from "./deploy/index.js";
 export * from "./agent-api/index.js";
 export * from "./serve-lifecycle.js";
+export * from "./semantic/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";
