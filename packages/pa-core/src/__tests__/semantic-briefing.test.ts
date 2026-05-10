@@ -44,6 +44,21 @@ test("semantic briefing marks summary claims with missing evidence", () => {
   assert.match(rendered, /Claim without evidence -> missing evidence/);
 });
 
+test("semantic briefing emits exactly one confirmation question", () => {
+  const index: SemanticCandidateIndex = {
+    version: 1,
+    generated_at: "2026-05-10T00:00:00.000Z",
+    documents: [
+      doc("ticket", "PAP-069", "tickets/PAP-069", "PAP-069", "builder implement semantic briefing evaluate"),
+    ],
+  };
+  const result = querySemanticCandidates("builder implement orchestrator evaluate", 5, index);
+  const rendered = renderSemanticBriefingBundle(buildSemanticBriefingBundle(result));
+  const questionMarks = rendered.match(/\?/g) ?? [];
+  assert.equal(questionMarks.length, 1);
+  assert.match(rendered, /Should I continue with deeper analysis now\?/);
+});
+
 test("semantic confirmation gate blocks writes before confirmation", () => {
   const blocked = enforceSemanticConfirmationGate(false, ["ticket", "status", "notes"]);
   assert.equal(blocked.allowed, false);

@@ -188,6 +188,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
       "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `cpa registry complete` or `cpa registry update` when the run finishes.",
+      ...(teamConfig.name === "evaluator" ? [] : ["After the registry completion marker is written, launch independent evaluation with `cpa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
     if (executionStyle === "solo") {
@@ -203,11 +204,13 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
     "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
     "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `opa registry complete` or `opa registry update` when the run finishes.",
+    ...(teamConfig.name === "evaluator" ? [] : ["After the registry completion marker is written, launch independent evaluation with `opa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
     "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
   ];
+  lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links before deeper analysis.");
+  lines.push("Ask exactly one confirmation question before deeper analysis, and do not mutate ticket, doc, status, branch, registry, or doc-ref state until confirmation.");
   if (teamConfig.name === "requirements") {
-    lines.push("For semantic briefing requests (for example: get up to date), render a reflection-first related bundle with evidence links, then ask exactly one confirmation question before deeper analysis.");
-    lines.push("Before confirmation, do not mutate ticket, doc, status, branch, registry, or doc-ref state; treat structured ticket and deployment records as authoritative over semantic similarity.");
+    lines.push("For requirements workflows, treat structured ticket and deployment records as authoritative over semantic similarity.");
   }
   if (executionStyle === "solo") {
     lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
@@ -222,6 +225,7 @@ const PA_CLI_SUBCOMMANDS = [
   "bulletin",
   "daily",
   "deploy",
+  "evaluate",
   "health",
   "idea",
   "registry",
