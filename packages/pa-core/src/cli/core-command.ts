@@ -15,6 +15,7 @@ import { runSignalCommand } from "./commands/signal.js";
 import { runScheduleCommand, runRemoveTimerCommand } from "./commands/schedule.js";
 import { runServeCommand } from "./commands/serve.js";
 import { runStatusCommand } from "./commands/status.js";
+import { runSemanticCommand } from "./commands/semantic.js";
 import type { CliIo } from "./utils.js";
 import { normalizeIo } from "./utils.js";
 
@@ -59,6 +60,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "codectx") return runCodeCtxCommand(rest, io);
     if (command === "timers") return runTimersCommand(rest, io);
     if (command === "signal") return runSignalCommand(rest, io);
+    if (command === "semantic") return runSemanticCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
     printHelp(io, opts.binaryName ?? defaultBinaryName());
     return 1;
@@ -70,7 +72,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
 
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
-  io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+  io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
   io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
 }
 

@@ -105,6 +105,20 @@ test("runCoreCommand exposes repos list", async () => {
   });
 });
 
+test("runCoreCommand exposes semantic rebuild and query", async () => {
+  await withCliEnv(async () => {
+    const rebuild = capture();
+    assert.equal(await runCoreCommand(["semantic", "rebuild"], { io: rebuild.io }), 0);
+    assert.match(rebuild.stdout.join("\n"), /Semantic index rebuilt/);
+
+    const query = capture();
+    assert.equal(await runCoreCommand(["semantic", "query", "semantic", "briefing", "PAP-058", "--top-k=3"], { io: query.io }), 0);
+    assert.match(query.stdout.join("\n"), /Query:/);
+    assert.match(query.stdout.join("\n"), /Reflections:/);
+    assert.match(query.stdout.join("\n"), /System:/);
+  });
+});
+
 test("runCoreCommand help uses invoking binary fallback", async () => {
   const captured = capture();
   const previousArgv = process.argv[1];
