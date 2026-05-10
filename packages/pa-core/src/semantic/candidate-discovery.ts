@@ -6,7 +6,10 @@ import { listDocuments, readDocument } from "../documents/index.js";
 import { TicketStore } from "../tickets/store.js";
 import { buildSemanticSourceMetadata, isApprovedSemanticPath, type SemanticSourceMetadata, type SemanticSourceType } from "./source-inventory.js";
 
-const STOPWORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "to", "was", "with"]);
+const STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "to", "was", "with",
+  "should", "could", "need", "needs", "get", "up", "date", "related", "context", "ticket", "task", "work",
+]);
 const INDEX_DIR = resolve(getDataDir(), "semantic");
 const INDEX_FILE = resolve(INDEX_DIR, "candidate-index.json");
 

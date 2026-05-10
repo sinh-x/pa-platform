@@ -23,7 +23,7 @@ test("semantic briefing renderer keeps reflections first and grouped", () => {
       doc("artifact", "agent-teams/builder/artifacts/report.md", "agent-teams/builder/artifacts/report.md", "Report", "bundle evidence map details"),
     ],
   };
-  const result = querySemanticCandidates("get up to date semantic briefing", 5, index);
+  const result = querySemanticCandidates("workflow get up to date semantic briefing", 5, index);
   const bundle = buildSemanticBriefingBundle(result);
   const rendered = renderSemanticBriefingBundle(bundle);
   assert.match(rendered, /- reflections:/);

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { buildSemanticSourceMetadata, listSemanticFixtureQuestions, querySemanticCandidates, type SemanticCandidateIndex } from "../semantic/index.js";
+import { buildSemanticSourceMetadata, listSemanticFixtureQuestions, querySemanticCandidates, rebuildSemanticCandidateIndex, type SemanticCandidateIndex } from "../semantic/index.js";
 
 function doc(type: "ticket" | "artifact" | "ticket-comment" | "session-log" | "registry-event" | "deployment" | "reflection" | "sinh-input" | "doc-ref", locator: string, link: string, title: string, content: string, authoredBy?: string) {
   return { metadata: buildSemanticSourceMetadata({ type, locator, link, authoredBy }), title, content };
@@ -60,4 +63,32 @@ test("semantic retrieval fixture reaches top-5 relevance for 8/10 questions", ()
     if (topLinks.includes(expectations[i]!)) hits += 1;
   }
   assert.equal(hits >= 8, true);
+});
+
+test("candidate index build handles unreadable doc refs safely", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-semantic-"));
+  const previous = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  try {
+    const artifactDir = join(root, "agent-teams", "builder", "artifacts");
+    mkdirSync(artifactDir, { recursive: true });
+    const unreadablePath = join(artifactDir, "unreadable.md");
+    writeFileSync(unreadablePath, "blocked", "utf-8");
+    chmodSync(unreadablePath, 0o000);
+    const validPath = join(artifactDir, "valid.md");
+    writeFileSync(validPath, "semantic evaluator note", "utf-8");
+
+    const index = rebuildSemanticCandidateIndex();
+    const unreadableDoc = index.documents.find((entry) => entry.metadata.link.endsWith("unreadable.md"));
+    const validDoc = index.documents.find((entry) => entry.metadata.link.endsWith("valid.md"));
+
+    assert.ok(unreadableDoc);
+    assert.equal(unreadableDoc.content, "");
+    assert.ok(validDoc);
+    assert.equal(validDoc.content, "semantic evaluator note");
+  } finally {
+    if (previous === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
