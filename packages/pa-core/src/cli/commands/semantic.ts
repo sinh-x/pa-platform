@@ -1,4 +1,12 @@
-import { countIndexedSourcesByType, getSemanticIndexPath, querySemanticCandidates, rebuildSemanticCandidateIndex } from "../../semantic/index.js";
+import {
+  buildSemanticBriefingBundle,
+  countIndexedSourcesByType,
+  enforceSemanticConfirmationGate,
+  getSemanticIndexPath,
+  querySemanticCandidates,
+  rebuildSemanticCandidateIndex,
+  renderSemanticBriefingBundle,
+} from "../../semantic/index.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
@@ -28,7 +36,17 @@ export function runSemanticCommand(argv: string[], io: Required<CliIo>): number 
     for (const item of results.system) io.stdout(`- ${item.metadata.link} | ${item.title} | score=${item.score.toFixed(3)}`);
     return 0;
   }
+  if (subcommand === "briefing") {
+    const query = rest.join(" ").trim();
+    if (!query) return printError("semantic briefing requires a search query", io);
+    const results = querySemanticCandidates(query, 5);
+    const bundle = buildSemanticBriefingBundle(results);
+    io.stdout(renderSemanticBriefingBundle(bundle));
+    const gate = enforceSemanticConfirmationGate(false, ["ticket", "doc", "status", "branch", "registry", "doc-ref"]);
+    io.stdout(gate.allowed ? "Write guard: clear" : `Write guard: ${gate.reason ?? "blocked"}`);
+    return 0;
+  }
   io.stderr(`Unknown semantic subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: rebuild, refresh, query");
+  io.stderr("Available subcommands: rebuild, refresh, query, briefing");
   return 1;
 }

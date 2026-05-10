@@ -116,6 +116,13 @@ test("runCoreCommand exposes semantic rebuild and query", async () => {
     assert.match(query.stdout.join("\n"), /Query:/);
     assert.match(query.stdout.join("\n"), /Reflections:/);
     assert.match(query.stdout.join("\n"), /System:/);
+
+    const briefing = capture();
+    assert.equal(await runCoreCommand(["semantic", "briefing", "get", "up", "to", "date"], { io: briefing.io }), 0);
+    assert.match(briefing.stdout.join("\n"), /Related context bundle:/);
+    assert.match(briefing.stdout.join("\n"), /Evidence map:/);
+    assert.match(briefing.stdout.join("\n"), /Confirmation gate:/);
+    assert.match(briefing.stdout.join("\n"), /Write guard: blocked before confirmation/);
   });
 });
 
