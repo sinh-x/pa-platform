@@ -168,7 +168,7 @@ end
 
 function __pa_core_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --repo --ticket --timeout
+        case --mode --objective --evaluate-deployment --repo --ticket --timeout
             return 0
     end
 
@@ -244,6 +244,7 @@ complete -c pa-core -f
 complete -c pa-core -n __fish_use_subcommand -a repos -d 'Manage repositories'
 complete -c pa-core -n __fish_use_subcommand -a status -d 'Show deployment status'
 complete -c pa-core -n __fish_use_subcommand -a deploy -d 'Deploy an agent team'
+complete -c pa-core -n __fish_use_subcommand -a evaluate -d 'Evaluate a completed deployment'
 complete -c pa-core -n __fish_use_subcommand -a serve -d 'Start API server through adapter hook'
 complete -c pa-core -n __fish_use_subcommand -a stop -d 'Stop API server through adapter hook'
 complete -c pa-core -n __fish_use_subcommand -a restart -d 'Restart API server through adapter hook'
@@ -265,7 +266,7 @@ complete -c pa-core -n __fish_use_subcommand -a signal -d 'Collect Signal Note t
 complete -c pa-core -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c pa-core -n __pa_core_deploy_needs_team -a '(__pa_core_deploy_team_candidates)' -d 'Team name'
-complete -c pa-core -f -n __pa_core_deploy_should_offer_options -a '--mode --objective --background --dry-run --repo --ticket --timeout' -d 'Deploy option'
+complete -c pa-core -f -n __pa_core_deploy_should_offer_options -a '--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout' -d 'Deploy option'
 complete -c pa-core -f -n __pa_core_deploy_completing -l mode -d 'Deploy mode' -r -a '(__pa_core_modes)'
 complete -c pa-core -n __pa_core_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c pa-core -n __pa_core_deploy_completing -l background -d 'Run detached/headless'
@@ -273,6 +274,22 @@ complete -c pa-core -n __pa_core_deploy_completing -l dry-run -d 'Generate prime
 complete -c pa-core -f -n __pa_core_deploy_completing -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
 complete -c pa-core -f -n __pa_core_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n __pa_core_deploy_completing -l timeout -d 'Timeout seconds' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from deploy evaluate' -l evaluate-deployment -d 'Deployment to evaluate' -r -a '(__pa_core_deployments)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment to evaluate'
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l background -d 'Run detached/headless'
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l dry-run -d 'Generate evaluator primer without invoking runtime'
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l record -d 'Store evaluator result'
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l evaluator-deployment -d 'Evaluator deployment ID' -r -a '(__pa_core_deployments)'
+complete -c pa-core -r -n '__fish_seen_subcommand_from evaluate' -l report-path -d 'Evaluator report path'
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l overall -d 'Overall evaluator score' -r
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l human-agency -d 'Human Agency score' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Repository name' -r -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Team model' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l agent-model -d 'Agent model' -r
 
 complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

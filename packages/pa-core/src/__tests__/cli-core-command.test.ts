@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, getServePidFilePath, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -186,6 +186,9 @@ test("runCoreCommand exposes status list and detail", async () => {
     const reportDir = join(root, "agent-teams", "builder", "done");
     mkdirSync(reportDir, { recursive: true });
     writeFileSync(join(reportDir, "report.md"), "Report for d-cli-1");
+    const artifactsReportDir = join(root, "agent-teams", "evaluator", "artifacts");
+    mkdirSync(artifactsReportDir, { recursive: true });
+    writeFileSync(join(artifactsReportDir, "2026-04-26-d-cli-artifact-evaluator-report.md"), "Artifact report for d-cli-artifact");
 
     const artifacts = capture();
     assert.equal(await runCoreCommand(["status", "d-cli-1", "--artifacts"], { io: artifacts.io }), 0);
@@ -207,6 +210,11 @@ test("runCoreCommand exposes status list and detail", async () => {
     const report = capture();
     assert.equal(await runCoreCommand(["status", "d-cli-1", "--report"], { io: report.io }), 0);
     assert.match(report.stdout.join("\n"), /Report for d-cli-1/);
+
+    appendRegistryEvent({ deployment_id: "d-cli-artifact", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const artifactReport = capture();
+    assert.equal(await runCoreCommand(["status", "d-cli-artifact", "--report"], { io: artifactReport.io }), 0);
+    assert.match(artifactReport.stdout.join("\n"), /Artifact report for d-cli-artifact/);
   });
 });
 
@@ -302,6 +310,55 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     }), 0);
     assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
+  });
+});
+
+test("runCoreCommand routes evaluate to dedicated evaluator deployment", async () => {
+  await withCliEnv(async (root) => {
+    const help = capture();
+    assert.equal(await runCoreCommand(["evaluate", "--help"], { io: help.io }), 0);
+    assert.match(help.stdout.join("\n"), /evaluate --evaluate-deployment <deploy-id>/);
+    assert.match(help.stdout.join("\n"), /deployment-review/);
+
+    const missing = capture();
+    assert.equal(await runCoreCommand(["evaluate"], { io: missing.io }), 0);
+    assert.match(missing.stdout.join("\n"), /Usage: evaluate/);
+
+    const invalid = capture();
+    assert.equal(await runCoreCommand(["evaluate", "--evaluate-deployment", "bad"], { io: invalid.io }), 1);
+    assert.match(invalid.stderr.join("\n"), /Invalid evaluate deployment id/);
+
+    const captured = capture();
+    const seen: unknown[] = [];
+    assert.equal(await runCoreCommand(["evaluate", "--evaluate-deployment", "d-abc123", "--ticket", "PAP-058", "--background", "--timeout", "120"], {
+      io: captured.io,
+      hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-eval01" }; } },
+    }), 0);
+    assert.deepEqual(seen, [{ team: "evaluator", mode: "deployment-review", evaluateDeployment: "d-abc123", ticket: "PAP-058", background: true, timeout: 120 }]);
+    assert.match(captured.stdout.join("\n"), /Evaluation pending: d-eval01/);
+
+    const positional = capture();
+    const positionalSeen: unknown[] = [];
+    assert.equal(await runCoreCommand(["evaluate", "d-def456", "--dry-run"], {
+      io: positional.io,
+      hooks: { deploy: (request) => { positionalSeen.push(request); return { status: "pending", deploymentId: "d-eval02" }; } },
+    }), 0);
+    assert.deepEqual(positionalSeen, [{ team: "evaluator", mode: "deployment-review", evaluateDeployment: "d-def456", dryRun: true, timeout: 1800 }]);
+
+    mkdirSync(join(root, "deployments", "d-target"), { recursive: true });
+    writeFileSync(join(root, "deployments", "d-target", "primer.md"), "# Primer");
+    writeFileSync(join(root, "deployments", "d-target", "activity.jsonl"), "{}\n");
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", objective: "Ship", primer: "deployments/d-target/primer.md" });
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", rating: { source: "agent", overall: 4 } });
+    appendRegistryEvent({ deployment_id: "d-eval00", team: "evaluator", event: "started", timestamp: "2026-04-26T00:02:00.000Z" });
+    const record = capture();
+    assert.equal(await runCoreCommand(["evaluate", "--record", "--evaluate-deployment", "d-target", "--evaluator-deployment", "d-eval00", "--report-path", "agent-teams/evaluator/artifacts/report.md", "--overall", "4", "--human-agency", "5"], { io: record.io }), 0);
+    assert.match(record.stdout.join("\n"), /Recorded evaluator result: d-eval00 -> d-target/);
+    const results = queryEvaluatorResultsByTargetDeployment("d-target");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.report_path, "agent-teams/evaluator/artifacts/report.md");
+    assert.equal(results[0]?.rating.overall, 4);
+    assert.equal(results[0]?.rating.metrics.human_agency, 5);
   });
 });
 

@@ -116,6 +116,22 @@ pa registry complete <DEPLOYMENT_ID> \
 
 **Individual agents do NOT write to the registry.** Only the team manager writes the completion marker.
 
+## Independent Evaluation Trigger
+
+After the completion marker is written, non-evaluator teams should launch the dedicated evaluator pass:
+
+```bash
+pa evaluate --evaluate-deployment <DEPLOYMENT_ID> --background
+```
+
+For ticket-linked deployments, pass the ticket ID as well:
+
+```bash
+pa evaluate --evaluate-deployment <DEPLOYMENT_ID> --ticket <TICKET-ID> --background
+```
+
+This creates a separate evaluator deployment with its own primer, session log, and registry lifecycle. Do not launch this recursively from evaluator deployments.
+
 ## Post-Completion Updates
 
 If user interaction or follow-up work occurs after the completion marker was written, record the update via `pa registry update`:
@@ -200,4 +216,3 @@ pa registry analytics --view daily       # deployments per day
 pa registry analytics --view teams       # team activity
 pa registry analytics --view ratings     # rating trends
 ```
-

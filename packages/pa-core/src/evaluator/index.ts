@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { appendEvaluatorResult, getDeploymentEvents, queryDeploymentStatus } from "../registry/index.js";
 import { getAgentTeamsDir, getDeploymentDir } from "../paths.js";
 import { TicketStore } from "../tickets/store.js";
-import type { EvaluatorResult } from "../types.js";
+import type { EvaluatorMetricName, EvaluatorResult } from "../types.js";
 
 export interface EvaluationEvidence {
   key: "objective" | "primer" | "activity" | "ticket" | "doc_refs" | "artifacts" | "session_log" | "registry_self_rating" | "registry_state";
@@ -90,10 +90,22 @@ export function scoreEvidence(bundle: DeploymentEvidenceBundle): EvaluatorResult
   };
 }
 
-export function runEvaluatorPass(targetDeploymentId: string, evaluatorDeploymentId: string, reportPath?: string): EvaluatorResult {
+export interface EvaluatorRatingOverride {
+  overall?: number;
+  metrics?: Partial<Record<EvaluatorMetricName, number>>;
+}
+
+export function runEvaluatorPass(targetDeploymentId: string, evaluatorDeploymentId: string, reportPath?: string, ratingOverride?: EvaluatorRatingOverride): EvaluatorResult {
   const bundle = collectDeploymentEvidence(targetDeploymentId, evaluatorDeploymentId);
   const scored = scoreEvidence(bundle);
-  return appendEvaluatorResult({ ...scored, report_path: reportPath ?? scored.report_path });
+  const rating = ratingOverride
+    ? {
+        ...scored.rating,
+        overall: ratingOverride.overall ?? scored.rating.overall,
+        metrics: { ...scored.rating.metrics, ...(ratingOverride.metrics ?? {}) },
+      }
+    : scored.rating;
+  return appendEvaluatorResult({ ...scored, rating, report_path: reportPath ?? scored.report_path });
 }
 
 function mk(key: EvaluationEvidence["key"], refs: string[], note?: string): EvaluationEvidence {

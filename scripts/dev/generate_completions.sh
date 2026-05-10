@@ -18,10 +18,11 @@ perl \
     s/Fish completions for pa-core/Fish completions for opa (opencode-pa adapter)/;
     s/__pa_core_/__opa_/g;
     s/\bpa-core\b/opa/g;
-    s/case --mode --objective --repo --ticket --timeout/case --mode --objective --objective-file --provider --model --team-model --agent-model --repo --ticket --timeout --resume/;
-    s/--mode --objective --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
+    s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume/;
+    s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
     s/(complete -c opa -n __opa_deploy_completing -l objective -d '\''Deployment objective'\'' -r\n)/$1complete -c opa -n __opa_deploy_completing -l objective-file -d '\''Objective from file'\'' -r -a '\''(complete -C "echo " | string match -r "^[^ ]+")'\''\ncomplete -c opa -n __opa_deploy_completing -l list-modes -d '\''List available deploy modes'\''\ncomplete -c opa -n __opa_deploy_completing -l validate -d '\''Validate without deploying'\''\ncomplete -c opa -f -n __opa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''openai minimax deepseek ollama-cloud'\''\ncomplete -c opa -f -n __opa_deploy_completing -l model -d '\''Model'\'' -r -a '\''gpt-5.5 MiniMax-M2.7 deepseek-v4-pro openai\/gpt-5.5 minimax-coding-plan\/MiniMax-M2.7 deepseek\/deepseek-v4-pro ollama-cloud\/deepseek-v4-pro'\''\ncomplete -c opa -f -n __opa_deploy_completing -l team-model -d '\''Team model'\'' -r -a '\''gpt-5.5 MiniMax-M2.7 deepseek-v4-pro openai\/gpt-5.5 minimax-coding-plan\/MiniMax-M2.7 deepseek\/deepseek-v4-pro ollama-cloud\/deepseek-v4-pro'\''\ncomplete -c opa -f -n __opa_deploy_completing -l agent-model -d '\''Agent model'\'' -r -a '\''gpt-5.5 MiniMax-M2.7 deepseek-v4-pro openai\/gpt-5.5 minimax-coding-plan\/MiniMax-M2.7 deepseek\/deepseek-v4-pro ollama-cloud\/deepseek-v4-pro'\''\n/;
     s/(complete -c opa -n __opa_deploy_completing -l timeout -d '\''Timeout seconds'\'' -r\n)/$1complete -c opa -f -n __opa_deploy_completing -l resume -d '\''Resume from deployment ID'\'' -r -a '\''(__opa_deployments)'\''\n/;
+    s/(complete -c opa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/complete -c opa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r -a '\''minimax openai deepseek ollama-cloud'\''\n/;
     print;
   ' \
   "$PA_CORE" > "$OPA"
@@ -35,10 +36,11 @@ perl \
     s/Fish completions for pa-core/Fish completions for cpa (claudecode-pa adapter)/;
     s/__pa_core_/__cpa_/g;
     s/\bpa-core\b/cpa/g;
-    s/case --mode --objective --repo --ticket --timeout/case --mode --objective --objective-file --provider --model --team-model --agent-model --repo --ticket --timeout --resume/;
-    s/--mode --objective --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
+    s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume/;
+    s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
     s/(complete -c cpa -n __cpa_deploy_completing -l objective -d '\''Deployment objective'\'' -r\n)/$1complete -c cpa -n __cpa_deploy_completing -l objective-file -d '\''Objective from file'\'' -r -a '\''(complete -C "echo " | string match -r "^[^ ]+")'\''\ncomplete -c cpa -n __cpa_deploy_completing -l list-modes -d '\''List available deploy modes'\''\ncomplete -c cpa -n __cpa_deploy_completing -l validate -d '\''Validate without deploying'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l model -d '\''Model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l team-model -d '\''Team model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\ncomplete -c cpa -f -n __cpa_deploy_completing -l agent-model -d '\''Agent model'\'' -r -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''\n/;
     s/(complete -c cpa -n __cpa_deploy_completing -l timeout -d '\''Timeout seconds'\'' -r\n)/$1complete -c cpa -f -n __cpa_deploy_completing -l resume -d '\''Resume from deployment ID'\'' -r -a '\''(__cpa_deployments)'\''\n/;
+    s/(complete -c cpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/complete -c cpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''\n/;
     print;
   ' \
   "$PA_CORE" > "$CPA"

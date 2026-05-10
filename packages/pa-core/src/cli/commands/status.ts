@@ -159,7 +159,7 @@ function reportSearchDirs(): string[] {
   if (!existsSync(agentTeams)) return dirs;
   for (const team of readdirSync(agentTeams, { withFileTypes: true })) {
     if (!team.isDirectory()) continue;
-    dirs.push(resolve(agentTeams, team.name, "done"), resolve(agentTeams, team.name, "ongoing"));
+    dirs.push(resolve(agentTeams, team.name, "done"), resolve(agentTeams, team.name, "ongoing"), resolve(agentTeams, team.name, "artifacts"));
   }
   return dirs;
 }

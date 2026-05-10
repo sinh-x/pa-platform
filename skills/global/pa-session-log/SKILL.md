@@ -343,6 +343,22 @@ pa registry complete $PA_DEPLOYMENT_ID \
 
 Use `status: "failed"` and lower scores on failure. The `rating.source` field is always `"agent"` for autonomous sessions.
 
+### Independent Evaluation After Completion
+
+After writing the registry completion marker, non-evaluator teams SHOULD launch an independent evaluator deployment for the just-finished run:
+
+```bash
+pa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background
+```
+
+If the run is ticket-linked, include the ticket for traceability:
+
+```bash
+pa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --ticket <TICKET-ID> --background
+```
+
+Do not launch recursive evaluator runs from the `evaluator` team itself. If the current run failed before a valid deployment ID or completion marker exists, skip evaluation and explain why in the session log.
+
 ## Consistency Rules
 
 ### MUST (violation = broken log)
