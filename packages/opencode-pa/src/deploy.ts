@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -24,7 +24,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket;
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
-  const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId);
+  const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
@@ -34,7 +34,19 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name };
+  const env = {
+    PA_DEPLOYMENT_ID: deploymentId,
+    PA_DEPLOYMENT_DIR: deployDir,
+    PA_ACTIVITY_LOG: paths.activityLogPath,
+    PA_TEAM: teamConfig.name,
+    PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
+    PA_TICKET_ID: request.ticket ?? "",
+    PA_REPO: request.repo ?? "",
+    PA_PROVIDER: request.provider ?? "",
+    PA_MODEL: request.model ?? "",
+    PA_TEAM_MODEL: request.teamModel ?? "",
+    PA_AGENT_MODEL: request.agentModel ?? "",
+  };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
@@ -84,6 +96,18 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
       : `opa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
+    await maybeLaunchPostDeployEvaluation({
+      deploymentId,
+      team: teamConfig.name,
+      mode: request.mode ?? teamConfig.default_mode,
+      ticket: request.ticket,
+      repo: request.repo,
+      provider: request.provider,
+      model: request.model,
+      teamModel: request.teamModel,
+      agentModel: request.agentModel,
+      hooks: { deploy: (nextRequest) => deployWithOpencode(nextRequest, adapter) },
+    });
     return result.exitCode === 0
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
@@ -94,13 +118,80 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   }
 }
 
-function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string): string | undefined {
+type BuilderCompletionPath = "builder-implement" | "builder-orchestrator";
+
+interface PostDeployEvaluationOpts {
+  deploymentId: string;
+  team: string;
+  mode?: string;
+  ticket?: string;
+  repo?: string;
+  provider?: string;
+  model?: string;
+  teamModel?: string;
+  agentModel?: string;
+  hooks: CoreExecutionHooks;
+}
+
+async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): Promise<void> {
+  const completionPath = resolveBuilderCompletionPath(opts.team, opts.mode);
+  if (!completionPath) return;
+  const status = queryDeploymentStatus(opts.deploymentId);
+  if (!status || status.status !== "success") return;
+  if (isEvaluationAlreadyRecorded(opts.deploymentId, completionPath)) return;
+  const command = ["evaluate", "--evaluate-deployment", opts.deploymentId, "--background"];
+  if (opts.ticket) command.push("--ticket", opts.ticket);
+  if (opts.repo) command.push("--repo", opts.repo);
+  if (opts.provider) command.push("--provider", opts.provider);
+  if (opts.model) command.push("--model", opts.model);
+  if (opts.teamModel) command.push("--team-model", opts.teamModel);
+  if (opts.agentModel) command.push("--agent-model", opts.agentModel);
+
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCoreCommand(command, { hooks: opts.hooks, io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "opa" });
+  const evaluatorDeploymentId = extractEvaluatorDeploymentId(stdout.join("\n"));
+
+  appendRegistryEvent({
+    deployment_id: opts.deploymentId,
+    team: opts.team,
+    event: "updated",
+    timestamp: nowUtc(),
+    note: code === 0
+      ? `[evaluator-launch path=${completionPath}] target=${opts.deploymentId} status=launched evaluator_deployment_id=${evaluatorDeploymentId ?? "unknown"}`
+      : `[evaluator-launch path=${completionPath}] target=${opts.deploymentId} status=failed reason=${compactReason(stderr.join("\n") || stdout.join("\n") || `evaluate exited ${code}`)}`,
+  });
+}
+
+function resolveBuilderCompletionPath(team: string, mode?: string): BuilderCompletionPath | null {
+  if (team !== "builder") return null;
+  if (mode === "implement") return "builder-implement";
+  if (mode === "orchestrator") return "builder-orchestrator";
+  return null;
+}
+
+function isEvaluationAlreadyRecorded(deploymentId: string, completionPath: BuilderCompletionPath): boolean {
+  return getDeploymentEvents(deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`));
+}
+
+function extractEvaluatorDeploymentId(output: string): string | undefined {
+  const match = output.match(/Evaluation\s+(?:pending|completed):\s+(d-[a-z0-9]{6})/);
+  return match?.[1];
+}
+
+function compactReason(text: string): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "unknown";
+  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 239)}...`;
+}
+
+function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string, evaluatorTeam: string): string | undefined {
   if (!targetDeploymentId) return undefined;
   const target = queryDeploymentStatus(targetDeploymentId);
   const status = target?.status ?? "unknown";
   const team = target?.team ?? "unknown";
   const ticket = target?.ticket_id ?? "none";
-  const outputPath = `agent-teams/builder/artifacts/${nowUtc().slice(0, 10)}-${targetDeploymentId}-evaluator-report.md`;
+  const outputPath = `agent-teams/${evaluatorTeam}/artifacts/${nowUtc().slice(0, 10)}-${targetDeploymentId}-evaluator-report.md`;
   return [
     "## Independent Evaluator Pass",
     `Target deployment: ${targetDeploymentId}`,

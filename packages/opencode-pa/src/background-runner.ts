@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths } from "@pa-platform/pa-core";
+import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, runCoreCommand, nowUtc } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
+import { createDefaultOpencodeHooks } from "./deploy.js";
 
 interface BackgroundConfig {
   args: string[];
@@ -34,6 +35,7 @@ try {
   if (result.exitCode === 0) {
     appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "opencode", body: "opa background deploy completed" }), activityLogPath);
     emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "opa background deploy completed", logFile: config.logFile, exitCode: 0 });
+    await maybeLaunchPostDeployEvaluation(config);
   } else {
     const errorBody = result.stderrTail || (result.spawnError ? result.spawnError.message : `opencode exited with code ${result.exitCode}`);
     appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "error", source: "opencode", body: errorBody }), activityLogPath);
@@ -58,6 +60,63 @@ interface BackgroundRunResult {
   sessionId?: string;
   stderrTail: string;
   spawnError?: Error;
+}
+
+type BuilderCompletionPath = "builder-implement" | "builder-orchestrator";
+
+async function maybeLaunchPostDeployEvaluation(config: BackgroundConfig): Promise<void> {
+  const completionPath = resolveBuilderCompletionPath(config.team, config.env["PA_MODE"]);
+  if (!completionPath) return;
+  const status = queryDeploymentStatus(config.deploymentId);
+  if (!status || status.status !== "success") return;
+  if (getDeploymentEvents(config.deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`))) return;
+
+  const command = ["evaluate", "--evaluate-deployment", config.deploymentId, "--background"];
+  const ticket = config.env["PA_TICKET_ID"];
+  const repo = config.env["PA_REPO"];
+  const provider = config.env["PA_PROVIDER"];
+  const model = config.env["PA_MODEL"];
+  const teamModel = config.env["PA_TEAM_MODEL"];
+  const agentModel = config.env["PA_AGENT_MODEL"];
+  if (ticket) command.push("--ticket", ticket);
+  if (repo) command.push("--repo", repo);
+  if (provider) command.push("--provider", provider);
+  if (model) command.push("--model", model);
+  if (teamModel) command.push("--team-model", teamModel);
+  if (agentModel) command.push("--agent-model", agentModel);
+
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runCoreCommand(command, { hooks: createDefaultOpencodeHooks(), io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "opa" });
+  const evaluatorDeploymentId = extractEvaluatorDeploymentId(stdout.join("\n"));
+
+  appendRegistryEvent({
+    deployment_id: config.deploymentId,
+    team: config.team,
+    event: "updated",
+    timestamp: nowUtc(),
+    note: code === 0
+      ? `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=launched evaluator_deployment_id=${evaluatorDeploymentId ?? "unknown"}`
+      : `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=failed reason=${compactReason(stderr.join("\n") || stdout.join("\n") || `evaluate exited ${code}`)}`,
+  });
+}
+
+function resolveBuilderCompletionPath(team: string, mode?: string): BuilderCompletionPath | null {
+  if (team !== "builder") return null;
+  if (mode === "implement") return "builder-implement";
+  if (mode === "orchestrator") return "builder-orchestrator";
+  return null;
+}
+
+function extractEvaluatorDeploymentId(output: string): string | undefined {
+  const match = output.match(/Evaluation\s+(?:pending|completed):\s+(d-[a-z0-9]{6})/);
+  return match?.[1];
+}
+
+function compactReason(text: string): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) return "unknown";
+  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 239)}...`;
 }
 
 function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {

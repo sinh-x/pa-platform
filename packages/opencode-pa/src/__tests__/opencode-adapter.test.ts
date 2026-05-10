@@ -108,6 +108,24 @@ function writeBuilderTeamConfig(root: string): void {
   ].join("\n"));
 }
 
+function writeEvaluatorTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "evaluator.yaml"), [
+    "name: evaluator",
+    "description: Evaluator",
+    "default_mode: deployment-review",
+    "objective: Review deployment",
+    "agents:",
+    "  - name: reviewer",
+    "    role: Reviews",
+    "deploy_modes:",
+    "  - id: deployment-review",
+    "    label: Deployment Review",
+    "    mode_type: work",
+    "    provider: openai",
+    "    model: gpt-5.5",
+  ].join("\n"));
+}
+
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const DATA_ANALYSIS_PRIMER_PATH = join(REPO_ROOT, "teams", "builder", "modes", "data-analysis.md");
 
@@ -301,6 +319,36 @@ test("opa deploy evaluate-deployment generates evaluator primer section with rea
     assert.match(primer, /Evaluator deployment: d-[a-f0-9]{6}/);
     assert.match(primer, /Read-only constraints: do not mutate tickets, docs, statuses, branches, or doc refs\./);
     assert.match(primer, /Evidence sources \(read-only\): objective, primer, activity, ticket state, doc refs, artifacts, session log, registry self-rating, registry status\./);
+  });
+});
+
+test("opa evaluate uses evaluator team primer and output path", async () => {
+  await withOpaEnv(async (root) => {
+    writeFileSync(join(root, "teams", "evaluator.yaml"), [
+      "name: evaluator",
+      "description: Evaluator",
+      "default_mode: deployment-review",
+      "objective: Evaluate deployments",
+      "agents:",
+      "  - name: reviewer",
+      "    role: Review deployments",
+      "deploy_modes:",
+      "  - id: deployment-review",
+      "    label: Deployment Review",
+      "    provider: openai",
+    ].join("\n"));
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "started", timestamp: "2026-05-10T09:00:00Z", ticket_id: "PAP-058", objective: "Build feature" });
+    appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "completed", timestamp: "2026-05-10T09:05:00Z", status: "success" });
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["evaluate", "--evaluate-deployment", "d-target", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /Team: evaluator/);
+    assert.match(primer, /Mode: deployment-review/);
+    assert.match(primer, /Output destination: agent-teams\/evaluator\/artifacts\/\d{4}-\d{2}-\d{2}-d-target-evaluator-report\.md/);
   });
 });
 
@@ -671,6 +719,81 @@ test("opa foreground deploy keeps existing completed marker authoritative", asyn
     assert.equal(terminalEvents.length, 1);
     assert.equal(terminalEvents[0]?.event, "completed");
     assert.equal(terminalEvents[0]?.fallback, false);
+  });
+});
+
+test("opa deploy builder implement success launches one background evaluator and records evidence", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    writeEvaluatorTeamConfig(root);
+    const spawnCalls: string[] = [];
+    const adapter: RuntimeAdapter = {
+      name: "opencode",
+      defaultModel: "stub/model",
+      sessionFileName: "session-id-opencode.txt",
+      installHooks() {},
+      spawn(opts): SpawnResult {
+        spawnCalls.push(opts.deployId);
+        return { sessionId: `ses-${opts.deployId}`, exitCode: 0 };
+      },
+      resume(opts): SpawnResult {
+        spawnCalls.push(opts.deployId);
+        return { sessionId: opts.sessionId, exitCode: 0 };
+      },
+      extractActivity() {
+        return [];
+      },
+      describeTools() {
+        return { runtime: "opencode", markdown: "stub" };
+      },
+    };
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--provider", "openai"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    assert.equal(spawnCalls.length, 2);
+    const statuses = queryDeploymentStatuses();
+    const builderDeploy = statuses.find((entry) => entry.team === "builder");
+    assert.ok(builderDeploy);
+    const evidence = getDeploymentEvents(builderDeploy.deploy_id).filter((event) => event.event === "updated" && (event.note ?? "").includes("[evaluator-launch path=builder-implement]"));
+    assert.equal(evidence.length, 1);
+    assert.match(evidence[0]?.note ?? "", /status=launched/);
+    assert.match(evidence[0]?.note ?? "", /target=d-[a-z0-9]{6}/);
+    assert.match(evidence[0]?.note ?? "", /evaluator_deployment_id=d-[a-z0-9]{6}/);
+  });
+});
+
+test("opa deploy records evaluator launch failure evidence when evaluate launch fails", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    writeEvaluatorTeamConfig(root);
+    const spawnCalls: string[] = [];
+    const adapter: RuntimeAdapter = {
+      name: "opencode",
+      defaultModel: "stub/model",
+      sessionFileName: "session-id-opencode.txt",
+      installHooks() {},
+      spawn(opts): SpawnResult {
+        if (spawnCalls.length > 0) throw new Error("evaluator launch failed");
+        spawnCalls.push(opts.deployId);
+        return { sessionId: `ses-${opts.deployId}`, exitCode: 0 };
+      },
+      resume(opts): SpawnResult {
+        return { sessionId: opts.sessionId, exitCode: 0 };
+      },
+      extractActivity() {
+        return [];
+      },
+      describeTools() {
+        return { runtime: "opencode", markdown: "stub" };
+      },
+    };
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--provider", "openai"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const builderDeploy = queryDeploymentStatuses().find((entry) => entry.team === "builder");
+    assert.ok(builderDeploy);
+    const evidence = getDeploymentEvents(builderDeploy.deploy_id).filter((event) => event.event === "updated" && (event.note ?? "").includes("[evaluator-launch path=builder-implement]"));
+    assert.equal(evidence.length, 1);
+    assert.match(evidence[0]?.note ?? "", /status=failed/);
+    assert.match(evidence[0]?.note ?? "", /reason=/);
   });
 });
 
