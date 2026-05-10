@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { serve } from "@hono/node-server";
-import { appendActivityEvent, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
+import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
 import type { WsClient, WsEvent } from "../index.js";
 
 function sleep(ms: number): Promise<void> {
@@ -232,6 +232,14 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
   await withApiEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001", agents: ["team-manager"], provider: "openai", models: { team: "openai/gpt-5.5" }, runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200 });
     appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done" });
+    appendRegistryEvent({ deployment_id: "d-api-eval-1", team: "builder", event: "started", timestamp: "2026-04-26T00:02:00.000Z" });
+    appendEvaluatorResult({
+      target_deployment_id: "d-api-1",
+      evaluator_deployment_id: "d-api-eval-1",
+      summary: "Evaluator row",
+      evidence_refs: ["deployments/d-api-1/primer.md"],
+      rating: { source: "system", overall: 4, metrics: { human_agency: 5, quality: 4 } },
+    });
     appendActivityEvent(createActivityEvent({ deployId: "d-api-1", timestamp: "2026-04-26T00:00:30.000Z", kind: "text", source: "opencode", body: "hello" }));
     const { app } = createAgentApiApp();
     const list = await app.request("/api/deployments?all=true&ticket_id=PAP-001");
@@ -247,12 +255,14 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
     assert.equal(listBody.filter.ticket_id, "PAP-001");
     const detail = await app.request("/api/deployments/d-api-1");
     assert.equal(detail.status, 200);
-    const detailBody = await detail.json() as { status: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number; deployment?: unknown; activity_events?: unknown[] };
+    const detailBody = await detail.json() as { status: string; provider?: string; runtime?: string; binary?: string; effective_timeout_seconds?: number; deployment?: unknown; activity_events?: unknown[]; evaluator_results?: Array<{ evaluator_deployment_id: string; rating: { metrics: { human_agency?: number } } }> };
     assert.equal(detailBody.status, "success");
     assert.equal(detailBody.provider, "openai");
     assert.equal(detailBody.runtime, "opencode");
     assert.equal(detailBody.binary, "opa");
     assert.equal(detailBody.effective_timeout_seconds, 1200);
+    assert.equal(detailBody.evaluator_results?.[0]?.evaluator_deployment_id, "d-api-eval-1");
+    assert.equal(detailBody.evaluator_results?.[0]?.rating.metrics.human_agency, 5);
     assert.equal(detailBody.deployment, undefined);
     assert.equal(detailBody.activity_events, undefined);
     const activity = await app.request("/api/deployments/d-api-1/activity");

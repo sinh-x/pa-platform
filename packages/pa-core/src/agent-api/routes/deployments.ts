@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { getDeploymentDir } from "../../paths.js";
-import { computeDeploymentStatuses, getDeploymentEvents, getDeploymentsByTicketId, readRegistry } from "../../registry/index.js";
+import { computeDeploymentStatuses, getDeploymentEvents, getDeploymentsByTicketId, queryEvaluatorResultsByTargetDeployment, readRegistry } from "../../registry/index.js";
+import type { EvaluatorResult } from "../../types.js";
 import { readDeploymentActivity } from "../../activity/index.js";
 import { nowUtc } from "../../time.js";
 import type { ActivityEvent } from "../../activity/index.js";
@@ -62,12 +63,20 @@ function isValidDeploymentId(id: string): boolean {
   return /^[a-zA-Z0-9-]+$/.test(id);
 }
 
-function deploymentDetail(id: string, events: ReturnType<typeof getDeploymentEvents>): DeploymentStatus & { primer_path?: string; error?: string; exit_code?: number; rating?: unknown } {
+function deploymentDetail(id: string, events: ReturnType<typeof getDeploymentEvents>): DeploymentStatus & { primer_path?: string; error?: string; exit_code?: number; rating?: unknown; evaluator_results?: EvaluatorResult[] } {
   const status = computeDeploymentStatuses(events)[0]!;
   const completed = events.find((event) => event.event === "completed");
   const crashed = events.find((event) => event.event === "crashed");
   const primerPath = resolve(getDeploymentDir(id), "primer.md");
-  return { ...status, primer_path: existsSync(primerPath) ? `deployments/${id}/primer.md` : undefined, error: completed?.error ?? crashed?.error, exit_code: completed?.exit_code ?? crashed?.exit_code, rating: completed?.rating };
+  const evaluatorResults = queryEvaluatorResultsByTargetDeployment(id);
+  return {
+    ...status,
+    primer_path: existsSync(primerPath) ? `deployments/${id}/primer.md` : undefined,
+    error: completed?.error ?? crashed?.error,
+    exit_code: completed?.exit_code ?? crashed?.exit_code,
+    rating: completed?.rating,
+    evaluator_results: evaluatorResults,
+  };
 }
 
 function toPhoneActivityEvent(event: ActivityEvent): Record<string, unknown> {

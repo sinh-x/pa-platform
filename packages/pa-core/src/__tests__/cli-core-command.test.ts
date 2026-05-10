@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendRegistryEvent, closeDb, getServePidFilePath, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, getServePidFilePath, runCoreCommand, TicketStore } from "../index.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -240,6 +240,15 @@ test("runCoreCommand exposes registry list, show, and complete", async () => {
 test("runCoreCommand exposes registry update, search, analytics, clean, and sweep", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-reg-extra", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", pid: 999999, summary: "build registry parity" });
+    appendRegistryEvent({ deployment_id: "d-reg-extra", team: "builder", event: "completed", timestamp: "2026-04-26T00:01:00.000Z", status: "success", summary: "done", rating: { source: "agent", overall: 3.5, productivity: 4, quality: 3 } });
+    appendRegistryEvent({ deployment_id: "d-reg-eval", team: "builder", event: "started", timestamp: "2026-04-26T00:02:00.000Z" });
+    appendEvaluatorResult({
+      target_deployment_id: "d-reg-extra",
+      evaluator_deployment_id: "d-reg-eval",
+      summary: "independent evaluation",
+      evidence_refs: ["deployments/d-reg-extra/primer.md"],
+      rating: { source: "system", overall: 4, metrics: { human_agency: 5, quality: 4 } },
+    });
 
     const update = capture();
     assert.equal(await runCoreCommand(["registry", "update", "d-reg-extra", "--summary", "updated", "--rating-overall", "4"], { io: update.io }), 0);
@@ -249,9 +258,19 @@ test("runCoreCommand exposes registry update, search, analytics, clean, and swee
     assert.equal(await runCoreCommand(["registry", "search", "registry", "--limit", "5"], { io: search.io }), 0);
     assert.match(search.stdout.join("\n"), /d-reg-extra/);
 
-    const analytics = capture();
-    assert.equal(await runCoreCommand(["registry", "analytics", "--view", "teams"], { io: analytics.io }), 0);
-    assert.match(analytics.stdout.join("\n"), /Team Activity/);
+    const analyticsTeams = capture();
+    assert.equal(await runCoreCommand(["registry", "analytics", "--view", "teams"], { io: analyticsTeams.io }), 0);
+    assert.match(analyticsTeams.stdout.join("\n"), /Team Activity/);
+
+    const analyticsRatings = capture();
+    assert.equal(await runCoreCommand(["registry", "analytics", "--view", "ratings"], { io: analyticsRatings.io }), 0);
+    assert.match(analyticsRatings.stdout.join("\n"), /SelfSrc/);
+    assert.match(analyticsRatings.stdout.join("\n"), /EvalSrc/);
+    assert.match(analyticsRatings.stdout.join("\n"), /HumanAgency/);
+    assert.match(analyticsRatings.stdout.join("\n"), /d-reg-extra/);
+    assert.match(analyticsRatings.stdout.join("\n"), /agent/);
+    assert.match(analyticsRatings.stdout.join("\n"), /system/);
+    assert.match(analyticsRatings.stdout.join("\n"), /5/);
 
     const sweep = capture();
     assert.equal(await runCoreCommand(["registry", "sweep"], { io: sweep.io }), 0);
