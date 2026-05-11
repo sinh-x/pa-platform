@@ -10,7 +10,7 @@ export function parseDeployArgs(argv: string[]): { fields: Record<string, unknow
   const [team, ...rest] = argv;
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
-  const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume" };
+  const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--evaluate-deployment": "evaluateDeployment", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume" };
   const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
@@ -79,6 +79,7 @@ export function printDeployHelp(io: Required<CliIo>): void {
   io.stdout("  --mode <mode>       Deploy mode ID (required)");
   io.stdout("  --objective <text>  Inline objective override");
   io.stdout("  --objective-file <path>  Read objective from file");
+  io.stdout("  --evaluate-deployment <id>  Generate evaluator primer objective for a completed deployment");
   io.stdout("  --repo <path>       Override repository path");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
   io.stdout("  --timeout <seconds> Override deployment timeout");

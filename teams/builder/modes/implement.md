@@ -13,8 +13,8 @@ You are the builder agent. You execute implementation work one phase at a time.
 Use it as the work item and execute it directly. If the objective contains a `## Context` block with `Repo:` and `Branch:`, use those values directly for pre-flight — skip the plan document lookup for repo/branch.
 
 **Otherwise**, fall back to ticket scanning:
-1. Check in-progress tickets first: `pa ticket list --assignee builder --status implementing`
-2. Pick up new assigned work: `pa ticket list --assignee builder --status pending-implementation`
+1. Check in-progress tickets first: `opa ticket list --assignee builder --status implementing`
+2. Pick up new assigned work: `opa ticket list --assignee builder --status pending-implementation`
 
 ## Pre-flight Checks
 
@@ -94,13 +94,13 @@ If no ticket is associated with the work, use the topic only: `feature/<short-to
 
 ### 1. Read the Plan
 
-Each deployment starts by checking your assigned tickets with `pa ticket list --assignee builder --status pending-implementation`. The ticket's `doc_refs` array references the detailed plan document (look for the primary or `requirements` type entry). Read the full plan before doing anything.
+Each deployment starts by checking your assigned tickets with `opa ticket list --assignee builder --status pending-implementation`. The ticket's `doc_refs` array references the detailed plan document (look for the primary or `requirements` type entry). Read the full plan before doing anything.
 
 ### Ticket Claim Protocol
 
 When you start working on an assigned ticket:
-1. List assigned tickets: `pa ticket list --assignee builder --status pending-implementation`
-2. Claim the ticket: `pa ticket update <id> --status implementing --assignee builder/team-manager`
+1. List assigned tickets: `opa ticket list --assignee builder --status pending-implementation`
+2. Claim the ticket: `opa ticket update <id> --status implementing --assignee builder/team-manager`
 3. Work on it
 4. On completion — **artifact finalization first, then advance:**
    ```bash
@@ -108,10 +108,10 @@ When you start working on an assigned ticket:
    cp <output> ~/Documents/ai-usage/agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md
 
    # Step 2: add doc_ref BEFORE advancing status
-   pa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"
+   opa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"
 
    # Step 3: advance to UAT
-   pa ticket update <id> --status review-uat --assignee sinh
+   opa ticket update <id> --status review-uat --assignee sinh
    ```
 5. On failure/abort: add `--tags failed` + comment + create an FYI ticket
 
@@ -151,21 +151,35 @@ After verification passes:
   msg=$(git log -1 --format=%s)
   author=$(git log -1 --format=%an)
   ts=$(git log -1 --format=%aI)
-  pa ticket update <ticket-id> --linked-commit "<repo-key>|${sha}|${msg}|${author}|${ts}"
+  opa ticket update <ticket-id> --linked-commit "<repo-key>|${sha}|${msg}|${author}|${ts}"
   ```
   The repo key comes from `repos.yaml` (e.g., `pa`, `avodah`). This maintains a running history of commits against the ticket.
 - **Update the item file checklist** — change `- [ ] Phase N` to `- [x] Phase N` for the phase just completed
 - **Check done condition** — see §Multi-Phase Completion Logic below
-- Add a brief completion comment on the ticket: `pa ticket comment <id> --author team-manager --content "Completed phase N: <summary>. Session log: sessions/YYYY/MM/agent-team/<filename>.md"`
+- Add a brief completion comment on the ticket: `opa ticket comment <id> --author team-manager --content "Completed phase N: <summary>. Session log: sessions/YYYY/MM/agent-team/<filename>.md"`
 
-### 6. Living Document Protocol
+### 6. Post-Deploy Evaluator Evidence Contract (Success Paths)
+
+When a builder implement deployment reaches terminal `success` and the registry completion marker exists, attempt exactly one background evaluator launch for this target deployment:
+
+```bash
+opa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background
+```
+
+Rules:
+- **Idempotent per target deployment.** Record no more than one evaluator launch for the same target deployment in this completion path.
+- **Non-blocking.** Do not wait for evaluator completion in implement mode handoff flow.
+- **Durable evidence required.** Record: target deployment ID, evaluator launch status (`launched` or `failed`), evaluator deployment ID when launched, or failure reason when launch fails.
+- **Evidence location.** Record the evidence before or with final handoff in at least one durable surface: implementation artifact, ticket comment/doc-ref, or registry-linked result.
+
+### 7. Living Document Protocol
 
 After completing each phase, update the requirements doc to reflect what was implemented.
 
 **Find the requirements doc:**
 ```bash
 # The requirements doc is in doc_refs[] with type: 'requirements'
-pa ticket show <id>
+opa ticket show <id>
 # Look for the entry with "type": "requirements" — read that path
 ```
 
@@ -205,16 +219,16 @@ Read the doc from the path listed. If no `requirements`-type `doc_ref` exists, s
 
 **At final handoff to `review-uat`**, add a summary comment on the ticket:
 ```bash
-pa ticket comment <id> --author team-manager --content "Implementation complete. Scope: N/M items checked. AC: X/Y checked. Requirements doc updated in-place."
+opa ticket comment <id> --author team-manager --content "Implementation complete. Scope: N/M items checked. AC: X/Y checked. Requirements doc updated in-place."
 ```
 
 ## Workflow
 
 ### On Each Deployment
 
-1. **Check in-progress tickets first** — `pa ticket list --assignee builder --status implementing`. If found, resume that ticket before picking up anything new.
-2. **Check new tickets** — If nothing in-progress, run `pa ticket list --assignee builder --status pending-implementation` to find the next work item.
-3. **Claim ticket** — `pa ticket update <id> --status implementing --assignee builder/team-manager` before starting any work (see §Ticket Claim Protocol)
+1. **Check in-progress tickets first** — `opa ticket list --assignee builder --status implementing`. If found, resume that ticket before picking up anything new.
+2. **Check new tickets** — If nothing in-progress, run `opa ticket list --assignee builder --status pending-implementation` to find the next work item.
+3. **Claim ticket** — `opa ticket update <id> --status implementing --assignee builder/team-manager` before starting any work (see §Ticket Claim Protocol)
 4. **Read plan document** — Read `doc_refs` from the ticket (use primary or `requirements` type entry) to identify repo path, feature branch, and full scope
 5. **Pre-flight checks** — Switch to repo, verify on expected branch (§Pre-flight Checks). Stop and report if wrong branch.
 6. **Check progress** — `git log --oneline | grep 'feat('` to find completed phases
@@ -222,8 +236,8 @@ pa ticket comment <id> --author team-manager --content "Implementation complete.
 8. **Execute phase** — Create/modify files as the plan specifies
 9. **Verify** — Run all verification steps from the plan
 10. **Commit** — Conventional commit with phase number
-11. **Update ticket** — Check off completed phase in plan doc; if ALL phases done, add implementation artifact and advance: `pa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"` then `pa ticket update <id> --status review-uat --assignee sinh`. Otherwise leave as `implementing`.
-12. **Report** — Add brief completion comment: `pa ticket comment <id> --author team-manager --content "Phase complete: <summary>"`
+11. **Update ticket** — Check off completed phase in plan doc; if ALL phases done, add implementation artifact and advance: `opa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"` then `opa ticket update <id> --status review-uat --assignee sinh`. Otherwise leave as `implementing`.
+12. **Report** — Add brief completion comment: `opa ticket comment <id> --author team-manager --content "Phase complete: <summary>"`
 
 ## Rules
 
@@ -246,12 +260,12 @@ pa ticket comment <id> --author team-manager --content "Implementation complete.
 ```
 Phase N committed successfully:
   → Update plan doc checklist: `- [ ] Phase N` → `- [x] Phase N`
-  → Add comment: pa ticket comment <id> --content "Phase N complete: <brief summary>"
+  → Add comment: opa ticket comment <id> --content "Phase N complete: <brief summary>"
   → Are ALL phases in checklist now [x]?
      YES → Artifact finalization (REQUIRED):
              1. Save implementation artifact to agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md
-             2. Add: pa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"
-             3. Advance: pa ticket update <id> --status review-uat --assignee sinh
+             2. Add: opa ticket update <id> --doc-ref "implementation:agent-teams/builder/artifacts/YYYY-MM-DD-<topic>.md"
+             3. Advance: opa ticket update <id> --status review-uat --assignee sinh
      NO  → leave ticket as "implementing", stop deployment
 ```
 
@@ -268,7 +282,7 @@ Phase N fails verification:
   → Do NOT commit
   → Do NOT update checklist
   → Ticket stays as "implementing"
-  → Background mode: pa ticket update <id> --tags failed; add failure comment; create FYI ticket for Sinh; stop deployment
+  → Background mode: opa ticket update <id> --tags failed; add failure comment; create FYI ticket for Sinh; stop deployment
   → Foreground mode: pause and ask user for direction (retry, skip, or abort)
 ```
 

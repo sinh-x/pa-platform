@@ -70,6 +70,35 @@ export interface Rating {
   insight?: number;
 }
 
+export type EvaluatorMetricName =
+  | "productivity"
+  | "quality"
+  | "efficiency"
+  | "insight"
+  | "human_agency"
+  | "evidence_grounding"
+  | "instruction_compliance"
+  | "user_fit"
+  | "risk_handling"
+  | "outcome_integrity";
+
+export interface EvaluatorRating {
+  source: "system" | "user";
+  overall: number;
+  metrics: Partial<Record<EvaluatorMetricName, number>>;
+}
+
+export interface EvaluatorResult {
+  target_deployment_id: string;
+  evaluator_deployment_id: string;
+  summary?: string;
+  report_path?: string;
+  evidence_refs: string[];
+  findings?: string;
+  rating: EvaluatorRating;
+  created_at: string;
+}
+
 export interface RegistryEvent {
   deployment_id: string;
   team: string;

@@ -168,7 +168,7 @@ end
 
 function __opa_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --objective-file --provider --model --team-model --agent-model --repo --ticket --timeout --resume
+        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume
             return 0
     end
 
@@ -244,6 +244,7 @@ complete -c opa -f
 complete -c opa -n __fish_use_subcommand -a repos -d 'Manage repositories'
 complete -c opa -n __fish_use_subcommand -a status -d 'Show deployment status'
 complete -c opa -n __fish_use_subcommand -a deploy -d 'Deploy an agent team'
+complete -c opa -n __fish_use_subcommand -a evaluate -d 'Evaluate a completed deployment'
 complete -c opa -n __fish_use_subcommand -a serve -d 'Start API server through adapter hook'
 complete -c opa -n __fish_use_subcommand -a stop -d 'Stop API server through adapter hook'
 complete -c opa -n __fish_use_subcommand -a restart -d 'Restart API server through adapter hook'
@@ -265,7 +266,7 @@ complete -c opa -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Se
 complete -c opa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c opa -n __opa_deploy_needs_team -a '(__opa_deploy_team_candidates)' -d 'Team name'
-complete -c opa -f -n __opa_deploy_should_offer_options -a '--mode --objective --objective-file --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
+complete -c opa -f -n __opa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
 complete -c opa -f -n __opa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__opa_modes)'
 complete -c opa -n __opa_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c opa -n __opa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
@@ -281,6 +282,22 @@ complete -c opa -f -n __opa_deploy_completing -l repo -d 'Repository name' -r -a
 complete -c opa -f -n __opa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
 complete -c opa -n __opa_deploy_completing -l timeout -d 'Timeout seconds' -r
 complete -c opa -f -n __opa_deploy_completing -l resume -d 'Resume from deployment ID' -r -a '(__opa_deployments)'
+complete -c opa -f -n '__fish_seen_subcommand_from deploy evaluate' -l evaluate-deployment -d 'Deployment to evaluate' -r -a '(__opa_deployments)'
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment to evaluate'
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l background -d 'Run detached/headless'
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l dry-run -d 'Generate evaluator primer without invoking runtime'
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l record -d 'Store evaluator result'
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l evaluator-deployment -d 'Evaluator deployment ID' -r -a '(__opa_deployments)'
+complete -c opa -r -n '__fish_seen_subcommand_from evaluate' -l report-path -d 'Evaluator report path'
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l overall -d 'Overall evaluator score' -r
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l human-agency -d 'Human Agency score' -r
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticket ID' -r -a '(__opa_ticket_ids)'
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Repository name' -r -a '(__opa_projects)'
+complete -c opa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r -a 'minimax openai deepseek ollama-cloud'
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Team model' -r
+complete -c opa -f -n '__fish_seen_subcommand_from evaluate' -l agent-model -d 'Agent model' -r
 
 complete -c opa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__opa_deployments)' -d 'Deployment'
 complete -c opa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

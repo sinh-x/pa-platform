@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   if (singleton && dbPath === getRegistryDbPath()) return singleton;
@@ -84,6 +84,23 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
     CREATE INDEX IF NOT EXISTS idx_deployments_started_at ON deployments(started_at);
     CREATE INDEX IF NOT EXISTS idx_deployments_ticket_id ON deployments(ticket_id);
+    CREATE TABLE IF NOT EXISTS evaluator_ratings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      target_deployment_id TEXT NOT NULL,
+      evaluator_deployment_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      rating TEXT NOT NULL,
+      summary TEXT,
+      report_path TEXT,
+      evidence_refs TEXT NOT NULL,
+      findings TEXT,
+      FOREIGN KEY (target_deployment_id) REFERENCES deployments(deployment_id),
+      FOREIGN KEY (evaluator_deployment_id) REFERENCES deployments(deployment_id),
+      UNIQUE(target_deployment_id, evaluator_deployment_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_evaluator_target ON evaluator_ratings(target_deployment_id);
+    CREATE INDEX IF NOT EXISTS idx_evaluator_evaluator ON evaluator_ratings(evaluator_deployment_id);
+    CREATE INDEX IF NOT EXISTS idx_evaluator_created_at ON evaluator_ratings(created_at);
     CREATE TABLE IF NOT EXISTS health_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,

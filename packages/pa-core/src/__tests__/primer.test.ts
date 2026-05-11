@@ -171,6 +171,8 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /pa-session-log/);
   assert.match(primer, /Save session logs under `sessions\/YYYY\/MM\/agent-team\/`/);
   assert.match(primer, /Session logs, artifact finalization, shutdown, and registry completion/i);
+  assert.match(primer, /For semantic briefing-style requests \(for example: startup context refresh or get up to date\), render `opa semantic briefing <query>` output with evidence links before deeper analysis\./);
+  assert.match(primer, /Ask exactly one confirmation question before deeper analysis, and do not mutate ticket, doc, status, branch, registry, or doc-ref state until confirmation\./);
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /uat:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);

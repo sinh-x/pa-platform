@@ -38,3 +38,7 @@ Version tagging remains an explicit manual release step so package version, chan
 ## Timestamp Policy
 
 All persisted timestamps must be UTC ISO 8601 strings with a `Z` suffix. Use `nowUtc()` for writes, `parseTimestamp()` for reads, and `formatLocal()` / `formatLocalShort()` only at display boundaries so CLI output renders in the host local timezone with an explicit offset.
+
+## Registry Rollback Note
+
+Schema v9 introduces the `evaluator_ratings` table and related indexes. If you must downgrade a local registry DB from schema v9 to v8, drop `evaluator_ratings` and its related indexes before running with v8 binaries.

@@ -1,8 +1,8 @@
 # Template: Orchestration Report
 
 > **Template:** orchestration-report
-> **Version:** 1.0
-> **Last Updated:** 2026-04-28
+> **Version:** 1.2
+> **Last Updated:** 2026-05-10
 > **Used by:** Builder orchestrator as the living cross-phase report
 > **Produces:** Orchestration report artifact
 > **Consumed by:** Sinh, future orchestrator runs, and aggregators
@@ -41,9 +41,9 @@ PR: <PR URL, populated after PR creation>
 - <HH:MM> - Phase 6 orchestration complete - ticket advanced to review-uat
 
 ### Sub-Deploys
-| Phase | Deploy ID | Mode | Status | Severity |
-|---|---|---|---|---|
-| 4.1 (<brief scope>) | d-abc123 | builder/implement | success | - |
+| Phase | Deploy ID | Mode | Status | Severity | Evaluator Launch | Evaluator Deploy ID | Evaluator Notes |
+|---|---|---|---|---|---|---|---|
+| 4.1 (<brief scope>) | d-abc123 | builder/implement | success | - | launched | d-eval123 | target=d-abc123 |
 
 > Severity: C=Critical, M=Major, Mn=Minor, I=Info
 
@@ -76,6 +76,12 @@ sessions/YYYY/MM/agent-team/<session-log-filename>.md
 - `Status:` must be exactly `in-progress`, `success`, `partial`, or `failed`.
 - Populate `Repo:`, `Branch:`, and `PR:` near the top so reviewers can cold-read the artifact.
 - Keep timeline entries one line each and use verifiable timestamps when available.
+- For each `builder/implement` child deployment, record evaluator coverage in `Evaluator Launch`, `Evaluator Deploy ID`, and `Evaluator Notes`.
+- `Evaluator Launch` should be one of: `launched`, `failed`, `skipped`, `not-applicable`, or `in-flight`.
+- On row creation (launch event), initialize evaluator fields to: `Evaluator Launch=in-flight`, `Evaluator Deploy ID=-`, `Evaluator Notes=awaiting-child-completion`.
+- On row completion (after `opa status <deploy-id> --wait`), replace `in-flight` with final evaluator evidence before moving to the next phase.
+- `Evaluator Notes` is required for `builder/implement` rows and must include the target deployment ID (`target=<child-deploy-id>`).
+- If launch is `failed` or `skipped`, fill `Evaluator Notes` with a precise reason (for example `target-team-is-evaluator`, `launch-command-failed:<stderr>`, or `child-status-not-success`).
 - Use the fixed remaining-findings format so future tools can parse the report.
 - On terminal exit, write the session log first, then populate `### Session Log`.
 - Attach with `opa ticket update <id> --doc-ref "orchestration:agent-teams/builder/artifacts/YYYY-MM-DD-report.md"` before handoff.

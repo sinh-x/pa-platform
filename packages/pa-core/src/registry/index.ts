@@ -1,5 +1,5 @@
 import { getDb } from "./db.js";
-import type { DeploymentStatus, RegistryEvent } from "../types.js";
+import type { DeploymentStatus, EvaluatorResult, RegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
@@ -49,6 +49,42 @@ export function queryDeploymentStatus(deployId: string): DeploymentStatus | null
   const db = getDb();
   const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
   return row ? deploymentFromRow(row) : null;
+}
+
+export function appendEvaluatorResult(input: Omit<EvaluatorResult, "created_at"> & { created_at?: string }): EvaluatorResult {
+  const db = getDb();
+  const createdAt = normalizeTimestamp(input.created_at ?? new Date().toISOString());
+  const row = {
+    target_deployment_id: input.target_deployment_id,
+    evaluator_deployment_id: input.evaluator_deployment_id,
+    created_at: createdAt,
+    rating: JSON.stringify(input.rating),
+    summary: input.summary ?? null,
+    report_path: input.report_path ?? null,
+    evidence_refs: JSON.stringify(input.evidence_refs),
+    findings: input.findings ?? null,
+  };
+  db.prepare(`
+    INSERT INTO evaluator_ratings (
+      target_deployment_id, evaluator_deployment_id, created_at, rating,
+      summary, report_path, evidence_refs, findings
+    ) VALUES (
+      @target_deployment_id, @evaluator_deployment_id, @created_at, @rating,
+      @summary, @report_path, @evidence_refs, @findings
+    ) ON CONFLICT(target_deployment_id, evaluator_deployment_id) DO UPDATE SET
+      created_at = excluded.created_at,
+      rating = excluded.rating,
+      summary = excluded.summary,
+      report_path = excluded.report_path,
+      evidence_refs = excluded.evidence_refs,
+      findings = excluded.findings
+  `).run(row);
+  return { ...input, created_at: createdAt };
+}
+
+export function queryEvaluatorResultsByTargetDeployment(targetDeploymentId: string): EvaluatorResult[] {
+  const db = getDb();
+  return (db.prepare("SELECT * FROM evaluator_ratings WHERE target_deployment_id = ? ORDER BY created_at DESC").all(targetDeploymentId) as Record<string, unknown>[]).map(evaluatorResultFromRow);
 }
 
 export function getDeploymentsByTicketId(ticketId: string): DeploymentStatus[] {
@@ -234,4 +270,17 @@ function optionalNumber(value: unknown): number | undefined {
 function parseJson<T>(value: unknown): T | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   return JSON.parse(value) as T;
+}
+
+function evaluatorResultFromRow(row: Record<string, unknown>): EvaluatorResult {
+  return {
+    target_deployment_id: String(row["target_deployment_id"]),
+    evaluator_deployment_id: String(row["evaluator_deployment_id"]),
+    created_at: normalizeTimestamp(row["created_at"]),
+    rating: parseJson<EvaluatorResult["rating"]>(row["rating"]) ?? { source: "system", overall: 0, metrics: {} },
+    summary: optionalString(row["summary"]),
+    report_path: optionalString(row["report_path"]),
+    evidence_refs: parseJson<string[]>(row["evidence_refs"]) ?? [],
+    findings: optionalString(row["findings"]),
+  };
 }

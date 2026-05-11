@@ -6,6 +6,7 @@ import { runBoardCommand } from "./commands/board.js";
 import { runTeamsCommand } from "./commands/teams.js";
 import { runReposCommand } from "./commands/repos.js";
 import { runDeployCommand, STATUS_WAIT_OVERRIDE_ENV } from "./commands/deploy.js";
+import { runEvaluateCommand } from "./commands/evaluate.js";
 import { runTicketCommand } from "./commands/ticket.js";
 import { runBulletinCommand } from "./commands/bulletin.js";
 import { runHealthCommand } from "./commands/health.js";
@@ -15,6 +16,7 @@ import { runSignalCommand } from "./commands/signal.js";
 import { runScheduleCommand, runRemoveTimerCommand } from "./commands/schedule.js";
 import { runServeCommand } from "./commands/serve.js";
 import { runStatusCommand } from "./commands/status.js";
+import { runSemanticCommand } from "./commands/semantic.js";
 import type { CliIo } from "./utils.js";
 import { normalizeIo } from "./utils.js";
 
@@ -46,6 +48,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), { sleep: opts.sleep ?? defaultSleep, clock: opts.clock ?? Date.now });
     if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {});
+    if (command === "evaluate") return runEvaluateCommand(rest, io, opts.hooks ?? {});
     if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});
     if (command === "schedule") return runScheduleCommand(rest, io);
     if (command === "remove-timer") return runRemoveTimerCommand(rest, io);
@@ -59,6 +62,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "codectx") return runCodeCtxCommand(rest, io);
     if (command === "timers") return runTimersCommand(rest, io);
     if (command === "signal") return runSignalCommand(rest, io);
+    if (command === "semantic") return runSemanticCommand(rest, io);
     io.stderr(`Unknown command: ${command}`);
     printHelp(io, opts.binaryName ?? defaultBinaryName());
     return 1;
@@ -70,7 +74,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
 
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
-  io.stdout("Commands: repos list, status, deploy, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal");
+  io.stdout("Commands: repos list, status, deploy, evaluate, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
   io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
 }
 

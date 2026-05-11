@@ -19,6 +19,7 @@ All agents have access to the `opa` CLI for PA platform workflow and deployment 
 | `opa teams [name]` | Show team workflow status; detail with name | `--all` |
 | `opa board` | Show kanban board grouped by status — scoped to current repo by default | `--project`, `--all`, `--assignee` |
 | `opa deploy <team>` | Deploy an agent team through the default OpenCode adapter | `--objective`, `--objective-file`, `--content-file`, `--mode`, `--dry-run`, `--background`, `--ticket`, `--repo`, `--team-model`, `--agent-model`, `--validate`, `--provider` |
+| `opa evaluate <deploy-id>` | Launch the dedicated evaluator team for a completed deployment | `--evaluate-deployment`, `--dry-run`, `--background`, `--ticket`, `--repo`, `--timeout`, `--provider`, `--model`, `--record` |
 | `opa status [deploy-id]` | Show deployment status | `--running`, `--team`, `--wait`, `--report`, `--artifacts`, `--activity`, `--recent`, `--today` |
 | `opa health [category]` | System health check: deployment health, agent behavior, compliance, infrastructure | `--json`, `--days`, `--since`, `--primer-summary`, `--history` (category: `deployments` \| `agents` \| `tickets` \| `compliance` \| `schedules` \| `infrastructure`) |
 | `opa schedule <spec> <repeat> [times...]` | Schedule a team with systemd timers | — |
@@ -34,6 +35,16 @@ All agents have access to the `opa` CLI for PA platform workflow and deployment 
 Daily planning, requirements analysis, ideas, and reports are handled through tickets plus `opa deploy <team> --mode <mode>` workflows rather than restored as required direct `daily`, `requirements`, `idea`, or `report` CLI commands.
 
 `opa status <deploy-id> --wait` polls until the deployment reaches a terminal status. It uses the deployment's recorded timeout by default; set `PA_STATUS_WAIT_TIMEOUT` to override the wait duration for that command only.
+
+### `opa evaluate` — Independent Deployment Review
+
+Use `opa evaluate` instead of `opa deploy ... --evaluate-deployment` for independent post-deployment review. It auto-routes to the `evaluator` team in `deployment-review` mode and injects the target deployment evidence context.
+
+```bash
+opa evaluate --evaluate-deployment d-037652 --background
+opa evaluate d-037652 --ticket PAP-058 --background
+opa evaluate --record --evaluate-deployment d-037652 --evaluator-deployment $PA_DEPLOYMENT_ID --report-path agent-teams/evaluator/artifacts/report.md --overall 4 --human-agency 4
+```
 
 ### `opa board` — CWD-Aware Scoping
 

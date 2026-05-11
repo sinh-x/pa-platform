@@ -175,10 +175,34 @@ function runRegistryAnalytics(argv: string[], io: Required<CliIo>): number {
   }
   if (!opts.view || opts.view === "ratings") {
     io.stdout("=== Rating Trends ===");
-    const rows = (getDb().prepare("SELECT team, timestamp, rating FROM registry_events WHERE rating IS NOT NULL ORDER BY timestamp DESC LIMIT 60").all() as Array<{ team: string; timestamp: string; rating: string }>).filter((row) => !opts.team || row.team === opts.team);
-    for (const row of rows) {
-      const rating = JSON.parse(row.rating) as { overall?: number; productivity?: number; quality?: number };
-      io.stdout(`${row.timestamp.slice(0, 10).padEnd(12)} ${row.team.padEnd(16)} ${String(rating.overall ?? "N/A").padEnd(8)} ${String(rating.productivity ?? "N/A").padEnd(8)} ${String(rating.quality ?? "N/A")}`);
+    io.stdout("Date         Team             Deploy       SelfSrc  Self    EvalSrc  Eval    HumanAgency");
+    const deploymentsById = new Map(queryDeploymentStatuses().map((deployment) => [deployment.deploy_id, deployment]));
+    const selfRows = (getDb().prepare("SELECT deployment_id, team, timestamp, rating FROM registry_events WHERE rating IS NOT NULL ORDER BY timestamp DESC LIMIT 120").all() as Array<{ deployment_id: string; team: string; timestamp: string; rating: string }>)
+      .filter((row) => !opts.team || row.team === opts.team);
+    const evaluatorRows = getDb().prepare(`
+      SELECT target_deployment_id, evaluator_deployment_id, created_at, rating
+      FROM evaluator_ratings
+      ORDER BY created_at DESC
+      LIMIT 120
+    `).all() as Array<{ target_deployment_id: string; evaluator_deployment_id: string; created_at: string; rating: string }>;
+    const latestEvaluatorByTarget = new Map<string, { target_deployment_id: string; evaluator_deployment_id: string; created_at: string; rating: string }>();
+    for (const row of evaluatorRows) if (!latestEvaluatorByTarget.has(row.target_deployment_id)) latestEvaluatorByTarget.set(row.target_deployment_id, row);
+
+    const seen = new Set<string>();
+    for (const row of selfRows) {
+      const selfRating = JSON.parse(row.rating) as { source?: string; overall?: number };
+      const evaluator = latestEvaluatorByTarget.get(row.deployment_id);
+      const evaluatorRating = evaluator ? JSON.parse(evaluator.rating) as { source?: string; overall?: number; metrics?: { human_agency?: number } } : undefined;
+      io.stdout(`${row.timestamp.slice(0, 10).padEnd(12)} ${row.team.padEnd(16)} ${row.deployment_id.padEnd(12)} ${String(selfRating.source ?? "agent").padEnd(8)} ${String(selfRating.overall ?? "N/A").padEnd(7)} ${String(evaluatorRating?.source ?? "N/A").padEnd(8)} ${String(evaluatorRating?.overall ?? "N/A").padEnd(7)} ${String(evaluatorRating?.metrics?.human_agency ?? "N/A")}`);
+      seen.add(row.deployment_id);
+    }
+
+    for (const evaluator of latestEvaluatorByTarget.values()) {
+      if (seen.has(evaluator.target_deployment_id)) continue;
+      const deployment = deploymentsById.get(evaluator.target_deployment_id);
+      if (opts.team && deployment?.team !== opts.team) continue;
+      const evaluatorRating = JSON.parse(evaluator.rating) as { source?: string; overall?: number; metrics?: { human_agency?: number } };
+      io.stdout(`${evaluator.created_at.slice(0, 10).padEnd(12)} ${(deployment?.team ?? "unknown").padEnd(16)} ${evaluator.target_deployment_id.padEnd(12)} ${"N/A".padEnd(8)} ${"N/A".padEnd(7)} ${String(evaluatorRating.source ?? "system").padEnd(8)} ${String(evaluatorRating.overall ?? "N/A").padEnd(7)} ${String(evaluatorRating.metrics?.human_agency ?? "N/A")}`);
     }
   }
   return 0;

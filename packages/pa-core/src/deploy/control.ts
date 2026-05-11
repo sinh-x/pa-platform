@@ -7,6 +7,7 @@ export interface DeployRequest {
   team: string;
   mode?: string;
   objective?: string;
+  evaluateDeployment?: string;
   repo?: string;
   ticket?: string;
   timeout?: number;
@@ -56,6 +57,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   const team = stringField(body, "team");
   const mode = stringField(body, "mode");
   const objective = stringField(body, "objective");
+  const evaluateDeployment = stringField(body, "evaluateDeployment");
   const repo = stringField(body, "repo");
   const ticket = stringField(body, "ticket");
   const provider = stringField(body, "provider");
@@ -73,6 +75,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (!team?.trim()) return { error: "team is required" };
   if (!isSafeIdentifier(team)) return { error: "Invalid team name" };
   if (mode && !isSafeIdentifier(mode)) return { error: "Invalid mode name" };
+  if (evaluateDeployment && !/^d-[a-z0-9]{6}$/.test(evaluateDeployment)) return { error: "Invalid evaluate deployment id" };
   if (repo && !isSafeRepoSpecifier(repo)) return { error: "Invalid repo name" };
   if (ticket && !/^[A-Z][A-Z0-9]+-[0-9]+$/.test(ticket)) return { error: "Invalid ticket ID" };
   if (provider && !/^[a-zA-Z0-9_-]+$/.test(provider)) return { error: "Invalid provider name" };
@@ -92,6 +95,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   const request: DeployRequest = { team };
   if (mode) request.mode = mode;
   if (objective?.trim()) request.objective = objective.trim();
+  if (evaluateDeployment) request.evaluateDeployment = evaluateDeployment;
   if (repo) request.repo = repo;
   if (ticket?.trim()) request.ticket = ticket.trim();
   if (timeout !== undefined) request.timeout = timeout;
