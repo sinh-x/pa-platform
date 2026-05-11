@@ -7,13 +7,46 @@ import { fileURLToPath } from "node:url";
 import { generatePrimer, parseTeamYamlContent } from "../index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const configRoot = resolve(repoRoot, "../pa-platform-config");
 
-function repoPath(...parts: string[]): string {
-  return join(repoRoot, ...parts);
+function configPath(...parts: string[]): string {
+  return join(configRoot, ...parts);
 }
 
-function resolveRepoFile(relativePath: string): string | undefined {
-  return repoPath(relativePath);
+function resolveConfigFile(relativePath: string): string | undefined {
+  return configPath(relativePath);
+}
+
+function withPrimerPathEnv(fn: (root: string, platform: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-paths-"));
+  const platform = join(root, "operator-config");
+  const previous = {
+    config: process.env["PA_PLATFORM_CONFIG"],
+    home: process.env["PA_PLATFORM_HOME"],
+    teams: process.env["PA_PLATFORM_TEAMS"],
+    skills: process.env["PA_PLATFORM_SKILLS"],
+  };
+  try {
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.yaml"), `config_dir: ${platform}\n`);
+    process.env["PA_PLATFORM_CONFIG"] = configDir;
+    delete process.env["PA_PLATFORM_HOME"];
+    delete process.env["PA_PLATFORM_TEAMS"];
+    delete process.env["PA_PLATFORM_SKILLS"];
+    fn(root, platform);
+  } finally {
+    restoreEnv("PA_PLATFORM_CONFIG", previous.config);
+    restoreEnv("PA_PLATFORM_HOME", previous.home);
+    restoreEnv("PA_PLATFORM_TEAMS", previous.teams);
+    restoreEnv("PA_PLATFORM_SKILLS", previous.skills);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function assertNoBannedOpencodeOperationalReferences(primer: string): void {
@@ -74,6 +107,7 @@ deploy_modes:
   const primer = generatePrimer({ runtime: "opencode", teamConfig: terseTeam, mode: "implement" });
   assert.doesNotMatch(primer, /terse-mode/);
   assert.doesNotMatch(primer, /missing skill/);
+  assert.doesNotMatch(primer, /Ask exactly one confirmation question before deeper analysis/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
@@ -124,14 +158,14 @@ deploy_modes:
 });
 
 test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", () => {
-  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: requirements,
     mode: "analyze",
     objective: "Analyze opencode primer parity for PAP-022.",
-    resolveFile: resolveRepoFile,
-    skillsDir: repoPath("skills", "global"),
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
     extraInstructions: [
       "<deployment-context>",
       "deployment_id: d-test00",
@@ -171,8 +205,7 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /pa-session-log/);
   assert.match(primer, /Save session logs under `sessions\/YYYY\/MM\/agent-team\/`/);
   assert.match(primer, /Session logs, artifact finalization, shutdown, and registry completion/i);
-  assert.match(primer, /For semantic briefing-style requests \(for example: startup context refresh or get up to date\), render `opa semantic briefing <query>` output with evidence links before deeper analysis\./);
-  assert.match(primer, /Ask exactly one confirmation question before deeper analysis, and do not mutate ticket, doc, status, branch, registry, or doc-ref state until confirmation\./);
+  assert.match(primer, /For semantic briefing-style requests \(for example: startup context refresh or get up to date\), render `opa semantic briefing <query>` output with evidence links, then ask exactly one confirmation question before deeper analysis or mutation\./);
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /uat:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);
@@ -183,14 +216,14 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
 });
 
 test("generatePrimer requirements analyze-auto fixture remains valid under opencode", () => {
-  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: requirements,
     mode: "analyze-auto",
     objective: "Auto-run requirements analysis for PAP-030",
-    resolveFile: resolveRepoFile,
-    skillsDir: repoPath("skills", "global"),
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
   });
 
   assert.match(primer, /Runtime: opencode/);
@@ -213,14 +246,14 @@ test("generatePrimer requirements analyze-auto fixture remains valid under openc
 });
 
 test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", () => {
-  const requirements = parseTeamYamlContent(readFileSync(repoPath("teams", "requirements.yaml"), "utf-8"));
+  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: requirements,
     mode: "spike",
     objective: "Research spike for PAP-030",
-    resolveFile: resolveRepoFile,
-    skillsDir: repoPath("skills", "global"),
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
     extraInstructions: [
       "<deployment-context>",
       "deployment_id: d-test00",
@@ -253,14 +286,14 @@ test("generatePrimer requirements spike fixture keeps ticket-driven orchestratio
 });
 
 test("generatePrimer representative builder fixture stays free of legacy opencode references", () => {
-  const builder = parseTeamYamlContent(readFileSync(repoPath("teams", "builder.yaml"), "utf-8"));
+  const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: builder,
     mode: "implement",
     objective: "Implement PAP-022 phase 4.4.",
-    resolveFile: resolveRepoFile,
-    skillsDir: repoPath("skills", "global"),
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
   });
 
   assert.match(primer, /Runtime: opencode/);
@@ -382,6 +415,39 @@ test("generatePrimer reads mode objective files and applies template vars", () =
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("generatePrimer resolves objectives, instructions, and shared skills from config_dir", () => {
+  withPrimerPathEnv((_root, platform) => {
+    mkdirSync(join(platform, "teams", "builder", "modes"), { recursive: true });
+    mkdirSync(join(platform, "skills", "global", "pa-cli"), { recursive: true });
+    writeFileSync(join(platform, "teams", "builder", "modes", "implement.md"), "Implement from operator config\n");
+    writeFileSync(join(platform, "skills", "global", "pa-cli", "SKILL.md"), "# pa-cli from operator config\n");
+    const builder = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: implementer
+    role: Writes code
+    instruction: teams/builder/modes/implement.md
+deploy_modes:
+  - id: implement
+    label: Implement
+    agents: [implementer]
+    objective: teams/builder/modes/implement.md
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: builder, mode: "implement" });
+
+    assert.match(primer, /## Objective\nImplement from operator config/);
+    assert.match(primer, /<instruction-file name="implementer">\nImplement from operator config/);
+    assert.match(primer, /# pa-cli from operator config/);
+    assert.match(primer, new RegExp(`${platform.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\/skills\/global\/pa-cli\/SKILL\\.md`));
+  });
 });
 
 test("generatePrimer preserves interactive mode instructions when user objective is supplied", () => {

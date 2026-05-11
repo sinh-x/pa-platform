@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { appendEvaluatorResult, appendRegistryEvent, closeDb, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const CONFIG_ROOT = resolve(REPO_ROOT, "../pa-platform-config");
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));
@@ -140,7 +141,7 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", () => {
-  const files = [...listPackageGuidanceFiles(join(REPO_ROOT, "teams")), ...listPackageGuidanceFiles(join(REPO_ROOT, "skills"))];
+  const files = [...listPackageGuidanceFiles(join(CONFIG_ROOT, "teams")), ...listPackageGuidanceFiles(join(CONFIG_ROOT, "skills"))];
   const offenders = files.flatMap((file) => {
     const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(REPO_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
     return matches;
@@ -149,7 +150,7 @@ test("packaged team and skill guidance avoids removed deploy mode flags", () => 
 });
 
 test("packaged PA CLI guidance describes opa adapter and core-owned serve", () => {
-  const guidance = readFileSync(join(REPO_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
+  const guidance = readFileSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
   assert.match(guidance, /# OPA CLI Reference/);
   assert.match(guidance, /`opa` is the default OpenCode deployment adapter/);
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
@@ -383,8 +384,10 @@ test("deploy --validate fails when team config references missing skills paths",
     assert.equal(await runCoreCommand(["deploy", "builder", "--validate"], { io: captured.io }), 1);
     const stderr = captured.stderr.join("\n");
     assert.match(stderr, /Team config validation failed/);
-    assert.match(stderr, /skills\/missing-agent-instruction\.md \(agent implementer instruction\)/);
-    assert.match(stderr, /skills\/missing-mode-objective\.md \(mode implement objective\)/);
+    assert.match(stderr, /skills\/missing-agent-instruction\.md \(agent implementer instruction; instruction\)/);
+    assert.match(stderr, /skills\/missing-mode-objective\.md \(mode implement objective; objective\)/);
+    assert.match(stderr, /attempted:/);
+    assert.match(stderr, /team config:/);
   });
 });
 

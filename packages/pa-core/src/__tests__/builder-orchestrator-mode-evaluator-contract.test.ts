@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const modePath = join(repoRoot, "teams", "builder", "modes", "orchestrator.md");
+const modePath = join(repoRoot, "../pa-platform-config", "teams", "builder", "modes", "orchestrator.md");
 
 test("builder orchestrator mode requires evaluator child coverage before handoff", () => {
   const modeDoc = readFileSync(modePath, "utf-8");

@@ -88,7 +88,7 @@
             process.exitCode = await runCoreCommand(process.argv.slice(2));
             EOF
 
-            for dir in docs skills teams; do
+            for dir in docs; do
               [ -d "$dir" ] && cp -r "$dir" "$share/"
             done
 

@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const templatePath = join(repoRoot, "skills", "templates", "orchestration-report.md");
+const templatePath = join(repoRoot, "../pa-platform-config", "skills", "templates", "orchestration-report.md");
 
 test("orchestration report template includes evaluator child coverage columns", () => {
   const template = readFileSync(templatePath, "utf-8");
