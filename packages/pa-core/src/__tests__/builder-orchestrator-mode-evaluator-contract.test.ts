@@ -34,3 +34,14 @@ test("builder orchestrator mode keeps no-ticket hard fail before Phase 0", (t) =
     "no-ticket hard fail rule must appear before Phase 0 instructions",
   );
 });
+
+test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+
+  assert.match(modeDoc, /Phase 5\.x confirmation gate rule: this gate applies only when Sinh\/user feedback\s+is involved\./);
+  assert.match(modeDoc, /the orchestrator MUST record the result and ask Sinh for\s+explicit confirmation before any Phase 6 action, routine merge work, or ticket\s+handoff\./);
+  assert.match(modeDoc, /Continue this loop until Sinh approves or explicitly stops the loop\./);
+  assert.match(modeDoc, /Phase 6\s+is blocked\s+unless state is `approved` or `stopped`\./);
+  assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
+});
