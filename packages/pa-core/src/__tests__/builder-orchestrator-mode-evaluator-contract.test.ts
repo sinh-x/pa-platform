@@ -15,3 +15,22 @@ test("builder orchestrator mode requires evaluator child coverage before handoff
   assert.match(modeDoc, /Child coverage write timing: persist child evaluator coverage in the sub-deploy row immediately after `opa status <deploy-id> --wait` returns and before advancing to the next phase or handoff\./);
   assert.match(modeDoc, /Evaluator Launch=in-flight/);
 });
+
+test("builder orchestrator mode keeps no-ticket hard fail before Phase 0", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+
+  assert.match(modeDoc, /No `ticket_id` → hard fail\./);
+  assert.match(modeDoc, /orchestrator requires ticket_id; none provided/);
+  assert.match(modeDoc, /Do not run Phase 0 or any later phase\./);
+
+  const noTicketRuleIndex = modeDoc.indexOf("- **No `ticket_id` → hard fail.");
+  const phaseZeroIndex = modeDoc.indexOf("## Phase 0: Repo Resolution (mandatory pre-flight)");
+
+  assert.notEqual(noTicketRuleIndex, -1);
+  assert.notEqual(phaseZeroIndex, -1);
+  assert.ok(
+    noTicketRuleIndex < phaseZeroIndex,
+    "no-ticket hard fail rule must appear before Phase 0 instructions",
+  );
+});
