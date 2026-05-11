@@ -45,3 +45,18 @@ test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate",
   assert.match(modeDoc, /Phase 6\s+is blocked\s+unless state is `approved` or `stopped`\./);
   assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
 });
+
+test("builder orchestrator mode requires one-bundle objective shape and branch reuse for Phase 5.x", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+
+  assert.match(modeDoc, /Map exactly one Sinh feedback bundle to exactly one builder\/implement objective\./);
+  assert.match(modeDoc, /The objective MUST use this section structure and section names:/);
+  assert.match(modeDoc, /- `Goal`/);
+  assert.match(modeDoc, /- `Requirements`/);
+  assert.match(modeDoc, /- `Verification`/);
+  assert.match(modeDoc, /- `Context`/);
+  assert.match(modeDoc, /- `Guardrails`/);
+  assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
+  assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
+});
