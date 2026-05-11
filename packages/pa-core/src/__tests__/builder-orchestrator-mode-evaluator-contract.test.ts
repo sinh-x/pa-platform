@@ -23,6 +23,8 @@ test("builder orchestrator mode keeps no-ticket hard fail before Phase 0", (t) =
   assert.match(modeDoc, /No `ticket_id` → hard fail\./);
   assert.match(modeDoc, /orchestrator requires ticket_id; none provided/);
   assert.match(modeDoc, /Do not run Phase 0 or any later phase\./);
+  assert.match(modeDoc, /before any orchestration side effect: no sub-deploy,\s+no branch creation\/switching, no ticket creation, and no orchestration report\s+mutation\./);
+  assert.match(modeDoc, /The one-line stderr error above is the only allowed output\./);
 
   const noTicketRuleIndex = modeDoc.indexOf("- **No `ticket_id` → hard fail.");
   const phaseZeroIndex = modeDoc.indexOf("## Phase 0: Repo Resolution (mandatory pre-flight)");
@@ -59,4 +61,14 @@ test("builder orchestrator mode requires one-bundle objective shape and branch r
   assert.match(modeDoc, /- `Guardrails`/);
   assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
   assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
+});
+
+test("builder orchestrator mode requires one-question ambiguity clarification before objective generation", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+
+  assert.match(modeDoc, /Step 2\.5 — Ambiguity clarification gate \(before objective generation\)\./);
+  assert.match(modeDoc, /ask exactly one clarification question and wait for\s+Sinh's answer before generating any builder objective\./);
+  assert.match(modeDoc, /Do not generate Step 3 objective content until Sinh replies\./);
+  assert.match(modeDoc, /Do not launch `pa deploy`, increment `cycle_count`, or advance to Phase 6 while\s+waiting for clarification\./);
 });
