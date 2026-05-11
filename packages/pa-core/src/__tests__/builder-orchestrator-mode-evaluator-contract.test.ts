@@ -48,6 +48,19 @@ test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate",
   assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
 });
 
+test("builder orchestrator mode requires durable Phase 5.x feedback-loop evidence fields", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+
+  assert.match(modeDoc, /Durable evidence contract for each Phase 5\.x feedback\/fix\/confirmation iteration:/);
+  assert.match(modeDoc, /Record `feedback_source`/);
+  assert.match(modeDoc, /Record `objective_artifact_path`/);
+  assert.match(modeDoc, /Record `child_deploy_id` and `child_status`/);
+  assert.match(modeDoc, /Record `verification_summary`/);
+  assert.match(modeDoc, /Record confirmation as either `confirmation_text`/);
+  assert.match(modeDoc, /or `confirmation_state=pending-confirmation`/);
+});
+
 test("builder orchestrator mode requires one-bundle objective shape and branch reuse for Phase 5.x", (t) => {
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
   const modeDoc = readFileSync(modePath, "utf-8");
