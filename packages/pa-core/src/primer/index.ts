@@ -207,8 +207,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     ...(teamConfig.name === "evaluator" ? [] : ["After the registry completion marker is written, launch independent evaluation with `opa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
     "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
   ];
-  lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links before deeper analysis.");
-  lines.push("Ask exactly one confirmation question before deeper analysis, and do not mutate ticket, doc, status, branch, registry, or doc-ref state until confirmation.");
+  lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links, then ask exactly one confirmation question before deeper analysis or mutation.");
   if (teamConfig.name === "requirements") {
     lines.push("For requirements workflows, treat structured ticket and deployment records as authoritative over semantic similarity.");
   }

@@ -125,7 +125,9 @@ printf 'config_dir: %s\n' "$custom_platform_dir" > "$custom_config_dir/config.ya
 set -gx PA_PLATFORM_CONFIG "$custom_config_dir"
 __completion_expect_contains opa-deploy-config 'opa deploy ' configteam; or set failed 1
 
-printf '%s\n' 'modes:' '  - id: implement' '  - id: custom-mode' > "$custom_team_dir/customteam.yaml"
+printf '%s\n' 'name: builder' 'description: Builder' 'objective: Build' 'agents: []' 'deploy_modes:' '  - id: implement' '    label: Implement' '  - id: orchestrator' '    label: Orchestrator' '  - id: routine' '    label: Routine' > "$custom_team_dir/builder.yaml"
+printf '%s\n' 'name: requirements' 'description: Requirements' 'objective: Requirements' 'agents: []' 'deploy_modes:' '  - id: analyze' '    label: Analyze' > "$custom_team_dir/requirements.yaml"
+printf '%s\n' 'name: customteam' 'description: Custom' 'objective: Custom' 'agents: []' 'deploy_modes:' '  - id: implement' '    label: Implement' '  - id: custom-mode' '    label: Custom Mode' > "$custom_team_dir/customteam.yaml"
 set -gx PA_PLATFORM_TEAMS "$custom_team_dir"
 
 __completion_expect_contains opa-deploy-team 'opa deploy ' builder; or set failed 1

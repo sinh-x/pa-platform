@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,40 @@ import assert from "node:assert/strict";
 import { getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const configRoot = resolve(repoRoot, "../pa-platform-config");
+
+function withConfigEnv(fn: (root: string, platform: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-teams-config-"));
+  const platform = join(root, "operator-config");
+  const previous = {
+    config: process.env["PA_PLATFORM_CONFIG"],
+    home: process.env["PA_PLATFORM_HOME"],
+    teams: process.env["PA_PLATFORM_TEAMS"],
+    skills: process.env["PA_PLATFORM_SKILLS"],
+  };
+
+  try {
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.yaml"), `config_dir: ${platform}\n`);
+    process.env["PA_PLATFORM_CONFIG"] = configDir;
+    delete process.env["PA_PLATFORM_HOME"];
+    delete process.env["PA_PLATFORM_TEAMS"];
+    delete process.env["PA_PLATFORM_SKILLS"];
+    fn(root, platform);
+  } finally {
+    restoreEnv("PA_PLATFORM_CONFIG", previous.config);
+    restoreEnv("PA_PLATFORM_HOME", previous.home);
+    restoreEnv("PA_PLATFORM_TEAMS", previous.teams);
+    restoreEnv("PA_PLATFORM_SKILLS", previous.skills);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 test("teams module lists and loads team configs", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-teams-"));
@@ -41,8 +75,81 @@ test("teams module lists and loads team configs", () => {
   }
 });
 
-test("builder team config has no Anthropic deploy modes", () => {
-  const builder = parseTeamYamlContent(readFileSync(join(repoRoot, "teams", "builder.yaml"), "utf-8"));
+test("team discovery and validation use config_dir as the normal operator base", () => {
+  withConfigEnv((_root, platform) => {
+    const teamsDir = join(platform, "teams");
+    mkdirSync(join(platform, "skills", "global", "pa-cli"), { recursive: true });
+    mkdirSync(join(platform, "skills", "requirements"), { recursive: true });
+    mkdirSync(join(platform, "teams", "builder", "modes"), { recursive: true });
+    writeFileSync(join(platform, "skills", "global", "pa-cli", "SKILL.md"), "# pa-cli\n");
+    writeFileSync(join(platform, "skills", "requirements", "review.md"), "# review\n");
+    writeFileSync(join(platform, "teams", "builder", "modes", "implement.md"), "Implement\n");
+    writeFileSync(join(teamsDir, "builder.yaml"), [
+      "name: builder",
+      "description: Builder team",
+      "objective: Build things",
+      "agents:",
+      "  - name: implementer",
+      "    role: Writes code",
+      "    instruction: teams/builder/modes/implement.md",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    objective: teams/builder/modes/implement.md",
+      "    global_docs:",
+      "      - skills/requirements/review.md",
+      "    skills:",
+      "      - name: pa-cli",
+      "        inject-as: shared-skill",
+    ].join("\n"));
+
+    const configs = listTeamConfigs();
+    assert.equal(configs.length, 1);
+    assert.equal(configs[0]?.filePath, join(teamsDir, "builder.yaml"));
+    assert.equal(loadTeamConfig("builder").agents[0]?.instruction, "teams/builder/modes/implement.md");
+    assert.deepEqual(validateTeamSkillReferences(), []);
+  });
+});
+
+test("validation reports objective, instruction, global doc, and shared skill paths", () => {
+  withConfigEnv((_root, platform) => {
+    const teamsDir = join(platform, "teams");
+    mkdirSync(teamsDir, { recursive: true });
+    writeFileSync(join(teamsDir, "builder.yaml"), [
+      "name: builder",
+      "description: Builder team",
+      "objective: Build things",
+      "agents:",
+      "  - name: implementer",
+      "    role: Writes code",
+      "    instruction: teams/builder/missing-instruction.md",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    objective: teams/builder/missing-objective.md",
+      "    global_docs:",
+      "      - skills/requirements/missing-review.md",
+      "    skills:",
+      "      - name: missing-shared-skill",
+      "        inject-as: shared-skill",
+    ].join("\n"));
+
+    const missing = validateTeamSkillReferences();
+    assert.deepEqual(missing.map((entry) => entry.kind).sort(), ["global_doc", "instruction", "objective", "shared_skill"]);
+    assert.deepEqual(missing.map((entry) => entry.context).sort(), [
+      "agent implementer instruction",
+      "mode implement global_docs[0]",
+      "mode implement objective",
+      "mode implement shared skill missing-shared-skill",
+    ]);
+    assert.ok(missing.some((entry) => entry.resolvedPath === join(platform, "skills", "global", "missing-shared-skill", "SKILL.md")));
+    assert.ok(missing.every((entry) => entry.teamConfigPath === join(teamsDir, "builder.yaml")));
+  });
+});
+
+test("builder team config has no Anthropic deploy modes", (t) => {
+  if (!existsSync(join(configRoot, "teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  const builder = parseTeamYamlContent(readFileSync(join(configRoot, "teams", "builder.yaml"), "utf-8"));
   const modeIds = builder.deploy_modes?.map((mode) => mode.id) ?? [];
 
   assert.ok(modeIds.length > 0);
@@ -102,7 +209,7 @@ test("validateTeamSkillReferences reports missing path with mode and agent conte
       "        inject-as: shared-skill",
     ].join("\n"));
 
-    const missing = validateTeamSkillReferences(teamsDir, root);
+    const missing = validateTeamSkillReferences(teamsDir, root, join(root, "skills", "global"));
     assert.equal(missing.length, 2);
     assert.deepEqual(missing.map((entry) => entry.reference).sort(), ["skills/missing-agent-instruction.md", "skills/missing-mode-objective.md"]);
     assert.deepEqual(missing.map((entry) => entry.context).sort(), ["agent implementer instruction", "mode implement objective"]);
@@ -157,7 +264,8 @@ test("validateTeamSkillReferences resolves production-style paths and reports mi
   }
 });
 
-test("current repository team skill references resolve", () => {
-  const missing = validateTeamSkillReferences(join(repoRoot, "teams"), repoRoot);
+test("external operator team skill references resolve", (t) => {
+  if (!existsSync(join(configRoot, "teams"))) return t.skip("external pa-platform-config fixture not available");
+  const missing = validateTeamSkillReferences(join(configRoot, "teams"), configRoot, join(configRoot, "skills", "global"));
   assert.deepEqual(missing, []);
 });

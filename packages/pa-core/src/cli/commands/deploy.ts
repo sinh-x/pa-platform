@@ -53,9 +53,11 @@ export function validateDeployConfig(team: string, io: Required<CliIo>): number 
   const config = loadTeamConfig(team);
   const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === config.name);
   if (missingReferences.length > 0) {
-    io.stderr(`Team config validation failed: ${missingReferences.length} missing skills path reference(s) for ${config.name}.`);
+    io.stderr(`Team config validation failed: ${missingReferences.length} missing referenced file(s) for ${config.name}.`);
     for (const reference of missingReferences) {
-      io.stderr(`- ${reference.reference} (${reference.context}) [${reference.teamConfigPath}]`);
+      io.stderr(`- ${reference.reference} (${reference.context}; ${reference.kind})`);
+      io.stderr(`  attempted: ${reference.resolvedPath}`);
+      io.stderr(`  team config: ${reference.teamConfigPath}`);
     }
     io.stderr(`Fix the missing path(s) or the team references, then rerun: opa deploy ${config.name} --validate`);
     return 1;
