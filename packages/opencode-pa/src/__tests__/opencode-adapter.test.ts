@@ -1052,7 +1052,8 @@ test("opa builder --list-modes exposes data-analysis mode", async () => {
   });
 });
 
-test("builder data-analysis primer requires framing and IPOV checklist fields", () => {
+test("builder data-analysis primer requires framing and IPOV checklist fields", (t) => {
+  if (!existsSync(DATA_ANALYSIS_PRIMER_PATH)) return t.skip("external pa-platform-config fixture not available");
   const primer = readFileSync(DATA_ANALYSIS_PRIMER_PATH, "utf-8");
   // Framing field labels (Startup Framing Protocol)
   assert.match(primer, /Startup Framing Protocol/);

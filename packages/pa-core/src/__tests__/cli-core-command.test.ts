@@ -140,7 +140,8 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
   assert.match(captured.stdout.join("\n"), /PA_STATUS_WAIT_TIMEOUT/);
 });
 
-test("packaged team and skill guidance avoids removed deploy mode flags", () => {
+test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
+  if (!existsSync(CONFIG_ROOT)) return t.skip("external pa-platform-config fixture not available");
   const files = [...listPackageGuidanceFiles(join(CONFIG_ROOT, "teams")), ...listPackageGuidanceFiles(join(CONFIG_ROOT, "skills"))];
   const offenders = files.flatMap((file) => {
     const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(REPO_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
@@ -149,7 +150,8 @@ test("packaged team and skill guidance avoids removed deploy mode flags", () => 
   assert.deepEqual(offenders, []);
 });
 
-test("packaged PA CLI guidance describes opa adapter and core-owned serve", () => {
+test("packaged PA CLI guidance describes opa adapter and core-owned serve", (t) => {
+  if (!existsSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"))) return t.skip("external pa-platform-config fixture not available");
   const guidance = readFileSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
   assert.match(guidance, /# OPA CLI Reference/);
   assert.match(guidance, /`opa` is the default OpenCode deployment adapter/);

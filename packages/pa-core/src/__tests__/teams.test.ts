@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,7 +147,8 @@ test("validation reports objective, instruction, global doc, and shared skill pa
   });
 });
 
-test("builder team config has no Anthropic deploy modes", () => {
+test("builder team config has no Anthropic deploy modes", (t) => {
+  if (!existsSync(join(configRoot, "teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const builder = parseTeamYamlContent(readFileSync(join(configRoot, "teams", "builder.yaml"), "utf-8"));
   const modeIds = builder.deploy_modes?.map((mode) => mode.id) ?? [];
 
@@ -208,7 +209,7 @@ test("validateTeamSkillReferences reports missing path with mode and agent conte
       "        inject-as: shared-skill",
     ].join("\n"));
 
-    const missing = validateTeamSkillReferences(teamsDir, root);
+    const missing = validateTeamSkillReferences(teamsDir, root, join(root, "skills", "global"));
     assert.equal(missing.length, 2);
     assert.deepEqual(missing.map((entry) => entry.reference).sort(), ["skills/missing-agent-instruction.md", "skills/missing-mode-objective.md"]);
     assert.deepEqual(missing.map((entry) => entry.context).sort(), ["agent implementer instruction", "mode implement objective"]);
@@ -263,7 +264,8 @@ test("validateTeamSkillReferences resolves production-style paths and reports mi
   }
 });
 
-test("external operator team skill references resolve", () => {
+test("external operator team skill references resolve", (t) => {
+  if (!existsSync(join(configRoot, "teams"))) return t.skip("external pa-platform-config fixture not available");
   const missing = validateTeamSkillReferences(join(configRoot, "teams"), configRoot, join(configRoot, "skills", "global"));
   assert.deepEqual(missing, []);
 });

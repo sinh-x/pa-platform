@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, join, resolve } from "node:path";
@@ -7,14 +7,16 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const templatePath = join(repoRoot, "../pa-platform-config", "skills", "templates", "orchestration-report.md");
 
-test("orchestration report template includes evaluator child coverage columns", () => {
+test("orchestration report template includes evaluator child coverage columns", (t) => {
+  if (!existsSync(templatePath)) return t.skip("external pa-platform-config fixture not available");
   const template = readFileSync(templatePath, "utf-8");
 
   assert.match(template, /\| Phase \| Deploy ID \| Mode \| Status \| Severity \| Evaluator Launch \| Evaluator Deploy ID \| Evaluator Notes \|/);
   assert.match(template, /\| 4\.1 \(<brief scope>\) \| d-abc123 \| builder\/implement \| success \| - \| launched \| d-eval123 \| target=d-abc123 \|/);
 });
 
-test("orchestration report template guidance defines durable evaluator evidence semantics", () => {
+test("orchestration report template guidance defines durable evaluator evidence semantics", (t) => {
+  if (!existsSync(templatePath)) return t.skip("external pa-platform-config fixture not available");
   const template = readFileSync(templatePath, "utf-8");
 
   assert.match(template, /Evaluator Launch` should be one of: `launched`, `failed`, `skipped`, `not-applicable`, or `in-flight`/);

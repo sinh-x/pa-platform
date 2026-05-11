@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -157,7 +157,8 @@ deploy_modes:
   }
 });
 
-test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", () => {
+test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", (t) => {
+  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
@@ -215,7 +216,8 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer requirements analyze-auto fixture remains valid under opencode", () => {
+test("generatePrimer requirements analyze-auto fixture remains valid under opencode", (t) => {
+  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
@@ -245,7 +247,8 @@ test("generatePrimer requirements analyze-auto fixture remains valid under openc
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", () => {
+test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", (t) => {
+  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
@@ -285,7 +288,8 @@ test("generatePrimer requirements spike fixture keeps ticket-driven orchestratio
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer representative builder fixture stays free of legacy opencode references", () => {
+test("generatePrimer representative builder fixture stays free of legacy opencode references", (t) => {
+  if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
   const primer = generatePrimer({
     runtime: "opencode",
