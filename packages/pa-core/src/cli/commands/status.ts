@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { readActivityEvents } from "../../activity/index.js";
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS } from "../../deploy/index.js";
 import { getAiUsageDir, getDeploymentDir } from "../../paths.js";
-import { appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../../registry/index.js";
+import { appendRegistryEvent, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../../registry/index.js";
 import { formatLocal, formatLocalShort, nowUtc, parseTimestamp } from "../../time.js";
 import type { DeploymentStatus } from "../../types.js";
 import { formatRegistryList, formatRegistryShow } from "../formatters.js";
@@ -85,6 +85,24 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
   while (true) {
     const deployment = queryDeploymentStatus(deployId);
     if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
+    if (deployment.status === "running" && deployment.pid !== undefined && !isProcessAlive(deployment.pid)) {
+      const hasTerminalEvent = getDeploymentEvents(deployId).some((event) => event.event === "completed" || event.event === "crashed");
+      if (!hasTerminalEvent) {
+        appendRegistryEvent({
+          deployment_id: deployId,
+          team: deployment.team,
+          event: "crashed",
+          timestamp: nowUtc(),
+          error: `status wait detected stale pid ${deployment.pid}`,
+          exit_code: -1,
+          summary: `status wait detected stale pid ${deployment.pid}`,
+        });
+      }
+      const refreshed = queryDeploymentStatus(deployId);
+      if (!refreshed) return printError(`Deployment not found: ${deployId}`, io);
+      io.stdout(`${refreshed.status} - ${refreshed.summary ?? refreshed.status}`);
+      return 1;
+    }
     if (deployment.status !== "running") {
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;

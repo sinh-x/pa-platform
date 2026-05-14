@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, getDeploymentEvents, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const CONFIG_ROOT = resolve(REPO_ROOT, "../pa-platform-config");
@@ -693,12 +693,48 @@ test("runCoreCommand status wait reports not found without polling", async () =>
   });
 });
 
-test.skip("status wait parent-unblock harness for permission-wait child failure (PAP-073 phase scaffold)", async () => {
+test("status wait unblocks parent when child reaches permission-wait failed terminal status", async () => {
   await withCliEnv(async () => {
-    // Phase 1 scaffold: this test reserves coverage for parent workflows waiting on
-    // review-auto child deployments that fail due to unresolved permission.asked.
-    // Later phases will wire a deterministic child/parent fixture and assert the
-    // parent receives terminal failure without indefinite wait.
+    appendRegistryEvent({ deployment_id: "d-child-perm-wait", team: "requirements", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const captured = capture();
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-child-perm-wait", "--wait"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        nowMs += ms;
+        appendRegistryEvent({
+          deployment_id: "d-child-perm-wait",
+          team: "requirements",
+          event: "completed",
+          timestamp: "2026-04-26T00:00:10.000Z",
+          status: "failed",
+          summary: "background permission wait exceeded 120s threshold",
+          exit_code: 124,
+        });
+      },
+    });
+
+    assert.equal(code, 1);
+    assert.match(captured.stdout.join("\n"), /Waiting for deployment: d-child-perm-wait/);
+    assert.match(captured.stdout.join("\n"), /failed - background permission wait exceeded 120s threshold/);
+  });
+});
+
+test("status wait writes crashed terminal event when deployment pid is stale", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-stale-pid", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120, pid: 999999 });
+    const captured = capture();
+
+    const code = await runCoreCommand(["status", "d-stale-pid", "--wait"], { io: captured.io });
+
+    assert.equal(code, 1);
+    assert.match(captured.stdout.join("\n"), /crashed - crashed/);
+
+    const events = getDeploymentEvents("d-stale-pid");
+    const crashed = events.filter((event) => event.event === "crashed");
+    assert.equal(crashed.length, 1);
+    assert.match(crashed[0]?.error ?? "", /status wait detected stale pid 999999/);
   });
 });
 
