@@ -537,6 +537,49 @@ test("opa background deploy records running registry state and pid", async () =>
   });
 });
 
+test("opa background deploy uses noninteractive opencode args for permission-safe execution", async () => {
+  await withOpaEnv(async () => {
+    let seenArgs: string[] = [];
+    const adapter = new OpencodeAdapter({
+      runCommand: () => { throw new Error("foreground should not run"); },
+      runBackgroundCommand: (args) => {
+        seenArgs = args;
+        return { pid: 5151 };
+      },
+    });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--background", "--provider", "deepseek"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    assert.deepEqual(seenArgs.slice(0, 4), ["run", "-m", "deepseek/deepseek-v4-pro", "--dangerously-skip-permissions"]);
+    assert.ok(seenArgs.includes("--format"));
+    assert.ok(seenArgs.includes("json"));
+    assert.ok(!seenArgs.includes("--prompt"));
+  });
+});
+
+test("opa status activity surfaces unresolved permission.asked evidence from fake background activity", async () => {
+  await withOpaEnv(async (root) => {
+    const adapter = new OpencodeAdapter({
+      runCommand: () => { throw new Error("foreground should not run"); },
+      runBackgroundCommand: () => ({ pid: 4242 }),
+    });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--background", "--provider", "openai"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployment = queryDeploymentStatuses()[0]!;
+    const activityPath = join(root, "deployments", deployment.deploy_id, "activity.jsonl");
+    writeFileSync(activityPath, [
+      JSON.stringify({ ts: 1714000000000, deploy_id: deployment.deploy_id, agent: "opencode", event: "permission.asked", data: { permission: "external_directory", message: "Allow read?" } }),
+      JSON.stringify({ ts: 1714000001000, deploy_id: deployment.deploy_id, agent: "opencode", event: "session.idle", data: { status: "idle" } }),
+    ].join("\n") + "\n", "utf-8");
+
+    const activityOut: string[] = [];
+    assert.equal(await runCoreCommand(["status", deployment.deploy_id, "--activity"], { io: { stdout: (line) => activityOut.push(line), stderr: () => {} } }), 0);
+    const rendered = activityOut.join("\n");
+    assert.match(rendered, /permission\.asked/);
+    assert.match(rendered, /external_directory/);
+    assert.doesNotMatch(rendered, /permission\.replied/);
+  });
+});
+
 test("opa foreground deploy records flag effective timeout metadata", async () => {
   await withOpaEnv(async () => {
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax", "--timeout", "1200"], { hooks: createOpencodeHooks(createStubAdapter({ exitCode: 0 })), io: { stdout: () => {}, stderr: () => {} } });

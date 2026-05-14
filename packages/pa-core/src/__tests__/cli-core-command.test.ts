@@ -693,6 +693,15 @@ test("runCoreCommand status wait reports not found without polling", async () =>
   });
 });
 
+test.skip("status wait parent-unblock harness for permission-wait child failure (PAP-073 phase scaffold)", async () => {
+  await withCliEnv(async () => {
+    // Phase 1 scaffold: this test reserves coverage for parent workflows waiting on
+    // review-auto child deployments that fail due to unresolved permission.asked.
+    // Later phases will wire a deterministic child/parent fixture and assert the
+    // parent receives terminal failure without indefinite wait.
+  });
+});
+
 test("runCoreCommand owns serve status and stale PID cleanup without adapter hook", async () => {
   await withCliEnv(async () => {
     const stopped = capture();
