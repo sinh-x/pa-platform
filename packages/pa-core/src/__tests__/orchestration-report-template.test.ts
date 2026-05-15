@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { getPlatformHomeDir } from "../index.js";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const templatePath = join(repoRoot, "../pa-platform-config", "skills", "templates", "orchestration-report.md");
+const configRoot = getPlatformHomeDir();
+const templatePath = join(configRoot, "skills", "templates", "orchestration-report.md");
 
 test("orchestration report template includes evaluator child coverage columns", (t) => {
   if (!existsSync(templatePath)) return t.skip("external pa-platform-config fixture not available");
@@ -29,8 +29,8 @@ test("orchestration report template requires Phase 5.x feedback loop evidence fi
   const template = readFileSync(templatePath, "utf-8");
 
   assert.match(template, /### Phase 5\.x Feedback Loop Evidence/);
-  assert.match(template, /\| Iteration \| Feedback Source \| Objective Artifact Path \| Child Deploy ID \| Child Status \| Verification Summary \| Confirmation \|/);
-  assert.match(template, /\| 5\.6-c1 \| sinh-uat-comment:<ticket-id>#<comment-id> \| agent-teams\/builder\/artifacts\/YYYY-MM-DD-<topic>-fix-objective-c1\.md \| d-fix123 \| success \|/);
+  assert.match(template, /\| Iteration \| Feedback Source \| Objective Artifact Path \| Plan-Review Evidence \(Pre-Launch\) \| Child Deploy ID \| Child Status \| Post-Completion Verification Evidence \| Confirmation \|/);
+  assert.match(template, /\| 5\.6-c1 \| sinh-uat-comment:<ticket-id>#<comment-id> \| agent-teams\/builder\/artifacts\/YYYY-MM-DD-<topic>-fix-objective-c1\.md \| approved: sinh confirmed objective comment <ticket-id>#<comment-id> before launch \| d-fix123 \| success \| all required checks passed after d-fix123; key finding IDs CQ-3,CQ-4 closed \| pending-confirmation \|/);
   assert.match(template, /`Confirmation` must be either explicit confirmation text/);
   assert.match(template, /or `pending-confirmation` while waiting\./);
 });

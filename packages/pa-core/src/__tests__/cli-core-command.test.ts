@@ -3,13 +3,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, getDeploymentEvents, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const CONFIG_ROOT = resolve(REPO_ROOT, "../pa-platform-config");
+const CONFIG_ROOT = getPlatformHomeDir();
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));
@@ -144,7 +142,7 @@ test("packaged team and skill guidance avoids removed deploy mode flags", (t) =>
   if (!existsSync(CONFIG_ROOT)) return t.skip("external pa-platform-config fixture not available");
   const files = [...listPackageGuidanceFiles(join(CONFIG_ROOT, "teams")), ...listPackageGuidanceFiles(join(CONFIG_ROOT, "skills"))];
   const offenders = files.flatMap((file) => {
-    const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(REPO_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
+    const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(CONFIG_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
     return matches;
   });
   assert.deepEqual(offenders, []);

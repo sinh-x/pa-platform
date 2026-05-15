@@ -2,12 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { generatePrimer, parseTeamYamlContent } from "../index.js";
+import { join } from "node:path";
+import { generatePrimer, getPlatformHomeDir, parseTeamYamlContent } from "../index.js";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const configRoot = resolve(repoRoot, "../pa-platform-config");
+const configRoot = getPlatformHomeDir();
 
 function configPath(...parts: string[]): string {
   return join(configRoot, ...parts);

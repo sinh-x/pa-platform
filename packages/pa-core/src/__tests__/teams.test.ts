@@ -1,13 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
+import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const configRoot = resolve(repoRoot, "../pa-platform-config");
+const configRoot = getPlatformHomeDir();
 
 function withConfigEnv(fn: (root: string, platform: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-teams-config-"));
