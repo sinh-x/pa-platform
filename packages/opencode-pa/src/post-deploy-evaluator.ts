@@ -17,3 +17,7 @@ export function compactReason(text: string): string {
   if (!trimmed) return "unknown";
   return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 239)}...`;
 }
+
+export function isAutoLaunchEnabled(enabled: boolean | undefined): boolean {
+  return enabled === true;
+}

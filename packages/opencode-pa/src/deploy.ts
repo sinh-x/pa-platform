@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
-import { compactReason, extractEvaluatorDeploymentId, resolveBuilderCompletionPath, type BuilderCompletionPath } from "./post-deploy-evaluator.js";
+import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath, type BuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithOpencode(request, adapter) };
@@ -133,6 +133,7 @@ interface PostDeployEvaluationOpts {
 }
 
 async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): Promise<void> {
+  if (!isAutoLaunchEnabled(loadConfig().evaluation?.auto_launch_enabled)) return;
   const completionPath = resolveBuilderCompletionPath(opts.team, opts.mode);
   if (!completionPath) return;
   const status = queryDeploymentStatus(opts.deploymentId);

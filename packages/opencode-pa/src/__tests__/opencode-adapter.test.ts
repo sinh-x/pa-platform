@@ -127,6 +127,10 @@ function writeEvaluatorTeamConfig(root: string): void {
   ].join("\n"));
 }
 
+function setAutoLaunchEnabled(root: string, enabled: boolean): void {
+  writeFileSync(join(root, "config", "config.yaml"), `config_dir: ${root}\nevaluation:\n  auto_launch_enabled: ${enabled ? "true" : "false"}\n`);
+}
+
 const CONFIG_ROOT = getPlatformHomeDir();
 const DATA_ANALYSIS_PRIMER_PATH = join(CONFIG_ROOT, "teams", "builder", "modes", "data-analysis.md");
 
@@ -766,10 +770,48 @@ test("opa foreground deploy keeps existing completed marker authoritative", asyn
   });
 });
 
-test("opa deploy builder implement success launches one background evaluator and records evidence", async () => {
+test("opa deploy builder implement success does not launch evaluator when auto-launch is disabled", async () => {
   await withOpaEnv(async (root) => {
     writeBuilderTeamConfig(root);
     writeEvaluatorTeamConfig(root);
+    setAutoLaunchEnabled(root, false);
+    const spawnCalls: string[] = [];
+    const adapter: RuntimeAdapter = {
+      name: "opencode",
+      defaultModel: "stub/model",
+      sessionFileName: "session-id-opencode.txt",
+      installHooks() {},
+      spawn(opts): SpawnResult {
+        spawnCalls.push(opts.deployId);
+        return { sessionId: `ses-${opts.deployId}`, exitCode: 0 };
+      },
+      resume(opts): SpawnResult {
+        spawnCalls.push(opts.deployId);
+        return { sessionId: opts.sessionId, exitCode: 0 };
+      },
+      extractActivity() {
+        return [];
+      },
+      describeTools() {
+        return { runtime: "opencode", markdown: "stub" };
+      },
+    };
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--provider", "openai"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    assert.equal(spawnCalls.length, 1);
+    const statuses = queryDeploymentStatuses();
+    const builderDeploy = statuses.find((entry) => entry.team === "builder");
+    assert.ok(builderDeploy);
+    const evidence = getDeploymentEvents(builderDeploy.deploy_id).filter((event) => event.event === "updated" && (event.note ?? "").includes("[evaluator-launch path=builder-implement]"));
+    assert.equal(evidence.length, 0);
+  });
+});
+
+test("opa deploy builder implement success launches one background evaluator and records evidence when enabled", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    writeEvaluatorTeamConfig(root);
+    setAutoLaunchEnabled(root, true);
     const spawnCalls: string[] = [];
     const adapter: RuntimeAdapter = {
       name: "opencode",
@@ -805,10 +847,11 @@ test("opa deploy builder implement success launches one background evaluator and
   });
 });
 
-test("opa deploy records evaluator launch failure evidence when evaluate launch fails", async () => {
+test("opa deploy records evaluator launch failure evidence when evaluate launch fails and enabled", async () => {
   await withOpaEnv(async (root) => {
     writeBuilderTeamConfig(root);
     writeEvaluatorTeamConfig(root);
+    setAutoLaunchEnabled(root, true);
     const spawnCalls: string[] = [];
     const adapter: RuntimeAdapter = {
       name: "opencode",
