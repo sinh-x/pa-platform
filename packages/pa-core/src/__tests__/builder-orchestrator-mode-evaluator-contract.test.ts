@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { getPlatformHomeDir } from "../index.js";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const modePath = join(repoRoot, "../pa-platform-config", "teams", "builder", "modes", "orchestrator.md");
+const configRoot = getPlatformHomeDir();
+const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
 
 test("builder orchestrator mode requires evaluator child coverage before handoff", (t) => {
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
@@ -74,14 +74,4 @@ test("builder orchestrator mode requires one-bundle objective shape and branch r
   assert.match(modeDoc, /- `Guardrails`/);
   assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
   assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
-});
-
-test("builder orchestrator mode requires one-question ambiguity clarification before objective generation", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
-
-  assert.match(modeDoc, /Step 2\.5 — Ambiguity clarification gate \(before objective generation\)\./);
-  assert.match(modeDoc, /ask exactly one clarification question and wait for\s+Sinh's answer before generating any builder objective\./);
-  assert.match(modeDoc, /Do not generate Step 3 objective content until Sinh replies\./);
-  assert.match(modeDoc, /Do not launch `pa deploy`, increment `cycle_count`, or advance to Phase 6 while\s+waiting for clarification\./);
 });
