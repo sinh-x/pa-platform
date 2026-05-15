@@ -139,8 +139,10 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
-  if (!existsSync(CONFIG_ROOT)) return t.skip("external pa-platform-config fixture not available");
-  const files = [...listPackageGuidanceFiles(join(CONFIG_ROOT, "teams")), ...listPackageGuidanceFiles(join(CONFIG_ROOT, "skills"))];
+  const teamsDir = join(CONFIG_ROOT, "teams");
+  const skillsDir = join(CONFIG_ROOT, "skills");
+  if (!existsSync(teamsDir) || !existsSync(skillsDir)) return t.skip("external pa-platform-config fixture not available");
+  const files = [...listPackageGuidanceFiles(teamsDir), ...listPackageGuidanceFiles(skillsDir)];
   const offenders = files.flatMap((file) => {
     const matches = readFileSync(file, "utf-8").split("\n").flatMap((line, index) => /--(?:interactive|direct)\b/.test(line) ? [`${file.slice(CONFIG_ROOT.length + 1)}:${index + 1}: ${line.trim()}`] : []);
     return matches;
