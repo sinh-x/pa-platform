@@ -73,3 +73,43 @@ test("loadConfig derives home, teams, and skills from the provided config file",
     assert.equal(config.skillsDir, join(platform, "skills", "global"));
   });
 });
+
+test("loadConfig leaves evaluation config undefined when absent", () => {
+  withPathEnv((root) => {
+    const configPath = join(root, "config", "config.yaml");
+    writeFileSync(configPath, "defaults:\n  runtime: opencode\n");
+
+    const config = loadConfig(configPath);
+    assert.equal(config.evaluation?.auto_launch_enabled, undefined);
+  });
+});
+
+test("loadConfig leaves auto_launch_enabled undefined when evaluation exists without key", () => {
+  withPathEnv((root) => {
+    const configPath = join(root, "config", "config.yaml");
+    writeFileSync(configPath, "evaluation: {}\n");
+
+    const config = loadConfig(configPath);
+    assert.equal(config.evaluation?.auto_launch_enabled, undefined);
+  });
+});
+
+test("loadConfig parses evaluation.auto_launch_enabled false", () => {
+  withPathEnv((root) => {
+    const configPath = join(root, "config", "config.yaml");
+    writeFileSync(configPath, "evaluation:\n  auto_launch_enabled: false\n");
+
+    const config = loadConfig(configPath);
+    assert.equal(config.evaluation?.auto_launch_enabled, false);
+  });
+});
+
+test("loadConfig parses evaluation.auto_launch_enabled true", () => {
+  withPathEnv((root) => {
+    const configPath = join(root, "config", "config.yaml");
+    writeFileSync(configPath, "evaluation:\n  auto_launch_enabled: true\n");
+
+    const config = loadConfig(configPath);
+    assert.equal(config.evaluation?.auto_launch_enabled, true);
+  });
+});

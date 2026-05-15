@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { expandHome, getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
-import type { PlatformConfig, ProviderDefaults } from "./types.js";
+import type { EvaluationConfig, PlatformConfig, ProviderDefaults } from "./types.js";
 
 interface RawConfig {
   config_dir?: string;
@@ -11,6 +11,7 @@ interface RawConfig {
   skills_dir?: string;
   defaults?: PlatformConfig["defaults"];
   provider_defaults?: ProviderDefaults;
+  evaluation?: EvaluationConfig;
 }
 
 export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
@@ -29,6 +30,7 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
     teamsDir,
     skillsDir,
     provider_defaults: raw.provider_defaults,
+    evaluation: raw.evaluation,
     defaults: raw.defaults,
   };
 }

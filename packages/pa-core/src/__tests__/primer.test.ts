@@ -309,6 +309,66 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer omits auto-evaluation deployment instruction when disabled", () => {
+  const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+
+  const opencodePrimer = generatePrimer({ runtime: "opencode", teamConfig: builderTeam, mode: "implement", evaluationAutoLaunchEnabled: false });
+  assert.doesNotMatch(opencodePrimer, /opa evaluate --evaluate-deployment/);
+
+  const claudePrimer = generatePrimer({ runtime: "claude", teamConfig: builderTeam, mode: "implement", evaluationAutoLaunchEnabled: false });
+  assert.doesNotMatch(claudePrimer, /cpa evaluate --evaluate-deployment/);
+});
+
+test("generatePrimer includes auto-evaluation deployment instruction when enabled", () => {
+  const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+
+  const opencodePrimer = generatePrimer({ runtime: "opencode", teamConfig: builderTeam, mode: "implement", evaluationAutoLaunchEnabled: true });
+  assert.match(opencodePrimer, /opa evaluate --evaluate-deployment/);
+
+  const claudePrimer = generatePrimer({ runtime: "claude", teamConfig: builderTeam, mode: "implement", evaluationAutoLaunchEnabled: true });
+  assert.match(claudePrimer, /cpa evaluate --evaluate-deployment/);
+});
+
+test("generatePrimer never requests evaluator self-launch", () => {
+  const evaluatorTeam = parseTeamYamlContent(`
+name: evaluator
+description: Evaluator team
+objective: Evaluate deployments
+agents:
+  - name: evaluator-agent
+    role: Reviews deployments
+deploy_modes:
+  - id: deployment-review
+    label: Deployment Review
+`);
+
+  const opencodePrimer = generatePrimer({ runtime: "opencode", teamConfig: evaluatorTeam, mode: "deployment-review", evaluationAutoLaunchEnabled: true });
+  assert.doesNotMatch(opencodePrimer, /opa evaluate --evaluate-deployment/);
+
+  const claudePrimer = generatePrimer({ runtime: "claude", teamConfig: evaluatorTeam, mode: "deployment-review", evaluationAutoLaunchEnabled: true });
+  assert.doesNotMatch(claudePrimer, /cpa evaluate --evaluate-deployment/);
+});
+
 test("generatePrimer renders claude-specific tool guidance", () => {
   const primer = generatePrimer({ runtime: "claude", teamConfig: team });
   assert.match(primer, /Runtime: claude/);

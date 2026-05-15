@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, runCoreCommand, nowUtc } from "@pa-platform/pa-core";
+import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, getDeploymentEvents, loadConfig, queryDeploymentStatus, runCoreCommand, nowUtc } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 import { createDefaultOpencodeHooks } from "./deploy.js";
-import { compactReason, extractEvaluatorDeploymentId, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
+import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 interface BackgroundConfig {
   args: string[];
@@ -78,6 +78,7 @@ interface BackgroundRunResult {
 }
 
 async function maybeLaunchPostDeployEvaluation(config: BackgroundConfig): Promise<void> {
+  if (!isAutoLaunchEnabled(loadConfig().evaluation?.auto_launch_enabled)) return;
   const completionPath = resolveBuilderCompletionPath(config.team, config.env["PA_MODE"]);
   if (!completionPath) return;
   const status = queryDeploymentStatus(config.deploymentId);

@@ -362,6 +362,17 @@ test("runCoreCommand routes evaluate to dedicated evaluator deployment", async (
     assert.equal(results[0]?.report_path, "agent-teams/evaluator/artifacts/report.md");
     assert.equal(results[0]?.rating.overall, 4);
     assert.equal(results[0]?.rating.metrics.human_agency, 5);
+
+    const configPath = join(root, "config", "config.yaml");
+    writeFileSync(configPath, "evaluation:\n  auto_launch_enabled: false\n");
+    const disabledConfig = capture();
+    const disabledConfigSeen: unknown[] = [];
+    assert.equal(await runCoreCommand(["evaluate", "--evaluate-deployment", "d-abc123"], {
+      io: disabledConfig.io,
+      hooks: { deploy: (request) => { disabledConfigSeen.push(request); return { status: "pending", deploymentId: "d-eval03" }; } },
+    }), 0);
+    assert.deepEqual(disabledConfigSeen, [{ team: "evaluator", mode: "deployment-review", evaluateDeployment: "d-abc123", timeout: 1800 }]);
+    assert.match(disabledConfig.stdout.join("\n"), /Evaluation pending: d-eval03/);
   });
 });
 

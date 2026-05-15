@@ -44,3 +44,21 @@ Manual migration for Sinh/operator setups:
 6. Run a dry-run such as `opa deploy requirements --mode analyze --dry-run` and inspect the generated primer if you need to confirm injected skills and instructions came from the external base.
 
 The pa-platform source repository no longer stores active `teams/` or `skills/` directories. Keep operator configuration changes in the external config repo, and keep source-code changes in pa-platform.
+
+## Automatic Evaluator Launch Gate
+
+Automatic post-registry evaluator launch instructions in generated primers are gated by `evaluation.auto_launch_enabled`.
+
+Default behavior (disabled):
+
+- If `evaluation.auto_launch_enabled` is missing or `false`, generated primers for non-evaluator teams omit automatic evaluator launch instructions.
+- Disabled mode produces zero automatic evaluator deployments and zero evaluator-launch failure events caused by this gate.
+
+Enabled example:
+
+```yaml
+evaluation:
+  auto_launch_enabled: true
+```
+
+When enabled, non-evaluator team primers include post-registry instructions to run background evaluation, and runtime auto-launch paths remain limited to at most one evaluator launch per deployment completion path.
