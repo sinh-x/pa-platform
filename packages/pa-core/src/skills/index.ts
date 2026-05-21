@@ -189,10 +189,19 @@ function validateSkillMetadata(name: string, skillPath: string, metadata: SkillM
   if (Array.isArray(metadata.runtimes) && metadata.runtimes.length > 0 && !metadata.runtimes.includes("opencode")) {
     issues.push({ code: "runtime-mismatch", message: `Skill ${name} does not include opencode runtime`, skillName: name, path: skillPath });
   }
-  if (/\bopencode\s+run\b/.test(content) || /\bcpa\s+deploy\b/.test(content)) {
+  if (hasOpencodeIncompatibleGuidance(content)) {
     issues.push({ code: "opencode-incompatible", message: `Skill ${name} includes opencode-incompatible command guidance`, skillName: name, path: skillPath });
   }
   return issues;
+}
+
+function hasOpencodeIncompatibleGuidance(content: string): boolean {
+  const incompatibleCommandPattern = /\b(opencode\s+run|cpa\s+deploy)\b/i;
+  const discouragingPattern = /\b(do\s+not|don't|avoid|never|instead|rather\s+than)\b/i;
+  return content.split("\n").some((line) => {
+    if (!incompatibleCommandPattern.test(line)) return false;
+    return !discouragingPattern.test(line);
+  });
 }
 
 function collectSkillUsageByTeam(teamsDir: string): Map<string, { teams: Set<string>; injectAs: Set<string> }> {

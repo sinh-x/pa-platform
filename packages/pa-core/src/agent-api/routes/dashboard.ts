@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { listKnowledgeBoundaries, listImprovementCandidates } from "../../knowledge/index.js";
 import { getDeploymentDir } from "../../paths.js";
@@ -209,7 +209,15 @@ function buildOpenCodeIntegrationView(): {
 function parseMemoryDocSources(deployId: string): string[] {
   const primerPath = resolve(getDeploymentDir(deployId), "primer.md");
   if (!existsSync(primerPath)) return [];
+  const mtimeMs = statSync(primerPath).mtimeMs;
+  const cached = MEMORY_DOC_SOURCE_CACHE.get(primerPath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.sources;
+
   const primer = readFileSync(primerPath, "utf-8");
   const matches = [...primer.matchAll(/<memory-doc path="([^"]+)">/g)];
-  return matches.map((match) => match[1] ?? "").filter((path) => path.length > 0);
+  const sources = matches.map((match) => match[1] ?? "").filter((path) => path.length > 0);
+  MEMORY_DOC_SOURCE_CACHE.set(primerPath, { mtimeMs, sources });
+  return sources;
 }
+
+const MEMORY_DOC_SOURCE_CACHE = new Map<string, { mtimeMs: number; sources: string[] }>();
