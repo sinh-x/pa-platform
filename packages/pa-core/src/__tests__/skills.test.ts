@@ -55,6 +55,7 @@ test("buildSkillRegistryReport inventories skills and validates metadata", () =>
     const report = buildSkillRegistryReport({ skillsDir, teamsDir, platformHomeDir: root });
     assert.equal(report.hermesDecisionMatrix.length >= 6, true);
     assert.equal(report.openCodeVisibility.commandAdapter, "opa");
+    assert.ok(report.openCodeVisibility.primerSkillSummary.length <= report.openCodeVisibility.primerSummaryBudgetChars);
 
     const paCli = report.inventory.find((item) => item.name === "pa-cli");
     assert.ok(paCli);
@@ -71,6 +72,25 @@ test("buildSkillRegistryReport inventories skills and validates metadata", () =>
     assert.ok(broken.issues.some((issue) => issue.code === "opencode-incompatible"));
 
     assert.ok(report.issues.some((issue) => issue.code === "missing-team-skill-reference" && issue.skillName === "missing-shared"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("buildSkillRegistryReport enforces OpenCode primer skill summary budget", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-skills-budget-"));
+  try {
+    const skillsDir = join(root, "skills", "global");
+    const teamsDir = join(root, "teams");
+    mkdirSync(teamsDir, { recursive: true });
+    for (let i = 0; i < 160; i++) {
+      const name = `skill-${String(i).padStart(3, "0")}-very-long-name-for-primer-summary-budget`;
+      mkdirSync(join(skillsDir, name), { recursive: true });
+      writeFileSync(join(skillsDir, name, "SKILL.md"), `---\nname: ${name}\ndescription: budget test\n---\n# ${name}\n`);
+    }
+    const report = buildSkillRegistryReport({ skillsDir, teamsDir, platformHomeDir: root });
+    assert.ok(report.openCodeVisibility.primerSkillSummary.length <= report.openCodeVisibility.primerSummaryBudgetChars);
+    assert.match(report.openCodeVisibility.primerSkillSummary, /truncated to 5000 chars/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

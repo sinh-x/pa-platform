@@ -203,6 +203,26 @@ test("dashboard shell endpoints are read-only, include empty states, and stay fa
         ticket_id: `PAP-${i + 100}`,
       });
     }
+    appendRegistryEvent({
+      deployment_id: "d-opencode-view-001",
+      team: "builder",
+      event: "started",
+      timestamp: "2026-05-21T02:00:00.000Z",
+      ticket_id: "PAP-078",
+      runtime: "opencode",
+      binary: "opa",
+    });
+    mkdirSync(join(root, "deployments", "d-opencode-view-001"), { recursive: true });
+    writeFileSync(join(root, "deployments", "d-opencode-view-001", "primer.md"), [
+      "# PA Deployment Primer",
+      "## Memory Docs",
+      '<memory-doc path="/tmp/repo/CLAUDE.md">',
+      "Repo memory",
+      "</memory-doc>",
+      '<memory-doc path="/tmp/repo/OPENCODE.md">',
+      "Runtime memory",
+      "</memory-doc>",
+    ].join("\n"));
 
     const store = new TicketStore();
     for (let i = 0; i < 500; i++) {
@@ -235,6 +255,7 @@ test("dashboard shell endpoints are read-only, include empty states, and stay fa
       "/api/dashboard/views/skills",
       "/api/dashboard/views/knowledge-memory",
       "/api/dashboard/views/improvement-candidates",
+      "/api/dashboard/views/opencode-integration",
     ];
     const durations: number[] = [];
     for (const path of paths) {
@@ -246,6 +267,31 @@ test("dashboard shell endpoints are read-only, include empty states, and stay fa
       }
     }
     assert.ok(p95(durations) < 500);
+
+    const opencodeView = await dashboardApp.app.request("/api/dashboard/views/opencode-integration");
+    assert.equal(opencodeView.status, 200);
+    const opencodeBody = await opencodeView.json() as {
+      readOnly: boolean;
+      runtimeOwner: string;
+      deploymentContexts: Array<{ runtime: string; binary: string }>;
+      memoryDocSources: string[];
+      skillInjection: { source: string; primerSummaryBudgetChars: number; primerSkillSummary: string };
+      opencodeSafeValidationWarnings: string[];
+    };
+    assert.equal(opencodeBody.readOnly, true);
+    assert.match(opencodeBody.runtimeOwner, /OPA is authoritative/);
+    assert.match(opencodeBody.skillInjection.source, /packaged pa-platform skills/);
+    assert.ok(opencodeBody.skillInjection.primerSummaryBudgetChars <= 5000);
+    assert.ok(opencodeBody.skillInjection.primerSkillSummary.length <= opencodeBody.skillInjection.primerSummaryBudgetChars);
+    assert.ok(Array.isArray(opencodeBody.memoryDocSources));
+    assert.ok(opencodeBody.memoryDocSources.includes("/tmp/repo/CLAUDE.md"));
+    assert.ok(opencodeBody.memoryDocSources.includes("/tmp/repo/OPENCODE.md"));
+    assert.ok(Array.isArray(opencodeBody.deploymentContexts));
+    assert.ok(opencodeBody.deploymentContexts.some((deployment) => deployment.runtime === "opencode" && deployment.binary === "opa"));
+    assert.ok(Array.isArray(opencodeBody.opencodeSafeValidationWarnings));
+
+    const blockedControl = await dashboardApp.app.request("/api/dashboard/views/opencode-integration", { method: "POST" });
+    assert.equal(blockedControl.status, 404);
   });
 });
 

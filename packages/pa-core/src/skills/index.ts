@@ -60,6 +60,7 @@ export interface SkillRegistryReport {
   openCodeVisibility: {
     skillRegistryEnabled: boolean;
     primerSummaryBudgetChars: number;
+    primerSkillSummary: string;
     commandAdapter: "opa";
   };
 }
@@ -107,9 +108,24 @@ export function buildSkillRegistryReport(options?: { skillsDir?: string; teamsDi
     openCodeVisibility: {
       skillRegistryEnabled: true,
       primerSummaryBudgetChars: DEFAULT_PRIMER_SUMMARY_BUDGET,
+      primerSkillSummary: buildPrimerSkillSummary(inventory, DEFAULT_PRIMER_SUMMARY_BUDGET),
       commandAdapter: "opa",
     },
   };
+}
+
+function buildPrimerSkillSummary(inventory: SkillInventoryRecord[], budgetChars: number): string {
+  const lines = inventory
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((item) => {
+      const injectAs = item.injectAs.length > 0 ? item.injectAs.join(",") : "none";
+      return `- ${item.name} (${item.sourceType}, inject-as: ${injectAs}, status: ${item.validationStatus})`;
+    });
+  const summary = lines.join("\n");
+  if (summary.length <= budgetChars) return summary;
+  const clipped = summary.slice(0, Math.max(0, budgetChars - 32)).trimEnd();
+  return `${clipped}\n... [truncated to ${budgetChars} chars]`;
 }
 
 function scanSkillRoot(root: string, packagedRoot: string, usageBySkill: Map<string, { teams: Set<string>; injectAs: Set<string> }>): SkillInventoryRecord[] {
