@@ -6,7 +6,7 @@ import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { Context, Next } from "hono";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
-import { actionRoutes, bulletinRoutes, configRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
+import { actionRoutes, bulletinRoutes, configRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
 
 export interface AgentApiOptions {
@@ -69,6 +69,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", repoGitExtRoutes());
   app.route("/", teamsRoutes());
   app.route("/", skillsRoutes());
+  app.route("/", knowledgeRoutes());
   app.route("/", timersRoutes());
   app.route("/", ticketRoutes());
   app.route("/", actionRoutes());

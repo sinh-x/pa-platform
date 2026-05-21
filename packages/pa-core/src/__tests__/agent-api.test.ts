@@ -119,6 +119,45 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     assert.ok(skillsBody.inventory.length >= 0);
     assert.ok(skillsBody.hermesDecisionMatrix.length >= 6);
 
+    mkdirSync(join(root, "sessions", "2026", "05", "agent-team"), { recursive: true });
+    writeFileSync(join(root, "sessions", "2026", "05", "agent-team", "2026-05-21-d-test-builder--team-manager--PAP-078--phase-2.md"), [
+      "# AI Session Log",
+      "> Agent: builder/team-manager",
+      "",
+      "## Self-Improvement",
+      "### What could be improved?",
+      "- tighten candidate extraction coverage",
+      "",
+      "## Follow-up Tasks",
+      "- [ ] PAP-321 add more tests",
+    ].join("\n"));
+    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-05-21T00:00:00.000Z" });
+    appendRegistryEvent({ deployment_id: "d-api-eval-1", team: "evaluator", event: "started", timestamp: "2026-05-21T00:00:30.000Z" });
+    appendEvaluatorResult({
+      target_deployment_id: "d-api-1",
+      evaluator_deployment_id: "d-api-eval-1",
+      summary: "Evaluator finding",
+      findings: "missing doc refs\nPAP-654 follow-up needed",
+      evidence_refs: ["deployments/d-api-1/primer.md"],
+      rating: { source: "system", overall: 3, metrics: { quality: 3 } },
+    });
+
+    const boundaries = await app.request("/api/knowledge-boundaries");
+    assert.equal(boundaries.status, 200);
+    const boundariesBody = await boundaries.json() as { boundaries: Array<{ itemType: string; storageLocation: string }> };
+    assert.equal(boundariesBody.boundaries.length, 8);
+    assert.equal(boundariesBody.boundaries.some((item) => item.itemType === "session-log"), true);
+
+    const candidates = await app.request("/api/improvement-candidates");
+    assert.equal(candidates.status, 200);
+    const candidatesBody = await candidates.json() as { candidates: Array<{ sourceType: string; sourceLink: string; owner: string; status: string; decision: string; followUpReference: string | null }> };
+    assert.equal(candidatesBody.candidates.some((candidate) => candidate.sourceType === "session-log" && candidate.owner === "builder/team-manager"), true);
+    assert.equal(candidatesBody.candidates.some((candidate) => candidate.sourceType === "evaluator-artifact"), true);
+    assert.equal(candidatesBody.candidates.every((candidate) => candidate.status === "new" && candidate.decision === "pending"), true);
+
+    const mutateCandidates = await app.request("/api/improvement-candidates", { method: "POST" });
+    assert.equal(mutateCandidates.status, 404);
+
     const routing = await app.request("/api/deploy-routing");
     assert.deepEqual(await routing.json(), {
       teams: [{ name: "builder", description: "Builder", default_provider: "openai", default_model: "gpt-5.5", modes: [{ id: "plan", label: "Plan", modeType: "work" }] }],

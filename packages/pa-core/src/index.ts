@@ -25,5 +25,6 @@ export * from "./serve-lifecycle.js";
 export * from "./semantic/index.js";
 export * from "./evaluator/index.js";
 export * from "./skills/index.js";
+export * from "./knowledge/index.js";
 export type * from "./types.js";
 export type * from "./runtime-api/index.js";

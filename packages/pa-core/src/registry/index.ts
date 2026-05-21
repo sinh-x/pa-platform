@@ -87,6 +87,11 @@ export function queryEvaluatorResultsByTargetDeployment(targetDeploymentId: stri
   return (db.prepare("SELECT * FROM evaluator_ratings WHERE target_deployment_id = ? ORDER BY created_at DESC").all(targetDeploymentId) as Record<string, unknown>[]).map(evaluatorResultFromRow);
 }
 
+export function queryEvaluatorResults(): EvaluatorResult[] {
+  const db = getDb();
+  return (db.prepare("SELECT * FROM evaluator_ratings ORDER BY created_at DESC").all() as Record<string, unknown>[]).map(evaluatorResultFromRow);
+}
+
 export function getDeploymentsByTicketId(ticketId: string): DeploymentStatus[] {
   const db = getDb();
   return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments WHERE ticket_id = ?").all(ticketId) as Record<string, unknown>[]).map(deploymentFromRow));
