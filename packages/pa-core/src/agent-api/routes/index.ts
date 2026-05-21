@@ -15,3 +15,4 @@ export * from "./repo-commits.js";
 export * from "./repo-git-ext.js";
 export * from "./timers.js";
 export * from "./actions.js";
+export * from "./skills.js";

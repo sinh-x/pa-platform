@@ -113,6 +113,12 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     assert.deepEqual(teamsBody.teams[0]?.deploy_modes.map((mode) => mode.id), ["plan", "chat"]);
     assert.equal(teamsBody.teams[0]?.deploy_modes[0]?.provider, "minimax");
 
+    const skills = await app.request("/api/skills");
+    assert.equal(skills.status, 200);
+    const skillsBody = await skills.json() as { inventory: Array<{ name: string }>; hermesDecisionMatrix: Array<{ decision: string }> };
+    assert.ok(skillsBody.inventory.length >= 0);
+    assert.ok(skillsBody.hermesDecisionMatrix.length >= 6);
+
     const routing = await app.request("/api/deploy-routing");
     assert.deepEqual(await routing.json(), {
       teams: [{ name: "builder", description: "Builder", default_provider: "openai", default_model: "gpt-5.5", modes: [{ id: "plan", label: "Plan", modeType: "work" }] }],
