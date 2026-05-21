@@ -71,6 +71,13 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   });
 }
 
+function p95(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+  return sorted[index] ?? 0;
+}
+
 test("agent API exposes health, tickets, bulletins, teams, and documents", async () => {
   await withApiEnv(async (root) => {
     const { app } = createAgentApiApp();
@@ -172,6 +179,73 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     const doc = await app.request("/api/documents?path=agent-teams/builder/artifacts/note.md");
     assert.equal(doc.status, 200);
     assert.equal((await doc.json() as { metadata: { title: string } }).metadata.title, "Note");
+  });
+});
+
+test("dashboard shell endpoints are read-only, include empty states, and stay fast with local fixture sizes", async () => {
+  await withApiEnv(async (root) => {
+    const { app } = createAgentApiApp();
+
+    const emptyDeployments = await app.request("/api/dashboard/views/deployments");
+    assert.equal(emptyDeployments.status, 200);
+    assert.equal((await emptyDeployments.json() as { count: number }).count, 0);
+
+    const emptyImprovements = await app.request("/api/dashboard/views/improvement-candidates");
+    assert.equal(emptyImprovements.status, 200);
+    assert.equal((await emptyImprovements.json() as { count: number }).count, 0);
+
+    for (let i = 0; i < 500; i++) {
+      appendRegistryEvent({
+        deployment_id: `d-phase1-${String(i).padStart(3, "0")}`,
+        team: "builder",
+        event: "started",
+        timestamp: `2026-05-21T00:${String(i % 60).padStart(2, "0")}:00.000Z`,
+        ticket_id: `PAP-${i + 100}`,
+      });
+    }
+
+    const store = new TicketStore();
+    for (let i = 0; i < 500; i++) {
+      store.create({ project: "pa-platform", title: `Ticket ${i}`, summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    }
+    const dashboardApp = createAgentApiApp();
+
+    const html = await dashboardApp.app.request("/dashboard");
+    assert.equal(html.status, 200);
+    assert.match(await html.text(), /PA Local Dashboard/);
+
+    const overview = await dashboardApp.app.request("/api/dashboard/overview");
+    assert.equal(overview.status, 200);
+    const overviewBody = await overview.json() as { readOnly: boolean; mutationRoutes: unknown[]; counts: { tickets: number } };
+    assert.equal(overviewBody.readOnly, true);
+    assert.deepEqual(overviewBody.mutationRoutes, []);
+    assert.equal(overviewBody.counts.tickets, 500);
+
+    const nonGetStatuses = await Promise.all([
+      dashboardApp.app.request("/api/dashboard/overview", { method: "POST" }),
+      dashboardApp.app.request("/api/dashboard/views/tickets", { method: "PATCH" }),
+      dashboardApp.app.request("/api/dashboard/views/skills", { method: "DELETE" }),
+    ]);
+    for (const response of nonGetStatuses) assert.equal(response.status, 404);
+
+    const paths = [
+      "/api/dashboard/overview",
+      "/api/dashboard/views/deployments",
+      "/api/dashboard/views/tickets",
+      "/api/dashboard/views/skills",
+      "/api/dashboard/views/knowledge-memory",
+      "/api/dashboard/views/improvement-candidates",
+    ];
+    const durations: number[] = [];
+    for (const path of paths) {
+      for (let i = 0; i < 8; i++) {
+        const startedAt = performance.now();
+        const response = await dashboardApp.app.request(path);
+        durations.push(performance.now() - startedAt);
+        assert.equal(response.status, 200);
+      }
+    }
+    assert.ok(p95(durations) < 500);
   });
 });
 

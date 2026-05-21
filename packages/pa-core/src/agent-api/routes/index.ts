@@ -17,3 +17,4 @@ export * from "./timers.js";
 export * from "./actions.js";
 export * from "./skills.js";
 export * from "./knowledge.js";
+export * from "./dashboard.js";
