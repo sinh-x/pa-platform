@@ -15,6 +15,16 @@ corepack pnpm --filter @pa-platform/pa-core typecheck
 corepack pnpm --filter @pa-platform/pa-core test
 ```
 
+Full branch verification (Phase 5 handoff):
+
+```bash
+corepack pnpm typecheck
+corepack pnpm build
+corepack pnpm test
+corepack pnpm completions
+corepack pnpm secrets:scan
+```
+
 Optional local serve smoke:
 
 ```bash
@@ -40,3 +50,11 @@ pa-core serve --host 127.0.0.1 --port 4096
 ## Performance Note
 
 The `agent-api` test suite includes fixture-backed p95 response checks for the dashboard routes using local fixture sizes aligned with NFR-2 budgets.
+
+## Fixture Sources
+
+- `packages/pa-core/src/__tests__/skills.test.ts`
+- `packages/pa-core/src/__tests__/knowledge.test.ts`
+- `packages/pa-core/src/__tests__/agent-api.test.ts`
+
+The fixture suites cover skill registry shape/validation, knowledge boundaries, improvement-candidate extraction, empty-state handling, read-only route enforcement, and local p95 route response checks.
