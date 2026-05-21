@@ -71,6 +71,13 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   });
 }
 
+function p95(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+  return sorted[index] ?? 0;
+}
+
 test("agent API exposes health, tickets, bulletins, teams, and documents", async () => {
   await withApiEnv(async (root) => {
     const { app } = createAgentApiApp();
@@ -113,6 +120,51 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     assert.deepEqual(teamsBody.teams[0]?.deploy_modes.map((mode) => mode.id), ["plan", "chat"]);
     assert.equal(teamsBody.teams[0]?.deploy_modes[0]?.provider, "minimax");
 
+    const skills = await app.request("/api/skills");
+    assert.equal(skills.status, 200);
+    const skillsBody = await skills.json() as { inventory: Array<{ name: string }>; hermesDecisionMatrix: Array<{ decision: string }> };
+    assert.ok(skillsBody.inventory.length >= 0);
+    assert.ok(skillsBody.hermesDecisionMatrix.length >= 6);
+
+    mkdirSync(join(root, "sessions", "2026", "05", "agent-team"), { recursive: true });
+    writeFileSync(join(root, "sessions", "2026", "05", "agent-team", "2026-05-21-d-test-builder--team-manager--PAP-078--phase-2.md"), [
+      "# AI Session Log",
+      "> Agent: builder/team-manager",
+      "",
+      "## Self-Improvement",
+      "### What could be improved?",
+      "- tighten candidate extraction coverage",
+      "",
+      "## Follow-up Tasks",
+      "- [ ] PAP-321 add more tests",
+    ].join("\n"));
+    appendRegistryEvent({ deployment_id: "d-api-1", team: "builder", event: "started", timestamp: "2026-05-21T00:00:00.000Z" });
+    appendRegistryEvent({ deployment_id: "d-api-eval-1", team: "evaluator", event: "started", timestamp: "2026-05-21T00:00:30.000Z" });
+    appendEvaluatorResult({
+      target_deployment_id: "d-api-1",
+      evaluator_deployment_id: "d-api-eval-1",
+      summary: "Evaluator finding",
+      findings: "missing doc refs\nPAP-654 follow-up needed",
+      evidence_refs: ["deployments/d-api-1/primer.md"],
+      rating: { source: "system", overall: 3, metrics: { quality: 3 } },
+    });
+
+    const boundaries = await app.request("/api/knowledge-boundaries");
+    assert.equal(boundaries.status, 200);
+    const boundariesBody = await boundaries.json() as { boundaries: Array<{ itemType: string; storageLocation: string }> };
+    assert.equal(boundariesBody.boundaries.length, 8);
+    assert.equal(boundariesBody.boundaries.some((item) => item.itemType === "session-log"), true);
+
+    const candidates = await app.request("/api/improvement-candidates");
+    assert.equal(candidates.status, 200);
+    const candidatesBody = await candidates.json() as { candidates: Array<{ sourceType: string; sourceLink: string; owner: string; status: string; decision: string; followUpReference: string | null }> };
+    assert.equal(candidatesBody.candidates.some((candidate) => candidate.sourceType === "session-log" && candidate.owner === "builder/team-manager"), true);
+    assert.equal(candidatesBody.candidates.some((candidate) => candidate.sourceType === "evaluator-artifact"), true);
+    assert.equal(candidatesBody.candidates.every((candidate) => candidate.status === "new" && candidate.decision === "pending"), true);
+
+    const mutateCandidates = await app.request("/api/improvement-candidates", { method: "POST" });
+    assert.equal(mutateCandidates.status, 404);
+
     const routing = await app.request("/api/deploy-routing");
     assert.deepEqual(await routing.json(), {
       teams: [{ name: "builder", description: "Builder", default_provider: "openai", default_model: "gpt-5.5", modes: [{ id: "plan", label: "Plan", modeType: "work" }] }],
@@ -127,6 +179,119 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
     const doc = await app.request("/api/documents?path=agent-teams/builder/artifacts/note.md");
     assert.equal(doc.status, 200);
     assert.equal((await doc.json() as { metadata: { title: string } }).metadata.title, "Note");
+  });
+});
+
+test("dashboard shell endpoints are read-only, include empty states, and stay fast with local fixture sizes", async () => {
+  await withApiEnv(async (root) => {
+    const { app } = createAgentApiApp();
+
+    const emptyDeployments = await app.request("/api/dashboard/views/deployments");
+    assert.equal(emptyDeployments.status, 200);
+    assert.equal((await emptyDeployments.json() as { count: number }).count, 0);
+
+    const emptyImprovements = await app.request("/api/dashboard/views/improvement-candidates");
+    assert.equal(emptyImprovements.status, 200);
+    assert.equal((await emptyImprovements.json() as { count: number }).count, 0);
+
+    for (let i = 0; i < 500; i++) {
+      appendRegistryEvent({
+        deployment_id: `d-phase1-${String(i).padStart(3, "0")}`,
+        team: "builder",
+        event: "started",
+        timestamp: `2026-05-21T00:${String(i % 60).padStart(2, "0")}:00.000Z`,
+        ticket_id: `PAP-${i + 100}`,
+      });
+    }
+    appendRegistryEvent({
+      deployment_id: "d-opencode-view-001",
+      team: "builder",
+      event: "started",
+      timestamp: "2026-05-21T02:00:00.000Z",
+      ticket_id: "PAP-078",
+      runtime: "opencode",
+      binary: "opa",
+    });
+    mkdirSync(join(root, "deployments", "d-opencode-view-001"), { recursive: true });
+    writeFileSync(join(root, "deployments", "d-opencode-view-001", "primer.md"), [
+      "# PA Deployment Primer",
+      "## Memory Docs",
+      '<memory-doc path="/tmp/repo/CLAUDE.md">',
+      "Repo memory",
+      "</memory-doc>",
+      '<memory-doc path="/tmp/repo/OPENCODE.md">',
+      "Runtime memory",
+      "</memory-doc>",
+    ].join("\n"));
+
+    const store = new TicketStore();
+    for (let i = 0; i < 500; i++) {
+      store.create({ project: "pa-platform", title: `Ticket ${i}`, summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    }
+    const dashboardApp = createAgentApiApp();
+
+    const html = await dashboardApp.app.request("/dashboard");
+    assert.equal(html.status, 200);
+    assert.match(await html.text(), /PA Local Dashboard/);
+
+    const overview = await dashboardApp.app.request("/api/dashboard/overview");
+    assert.equal(overview.status, 200);
+    const overviewBody = await overview.json() as { readOnly: boolean; mutationRoutes: unknown[]; counts: { tickets: number } };
+    assert.equal(overviewBody.readOnly, true);
+    assert.deepEqual(overviewBody.mutationRoutes, []);
+    assert.equal(overviewBody.counts.tickets, 500);
+
+    const nonGetStatuses = await Promise.all([
+      dashboardApp.app.request("/api/dashboard/overview", { method: "POST" }),
+      dashboardApp.app.request("/api/dashboard/views/tickets", { method: "PATCH" }),
+      dashboardApp.app.request("/api/dashboard/views/skills", { method: "DELETE" }),
+    ]);
+    for (const response of nonGetStatuses) assert.equal(response.status, 404);
+
+    const paths = [
+      "/api/dashboard/overview",
+      "/api/dashboard/views/deployments",
+      "/api/dashboard/views/tickets",
+      "/api/dashboard/views/skills",
+      "/api/dashboard/views/knowledge-memory",
+      "/api/dashboard/views/improvement-candidates",
+      "/api/dashboard/views/opencode-integration",
+    ];
+    const durations: number[] = [];
+    for (const path of paths) {
+      for (let i = 0; i < 8; i++) {
+        const startedAt = performance.now();
+        const response = await dashboardApp.app.request(path);
+        durations.push(performance.now() - startedAt);
+        assert.equal(response.status, 200);
+      }
+    }
+    assert.ok(p95(durations) < 500);
+
+    const opencodeView = await dashboardApp.app.request("/api/dashboard/views/opencode-integration");
+    assert.equal(opencodeView.status, 200);
+    const opencodeBody = await opencodeView.json() as {
+      readOnly: boolean;
+      runtimeOwner: string;
+      deploymentContexts: Array<{ runtime: string; binary: string }>;
+      memoryDocSources: string[];
+      skillInjection: { source: string; primerSummaryBudgetChars: number; primerSkillSummary: string };
+      opencodeSafeValidationWarnings: string[];
+    };
+    assert.equal(opencodeBody.readOnly, true);
+    assert.match(opencodeBody.runtimeOwner, /OPA is authoritative/);
+    assert.match(opencodeBody.skillInjection.source, /packaged pa-platform skills/);
+    assert.ok(opencodeBody.skillInjection.primerSummaryBudgetChars <= 5000);
+    assert.ok(opencodeBody.skillInjection.primerSkillSummary.length <= opencodeBody.skillInjection.primerSummaryBudgetChars);
+    assert.ok(Array.isArray(opencodeBody.memoryDocSources));
+    assert.ok(opencodeBody.memoryDocSources.includes("/tmp/repo/CLAUDE.md"));
+    assert.ok(opencodeBody.memoryDocSources.includes("/tmp/repo/OPENCODE.md"));
+    assert.ok(Array.isArray(opencodeBody.deploymentContexts));
+    assert.ok(opencodeBody.deploymentContexts.some((deployment) => deployment.runtime === "opencode" && deployment.binary === "opa"));
+    assert.ok(Array.isArray(opencodeBody.opencodeSafeValidationWarnings));
+
+    const blockedControl = await dashboardApp.app.request("/api/dashboard/views/opencode-integration", { method: "POST" });
+    assert.equal(blockedControl.status, 404);
   });
 });
 
