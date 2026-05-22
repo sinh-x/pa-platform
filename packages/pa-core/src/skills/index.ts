@@ -15,7 +15,13 @@ export interface SkillMetadata {
   "pa-inject-as"?: string;
   platforms?: string[];
   runtimes?: string[];
+  required_credential_files?: RequiredCredentialFileMetadata[];
   [key: string]: unknown;
+}
+
+export interface RequiredCredentialFileMetadata {
+  path: string;
+  description: string;
 }
 
 export interface SkillValidationIssue {
@@ -192,6 +198,60 @@ function validateSkillMetadata(name: string, skillPath: string, metadata: SkillM
   if (hasOpencodeIncompatibleGuidance(content)) {
     issues.push({ code: "opencode-incompatible", message: `Skill ${name} includes opencode-incompatible command guidance`, skillName: name, path: skillPath });
   }
+  issues.push(...validateRequiredCredentialFiles(name, skillPath, metadata));
+  return issues;
+}
+
+function validateRequiredCredentialFiles(name: string, skillPath: string, metadata: SkillMetadata): SkillValidationIssue[] {
+  const field = metadata.required_credential_files;
+  if (field === undefined) return [];
+
+  if (!Array.isArray(field)) {
+    return [{
+      code: "invalid-metadata",
+      message: `Skill ${name} required_credential_files must be a list`,
+      skillName: name,
+      path: skillPath,
+    }];
+  }
+
+  const issues: SkillValidationIssue[] = [];
+  const normalized: RequiredCredentialFileMetadata[] = [];
+
+  for (let index = 0; index < field.length; index++) {
+    const item = field[index];
+    if (!item || typeof item !== "object") {
+      issues.push({
+        code: "invalid-metadata",
+        message: `Skill ${name} required_credential_files[${index}] must be an object`,
+        skillName: name,
+        path: skillPath,
+      });
+      continue;
+    }
+
+    const path = typeof item.path === "string" ? item.path.trim() : "";
+    const description = typeof item.description === "string" ? item.description.trim() : "";
+    if (!path) {
+      issues.push({
+        code: "invalid-metadata",
+        message: `Skill ${name} required_credential_files[${index}] must include a non-empty path`,
+        skillName: name,
+        path: skillPath,
+      });
+    }
+    if (!description) {
+      issues.push({
+        code: "invalid-metadata",
+        message: `Skill ${name} required_credential_files[${index}] must include a non-empty description`,
+        skillName: name,
+        path: skillPath,
+      });
+    }
+    if (path && description) normalized.push({ path, description });
+  }
+
+  if (issues.length === 0) metadata.required_credential_files = normalized;
   return issues;
 }
 
