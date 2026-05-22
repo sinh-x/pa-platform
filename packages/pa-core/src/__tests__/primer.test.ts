@@ -305,6 +305,7 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /## Deployment Instructions/);
   assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
+  assert.match(primer, /path=".*skills\/global\/google-workspace\/SKILL\.md"/);
   assert.doesNotMatch(primer, /missing skill/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
