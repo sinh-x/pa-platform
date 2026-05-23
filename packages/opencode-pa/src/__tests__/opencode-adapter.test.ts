@@ -414,11 +414,25 @@ test("opa deploy supports pa deploy compatibility flags", async () => {
   });
 });
 
-test("opa dry-run objective-file includes allowed content and blocks sensitive local content before primer generation", async () => {
+test("opa dry-run objective-file preserves markdown table, fenced code markers, and angle-bracket text", async () => {
   await withOpaEnv(async (root) => {
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
     const objectiveFile = join(root, "objective.md");
-    writeFileSync(objectiveFile, "Ship allowed objective from dry-run file.");
+    const allowedObjective = [
+      "# Objective",
+      "",
+      "| Item | Status |",
+      "|---|---|",
+      "| AC1 | pending |",
+      "",
+      "```md",
+      "preserve backticks",
+      "```",
+      "",
+      "Comparison checks: 2 < 3 and 5 > 4.",
+      "",
+    ].join("\n");
+    writeFileSync(objectiveFile, allowedObjective);
 
     const allowedStdout: string[] = [];
     const allowedStderr: string[] = [];
@@ -429,7 +443,12 @@ test("opa dry-run objective-file includes allowed content and blocks sensitive l
     assert.deepEqual(allowedStderr, []);
     const deployId = allowedStdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
     assert.ok(deployId);
-    assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /Ship allowed objective from dry-run file/);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /\| Item \| Status \|/);
+    assert.match(primer, /\|---\|---\|/);
+    assert.match(primer, /```md/);
+    assert.match(primer, /preserve backticks/);
+    assert.match(primer, /Comparison checks: 2 < 3 and 5 > 4\./);
 
     writeFileSync(join(root, "config", "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_DRY_RUN_PRIVATE_[0-9]+'", ""].join("\n"));
     writeFileSync(objectiveFile, "contains FAKE_DRY_RUN_PRIVATE_123 only");
