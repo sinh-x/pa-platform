@@ -407,7 +407,16 @@ test("deploy --validate fails when team config references missing skills paths",
 test("deploy objective-file uses guarded local text-file reader", async () => {
   await withCliEnv(async (root) => {
     const objectiveFile = join(root, "objective.md");
-    writeFileSync(objectiveFile, "Ship a normal objective from a local file.");
+    const markdownObjective = [
+      "| Phase | Status |",
+      "|---|---|",
+      "| 1 | `done` |",
+      "",
+      "```md",
+      "2 < 3 and 5 > 4",
+      "```",
+    ].join("\n");
+    writeFileSync(objectiveFile, markdownObjective);
 
     const seen: unknown[] = [];
     const allowed = capture();
@@ -415,7 +424,7 @@ test("deploy objective-file uses guarded local text-file reader", async () => {
       io: allowed.io,
       hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-objective-file" }; } },
     }), 0);
-    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship a normal objective from a local file.", dryRun: true, timeout: 1800 }]);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: markdownObjective, dryRun: true, timeout: 1800 }]);
 
     writeFileSync(join(process.env["PA_PLATFORM_CONFIG"]!, "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_PRIVATE_OBJECTIVE_[0-9]+'", ""].join("\n"));
     writeFileSync(objectiveFile, "contains FAKE_PRIVATE_OBJECTIVE_123 only");
@@ -521,6 +530,11 @@ test("deploy inline objective uses sensitive content guard after objective valid
   await withCliEnv(async () => {
     const seen: unknown[] = [];
     const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-inline-objective" }; } };
+
+    const markdownInlineObjective = "| phase | status | `ok` | 2 < 3 | 5 > 4 |";
+    const allowedMarkdown = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", markdownInlineObjective, "--dry-run"], { io: allowedMarkdown.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: markdownInlineObjective, dryRun: true, timeout: 1800 });
 
     const allowed = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship a normal inline objective.", "--dry-run"], { io: allowed.io, hooks }), 0);
