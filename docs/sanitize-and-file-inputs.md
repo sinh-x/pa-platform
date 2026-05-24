@@ -36,7 +36,7 @@ For API deploys, `packages/pa-core/src/agent-api/routes/deploy-control.ts` accep
 | Area | Location | Current behavior |
 |---|---|---|
 | Deploy field validation | `packages/pa-core/src/deploy/control.ts` | Validates `team`, `mode`, `repo`, `ticket`, provider/model names, `resume`, `timeout`, and objective content. |
-| Objective content validation | `packages/pa-core/src/deploy/control.ts` | Rejects objectives over 10000 characters and rejects control characters plus `` ` $ \\ ; & \| > < ``. |
+| Objective content validation | `packages/pa-core/src/deploy/control.ts` | Rejects objectives over 10000 characters and rejects control characters plus `$`, `;`, `&`, and backslash. Markdown structure characters `|`, backticks, `<`, and `>` are allowed. |
 | Objective file path handling | `packages/pa-core/src/cli/core-command.ts` | Resolves local paths without API-style sandboxing; sensitive filename, path, and content guardrails block before deploy execution. |
 | Ticket comment file input | `packages/pa-core/src/cli/commands/ticket.ts` | Resolves local paths without API-style sandboxing; sensitive filename, path, and content guardrails block before comment creation. |
 | Agent API path sandbox | `packages/pa-core/src/agent-api/utils/sandbox.ts` | Ensures API document/folder/image paths resolve inside `~/Documents/ai-usage`. |

@@ -88,7 +88,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (timeoutValidation) return { error: timeoutValidation };
   if (objective && objective.trim()) {
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f`$\\;&|><]/.test(objective)) return { error: "objective contains invalid characters" };
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f$\\;&]/.test(objective)) return { error: "objective contains invalid characters" };
   }
   if (dryRun && background) return { error: "--background and --dry-run are mutually exclusive" };
 
