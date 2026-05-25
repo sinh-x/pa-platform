@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
-export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud";
+export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
 
 export interface OpencodeCommandResult {
   status: number | null;
@@ -30,6 +30,7 @@ const PROVIDER_DEFAULT_MODELS: Record<OpencodeProvider, string> = {
   openai: process.env["OPA_OPENAI_MODEL"] ?? "openai/gpt-5.5",
   deepseek: process.env["OPA_DEEPSEEK_MODEL"] ?? "deepseek/deepseek-v4-pro",
   "ollama-cloud": process.env["OPA_OLLAMA_CLOUD_MODEL"] ?? "ollama-cloud/deepseek-v4-pro",
+  "opencode-go": process.env["OPA_OPENCODE_GO_MODEL"] ?? "opencode-go/deepseek-v4-pro",
 };
 
 export class OpencodeAdapter implements RuntimeAdapter {
@@ -296,7 +297,8 @@ export function normalizeProvider(provider: string | undefined): OpencodeProvide
   if (provider === "openai") return "openai";
   if (provider === "deepseek") return "deepseek";
   if (provider === "ollama-cloud") return "ollama-cloud";
-  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek, ollama-cloud`);
+  if (provider === "opencode-go") return "opencode-go";
+  throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek, ollama-cloud, opencode-go`);
 }
 
 function writeLog(path: string, stdout: string, stderr: string): void {
