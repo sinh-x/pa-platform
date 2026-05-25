@@ -207,6 +207,129 @@ function __pa_core_deploy_team_name
     return 1
 end
 
+function __pa_core_deploy_provider_name
+    __pa_core_deploy_is_context; or return 1
+
+    set -l tokens (commandline -opc)
+    set -l expecting_value false
+
+    for token in $tokens[3..-1]
+        if test "$expecting_value" = true
+            printf '%s\n' "$token"
+            return 0
+        end
+
+        if test "$token" = "--provider"
+            set expecting_value true
+            continue
+        end
+
+        if string match -q -- '-*' $token
+            if __pa_core_deploy_option_expects_value "$token"
+                set expecting_value true
+            end
+            continue
+        end
+    end
+
+    return 1
+end
+
+function __pa_core_models_for_provider
+    set -l provider (__pa_core_deploy_provider_name)
+    test -z "$provider"; and set provider opencode-go
+
+    switch $provider
+        case minimax
+            printf '%s\n' \
+                minimax/MiniMax-M2 \
+                minimax/MiniMax-M2.1 \
+                minimax/MiniMax-M2.5 \
+                minimax/MiniMax-M2.5-highspeed \
+                minimax/MiniMax-M2.7 \
+                minimax/MiniMax-M2.7-highspeed \
+                minimax-coding-plan/MiniMax-M2 \
+                minimax-coding-plan/MiniMax-M2.1 \
+                minimax-coding-plan/MiniMax-M2.5 \
+                minimax-coding-plan/MiniMax-M2.5-highspeed \
+                minimax-coding-plan/MiniMax-M2.7 \
+                minimax-coding-plan/MiniMax-M2.7-highspeed
+        case openai
+            printf '%s\n' \
+                openai/gpt-5.2 \
+                openai/gpt-5.3-codex \
+                openai/gpt-5.3-codex-spark \
+                openai/gpt-5.4 \
+                openai/gpt-5.4-fast \
+                openai/gpt-5.4-mini \
+                openai/gpt-5.4-mini-fast \
+                openai/gpt-5.5 \
+                openai/gpt-5.5-fast \
+                openai/gpt-5.5-pro
+        case deepseek
+            printf '%s\n' \
+                deepseek/deepseek-chat \
+                deepseek/deepseek-reasoner \
+                deepseek/deepseek-v4-flash \
+                deepseek/deepseek-v4-pro
+        case ollama-cloud
+            printf '%s\n' \
+                ollama-cloud/cogito-2.1:671b \
+                ollama-cloud/deepseek-v3.1:671b \
+                ollama-cloud/deepseek-v3.2 \
+                ollama-cloud/deepseek-v4-flash \
+                ollama-cloud/deepseek-v4-pro \
+                ollama-cloud/devstral-2:123b \
+                ollama-cloud/devstral-small-2:24b \
+                ollama-cloud/gemini-3-flash-preview \
+                ollama-cloud/gemma3:12b \
+                ollama-cloud/gemma3:27b \
+                ollama-cloud/gemma3:4b \
+                ollama-cloud/gemma4:31b \
+                ollama-cloud/glm-4.6 \
+                ollama-cloud/glm-4.7 \
+                ollama-cloud/glm-5 \
+                ollama-cloud/glm-5.1 \
+                ollama-cloud/gpt-oss:120b \
+                ollama-cloud/gpt-oss:20b \
+                ollama-cloud/kimi-k2-thinking \
+                ollama-cloud/kimi-k2:1t \
+                ollama-cloud/kimi-k2.5 \
+                ollama-cloud/kimi-k2.6 \
+                ollama-cloud/minimax-m2 \
+                ollama-cloud/minimax-m2.1 \
+                ollama-cloud/minimax-m2.5 \
+                ollama-cloud/minimax-m2.7 \
+                ollama-cloud/ministral-3:14b \
+                ollama-cloud/ministral-3:3b \
+                ollama-cloud/ministral-3:8b \
+                ollama-cloud/mistral-large-3:675b \
+                ollama-cloud/nemotron-3-nano:30b \
+                ollama-cloud/nemotron-3-super \
+                ollama-cloud/qwen3-coder-next \
+                ollama-cloud/qwen3-coder:480b \
+                ollama-cloud/qwen3-next:80b \
+                ollama-cloud/qwen3-vl:235b \
+                ollama-cloud/qwen3-vl:235b-instruct \
+                ollama-cloud/qwen3.5:397b \
+                ollama-cloud/rnj-1:8b
+        case 'opencode-go' '*'
+            printf '%s\n' \
+                opencode-go/deepseek-v4-flash \
+                opencode-go/deepseek-v4-pro \
+                opencode-go/glm-5 \
+                opencode-go/glm-5.1 \
+                opencode-go/kimi-k2.5 \
+                opencode-go/kimi-k2.6 \
+                opencode-go/mimo-v2.5 \
+                opencode-go/mimo-v2.5-pro \
+                opencode-go/minimax-m2.5 \
+                opencode-go/minimax-m2.7 \
+                opencode-go/qwen3.5-plus \
+                opencode-go/qwen3.6-plus
+    end
+end
+
 function __pa_core_deploy_has_team
     set -l team_name (__pa_core_deploy_team_name)
     test -n "$team_name"; or return 1
