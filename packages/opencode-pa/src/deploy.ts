@@ -32,7 +32,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider ?? selectedMode?.provider ?? "openai";
+  const provider = request.provider ?? selectedMode?.provider ?? "opencode-go";
   const model = resolveOpencodeModel(provider, request.model ?? request.teamModel ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);

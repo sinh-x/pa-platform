@@ -1,8 +1,8 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
 export type RuntimeName = "claude" | "opencode";
-export type ProviderName = "anthropic" | "minimax" | "openai" | "deepseek" | "ollama-cloud";
-export type ModelName = "haiku" | "sonnet" | "opus" | "gpt-5.5";
+export type ProviderName = string;
+export type ModelName = string;
 
 export interface SkillEntry {
   name: string;
