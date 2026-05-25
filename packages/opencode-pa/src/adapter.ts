@@ -35,7 +35,7 @@ const PROVIDER_DEFAULT_MODELS: Record<OpencodeProvider, string> = {
 
 export class OpencodeAdapter implements RuntimeAdapter {
   readonly name = "opencode" as const;
-  readonly defaultModel = PROVIDER_DEFAULT_MODELS.openai;
+  readonly defaultModel = PROVIDER_DEFAULT_MODELS["opencode-go"];
   readonly sessionFileName = "session-id-opencode.txt";
 
   private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
@@ -102,7 +102,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         "Use `opa` for PA platform deployment and workflow commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
         "Use `pa-core serve` for Agent API server lifecycle; `opa` is the default deployment adapter, not the server owner.",
         "Use opencode tools exposed in the current session; do not assume Claude-only operational tools exist.",
-        "Supported providers for `opa deploy`: `minimax`, `openai`, `deepseek` (default), and `ollama-cloud`.",
+        "Supported providers for `opa deploy`: `opencode-go` (default), `minimax`, `openai`, `deepseek`, and `ollama-cloud`.",
       ].join("\n"),
     };
   }
