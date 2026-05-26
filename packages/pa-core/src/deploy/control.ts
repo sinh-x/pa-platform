@@ -79,9 +79,9 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (repo && !isSafeRepoSpecifier(repo)) return { error: "Invalid repo name" };
   if (ticket && !/^[A-Z][A-Z0-9]+-[0-9]+$/.test(ticket)) return { error: "Invalid ticket ID" };
   if (provider && !/^[a-zA-Z0-9_-]+$/.test(provider)) return { error: "Invalid provider name" };
-  if (model && !/^[a-zA-Z0-9_.\/-]+$/.test(model)) return { error: "Invalid model name" };
-  if (teamModel && !/^[a-zA-Z0-9_.\/-]+$/.test(teamModel)) return { error: "Invalid team model name" };
-  if (agentModel && !/^[a-zA-Z0-9_.\/-]+$/.test(agentModel)) return { error: "Invalid agent model name" };
+  if (model && !/^[-a-zA-Z0-9_.:\/]+$/.test(model)) return { error: "Invalid model name" };
+  if (teamModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(teamModel)) return { error: "Invalid team model name" };
+  if (agentModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(agentModel)) return { error: "Invalid agent model name" };
   if (resume && !/^[a-zA-Z0-9-]+$/.test(resume)) return { error: "Invalid resume deployment id" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
   const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");

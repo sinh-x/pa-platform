@@ -124,9 +124,9 @@ export function parseEvaluateArgs(argv: string[]): EvaluateArgs | { error: strin
   if (request.ticket && !/^[A-Z][A-Z0-9]+-[0-9]+$/.test(request.ticket)) return { error: "Invalid ticket ID" };
   if (request.timeout !== undefined && (!Number.isInteger(request.timeout) || request.timeout < 60 || request.timeout > 7200)) return { error: "timeout must be between 60 and 7200 seconds" };
   if (request.provider && !/^[a-zA-Z0-9_-]+$/.test(request.provider)) return { error: "Invalid provider name" };
-  if (request.model && !/^[a-zA-Z0-9_.\/-]+$/.test(request.model)) return { error: "Invalid model name" };
-  if (request.teamModel && !/^[a-zA-Z0-9_.\/-]+$/.test(request.teamModel)) return { error: "Invalid team model name" };
-  if (request.agentModel && !/^[a-zA-Z0-9_.\/-]+$/.test(request.agentModel)) return { error: "Invalid agent model name" };
+  if (request.model && !/^[-a-zA-Z0-9_.:\/]+$/.test(request.model)) return { error: "Invalid model name" };
+  if (request.teamModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(request.teamModel)) return { error: "Invalid team model name" };
+  if (request.agentModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(request.agentModel)) return { error: "Invalid agent model name" };
   if (request.dryRun && request.background) return { error: "--background and --dry-run are mutually exclusive" };
 
   return { action: "launch", request };
