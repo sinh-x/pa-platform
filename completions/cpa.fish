@@ -211,24 +211,23 @@ function __cpa_deploy_provider_name
     __cpa_deploy_is_context; or return 1
 
     set -l tokens (commandline -opc)
-    set -l expecting_value false
+    set -l expecting_provider false
 
     for token in $tokens[3..-1]
-        if test "$expecting_value" = true
+        if test "$expecting_provider" = true
             printf '%s\n' "$token"
             return 0
         end
 
         if test "$token" = "--provider"
-            set expecting_value true
+            set expecting_provider true
             continue
         end
 
         if string match -q -- '-*' $token
             if __cpa_deploy_option_expects_value "$token"
-                set expecting_value true
+                continue
             end
-            continue
         end
     end
 
