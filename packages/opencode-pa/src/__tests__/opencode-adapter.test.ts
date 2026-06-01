@@ -192,7 +192,7 @@ test("opa tool guidance keeps pa-core serve as server owner", () => {
   const guidance = new OpencodeAdapter().describeTools().markdown;
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(guidance, /`opa` is the default deployment adapter, not the server owner/);
-  assert.match(guidance, /Supported providers for `opa deploy`: `opencode-go` \(default\), `minimax`, `openai`, `deepseek`, and `ollama-cloud`/);
+  assert.match(guidance, /Supported providers for `opa deploy`: `ollama-cloud` \(default\), `minimax`, `openai`, `deepseek`, and `opencode-go`/);
   assert.doesNotMatch(guidance, /opa serve/);
 });
 
