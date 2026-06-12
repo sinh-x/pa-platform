@@ -1,6 +1,6 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
-export type RuntimeName = "claude" | "opencode";
+export type RuntimeName = "claude" | "opencode" | "droid";
 export type ProviderName = string;
 export type ModelName = string;
 
@@ -164,6 +164,7 @@ export interface ProviderDefaults {
     openai?: { base_url?: string; models?: ProviderModelTier };
     deepseek?: { base_url?: string; models?: ProviderModelTier };
     "ollama-cloud"?: { base_url?: string; models?: ProviderModelTier };
+    factory?: { api_key?: string; base_url?: string };
   };
 }
 
@@ -183,5 +184,6 @@ export interface PlatformConfig {
     runtime?: RuntimeName;
     opencode?: { provider?: string; model?: string };
     claudecode?: { model?: string; minimax_via_claude?: boolean };
+    droidcode?: { model?: string };
   };
 }

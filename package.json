@@ -25,6 +25,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@factory/droid-sdk": "^0.6.0",
     "better-sqlite3": "11.6.0",
     "js-yaml": "^4.1.0"
   },

@@ -144,6 +144,13 @@ function renderActiveBulletins(runtime: RuntimeName): string {
         "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
         "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
       ].join("\n");
+    case "droid":
+      return [
+        "## Active Bulletins",
+        "Before starting work, run `dpa bulletin list`.",
+        "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
+        "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
+      ].join("\n");
     default:
       return "";
   }
@@ -160,12 +167,12 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
 ];
 
 function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], runtime: RuntimeName): string {
-  if (runtime !== "opencode" && runtime !== "claude") return "";
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
   const skillNames = new Set(skills.map((skill) => skill.name));
   const procedures = PROCEDURE_CATALOG.filter(([name]) => skillNames.has(name));
   const intro = runtime === "claude"
     ? "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content and take precedence over any Claude Code skills loaded from `~/.claude/skills`."
-    : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external Claude Code skill folders.";
+    : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
   const lines = ["## Available Procedures", intro];
   if (procedures.length > 0) {
     for (const [name, description] of procedures) lines.push(`- ${name}: ${description}.`);
@@ -180,7 +187,7 @@ function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], r
 }
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, evaluationAutoLaunchEnabled: boolean): string {
-  if (runtime !== "opencode" && runtime !== "claude") return "";
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
   const executionStyle = mode?.solo || (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
   if (runtime === "claude") {
     const lines = [
@@ -196,6 +203,23 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
     } else {
       lines.push("This is a team-mode deployment: spawn sub-agents via the Agent tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
+    }
+    return lines.join("\n");
+  }
+  if (runtime === "droid") {
+    const lines = [
+      "## Deployment Instructions",
+      "Use `dpa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use Droid tools exposed in the active session: Read, Edit, Create, Execute, Grep, Glob, LS, Task (sub-agent spawning), AskUser, Skill, WebSearch, FetchUrl, and TodoWrite.",
+      "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
+      "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
+      "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `dpa registry complete` or `dpa registry update` when the run finishes.",
+      ...(teamConfig.name === "evaluator" || !evaluationAutoLaunchEnabled ? [] : ["After the registry completion marker is written, launch independent evaluation with `dpa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
+      "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
+    ];
+    if (executionStyle === "solo") {
+      lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
+    } else {
+      lines.push("This is a team-mode deployment: spawn sub-agents via the Task tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
     }
     return lines.join("\n");
   }
@@ -272,6 +296,20 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bpa command\b/g, "cpa command")
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills");
   }
+  if (runtime === "droid") {
+    return content
+      .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
+      .replace(PA_CLI_COMMAND_RE, "$1dpa")
+      .replace(CLAUDECODE_PROSE_LINE_RE, "")
+      .replace(/`pa` CLI/g, "`dpa` CLI")
+      .replace(/\bPA CLI\b/g, "DPA CLI")
+      .replace(/\bpa CLI\b/g, "dpa CLI")
+      .replace(/\bpa commands\b/g, "dpa commands")
+      .replace(/\bpa command\b/g, "dpa command")
+      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
+      .replace(/\bAskUserQuestion\b/g, "AskUser tool")
+      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Task sub-agent");
+  }
   return content;
 }
 
@@ -293,6 +331,16 @@ function defaultToolReference(runtime: RuntimeName): string {
       "Use `pa-core serve` for Agent API server lifecycle; `cpa` is a deployment adapter, not the server owner.",
       "Claude Code team deployments may use Skill (slash commands), AskUserQuestion, Agent (sub-agent spawning), TeamCreate, SendMessage, and ScheduleWakeup when they are exposed by the active session.",
       "Use tool availability from the active session as the source of truth.",
+    ].join("\n");
+  }
+  if (runtime === "droid") {
+    return [
+      "Runtime: Droid via `dpa`.",
+      "Use `dpa` for PA platform deployment and workflow commands; it invokes the same pa-core command set that `opa` and `cpa` use, with Droid session integration via the Factory SDK.",
+      "Use `pa-core serve` for Agent API server lifecycle; `dpa` is a deployment adapter, not the server owner.",
+      "Droid deployments may use all Droid-native tools: Read, Edit, Create, Execute, Grep, Glob, LS, Task (sub-agent spawning), AskUser, Skill, WebSearch, FetchUrl, and TodoWrite.",
+      "Droid deploys via the Factory SDK with session streaming; all runs (foreground and background) capture a session id and are resumable.",
+      "Default model: `deepseek-v4-pro` (override via `--model`, team-mode YAML, or `PA_DPA_DEFAULT_MODEL`).",
     ].join("\n");
   }
 
