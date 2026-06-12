@@ -11,6 +11,7 @@ Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 | `@pa-platform/pa-core` | Runtime-neutral PA core library, shared CLI dispatcher, and Agent API app |
 | `@pa-platform/opencode-pa` | OpenCode adapter that provides the `opa` CLI and runtime hooks |
 | `@pa-platform/claudecode-pa` | Claude Code adapter that provides the `cpa` CLI, settings.json hooks, and stream-json activity capture |
+| `@pa-platform/droidcode-pa` | Droid adapter that provides the `dpa` CLI driven by the Factory SDK with streaming activity capture |
 
 ## CLI
 
@@ -24,14 +25,17 @@ pa-core ticket list --project pa-platform
 pa-core status
 ```
 
-Deployment execution is adapter-hooked. Use `opa` for OpenCode runs and `cpa` for Claude Code runs:
+Deployment execution is adapter-hooked. Use `opa` for OpenCode runs, `cpa` for Claude Code runs, and `dpa` for Droid runs:
 
 ```bash
 opa deploy builder --mode implement
 cpa deploy builder --mode implement
+dpa deploy builder --mode implement
 ```
 
 `cpa` defaults to model `claude-opus-4-7` and `--provider anthropic`; see `docs/cpa-claude-code-adapter.md` for the full adapter overview.
+
+`dpa` defaults to model `deepseek-v4-pro` and requires `FACTORY_API_KEY` in the environment. Provider hints map to Droid model IDs. See `docs/dpa-droid-adapter.md` for the full adapter overview.
 
 The Agent API server is core-owned:
 

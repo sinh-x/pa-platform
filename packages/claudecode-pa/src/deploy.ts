@@ -131,6 +131,7 @@ function detectOtherRuntimeSession(deployDir: string, expectedSessionFileName: s
   const knownSessions: Record<string, { runtime: string; binary: string }> = {
     "session-id-claude.txt": { runtime: "claude", binary: "cpa" },
     "session-id-opencode.txt": { runtime: "opencode", binary: "opa" },
+    "session-id-droid.txt": { runtime: "droid", binary: "dpa" },
   };
   for (const [fileName, runtime] of Object.entries(knownSessions)) {
     if (fileName !== expectedSessionFileName && existsSync(resolve(deployDir, fileName))) return runtime;

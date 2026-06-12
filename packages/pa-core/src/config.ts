@@ -14,6 +14,17 @@ interface RawConfig {
   evaluation?: EvaluationConfig;
 }
 
+function mergeProviderDefaults(base: ProviderDefaults | undefined, override: ProviderDefaults | undefined): ProviderDefaults | undefined {
+  if (!base && !override) return undefined;
+  if (!base) return override;
+  if (!override) return base;
+  return {
+    default_provider: override.default_provider ?? base.default_provider,
+    default_model: override.default_model ?? base.default_model,
+    providers: { ...base.providers, ...override.providers },
+  };
+}
+
 export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
   const raw = existsSync(configPath)
     ? (yaml.load(readFileSync(configPath, "utf-8")) as RawConfig | undefined) ?? {}
@@ -23,13 +34,25 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
   const teamsDir = process.env["PA_PLATFORM_TEAMS"] ? expandHome(process.env["PA_PLATFORM_TEAMS"]) : raw.teams_dir ? expandHome(raw.teams_dir) : raw.config_dir ? resolve(homeDir, "teams") : getTeamsDir();
   const skillsDir = process.env["PA_PLATFORM_SKILLS"] ? expandHome(process.env["PA_PLATFORM_SKILLS"]) : raw.skills_dir ? expandHome(raw.skills_dir) : raw.config_dir ? resolve(homeDir, "skills/global") : getSkillsDir();
 
+  // Merge provider_defaults from the external config repo (config_dir) if present,
+  // so that provider credentials (e.g. factory api_key) stored in the external repo
+  // flow through to all adapters. The main config overrides the external config.
+  let externalProviderDefaults: ProviderDefaults | undefined;
+  if (raw.config_dir) {
+    const externalConfigPath = resolve(homeDir, "config.yaml");
+    if (existsSync(externalConfigPath)) {
+      const externalRaw = yaml.load(readFileSync(externalConfigPath, "utf-8")) as RawConfig | undefined;
+      externalProviderDefaults = externalRaw?.provider_defaults;
+    }
+  }
+
   return {
     configDir: process.env["PA_PLATFORM_CONFIG"] ?? getConfigDir(),
     dataDir: process.env["PA_PLATFORM_DATA"] ?? raw.data_dir ?? getDataDir(),
     homeDir,
     teamsDir,
     skillsDir,
-    provider_defaults: raw.provider_defaults,
+    provider_defaults: mergeProviderDefaults(externalProviderDefaults, raw.provider_defaults),
     evaluation: raw.evaluation,
     defaults: raw.defaults,
   };

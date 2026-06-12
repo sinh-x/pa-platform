@@ -53,7 +53,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-yrNa6oF1FdG39YTZj4xw/HPRnXzJdoFabBXBI+M4twU=";
+            hash = "sha256-1+0ifZoPHTcp1Ub+aZQAZxK6HXCvWtnQ/8jnEykR5i4=";
             fetcherVersion = 3;
           };
 
@@ -67,7 +67,7 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $out/bin $out/share/fish/vendor_completions.d
+            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
@@ -81,6 +81,11 @@
             cp -r packages/claudecode-pa/dist $share/packages/claudecode-pa/dist
             mkdir -p $share/packages/claudecode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/claudecode-pa/node_modules/@pa-platform/pa-core
+
+            cp packages/droidcode-pa/package.json $share/packages/droidcode-pa/package.json
+            cp -r packages/droidcode-pa/dist $share/packages/droidcode-pa/dist
+            mkdir -p $share/packages/droidcode-pa/node_modules/@pa-platform
+            ln -s ../../../pa-core $share/packages/droidcode-pa/node_modules/@pa-platform/pa-core
 
             install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
             import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";
@@ -104,6 +109,10 @@
               install -Dm644 completions/cpa.fish $out/share/fish/vendor_completions.d/cpa.fish
             fi
 
+            if [ -f completions/dpa.fish ]; then
+              install -Dm644 completions/dpa.fish $out/share/fish/vendor_completions.d/dpa.fish
+            fi
+
             cp -r node_modules $share/node_modules
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-core \
@@ -116,6 +125,10 @@
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/cpa \
               --add-flags "$share/packages/claudecode-pa/dist/cli.js" \
+              --prefix PATH : "${runtimePath}"
+
+            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/dpa \
+              --add-flags "$share/packages/droidcode-pa/dist/cli.js" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
@@ -146,6 +159,7 @@
         pa-core = paPlatformFor system;
         opa = paPlatformFor system;
         cpa = paPlatformFor system;
+        dpa = paPlatformFor system;
         default = paPlatformFor system;
       });
 
@@ -154,6 +168,7 @@
         pa-core = self.packages.${prev.stdenv.hostPlatform.system}.pa-core;
         opa = self.packages.${prev.stdenv.hostPlatform.system}.opa;
         cpa = self.packages.${prev.stdenv.hostPlatform.system}.cpa;
+        dpa = self.packages.${prev.stdenv.hostPlatform.system}.dpa;
       };
 
       devShells = forAllSystems (system:

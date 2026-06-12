@@ -1,0 +1,455 @@
+import { spawnSync } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
+import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
+import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
+
+const STREAM_BODY_MAX_CHARS = 500;
+const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
+
+const PROVIDER_DEFAULT_DROID_MODELS: Record<string, string> = {
+  anthropic: "claude-opus-4-8",
+  openai: "gpt-5.5",
+  deepseek: "deepseek-v4-pro",
+  gemini: "gemini-3.1-pro-preview",
+  minimax: "minimax-m2.7",
+  "ollama-cloud": "glm-5.1",
+};
+
+export interface DroidCodeAdapterOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
+  resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+}
+
+export class DroidCodeAdapter implements RuntimeAdapter {
+  readonly name = "droid" as const;
+  readonly defaultModel: string;
+  readonly sessionFileName = "session-id-droid.txt";
+
+  private readonly cwd: string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
+  private readonly resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+
+  constructor(options: DroidCodeAdapterOptions = {}) {
+    this.cwd = options.cwd ?? process.cwd();
+    this.env = options.env ?? process.env;
+    this.sessionFactory = options.sessionFactory;
+    this.resumeFactory = options.resumeFactory;
+    this.defaultModel = resolveDefaultDroidModel(this.env);
+    this.runBackgroundCommand = options.runBackgroundCommand ?? ((_args, _opts) => {
+      throw new Error("dpa background mode is not yet implemented — use foreground or --background via the droid SDK session factory");
+    });
+  }
+
+  spawn(opts: SpawnOpts): Promise<SpawnResult> {
+    return this.runDroid(opts);
+  }
+
+  resume(opts: ResumeOpts): Promise<SpawnResult> {
+    return this.runDroid(opts, opts.sessionId);
+  }
+
+  extractActivity(deployDir: string): ActivityEvent[] {
+    const logPath = resolve(deployDir, "droid-output.jsonl");
+    if (!existsSync(logPath)) return [];
+    const events: ActivityEvent[] = [];
+    for (const line of readFileSync(logPath, "utf-8").split("\n").filter(Boolean)) {
+      try {
+        const raw = JSON.parse(line) as Record<string, unknown>;
+        events.push(createActivityEvent({
+          deployId: String(raw["deployId"] ?? basenameDeployId(deployDir)),
+          timestamp: normalizeTimestamp(raw["timestamp"]),
+          kind: normalizeKind(raw),
+          source: extractSource(raw),
+          body: extractBody(raw),
+          partType: extractPartType(raw),
+          metadata: raw,
+        }));
+      } catch {
+        events.push(createActivityEvent({ deployId: basenameDeployId(deployDir), kind: "text", source: "droid", body: line }));
+      }
+    }
+    return events;
+  }
+
+  installHooks(_targetDir: string, _config: HookConfig): void {
+    installPaDroidHooks(this.env);
+  }
+
+  describeTools(): ToolReference {
+    return {
+      runtime: this.name,
+      markdown: [
+        "Runtime: Droid via `dpa`.",
+        "Use `dpa` for PA platform deployment and workflow commands; it invokes the same pa-core command set that `opa` and `cpa` use.",
+        "Use `pa-core serve` for Agent API server lifecycle; `dpa` is a deployment adapter, not the server owner.",
+        "Droid deployments use the full Droid tool set: Read, Edit, Create, Execute, Grep, Glob, LS, Task (sub-agent spawning), AskUser, Skill, WebSearch, FetchUrl, and TodoWrite.",
+        "All dpa runs (foreground and background) capture a session id and are resumable.",
+        `Default model: \`${this.defaultModel}\` (override via --model, team-mode YAML, or PA_DPA_DEFAULT_MODEL).`,
+      ].join("\n"),
+    };
+  }
+
+  getCwd(): string {
+    return this.cwd;
+  }
+
+  getEnv(): NodeJS.ProcessEnv {
+    return this.env;
+  }
+
+  private async runDroid(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const primer = readFileSync(opts.primerPath, "utf-8");
+    const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
+    const model = opts.model ?? this.defaultModel;
+    const apiKey = opts.env?.["FACTORY_API_KEY"] ?? this.env["FACTORY_API_KEY"];
+    if (!apiKey) {
+      const msg = "FACTORY_API_KEY is required for dpa deploys. Set it as FACTORY_API_KEY in your environment, or in ~/.config/sinh-x/pa-platform/config.yaml under provider_defaults.providers.factory.api_key.";
+      appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "droid", body: msg }), activityLogPath);
+      return { exitCode: 1, logFile: opts.logFile, errorMessage: msg };
+    }
+
+    const mergedEnv = { ...this.env, ...opts.env };
+
+    // Foreground: spawn droid (interactive TUI mode) with primer as positional arg.
+    // Matches opa's runInheritedCommand pattern: inherited stdio for full TUI, piped stderr for capture.
+    // When custom factories are set (tests), fall through to SDK streaming path below.
+    if (opts.mode === "foreground" && !this.sessionFactory && !this.resumeFactory) {
+      const args = ["-m", model];
+      if (sessionId) args.push("-r", sessionId);
+      args.push(primer);
+      const result = spawnSync("droid", args, {
+        cwd: this.cwd,
+        env: mergedEnv,
+        stdio: ["inherit", "inherit", "pipe"],
+        encoding: "utf-8",
+      });
+      const stderr = typeof result.stderr === "string" ? result.stderr : "";
+      if (stderr.length > 0 && result.status !== 0) process.stderr.write(stderr);
+
+      const exitCode = result.status ?? 1;
+      const errorMessage = exitCode !== 0
+        ? (stderr ? firstLine(stderr) : `droid exited with code ${exitCode}`)
+        : undefined;
+      if (errorMessage) {
+        appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "droid", body: sanitizeStreamBody(errorMessage) }), activityLogPath);
+      }
+      const terminalBody = exitCode === 0 ? `droid exited with code ${exitCode}` : `droid exited with code ${exitCode}: ${errorMessage ?? "unknown error"}`;
+      appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: exitCode === 0 ? "text" : "error", source: "droid", body: terminalBody }), activityLogPath);
+
+      return { ...(sessionId ? { sessionId } : {}), exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
+    }
+
+    if (opts.mode === "background") {
+      const result = this.runBackgroundCommand([model, opts.primerPath], {
+        cwd: this.cwd,
+        env: toEnvRecord(mergedEnv),
+        logFile: opts.logFile,
+      });
+      const captured = result.sessionId ?? sessionId;
+      return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
+    }
+
+    // Streaming mode (tests / explicit SDK path): use SDK session.stream()
+    const deployDir = resolve(dirname(opts.primerPath));
+    const outputJsonlPath = resolve(deployDir, "droid-output.jsonl");
+    mkdirSync(dirname(outputJsonlPath), { recursive: true });
+    if (opts.logFile) mkdirSync(dirname(opts.logFile), { recursive: true });
+    const log = opts.logFile ? createWriteStream(opts.logFile, { flags: "a" }) : undefined;
+    const jsonl = createWriteStream(outputJsonlPath, { flags: "a" });
+    log?.on("error", () => {});
+    jsonl.on("error", () => {});
+
+    try {
+      const session = sessionId
+        ? await (this.resumeFactory ?? defaultResumeSession)(sessionId, { apiKey, env: toEnvRecord(mergedEnv) })
+        : await (this.sessionFactory ?? defaultCreateSession)({ modelId: model, cwd: this.cwd, env: toEnvRecord(mergedEnv), apiKey });
+
+      let exitCode = 0;
+      let errorMessage: string | undefined;
+
+      try {
+        for await (const msg of session.stream(primer)) {
+          const raw = serializeStreamMessage(msg);
+          jsonl.write(raw + "\n");
+          log?.write(raw + "\n");
+          const event = droidStreamMessageToActivityEvent(msg, opts.deployId);
+          if (event) appendActivityEvent(event, activityLogPath);
+        }
+      } catch (streamError) {
+        exitCode = 1;
+        errorMessage = streamError instanceof Error ? streamError.message : String(streamError);
+        appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "droid", body: sanitizeStreamBody(errorMessage) }), activityLogPath);
+      }
+
+      if (exitCode === 0 && errorMessage) exitCode = 1;
+      const terminalBody = exitCode === 0 ? `droid exited with code ${exitCode}` : `droid exited with code ${exitCode}: ${errorMessage ?? "unknown error"}`;
+      appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: exitCode === 0 ? "text" : "error", source: "droid", body: terminalBody }), activityLogPath);
+
+      return { sessionId: session.sessionId, exitCode, logFile: opts.logFile, ...(errorMessage ? { errorMessage } : {}) };
+    } finally {
+      log?.end();
+      jsonl.end();
+    }
+  }
+}
+
+export function resolveDroidModel(
+  provider: string | undefined,
+  model: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platformDefaults?: { model?: string },
+): string {
+  // Explicit model takes highest priority
+  if (model && model.length > 0) {
+    // opencode-style provider/model paths (e.g. "deepseek/deepseek-v4-pro"):
+    // droid uses flat model ids; extract the model name after the slash.
+    if (model.includes("/")) return model.split("/").pop()!;
+    return model;
+  }
+  // Platform config default
+  if (platformDefaults?.model && platformDefaults.model.length > 0) {
+    return platformDefaults.model;
+  }
+  // Provider-based default map
+  if (provider && PROVIDER_DEFAULT_DROID_MODELS[provider]) {
+    return PROVIDER_DEFAULT_DROID_MODELS[provider];
+  }
+  // Env override
+  const envOverride = env["PA_DPA_DEFAULT_MODEL"];
+  if (envOverride && envOverride.length > 0) return envOverride;
+  // Fallback
+  return "deepseek-v4-pro";
+}
+
+export function resolveDefaultDroidModel(env: NodeJS.ProcessEnv): string {
+  return env["PA_DPA_DEFAULT_MODEL"] ?? "deepseek-v4-pro";
+}
+
+function resolveAutonomy(env: NodeJS.ProcessEnv): AutonomyLevel {
+  const raw = (env["PA_DPA_AUTONOMY"] ?? "high").toLowerCase();
+  switch (raw) {
+    case "off": return AutonomyLevel.Off;
+    case "low": return AutonomyLevel.Low;
+    case "medium": return AutonomyLevel.Medium;
+    case "high": return AutonomyLevel.High;
+    default: return AutonomyLevel.High;
+  }
+}
+
+async function defaultCreateSession(opts: {
+  modelId: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  apiKey: string;
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
+}): Promise<DroidSession> {
+  return createSession({
+    cwd: opts.cwd,
+    env: toEnvRecord(opts.env),
+    apiKey: opts.apiKey,
+    modelId: opts.modelId,
+    autonomyLevel: resolveAutonomy(opts.env),
+    permissionHandler: () => ToolConfirmationOutcome.ProceedOnce,
+    abortSignal: opts.abortSignal,
+  });
+}
+
+async function defaultResumeSession(
+  sessionId: string,
+  opts: {
+    apiKey: string;
+    env: NodeJS.ProcessEnv;
+    abortSignal?: AbortSignal;
+  },
+): Promise<DroidSession> {
+  return resumeSession(sessionId, {
+    env: toEnvRecord(opts.env),
+    apiKey: opts.apiKey,
+    permissionHandler: () => ToolConfirmationOutcome.ProceedOnce,
+    abortSignal: opts.abortSignal,
+  });
+}
+
+function serializeStreamMessage(msg: DroidStreamMessage): string {
+  try {
+    return JSON.stringify(msg);
+  } catch {
+    return JSON.stringify({ type: String(msg.type), error: "unserializable" });
+  }
+}
+
+function droidStreamMessageToActivityEvent(msg: DroidStreamMessage, deployId: string): ActivityEvent | null {
+  const raw = msg as unknown as Record<string, unknown>;
+  const type = String(raw["type"] ?? "");
+  switch (type) {
+    case "assistant_text_delta":
+      return null;
+    case "assistant_text_complete":
+      return createActivityEvent({
+        deployId,
+        kind: "text",
+        source: "droid",
+        body: sanitizeStreamBody(stringValue(raw["text"]) ?? ""),
+        partType: "text",
+        metadata: raw,
+      });
+    case "thinking_text_delta":
+      return null;
+    case "thinking_text_complete":
+      return createActivityEvent({
+        deployId,
+        kind: "thinking",
+        source: "droid",
+        body: sanitizeStreamBody(stringValue(raw["text"]) ?? ""),
+        partType: "thinking",
+        metadata: raw,
+      });
+    case "tool_call": {
+      const name = stringValue(raw["name"]) ?? "tool";
+      const input = (raw["input"] ?? {}) as Record<string, unknown>;
+      return createActivityEvent({
+        deployId,
+        kind: "tool_use",
+        source: "droid",
+        body: sanitizeStreamBody([name, extractToolDescription(input)].filter(Boolean).join(" ")),
+        partType: "tool_use",
+        metadata: raw,
+      });
+    }
+    case "tool_result": {
+      const content = raw["content"];
+      let text = "";
+      if (typeof content === "string") {
+        text = content;
+      } else if (Array.isArray(content) && content.length > 0) {
+        const first = content[0] as Record<string, unknown> | undefined;
+        text = stringValue(first?.text) ?? "";
+      }
+      return createActivityEvent({
+        deployId,
+        kind: "tool_result",
+        source: "droid",
+        body: sanitizeStreamBody(`tool_result ${text}`.trim()),
+        partType: "tool_result",
+        metadata: raw,
+      });
+    }
+    case "error":
+      return createActivityEvent({
+        deployId,
+        kind: "error",
+        source: "droid",
+        body: sanitizeStreamBody(stringValue(raw["message"]) ?? "error"),
+        partType: "error",
+        metadata: raw,
+      });
+    case "result":
+      return createActivityEvent({
+        deployId,
+        kind: "text",
+        source: "droid",
+        body: sanitizeStreamBody(stringValue(raw["result"]) ?? stringValue(raw["subtype"]) ?? "completed"),
+        partType: "result",
+        metadata: raw,
+      });
+    default:
+      return null;
+  }
+}
+
+function extractToolDescription(input: Record<string, unknown>): string | undefined {
+  return stringValue(input["description"] ?? input["command"] ?? input["filePath"] ?? input["file_path"] ?? input["pattern"] ?? input["url"] ?? input["prompt"]);
+}
+
+function sanitizeStreamBody(value: string): string {
+  let result = value;
+  for (const pattern of STREAM_SECRET_PATTERNS) result = result.replace(pattern, "[REDACTED]");
+  return result.length > STREAM_BODY_MAX_CHARS ? `${result.slice(0, STREAM_BODY_MAX_CHARS - 3)}...` : result;
+}
+
+function createDroidActivityWriter(deployId: string, activityLogPath: string): { write(text: string): void; flush(): void } {
+  let pending = "";
+  const processLine = (line: string): void => {
+    if (!line.trim()) return;
+    try {
+      const raw = JSON.parse(line) as ActivityEvent;
+      appendActivityEvent(raw, activityLogPath);
+    } catch {
+      appendActivityEvent(createActivityEvent({ deployId, kind: "text", source: "droid", body: line }), activityLogPath);
+    }
+  };
+  return {
+    write(text: string): void {
+      pending += text;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) processLine(line);
+    },
+    flush(): void {
+      processLine(pending);
+      pending = "";
+    },
+  };
+}
+
+function normalizeKind(raw: Record<string, unknown>): ActivityEvent["kind"] {
+  const type = String(raw["kind"] ?? raw["type"] ?? "text").toLowerCase();
+  if (type === "error") return "error";
+  if (type === "thinking" || type === "thinking_text_complete") return "thinking";
+  if (type === "tool_use" || type === "tool_call") return "tool_use";
+  if (type === "tool_result") return "tool_result";
+  return "text";
+}
+
+function extractBody(raw: Record<string, unknown>): string {
+  const body = raw["body"] ?? raw["text"] ?? raw["content"] ?? raw["message"] ?? "";
+  return sanitizeStreamBody(typeof body === "string" ? body : JSON.stringify(body));
+}
+
+function extractSource(raw: Record<string, unknown>): string {
+  const sessionId = stringValue(raw["sessionId"] ?? raw["session_id"]);
+  return sessionId ? sessionId.slice(0, 8) : "droid";
+}
+
+function extractPartType(raw: Record<string, unknown>): string | undefined {
+  return stringValue(raw["partType"] ?? raw["part_type"] ?? raw["type"]);
+}
+
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value === "string") return parseTimestamp(value).toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) return nowUtc(new Date(value));
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function basenameDeployId(deployDir: string): string {
+  return deployDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown";
+}
+
+function toEnvRecord(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+export function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FACTORY_API_KEY", "FACTORY_API_BASE_URL", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_DPA_DEFAULT_MODEL", "PA_DPA_AUTONOMY"] as const) {
+    if (env[key]) picked[key] = env[key]!;
+  }
+  return picked;
+}

@@ -3,18 +3,18 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
-import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
-import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath, type BuilderCompletionPath } from "./post-deploy-evaluator.js";
+import { DroidCodeAdapter, resolveDroidModel } from "./adapter.js";
+import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 
-export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
-  return { deploy: (request) => deployWithOpencode(request, adapter) };
+export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
+  return { deploy: (request) => deployWithDroid(request, adapter) };
 }
 
-export function createDefaultOpencodeHooks(): CoreExecutionHooks {
-  return createOpencodeHooks();
+export function createDefaultDroidHooks(): CoreExecutionHooks {
+  return createDroidHooks();
 }
 
-export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter()) {
+export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAdapter = new DroidCodeAdapter()) {
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
@@ -28,12 +28,12 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
-  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions, evaluationAutoLaunchEnabled: platformConfig.evaluation?.auto_launch_enabled });
+  const primer = generatePrimer({ runtime: "droid", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions, evaluationAutoLaunchEnabled: platformConfig.evaluation?.auto_launch_enabled });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider ?? selectedMode?.provider ?? "ollama-cloud";
-  const model = resolveOpencodeModel(provider, request.model ?? request.teamModel ?? selectedMode?.model);
+  const provider = request.provider ?? selectedMode?.provider ?? "";
+  const model = resolveDroidModel(provider, request.model ?? request.teamModel ?? selectedMode?.model, process.env, platformConfig.defaults?.droidcode);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
   const env = {
@@ -49,10 +49,18 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     PA_TEAM_MODEL: request.teamModel ?? "",
     PA_AGENT_MODEL: request.agentModel ?? "",
   };
+  // Resolve FACTORY_API_KEY: env var takes precedence, platform config as fallback.
+  const factoryApiKey = process.env["FACTORY_API_KEY"]
+    ?? platformConfig.provider_defaults?.providers?.factory?.api_key;
+  if (factoryApiKey) {
+    (env as Record<string, string>)["FACTORY_API_KEY"] = factoryApiKey;
+  } else {
+    process.stdout.write("Warning: FACTORY_API_KEY not set. Set it in your environment or in ~/.config/sinh-x/pa-platform/config.yaml under provider_defaults.providers.factory.api_key. The deploy will fail unless the key is otherwise available.\n");
+  }
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
-    writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
+    writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "droid", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
 
@@ -63,39 +71,34 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
+  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "droid", binary: "dpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
 
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env });
-    // Only persist a session file when a real opencode session token was captured.
-    // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
-    // the deploy id as a placeholder, which silently broke `opa deploy --resume`.
+      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession })
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env });
+    // dpa captures session ids from all modes (foreground included) via the SDK.
     if (result.sessionId) {
       writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");
     }
     const pid = typeof result.metadata?.["pid"] === "number" ? result.metadata["pid"] : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
-      appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `opencode background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
+      appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "droid", body: `dpa background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    // Finalization appends to activity.jsonl instead of overwriting — live events from
-    // the opencode plugin (~/.config/opencode/plugins/pa-safety-activity.js) and any
-    // streaming writer are preserved alongside our terminal event.
     const errorMessage = result.errorMessage;
     const terminalKind = result.exitCode === 0 ? "text" : "error";
     const terminalBody = result.exitCode === 0
-      ? `opencode exited with code ${result.exitCode}`
+      ? `droid exited with code ${result.exitCode}`
       : errorMessage
-        ? `opencode exited with code ${result.exitCode}: ${errorMessage}`
-        : `opencode exited with code ${result.exitCode}`;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: terminalKind, source: "opencode", body: terminalBody }), paths.activityLogPath);
+        ? `droid exited with code ${result.exitCode}: ${errorMessage}`
+        : `droid exited with code ${result.exitCode}`;
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: terminalKind, source: "droid", body: terminalBody }), paths.activityLogPath);
     const summary = result.exitCode === 0
-      ? "opa deploy completed"
-      : `opa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
+      ? "dpa deploy completed"
+      : `dpa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     await maybeLaunchPostDeployEvaluation({
@@ -108,11 +111,11 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
       model: request.model,
       teamModel: request.teamModel,
       agentModel: request.agentModel,
-      hooks: { deploy: (nextRequest) => deployWithOpencode(nextRequest, adapter) },
+      hooks: { deploy: (nextRequest) => deployWithDroid(nextRequest, adapter) },
     });
     return result.exitCode === 0
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
-      : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
+      : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `droid exited with code ${result.exitCode}` };
   } catch (error) {
     emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
@@ -150,7 +153,7 @@ async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): 
 
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const code = await runCoreCommand(command, { hooks: opts.hooks, io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "opa" });
+  const code = await runCoreCommand(command, { hooks: opts.hooks, io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "dpa" });
   const evaluatorDeploymentId = extractEvaluatorDeploymentId(stdout.join("\n"));
 
   appendRegistryEvent({
@@ -164,7 +167,7 @@ async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): 
   });
 }
 
-function isEvaluationAlreadyRecorded(deploymentId: string, completionPath: BuilderCompletionPath): boolean {
+function isEvaluationAlreadyRecorded(deploymentId: string, completionPath: string): boolean {
   return getDeploymentEvents(deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`));
 }
 
@@ -205,11 +208,11 @@ function readPriorSession(deploymentId: string, sessionFileName: string): string
     if (otherRuntime) {
       throw new Error(`cannot resume: deploy ${deploymentId} was launched by ${otherRuntime.runtime}; use '${otherRuntime.binary} deploy --resume ${deploymentId}'`);
     }
-    throw new Error(`no opencode session id recorded for ${deploymentId} — cannot resume (foreground TUI runs are not resumable)`);
+    throw new Error(`no droid session id recorded for ${deploymentId} — cannot resume`);
   }
   const value = readFileSync(sessionPath, "utf-8").trim();
   if (!value) {
-    throw new Error(`empty opencode session id recorded for ${deploymentId} — cannot resume`);
+    throw new Error(`empty droid session id recorded for ${deploymentId} — cannot resume`);
   }
   return value;
 }
@@ -270,7 +273,7 @@ function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   if (docs.length === 0) return undefined;
   return [
     "## Memory Docs",
-    "The following instruction files were explicitly included to emulate Claude Code memory for opencode deployments. Follow them unless they conflict with this deployment primer.",
+    "The following instruction files were explicitly included to emulate memory for droid deployments. Follow them unless they conflict with this deployment primer.",
     ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
   ].join("\n\n");
 }

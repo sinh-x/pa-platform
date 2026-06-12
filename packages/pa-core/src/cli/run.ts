@@ -66,6 +66,7 @@ export function createMockRuntimeAdapter(name: RuntimeName = "opencode"): Runtim
   const defaults: Record<RuntimeName, { defaultModel: string; sessionFileName: string }> = {
     opencode: { defaultModel: "sonnet", sessionFileName: "session-id-opencode.txt" },
     claude: { defaultModel: "claude-opus-4-7", sessionFileName: "session-id-claude.txt" },
+    droid: { defaultModel: "deepseek-v4-pro", sessionFileName: "session-id-droid.txt" },
   };
   const { defaultModel, sessionFileName } = defaults[name];
   return {
