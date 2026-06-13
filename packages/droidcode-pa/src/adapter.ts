@@ -150,9 +150,8 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     // When custom factories are set (tests), fall through to SDK streaming path below.
     if (opts.mode === "foreground" && !this.sessionFactory && !this.resumeFactory) {
       const autonomy = opts.autonomy ?? "high";
-      const args = ["exec", "--auto", autonomy, "-m", model];
+      const args = ["exec", "--auto", autonomy, "-m", model, "-f", opts.primerPath];
       if (sessionId) args.push("-s", sessionId);
-      args.push(primer);
       const result = spawnSync("droid", args, {
         cwd: this.cwd,
         env: mergedEnv,
