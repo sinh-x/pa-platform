@@ -397,8 +397,36 @@ describe("resolveDefaultDroidModel", () => {
 });
 
 describe("resolveDroidAutonomy", () => {
-  it("defaults to high", () => {
-    assert.equal(resolveDroidAutonomy({}), "high");
+  it("defaults to medium", () => {
+    assert.equal(resolveDroidAutonomy({}), "medium");
+  });
+
+  it("cliFlag wins over env var (AC6)", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "low",
+      env: { PA_DPA_AUTONOMY: "high" },
+    }), "low");
+  });
+
+  it("cliFlag wins over mode runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "high",
+      modeRuntimes: { autonomy: "low" },
+    }), "high");
+  });
+
+  it("cliFlag wins over team runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "high",
+      teamRuntimes: { autonomy: "low" },
+    }), "high");
+  });
+
+  it("cliFlag wins over platform defaults", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "low",
+      platformDefaults: { autonomy: "high" },
+    }), "low");
   });
 
   it("uses PA_DPA_AUTONOMY env var", () => {
@@ -430,13 +458,39 @@ describe("resolveDroidAutonomy", () => {
     assert.equal(resolveDroidAutonomy({ platformDefaults: { autonomy: "low" } }), "low");
   });
 
-  it("full precedence: PA_DPA_AUTONOMY > mode runtime > team runtime > platform > high", () => {
+  it("full precedence: cliFlag > PA_DPA_AUTONOMY > mode runtime > team runtime > platform > medium", () => {
     assert.equal(resolveDroidAutonomy({
+      cliFlag: "high",
       env: { PA_DPA_AUTONOMY: "medium" },
       modeRuntimes: { autonomy: "low" },
       teamRuntimes: { autonomy: "high" },
       platformDefaults: { autonomy: "low" },
+    }), "high");
+  });
+
+  it("invalid cliFlag falls through to env var", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "invalid",
+      env: { PA_DPA_AUTONOMY: "low" },
+    }), "low");
+  });
+
+  it("invalid cliFlag falls through to mode runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "SUPER_HIGH",
+      modeRuntimes: { autonomy: "medium" },
     }), "medium");
+  });
+
+  it("invalid cliFlag falls through to default when no other source", () => {
+    assert.equal(resolveDroidAutonomy({ cliFlag: "nonsense" }), "medium");
+  });
+
+  it("valid cliFlag with mixed case is normalized", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "HIGH",
+      env: { PA_DPA_AUTONOMY: "low" },
+    }), "high");
   });
 });
 

@@ -1,7 +1,11 @@
+import type { AutonomyLevel } from "../types.js";
+
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
 export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
 export const MAX_DEPLOY_TIMEOUT_SECONDS = 7200;
 const PA_MAX_RUNTIME_ENV = "PA_MAX_RUNTIME";
+
+const VALID_AUTONOMY_LEVELS = new Set<string>(["low", "medium", "high"]);
 
 export interface DeployRequest {
   team: string;
@@ -18,6 +22,7 @@ export interface DeployRequest {
   teamModel?: string;
   agentModel?: string;
   resume?: string;
+  autonomy?: AutonomyLevel;
   listModes?: boolean;
   validate?: boolean;
 }
@@ -65,6 +70,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   const teamModel = stringField(body, "teamModel");
   const agentModel = stringField(body, "agentModel");
   const resume = stringField(body, "resume");
+  const autonomy = stringField(body, "autonomy");
   const rawTimeout = body["timeout"];
   const timeout = typeof rawTimeout === "number" ? rawTimeout : undefined;
   const dryRun = booleanField(body, "dryRun");
@@ -83,6 +89,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (teamModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(teamModel)) return { error: "Invalid team model name" };
   if (agentModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(agentModel)) return { error: "Invalid agent model name" };
   if (resume && !/^[a-zA-Z0-9-]+$/.test(resume)) return { error: "Invalid resume deployment id" };
+  if (autonomy && !VALID_AUTONOMY_LEVELS.has(autonomy)) return { error: "Invalid autonomy level: must be low, medium, or high" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
   const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");
   if (timeoutValidation) return { error: timeoutValidation };
@@ -106,6 +113,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (teamModel) request.teamModel = teamModel;
   if (agentModel) request.agentModel = agentModel;
   if (resume) request.resume = resume;
+  if (autonomy) request.autonomy = autonomy as AutonomyLevel;
   if (listModes !== undefined) request.listModes = listModes;
   if (validate !== undefined) request.validate = validate;
   return { request };
