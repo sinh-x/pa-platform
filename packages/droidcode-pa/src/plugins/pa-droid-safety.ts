@@ -304,11 +304,16 @@ try {
   if (hookEvent === "PostToolUse") {
     const response = input.tool_response || {};
     let exitCode = response.exitCode;
+    let exitCodeSource;
     if (exitCode === undefined || exitCode === null) {
       exitCode = response.result?.exitCode;
+      if (exitCode !== undefined && exitCode !== null) exitCodeSource = "result";
+    } else {
+      exitCodeSource = "direct";
     }
     if (exitCode === undefined || exitCode === null) {
       exitCode = response.result?.metadata?.exitCode;
+      if (exitCode !== undefined && exitCode !== null) exitCodeSource = "metadata";
     }
     if (typeof exitCode === "string") exitCode = Number(exitCode);
     const isError = exitCode !== undefined && exitCode !== null && exitCode !== 0;
@@ -324,6 +329,7 @@ try {
         tool: toolName,
         kind: isError ? "error" : "info",
         exitCode: exitCode !== undefined && exitCode !== null ? exitCode : undefined,
+        exitCodeSource,
         summary: maskSensitiveText(body),
       },
     });

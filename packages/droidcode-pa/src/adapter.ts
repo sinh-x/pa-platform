@@ -10,6 +10,11 @@ import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
 import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
 
 const STREAM_BODY_MAX_CHARS = 500;
+// WARNING: these patterns carry the global flag and are shared across all masking
+// calls.  They are safe when used ONLY with .replace() (which resets lastIndex),
+// but .test() / .exec() will retain state and can produce intermittent misses.
+// If you ever need .test() / .exec(), clone each regex (e.g. new RegExp(p)) or
+// reset p.lastIndex = 0 before every call.
 const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/gi, /(?:\b|_)secret(?:\b|_)/gi, /(?:\b|_)password(?:\b|_)/gi, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/gi, /bearer\s+\S+/gi, /sk-ant-\S+/gi, /fk-[a-zA-Z0-9_-]{20,}/gi];
 
 export interface DroidModelResolutionOpts {
