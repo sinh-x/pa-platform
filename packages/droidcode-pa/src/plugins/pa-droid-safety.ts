@@ -319,8 +319,8 @@ try {
     const isError = exitCode !== undefined && exitCode !== null && exitCode !== 0;
     const body = truncate(String(
       response.error
-        || (exitCode !== undefined && exitCode !== null ? "exit=" + exitCode : "")
         || response.result
+        || (exitCode !== undefined && exitCode !== null ? "exit=" + exitCode : "")
         || JSON.stringify(response)
     ));
     appendActivity(env, {
