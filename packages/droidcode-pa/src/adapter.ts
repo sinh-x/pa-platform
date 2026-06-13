@@ -263,8 +263,11 @@ export function resolveDroidAutonomy(opts: DroidAutonomyResolutionOpts = {}): st
     if (VALID_AUTONOMY_LEVELS.has(normalized)) return normalized;
   }
   const env = opts.env ?? process.env;
-  const envVal = env["PA_DPA_AUTONOMY"];
-  if (envVal && envVal.length > 0) return envVal;
+    const envVal = env["PA_DPA_AUTONOMY"];
+    if (envVal && envVal.length > 0) {
+      const normalized = envVal.toLowerCase();
+      if (VALID_AUTONOMY_LEVELS.has(normalized)) return normalized;
+    }
   if (opts.modeRuntimes?.autonomy) return opts.modeRuntimes.autonomy;
   if (opts.teamRuntimes?.autonomy) return opts.teamRuntimes.autonomy;
   if (opts.platformDefaults?.autonomy && opts.platformDefaults.autonomy.length > 0) return opts.platformDefaults.autonomy;
@@ -293,13 +296,12 @@ function createSafetyPermissionHandler() {
 }
 
 function resolveAutonomy(env: NodeJS.ProcessEnv): AutonomyLevel {
-  const raw = (env["PA_DPA_AUTONOMY"] ?? "high").toLowerCase();
+  const raw = (env["PA_DPA_AUTONOMY"] ?? "medium").toLowerCase();
   switch (raw) {
-    case "off": return AutonomyLevel.Off;
     case "low": return AutonomyLevel.Low;
     case "medium": return AutonomyLevel.Medium;
     case "high": return AutonomyLevel.High;
-    default: return AutonomyLevel.High;
+    default: return AutonomyLevel.Medium;
   }
 }
 
