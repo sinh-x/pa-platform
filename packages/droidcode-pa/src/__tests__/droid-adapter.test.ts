@@ -243,6 +243,82 @@ describe("DroidCodeAdapter", () => {
     const events = adapter.extractActivity("/nonexistent/path");
     assert.equal(events.length, 0);
   });
+
+  it("runs injected runBackgroundCommand for background mode", async () => {
+    let calledArgs: string[] | undefined;
+    const adapter = new DroidCodeAdapter({
+      cwd: "/test",
+      env: { FACTORY_API_KEY: TEST_API_KEY },
+      runBackgroundCommand: (args) => {
+        calledArgs = args;
+        return { pid: 4242 };
+      },
+      sessionFactory: async () => fakeStream([textComplete("done"), resultMsg("success")]),
+    });
+
+    const logFile = resolve(root, "bg-test.log");
+    const result = await adapter.spawn({
+      primerPath,
+      deployId: "d-bgtest",
+      mode: "background",
+      model: "deepseek-v4-pro",
+      logFile,
+      env: {},
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.ok(calledArgs, "runBackgroundCommand should be called");
+    assert.equal(calledArgs![0], "deepseek-v4-pro");
+    assert.equal(calledArgs![1], primerPath);
+    assert.equal(result.metadata?.pid, 4242);
+  });
+
+  it("returns sessionId from injected runBackgroundCommand", async () => {
+    const adapter = new DroidCodeAdapter({
+      cwd: "/test",
+      env: { FACTORY_API_KEY: TEST_API_KEY },
+      runBackgroundCommand: () => ({ pid: 1234, sessionId: "ses_bg" }),
+      sessionFactory: async () => fakeStream([textComplete("done"), resultMsg("success")]),
+    });
+
+    const logFile = resolve(root, "bg-session.log");
+    const result = await adapter.spawn({
+      primerPath,
+      deployId: "d-bgsession",
+      mode: "background",
+      model: "deepseek-v4-pro",
+      logFile,
+      env: {},
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.sessionId, "ses_bg");
+  });
+
+  it("background mode does not throw when runBackgroundCommand is injected", async () => {
+    const adapter = new DroidCodeAdapter({
+      cwd: "/test",
+      env: { FACTORY_API_KEY: TEST_API_KEY },
+      runBackgroundCommand: () => ({ pid: 5678 }),
+      sessionFactory: async () => fakeStream([textComplete("done"), resultMsg("success")]),
+    });
+
+    const logFile = resolve(root, "bg-nothrow.log");
+    let errorThrown = false;
+    try {
+      await adapter.spawn({
+        primerPath,
+        deployId: "d-bgnothrow",
+        mode: "background",
+        model: "deepseek-v4-pro",
+        logFile,
+        env: {},
+      });
+    } catch {
+      errorThrown = true;
+    }
+    assert.equal(errorThrown, false, "background deploy should not throw");
+  });
 });
 
 describe("resolveDroidModel", () => {
