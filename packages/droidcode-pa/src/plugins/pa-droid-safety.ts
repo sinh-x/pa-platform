@@ -1,8 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { SAFETY_PATTERNS } from "../safety-rules.js";
 
 export const PA_DROID_SAFETY_SCRIPT = "pa-safety.js";
+const PA_DROID_SAFETY_PATTERNS = "pa-safety-patterns.json";
 
 interface HooksConfig {
   hooks?: {
@@ -38,8 +40,17 @@ export function installDroidSafetyScript(env: NodeJS.ProcessEnv = process.env): 
   return scriptPath;
 }
 
+export function installDroidSafetyPatterns(env: NodeJS.ProcessEnv = process.env): string {
+  const factoryDir = env["FACTORY_DIR"] ?? join(env["HOME"] ?? homedir(), ".factory");
+  const patternsPath = join(factoryDir, "hooks", PA_DROID_SAFETY_PATTERNS);
+  mkdirSync(dirname(patternsPath), { recursive: true });
+  writeFileSync(patternsPath, JSON.stringify(SAFETY_PATTERNS, null, 2) + "\n", "utf-8");
+  return patternsPath;
+}
+
 export function installPaDroidHooks(env: NodeJS.ProcessEnv = process.env): void {
   const scriptPath = installDroidSafetyScript(env);
+  installDroidSafetyPatterns(env);
   const hooksPath = resolveDroidHooksPath(env);
   const scriptCmd = `node ${scriptPath}`;
 
@@ -123,7 +134,20 @@ const BUILTIN_SECRET_PATTERNS = [
   { label: "FK_KEY", pattern: /fk-[a-zA-Z0-9_-]{20,}/gi },
 ];
 
-const BLOCKED_FILE_PATTERNS = [
+function loadSafetyPatterns() {
+  const patternsPath = join(homedir(), ".factory", "hooks", "pa-safety-patterns.json");
+  if (!existsSync(patternsPath)) return { destructiveCommands: [], blockedFilePatterns: [] };
+  try {
+    return JSON.parse(readFileSync(patternsPath, "utf-8"));
+  } catch {
+    return { destructiveCommands: [], blockedFilePatterns: [] };
+  }
+}
+
+const SAFETY = loadSafetyPatterns();
+const DESTS = (SAFETY.destructiveCommands || []).map((p) => { try { return new RegExp(p, "i"); } catch { return null; } }).filter(Boolean);
+const BLOCKED_FILE_PATTERNS = (SAFETY.blockedFilePatterns || []).map((p) => { try { return new RegExp(p, "i"); } catch { return null; } }).filter(Boolean);
+const BLOCKED_FILE_HARDCODED = [
   /(^|[\\/])\.env(\.|$)/,
   /(^|[\\/])\.ssh[\\/]id_/,
   /credentials/i,
@@ -135,14 +159,6 @@ const BLOCKED_FILE_PATTERNS = [
   /(^|[\\/])\.pypirc$/,
 ];
 
-const DESTRUCTIVE_COMMANDS = [
-  /\brm\b(?!\s+(-\w*\s*)*[^-\s])/,
-  /(^|\||;|&&|\|\|)\s*rm\b/,
-  /(^|\||;|&&|\|\|)\s*find\s+[^|;]*-delete\b/,
-  /(^|\||;|&&|\|\|)\s*xargs\s+[^|;]*\brm\b/,
-  /\bgit\s+push\s+.*--force/,
-];
-
 function truncate(value, max = STREAM_BODY_MAX_CHARS) {
   if (value === undefined || value === null) return "";
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -151,6 +167,9 @@ function truncate(value, max = STREAM_BODY_MAX_CHARS) {
 
 function isBlockedFilePath(filePath) {
   if (!filePath) return false;
+  for (const pattern of BLOCKED_FILE_HARDCODED) {
+    if (pattern.test(filePath)) return true;
+  }
   for (const pattern of BLOCKED_FILE_PATTERNS) {
     if (pattern.test(filePath)) return true;
   }
@@ -166,7 +185,7 @@ function isBlockedFilePath(filePath) {
 
 function containsDestructiveCommand(command) {
   if (!command) return false;
-  for (const pattern of DESTRUCTIVE_COMMANDS) {
+  for (const pattern of DESTS) {
     if (pattern.test(command)) return true;
   }
   return false;
@@ -244,7 +263,7 @@ try {
   if (hookEvent === "PreToolUse") {
     // Block destructive commands
     if (toolName === "Execute" && containsDestructiveCommand(toolInput.command)) {
-      console.error("BLOCKED: destructive command detected. Use pa trash move instead of rm, or review the command for unsafe operations.");
+      console.error("BLOCKED: destructive command detected. Use dpa trash move instead of rm, or review the command for unsafe operations.");
       process.exit(2);
     }
     // Block sensitive file access

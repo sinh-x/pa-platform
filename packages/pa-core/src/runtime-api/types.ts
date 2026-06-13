@@ -21,6 +21,7 @@ export interface SpawnOpts {
   deployId: string;
   mode: "foreground" | "background" | "dry-run";
   model?: string;
+  autonomy?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
   logFile?: string;

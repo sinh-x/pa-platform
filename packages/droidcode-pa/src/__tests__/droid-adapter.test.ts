@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
-import { DroidCodeAdapter, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
+import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 
@@ -247,39 +247,64 @@ describe("DroidCodeAdapter", () => {
 
 describe("resolveDroidModel", () => {
   it("returns explicit model as-is when no slash", () => {
-    assert.equal(resolveDroidModel(undefined, "claude-opus-4-8"), "claude-opus-4-8");
+    assert.equal(resolveDroidModel("claude-opus-4-8"), "claude-opus-4-8");
   });
 
   it("strips provider prefix from opencode-style model ids", () => {
-    assert.equal(resolveDroidModel(undefined, "deepseek/deepseek-v4-pro"), "deepseek-v4-pro");
+    assert.equal(resolveDroidModel("deepseek/deepseek-v4-pro"), "deepseek-v4-pro");
   });
 
-  it("returns platform config default if no explicit model", () => {
-    assert.equal(resolveDroidModel(undefined, undefined, process.env, { model: "gpt-5.5" }), "gpt-5.5");
+  it("uses mode runtimes.droid.model when no explicit model", () => {
+    assert.equal(resolveDroidModel(undefined, { modeRuntimes: { model: "gpt-5.5" } }), "gpt-5.5");
   });
 
-  it("falls back to provider map", () => {
-    assert.equal(resolveDroidModel("anthropic", undefined), "claude-opus-4-8");
-    assert.equal(resolveDroidModel("openai", undefined), "gpt-5.5");
-    assert.equal(resolveDroidModel("deepseek", undefined), "deepseek-v4-pro");
-    assert.equal(resolveDroidModel("gemini", undefined), "gemini-3.1-pro-preview");
-    assert.equal(resolveDroidModel("minimax", undefined), "minimax-m2.7");
+  it("uses team runtimes.droid.model as fallback after mode runtimes", () => {
+    assert.equal(resolveDroidModel(undefined, { teamRuntimes: { model: "claude-sonnet-4-6" } }), "claude-sonnet-4-6");
   });
 
-  it("uses PA_DPA_DEFAULT_MODEL as last resort", () => {
-    assert.equal(resolveDroidModel(undefined, undefined, { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" }), "claude-sonnet-4-6");
+  it("mode runtimes wins over team runtimes", () => {
+    assert.equal(resolveDroidModel(undefined, { modeRuntimes: { model: "gpt-5.5" }, teamRuntimes: { model: "claude-opus-4-8" } }), "gpt-5.5");
   });
 
-  it("falls back to deepseek-v4-pro", () => {
-    assert.equal(resolveDroidModel(undefined, undefined), "deepseek-v4-pro");
+  it("uses PA_DPA_DEFAULT_MODEL after runtimes", () => {
+    assert.equal(resolveDroidModel(undefined, { env: { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" } }), "claude-sonnet-4-6");
   });
 
-  it("explicit model wins over platform config", () => {
-    assert.equal(resolveDroidModel(undefined, "gemini-3.5-flash", process.env, { model: "gpt-5.5" }), "gemini-3.5-flash");
+  it("mode runtimes wins over PA_DPA_DEFAULT_MODEL", () => {
+    assert.equal(resolveDroidModel(undefined, { modeRuntimes: { model: "gpt-5.5" }, env: { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" } }), "gpt-5.5");
   });
 
-  it("explicit model wins over provider map", () => {
-    assert.equal(resolveDroidModel("anthropic", "claude-haiku-4-5-20251001"), "claude-haiku-4-5-20251001");
+  it("returns platform config default after env", () => {
+    assert.equal(resolveDroidModel(undefined, { platformDefaults: { model: "gpt-5.5" } }), "gpt-5.5");
+  });
+
+  it("PA_DPA_DEFAULT_MODEL wins over platform config default", () => {
+    assert.equal(resolveDroidModel(undefined, { platformDefaults: { model: "gpt-5.5" }, env: { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" } }), "claude-sonnet-4-6");
+  });
+
+  it("falls back to deepseek-v4-pro when nothing is set", () => {
+    assert.equal(resolveDroidModel(undefined, {}), "deepseek-v4-pro");
+  });
+
+  it("explicit model wins over runtimes", () => {
+    assert.equal(resolveDroidModel("gemini-3.5-flash", { modeRuntimes: { model: "gpt-5.5" } }), "gemini-3.5-flash");
+  });
+
+  it("explicit model wins over all other options (full precedence)", () => {
+    assert.equal(resolveDroidModel("claude-haiku-4-5-20251001", {
+      modeRuntimes: { model: "gpt-5.5" },
+      teamRuntimes: { model: "claude-opus-4-8" },
+      env: { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" },
+      platformDefaults: { model: "minimax-m2.7" },
+    }), "claude-haiku-4-5-20251001");
+  });
+
+  it("full precedence: mode runtimes > team runtimes > env > platform > deepseek", () => {
+    assert.equal(resolveDroidModel(undefined, {
+      teamRuntimes: { model: "claude-opus-4-8" },
+      env: { PA_DPA_DEFAULT_MODEL: "claude-sonnet-4-6" },
+      platformDefaults: { model: "minimax-m2.7" },
+    }), "claude-opus-4-8");
   });
 });
 
@@ -290,6 +315,50 @@ describe("resolveDefaultDroidModel", () => {
 
   it("returns env override", () => {
     assert.equal(resolveDefaultDroidModel({ PA_DPA_DEFAULT_MODEL: "gpt-5.5" }), "gpt-5.5");
+  });
+});
+
+describe("resolveDroidAutonomy", () => {
+  it("defaults to high", () => {
+    assert.equal(resolveDroidAutonomy({}), "high");
+  });
+
+  it("uses PA_DPA_AUTONOMY env var", () => {
+    assert.equal(resolveDroidAutonomy({ env: { PA_DPA_AUTONOMY: "medium" } }), "medium");
+  });
+
+  it("PA_DPA_AUTONOMY wins over runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      env: { PA_DPA_AUTONOMY: "medium" },
+      modeRuntimes: { autonomy: "low" },
+    }), "medium");
+  });
+
+  it("mode runtimes win over team runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      modeRuntimes: { autonomy: "low" },
+      teamRuntimes: { autonomy: "high" },
+    }), "low");
+  });
+
+  it("team runtimes win over platform defaults", () => {
+    assert.equal(resolveDroidAutonomy({
+      teamRuntimes: { autonomy: "medium" },
+      platformDefaults: { autonomy: "high" },
+    }), "medium");
+  });
+
+  it("platform defaults win over hard default", () => {
+    assert.equal(resolveDroidAutonomy({ platformDefaults: { autonomy: "low" } }), "low");
+  });
+
+  it("full precedence: PA_DPA_AUTONOMY > mode runtime > team runtime > platform > high", () => {
+    assert.equal(resolveDroidAutonomy({
+      env: { PA_DPA_AUTONOMY: "medium" },
+      modeRuntimes: { autonomy: "low" },
+      teamRuntimes: { autonomy: "high" },
+      platformDefaults: { autonomy: "low" },
+    }), "medium");
   });
 });
 

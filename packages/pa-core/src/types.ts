@@ -9,6 +9,21 @@ export interface SkillEntry {
   "inject-as": "global-skill" | "shared-skill" | "reference";
 }
 
+export type AutonomyLevel = "low" | "medium" | "high";
+
+export interface RuntimeOverrides {
+  model?: ModelName;
+  provider?: ProviderName;
+  autonomy?: AutonomyLevel;
+  timeout?: number;
+}
+
+export interface RuntimeConfigMap {
+  droid?: RuntimeOverrides;
+  opencode?: RuntimeOverrides;
+  claude?: RuntimeOverrides;
+}
+
 export interface DeployMode {
   id: string;
   label: string;
@@ -22,6 +37,7 @@ export interface DeployMode {
   provider?: ProviderName;
   timeout?: number;
   global_docs?: string[];
+  runtimes?: RuntimeConfigMap;
 }
 
 export interface HierarchyMember {
@@ -59,6 +75,7 @@ export interface TeamConfig {
   timeout?: number;
   global_docs?: string[];
   terse_mode?: boolean;
+  runtimes?: RuntimeConfigMap;
 }
 
 export interface Rating {
@@ -184,6 +201,6 @@ export interface PlatformConfig {
     runtime?: RuntimeName;
     opencode?: { provider?: string; model?: string };
     claudecode?: { model?: string; minimax_via_claude?: boolean };
-    droidcode?: { model?: string };
+    droidcode?: { model?: string; autonomy?: AutonomyLevel };
   };
 }
