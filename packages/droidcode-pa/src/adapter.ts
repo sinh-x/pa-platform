@@ -255,8 +255,13 @@ export function resolveDefaultDroidModel(env: NodeJS.ProcessEnv, platformDefault
   return env["PA_DPA_DEFAULT_MODEL"] ?? platformDefaults?.model ?? "deepseek-v4-pro";
 }
 
+const VALID_AUTONOMY_LEVELS = new Set<string>(["off", "low", "medium", "high"]);
+
 export function resolveDroidAutonomy(opts: DroidAutonomyResolutionOpts = {}): string {
-  if (opts.cliFlag && opts.cliFlag.length > 0) return opts.cliFlag;
+  if (opts.cliFlag && opts.cliFlag.length > 0) {
+    const normalized = opts.cliFlag.toLowerCase();
+    if (VALID_AUTONOMY_LEVELS.has(normalized)) return normalized;
+  }
   const env = opts.env ?? process.env;
   const envVal = env["PA_DPA_AUTONOMY"];
   if (envVal && envVal.length > 0) return envVal;

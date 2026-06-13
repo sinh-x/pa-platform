@@ -467,6 +467,31 @@ describe("resolveDroidAutonomy", () => {
       platformDefaults: { autonomy: "low" },
     }), "high");
   });
+
+  it("invalid cliFlag falls through to env var", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "invalid",
+      env: { PA_DPA_AUTONOMY: "low" },
+    }), "low");
+  });
+
+  it("invalid cliFlag falls through to mode runtimes", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "SUPER_HIGH",
+      modeRuntimes: { autonomy: "medium" },
+    }), "medium");
+  });
+
+  it("invalid cliFlag falls through to default when no other source", () => {
+    assert.equal(resolveDroidAutonomy({ cliFlag: "nonsense" }), "medium");
+  });
+
+  it("valid cliFlag with mixed case is normalized", () => {
+    assert.equal(resolveDroidAutonomy({
+      cliFlag: "HIGH",
+      env: { PA_DPA_AUTONOMY: "low" },
+    }), "high");
+  });
 });
 
 describe("createDroidHooks", () => {
