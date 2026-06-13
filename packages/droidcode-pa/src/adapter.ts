@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
@@ -49,8 +51,28 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     this.sessionFactory = options.sessionFactory;
     this.resumeFactory = options.resumeFactory;
     this.defaultModel = resolveDefaultDroidModel(this.env);
-    this.runBackgroundCommand = options.runBackgroundCommand ?? ((_args, _opts) => {
-      throw new Error("dpa background mode is not yet implemented — use foreground or --background via the droid SDK session factory");
+    this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
+      const logFile = opts.logFile ?? resolve(this.cwd, "droid-background.log");
+      mkdirSync(dirname(logFile), { recursive: true });
+      const configPath = resolve(dirname(logFile), "droid-background.json");
+      writeFileSync(configPath, JSON.stringify({
+        args,
+        cwd: opts.cwd,
+        env: pickBackgroundEnv(opts.env),
+        logFile,
+        deploymentId: opts.env["PA_DEPLOYMENT_ID"],
+        team: opts.env["PA_TEAM"],
+        sessionFileName: this.sessionFileName,
+      }, null, 2));
+      const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
+      const child = spawn(process.execPath, [runnerPath, configPath], {
+        cwd: opts.cwd,
+        env: opts.env,
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      return { pid: child.pid };
     });
   }
 
