@@ -244,6 +244,20 @@ function summarizeTool(toolName, toolInput) {
     case "Glob": return truncate(String(toolInput.patterns || toolInput.pattern || ""));
     case "FetchUrl":
     case "WebSearch": return truncate(toolInput.url || toolInput.query || "", 150);
+    case "Task": return truncate((toolInput.subagent_type || "") + ": " + (toolInput.description || ""));
+    case "Skill": return truncate(toolInput.skill || "");
+    case "AskUser": {
+      const q = toolInput.questionnaire || "";
+      const firstLine = q.split("\n")[0] || "";
+      return truncate(firstLine);
+    }
+    case "ExitSpecMode": {
+      const raw = toolInput.plan || toolInput.title || "";
+      const firstLine = raw.split("\n")[0] || "";
+      return truncate(firstLine);
+    }
+    case "ToolSearch": return truncate(toolInput.query || "");
+    case "GenerateDroid": return truncate(toolInput.description || "");
     default: return truncate(toolInput);
   }
 }
@@ -253,7 +267,11 @@ function resolveFilePath(args) {
 }
 
 try {
-  const raw = readFileSync("/dev/stdin", "utf-8");
+  const raw = readFileSync(0, "utf-8");
+  if (!raw || raw.trim().length === 0) {
+    console.error("pa-safety hook: empty stdin");
+    process.exit(0);
+  }
   const input = JSON.parse(raw);
   const hookEvent = input.hook_event_name || "";
   const toolName = input.tool_name || "";
@@ -285,19 +303,34 @@ try {
 
   if (hookEvent === "PostToolUse") {
     const response = input.tool_response || {};
-    // Log tool.after
+    let exitCode = response.exitCode;
+    let exitCodeSource;
+    if (exitCode === undefined || exitCode === null) {
+      exitCode = response.result?.exitCode;
+      if (exitCode !== undefined && exitCode !== null) exitCodeSource = "result";
+    } else {
+      exitCodeSource = "direct";
+    }
+    if (exitCode === undefined || exitCode === null) {
+      exitCode = response.result?.metadata?.exitCode;
+      if (exitCode !== undefined && exitCode !== null) exitCodeSource = "metadata";
+    }
+    if (typeof exitCode === "string") exitCode = Number(exitCode);
+    const isError = exitCode !== undefined && exitCode !== null && exitCode !== 0;
+    const body = truncate(String(
+      response.error
+        || response.result
+        || (exitCode !== undefined && exitCode !== null ? "exit=" + exitCode : "")
+        || JSON.stringify(response)
+    ));
     appendActivity(env, {
       event: "tool.execute.after",
       data: {
         tool: toolName,
-        summary: maskSensitiveText(
-          truncate(String(
-            response.error
-              || response.result
-              || (response.exitCode !== undefined ? "exit=" + response.exitCode : "")
-              || JSON.stringify(response)
-          ))
-        ),
+        kind: isError ? "error" : "info",
+        exitCode: exitCode !== undefined && exitCode !== null ? exitCode : undefined,
+        exitCodeSource,
+        summary: maskSensitiveText(body),
       },
     });
     process.exit(0);

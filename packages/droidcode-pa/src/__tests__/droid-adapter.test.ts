@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
+import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 
 const TEST_API_KEY = "changeme";
@@ -449,5 +451,396 @@ describe("createDroidHooks", () => {
     const adapter = new DroidCodeAdapter({ cwd: "/test", env: { FACTORY_API_KEY: TEST_API_KEY } });
     const hooks = createDroidHooks(adapter);
     assert.ok(hooks.deploy);
+  });
+});
+
+function runHookScript(scriptPath: string, input: Record<string, unknown>, env: Record<string, string>): { exitCode: number; stderr: string; activityPath: string } {
+  const deployDir = env["PA_DEPLOYMENT_DIR"]!;
+  const activityPath = join(deployDir, "activity.jsonl");
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) childEnv[key] = value;
+  }
+  for (const [key, value] of Object.entries(env)) {
+    childEnv[key] = value;
+  }
+  // Clear parent-level PA env vars that would override test dir
+  delete childEnv["PA_ACTIVITY_LOG"];
+  childEnv["PA_DEPLOYMENT_DIR"] = deployDir;
+  childEnv["PA_DEPLOYMENT_ID"] = env["PA_DEPLOYMENT_ID"]!;
+  childEnv["FACTORY_DIR"] = childEnv["FACTORY_DIR"] ?? join(env["HOME"]!, ".factory");
+  const result = spawnSync(process.execPath, [scriptPath], {
+    input: JSON.stringify(input),
+    encoding: "utf-8",
+    env: childEnv,
+    timeout: 5000,
+  });
+  return { exitCode: result.status ?? 0, stderr: result.stderr ?? "", activityPath };
+}
+
+describe("droid safety hook tool summaries", () => {
+  let hookRoot: string;
+  let deployDir: string;
+  let scriptPath: string;
+
+  before(() => {
+    hookRoot = mkdtempSync(join(tmpdir(), "dpa-hook-test-"));
+    const homeDir = join(hookRoot, "home");
+    const factoryDir = join(homeDir, ".factory");
+    mkdirSync(factoryDir, { recursive: true });
+    deployDir = join(hookRoot, "deployments", "d-test-hook");
+    mkdirSync(deployDir, { recursive: true });
+    scriptPath = installDroidSafetyScript({ HOME: homeDir });
+    installDroidSafetyPatterns({ HOME: homeDir });
+  });
+
+  after(() => {
+    try { rmSync(hookRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* best-effort */ }
+  });
+
+  function baseEnv(): Record<string, string> {
+    return {
+      HOME: join(hookRoot, "home"),
+      PA_DEPLOYMENT_ID: "d-test-hook",
+      PA_DEPLOYMENT_DIR: deployDir,
+    };
+  }
+
+  function readLastActivityLine(): Record<string, unknown> | undefined {
+    const p = join(deployDir, "activity.jsonl");
+    if (!existsSync(p)) return undefined;
+    const lines = readFileSync(p, "utf-8").split("\n").filter(Boolean);
+    if (lines.length === 0) return undefined;
+    return JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
+  }
+
+  function readActivityLineCount(): number {
+    const p = join(deployDir, "activity.jsonl");
+    if (!existsSync(p)) return 0;
+    return readFileSync(p, "utf-8").split("\n").filter(Boolean).length;
+  }
+
+  it("summarizes Task tool with subagent_type and description", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "worker", description: "Fix login bug" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "Task");
+    assert.ok(String(data.summary).includes("worker"), `summary should include subagent_type: ${data.summary}`);
+    assert.ok(String(data.summary).includes("Fix login bug"), `summary should include description: ${data.summary}`);
+  });
+
+  it("summarizes Skill tool with skill name", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Skill",
+      tool_input: { skill: "pa-startup" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "Skill");
+    assert.ok(String(data.summary).includes("pa-startup"), `summary should include skill name: ${data.summary}`);
+  });
+
+  it("summarizes AskUser with questionnaire first line", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "AskUser",
+      tool_input: { questionnaire: "1. [question] Which approach?\n[topic] Approach\n[option] A\n[option] B" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "AskUser");
+    assert.ok(String(data.summary).includes("Which approach?"), `summary should include first question line: ${data.summary}`);
+    assert.ok(!String(data.summary).includes("[topic]"), `summary should NOT include topic line: ${data.summary}`);
+  });
+
+  it("summarizes ExitSpecMode with plan title", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "ExitSpecMode",
+      tool_input: { plan: "## Implementation Plan\n\nPhase 1: Do the thing", title: "" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "ExitSpecMode");
+    assert.ok(String(data.summary).includes("Implementation Plan"), `summary should include plan title: ${data.summary}`);
+  });
+
+  it("summarizes ToolSearch with query", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "ToolSearch",
+      tool_input: { query: "select:figma_mcp" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "ToolSearch");
+    assert.ok(String(data.summary).includes("select:figma_mcp"), `summary should include query: ${data.summary}`);
+  });
+
+  it("summarizes GenerateDroid with description", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "GenerateDroid",
+      tool_input: { description: "A security review droid" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "GenerateDroid");
+    assert.ok(String(data.summary).includes("security review"), `summary should include description: ${data.summary}`);
+  });
+
+  it("preserves existing Execute summary", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm build" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.tool, "Execute");
+    assert.ok(String(data.summary).includes("pnpm build"));
+  });
+
+  it("extracts exit code from response.exitCode", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm build" },
+      tool_response: { exitCode: 1, result: "build failed" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "error");
+    assert.equal(data.exitCode, 1);
+  });
+
+  it("extracts exit code from response.result.exitCode", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm test" },
+      tool_response: { result: { exitCode: 2, stdout: "fail" } },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "error");
+    assert.equal(data.exitCode, 2);
+  });
+
+  it("extracts exit code from response.result.metadata.exitCode", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm lint" },
+      tool_response: { result: { metadata: { exitCode: 3 }, stdout: "errors" } },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "error");
+    assert.equal(data.exitCode, 3);
+  });
+
+  it("classifies zero exit code as info (not error)", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm build" },
+      tool_response: { exitCode: 0, result: "build ok" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "info");
+    assert.equal(data.exitCode, 0);
+  });
+
+  it("normalizes string exitCode to number in PostToolUse", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm build" },
+      tool_response: { exitCode: "0", result: "build ok" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "info");
+    assert.equal(data.exitCode, 0);
+  });
+
+  it("blocks destructive commands with exit code 2", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "rm -rf /important" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 2);
+    assert.ok(result.stderr.includes("BLOCKED"), `stderr should contain BLOCKED: ${result.stderr}`);
+    // No new activity written for blocked calls
+    assert.equal(readActivityLineCount(), before);
+  });
+
+  it("blocks sensitive file access with exit code 2", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "/home/user/.env" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 2);
+    assert.ok(result.stderr.includes("BLOCKED"), `stderr should contain BLOCKED: ${result.stderr}`);
+    assert.equal(readActivityLineCount(), before);
+  });
+});
+
+describe("droid safety hook masking", () => {
+  let hookRoot: string;
+  let deployDir: string;
+  let scriptPath: string;
+
+  before(() => {
+    hookRoot = mkdtempSync(join(tmpdir(), "dpa-mask-test-"));
+    const homeDir = join(hookRoot, "home");
+    const factoryDir = join(homeDir, ".factory");
+    mkdirSync(factoryDir, { recursive: true });
+    deployDir = join(hookRoot, "deployments", "d-test-mask");
+    mkdirSync(deployDir, { recursive: true });
+    scriptPath = installDroidSafetyScript({ HOME: homeDir });
+    installDroidSafetyPatterns({ HOME: homeDir });
+  });
+
+  after(() => {
+    try { rmSync(hookRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* best-effort */ }
+  });
+
+  function baseEnv(): Record<string, string> {
+    return {
+      HOME: join(hookRoot, "home"),
+      PA_DEPLOYMENT_ID: "d-test-mask",
+      PA_DEPLOYMENT_DIR: deployDir,
+    };
+  }
+
+  function readActivitySummary(): string {
+    const p = join(deployDir, "activity.jsonl");
+    if (!existsSync(p)) return "";
+    const lines = readFileSync(p, "utf-8").split("\n").filter(Boolean);
+    if (lines.length === 0) return "";
+    const data = (JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>).data as Record<string, unknown>;
+    return String(data.summary ?? "");
+  }
+
+  it("masks API key field names in summaries", () => {
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "curl -H 'api_key=TESTKEY123' https://api.example.com" },
+    };
+    runHookScript(scriptPath, input, baseEnv());
+    const summary = readActivitySummary();
+    assert.ok(summary.includes("REDACTED"), `summary should redact api_key field name: ${summary}`);
+    assert.ok(!summary.includes("api_key"), `summary should NOT contain raw api_key: ${summary}`);
+  });
+
+  it("masks bearer tokens with value", () => {
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "curl -H 'Authorization: Bearer test_token_12345' https://api.example.com" },
+    };
+    runHookScript(scriptPath, input, baseEnv());
+    const summary = readActivitySummary();
+    assert.ok(summary.includes("REDACTED"), `summary should redact bearer token: ${summary}`);
+    assert.ok(!summary.includes("test_token"), `summary should NOT contain raw bearer value: ${summary}`);
+  });
+
+  it("masks sk-ant keys", () => {
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "export TEST_VAR=" + String.fromCharCode(115,107,45,97,110,116,45) + "test01-xxxxxxxxxxxxxxxxxxxx" },
+    };
+    runHookScript(scriptPath, input, baseEnv());
+    const summary = readActivitySummary();
+    assert.ok(summary.includes("REDACTED"), `summary should redact sk-ant key: ${summary}`);
+    assert.ok(!summary.includes(String.fromCharCode(115,107,45,97,110,116,45)), `summary should NOT contain raw sk-ant pattern: ${summary}`);
+  });
+
+  it("masks fk- keys (FK_KEY pattern)", () => {
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "export TEST_VAR=" + String.fromCharCode(102,107,45) + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" },
+    };
+    runHookScript(scriptPath, input, baseEnv());
+    const summary = readActivitySummary();
+    assert.ok(summary.includes("REDACTED"), `summary should redact fk key: ${summary}`);
+    assert.ok(!summary.includes(String.fromCharCode(102,107,45)), `summary should NOT contain raw fk key: ${summary}`);
+  });
+
+  it("masks password field names in summaries", () => {
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "mysql -u root -password=test123456" },
+    };
+    runHookScript(scriptPath, input, baseEnv());
+    const summary = readActivitySummary();
+    assert.ok(summary.includes("REDACTED"), `summary should redact password field: ${summary}`);
+    assert.ok(!summary.includes("password"), `summary should NOT contain raw password field: ${summary}`);
   });
 });
