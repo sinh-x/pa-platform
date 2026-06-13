@@ -10,7 +10,7 @@ import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
 import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
 
 const STREAM_BODY_MAX_CHARS = 500;
-const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
+const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/gi, /(?:\b|_)secret(?:\b|_)/gi, /(?:\b|_)password(?:\b|_)/gi, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/gi, /bearer\s+\S+/gi, /sk-ant-\S+/gi, /fk-[a-zA-Z0-9_-]{20,}/gi];
 
 export interface DroidModelResolutionOpts {
   env?: NodeJS.ProcessEnv;
