@@ -310,6 +310,7 @@ try {
     if (exitCode === undefined || exitCode === null) {
       exitCode = response.result?.metadata?.exitCode;
     }
+    if (typeof exitCode === "string") exitCode = Number(exitCode);
     const isError = exitCode !== undefined && exitCode !== null && exitCode !== 0;
     const body = truncate(String(
       response.error

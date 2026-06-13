@@ -702,6 +702,23 @@ describe("droid safety hook tool summaries", () => {
     assert.equal(data.exitCode, 0);
   });
 
+  it("normalizes string exitCode to number in PostToolUse", () => {
+    const before = readActivityLineCount();
+    const input = {
+      hook_event_name: "PostToolUse",
+      tool_name: "Execute",
+      tool_input: { command: "pnpm build" },
+      tool_response: { exitCode: "0", result: "build ok" },
+    };
+    const result = runHookScript(scriptPath, input, baseEnv());
+    assert.equal(result.exitCode, 0);
+    assert.equal(readActivityLineCount(), before + 1);
+    const line = readLastActivityLine();
+    const data = line!.data as Record<string, unknown>;
+    assert.equal(data.kind, "info");
+    assert.equal(data.exitCode, 0);
+  });
+
   it("blocks destructive commands with exit code 2", () => {
     const before = readActivityLineCount();
     const input = {
