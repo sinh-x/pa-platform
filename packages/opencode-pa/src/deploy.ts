@@ -32,8 +32,16 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider ?? selectedMode?.provider ?? "ollama-cloud";
-  const model = resolveOpencodeModel(provider, request.model ?? request.teamModel ?? selectedMode?.model);
+  const provider = request.provider
+    ?? selectedMode?.runtimes?.opencode?.provider
+    ?? teamConfig.runtimes?.opencode?.provider
+    ?? selectedMode?.provider
+    ?? "ollama-cloud";
+  const model = resolveOpencodeModel(provider, request.model
+    ?? request.teamModel
+    ?? selectedMode?.runtimes?.opencode?.model
+    ?? teamConfig.runtimes?.opencode?.model
+    ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
   const env = {

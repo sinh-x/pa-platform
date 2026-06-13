@@ -4,6 +4,54 @@
 
 Team YAML files are active shared configuration and should remain structurally compatible with the frozen PA team YAMLs. Existing mode IDs and fields such as `provider` are preserved in the team files for compatibility and migration traceability.
 
+## Runtime-Aware Configuration (runtimes block)
+
+Team and mode YAML can carry an optional `runtimes:` block that provides per-runtime overrides for model, provider, autonomy, and timeout. Generic/shared settings (agents, skills, objective, mode_type, solo, global_docs) stay at the top level and apply to all runtimes.
+
+```yaml
+# Team-level example
+name: builder
+description: Build team
+agents: [...]
+objective: "..."
+runtimes:
+  droid:
+    model: deepseek-v4-pro
+    autonomy: high
+  opencode:
+    provider: ollama-cloud
+    model: deepseek-v4-pro
+  claude:
+    model: claude-opus-4-7
+```
+
+```yaml
+# Mode-level example
+deploy_modes:
+  - id: implement
+    label: Implement
+    objective: ...
+    runtimes:
+      droid:
+        model: gpt-5.5
+      opencode:
+        provider: minimax
+```
+
+### Per-Adapter Precedence
+
+Each adapter resolves model/provider/autonomy from its own runtime block, ignoring other runtimes' hints:
+
+| Adapter | Resolution order |
+|---|---|
+| dpa | CLI flags > mode `runtimes.droid` > team `runtimes.droid` > `PA_DPA_DEFAULT_MODEL` > platform `defaults.droidcode` > `deepseek-v4-pro` |
+| opa | CLI flags > mode `runtimes.opencode` > team `runtimes.opencode` > legacy flat fields > provider defaults |
+| cpa | CLI flags > mode `runtimes.claude` > team `runtimes.claude` > legacy flat fields > `PA_CPA_DEFAULT_MODEL` > `claude-opus-4-7` |
+
+### Back-Compat
+
+When `runtimes:` is absent, all adapters behave identically to the pre-runtimes era (byte-for-byte unchanged for opa and cpa; dpa defaults to `deepseek-v4-pro` instead of the legacy provider-to-premium map).
+
 Runtime selection is handled by the adapter CLI:
 
 - `cpa` (`@pa-platform/claudecode-pa`) interprets shared team config for Claude Code execution. Implemented; default model `claude-opus-4-7`; `--provider` accepts only `anthropic`. See `docs/cpa-claude-code-adapter.md` for the operator overview.

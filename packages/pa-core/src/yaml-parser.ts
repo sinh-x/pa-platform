@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
-import type { Agent, DeployMode, Hierarchy, HierarchyMember, SkillEntry, TeamConfig } from "./types.js";
+import type { Agent, AutonomyLevel, DeployMode, Hierarchy, HierarchyMember, RuntimeConfigMap, SkillEntry, TeamConfig } from "./types.js";
 
 // Ported from PA yaml-parser.ts at frozen PA source on 2026-04-26; pa-platform owns future changes.
 
@@ -37,10 +37,12 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       provider: mode["provider"] as DeployMode["provider"],
       timeout: mode["timeout"] as number | undefined,
       global_docs: mode["global_docs"] as string[] | undefined,
+      runtimes: parseRuntimes(mode["runtimes"] as Record<string, unknown> | undefined),
     };
   });
 
   const hierarchy = parseHierarchy(raw["hierarchy"] as Record<string, unknown> | undefined);
+  const runtimes = parseRuntimes(raw["runtimes"] as Record<string, unknown> | undefined);
 
   return {
     name: String(raw["name"] ?? ""),
@@ -56,7 +58,24 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     timeout: raw["timeout"] as number | undefined,
     global_docs: raw["global_docs"] as string[] | undefined,
     terse_mode: raw["terse_mode"] as boolean | undefined,
+    runtimes,
   };
+}
+
+function parseRuntimes(raw: Record<string, unknown> | undefined): RuntimeConfigMap | undefined {
+  if (!raw) return undefined;
+  const result: RuntimeConfigMap = {};
+  for (const runtime of ["droid", "opencode", "claude"] as const) {
+    const block = raw[runtime] as Record<string, unknown> | undefined;
+    if (!block) continue;
+    result[runtime] = {
+      model: block["model"] as string | undefined,
+      provider: block["provider"] as string | undefined,
+      autonomy: block["autonomy"] as AutonomyLevel | undefined,
+      timeout: block["timeout"] as number | undefined,
+    };
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {

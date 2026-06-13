@@ -4,19 +4,25 @@ import { dirname, resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
+import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
 import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
 
 const STREAM_BODY_MAX_CHARS = 500;
 const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key)(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
 
-const PROVIDER_DEFAULT_DROID_MODELS: Record<string, string> = {
-  anthropic: "claude-opus-4-8",
-  openai: "gpt-5.5",
-  deepseek: "deepseek-v4-pro",
-  gemini: "gemini-3.1-pro-preview",
-  minimax: "minimax-m2.7",
-  "ollama-cloud": "glm-5.1",
-};
+export interface DroidModelResolutionOpts {
+  env?: NodeJS.ProcessEnv;
+  platformDefaults?: { model?: string };
+  modeRuntimes?: { model?: string };
+  teamRuntimes?: { model?: string };
+}
+
+export interface DroidAutonomyResolutionOpts {
+  env?: NodeJS.ProcessEnv;
+  modeRuntimes?: { autonomy?: string };
+  teamRuntimes?: { autonomy?: string };
+  platformDefaults?: { autonomy?: string };
+}
 
 export interface DroidCodeAdapterOptions {
   cwd?: string;
@@ -118,12 +124,12 @@ export class DroidCodeAdapter implements RuntimeAdapter {
 
     const mergedEnv = { ...this.env, ...opts.env };
 
-    // Foreground: spawn droid (interactive TUI mode) with primer as positional arg.
-    // Matches opa's runInheritedCommand pattern: inherited stdio for full TUI, piped stderr for capture.
+    // Foreground: spawn droid exec --auto <level> (non-interactive mode).
     // When custom factories are set (tests), fall through to SDK streaming path below.
     if (opts.mode === "foreground" && !this.sessionFactory && !this.resumeFactory) {
-      const args = ["-m", model];
-      if (sessionId) args.push("-r", sessionId);
+      const autonomy = opts.autonomy ?? "high";
+      const args = ["exec", "--auto", autonomy, "-m", model];
+      if (sessionId) args.push("-s", sessionId);
       args.push(primer);
       const result = spawnSync("droid", args, {
         cwd: this.cwd,
@@ -202,35 +208,55 @@ export class DroidCodeAdapter implements RuntimeAdapter {
 }
 
 export function resolveDroidModel(
-  provider: string | undefined,
   model: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-  platformDefaults?: { model?: string },
+  opts: DroidModelResolutionOpts = {},
 ): string {
-  // Explicit model takes highest priority
   if (model && model.length > 0) {
-    // opencode-style provider/model paths (e.g. "deepseek/deepseek-v4-pro"):
-    // droid uses flat model ids; extract the model name after the slash.
     if (model.includes("/")) return model.split("/").pop()!;
     return model;
   }
-  // Platform config default
-  if (platformDefaults?.model && platformDefaults.model.length > 0) {
-    return platformDefaults.model;
-  }
-  // Provider-based default map
-  if (provider && PROVIDER_DEFAULT_DROID_MODELS[provider]) {
-    return PROVIDER_DEFAULT_DROID_MODELS[provider];
-  }
-  // Env override
+  if (opts.modeRuntimes?.model) return opts.modeRuntimes.model;
+  if (opts.teamRuntimes?.model) return opts.teamRuntimes.model;
+  const env = opts.env ?? process.env;
   const envOverride = env["PA_DPA_DEFAULT_MODEL"];
   if (envOverride && envOverride.length > 0) return envOverride;
-  // Fallback
+  if (opts.platformDefaults?.model && opts.platformDefaults.model.length > 0) return opts.platformDefaults.model;
   return "deepseek-v4-pro";
 }
 
-export function resolveDefaultDroidModel(env: NodeJS.ProcessEnv): string {
-  return env["PA_DPA_DEFAULT_MODEL"] ?? "deepseek-v4-pro";
+export function resolveDefaultDroidModel(env: NodeJS.ProcessEnv, platformDefaults?: { model?: string }): string {
+  return env["PA_DPA_DEFAULT_MODEL"] ?? platformDefaults?.model ?? "deepseek-v4-pro";
+}
+
+export function resolveDroidAutonomy(opts: DroidAutonomyResolutionOpts = {}): string {
+  const env = opts.env ?? process.env;
+  const envVal = env["PA_DPA_AUTONOMY"];
+  if (envVal && envVal.length > 0) return envVal;
+  if (opts.modeRuntimes?.autonomy) return opts.modeRuntimes.autonomy;
+  if (opts.teamRuntimes?.autonomy) return opts.teamRuntimes.autonomy;
+  if (opts.platformDefaults?.autonomy && opts.platformDefaults.autonomy.length > 0) return opts.platformDefaults.autonomy;
+  return "high";
+}
+
+function createSafetyPermissionHandler() {
+  return (params: Record<string, unknown>): ToolConfirmationOutcome => {
+    const toolUses = (params["toolUses"] ?? []) as Array<Record<string, unknown>>;
+    for (const toolUse of toolUses) {
+      const toolName = String(toolUse["toolName"] ?? toolUse["name"] ?? "");
+      const details = (toolUse["details"] ?? {}) as Record<string, unknown>;
+
+      if (toolName === "Execute") {
+        const command = String(details["command"] ?? details["fullCommand"] ?? "");
+        if (isDestructiveCommand(command)) return ToolConfirmationOutcome.Cancel;
+      }
+
+      if (toolName === "Edit" || toolName === "Create") {
+        const filePath = String(details["filePath"] ?? details["file_path"] ?? "");
+        if (isBlockedFilePath(filePath)) return ToolConfirmationOutcome.Cancel;
+      }
+    }
+    return ToolConfirmationOutcome.ProceedOnce;
+  };
 }
 
 function resolveAutonomy(env: NodeJS.ProcessEnv): AutonomyLevel {
@@ -258,7 +284,7 @@ async function defaultCreateSession(opts: {
     apiKey: opts.apiKey,
     modelId: opts.modelId,
     autonomyLevel: resolveAutonomy(opts.env),
-    permissionHandler: () => ToolConfirmationOutcome.ProceedOnce,
+    permissionHandler: createSafetyPermissionHandler(),
     abortSignal: opts.abortSignal,
   });
 }
@@ -274,7 +300,7 @@ async function defaultResumeSession(
   return resumeSession(sessionId, {
     env: toEnvRecord(opts.env),
     apiKey: opts.apiKey,
-    permissionHandler: () => ToolConfirmationOutcome.ProceedOnce,
+    permissionHandler: createSafetyPermissionHandler(),
     abortSignal: opts.abortSignal,
   });
 }

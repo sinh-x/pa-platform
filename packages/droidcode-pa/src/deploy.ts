@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
-import { DroidCodeAdapter, resolveDroidModel } from "./adapter.js";
+import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel } from "./adapter.js";
 import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
@@ -33,7 +33,16 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   writeFileSync(primerPath, primer, "utf-8");
 
   const provider = request.provider ?? selectedMode?.provider ?? "";
-  const model = resolveDroidModel(provider, request.model ?? request.teamModel ?? selectedMode?.model, process.env, platformConfig.defaults?.droidcode);
+  const model = resolveDroidModel(request.model ?? request.teamModel ?? selectedMode?.model, {
+    platformDefaults: platformConfig.defaults?.droidcode,
+    modeRuntimes: selectedMode?.runtimes?.droid,
+    teamRuntimes: teamConfig.runtimes?.droid,
+  });
+  const autonomy = resolveDroidAutonomy({
+    modeRuntimes: selectedMode?.runtimes?.droid,
+    teamRuntimes: teamConfig.runtimes?.droid,
+    platformDefaults: platformConfig.defaults?.droidcode,
+  });
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
   const env = {
@@ -76,8 +85,8 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env });
+      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession })
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env });
     // dpa captures session ids from all modes (foreground included) via the SDK.
     if (result.sessionId) {
       writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");

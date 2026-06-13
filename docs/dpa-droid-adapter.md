@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `opa` | OpenCode | openai/minimax (per team YAML) | `ollama-cloud/deepseek-v4-pro` |
 | `cpa` | Claude Code | `anthropic` only | `claude-opus-4-7` |
-| `dpa` | Droid | provider hint mapped to Droid model | `deepseek-v4-pro` |
+| `dpa` | Droid | runtime-aware (droid block) | `deepseek-v4-pro` |
 
 Use `dpa` when you want the deployment to run inside a Droid session: the primer is delivered to Droid via the SDK, tool activity is streamed into `activity.jsonl`, and session resume is keyed off `session-id-droid.txt`. All dpa runs (foreground and background) capture a session id and are resumable.
 
@@ -35,24 +35,24 @@ dpa deploy <team> --model claude-opus-4-8      # override the default model
 export FACTORY_API_KEY=fk-...
 ```
 
-## Provider and model resolution
+## Model resolution
 
 ```
---model > --team-model > deploy_modes[].model (team YAML) > platform defaults.droidcode.model > provider map > $PA_DPA_DEFAULT_MODEL > deepseek-v4-pro
+--model > --team-model > mode runtimes.droid.model > team runtimes.droid.model > $PA_DPA_DEFAULT_MODEL > platform defaults.droidcode.model > deepseek-v4-pro
 ```
 
-Droid uses a flat model namespace — no provider prefix. When `--provider` is set, dpa maps it to a default Droid model:
+dpa uses the runtime-aware `runtimes.droid` block for per-runtime model selection. The legacy provider-to-premium model map has been removed -- dpa defaults to `deepseek-v4-pro` regardless of the team YAML `provider` field. OpenCode-style `provider/model` IDs (e.g. `deepseek/deepseek-v4-pro`) are automatically stripped to the flat model ID.
 
-| Provider | Default Droid model |
-|---|---|
-| `anthropic` | `claude-opus-4-8` |
-| `openai` | `gpt-5.5` |
-| `deepseek` | `deepseek-v4-pro` |
-| `gemini` | `gemini-3.1-pro-preview` |
-| `minimax` | `minimax-m2.7` |
-| `ollama-cloud` | `glm-5.1` |
+To override the model per-runtime, add a `runtimes.droid` block:
 
-O pencode-style `provider/model` IDs (e.g. `deepseek/deepseek-v4-pro`) are automatically stripped to the flat model ID.
+```yaml
+deploy_modes:
+  - id: implement
+    label: Implement
+    runtimes:
+      droid:
+        model: gpt-5.5
+```
 
 ## Configuration
 
@@ -78,10 +78,18 @@ A `dpa` deploy writes `session-id-droid.txt` after the first stream event. `dpa 
 
 ## Autonomy
 
-dpa runs Droid with autonomy level `high` by default, auto-approving all tool permissions. This is equivalent to `--auto high` on the `droid exec` CLI. Override via `PA_DPA_AUTONOMY`:
+dpa resolves autonomy in this order: `PA_DPA_AUTONOMY` > mode `runtimes.droid.autonomy` > team `runtimes.droid.autonomy` > platform `defaults.droidcode.autonomy` > `high`. The resolved level drives both the SDK `autonomyLevel` and the foreground `droid exec --auto <level>` flag.
+
+Foreground deploys run via `droid exec --auto <level>` (non-interactive) with the resolved model and primer, preserving session-id capture and activity logging. Override via env or runtimes block:
 
 ```bash
 PA_DPA_AUTONOMY=medium dpa deploy builder
+```
+
+```yaml
+runtimes:
+  droid:
+    autonomy: low
 ```
 
 ## Packaging
