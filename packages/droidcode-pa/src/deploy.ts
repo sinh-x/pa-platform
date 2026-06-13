@@ -39,6 +39,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     teamRuntimes: teamConfig.runtimes?.droid,
   });
   const autonomy = resolveDroidAutonomy({
+    cliFlag: request.autonomy,
     modeRuntimes: selectedMode?.runtimes?.droid,
     teamRuntimes: teamConfig.runtimes?.droid,
     platformDefaults: platformConfig.defaults?.droidcode,

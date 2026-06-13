@@ -25,6 +25,7 @@ export interface DroidModelResolutionOpts {
 }
 
 export interface DroidAutonomyResolutionOpts {
+  cliFlag?: string;
   env?: NodeJS.ProcessEnv;
   modeRuntimes?: { autonomy?: string };
   teamRuntimes?: { autonomy?: string };
@@ -254,13 +255,14 @@ export function resolveDefaultDroidModel(env: NodeJS.ProcessEnv, platformDefault
 }
 
 export function resolveDroidAutonomy(opts: DroidAutonomyResolutionOpts = {}): string {
+  if (opts.cliFlag && opts.cliFlag.length > 0) return opts.cliFlag;
   const env = opts.env ?? process.env;
   const envVal = env["PA_DPA_AUTONOMY"];
   if (envVal && envVal.length > 0) return envVal;
   if (opts.modeRuntimes?.autonomy) return opts.modeRuntimes.autonomy;
   if (opts.teamRuntimes?.autonomy) return opts.teamRuntimes.autonomy;
   if (opts.platformDefaults?.autonomy && opts.platformDefaults.autonomy.length > 0) return opts.platformDefaults.autonomy;
-  return "high";
+  return "medium";
 }
 
 function createSafetyPermissionHandler() {
