@@ -146,12 +146,11 @@ export class DroidCodeAdapter implements RuntimeAdapter {
 
     const mergedEnv = { ...this.env, ...opts.env };
 
-    // Foreground: spawn droid exec --auto <level> (non-interactive mode).
+    // Foreground: interactive TUI mode.
     // When custom factories are set (tests), fall through to SDK streaming path below.
     if (opts.mode === "foreground" && !this.sessionFactory && !this.resumeFactory) {
-      const autonomy = opts.autonomy ?? "high";
-      const args = ["exec", "--auto", autonomy, "-m", model, "-f", opts.primerPath];
-      if (sessionId) args.push("-s", sessionId);
+      const args = ["-m", model, "-f", opts.primerPath];
+      if (sessionId) args.push("-r", sessionId);
       const result = spawnSync("droid", args, {
         cwd: this.cwd,
         env: mergedEnv,
