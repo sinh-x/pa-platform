@@ -84,15 +84,15 @@ export function printDeployHelp(io: Required<CliIo>): void {
   io.stdout("  --evaluate-deployment <id>  Generate evaluator primer objective for a completed deployment");
   io.stdout("  --repo <path>       Override repository path");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
-  io.stdout("  --timeout <seconds> Override deployment timeout");
-  io.stdout("  --resume <id>       Resume a prior deployment");
+  io.stdout("  --timeout <seconds>    Override deployment timeout");
+  io.stdout("  --resume <id>          Resume a prior deployment");
+  io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");
   io.stdout("");
   io.stdout("Provider options:");
-  io.stdout("  --provider <name>   Model provider (minimax, openai, deepseek, ollama-cloud, opencode-go). Default: ollama-cloud");
-  io.stdout("  --model <name>      Override default model");
-  io.stdout("  --team-model <name> Override team-level model");
-  io.stdout("  --agent-model <name> Override agent-level model");
-  io.stdout("  --autonomy <level> Override autonomy level (low, medium, high)");
+  io.stdout("  --provider <name>      Model provider (minimax, openai, deepseek, ollama-cloud, opencode-go). Default: ollama-cloud");
+  io.stdout("  --model <name>         Override default model");
+  io.stdout("  --team-model <name>    Override team-level model");
+  io.stdout("  --agent-model <name>   Override agent-level model");
 }
 
 export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
