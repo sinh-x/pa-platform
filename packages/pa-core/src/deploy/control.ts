@@ -25,6 +25,7 @@ export interface DeployRequest {
   autonomy?: AutonomyLevel;
   listModes?: boolean;
   validate?: boolean;
+  sanitizedCharsRemoved?: number;
 }
 
 export interface DeployTimeoutResolutionInput {
@@ -110,11 +111,13 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (timeoutValidation) return { error: timeoutValidation };
   const warnings: string[] = [];
   let sanitizedObjective: string | undefined;
+  let sanitizedCharsRemoved: number | undefined;
   if (objective && objective.trim()) {
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
     const result = sanitizeTextInput(objective);
     if (result.removed > 0) {
       warnings.push(`sanitized objective: removed ${result.removed} invalid character(s)`);
+      sanitizedCharsRemoved = result.removed;
     }
     sanitizedObjective = result.sanitized.trim();
   }
@@ -137,6 +140,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (autonomy) request.autonomy = autonomy as AutonomyLevel;
   if (listModes !== undefined) request.listModes = listModes;
   if (validate !== undefined) request.validate = validate;
+  if (sanitizedCharsRemoved !== undefined) request.sanitizedCharsRemoved = sanitizedCharsRemoved;
   const result: ValidateDeployResult = { request };
   if (warnings.length > 0) result.warnings = warnings;
   return result;

@@ -73,6 +73,10 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
 
   emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
 
+  if (request.sanitizedCharsRemoved && request.sanitizedCharsRemoved > 0) {
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `sanitized objective: removed ${request.sanitizedCharsRemoved} invalid character(s)` }), paths.activityLogPath);
+  }
+
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
