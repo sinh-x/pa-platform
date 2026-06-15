@@ -7,6 +7,7 @@ import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
 import { formatTicketList, formatTicketShow } from "../formatters.js";
+import { sanitizeTextInput } from "../../deploy/control.js";
 
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
@@ -32,6 +33,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   if (subcommand === "create") {
     const parsed = parseTicketCreateArgs(rest);
     if ("error" in parsed) return printError(parsed.error, io);
+    if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     const ticket = store.create(parsed.input, parsed.actor);
     io.stdout(`Created ${ticket.id}: ${ticket.title}`);
     return 0;
@@ -50,6 +52,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket comment requires id", io);
     const parsed = parseTicketCommentArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
+    if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     const comment = store.comment(id, parsed.author, parsed.content);
     io.stdout(`Commented ${id}: ${comment.id}`);
     return 0;
@@ -109,7 +112,7 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
   return opts;
 }
 
-function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; actor: string } | { error: string } {
+function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; actor: string; warnings?: string[] } | { error: string } {
   const result = parseFlagPairs(argv, new Set(["--project", "--title", "--type", "--priority", "--estimate", "--assignee", "--summary", "--description", "--status", "--from", "--to", "--tags", "--doc-ref", "--actor"]));
   if ("error" in result) return result;
   const values = result.values;
@@ -120,7 +123,16 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   }
   const actor = values["--actor"] ?? "pa-core";
   const docRef = values["--doc-ref"] ? parseDocRefFlag(values["--doc-ref"]!) : undefined;
-  return { actor, input: { project, title: values["--title"]!, summary: values["--summary"] ?? "", description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
+  const warnings: string[] = [];
+  const titleResult = sanitizeTextInput(values["--title"]!);
+  if (titleResult.removed > 0) warnings.push(`sanitized title: removed ${titleResult.removed} invalid character(s)`);
+  const summaryResult = sanitizeTextInput(values["--summary"] ?? "");
+  if (summaryResult.removed > 0) warnings.push(`sanitized summary: removed ${summaryResult.removed} invalid character(s)`);
+  const descriptionResult = sanitizeTextInput(values["--description"] ?? "");
+  if (descriptionResult.removed > 0) warnings.push(`sanitized description: removed ${descriptionResult.removed} invalid character(s)`);
+  const parsed: { input: CreateTicketInput; actor: string; warnings?: string[] } = { actor, input: { project, title: titleResult.sanitized, summary: summaryResult.sanitized, description: descriptionResult.sanitized, status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
+  if (warnings.length > 0) parsed.warnings = warnings;
+  return parsed;
 }
 
 function availableProjectGuidance(): string {
@@ -148,14 +160,17 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
   return { input, actor: values["--actor"] ?? "pa-core" };
 }
 
-function parseTicketCommentArgs(argv: string[]): { author: string; content: string } | { error: string } {
+function parseTicketCommentArgs(argv: string[]): { author: string; content: string; warnings?: string[] } | { error: string } {
   const result = parseFlagPairs(argv, new Set(["--author", "--content", "--content-file"]));
   if ("error" in result) return result;
   if (!result.values["--author"]) return { error: "--author is required" };
   if (result.values["--content"] && result.values["--content-file"]) return { error: "Use only one of --content or --content-file" };
   if (!result.values["--content"] && !result.values["--content-file"]) return { error: "one of --content or --content-file is required" };
-  const content = result.values["--content-file"] ? readGuardedLocalTextFile(result.values["--content-file"]!) : result.values["--content"]!;
-  return { author: result.values["--author"]!, content };
+  const rawContent = result.values["--content-file"] ? readGuardedLocalTextFile(result.values["--content-file"]!) : result.values["--content"]!;
+  const sanitized = sanitizeTextInput(rawContent);
+  const parsed: { author: string; content: string; warnings?: string[] } = { author: result.values["--author"]!, content: sanitized.sanitized };
+  if (sanitized.removed > 0) parsed.warnings = [`sanitized comment content: removed ${sanitized.removed} invalid character(s)`];
+  return parsed;
 }
 
 function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
@@ -210,7 +225,12 @@ function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketS
     if ("error" in parsed) return printError(parsed.error, io);
     const title = parsed.values["--title"];
     if (!title) return printError("--title is required", io);
-    const result = store.addSubTicket(parentId, { title, summary: parsed.values["--summary"] ?? "", assignee: parsed.values["--assignee"] ?? "", priority: (parsed.values["--priority"] ?? "medium") as TicketPriority, estimate: (parsed.values["--estimate"] ?? "S") as Estimate }, parsed.values["--actor"] ?? "pa-core");
+    const titleResult = sanitizeTextInput(title);
+    if (titleResult.removed > 0) io.stderr(`sanitized sub-ticket title: removed ${titleResult.removed} invalid character(s)`);
+    const summaryRaw = parsed.values["--summary"] ?? "";
+    const summaryResult = sanitizeTextInput(summaryRaw);
+    if (summaryResult.removed > 0) io.stderr(`sanitized sub-ticket summary: removed ${summaryResult.removed} invalid character(s)`);
+    const result = store.addSubTicket(parentId, { title: titleResult.sanitized, summary: summaryResult.sanitized, assignee: parsed.values["--assignee"] ?? "", priority: (parsed.values["--priority"] ?? "medium") as TicketPriority, estimate: (parsed.values["--estimate"] ?? "S") as Estimate }, parsed.values["--actor"] ?? "pa-core");
     io.stdout(`Created sub-ticket: ${result.subTicket.id}`);
     return 0;
   }
@@ -229,8 +249,16 @@ function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketS
     const input: { status?: SubTicketStatus; assignee?: string; title?: string; summary?: string; priority?: TicketPriority; estimate?: Estimate } = {};
     if (values["--status"]) input.status = values["--status"] as SubTicketStatus;
     if (values["--assignee"]) input.assignee = values["--assignee"];
-    if (values["--title"]) input.title = values["--title"];
-    if (values["--summary"]) input.summary = values["--summary"];
+    if (values["--title"]) {
+      const titleResult = sanitizeTextInput(values["--title"]);
+      if (titleResult.removed > 0) io.stderr(`sanitized sub-ticket title: removed ${titleResult.removed} invalid character(s)`);
+      input.title = titleResult.sanitized;
+    }
+    if (values["--summary"]) {
+      const summaryResult = sanitizeTextInput(values["--summary"]);
+      if (summaryResult.removed > 0) io.stderr(`sanitized sub-ticket summary: removed ${summaryResult.removed} invalid character(s)`);
+      input.summary = summaryResult.sanitized;
+    }
     if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
     if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
     const result = store.updateSubTicket(parentId, subTicketId, input, values["--actor"] ?? "pa-core");

@@ -554,15 +554,69 @@ test("deploy inline objective uses sensitive content guard after objective valid
     assert.doesNotMatch(blockedLocal.stderr.join("\n"), /FAKE_INLINE_OBJECTIVE|123/);
     assert.equal(seen.length, 0);
 
-    const invalidCharacter = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", "api_key=abcdefghijklmnop;"], { io: invalidCharacter.io, hooks }), 1);
-    assert.match(invalidCharacter.stderr.join("\n"), /objective contains invalid characters/);
-    assert.doesNotMatch(invalidCharacter.stderr.join("\n"), /Blocked sensitive content input/);
+    const sanitized = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship it; with $special & chars\\today", "--dry-run"], { io: sanitized.io, hooks }), 0);
+    assert.match(sanitized.stderr.join("\n"), /sanitized objective: removed \d+ invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship it with special  charstoday", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 4 });
 
     const tooLong = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}api_key=abcdefghijklmnop`], { io: tooLong.io, hooks }), 1);
     assert.match(tooLong.stderr.join("\n"), /objective exceeds max length of 10000 characters/);
     assert.doesNotMatch(tooLong.stderr.join("\n"), /Blocked sensitive content input/);
+  });
+});
+
+test("deploy sanitizes invalid characters from objective and shows stderr warning", async () => {
+  await withCliEnv(async () => {
+    const seen: unknown[] = [];
+    const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-sanitize" }; } };
+
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build feature; deploy now", "--dry-run"], { io: withSemicolon.io, hooks }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build feature deploy now", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Cost: $100 budget", "--dry-run"], { io: withDollar.io, hooks }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Cost: 100 budget", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+
+    const withBackslash = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Path: \\usr\\local", "--dry-run"], { io: withBackslash.io, hooks }), 0);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Path: usrlocal", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+
+    const withAmpersand = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build & test & deploy", "--dry-run"], { io: withAmpersand.io, hooks }), 0);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build  test  deploy", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+
+    const withControlChar = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Hello\x00World\x1f!", "--dry-run"], { io: withControlChar.io, hooks }), 0);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "HelloWorld!", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+
+    const withDel = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Delete\x7fme", "--dry-run"], { io: withDel.io, hooks }), 0);
+    assert.match(withDel.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Deleteme", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+
+    const cleanInput = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Clean input no special chars", "--dry-run"], { io: cleanInput.io, hooks }), 0);
+    assert.equal(cleanInput.stderr.length, 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Clean input no special chars", dryRun: true, timeout: 1800 });
+
+    const preservesTabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Line1\tindented\nLine2\r\nLine3", "--dry-run"], { io: preservesTabNewlineCr.io, hooks }), 0);
+    assert.equal(preservesTabNewlineCr.stderr.length, 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Line1\tindented\nLine2\r\nLine3", dryRun: true, timeout: 1800 });
+
+    const mixedInvalidAndSensitive = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop;", "--dry-run"], { io: mixedInvalidAndSensitive.io, hooks }), 1);
+    assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(mixedInvalidAndSensitive.stderr.join("\n"), /abcdefghijklmnop|api_key/);
+    assert.equal(seen.length, 0);
   });
 });
 
@@ -1216,6 +1270,170 @@ test("sensitive guards do not expose bypass flags or override behavior", async (
     assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content-file", sensitiveFile, "--force"], { io: commentForce.io }), 1);
     assert.match(commentForce.stderr.join("\n"), /Unknown option: --force|Unsupported/);
     assert.equal(new TicketStore().get("PAP-001")?.comments.length, 0);
+  });
+});
+
+test("ticket create sanitizes invalid characters from title and summary with stderr warning", async () => {
+  await withCliEnv(async () => {
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix; bug", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary; ok"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized summary: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stdout.join("\n"), /Created PAP-001/);
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.title, "Fix bug");
+    assert.equal(ticket?.summary, "Summary ok");
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Cost: $100", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Budget $50"], { io: withDollar.io }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withDollar.stderr.join("\n"), /sanitized summary: removed 1 invalid character\(s\)/);
+    const ticket2 = new TicketStore().get("PAP-002");
+    assert.equal(ticket2?.title, "Cost: 100");
+    assert.equal(ticket2?.summary, "Budget 50");
+
+    const cleanInput = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Clean title", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Clean summary"], { io: cleanInput.io }), 0);
+    assert.equal(cleanInput.stderr.length, 0);
+    assert.match(cleanInput.stdout.join("\n"), /Created PAP-003/);
+    const ticket3 = new TicketStore().get("PAP-003");
+    assert.equal(ticket3?.title, "Clean title");
+    assert.equal(ticket3?.summary, "Clean summary");
+
+    const preservesTabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Line1\tindented\nLine2\r\nLine3", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Tab\tnewline\ncr\r\n"], { io: preservesTabNewlineCr.io }), 0);
+    assert.equal(preservesTabNewlineCr.stderr.length, 0);
+    const ticket4 = new TicketStore().get("PAP-004");
+    assert.equal(ticket4?.title, "Line1\tindented\nLine2\r\nLine3");
+    assert.equal(ticket4?.summary, "Tab\tnewline\ncr\r\n");
+  });
+});
+
+test("ticket create sanitizes invalid characters from description with stderr warning", async () => {
+  await withCliEnv(async () => {
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Desc; with ; semicolons"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized description: removed 2 invalid character\(s\)/);
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.description, "Desc with  semicolons");
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug 2", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Cost: $100"], { io: withDollar.io }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized description: removed 1 invalid character\(s\)/);
+    const ticket2 = new TicketStore().get("PAP-002");
+    assert.equal(ticket2?.description, "Cost: 100");
+
+    const cleanDesc = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug 3", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Clean desc"], { io: cleanDesc.io }), 0);
+    assert.equal(cleanDesc.stderr.length, 0);
+    const ticket3 = new TicketStore().get("PAP-003");
+    assert.equal(ticket3?.description, "Clean desc");
+  });
+});
+
+test("ticket comment sanitizes invalid characters from content and content-file with stderr warning", async () => {
+  await withCliEnv(async (root) => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Comment sanitize", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content", "Working; done"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized comment content: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stdout.join("\n"), /Commented PAP-001/);
+    let ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.comments[0]?.content, "Working done");
+
+    const cleanContent = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content", "Clean comment"], { io: cleanContent.io }), 0);
+    assert.equal(cleanContent.stderr.length, 0);
+    ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.comments[1]?.content, "Clean comment");
+
+    const commentFile = join(root, "comment-sanitize.md");
+    writeFileSync(commentFile, "File; content & special");
+    const withFile = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content-file", commentFile], { io: withFile.io }), 0);
+    assert.match(withFile.stderr.join("\n"), /sanitized comment content: removed 2 invalid character\(s\)/);
+    ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.comments[2]?.content, "File content  special");
+
+    const preservesTabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-001", "--author", "builder/team-manager", "--content", "Tab\tnewline\ncr\r\n"], { io: preservesTabNewlineCr.io }), 0);
+    assert.equal(preservesTabNewlineCr.stderr.length, 0);
+    ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.comments[3]?.content, "Tab\tnewline\ncr\r\n");
+  });
+});
+
+test("ticket subticket create and update sanitize title and summary with stderr warning", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Sub sanitize parent", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+
+    const subCreate = capture();
+    assert.equal(await runCoreCommand(["ticket", "subticket", "create", "PAP-001", "--title", "Fix; bug", "--summary", "Desc; here"], { io: subCreate.io }), 0);
+    assert.match(subCreate.stderr.join("\n"), /sanitized sub-ticket title: removed 1 invalid character\(s\)/);
+    assert.match(subCreate.stderr.join("\n"), /sanitized sub-ticket summary: removed 1 invalid character\(s\)/);
+    assert.match(subCreate.stdout.join("\n"), /PAP-001-ST-1/);
+
+    const subUpdate = capture();
+    assert.equal(await runCoreCommand(["ticket", "subticket", "update", "PAP-001", "PAP-001-ST-1", "--title", "New; title", "--summary", "New; summary"], { io: subUpdate.io }), 0);
+    assert.match(subUpdate.stderr.join("\n"), /sanitized sub-ticket title: removed 1 invalid character\(s\)/);
+    assert.match(subUpdate.stderr.join("\n"), /sanitized sub-ticket summary: removed 1 invalid character\(s\)/);
+    assert.match(subUpdate.stdout.join("\n"), /Updated/);
+
+    const cleanSubCreate = capture();
+    assert.equal(await runCoreCommand(["ticket", "subticket", "create", "PAP-001", "--title", "Clean subtask", "--summary", "Clean summary"], { io: cleanSubCreate.io }), 0);
+    assert.equal(cleanSubCreate.stderr.length, 0);
+    assert.match(cleanSubCreate.stdout.join("\n"), /PAP-001-ST-2/);
+  });
+});
+
+test("bulletin create sanitizes invalid characters from title and message with stderr warning", async () => {
+  await withCliEnv(async () => {
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Stop; deploys", "--block", "all", "--message", "Wait; now"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stdout.join("\n"), /Created B-001/);
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "$Block", "--block", "all", "--message", "$Msg"], { io: withDollar.io }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withDollar.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withDollar.stdout.join("\n"), /Created B-002/);
+
+    const withBackslash = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\\now", "--block", "all", "--message", "Msg\\here"], { io: withBackslash.io }), 0);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withBackslash.stdout.join("\n"), /Created B-003/);
+
+    const withAmpersand = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block&stop", "--block", "all", "--message", "Msg&end"], { io: withAmpersand.io }), 0);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withAmpersand.stdout.join("\n"), /Created B-004/);
+
+    const withControlChar = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\u0001\u0002", "--block", "all", "--message", "Msg\u0001\u0002"], { io: withControlChar.io }), 0);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized title: removed 2 invalid character\(s\)/);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized message: removed 2 invalid character\(s\)/);
+    assert.match(withControlChar.stdout.join("\n"), /Created B-005/);
+
+    const withDel = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\u007f", "--block", "all", "--message", "Msg\u007f"], { io: withDel.io }), 0);
+    assert.match(withDel.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withDel.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withDel.stdout.join("\n"), /Created B-006/);
+
+    const clean = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Clean title", "--block", "all", "--message", "Clean message"], { io: clean.io }), 0);
+    assert.equal(clean.stderr.length, 0);
+    assert.match(clean.stdout.join("\n"), /Created B-007/);
+
+    const tabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Tab\tnewline\ncr\r", "--block", "all", "--message", "Tab\tnewline\ncr\r"], { io: tabNewlineCr.io }), 0);
+    assert.equal(tabNewlineCr.stderr.length, 0);
+    assert.match(tabNewlineCr.stdout.join("\n"), /Created B-008/);
   });
 });
 

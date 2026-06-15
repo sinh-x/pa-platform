@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, createAgentApiApp } from "../index.js";
+import { closeDb, createAgentApiApp, sanitizeTextInput } from "../index.js";
 
 function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-deploy-status-"));
@@ -147,4 +147,36 @@ test("deploy paths helpers manage primer and deploy directories", async () => {
     const read = readPrimerFile(deployId);
     assert.equal(read, content);
   });
+});
+
+test("sanitizeTextInput removes invalid characters and reports count", () => {
+  // empty string
+  const r1 = sanitizeTextInput("");
+  assert.equal(r1.sanitized, "");
+  assert.equal(r1.removed, 0);
+
+  // all-invalid characters
+  const r2 = sanitizeTextInput("\x00\x08\x0b\x0c\x0e\x1f\x7f$\\;&");
+  assert.equal(r2.sanitized, "");
+  assert.equal(r2.removed, 11);
+
+  // all-valid characters
+  const r3 = sanitizeTextInput("Hello, world! 123");
+  assert.equal(r3.sanitized, "Hello, world! 123");
+  assert.equal(r3.removed, 0);
+
+  // mixed characters
+  const r4 = sanitizeTextInput("Hello\x00 world\x1f with $special\\chars & more; text");
+  assert.equal(r4.sanitized, "Hello world with specialchars  more text");
+  assert.equal(r4.removed, 6);
+
+  // Unicode characters (should be preserved)
+  const r5 = sanitizeTextInput("café 汉字 ñ");
+  assert.equal(r5.sanitized, "café 汉字 ñ");
+  assert.equal(r5.removed, 0);
+
+  // only newlines and tabs (should be preserved)
+  const r6 = sanitizeTextInput("\t\n\r");
+  assert.equal(r6.sanitized, "\t\n\r");
+  assert.equal(r6.removed, 0);
 });
