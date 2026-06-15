@@ -110,6 +110,9 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     io.stderr(validated.error);
     return 1;
   }
+  if (validated.warnings) {
+    for (const warning of validated.warnings) io.stderr(warning);
+  }
   if (validated.request.objective) {
     try {
       assertNoSensitiveMatch("content", validated.request.objective);

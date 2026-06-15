@@ -554,15 +554,69 @@ test("deploy inline objective uses sensitive content guard after objective valid
     assert.doesNotMatch(blockedLocal.stderr.join("\n"), /FAKE_INLINE_OBJECTIVE|123/);
     assert.equal(seen.length, 0);
 
-    const invalidCharacter = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--objective", "api_key=abcdefghijklmnop;"], { io: invalidCharacter.io, hooks }), 1);
-    assert.match(invalidCharacter.stderr.join("\n"), /objective contains invalid characters/);
-    assert.doesNotMatch(invalidCharacter.stderr.join("\n"), /Blocked sensitive content input/);
+    const sanitized = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship it; with $special & chars\\today", "--dry-run"], { io: sanitized.io, hooks }), 0);
+    assert.match(sanitized.stderr.join("\n"), /sanitized objective: removed \d+ invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship it with special  charstoday", dryRun: true, timeout: 1800 });
 
     const tooLong = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}api_key=abcdefghijklmnop`], { io: tooLong.io, hooks }), 1);
     assert.match(tooLong.stderr.join("\n"), /objective exceeds max length of 10000 characters/);
     assert.doesNotMatch(tooLong.stderr.join("\n"), /Blocked sensitive content input/);
+  });
+});
+
+test("deploy sanitizes invalid characters from objective and shows stderr warning", async () => {
+  await withCliEnv(async () => {
+    const seen: unknown[] = [];
+    const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-sanitize" }; } };
+
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build feature; deploy now", "--dry-run"], { io: withSemicolon.io, hooks }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build feature deploy now", dryRun: true, timeout: 1800 });
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Cost: $100 budget", "--dry-run"], { io: withDollar.io, hooks }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Cost: 100 budget", dryRun: true, timeout: 1800 });
+
+    const withBackslash = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Path: \\usr\\local", "--dry-run"], { io: withBackslash.io, hooks }), 0);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Path: usrlocal", dryRun: true, timeout: 1800 });
+
+    const withAmpersand = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build & test & deploy", "--dry-run"], { io: withAmpersand.io, hooks }), 0);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build  test  deploy", dryRun: true, timeout: 1800 });
+
+    const withControlChar = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Hello\x00World\x1f!", "--dry-run"], { io: withControlChar.io, hooks }), 0);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "HelloWorld!", dryRun: true, timeout: 1800 });
+
+    const withDel = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Delete\x7fme", "--dry-run"], { io: withDel.io, hooks }), 0);
+    assert.match(withDel.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Deleteme", dryRun: true, timeout: 1800 });
+
+    const cleanInput = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Clean input no special chars", "--dry-run"], { io: cleanInput.io, hooks }), 0);
+    assert.equal(cleanInput.stderr.length, 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Clean input no special chars", dryRun: true, timeout: 1800 });
+
+    const preservesTabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Line1\tindented\nLine2\r\nLine3", "--dry-run"], { io: preservesTabNewlineCr.io, hooks }), 0);
+    assert.equal(preservesTabNewlineCr.stderr.length, 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Line1\tindented\nLine2\r\nLine3", dryRun: true, timeout: 1800 });
+
+    const mixedInvalidAndSensitive = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop;", "--dry-run"], { io: mixedInvalidAndSensitive.io, hooks }), 1);
+    assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
+    assert.match(mixedInvalidAndSensitive.stderr.join("\n"), /Blocked sensitive content input/);
+    assert.doesNotMatch(mixedInvalidAndSensitive.stderr.join("\n"), /abcdefghijklmnop|api_key/);
+    assert.equal(seen.length, 0);
   });
 });
 
