@@ -58,7 +58,22 @@ export interface CoreExecutionHooks {
   getSelfUpdateStatus?(): Promise<SelfUpdateStatusResult> | SelfUpdateStatusResult;
 }
 
-export function validateDeployRequestFields(body: Record<string, unknown>): { request: DeployRequest } | { error: string } {
+export interface SanitizeResult {
+  sanitized: string;
+  removed: number;
+}
+
+export function sanitizeTextInput(text: string): SanitizeResult {
+  const sanitized = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f$\\;&]/g, "");
+  return { sanitized, removed: text.length - sanitized.length };
+}
+
+export interface ValidateDeployResult {
+  request: DeployRequest;
+  warnings?: string[];
+}
+
+export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string } {
   const team = stringField(body, "team");
   const mode = stringField(body, "mode");
   const objective = stringField(body, "objective");
@@ -93,15 +108,21 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
   const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");
   if (timeoutValidation) return { error: timeoutValidation };
+  const warnings: string[] = [];
+  let sanitizedObjective: string | undefined;
   if (objective && objective.trim()) {
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f$\\;&]/.test(objective)) return { error: "objective contains invalid characters" };
+    const result = sanitizeTextInput(objective);
+    if (result.removed > 0) {
+      warnings.push(`sanitized objective: removed ${result.removed} invalid character(s)`);
+    }
+    sanitizedObjective = result.sanitized.trim();
   }
   if (dryRun && background) return { error: "--background and --dry-run are mutually exclusive" };
 
   const request: DeployRequest = { team };
   if (mode) request.mode = mode;
-  if (objective?.trim()) request.objective = objective.trim();
+  if (sanitizedObjective) request.objective = sanitizedObjective;
   if (evaluateDeployment) request.evaluateDeployment = evaluateDeployment;
   if (repo) request.repo = repo;
   if (ticket?.trim()) request.ticket = ticket.trim();
@@ -116,7 +137,9 @@ export function validateDeployRequestFields(body: Record<string, unknown>): { re
   if (autonomy) request.autonomy = autonomy as AutonomyLevel;
   if (listModes !== undefined) request.listModes = listModes;
   if (validate !== undefined) request.validate = validate;
-  return { request };
+  const result: ValidateDeployResult = { request };
+  if (warnings.length > 0) result.warnings = warnings;
+  return result;
 }
 
 export function resolveDeployTimeoutSeconds(input: DeployTimeoutResolutionInput = {}): { timeout: number } | { error: string } {
