@@ -1365,6 +1365,56 @@ test("ticket subticket create and update sanitize title and summary with stderr 
   });
 });
 
+test("bulletin create sanitizes invalid characters from title and message with stderr warning", async () => {
+  await withCliEnv(async () => {
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Stop; deploys", "--block", "all", "--message", "Wait; now"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withSemicolon.stdout.join("\n"), /Created B-001/);
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "$Block", "--block", "all", "--message", "$Msg"], { io: withDollar.io }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withDollar.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withDollar.stdout.join("\n"), /Created B-002/);
+
+    const withBackslash = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\\now", "--block", "all", "--message", "Msg\\here"], { io: withBackslash.io }), 0);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withBackslash.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withBackslash.stdout.join("\n"), /Created B-003/);
+
+    const withAmpersand = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block&stop", "--block", "all", "--message", "Msg&end"], { io: withAmpersand.io }), 0);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withAmpersand.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withAmpersand.stdout.join("\n"), /Created B-004/);
+
+    const withControlChar = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\u0001\u0002", "--block", "all", "--message", "Msg\u0001\u0002"], { io: withControlChar.io }), 0);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized title: removed 2 invalid character\(s\)/);
+    assert.match(withControlChar.stderr.join("\n"), /sanitized message: removed 2 invalid character\(s\)/);
+    assert.match(withControlChar.stdout.join("\n"), /Created B-005/);
+
+    const withDel = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Block\u007f", "--block", "all", "--message", "Msg\u007f"], { io: withDel.io }), 0);
+    assert.match(withDel.stderr.join("\n"), /sanitized title: removed 1 invalid character\(s\)/);
+    assert.match(withDel.stderr.join("\n"), /sanitized message: removed 1 invalid character\(s\)/);
+    assert.match(withDel.stdout.join("\n"), /Created B-006/);
+
+    const clean = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Clean title", "--block", "all", "--message", "Clean message"], { io: clean.io }), 0);
+    assert.equal(clean.stderr.length, 0);
+    assert.match(clean.stdout.join("\n"), /Created B-007/);
+
+    const tabNewlineCr = capture();
+    assert.equal(await runCoreCommand(["bulletin", "create", "--title", "Tab\tnewline\ncr\r", "--block", "all", "--message", "Tab\tnewline\ncr\r"], { io: tabNewlineCr.io }), 0);
+    assert.equal(tabNewlineCr.stderr.length, 0);
+    assert.match(tabNewlineCr.stdout.join("\n"), /Created B-008/);
+  });
+});
+
 test("runCoreCommand exposes health, trash, and codectx commands", async () => {
   await withCliEnv(async (root) => {
     const health = capture();
