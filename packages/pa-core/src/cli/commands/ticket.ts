@@ -128,7 +128,9 @@ function parseTicketCreateArgs(argv: string[]): { input: CreateTicketInput; acto
   if (titleResult.removed > 0) warnings.push(`sanitized title: removed ${titleResult.removed} invalid character(s)`);
   const summaryResult = sanitizeTextInput(values["--summary"] ?? "");
   if (summaryResult.removed > 0) warnings.push(`sanitized summary: removed ${summaryResult.removed} invalid character(s)`);
-  const parsed: { input: CreateTicketInput; actor: string; warnings?: string[] } = { actor, input: { project, title: titleResult.sanitized, summary: summaryResult.sanitized, description: values["--description"] ?? "", status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
+  const descriptionResult = sanitizeTextInput(values["--description"] ?? "");
+  if (descriptionResult.removed > 0) warnings.push(`sanitized description: removed ${descriptionResult.removed} invalid character(s)`);
+  const parsed: { input: CreateTicketInput; actor: string; warnings?: string[] } = { actor, input: { project, title: titleResult.sanitized, summary: summaryResult.sanitized, description: descriptionResult.sanitized, status: (values["--status"] ?? "idea") as TicketStatus, priority: values["--priority"] as TicketPriority, type: values["--type"] as TicketType, assignee: values["--assignee"]!, estimate: values["--estimate"] as Estimate, from: values["--from"] ?? "", to: values["--to"] ?? "", tags: splitCsv(values["--tags"]), blockedBy: [], doc_refs: docRef ? [{ type: docRef.type ?? "attachment", path: docRef.path, primary: true, addedAt: nowUtc(), addedBy: actor }] : [], comments: [] } };
   if (warnings.length > 0) parsed.warnings = warnings;
   return parsed;
 }

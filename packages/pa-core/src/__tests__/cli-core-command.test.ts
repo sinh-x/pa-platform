@@ -1309,6 +1309,28 @@ test("ticket create sanitizes invalid characters from title and summary with std
   });
 });
 
+test("ticket create sanitizes invalid characters from description with stderr warning", async () => {
+  await withCliEnv(async () => {
+    const withSemicolon = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Desc; with ; semicolons"], { io: withSemicolon.io }), 0);
+    assert.match(withSemicolon.stderr.join("\n"), /sanitized description: removed 2 invalid character\(s\)/);
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.description, "Desc with  semicolons");
+
+    const withDollar = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug 2", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Cost: $100"], { io: withDollar.io }), 0);
+    assert.match(withDollar.stderr.join("\n"), /sanitized description: removed 1 invalid character\(s\)/);
+    const ticket2 = new TicketStore().get("PAP-002");
+    assert.equal(ticket2?.description, "Cost: 100");
+
+    const cleanDesc = capture();
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Fix bug 3", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Clean desc"], { io: cleanDesc.io }), 0);
+    assert.equal(cleanDesc.stderr.length, 0);
+    const ticket3 = new TicketStore().get("PAP-003");
+    assert.equal(ticket3?.description, "Clean desc");
+  });
+});
+
 test("ticket comment sanitizes invalid characters from content and content-file with stderr warning", async () => {
   await withCliEnv(async (root) => {
     assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Comment sanitize", "--type", "task", "--priority", "high", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
