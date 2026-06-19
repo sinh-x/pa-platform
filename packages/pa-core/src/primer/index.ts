@@ -51,7 +51,9 @@ ${userObjective}` : "",
     ``,
     renderActiveBulletins(options.runtime),
     ``,
-    renderAvailableProcedures(skills, globalDocs, options.runtime),
+    renderAvailableProcedures(skills, options.runtime),
+    ``,
+    renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
     renderDeploymentInstructions(options.teamConfig, mode, options.runtime, options.evaluationAutoLaunchEnabled === true),
     ``,
@@ -166,7 +168,7 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
   ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
 ];
 
-function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], runtime: RuntimeName): string {
+function renderAvailableProcedures(skills: SkillEntry[], runtime: RuntimeName): string {
   if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
   const skillNames = new Set(skills.map((skill) => skill.name));
   const procedures = PROCEDURE_CATALOG.filter(([name]) => skillNames.has(name));
@@ -179,9 +181,21 @@ function renderAvailableProcedures(skills: SkillEntry[], globalDocs: string[], r
   } else {
     lines.push("- No PA operational skills are injected for this mode. Follow the objective and runtime tool guidance.");
   }
-  if (globalDocs.length > 0) {
-    lines.push("Reference documents discoverable for this mode:");
-    for (const doc of globalDocs) lines.push(`- ${doc}`);
+  return lines.join("\n");
+}
+
+function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName): string {
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
+  if (globalDocs.length === 0) return "";
+  const lines = ["## Project Agent Guides"];
+  for (const doc of globalDocs) {
+    const resolved = resolveFile?.(doc) ?? resolve(getPlatformHomeDir(), doc);
+    if (!existsSync(resolved)) {
+      lines.push(`- ${doc} (missing: ${resolved})`);
+      continue;
+    }
+    const body = adaptContentForRuntime(readFileSync(resolved, "utf-8"), runtime);
+    lines.push(body);
   }
   return lines.join("\n");
 }
