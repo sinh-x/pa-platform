@@ -2,10 +2,8 @@ import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome } from "@factory/droid-sdk";
-import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, getDeploymentEvents, loadConfig, queryDeploymentStatus, runCoreCommand, nowUtc, type ActivityEvent } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, queryDeploymentStatus, type ActivityEvent } from "@pa-platform/pa-core";
 import { resolveDefaultDroidModel } from "./adapter.js";
-import { createDefaultDroidHooks } from "./deploy.js";
-import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
 function toEnvRecord(env: Record<string, string | undefined>): Record<string, string> {
@@ -48,7 +46,6 @@ if (isEntrypoint()) {
     } else if (result.exitCode === 0) {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "droid", body: "dpa background deploy completed" }), activityLogPath);
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "dpa background deploy completed", logFile: config.logFile, exitCode: 0 });
-      await maybeLaunchPostDeployEvaluation(config);
     } else {
       const errorBody = result.stderrTail || (result.spawnError ? result.spawnError.message : `droid exited with code ${result.exitCode}`);
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "error", source: "droid", body: errorBody }), activityLogPath);
@@ -74,44 +71,6 @@ interface BackgroundRunResult {
   sessionId?: string;
   stderrTail: string;
   spawnError?: Error;
-}
-
-async function maybeLaunchPostDeployEvaluation(config: BackgroundConfig): Promise<void> {
-  if (!isAutoLaunchEnabled(loadConfig().evaluation?.auto_launch_enabled)) return;
-  const completionPath = resolveBuilderCompletionPath(config.team, config.env["PA_MODE"]);
-  if (!completionPath) return;
-  const status = queryDeploymentStatus(config.deploymentId);
-  if (!status || status.status !== "success") return;
-  if (getDeploymentEvents(config.deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`))) return;
-
-  const command = ["evaluate", "--evaluate-deployment", config.deploymentId, "--background"];
-  const ticket = config.env["PA_TICKET_ID"];
-  const repo = config.env["PA_REPO"];
-  const provider = config.env["PA_PROVIDER"];
-  const model = config.env["PA_MODEL"];
-  const teamModel = config.env["PA_TEAM_MODEL"];
-  const agentModel = config.env["PA_AGENT_MODEL"];
-  if (ticket) command.push("--ticket", ticket);
-  if (repo) command.push("--repo", repo);
-  if (provider) command.push("--provider", provider);
-  if (model) command.push("--model", model);
-  if (teamModel) command.push("--team-model", teamModel);
-  if (agentModel) command.push("--agent-model", agentModel);
-
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const code = await runCoreCommand(command, { hooks: createDefaultDroidHooks(), io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "dpa" });
-  const evaluatorDeploymentId = extractEvaluatorDeploymentId(stdout.join("\n"));
-
-  appendRegistryEvent({
-    deployment_id: config.deploymentId,
-    team: config.team,
-    event: "updated",
-    timestamp: nowUtc(),
-    note: code === 0
-      ? `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=launched evaluator_deployment_id=${evaluatorDeploymentId ?? "unknown"}`
-      : `[evaluator-launch path=${completionPath}] target=${config.deploymentId} status=failed reason=${compactReason(stderr.join("\n") || stdout.join("\n") || `evaluate exited ${code}`)}`,
-  });
 }
 
 async function runDroidBackground(config: BackgroundConfig): Promise<BackgroundRunResult> {
