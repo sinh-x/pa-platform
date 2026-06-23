@@ -363,8 +363,8 @@ test("runCoreCommand routes evaluate to dedicated evaluator deployment", async (
     assert.equal(results[0]?.rating.overall, 4);
     assert.equal(results[0]?.rating.metrics.human_agency, 5);
 
-    const configPath = join(root, "config", "config.yaml");
-    writeFileSync(configPath, "evaluation:\n  auto_launch_enabled: false\n");
+    // evaluation.auto_launch_enabled config write removed: EvaluationConfig was
+    // removed from PlatformConfig and loadConfig no longer reads this field.
     const disabledConfig = capture();
     const disabledConfigSeen: unknown[] = [];
     assert.equal(await runCoreCommand(["evaluate", "--evaluate-deployment", "d-abc123"], {
