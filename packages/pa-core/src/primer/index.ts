@@ -14,7 +14,6 @@ export interface GeneratePrimerOptions {
   skillsDir?: string;
   extraInstructions?: string;
   toolReference?: ToolReference;
-  evaluationAutoLaunchEnabled?: boolean;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
@@ -55,7 +54,7 @@ ${userObjective}` : "",
     ``,
     renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
-    renderDeploymentInstructions(options.teamConfig, mode, options.runtime, options.evaluationAutoLaunchEnabled === true),
+    renderDeploymentInstructions(options.teamConfig, mode, options.runtime),
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
@@ -200,7 +199,7 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
   return lines.join("\n");
 }
 
-function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName, evaluationAutoLaunchEnabled: boolean): string {
+function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
   if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
   const executionStyle = mode?.solo || (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
   if (runtime === "claude") {
@@ -210,7 +209,6 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
       "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `cpa registry complete` or `cpa registry update` when the run finishes.",
-      ...(teamConfig.name === "evaluator" || !evaluationAutoLaunchEnabled ? [] : ["After the registry completion marker is written, launch independent evaluation with `cpa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
     if (executionStyle === "solo") {
@@ -227,7 +225,6 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
       "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `dpa registry complete` or `dpa registry update` when the run finishes.",
-      ...(teamConfig.name === "evaluator" || !evaluationAutoLaunchEnabled ? [] : ["After the registry completion marker is written, launch independent evaluation with `dpa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
     if (executionStyle === "solo") {
@@ -243,7 +240,6 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
     "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
     "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `opa registry complete` or `opa registry update` when the run finishes.",
-    ...(teamConfig.name === "evaluator" || !evaluationAutoLaunchEnabled ? [] : ["After the registry completion marker is written, launch independent evaluation with `opa evaluate --evaluate-deployment $PA_DEPLOYMENT_ID --background` unless this run failed before a deployment ID or registry marker exists."]),
     "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
   ];
   lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links, then ask exactly one confirmation question before deeper analysis or mutation.");
