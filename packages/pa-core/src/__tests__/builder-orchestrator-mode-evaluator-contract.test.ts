@@ -7,13 +7,14 @@ import { getPlatformHomeDir } from "../index.js";
 const configRoot = getPlatformHomeDir();
 const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
 
-test("builder orchestrator mode requires evaluator child coverage before handoff", (t) => {
+test("builder orchestrator mode excludes evaluator child coverage contract", (t) => {
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
   const modeDoc = readFileSync(modePath, "utf-8");
 
-  assert.match(modeDoc, /Child coverage contract: for every builder implement child deployment that reaches terminal status, the orchestration report must record child deployment ID, child terminal status, evaluator launch status, and evaluator deployment ID or failure\/skip reason\./);
-  assert.match(modeDoc, /Child coverage write timing: persist child evaluator coverage in the sub-deploy row immediately after `opa status <deploy-id> --wait` returns and before advancing to the next phase or handoff\./);
-  assert.match(modeDoc, /Evaluator Launch=in-flight/);
+  assert.doesNotMatch(modeDoc, /Child coverage contract/);
+  assert.doesNotMatch(modeDoc, /Child coverage write timing/);
+  assert.doesNotMatch(modeDoc, /Evaluator Launch=in-flight/);
+  assert.doesNotMatch(modeDoc, /Phase 6\.5: Post-Deploy Evaluator/);
 });
 
 test("builder orchestrator mode keeps no-ticket hard fail before Phase 0", (t) => {

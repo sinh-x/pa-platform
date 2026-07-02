@@ -2,9 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, appendRegistryEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentEvents, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, runCoreCommand, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel } from "./adapter.js";
-import { compactReason, extractEvaluatorDeploymentId, isAutoLaunchEnabled, resolveBuilderCompletionPath } from "./post-deploy-evaluator.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithDroid(request, adapter) };
@@ -28,7 +27,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
-  const primer = generatePrimer({ runtime: "droid", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions, evaluationAutoLaunchEnabled: platformConfig.evaluation?.auto_launch_enabled });
+  const primer = generatePrimer({ runtime: "droid", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
@@ -111,18 +110,6 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
       : `dpa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    await maybeLaunchPostDeployEvaluation({
-      deploymentId,
-      team: teamConfig.name,
-      mode: request.mode ?? teamConfig.default_mode,
-      ticket: request.ticket,
-      repo: request.repo,
-      provider: request.provider,
-      model: request.model,
-      teamModel: request.teamModel,
-      agentModel: request.agentModel,
-      hooks: { deploy: (nextRequest) => deployWithDroid(nextRequest, adapter) },
-    });
     return result.exitCode === 0
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `droid exited with code ${result.exitCode}` };
@@ -131,54 +118,6 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
-}
-
-interface PostDeployEvaluationOpts {
-  deploymentId: string;
-  team: string;
-  mode?: string;
-  ticket?: string;
-  repo?: string;
-  provider?: string;
-  model?: string;
-  teamModel?: string;
-  agentModel?: string;
-  hooks: CoreExecutionHooks;
-}
-
-async function maybeLaunchPostDeployEvaluation(opts: PostDeployEvaluationOpts): Promise<void> {
-  if (!isAutoLaunchEnabled(loadConfig().evaluation?.auto_launch_enabled)) return;
-  const completionPath = resolveBuilderCompletionPath(opts.team, opts.mode);
-  if (!completionPath) return;
-  const status = queryDeploymentStatus(opts.deploymentId);
-  if (!status || status.status !== "success") return;
-  if (isEvaluationAlreadyRecorded(opts.deploymentId, completionPath)) return;
-  const command = ["evaluate", "--evaluate-deployment", opts.deploymentId, "--background"];
-  if (opts.ticket) command.push("--ticket", opts.ticket);
-  if (opts.repo) command.push("--repo", opts.repo);
-  if (opts.provider) command.push("--provider", opts.provider);
-  if (opts.model) command.push("--model", opts.model);
-  if (opts.teamModel) command.push("--team-model", opts.teamModel);
-  if (opts.agentModel) command.push("--agent-model", opts.agentModel);
-
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const code = await runCoreCommand(command, { hooks: opts.hooks, io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, binaryName: "dpa" });
-  const evaluatorDeploymentId = extractEvaluatorDeploymentId(stdout.join("\n"));
-
-  appendRegistryEvent({
-    deployment_id: opts.deploymentId,
-    team: opts.team,
-    event: "updated",
-    timestamp: nowUtc(),
-    note: code === 0
-      ? `[evaluator-launch path=${completionPath}] target=${opts.deploymentId} status=launched evaluator_deployment_id=${evaluatorDeploymentId ?? "unknown"}`
-      : `[evaluator-launch path=${completionPath}] target=${opts.deploymentId} status=failed reason=${compactReason(stderr.join("\n") || stdout.join("\n") || `evaluate exited ${code}`)}`,
-  });
-}
-
-function isEvaluationAlreadyRecorded(deploymentId: string, completionPath: string): boolean {
-  return getDeploymentEvents(deploymentId).some((event) => event.event === "updated" && event.note?.includes(`[evaluator-launch path=${completionPath}]`));
 }
 
 function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string, evaluatorTeam: string): string | undefined {

@@ -185,10 +185,6 @@ export interface ProviderDefaults {
   };
 }
 
-export interface EvaluationConfig {
-  auto_launch_enabled?: boolean;
-}
-
 export interface PlatformConfig {
   configDir: string;
   dataDir: string;
@@ -196,7 +192,6 @@ export interface PlatformConfig {
   teamsDir: string;
   skillsDir: string;
   provider_defaults?: ProviderDefaults;
-  evaluation?: EvaluationConfig;
   defaults?: {
     runtime?: RuntimeName;
     opencode?: { provider?: string; model?: string };
