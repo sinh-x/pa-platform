@@ -822,3 +822,47 @@ test("agent API exposes timer parsing helpers", async () => {
     assert.deepEqual(parseTimersOutput("NEXT LEFT LAST PASSED UNIT ACTIVATES\nMon 2026-03-16 05:00:00 +07 6h - - pa-daily-plan.timer pa.service"), [{ unit: "pa-daily-plan.timer", team: "daily-plan", next_in: "6h" }]);
   });
 });
+
+test("agent API PATCH ticket with add_linked_branch returns warning for non-conforming branch name", async () => {
+  await withApiEnv(async (root) => {
+    const repo = join(root, "repo");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["checkout", "-b", "my-random-name"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["checkout", "-b", "feature/PAP-001-fix-login"], { cwd: repo, stdio: "ignore" });
+
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n    feature_branch_pattern: "feature/<ticket>-<topic>"\n`);
+
+    const { app } = createAgentApiApp();
+
+    const created = await app.request("/api/tickets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project: "pa-platform", title: "Branch link test", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }),
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json() as { ticket: { id: string } };
+    const ticketId = createdBody.ticket.id;
+
+    const nonConforming = await app.request(`/api/tickets/${ticketId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ add_linked_branch: { repo: "pa-platform", branch: "my-random-name" } }),
+    });
+    assert.equal(nonConforming.status, 200);
+    const nonConformingBody = await nonConforming.json() as { ticket: Record<string, unknown>; warning?: string };
+    assert.equal(typeof nonConformingBody.warning, "string");
+    assert.match(nonConformingBody.warning ?? "", /does not match/);
+
+    const conforming = await app.request(`/api/tickets/${ticketId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-fix-login" } }),
+    });
+    assert.equal(conforming.status, 200);
+    const conformingBody = await conforming.json() as { ticket: Record<string, unknown>; warning?: string };
+    assert.equal(conformingBody.warning, undefined);
+  });
+});
