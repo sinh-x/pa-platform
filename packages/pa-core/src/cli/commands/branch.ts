@@ -81,7 +81,7 @@ function runBranchCreate(argv: string[], io: Required<CliIo>): number {
   return 0;
 }
 
-function runBranchValidate(argv: string[], io: Required<CliIo>): number {
+function runBranchValidate(io: Required<CliIo>): number {
   const project = resolveProjectFromCwd();
   if (!project) return printError("Not in a registered repository", io);
   const repo = resolveRepo(project.key);
@@ -104,7 +104,7 @@ function runBranchValidate(argv: string[], io: Required<CliIo>): number {
 export function runBranchCommand(argv: string[], io: Required<CliIo>): number {
   const subcommand = argv[0];
   if (subcommand === "create") return runBranchCreate(argv.slice(1), io);
-  if (subcommand === "validate") return runBranchValidate(argv.slice(1), io);
+  if (subcommand === "validate") return runBranchValidate(io);
   io.stderr(`Unknown branch subcommand: ${subcommand ?? ""}`.trim());
   io.stderr("Available subcommands: create, validate");
   return 1;

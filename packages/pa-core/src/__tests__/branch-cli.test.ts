@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, runCoreCommand, TicketStore } from "../index.js";
+import { closeDb, runCoreCommand } from "../index.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
@@ -33,7 +33,6 @@ function withBranchCliEnv(fn: (root: string, repo: string) => Promise<void>): Pr
 
   const ticketsDir = join(root, "data", "tickets");
   mkdirSync(ticketsDir, { recursive: true });
-  const store = new TicketStore(ticketsDir);
 
   return fn(root, repo).finally(() => {
     closeDb();
