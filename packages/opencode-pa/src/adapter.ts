@@ -108,12 +108,12 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
-    const primer = readFileSync(opts.primerPath, "utf-8");
+    const wrapperPrompt = buildPrimerLoadPrompt(opts.primerPath);
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     if (opts.mode === "foreground") {
       const args = ["-m", opts.model ?? this.defaultModel];
       if (sessionId) args.push("--session", sessionId);
-      args.push("--prompt", primer);
+      args.push("--prompt", wrapperPrompt);
       const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
@@ -130,7 +130,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
     const args = ["run", "-m", opts.model ?? this.defaultModel, "--dangerously-skip-permissions"];
     if (sessionId) args.push("--session", sessionId);
     args.push("--format", "json");
-    args.push(primer);
+    args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
       const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
@@ -280,6 +280,10 @@ export function opencodeJsonToActivityEvent(raw: Record<string, unknown>, deploy
     partType: extractPartType(raw),
     metadata: raw,
   });
+}
+
+export function buildPrimerLoadPrompt(primerPath: string): string {
+  return `Read the deployment primer at '${primerPath}' using the Read tool and follow ALL instructions in it exactly. Start immediately. When finished, write the completion marker and exit.`;
 }
 
 export function resolveOpencodeModel(provider: string | undefined, model: string | undefined): string {

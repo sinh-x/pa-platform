@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, getPlatformHomeDir, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
-import { createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
+import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
@@ -164,6 +164,21 @@ test("normalizeProvider accepts valid providers and rejects unsupported ones", (
   assert.throws(() => normalizeProvider("anthropic"), /Supported providers: minimax, openai, deepseek, ollama-cloud, opencode-go/);
   assert.throws(() => normalizeProvider("claude"), /Supported providers: minimax, openai, deepseek, ollama-cloud, opencode-go/);
   assert.throws(() => normalizeProvider("unknown"), /Supported providers: minimax, openai, deepseek, ollama-cloud, opencode-go/);
+});
+
+test("buildPrimerLoadPrompt returns a short wrapper prompt referencing the primer path", () => {
+  const prompt = buildPrimerLoadPrompt("/tmp/d-abc123/primer.md");
+  assert.ok(prompt.length < 500, `wrapper prompt must be under 500 bytes, got ${prompt.length}`);
+  assert.match(prompt, /Read the deployment primer at '\/tmp\/d-abc123\/primer\.md'/);
+  assert.match(prompt, /using the Read tool/);
+  assert.match(prompt, /follow ALL instructions/);
+});
+
+test("buildPrimerLoadPrompt embeds an arbitrary primer path verbatim", () => {
+  const path = "/home/sinh/Documents/ai-usage/deployments/d-f133b2/primer.md";
+  const prompt = buildPrimerLoadPrompt(path);
+  assert.ok(prompt.includes(path));
+  assert.ok(prompt.length < 500);
 });
 
 test("opa tool guidance keeps pa-core serve as server owner", () => {
@@ -449,6 +464,107 @@ test("opa dry-run objective-file preserves markdown table, fenced code markers, 
 
     for (const file of [join(root, "deployments", deployId, "primer.md")]) {
       assert.doesNotMatch(readFileSync(file, "utf-8"), /FAKE_DRY_RUN_PRIVATE|123/);
+    }
+  });
+});
+
+test("opa foreground deploy passes the short wrapper prompt instead of the full primer body", async () => {
+  await withOpaEnv(async (root) => {
+    const bin = join(root, "bin");
+    const argsPath = join(root, "opencode-args.json");
+    mkdirSync(bin, { recursive: true });
+    const opencode = join(bin, "opencode");
+    writeFileSync(opencode, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+fs.appendFileSync(process.env.PA_ACTIVITY_LOG, JSON.stringify({ ts: "2026-07-06T00:00:00.000Z", deploy_id: process.env.PA_DEPLOYMENT_ID, agent: "ses_fg", event: "message.updated", data: { message: { role: "assistant" }, text: "fg ok" } }) + "\\n");
+`, "utf-8");
+    chmodSync(opencode, 0o755);
+    const previousPath = process.env["PATH"];
+    const previousArgsPath = process.env["OPA_ARGS_PATH"];
+    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
+    process.env["OPA_ARGS_PATH"] = argsPath;
+    const stdout: string[] = [];
+    try {
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax"], { hooks: createOpencodeHooks(new OpencodeAdapter()), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+      assert.equal(code, 0);
+      const deployId = queryDeploymentStatuses()[0]!.deploy_id;
+      const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
+      const promptIdx = args.indexOf("--prompt");
+      assert.ok(promptIdx >= 0, "expected --prompt flag in args");
+      const promptValue = args[promptIdx + 1];
+      const primerPath = join(root, "deployments", deployId, "primer.md");
+      const expectedWrapper = buildPrimerLoadPrompt(primerPath);
+      assert.equal(promptValue, expectedWrapper);
+      assert.match(promptValue, new RegExp(escapeRegExp(primerPath)));
+      const fullPrimer = readFileSync(primerPath, "utf-8");
+      assert.ok(!args.includes(fullPrimer), "full primer body must not appear as an argument");
+      for (const arg of args) {
+        assert.ok(!arg.includes(fullPrimer), "no argument may contain the full primer body");
+      }
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+      if (previousArgsPath === undefined) delete process.env["OPA_ARGS_PATH"];
+      else process.env["OPA_ARGS_PATH"] = previousArgsPath;
+    }
+  });
+});
+
+test("opa streaming deploy passes the short wrapper prompt positionally instead of the full primer body", async () => {
+  await withOpaEnv(async (root) => {
+    let capturedArgs: string[] = [];
+    const adapter = new OpencodeAdapter({
+      runCommand: (args) => {
+        capturedArgs = args;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      runBackgroundCommand: () => { throw new Error("background should not run"); },
+    });
+    const primerPath = join(root, "deployments", "d-stream", "primer.md");
+    mkdirSync(dirname(primerPath), { recursive: true });
+    writeFileSync(primerPath, "# Full primer body\n\nA very long primer that would exceed ARG_MAX.\n");
+    const result = await adapter.spawn({ primerPath, deployId: "d-stream", mode: "dry-run", model: "openai/gpt-5.5", timeoutMs: 1000, env: {} });
+    assert.equal(result.exitCode, 0);
+    const expectedWrapper = buildPrimerLoadPrompt(primerPath);
+    const lastArg = capturedArgs.at(-1);
+    assert.ok(lastArg, "expected at least one positional argument");
+    assert.equal(lastArg, expectedWrapper);
+    assert.match(lastArg, new RegExp(escapeRegExp(primerPath)));
+    const fullPrimer = readFileSync(primerPath, "utf-8");
+    assert.ok(!capturedArgs.includes(fullPrimer), "full primer body must not appear in args");
+    for (const arg of capturedArgs) {
+      assert.ok(!arg.includes(fullPrimer), "no argument may contain the full primer body");
+    }
+    assert.ok(!capturedArgs.includes("--prompt"), "streaming path must not pass --prompt");
+    assert.ok(capturedArgs.includes("run"));
+    assert.ok(capturedArgs.includes("json"));
+  });
+});
+
+test("opa background deploy passes the short wrapper prompt positionally instead of the full primer body", async () => {
+  await withOpaEnv(async (root) => {
+    let capturedArgs: string[] = [];
+    const adapter = new OpencodeAdapter({
+      runCommand: () => { throw new Error("foreground should not run"); },
+      runBackgroundCommand: (args) => {
+        capturedArgs = args;
+        return { pid: 4242, sessionId: "sess-bg" };
+      },
+    });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--background", "--provider", "deepseek"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = queryDeploymentStatuses()[0]!.deploy_id;
+    const primerPath = join(root, "deployments", deployId, "primer.md");
+    const expectedWrapper = buildPrimerLoadPrompt(primerPath);
+    const lastArg = capturedArgs.at(-1);
+    assert.ok(lastArg, "expected at least one positional argument");
+    assert.equal(lastArg, expectedWrapper);
+    assert.match(lastArg, new RegExp(escapeRegExp(primerPath)));
+    const fullPrimer = readFileSync(primerPath, "utf-8");
+    assert.ok(!capturedArgs.includes(fullPrimer), "full primer body must not appear in args");
+    for (const arg of capturedArgs) {
+      assert.ok(!arg.includes(fullPrimer), "no argument may contain the full primer body");
     }
   });
 });
