@@ -96,6 +96,8 @@ export function ticketRoutes(store = new TicketStore()): Hono {
           if (!validateBranchName(input.add_linked_branch.branch, pattern)) {
             result.warning = `Branch name '${input.add_linked_branch.branch}' does not match the configured pattern '${pattern}'`;
           }
+        } else {
+          result.warning = `Repo key '${input.add_linked_branch.repo}' not found; branch-name validation skipped`;
         }
       }
       return c.json(result);

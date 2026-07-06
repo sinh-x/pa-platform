@@ -74,7 +74,8 @@ function runBranchCreate(argv: string[], io: Required<CliIo>): number {
       git(["checkout", "-b", branch, developBranch], repo.path, io);
     }
   } catch (error) {
-    return printError("Failed to create branch", io);
+    const message = error instanceof Error ? error.message : String(error);
+    return printError(`Failed to create branch: ${message}`, io);
   }
 
   io.stdout(`Created and checked out ${branch}`);
