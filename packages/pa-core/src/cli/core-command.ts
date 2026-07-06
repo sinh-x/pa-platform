@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { CoreExecutionHooks } from "../deploy/index.js";
+import { runBranchCommand } from "./commands/branch.js";
 import { runCodeCtxCommand } from "./commands/codectx.js";
 import { runRegistryCommand } from "./commands/registry.js";
 import { runBoardCommand } from "./commands/board.js";
@@ -53,6 +54,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     if (command === "schedule") return runScheduleCommand(rest, io);
     if (command === "remove-timer") return runRemoveTimerCommand(rest, io);
     if (command === "board") return runBoardCommand(rest, io);
+    if (command === "branch") return runBranchCommand(rest, io);
     if (command === "teams") return runTeamsCommand(rest, io);
     if (command === "registry") return runRegistryCommand(rest, io);
     if (command === "ticket") return runTicketCommand(rest, io);
@@ -74,7 +76,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
 
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
-  io.stdout("Commands: repos list, status, deploy, evaluate, serve, stop, restart, serve-status, schedule, remove-timer, board, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
+  io.stdout("Commands: repos list, status, deploy, evaluate, serve, stop, restart, serve-status, schedule, remove-timer, board, branch, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
   io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
 }
 
