@@ -13,6 +13,13 @@ export interface RepoEntry {
   prefix?: string;
   mainBranch?: string;
   developBranch?: string;
+  featureBranchPattern?: string;
+}
+
+export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
+
+export function getBranchPattern(repo: RepoEntry): string {
+  return repo.featureBranchPattern ?? DEFAULT_BRANCH_PATTERN;
 }
 
 function candidateReposFiles(): string[] {
