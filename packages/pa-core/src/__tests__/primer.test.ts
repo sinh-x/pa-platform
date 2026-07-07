@@ -208,8 +208,9 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /uat:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);
-  assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
-  assert.match(primer, /path=".*skills\/global\/pa-session-log\/SKILL\.md"/);
+  assert.match(primer, /## Reference Skills/);
+  assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
+  assert.match(primer, /- pa-session-log:.*Path: `.*skills\/global\/pa-session-log\/SKILL\.md`/);
   assertNoLegacyPaCliExamples(primer);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
@@ -304,8 +305,9 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assert.match(primer, /`opa` is the default deployment adapter/);
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /## Deployment Instructions/);
-  assert.match(primer, /path=".*skills\/global\/pa-cli\/SKILL\.md"/);
-  assert.match(primer, /path=".*skills\/global\/google-workspace\/SKILL\.md"/);
+  assert.match(primer, /## Reference Skills/);
+  assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
+  assert.match(primer, /- google-workspace:.*Path: `.*skills\/global\/google-workspace\/SKILL\.md`/);
   assert.doesNotMatch(primer, /missing skill/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
@@ -547,6 +549,97 @@ deploy_modes:
     assert.match(primer, /## Active Bulletins/);
     assert.match(primer, /## Available Procedures/);
     assert.match(primer, /## Deployment Instructions/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer renders reference skills in ## Reference Skills section, not inlined", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-ref-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), "# PA CLI Reference\nInlined body that should NOT appear in Skills section.\n");
+    const teamWithRef = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: reference
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithRef, mode: "implement", skillsDir: root });
+    assert.match(primer, /## Reference Skills/);
+    assert.match(primer, /Use the Read tool to load any skill below when you need it/);
+    assert.match(primer, /- pa-cli:.*Path: `.*pa-cli\/SKILL\.md`/);
+    assert.doesNotMatch(primer, /Inlined body that should NOT appear in Skills section/);
+    assert.match(primer, /## Skills\n\(none\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer renders mixed inject-as types: shared-skill inlined, reference cataloged", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-mixed-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    mkdirSync(join(root, "pa-session-log"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), "# PA CLI Reference\nShared skill body to inline.\n");
+    writeFileSync(join(root, "pa-session-log", "SKILL.md"), "# Session Logging\nReference skill body.\n");
+    const mixedTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+      - name: pa-session-log
+        inject-as: reference
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: mixedTeam, mode: "implement", skillsDir: root });
+    assert.match(primer, /## Skills/);
+    assert.match(primer, /Shared skill body to inline/);
+    assert.match(primer, /## Reference Skills/);
+    assert.match(primer, /- pa-session-log:.*Path: `.*pa-session-log\/SKILL\.md`/);
+    assert.doesNotMatch(primer, /Reference skill body/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer omits ## Reference Skills section when no skills use inject-as: reference", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-no-ref-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), "# PA CLI Reference\nBody.\n");
+    const teamNoRef = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamNoRef, mode: "implement", skillsDir: root });
+    assert.doesNotMatch(primer, /## Reference Skills/);
+    assert.match(primer, /## Skills/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
