@@ -134,7 +134,11 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
 function renderReferenceSkillCatalog(skills: SkillEntry[], skillsDir: string): string {
   const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
   if (referenceSkills.length === 0) return "";
-  const lines = ["## Reference Skills", "Use the Read tool to load any skill below when you need it. Start by reading pa-cli for CLI reference."];
+  const intro = "Use the Read tool to load any skill below when you need it.";
+  const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
+    ? " Start by reading pa-cli for CLI reference."
+    : "";
+  const lines = ["## Reference Skills", `${intro}${paCliHint}`];
   for (const skill of referenceSkills) {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
     const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];

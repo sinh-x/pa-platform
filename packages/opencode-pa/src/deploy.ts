@@ -5,6 +5,44 @@ import { homedir } from "node:os";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
+const PA_ENV_KEYS = [
+  "PA_DEPLOYMENT_ID",
+  "PA_DEPLOYMENT_DIR",
+  "PA_ACTIVITY_LOG",
+  "PA_TEAM",
+  "PA_MODE",
+  "PA_TICKET_ID",
+  "PA_REPO",
+  "PA_PROVIDER",
+  "PA_MODEL",
+  "PA_TEAM_MODEL",
+  "PA_AGENT_MODEL",
+] as const;
+
+type PaEnvKey = (typeof PA_ENV_KEYS)[number];
+
+function buildPaEnvVars(args: {
+  deploymentId: string;
+  deployDir: string;
+  activityLogPath: string;
+  teamConfig: TeamConfig;
+  request: DeployRequest;
+}): Record<PaEnvKey, string> {
+  return {
+    PA_DEPLOYMENT_ID: args.deploymentId,
+    PA_DEPLOYMENT_DIR: args.deployDir,
+    PA_ACTIVITY_LOG: args.activityLogPath,
+    PA_TEAM: args.teamConfig.name,
+    PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
+    PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_REPO: args.request.repo ?? "",
+    PA_PROVIDER: args.request.provider ?? "",
+    PA_MODEL: args.request.model ?? "",
+    PA_TEAM_MODEL: args.request.teamModel ?? "",
+    PA_AGENT_MODEL: args.request.agentModel ?? "",
+  };
+}
+
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithOpencode(request, adapter) };
 }
@@ -24,19 +62,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   const paths = getDeployPaths(deploymentId);
-  const env = {
-    PA_DEPLOYMENT_ID: deploymentId,
-    PA_DEPLOYMENT_DIR: deployDir,
-    PA_ACTIVITY_LOG: paths.activityLogPath,
-    PA_TEAM: teamConfig.name,
-    PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
-    PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "",
-    PA_REPO: request.repo ?? "",
-    PA_PROVIDER: request.provider ?? "",
-    PA_MODEL: request.model ?? "",
-    PA_TEAM_MODEL: request.teamModel ?? "",
-    PA_AGENT_MODEL: request.agentModel ?? "",
-  };
+  const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
@@ -205,7 +231,7 @@ interface DeploymentContextOpts {
   repo?: string;
   cwd: string;
   mode?: string;
-  envVars?: Record<string, string>;
+  envVars?: Partial<Record<PaEnvKey, string>>;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
@@ -258,17 +284,7 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const envVarLines = opts.envVars
     ? [
         "pa_env_vars:",
-        `  PA_DEPLOYMENT_ID: ${opts.envVars["PA_DEPLOYMENT_ID"] ?? ""}`,
-        `  PA_DEPLOYMENT_DIR: ${opts.envVars["PA_DEPLOYMENT_DIR"] ?? ""}`,
-        `  PA_ACTIVITY_LOG: ${opts.envVars["PA_ACTIVITY_LOG"] ?? ""}`,
-        `  PA_TEAM: ${opts.envVars["PA_TEAM"] ?? ""}`,
-        `  PA_MODE: ${opts.envVars["PA_MODE"] ?? ""}`,
-        `  PA_TICKET_ID: ${opts.envVars["PA_TICKET_ID"] ?? ""}`,
-        `  PA_REPO: ${opts.envVars["PA_REPO"] ?? ""}`,
-        `  PA_PROVIDER: ${opts.envVars["PA_PROVIDER"] ?? ""}`,
-        `  PA_MODEL: ${opts.envVars["PA_MODEL"] ?? ""}`,
-        `  PA_TEAM_MODEL: ${opts.envVars["PA_TEAM_MODEL"] ?? ""}`,
-        `  PA_AGENT_MODEL: ${opts.envVars["PA_AGENT_MODEL"] ?? ""}`,
+        ...PA_ENV_KEYS.map((key) => `  ${key}: ${opts.envVars?.[key] ?? ""}`),
       ].join("\n")
     : "";
   return `<deployment-context>
