@@ -48,7 +48,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   }
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   const paths = getDeployPaths(deploymentId);
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name };
+  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
