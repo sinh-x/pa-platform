@@ -119,6 +119,59 @@ function readDryRunBody(root: string, stdout: string[]): string {
   return activity.map((event) => event.body).join("\n");
 }
 
+test("opa dry-run --ticket propagates to deployment-context block", async () => {
+  await withOpaEnv(async (root) => {
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /ticket_id: DG-211/);
+    assert.ok(primer.includes("ticket_id: DG-211"), "primer should contain ticket_id in deployment-context block");
+  });
+});
+
+test("opa dry-run reads PA_TICKET_ID env var when --ticket not passed", async () => {
+  await withOpaEnv(async (root) => {
+    const prev = process.env["PA_TICKET_ID"];
+    process.env["PA_TICKET_ID"] = "DG-211";
+    try {
+      const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+      const stdout: string[] = [];
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+      assert.equal(code, 0);
+      const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+      assert.ok(deployId);
+      const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+      assert.match(primer, /ticket_id: DG-211/);
+    } finally {
+      restore("PA_TICKET_ID", prev);
+    }
+  });
+});
+
+test("opa dry-run --ticket overrides stale PA_TICKET_ID env var", async () => {
+  await withOpaEnv(async (root) => {
+    const prev = process.env["PA_TICKET_ID"];
+    process.env["PA_TICKET_ID"] = "OLD-999";
+    try {
+      const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+      const stdout: string[] = [];
+      const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+      assert.equal(code, 0);
+      const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+      assert.ok(deployId);
+      const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+      assert.match(primer, /ticket_id: DG-211/);
+      assert.ok(!primer.includes("ticket_id: OLD-999"), "ticket from env var should not appear when --ticket flag is used");
+    } finally {
+      restore("PA_TICKET_ID", prev);
+    }
+  });
+});
+
 test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("minimax", undefined), "minimax-coding-plan/MiniMax-M2.7");
   assert.equal(resolveOpencodeModel("openai", undefined), "openai/gpt-5.5");
