@@ -22,7 +22,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const teamConfig = loadTeamConfig(request.team);
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
-  const ticketId = request.ticket;
+  const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
   const primer = generatePrimer({ runtime: "claude", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
