@@ -51,7 +51,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     PA_ACTIVITY_LOG: paths.activityLogPath,
     PA_TEAM: teamConfig.name,
     PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
-    PA_TICKET_ID: request.ticket ?? "",
+    PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "",
     PA_REPO: request.repo ?? "",
     PA_PROVIDER: request.provider ?? "",
     PA_MODEL: request.model ?? "",
