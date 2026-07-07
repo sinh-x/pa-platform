@@ -58,6 +58,7 @@ ${userObjective}` : "",
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
+    renderReferenceSkillCatalog(skills, options.skillsDir ?? getSkillsDir()),
     extraInstructions ? `\n## Extra Instructions\n${extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
 }
@@ -121,12 +122,29 @@ function resolveInstruction(options: GeneratePrimerOptions, instruction: string)
 }
 
 function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
-  if (skills.length === 0) return "(none)";
-  return skills.map((skill) => {
+  const inlined = skills.filter((skill) => skill["inject-as"] !== "reference");
+  if (inlined.length === 0) return "(none)";
+  return inlined.map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
     const body = adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime);
     return `<${skill["inject-as"]} name="${skill.name}" path="${path}">\n${body}\n</${skill["inject-as"]}>`;
   }).join("\n\n");
+}
+
+function renderReferenceSkillCatalog(skills: SkillEntry[], skillsDir: string): string {
+  const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
+  if (referenceSkills.length === 0) return "";
+  const intro = "Use the Read tool to load any skill below when you need it.";
+  const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
+    ? " Start by reading pa-cli for CLI reference."
+    : "";
+  const lines = ["## Reference Skills", `${intro}${paCliHint}`];
+  for (const skill of referenceSkills) {
+    const path = resolve(skillsDir, skill.name, "SKILL.md");
+    const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
+    lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
+  }
+  return lines.join("\n");
 }
 
 function renderActiveBulletins(runtime: RuntimeName): string {

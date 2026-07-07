@@ -5,6 +5,44 @@ import { homedir } from "node:os";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
+const PA_ENV_KEYS = [
+  "PA_DEPLOYMENT_ID",
+  "PA_DEPLOYMENT_DIR",
+  "PA_ACTIVITY_LOG",
+  "PA_TEAM",
+  "PA_MODE",
+  "PA_TICKET_ID",
+  "PA_REPO",
+  "PA_PROVIDER",
+  "PA_MODEL",
+  "PA_TEAM_MODEL",
+  "PA_AGENT_MODEL",
+] as const;
+
+type PaEnvKey = (typeof PA_ENV_KEYS)[number];
+
+function buildPaEnvVars(args: {
+  deploymentId: string;
+  deployDir: string;
+  activityLogPath: string;
+  teamConfig: TeamConfig;
+  request: DeployRequest;
+}): Record<PaEnvKey, string> {
+  return {
+    PA_DEPLOYMENT_ID: args.deploymentId,
+    PA_DEPLOYMENT_DIR: args.deployDir,
+    PA_ACTIVITY_LOG: args.activityLogPath,
+    PA_TEAM: args.teamConfig.name,
+    PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
+    PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_REPO: args.request.repo ?? "",
+    PA_PROVIDER: args.request.provider ?? "",
+    PA_MODEL: args.request.model ?? "",
+    PA_TEAM_MODEL: args.request.teamModel ?? "",
+    PA_AGENT_MODEL: args.request.agentModel ?? "",
+  };
+}
+
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithOpencode(request, adapter) };
 }
@@ -23,7 +61,9 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
+  const paths = getDeployPaths(deploymentId);
+  const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
@@ -41,20 +81,6 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     ?? teamConfig.runtimes?.opencode?.model
     ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const paths = getDeployPaths(deploymentId);
-  const env = {
-    PA_DEPLOYMENT_ID: deploymentId,
-    PA_DEPLOYMENT_DIR: deployDir,
-    PA_ACTIVITY_LOG: paths.activityLogPath,
-    PA_TEAM: teamConfig.name,
-    PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
-    PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "",
-    PA_REPO: request.repo ?? "",
-    PA_PROVIDER: request.provider ?? "",
-    PA_MODEL: request.model ?? "",
-    PA_TEAM_MODEL: request.teamModel ?? "",
-    PA_AGENT_MODEL: request.agentModel ?? "",
-  };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
@@ -205,6 +231,7 @@ interface DeploymentContextOpts {
   repo?: string;
   cwd: string;
   mode?: string;
+  envVars?: Partial<Record<PaEnvKey, string>>;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
@@ -254,6 +281,12 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
+  const envVarLines = opts.envVars
+    ? [
+        "pa_env_vars:",
+        ...PA_ENV_KEYS.map((key) => `  ${key}: ${opts.envVars?.[key] ?? ""}`),
+      ].join("\n")
+    : "";
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
@@ -268,5 +301,5 @@ ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${opts.mode ?? "default"}
-</deployment-context>`;
+${envVarLines}</deployment-context>`;
 }

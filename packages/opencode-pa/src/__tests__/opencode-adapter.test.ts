@@ -133,6 +133,30 @@ test("opa dry-run --ticket propagates to deployment-context block", async () => 
   });
 });
 
+test("opa dry-run deployment-context block includes pa_env_vars subsection", async () => {
+  await withOpaEnv(async (root) => {
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211", "--repo", "~/demo-repo", "--provider", "openai", "--model", "gpt-5", "--team-model", "o3"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /pa_env_vars:/);
+    assert.match(primer, /PA_DEPLOYMENT_ID: d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_DEPLOYMENT_DIR: .+deployments\/d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_ACTIVITY_LOG: .+activity\.jsonl/);
+    assert.match(primer, /PA_TEAM: daily/);
+    assert.match(primer, /PA_MODE: plan/);
+    assert.match(primer, /PA_TICKET_ID: DG-211/);
+    assert.match(primer, /PA_REPO: ~\/demo-repo|demo-repo/);
+    assert.match(primer, /PA_PROVIDER: openai/);
+    assert.match(primer, /PA_MODEL: gpt-5/);
+    assert.match(primer, /PA_TEAM_MODEL: o3/);
+    assert.match(primer, /PA_AGENT_MODEL:/);
+  });
+});
+
 test("opa dry-run reads PA_TICKET_ID env var when --ticket not passed", async () => {
   await withOpaEnv(async (root) => {
     const prev = process.env["PA_TICKET_ID"];
