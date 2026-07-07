@@ -5,8 +5,9 @@ import { deriveDocRefTitle } from "../../tickets/doc-ref.js";
 import { TicketStore } from "../../tickets/store.js";
 import type { CreateTicketInput, TicketListFilters, UpdateTicketInput } from "../../tickets/types.js";
 import { validateAssignee, validateAuthor } from "../../tickets/validate.js";
+import { validateBranchName } from "../../tickets/git-validation.js";
 import { getDeploymentsByTicketId } from "../../registry/index.js";
-import { listRepos, resolveProject } from "../../repos.js";
+import { getBranchPattern, listRepos, loadRepoEntry, resolveProject } from "../../repos.js";
 
 const BOARD_DEFAULT_EXCLUDE_TAGS = ["backlog", "archived"];
 const BOARD_DEFAULT_EXCLUDE_TYPES: TicketListFilters["excludeTypes"] = ["fyi", "work-report"];
@@ -86,7 +87,20 @@ export function ticketRoutes(store = new TicketStore()): Hono {
       try { validateAssignee(input.assignee); } catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error), code: "BAD_REQUEST" }, 400); }
     }
     try {
-      return c.json({ ticket: store.update(c.req.param("id"), input, actor) });
+      const ticket = store.update(c.req.param("id"), input, actor);
+      const result: Record<string, unknown> = { ticket };
+      if (input.add_linked_branch) {
+        const repoEntry = loadRepoEntry(input.add_linked_branch.repo);
+        if (repoEntry) {
+          const pattern = getBranchPattern(repoEntry);
+          if (!validateBranchName(input.add_linked_branch.branch, pattern)) {
+            result.warning = `Branch name '${input.add_linked_branch.branch}' does not match the configured pattern '${pattern}'`;
+          }
+        } else {
+          result.warning = `Repo key '${input.add_linked_branch.repo}' not found; branch-name validation skipped`;
+        }
+      }
+      return c.json(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return c.json({ error: message, code: message.includes("not found") ? "NOT_FOUND" : "UPDATE_FAILED" }, message.includes("not found") ? 404 : 400);

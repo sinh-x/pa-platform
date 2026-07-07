@@ -3,6 +3,53 @@ import { loadRepoEntry, listRepos } from "../repos.js";
 import { nowUtc } from "../time.js";
 import type { AddLinkedBranchInput, AddLinkedCommitInput, LinkedBranch, LinkedCommit } from "./types.js";
 
+const GIT_REF_ILLEGAL_CHARS = /[\s~^:?*\[\\]/;
+const GIT_REF_ILLEGAL_SEQUENCES = /(?:\.\.|\/\/|@{|\.\.lock$|\.lock$)/;
+
+function isGitRefSafe(ref: string): boolean {
+  if (!ref) return false;
+  if (ref.startsWith("-")) return false;
+  if (ref.endsWith("/")) return false;
+  if (ref.endsWith(".lock")) return false;
+  if (GIT_REF_ILLEGAL_CHARS.test(ref)) return false;
+  if (GIT_REF_ILLEGAL_SEQUENCES.test(ref)) return false;
+  return true;
+}
+
+function sanitizeTopicSlug(topic: string): string {
+  return topic
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function buildBranchName(tickets: string[], topic: string, pattern: string): string {
+  if (tickets.length === 0) throw new Error("buildBranchName requires at least one ticket id");
+  const sanitizedTopic = sanitizeTopicSlug(topic);
+  if (!sanitizedTopic) throw new Error(`buildBranchName: topic is empty after sanitization (input: "${topic}")`);
+  const joinedTickets = tickets.join("-");
+  const branch = pattern.replace(/<ticket>/g, joinedTickets).replace(/<topic>/g, sanitizedTopic);
+  if (!isGitRefSafe(branch)) throw new Error(`buildBranchName: generated branch is not git-ref-safe: "${branch}"`);
+  return branch;
+}
+
+export function validateBranchName(branch: string, pattern: string): boolean {
+  const ticketSegment = "[A-Z]+-\\d+(?:-[A-Z]+-\\d+)*";
+  const topicSegment = "[a-z0-9-]+";
+  const regexBody = escapeRegex(pattern)
+    .replace(/<ticket>/g, ticketSegment)
+    .replace(/<topic>/g, topicSegment);
+  const regex = new RegExp(`^${regexBody}$`);
+  return regex.test(branch);
+}
+
 function validateRepoKey(repo: string): { name: string; path: string } {
   const entry = loadRepoEntry(repo);
   if (!entry) {
