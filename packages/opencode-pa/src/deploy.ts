@@ -23,7 +23,21 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
+  const paths = getDeployPaths(deploymentId);
+  const env = {
+    PA_DEPLOYMENT_ID: deploymentId,
+    PA_DEPLOYMENT_DIR: deployDir,
+    PA_ACTIVITY_LOG: paths.activityLogPath,
+    PA_TEAM: teamConfig.name,
+    PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
+    PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_REPO: request.repo ?? "",
+    PA_PROVIDER: request.provider ?? "",
+    PA_MODEL: request.model ?? "",
+    PA_TEAM_MODEL: request.teamModel ?? "",
+    PA_AGENT_MODEL: request.agentModel ?? "",
+  };
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
@@ -41,20 +55,6 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     ?? teamConfig.runtimes?.opencode?.model
     ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const paths = getDeployPaths(deploymentId);
-  const env = {
-    PA_DEPLOYMENT_ID: deploymentId,
-    PA_DEPLOYMENT_DIR: deployDir,
-    PA_ACTIVITY_LOG: paths.activityLogPath,
-    PA_TEAM: teamConfig.name,
-    PA_MODE: request.mode ?? teamConfig.default_mode ?? "",
-    PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "",
-    PA_REPO: request.repo ?? "",
-    PA_PROVIDER: request.provider ?? "",
-    PA_MODEL: request.model ?? "",
-    PA_TEAM_MODEL: request.teamModel ?? "",
-    PA_AGENT_MODEL: request.agentModel ?? "",
-  };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
@@ -205,6 +205,7 @@ interface DeploymentContextOpts {
   repo?: string;
   cwd: string;
   mode?: string;
+  envVars?: Record<string, string>;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
@@ -254,6 +255,22 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
+  const envVarLines = opts.envVars
+    ? [
+        "pa_env_vars:",
+        `  PA_DEPLOYMENT_ID: ${opts.envVars["PA_DEPLOYMENT_ID"] ?? ""}`,
+        `  PA_DEPLOYMENT_DIR: ${opts.envVars["PA_DEPLOYMENT_DIR"] ?? ""}`,
+        `  PA_ACTIVITY_LOG: ${opts.envVars["PA_ACTIVITY_LOG"] ?? ""}`,
+        `  PA_TEAM: ${opts.envVars["PA_TEAM"] ?? ""}`,
+        `  PA_MODE: ${opts.envVars["PA_MODE"] ?? ""}`,
+        `  PA_TICKET_ID: ${opts.envVars["PA_TICKET_ID"] ?? ""}`,
+        `  PA_REPO: ${opts.envVars["PA_REPO"] ?? ""}`,
+        `  PA_PROVIDER: ${opts.envVars["PA_PROVIDER"] ?? ""}`,
+        `  PA_MODEL: ${opts.envVars["PA_MODEL"] ?? ""}`,
+        `  PA_TEAM_MODEL: ${opts.envVars["PA_TEAM_MODEL"] ?? ""}`,
+        `  PA_AGENT_MODEL: ${opts.envVars["PA_AGENT_MODEL"] ?? ""}`,
+      ].join("\n")
+    : "";
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
@@ -268,5 +285,5 @@ ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${opts.mode ?? "default"}
-</deployment-context>`;
+${envVarLines}</deployment-context>`;
 }
