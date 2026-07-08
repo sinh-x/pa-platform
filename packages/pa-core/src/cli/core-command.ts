@@ -78,7 +78,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("Commands: repos list, status, deploy, evaluate, serve, stop, restart, serve-status, schedule, remove-timer, board, branch, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
   io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
-  io.stdout(`Status: ${binaryName} status <deploy-id> [--activity [--verbose]] [--wait]; --report and --artifacts are standalone (not combinable); --verbose requires --activity.`);
+  io.stdout(`Status: ${binaryName} status <deploy-id> [--activity [--verbose]] [--wait]; --report and --artifacts are standalone (rejected when combined with other display flags); --verbose requires --activity.`);
 }
 
 function defaultBinaryName(): string {

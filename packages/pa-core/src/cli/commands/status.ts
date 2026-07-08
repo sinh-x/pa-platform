@@ -52,6 +52,13 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
   }
   if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
   if (opts.verbose && !opts.activity) return { error: "--verbose requires --activity" };
+  const standaloneFlags: Array<keyof typeof opts> = ["report", "artifacts"];
+  for (const flag of standaloneFlags) {
+    if (opts[flag]) {
+      const conflict = (["wait", "activity", "report", "artifacts"] as const).find((other) => other !== flag && opts[other]);
+      if (conflict) return { error: `--${flag} is standalone and not combinable with --${conflict}` };
+    }
+  }
   return opts;
 }
 
@@ -233,11 +240,9 @@ function formatReasoningEvent(event: ActivityEvent, ts: string): string {
 }
 
 function extractReasoningContent(body: string): string {
-  const marker = "part=reasoning";
-  const idx = body.indexOf(marker);
-  if (idx === -1) return body;
-  const rest = body.slice(idx + marker.length).trim();
-  return rest;
+  const match = /^part=(\S+)(?:\s+role=(\S+))?\s+/.exec(body);
+  if (!match) return body;
+  return body.slice(match[0].length);
 }
 
 function isToolActionEvent(event: ActivityEvent): boolean {

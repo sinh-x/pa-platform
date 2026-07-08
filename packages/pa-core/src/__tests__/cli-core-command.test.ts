@@ -267,6 +267,57 @@ test("status --activity formats reasoning events with indented content", async (
   });
 });
 
+test("status --activity strips part=thinking role=assistant prefix for kind=thinking events", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-thinking", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-thinking");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      // Realistic opencode plugin schema: kind="thinking" with body produced by summarizeMessageData:
+      // "part=thinking role=assistant <thinking content>"
+      JSON.stringify({ deployId: "d-act-thinking", timestamp: "2026-04-26T00:00:00.000Z", kind: "thinking", source: "opencode", body: "part=thinking role=assistant I should consider the edge cases first." }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-thinking", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /reasoning/);
+    assert.match(output, /    I should consider the edge cases first\./);
+    assert.doesNotMatch(output, /part=thinking/);
+    assert.doesNotMatch(output, /role=assistant/);
+  });
+});
+
+test("status --report combined with --activity is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-report-conflict", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-report-conflict", "--report", "--activity"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--report is standalone and not combinable with --activity/);
+  });
+});
+
+test("status --artifacts combined with --wait is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-artifacts-conflict", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-artifacts-conflict", "--artifacts", "--wait"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--artifacts is standalone and not combinable with --wait/);
+  });
+});
+
+test("status --report combined with --artifacts is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-both-standalone", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-both-standalone", "--report", "--artifacts"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--report is standalone and not combinable with --artifacts/);
+  });
+});
+
 test("status --activity formats tool actions with concise tool name and target", async () => {
   await withCliEnv(async (root) => {
     appendRegistryEvent({ deployment_id: "d-act-tools", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
