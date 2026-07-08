@@ -221,6 +221,144 @@ test("runCoreCommand exposes status list and detail", async () => {
   });
 });
 
+test("status --activity filters noise events from output", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-filter", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-filter");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.status: idle" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "file.watcher.updated: /some/path" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:03.000Z", kind: "text", source: "opencode", body: "session.updated: stuff" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:04.000Z", kind: "text", source: "opencode", body: "visible text event" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-filter", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /1\/5 events/);
+    assert.match(output, /visible text event/);
+    assert.doesNotMatch(output, /session\.status/);
+    assert.doesNotMatch(output, /session\.diff/);
+    assert.doesNotMatch(output, /file\.watcher\.updated/);
+    assert.doesNotMatch(output, /session\.updated/);
+  });
+});
+
+test("status --activity formats reasoning events with indented content", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-reasoning", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-reasoning");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-reasoning", timestamp: "2026-04-26T00:00:00.000Z", kind: "thinking", source: "opencode", body: "part=reasoning Let me analyze the problem and find a solution." }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-reasoning", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /reasoning/);
+    assert.match(output, /    Let me analyze the problem and find a solution\./);
+    assert.doesNotMatch(output, /part=reasoning/);
+  });
+});
+
+test("status --activity formats tool actions with concise tool name and target", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-tools", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-tools");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-tools", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "git status" } } }),
+      JSON.stringify({ deployId: "d-act-tools", timestamp: "2026-04-26T00:00:01.000Z", kind: "tool_result", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "git status" } } }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-tools", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /tool\s+bash: git status/);
+    assert.match(output, /result\s+bash: git status/);
+    assert.doesNotMatch(output, /"command"/);
+    assert.doesNotMatch(output, /"args"/);
+  });
+});
+
+test("status --activity groups events by agent/session source", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-group", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-group");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-group", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "ses_abc", body: "event from session abc" }),
+      JSON.stringify({ deployId: "d-act-group", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "ses_def", body: "event from session def" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-group", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /--- ses_abc \(1\) ---/);
+    assert.match(output, /--- ses_def \(1\) ---/);
+    assert.match(output, /event from session abc/);
+    assert.match(output, /event from session def/);
+  });
+});
+
+test("status --activity --verbose shows all events including noise", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-verbose", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-verbose");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.status: idle" }),
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "visible text event" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-verbose", "--activity", "--verbose"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /3 events \[verbose\]/);
+    assert.match(output, /session\.status/);
+    assert.match(output, /session\.diff/);
+    assert.match(output, /visible text event/);
+  });
+});
+
+test("status --wait --activity shows activity tail during poll", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-act", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-act");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "event three" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-act", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        appendRegistryEvent({ deployment_id: "d-wait-act", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 1);
+    const output = captured.stdout.join("\n");
+    assert.match(output, /Waiting for deployment: d-wait-act/);
+    assert.match(output, /--- activity tail/);
+    assert.match(output, /event three/);
+    assert.match(output, /success - done/);
+  });
+});
+
 test("runCoreCommand exposes registry list, show, and complete", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-reg-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
