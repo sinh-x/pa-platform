@@ -136,6 +136,9 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
   }
   assert.match(captured.stdout.join("\n"), /Usage: opa /);
   assert.match(captured.stdout.join("\n"), /PA_STATUS_WAIT_TIMEOUT/);
+  assert.match(captured.stdout.join("\n"), /--activity \[--verbose\]/);
+  assert.match(captured.stdout.join("\n"), /--verbose requires --activity/);
+  assert.match(captured.stdout.join("\n"), /\[--report\] \[--artifacts\]/);
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
@@ -410,6 +413,46 @@ test("status --wait --activity tail is incremental across polls", async () => {
     // event three should be emitted once (on the third poll after it was appended)
     const eventThreeOccurrences = output.match(/event three/g) ?? [];
     assert.equal(eventThreeOccurrences.length, 1, "new event should be emitted once");
+    assert.match(output, /success - done/);
+  });
+});
+
+test("status --wait --activity flushes final activity batch on terminal status", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-final", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-final");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-final", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        if (sleeps === 1) {
+          // append a late event then mark completed on the second sleep
+          writeFileSync(activityFile, [
+            JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+            JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event two (final)" }),
+          ].join("\n") + "\n");
+          return;
+        }
+        appendRegistryEvent({ deployment_id: "d-wait-final", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 2);
+    const output = captured.stdout.join("\n");
+    // The late event "event two (final)" must appear in the final flush
+    assert.match(output, /event two \(final\)/, "final activity batch must be flushed on terminal status");
     assert.match(output, /success - done/);
   });
 });
