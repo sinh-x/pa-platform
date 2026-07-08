@@ -51,6 +51,7 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else return { error: `Unexpected status argument: ${arg}` };
   }
   if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
+  if (opts.verbose && !opts.activity) return { error: "--verbose requires --activity" };
   return opts;
 }
 
@@ -89,6 +90,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
   io.stdout(`Override env: ${STATUS_WAIT_OVERRIDE_ENV}`);
 
   const startedAt = runtime.clock();
+  let activityCursor: number | undefined;
   while (true) {
     const deployment = queryDeploymentStatus(deployId);
     if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
@@ -114,7 +116,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
-    if (options?.activity) showActivityTail(deployId, io, options.verbose ?? false);
+    if (options?.activity) activityCursor = showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
     if (runtime.clock() - startedAt >= timeout.seconds * 1000) {
       io.stderr(`Timed out waiting for deployment ${deployId} after ${timeout.seconds}s`);
       return 1;
@@ -179,15 +181,19 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose =
 
 const ACTIVITY_TAIL_LIMIT = 10;
 
-function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean): void {
+function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
-  if (!existsSync(activityFile)) return;
+  if (!existsSync(activityFile)) return cursor;
   const events = readActivityEvents(activityFile);
-  if (events.length === 0) return;
+  if (events.length === 0) return cursor;
   const visible = verbose ? events : events.filter((event) => !isNoiseActivityEvent(event));
-  const tail = visible.slice(-ACTIVITY_TAIL_LIMIT);
-  io.stdout(`--- activity tail (${tail.length}${verbose ? "" : `/${visible.length}`} events${verbose ? " [verbose]" : ""}) ---`);
+  const startIndex = cursor === undefined ? Math.max(0, visible.length - ACTIVITY_TAIL_LIMIT) : cursor;
+  const tail = visible.slice(startIndex);
+  if (tail.length === 0) return startIndex;
+  const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
+  io.stdout(`--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`);
   for (const event of tail) io.stdout(formatActivityEvent(event));
+  return startIndex + tail.length;
 }
 
 const NOISE_EVENT_PREFIXES = ["session.status", "session.diff", "file.watcher.updated", "session.updated"];
@@ -196,7 +202,7 @@ function isNoiseActivityEvent(event: ActivityEvent): boolean {
   for (const prefix of NOISE_EVENT_PREFIXES) {
     if (event.body.startsWith(`${prefix}:`) || event.body.startsWith(`${prefix} `)) {
       if (prefix === "session.diff") {
-        return /diff=\[\]\s*$/.test(event.body) || /diff=\[\]\s/.test(event.body);
+        return /\bdiff=\[\]/.test(event.body);
       }
       return true;
     }

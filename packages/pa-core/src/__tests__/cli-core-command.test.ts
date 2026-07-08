@@ -359,6 +359,89 @@ test("status --wait --activity shows activity tail during poll", async () => {
   });
 });
 
+test("status --wait --activity tail is incremental across polls", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-incr", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-incr");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-incr", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        if (sleeps === 1) {
+          // unchanged activity: no new events appended
+          return;
+        }
+        if (sleeps === 2) {
+          // append a new event then mark completed on the third sleep
+          writeFileSync(activityFile, [
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event three" }),
+          ].join("\n") + "\n");
+          return;
+        }
+        appendRegistryEvent({ deployment_id: "d-wait-incr", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 3);
+    const output = captured.stdout.join("\n");
+    // first poll prints initial tail (last 10 of visible = 2 events)
+    // second poll: unchanged activity prints nothing (incremental)
+    // third poll: only the new event three is emitted
+    const tailHeaders = output.match(/--- activity tail/g) ?? [];
+    assert.equal(tailHeaders.length, 2, "should print tail only when there is something new to show");
+    // event two must appear exactly once (initial tail, not reprinted on unchanged poll)
+    const eventTwoOccurrences = output.match(/event two/g) ?? [];
+    assert.equal(eventTwoOccurrences.length, 1, "unchanged activity must not reprint previous events");
+    // event three should be emitted once (on the third poll after it was appended)
+    const eventThreeOccurrences = output.match(/event three/g) ?? [];
+    assert.equal(eventThreeOccurrences.length, 1, "new event should be emitted once");
+    assert.match(output, /success - done/);
+  });
+});
+
+test("status --activity keeps non-empty session.diff events visible", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-diff", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-diff");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-diff", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[file.ts]" }),
+      JSON.stringify({ deployId: "d-act-diff", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-diff", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /diff=\[file\.ts\]/, "non-empty diff must remain visible");
+    assert.doesNotMatch(output, /diff=\[\]\s*\n/, "empty diff must be filtered out");
+  });
+});
+
+test("status --verbose without --activity is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-verbose-err", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-verbose-err", "--verbose"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--verbose requires --activity/);
+  });
+});
+
 test("runCoreCommand exposes registry list, show, and complete", async () => {
   await withCliEnv(async () => {
     appendRegistryEvent({ deployment_id: "d-reg-1", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
