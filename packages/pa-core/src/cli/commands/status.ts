@@ -72,7 +72,12 @@ function resolveStatusWaitTimeout(deployment: DeploymentStatus): { seconds: numb
   return { seconds: deployment.effective_timeout_seconds ?? DEFAULT_DEPLOY_TIMEOUT_SECONDS };
 }
 
-async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime): Promise<number> {
+interface WaitForDeploymentOptions {
+  activity?: boolean;
+  verbose?: boolean;
+}
+
+async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime, options?: WaitForDeploymentOptions): Promise<number> {
   const initial = queryDeploymentStatus(deployId);
   if (!initial) return printError(`Deployment not found: ${deployId}`, io);
   const timeout = resolveStatusWaitTimeout(initial);
@@ -109,6 +114,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
+    if (options?.activity) showActivityTail(deployId, io, options.verbose ?? false);
     if (runtime.clock() - startedAt >= timeout.seconds * 1000) {
       io.stderr(`Timed out waiting for deployment ${deployId} after ${timeout.seconds}s`);
       return 1;
@@ -169,6 +175,19 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose =
     for (const event of group) io.stdout(formatActivityEvent(event));
   }
   return 0;
+}
+
+const ACTIVITY_TAIL_LIMIT = 10;
+
+function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean): void {
+  const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
+  if (!existsSync(activityFile)) return;
+  const events = readActivityEvents(activityFile);
+  if (events.length === 0) return;
+  const visible = verbose ? events : events.filter((event) => !isNoiseActivityEvent(event));
+  const tail = visible.slice(-ACTIVITY_TAIL_LIMIT);
+  io.stdout(`--- activity tail (${tail.length}${verbose ? "" : `/${visible.length}`} events${verbose ? " [verbose]" : ""}) ---`);
+  for (const event of tail) io.stdout(formatActivityEvent(event));
 }
 
 const NOISE_EVENT_PREFIXES = ["session.status", "session.diff", "file.watcher.updated", "session.updated"];
@@ -293,7 +312,7 @@ export async function runStatusCommand(argv: string[], io: Required<CliIo>, now:
       io.stderr(`Deployment not found: ${opts.deployId}`);
       return 1;
     }
-    if (opts.wait) return waitForDeployment(opts.deployId, io, runtime);
+    if (opts.wait) return waitForDeployment(opts.deployId, io, runtime, { activity: opts.activity, verbose: opts.verbose });
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
     if (opts.activity) return showDeploymentActivity(opts.deployId, io, opts.verbose);
