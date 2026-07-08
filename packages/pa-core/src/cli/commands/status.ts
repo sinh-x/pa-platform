@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { readActivityEvents } from "../../activity/index.js";
+import { maskSecrets, readActivityEvents } from "../../activity/index.js";
 import type { ActivityEvent } from "../../activity/index.js";
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS } from "../../deploy/index.js";
 import { getAiUsageDir, getDeploymentDir } from "../../paths.js";
@@ -197,6 +197,8 @@ function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolea
   return startIndex + tail.length;
 }
 
+// Noise prefixes match the `<event>: <summary>` body format produced by summarizePluginEvent()
+// in activity/index.ts. Keep in sync with that function's `${event}${summary ? `: ${summary}` : ""}` template.
 const NOISE_EVENT_PREFIXES = ["session.status", "session.diff", "file.watcher.updated", "session.updated"];
 
 function isNoiseActivityEvent(event: ActivityEvent): boolean {
@@ -262,17 +264,17 @@ function extractToolTarget(event: ActivityEvent): string {
   const args = recordValue(meta["args"]);
   if (args) {
     const target = firstMetaString(args, ["command", "filePath", "file_path", "pattern", "url", "path", "description", "query"]);
-    if (target) return target;
+    if (target) return maskSecrets(target);
   }
   const summary = typeof meta["summary"] === "string" ? meta["summary"] : "";
-  if (summary) return summary.slice(0, 80);
-  return firstMetaString(meta, ["summary", "description", "command", "error", "message"]) ?? "";
+  if (summary) return maskSecrets(summary.slice(0, 80));
+  return maskSecrets(firstMetaString(meta, ["summary", "description", "command", "error", "message"]) ?? "");
 }
 
 function firstMetaString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value.slice(0, 80);
+    if (typeof value === "string" && value.length > 0) return maskSecrets(value.slice(0, 80));
   }
   return undefined;
 }

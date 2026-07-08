@@ -138,7 +138,7 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
   assert.match(captured.stdout.join("\n"), /PA_STATUS_WAIT_TIMEOUT/);
   assert.match(captured.stdout.join("\n"), /--activity \[--verbose\]/);
   assert.match(captured.stdout.join("\n"), /--verbose requires --activity/);
-  assert.match(captured.stdout.join("\n"), /\[--report\] \[--artifacts\]/);
+  assert.match(captured.stdout.join("\n"), /--report and --artifacts are standalone/);
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
@@ -284,6 +284,25 @@ test("status --activity formats tool actions with concise tool name and target",
     assert.match(output, /result\s+bash: git status/);
     assert.doesNotMatch(output, /"command"/);
     assert.doesNotMatch(output, /"args"/);
+  });
+});
+
+test("status --activity redacts secrets in tool-action target from metadata.args.command", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-secret", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-secret");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "curl -H 'Authorization: Bearer sk-leaked-token-12345' https://api.example.com" } } }),
+      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:01.000Z", kind: "tool_result", source: "opencode", body: "tool=bash", metadata: { tool: "bash", summary: "export TOKEN=sk-leaked-token-12345 && npm publish" } }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-secret", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /tool\s+bash: curl -H 'Authorization: \[REDACTED\]/);
+    assert.match(output, /result\s+bash: export \[REDACTED\]/);
+    assert.doesNotMatch(output, /sk-leaked-token-12345/);
   });
 });
 
