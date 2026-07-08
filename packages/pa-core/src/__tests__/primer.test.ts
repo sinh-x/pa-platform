@@ -618,6 +618,90 @@ deploy_modes:
   }
 });
 
+test("generatePrimer orchestrator mode with solo:false omits solo deployment instruction", () => {
+  const orchestratorTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: orchestrator
+    label: Orchestrator
+    agents: []
+    solo: false
+    objective: Orchestrate sub-deploys
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: orchestratorTeam, mode: "orchestrator" });
+  assert.doesNotMatch(primer, /This is a solo deployment/);
+  assert.match(primer, /This is a team-mode deployment/);
+  assert.match(primer, /coordinate through opencode-exposed tools only/);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
+test("generatePrimer orchestrator mode does not contain solo line across runtimes", () => {
+  const orchestratorTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: orchestrator
+    label: Orchestrator
+    agents: []
+    solo: false
+    objective: Orchestrate sub-deploys
+`);
+  for (const runtime of ["opencode", "claude", "droid"] as const) {
+    const primer = generatePrimer({ runtime, teamConfig: orchestratorTeam, mode: "orchestrator" });
+    assert.doesNotMatch(primer, /This is a solo deployment/, `orchestrator mode must not be solo for runtime ${runtime}`);
+    assert.match(primer, /This is a team-mode deployment/, `orchestrator mode must be team-mode for runtime ${runtime}`);
+  }
+});
+
+test("generatePrimer implement mode with empty agents still gets solo instruction", () => {
+  const implementTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    agents: []
+    objective: Implement directly
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: implementTeam, mode: "implement" });
+  assert.match(primer, /This is a solo deployment/);
+  assert.doesNotMatch(primer, /This is a team-mode deployment/);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
+test("generatePrimer worker mode with empty agents still gets solo instruction", () => {
+  const workerTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: worker
+    label: Worker
+    agents: []
+    objective: Work directly
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: workerTeam, mode: "worker" });
+  assert.match(primer, /This is a solo deployment/);
+  assert.doesNotMatch(primer, /This is a team-mode deployment/);
+  assertNoBannedOpencodeOperationalReferences(primer);
+});
+
 test("generatePrimer omits ## Reference Skills section when no skills use inject-as: reference", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-no-ref-"));
   try {

@@ -219,7 +219,9 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
   if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
-  const executionStyle = mode?.solo || (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
+  const executionStyle = mode?.solo === true ? "solo"
+    : mode?.solo === false ? "team"
+    : (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
   if (runtime === "claude") {
     const lines = [
       "## Deployment Instructions",
