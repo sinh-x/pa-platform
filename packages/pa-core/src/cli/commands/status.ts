@@ -51,6 +51,7 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else return { error: `Unexpected status argument: ${arg}` };
   }
   if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
+  if (opts.wait) opts.activity = true;
   if (opts.verbose && !opts.activity) return { error: "--verbose requires --activity" };
   const standaloneFlags: Array<keyof typeof opts> = ["report", "artifacts"];
   for (const flag of standaloneFlags) {
