@@ -110,3 +110,21 @@ evaluation:
 ```
 
 When enabled, non-evaluator team primers include post-registry instructions to run background evaluation, and runtime auto-launch paths remain limited to at most one evaluator launch per deployment completion path.
+
+## Orchestration Sub-Deploy Launch Convention (FR-8)
+
+When an orchestrator spawns builder/implement sub-deploys, the launch template SHOULD default to `--background` and SHOULD omit `--provider` (let the team/mode YAML resolve the provider). This keeps sub-deploys detached, non-interactive, and provider-agnostic so the operator's team config is the single source of truth for provider/model.
+
+Canonical template:
+
+```bash
+opa deploy builder --mode implement --background --ticket <id> --objective-file <path>
+```
+
+Notes:
+
+- `--background` is the default for orchestrated sub-deploys so the child deployment writes its session id and activity log without blocking the orchestrator's foreground loop.
+- Omit `--provider` unless the orchestrator needs to override the team YAML `runtimes.opencode.provider` / mode `provider` for a specific run. Provider overrides are rare and should be intentional.
+- `--ticket <id>` links the sub-deploy to its work item for traceability.
+- `--objective-file <path>` supplies the phase objective; the orchestrator writes this file before launching the sub-deploy and the implement agent reads it as the `## User Objective` block of its primer.
+- This is a documentation-level convention. Enforcing it inside the orchestrator mode-instruction content is tracked as a separate follow-up (see PAP-110 / OQ-3).
