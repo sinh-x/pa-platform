@@ -744,6 +744,149 @@ test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after th
   assert.ok(userObjectiveIndex < runtimeToolsIndex, "## User Objective must precede ## Runtime Tools");
 });
 
+test("generatePrimer skips placeholder-only template global_docs and keeps docs that use <angle> in code examples (FR-2, AC2)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-placeholder-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(join(guidesDir, "templates"), { recursive: true });
+    const templatePath = join(guidesDir, "templates", "project-agent-guide.md");
+    writeFileSync(templatePath, [
+      "# Template: Project Agent Guide",
+      "",
+      "> **Template:** project-agent-guide",
+      "> **Version:** 1.0",
+      "",
+      "## Template",
+      "",
+      "```markdown",
+      "# Project Agent Guide: <project-name>",
+      "",
+      "## 2. Conventions",
+      "",
+      "### C1: <Convention Title>",
+      "",
+      "**Rule:** <One-sentence rule statement.>",
+      "",
+      "### C2: <Convention Title>",
+      "",
+      "## 3. Patterns",
+      "",
+      "### P1: <Pattern Name>",
+      "```",
+      "",
+      "## Guidance Notes",
+      "Minimum 3 conventions in section 2.",
+    ].join("\n"));
+    const codeExamplePath = join(guidesDir, "filled-guide.md");
+    writeFileSync(codeExamplePath, [
+      "# Project Agent Guide: pa-platform",
+      "",
+      "## 2. Conventions",
+      "",
+      "### C1: Type everything",
+      "",
+      "**Example:**",
+      "```ts",
+      "const x: Array<string> = parse<string>(input);",
+      "const y: Map<string, number> = new Map();",
+      "```",
+      "",
+      "## Guidance Notes",
+      "Use angle-bracket generics in TypeScript examples.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/templates/project-agent-guide.md
+      - guides/filled-guide.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /## Project Agent Guides/);
+    assert.match(primer, /guides\/templates\/project-agent-guide\.md \(skipped: placeholder-only template\)/);
+    assert.doesNotMatch(primer, /# Project Agent Guide: <project-name>/);
+    assert.doesNotMatch(primer, /<Convention Title>/);
+    assert.doesNotMatch(primer, /<Pattern Name>/);
+    assert.match(primer, /# Project Agent Guide: pa-platform/);
+    assert.match(primer, /C1: Type everything/);
+    assert.match(primer, /Array<string>/);
+    assert.match(primer, /Map<string, number>/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer honors opt-out comment on otherwise ambiguous global_docs (FR-2 opt-out)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-optout-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    const guidePath = join(guidesDir, "stale-guide.md");
+    writeFileSync(guidePath, [
+      "# Project Agent Guide: my-project",
+      "",
+      "<!-- pa: skip-placeholder-template -->",
+      "",
+      "## 2. Conventions",
+      "",
+      "### C1: Use strict types",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/stale-guide.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /guides\/stale-guide\.md \(skipped: placeholder-only template\)/);
+    assert.doesNotMatch(primer, /Use strict types/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer builder/implement fixture no longer contains placeholder template markers (FR-2, FR-3, AC2)", (t) => {
+  if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: builder,
+    mode: "implement",
+    objective: "Implement PAP-110 phase 2.",
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
+  });
+  assert.doesNotMatch(primer, /# Project Agent Guide: <project-name>/);
+  assert.doesNotMatch(primer, /<Convention Title>/);
+  assert.doesNotMatch(primer, /<Pattern Name>/);
+});
+
 test("generatePrimer omits ## Reference Skills section when no skills use inject-as: reference", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-no-ref-"));
   try {

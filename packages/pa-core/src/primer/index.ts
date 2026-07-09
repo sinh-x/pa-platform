@@ -209,10 +209,31 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
       lines.push(`- ${doc} (missing: ${resolved})`);
       continue;
     }
-    const body = adaptContentForRuntime(readFileSync(resolved, "utf-8"), runtime);
+    const raw = readFileSync(resolved, "utf-8");
+    if (isPlaceholderTemplate(raw)) {
+      lines.push(`- ${doc} (skipped: placeholder-only template)`);
+      continue;
+    }
+    const body = adaptContentForRuntime(raw, runtime);
     lines.push(body);
   }
   return lines.join("\n");
+}
+
+const PLACEHOLDER_TOKEN_RE = /<[A-Za-z][A-Za-z0-9 _./-]*>/g;
+const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+<[A-Za-z][A-Za-z0-9 _./-]*>/m;
+const TEMPLATE_SELF_ID_RE = /(?:^# Template[:\s]|^>\s+\*\*Template:\*\*)/m;
+const PLACEHOLDER_OPT_OUT_RE = /<!--\s*pa:\s*skip-placeholder-template\s*-->/;
+
+function isPlaceholderTemplate(body: string): boolean {
+  if (PLACEHOLDER_OPT_OUT_RE.test(body)) return true;
+  const tokens = body.match(PLACEHOLDER_TOKEN_RE);
+  if (!tokens || tokens.length < 3) return false;
+  if (TEMPLATE_SELF_ID_RE.test(body)) return true;
+  const headingLines = body.split("\n").filter((line) => /^#{1,6}\s+/.test(line));
+  if (headingLines.length === 0) return true;
+  const filledHeadings = headingLines.filter((line) => !PLACEHOLDER_HEADING_RE.test(line));
+  return filledHeadings.length === 0;
 }
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
