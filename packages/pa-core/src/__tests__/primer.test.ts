@@ -702,6 +702,48 @@ deploy_modes:
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer places ## User Objective before ## Objective and within 20 lines when supplied (FR-1, NFR-2)", () => {
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: team,
+    mode: "plan",
+    objective: "Build a daily instructor performance table",
+  });
+  const lines = primer.split("\n");
+  const userObjectiveIndex = lines.findIndex((line) => line === "## User Objective");
+  const objectiveIndex = lines.findIndex((line) => line === "## Objective");
+  assert.notEqual(userObjectiveIndex, -1, "## User Objective must be present when an objective is supplied");
+  assert.notEqual(objectiveIndex, -1, "## Objective must be present");
+  assert.ok(userObjectiveIndex < objectiveIndex, `## User Objective (line ${userObjectiveIndex + 1}) must precede ## Objective (line ${objectiveIndex + 1})`);
+  assert.ok(userObjectiveIndex < 20, `## User Objective must be within the first 20 lines (found at line ${userObjectiveIndex + 1})`);
+});
+
+test("generatePrimer omits ## User Objective block when no objective is supplied (edge case)", () => {
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
+  assert.doesNotMatch(primer, /## User Objective/);
+  assert.match(primer, /## Objective/);
+});
+
+test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after the objective block when user objective is supplied", () => {
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: team,
+    mode: "plan",
+    objective: "Build a daily instructor performance table",
+  });
+  const lines = primer.split("\n");
+  const userObjectiveIndex = lines.findIndex((line) => line === "## User Objective");
+  const objectiveIndex = lines.findIndex((line) => line === "## Objective");
+  const runtimeToolsIndex = lines.findIndex((line) => line === "## Runtime Tools");
+  const activeBulletinsIndex = lines.findIndex((line) => line === "## Active Bulletins");
+  const teamIndex = lines.findIndex((line) => line === "## Team");
+  assert.ok(runtimeToolsIndex !== -1 && activeBulletinsIndex !== -1, "Runtime Tools and Active Bulletins must be present");
+  assert.ok(objectiveIndex < runtimeToolsIndex, "## Objective must precede ## Runtime Tools");
+  assert.ok(runtimeToolsIndex < activeBulletinsIndex, "## Runtime Tools must precede ## Active Bulletins");
+  assert.ok(activeBulletinsIndex < teamIndex, "## Active Bulletins must precede ## Team");
+  assert.ok(userObjectiveIndex < runtimeToolsIndex, "## User Objective must precede ## Runtime Tools");
+});
+
 test("generatePrimer omits ## Reference Skills section when no skills use inject-as: reference", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-no-ref-"));
   try {
