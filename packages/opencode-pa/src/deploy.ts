@@ -2,24 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
-
-const PA_ENV_KEYS = [
-  "PA_DEPLOYMENT_ID",
-  "PA_DEPLOYMENT_DIR",
-  "PA_ACTIVITY_LOG",
-  "PA_TEAM",
-  "PA_MODE",
-  "PA_TICKET_ID",
-  "PA_REPO",
-  "PA_PROVIDER",
-  "PA_MODEL",
-  "PA_TEAM_MODEL",
-  "PA_AGENT_MODEL",
-] as const;
-
-type PaEnvKey = (typeof PA_ENV_KEYS)[number];
 
 function buildPaEnvVars(args: {
   deploymentId: string;
@@ -236,6 +220,10 @@ interface DeploymentContextOpts {
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
+// opencode loads AGENTS.md/CLAUDE.md natively, so the full bodies are not re-injected here.
+// A path pointer keeps the files discoverable (and preserves the <memory-doc path="..."> tag
+// the dashboard parses for memory-doc sources) without duplicating natively-loaded content.
+const MEMORY_DOC_POINTER_MODE = true;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
   const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
@@ -244,12 +232,7 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
-  if (docs.length === 0) return undefined;
-  return [
-    "## Memory Docs",
-    "The following instruction files were explicitly included to emulate Claude Code memory for opencode deployments. Follow them unless they conflict with this deployment primer.",
-    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
-  ].join("\n\n");
+  return renderMemoryDocsBlock(docs, { runtimeLabel: "opencode", pointerMode: MEMORY_DOC_POINTER_MODE });
 }
 
 function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {
@@ -281,12 +264,7 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
-  const envVarLines = opts.envVars
-    ? [
-        "pa_env_vars:",
-        ...PA_ENV_KEYS.map((key) => `  ${key}: ${opts.envVars?.[key] ?? ""}`),
-      ].join("\n")
-    : "";
+  const envVarLines = renderEnvVarsBlock(opts.envVars);
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { ClaudeCodeAdapter, resolveClaudeModel } from "./adapter.js";
 
 export function createClaudeHooks(adapter: RuntimeAdapter = new ClaudeCodeAdapter()): CoreExecutionHooks {
@@ -11,6 +11,33 @@ export function createClaudeHooks(adapter: RuntimeAdapter = new ClaudeCodeAdapte
 
 export function createDefaultClaudeHooks(): CoreExecutionHooks {
   return createClaudeHooks();
+}
+
+// MIN-C: claudecode-pa now injects the same `pa_env_vars:` subsection that
+// opencode-pa does, so all three adapters present env vars consistently to
+// downstream tooling. claude's effective env surface is narrower than opa/dpa
+// (it is anthropic-only and ignores team-mode `provider:` for non-anthropic),
+// so the model/provider fields reflect what claude actually resolved.
+function buildPaEnvVars(args: {
+  deploymentId: string;
+  deployDir: string;
+  activityLogPath: string;
+  teamConfig: TeamConfig;
+  request: DeployRequest;
+}): Record<PaEnvKey, string> {
+  return {
+    PA_DEPLOYMENT_ID: args.deploymentId,
+    PA_DEPLOYMENT_DIR: args.deployDir,
+    PA_ACTIVITY_LOG: args.activityLogPath,
+    PA_TEAM: args.teamConfig.name,
+    PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
+    PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_REPO: args.request.repo ?? "",
+    PA_PROVIDER: args.request.provider ?? "",
+    PA_MODEL: args.request.model ?? "",
+    PA_TEAM_MODEL: args.request.teamModel ?? "",
+    PA_AGENT_MODEL: args.request.agentModel ?? "",
+  };
 }
 
 export async function deployWithClaude(request: DeployRequest, adapter: RuntimeAdapter = new ClaudeCodeAdapter()) {
@@ -23,7 +50,9 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
+  const paths = getDeployPaths(deploymentId);
+  const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
   const primer = generatePrimer({ runtime: "claude", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
@@ -47,7 +76,6 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const paths = getDeployPaths(deploymentId);
   const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
@@ -172,10 +200,15 @@ interface DeploymentContextOpts {
   repo?: string;
   cwd: string;
   mode?: string;
+  envVars?: Partial<Record<PaEnvKey, string>>;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
+// claude (Claude Code) loads CLAUDE.md natively, so the full bodies are not re-injected here.
+// A path pointer keeps the files discoverable (and preserves the <memory-doc path="..."> tag
+// the dashboard parses for memory-doc sources) without duplicating natively-loaded content.
+const MEMORY_DOC_POINTER_MODE = true;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
   const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
@@ -184,12 +217,7 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
-  if (docs.length === 0) return undefined;
-  return [
-    "## Memory Docs",
-    "The following instruction files were explicitly included so cpa deployments inherit Claude Code memory regardless of how the spawned process resolves CLAUDE.md. Follow them unless they conflict with this deployment primer.",
-    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
-  ].join("\n\n");
+  return renderMemoryDocsBlock(docs, { runtimeLabel: "Claude Code", pointerMode: MEMORY_DOC_POINTER_MODE });
 }
 
 function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {
@@ -221,6 +249,7 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
+  const envVarLines = renderEnvVarsBlock(opts.envVars);
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
@@ -235,5 +264,5 @@ ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${opts.mode ?? "default"}
-</deployment-context>`;
+${envVarLines}</deployment-context>`;
 }

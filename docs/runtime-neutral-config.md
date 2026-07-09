@@ -110,3 +110,78 @@ evaluation:
 ```
 
 When enabled, non-evaluator team primers include post-registry instructions to run background evaluation, and runtime auto-launch paths remain limited to at most one evaluator launch per deployment completion path.
+
+## Orchestration Sub-Deploy Launch Convention (FR-8)
+
+When an orchestrator spawns builder/implement sub-deploys, the launch template SHOULD default to `--background` and SHOULD omit `--provider` (let the team/mode YAML resolve the provider). This keeps sub-deploys detached, non-interactive, and provider-agnostic so the operator's team config is the single source of truth for provider/model.
+
+Canonical template:
+
+```bash
+opa deploy builder --mode implement --background --ticket <id> --objective-file <path>
+```
+
+Notes:
+
+- `--background` is the default for orchestrated sub-deploys so the child deployment writes its session id and activity log without blocking the orchestrator's foreground loop.
+- Omit `--provider` unless the orchestrator needs to override the team YAML `runtimes.opencode.provider` / mode `provider` for a specific run. Provider overrides are rare and should be intentional.
+- `--ticket <id>` links the sub-deploy to its work item for traceability.
+- `--objective-file <path>` supplies the phase objective; the orchestrator writes this file before launching the sub-deploy and the implement agent reads it as the `## User Objective` block of its primer.
+- This is a documentation-level convention. Enforcing it inside the orchestrator mode-instruction content is tracked as a separate follow-up (see PAP-110 / OQ-3).
+
+## Project Agent Guide Injection & Primer Signals
+
+`pa-core` primer generation applies three de-noising behaviors to keep primers signal-first and consistent across runtimes. All are implemented in `packages/pa-core/src/primer/index.ts`.
+
+### Placeholder-Template Skip
+
+`global_docs` (project agent guides) that are placeholder-only templates are skipped instead of injected, so a primer never carries an unfilled `<project-name>`/`<Convention Title>` guide. When a guide is skipped, the primer lists it as `- <path> (skipped: placeholder-only template)` rather than injecting its body.
+
+A `global_docs` file is treated as a placeholder-only template when **all** of the following hold:
+
+1. It does not contain the force-include comment `<!-- pa: keep-content -->` (this always wins — see below).
+2. It contains at least 3 angle-bracket tokens matching `<[A-Za-z]...>` (e.g. `<Convention Title>`).
+3. Any one of: it self-identifies as a template (a `# Template:` heading or a `> **Template:**` blockquote — the colon is required, so a prose title like `# Template Engine Conventions` does NOT self-identify); OR it has no Markdown headings; OR every heading contains a placeholder token.
+
+Author controls (place either comment anywhere in the guide body):
+
+| Comment | Effect |
+|---|---|
+| `<!-- pa: keep-content -->` | Force-include — always inject the full body, even if it looks like a placeholder template. |
+| `<!-- pa: skip-placeholder-template -->` | Force-skip — always treat the file as a placeholder template and skip it. |
+
+Known limitation (accepted): the token match also matches legitimate generic/HTML angle syntax (`Array<string>`, `<div>`). A heading-less prose doc containing 3+ such tokens can therefore be falsely classified as a placeholder and skipped. Real project guides almost always carry filled headings, so this is a narrow edge; if a genuine heading-less guide is affected, add `<!-- pa: keep-content -->` to force injection.
+
+### Memory-Doc Pointer Mode
+
+Runtimes that load repo memory docs natively (`opencode`, `claude`) receive **path pointers** instead of full re-injected bodies:
+
+```
+<memory-doc path="...">
+[pointer: loaded natively by <runtime> — see file at this path]
+</memory-doc>
+```
+
+`droid` retains full memory-doc injection pending confirmation of native memory-doc loading (PAP-110 / OQ-1). This keeps large `CLAUDE.md`/`AGENTS.md` tails out of opencode/claude primers while preserving discoverability.
+
+### Primer Size Signal
+
+Every generated primer ends with a machine-readable size line:
+
+```
+<!--pa:primer-size lines=<n> chars=<n> mode=<id> budget=<n> over=<true|false>-->
+```
+
+- `lines` / `chars` — the primer's real line and character counts (including the size line itself).
+- `mode` — the deploy mode id (or `default`).
+- `budget` — the per-mode line budget; `over=true` when `lines > budget`.
+- The signal is warning-only — it never blocks or truncates a deployment.
+
+Per-mode line budgets (`PRIMER_LINE_BUDGET`):
+
+| Mode | Budget (lines) |
+|---|---|
+| orchestrator, analyze | 1200 |
+| review, review-auto | 1000 |
+| implement | 800 |
+| default (unlisted modes) | 1200 |

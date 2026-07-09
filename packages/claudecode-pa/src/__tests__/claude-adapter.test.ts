@@ -148,6 +148,27 @@ test("cpa dry-run generates primer with claude runtime and does not spawn claude
   });
 });
 
+test("cpa deploy includes repo memory docs as path pointers (claude native load, MIN-3/FR-4)", async () => {
+  await withCpaEnv(async (root) => {
+    writeFileSync(join(root, "repo", "CLAUDE.md"), "# Repo Memory\nAlways follow repo-specific memory.\n");
+    mkdirSync(join(root, "repo", ".claude"), { recursive: true });
+    writeFileSync(join(root, "repo", ".claude", "CLAUDE.md"), "# Nested Memory\nUse nested Claude memory too.\n");
+    const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--repo", "pa-platform"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /## Memory Docs/);
+    // claude loads CLAUDE.md natively — pointer mode lists paths without re-injecting full bodies.
+    assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+    assert.match(primer, /loaded natively by Claude Code/);
+    assert.doesNotMatch(primer, /Always follow repo-specific memory/);
+    assert.doesNotMatch(primer, /Use nested Claude memory too/);
+  });
+});
+
 test("cpa dry-run picks up builder mode YAML model", async () => {
   await withCpaEnv(async (root) => {
     writeBuilderTeamConfig(root);
@@ -858,6 +879,30 @@ test("ClaudeCodeAdapter.installHooks invokes installPaClaudeHooks on real adapte
     for (const eventName of PA_CLAUDE_HOOK_EVENTS) {
       assert.equal(countEntriesWithCommand(settings.hooks?.[eventName], handlerPath), 1);
     }
+  });
+});
+
+test("cpa dry-run deployment-context block includes pa_env_vars subsection (MIN-C)", async () => {
+  await withCpaEnv(async (root) => {
+    const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211", "--repo", "pa-platform", "--provider", "anthropic", "--model", "claude-sonnet-4-6", "--team-model", "claude-opus-4-7"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /pa_env_vars:/);
+    assert.match(primer, /PA_DEPLOYMENT_ID: d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_DEPLOYMENT_DIR: .+deployments\/d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_ACTIVITY_LOG: .+activity\.jsonl/);
+    assert.match(primer, /PA_TEAM: daily/);
+    assert.match(primer, /PA_MODE: plan/);
+    assert.match(primer, /PA_TICKET_ID: DG-211/);
+    assert.match(primer, /PA_REPO:/);
+    assert.match(primer, /PA_PROVIDER: anthropic/);
+    assert.match(primer, /PA_MODEL: claude-sonnet-4-6/);
+    assert.match(primer, /PA_TEAM_MODEL: claude-opus-4-7/);
+    assert.match(primer, /PA_AGENT_MODEL:/);
   });
 });
 

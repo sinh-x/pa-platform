@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel } from "./adapter.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
@@ -11,6 +11,32 @@ export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter(
 
 export function createDefaultDroidHooks(): CoreExecutionHooks {
   return createDroidHooks();
+}
+
+// MIN-C: droidcode-pa now injects the same `pa_env_vars:` subsection that
+// opencode-pa does, so all three adapters present env vars consistently to
+// downstream tooling. droid's env surface matches opa's (full model/provider
+// fields) since both pass them through to the runtime.
+function buildPaEnvVars(args: {
+  deploymentId: string;
+  deployDir: string;
+  activityLogPath: string;
+  teamConfig: TeamConfig;
+  request: DeployRequest;
+}): Record<PaEnvKey, string> {
+  return {
+    PA_DEPLOYMENT_ID: args.deploymentId,
+    PA_DEPLOYMENT_DIR: args.deployDir,
+    PA_ACTIVITY_LOG: args.activityLogPath,
+    PA_TEAM: args.teamConfig.name,
+    PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
+    PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_REPO: args.request.repo ?? "",
+    PA_PROVIDER: args.request.provider ?? "",
+    PA_MODEL: args.request.model ?? "",
+    PA_TEAM_MODEL: args.request.teamModel ?? "",
+    PA_AGENT_MODEL: args.request.agentModel ?? "",
+  };
 }
 
 export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAdapter = new DroidCodeAdapter()) {
@@ -24,7 +50,9 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   const platformConfig = loadConfig();
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode });
+  const paths = getDeployPaths(deploymentId);
+  const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
+  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   const primer = generatePrimer({ runtime: "droid", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
@@ -44,7 +72,6 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     platformDefaults: platformConfig.defaults?.droidcode,
   });
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const paths = getDeployPaths(deploymentId);
   const env = {
     PA_DEPLOYMENT_ID: deploymentId,
     PA_DEPLOYMENT_DIR: deployDir,
@@ -207,10 +234,16 @@ interface DeploymentContextOpts {
   repo?: string;
   cwd: string;
   mode?: string;
+  envVars?: Partial<Record<PaEnvKey, string>>;
 }
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
+// OQ-1 (per plan): droid runtime's native memory-doc loading is UNCONFIRMED. To avoid dropping
+// real context, droid defaults to FULL injection (not pointer mode). A dead pointer here would
+// remove context the runtime may not load on its own. Only switch droid to pointer mode if
+// native loading is confirmed.
+const MEMORY_DOC_POINTER_MODE = false;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
   const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
@@ -219,12 +252,7 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
-  if (docs.length === 0) return undefined;
-  return [
-    "## Memory Docs",
-    "The following instruction files were explicitly included to emulate memory for droid deployments. Follow them unless they conflict with this deployment primer.",
-    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
-  ].join("\n\n");
+  return renderMemoryDocsBlock(docs, { runtimeLabel: "droid", pointerMode: MEMORY_DOC_POINTER_MODE });
 }
 
 function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {
@@ -256,6 +284,7 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
+  const envVarLines = renderEnvVarsBlock(opts.envVars);
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}
@@ -270,5 +299,5 @@ ticket_id: ${opts.ticketId ?? "none"}
 agents:
 ${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${opts.mode ?? "default"}
-</deployment-context>`;
+${envVarLines}</deployment-context>`;
 }

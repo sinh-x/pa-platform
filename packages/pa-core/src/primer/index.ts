@@ -26,18 +26,21 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const toolReference = adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime);
   const extraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
 
-  return [
+  const body = [
     `# PA Deployment Primer`,
     ``,
     `Runtime: ${options.runtime}`,
     `Team: ${options.teamConfig.name}`,
     `Mode: ${mode?.id ?? "default"}`,
     ``,
+    userObjective ? `## User Objective\n${userObjective}` : "",
     `## Objective`,
     objective,
-    userObjective ? `
-## User Objective
-${userObjective}` : "",
+    ``,
+    `## Runtime Tools`,
+    toolReference,
+    ``,
+    renderActiveBulletins(options.runtime),
     ``,
     `## Team`,
     options.teamConfig.description,
@@ -45,12 +48,7 @@ ${userObjective}` : "",
     `## Agents`,
     renderAgents(agents, options, options.runtime),
     ``,
-    `## Runtime Tools`,
-    toolReference,
-    ``,
-    renderActiveBulletins(options.runtime),
-    ``,
-    renderAvailableProcedures(skills, options.runtime),
+    renderAvailableProcedures(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
     ``,
     renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
@@ -58,9 +56,9 @@ ${userObjective}` : "",
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
-    renderReferenceSkillCatalog(skills, options.skillsDir ?? getSkillsDir()),
     extraInstructions ? `\n## Extra Instructions\n${extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
+  return `${body}\n${renderSizeSignal(body, mode?.id)}`;
 }
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
@@ -109,7 +107,7 @@ function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptio
     if (agent.model) lines.push(`Model: ${agent.model}`);
     if (agent.instruction) {
       const content = resolveInstruction(options, agent.instruction);
-      lines.push("", `<instruction-file name="${agent.name}">`, adaptContentForRuntime(content, runtime), `</instruction-file>`);
+      lines.push("", `<instruction-file name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(content, runtime)), `</instruction-file>`);
     }
     return lines.join("\n");
   }).join("\n\n");
@@ -126,25 +124,9 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
   if (inlined.length === 0) return "(none)";
   return inlined.map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
-    const body = adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime);
+    const body = demoteHeadings(adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime));
     return `<${skill["inject-as"]} name="${skill.name}" path="${path}">\n${body}\n</${skill["inject-as"]}>`;
   }).join("\n\n");
-}
-
-function renderReferenceSkillCatalog(skills: SkillEntry[], skillsDir: string): string {
-  const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
-  if (referenceSkills.length === 0) return "";
-  const intro = "Use the Read tool to load any skill below when you need it.";
-  const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
-    ? " Start by reading pa-cli for CLI reference."
-    : "";
-  const lines = ["## Reference Skills", `${intro}${paCliHint}`];
-  for (const skill of referenceSkills) {
-    const path = resolve(skillsDir, skill.name, "SKILL.md");
-    const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
-    lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
-  }
-  return lines.join("\n");
 }
 
 function renderActiveBulletins(runtime: RuntimeName): string {
@@ -185,17 +167,33 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
   ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
 ];
 
-function renderAvailableProcedures(skills: SkillEntry[], runtime: RuntimeName): string {
+function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
   if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
-  const skillNames = new Set(skills.map((skill) => skill.name));
-  const procedures = PROCEDURE_CATALOG.filter(([name]) => skillNames.has(name));
   const intro = runtime === "claude"
     ? "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content and take precedence over any Claude Code skills loaded from `~/.claude/skills`."
     : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
   const lines = ["## Available Procedures", intro];
-  if (procedures.length > 0) {
-    for (const [name, description] of procedures) lines.push(`- ${name}: ${description}.`);
-  } else {
+  const inlined = skills.filter((skill) => skill["inject-as"] !== "reference");
+  const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
+  if (inlined.length > 0) {
+    for (const skill of inlined) {
+      const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
+      lines.push(description ? `- ${skill.name}: ${description}.` : `- ${skill.name}: injected below.`);
+    }
+  }
+  if (referenceSkills.length > 0) {
+    if (inlined.length > 0) lines.push("");
+    const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
+      ? " Start by reading pa-cli for CLI reference."
+      : "";
+    lines.push(`Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
+    for (const skill of referenceSkills) {
+      const path = resolve(skillsDir, skill.name, "SKILL.md");
+      const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
+      lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
+    }
+  }
+  if (inlined.length === 0 && referenceSkills.length === 0) {
     lines.push("- No PA operational skills are injected for this mode. Follow the objective and runtime tool guidance.");
   }
   return lines.join("\n");
@@ -211,10 +209,48 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
       lines.push(`- ${doc} (missing: ${resolved})`);
       continue;
     }
-    const body = adaptContentForRuntime(readFileSync(resolved, "utf-8"), runtime);
+    const raw = readFileSync(resolved, "utf-8");
+    if (isPlaceholderTemplate(raw)) {
+      lines.push(`- ${doc} (skipped: placeholder-only template)`);
+      continue;
+    }
+    const body = adaptContentForRuntime(raw, runtime);
     lines.push(body);
   }
   return lines.join("\n");
+}
+
+const PLACEHOLDER_TOKEN_RE = /<[A-Za-z][A-Za-z0-9 _./-]*>/g;
+// MIN-B: also match headings with an EMBEDDED placeholder token (e.g.
+// `### C1: <Convention Title>`), not just headings that start with one. This
+// narrows the future risk window where a template heading slips past detection
+// because the placeholder is not the first token. Headings only — generic
+// `<T>` inside prose/code is handled separately by PLACEHOLDER_TOKEN_RE.
+// MIN-C3-3 (accepted limitation): PLACEHOLDER_TOKEN_RE also matches legit
+// generic/HTML angle tokens (`Array<string>`, `<div>`), so a heading-less prose
+// doc with >=3 such tokens is skipped as a placeholder. Narrowing to exclude
+// code-fence content would break the existing test where all placeholder tokens
+// are inside a ``` fence. The `pa: keep-content` opt-out is the documented escape
+// hatch for docs that are falsely classified as placeholder templates.
+const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+.*<[A-Za-z][A-Za-z0-9 _./-]*>/m;
+// Self-ID requires an explicit `# Template:` front-matter marker (colon required).
+// A bare `# Template Engine Conventions` prose title (space, no colon) must NOT
+// self-identify as a placeholder, so a legit doc with such a title and ≥3 generics
+// is still injected (MAJ-1 fix). The `> **Template:**` blockquote form is retained.
+const TEMPLATE_SELF_ID_RE = /(?:^#\s*Template:|^>\s+\*\*Template:\*\*)/m;
+const PLACEHOLDER_OPT_OUT_RE = /<!--\s*pa:\s*skip-placeholder-template\s*-->/;
+const PLACEHOLDER_FORCE_INCLUDE_RE = /<!--\s*pa:\s*keep-content\s*-->/;
+
+function isPlaceholderTemplate(body: string): boolean {
+  if (PLACEHOLDER_FORCE_INCLUDE_RE.test(body)) return false;
+  if (PLACEHOLDER_OPT_OUT_RE.test(body)) return true;
+  const tokens = body.match(PLACEHOLDER_TOKEN_RE);
+  if (!tokens || tokens.length < 3) return false;
+  if (TEMPLATE_SELF_ID_RE.test(body)) return true;
+  const headingLines = body.split("\n").filter((line) => /^#{1,6}\s+/.test(line));
+  if (headingLines.length === 0) return true;
+  const filledHeadings = headingLines.filter((line) => !PLACEHOLDER_HEADING_RE.test(line));
+  return filledHeadings.length === 0;
 }
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
@@ -343,6 +379,97 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
   return content;
 }
 
+const ATX_HEADING_LINE_RE = /^(#{1,6})(?=\s)(.*)$/;
+// Hoisted fence-close regexes (MIN-5): avoid compiling a new RegExp per in-fence line.
+// Capture group provides the close-run string so we can verify its length >= opening count (MIN-C3-2).
+const BACKTICK_FENCE_CLOSE_RE = /^\s*(`{3,})\s*$/;
+const TILDE_FENCE_CLOSE_RE = /^\s*(~{3,})\s*$/;
+// Known primer top-level section headers (h2). An injected heading whose demoted
+// form exactly matches one of these is demoted one extra level to avoid collision (MIN-1).
+const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
+  "## User Objective",
+  "## Objective",
+  "## Runtime Tools",
+  "## Active Bulletins",
+  "## Team",
+  "## Agents",
+  "## Available Procedures",
+  "## Project Agent Guides",
+  "## Deployment Instructions",
+  "## Skills",
+  "## Extra Instructions",
+  "## Memory Docs",
+]);
+
+function demoteHeadings(content: string): string {
+  const lines = content.split("\n");
+  let inFence: { char: string; count: number } | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const openMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (openMatch && !inFence) {
+      inFence = { char: openMatch[1]!.charAt(0), count: openMatch[1]!.length };
+      continue;
+    }
+    if (inFence) {
+      const closeMatch = line.match(inFence.char === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
+      if (closeMatch && closeMatch[1]!.length >= inFence.count) inFence = null;
+      continue;
+    }
+    const m = line.match(ATX_HEADING_LINE_RE);
+    if (!m) continue;
+    const level = m[1]!.length;
+    if (level >= 6) continue;
+    const demotedLevel = level + 1;
+    const demotedText = `${"#".repeat(demotedLevel)}${m[2]}`;
+    // Collision guard (MIN-1): if the demoted form matches a known primer section header,
+    // demote one extra level (h1→h3 instead of h1→h2) so AC4 holds for h1 titles whose
+    // text coincides with a primer section name. Cap at h6.
+    if (demotedLevel < 6 && PRIMER_SECTION_HEADERS.has(demotedText.trim())) {
+      const extraLevel = Math.min(demotedLevel + 1, 6);
+      lines[i] = `${"#".repeat(extraLevel)}${m[2]}`;
+    } else {
+      lines[i] = demotedText;
+    }
+  }
+  return lines.join("\n");
+}
+
+const PRIMER_LINE_BUDGET: Readonly<Record<string, number>> = {
+  orchestrator: 1200,
+  analyze: 1200,
+  review: 1000,
+  "review-auto": 1000,
+  implement: 800,
+  default: 1200,
+};
+
+function renderSizeSignal(primerBody: string, modeId: string | undefined): string {
+  // The final primer is `${body}\n${sizeLine}` — one extra line beyond the body.
+  // Report the real line count (body lines + 1 for the size line) so downstream
+  // tooling comparing `lines=N` to the file's real line count is not off by one (MIN-2).
+  const bodyLines = primerBody.split("\n").length;
+  const lines = bodyLines + 1;
+  const budget = PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
+  const over = lines > budget;
+  // MIN-A: compute chars from the FINAL size line length, not the placeholder.
+  // The final size line embeds `chars=${chars}` whose digit count depends on chars
+  // itself; building the line from a `chars=0` placeholder under-counts by
+  // (digitCount - 1). Construct the final line first, then derive chars so it
+  // equals the primer's real character count (body + "\n" + final size line).
+  const template = (charsValue: string) => `<!--pa:primer-size lines=${lines} chars=${charsValue} mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
+  // Solve for the stable char count: the size line length grows with the digit
+  // count of `chars`. Iterate to a fixed point — at most a few passes since each
+  // extra digit only adds one char.
+  let chars = primerBody.length + 1 + template("0").length;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = primerBody.length + 1 + template(String(chars)).length;
+    if (next === chars) break;
+    chars = next;
+  }
+  return template(String(chars));
+}
+
 function defaultToolReference(runtime: RuntimeName): string {
   if (runtime === "opencode") {
     return [
@@ -377,5 +504,74 @@ function defaultToolReference(runtime: RuntimeName): string {
   return [
     "Claude Code team deployments may use TeamCreate, SendMessage, Agent, AskUserQuestion, and ScheduleWakeup when provided by the adapter.",
     "Use tool availability from the active session as the source of truth.",
+  ].join("\n");
+}
+
+// --- Shared memory-doc block helper (MIN-4 DRY extraction) ---
+// The three runtime adapters (opencode/claude/droid) previously copy-pasted the
+// pointer-vs-full `buildMemoryDocsBlock` logic. This shared helper centralizes it;
+// each adapter keeps its local `MEMORY_DOC_POINTER_MODE` flag and calls this helper.
+
+export interface MemoryDocEntry {
+  path: string;
+  content: string;
+}
+
+export interface RenderMemoryDocsBlockOptions {
+  /** Human-readable runtime label used in the pointer/full-injection prose (e.g. "opencode", "Claude Code", "droid"). */
+  runtimeLabel: string;
+  /** When true, emit path pointers instead of full bodies (runtime loads memory docs natively). */
+  pointerMode: boolean;
+}
+
+export function renderMemoryDocsBlock(docs: MemoryDocEntry[], opts: RenderMemoryDocsBlockOptions): string | undefined {
+  if (docs.length === 0) return undefined;
+  if (opts.pointerMode) {
+    return [
+      "## Memory Docs",
+      `The following instruction files are loaded natively by ${opts.runtimeLabel}; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.`,
+      ...docs.map((doc) => `<memory-doc path="${doc.path}">\n[pointer: loaded natively by ${opts.runtimeLabel} — see file at this path]\n</memory-doc>`),
+    ].join("\n\n");
+  }
+  return [
+    "## Memory Docs",
+    `The following instruction files were explicitly included to emulate memory for ${opts.runtimeLabel} deployments. Follow them unless they conflict with this deployment primer.`,
+    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
+  ].join("\n\n");
+}
+
+// --- Shared deployment-context env-vars helper (MIN-C DRY extraction) ---
+// All three runtime adapters (opencode/claude/droid) inject a `pa_env_vars:`
+// subsection into the `<deployment-context>` block. Centralizing the key list
+// and the rendering keeps the three adapters consistent and avoids drift.
+
+export const PA_ENV_KEYS = [
+  "PA_DEPLOYMENT_ID",
+  "PA_DEPLOYMENT_DIR",
+  "PA_ACTIVITY_LOG",
+  "PA_TEAM",
+  "PA_MODE",
+  "PA_TICKET_ID",
+  "PA_REPO",
+  "PA_PROVIDER",
+  "PA_MODEL",
+  "PA_TEAM_MODEL",
+  "PA_AGENT_MODEL",
+] as const;
+
+export type PaEnvKey = (typeof PA_ENV_KEYS)[number];
+
+/**
+ * Renders the `pa_env_vars:` subsection for the `<deployment-context>` block.
+ * Returns the empty string when no env vars are supplied so the block stays
+ * unchanged for adapters that opt out (kept for back-compat). Each key line is
+ * `  KEY: value` (empty string when the key is absent), matching the existing
+ * opencode-pa format byte-for-byte.
+ */
+export function renderEnvVarsBlock(envVars: Partial<Record<PaEnvKey, string>> | undefined): string {
+  if (!envVars) return "";
+  return [
+    "pa_env_vars:",
+    ...PA_ENV_KEYS.map((key) => `  ${key}: ${envVars[key] ?? ""}`),
   ].join("\n");
 }
