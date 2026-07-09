@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { ClaudeCodeAdapter, resolveClaudeModel } from "./adapter.js";
 
 export function createClaudeHooks(adapter: RuntimeAdapter = new ClaudeCodeAdapter()): CoreExecutionHooks {
@@ -188,19 +188,7 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
-  if (docs.length === 0) return undefined;
-  if (MEMORY_DOC_POINTER_MODE) {
-    return [
-      "## Memory Docs",
-      "The following instruction files are loaded natively by Claude Code; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.",
-      ...docs.map((doc) => `<memory-doc path="${doc.path}">\n[pointer: loaded natively by Claude Code — see file at this path]\n</memory-doc>`),
-    ].join("\n\n");
-  }
-  return [
-    "## Memory Docs",
-    "The following instruction files were explicitly included so cpa deployments inherit Claude Code memory regardless of how the spawned process resolves CLAUDE.md. Follow them unless they conflict with this deployment primer.",
-    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
-  ].join("\n\n");
+  return renderMemoryDocsBlock(docs, { runtimeLabel: "Claude Code", pointerMode: MEMORY_DOC_POINTER_MODE });
 }
 
 function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {

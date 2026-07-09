@@ -222,10 +222,16 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
 
 const PLACEHOLDER_TOKEN_RE = /<[A-Za-z][A-Za-z0-9 _./-]*>/g;
 const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+<[A-Za-z][A-Za-z0-9 _./-]*>/m;
-const TEMPLATE_SELF_ID_RE = /(?:^# Template[:\s]|^>\s+\*\*Template:\*\*)/m;
+// Self-ID requires an explicit `# Template:` front-matter marker (colon required).
+// A bare `# Template Engine Conventions` prose title (space, no colon) must NOT
+// self-identify as a placeholder, so a legit doc with such a title and ≥3 generics
+// is still injected (MAJ-1 fix). The `> **Template:**` blockquote form is retained.
+const TEMPLATE_SELF_ID_RE = /(?:^#\s*Template:|^>\s+\*\*Template:\*\*)/m;
 const PLACEHOLDER_OPT_OUT_RE = /<!--\s*pa:\s*skip-placeholder-template\s*-->/;
+const PLACEHOLDER_FORCE_INCLUDE_RE = /<!--\s*pa:\s*keep-content\s*-->/;
 
 function isPlaceholderTemplate(body: string): boolean {
+  if (PLACEHOLDER_FORCE_INCLUDE_RE.test(body)) return false;
   if (PLACEHOLDER_OPT_OUT_RE.test(body)) return true;
   const tokens = body.match(PLACEHOLDER_TOKEN_RE);
   if (!tokens || tokens.length < 3) return false;
@@ -363,6 +369,25 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
 }
 
 const ATX_HEADING_LINE_RE = /^(#{1,6})(?=\s)(.*)$/;
+// Hoisted fence-close regexes (MIN-5): avoid compiling a new RegExp per in-fence line.
+const BACKTICK_FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
+const TILDE_FENCE_CLOSE_RE = /^\s*~{3,}\s*$/;
+// Known primer top-level section headers (h2). An injected heading whose demoted
+// form exactly matches one of these is demoted one extra level to avoid collision (MIN-1).
+const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
+  "## User Objective",
+  "## Objective",
+  "## Runtime Tools",
+  "## Active Bulletins",
+  "## Team",
+  "## Agents",
+  "## Available Procedures",
+  "## Project Agent Guides",
+  "## Deployment Instructions",
+  "## Skills",
+  "## Extra Instructions",
+  "## Memory Docs",
+]);
 
 function demoteHeadings(content: string): string {
   const lines = content.split("\n");
@@ -375,7 +400,7 @@ function demoteHeadings(content: string): string {
       continue;
     }
     if (inFence) {
-      const closeMatch = line.match(new RegExp(`^\\s*${inFence === "`" ? "`{3,}" : "~{3,}"}\\s*$`));
+      const closeMatch = line.match(inFence === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
       if (closeMatch) inFence = null;
       continue;
     }
@@ -383,7 +408,17 @@ function demoteHeadings(content: string): string {
     if (!m) continue;
     const level = m[1]!.length;
     if (level >= 6) continue;
-    lines[i] = `${"#".repeat(level + 1)}${m[2]}`;
+    const demotedLevel = level + 1;
+    const demotedText = `${"#".repeat(demotedLevel)}${m[2]}`;
+    // Collision guard (MIN-1): if the demoted form matches a known primer section header,
+    // demote one extra level (h1→h3 instead of h1→h2) so AC4 holds for h1 titles whose
+    // text coincides with a primer section name. Cap at h6.
+    if (demotedLevel < 6 && PRIMER_SECTION_HEADERS.has(demotedText.trim())) {
+      const extraLevel = Math.min(demotedLevel + 1, 6);
+      lines[i] = `${"#".repeat(extraLevel)}${m[2]}`;
+    } else {
+      lines[i] = demotedText;
+    }
   }
   return lines.join("\n");
 }
@@ -397,13 +432,17 @@ const PRIMER_LINE_BUDGET: Readonly<Record<string, number>> = {
   default: 1200,
 };
 
-function renderSizeSignal(primer: string, modeId: string | undefined): string {
-  const lines = primer.split("\n").length;
-  const chars = primer.length;
+function renderSizeSignal(primerBody: string, modeId: string | undefined): string {
+  // The final primer is `${body}\n${sizeLine}` — one extra line beyond the body.
+  // Report the real line count (body lines + 1 for the size line) so downstream
+  // tooling comparing `lines=N` to the file's real line count is not off by one (MIN-2).
+  const bodyLines = primerBody.split("\n").length;
+  const lines = bodyLines + 1;
   const budget = PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
   const over = lines > budget;
-  // Always emit a machine-readable size line as an HTML comment so downstream
-  // tooling/agents can parse primer size without scanning the full body.
+  const sizeLine = `<!--pa:primer-size lines=${lines} chars=0 mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
+  // chars counts the final primer (body + newline + size line), replacing the placeholder 0.
+  const chars = primerBody.length + 1 + sizeLine.length;
   return `<!--pa:primer-size lines=${lines} chars=${chars} mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
 }
 
@@ -442,4 +481,37 @@ function defaultToolReference(runtime: RuntimeName): string {
     "Claude Code team deployments may use TeamCreate, SendMessage, Agent, AskUserQuestion, and ScheduleWakeup when provided by the adapter.",
     "Use tool availability from the active session as the source of truth.",
   ].join("\n");
+}
+
+// --- Shared memory-doc block helper (MIN-4 DRY extraction) ---
+// The three runtime adapters (opencode/claude/droid) previously copy-pasted the
+// pointer-vs-full `buildMemoryDocsBlock` logic. This shared helper centralizes it;
+// each adapter keeps its local `MEMORY_DOC_POINTER_MODE` flag and calls this helper.
+
+export interface MemoryDocEntry {
+  path: string;
+  content: string;
+}
+
+export interface RenderMemoryDocsBlockOptions {
+  /** Human-readable runtime label used in the pointer/full-injection prose (e.g. "opencode", "Claude Code", "droid"). */
+  runtimeLabel: string;
+  /** When true, emit path pointers instead of full bodies (runtime loads memory docs natively). */
+  pointerMode: boolean;
+}
+
+export function renderMemoryDocsBlock(docs: MemoryDocEntry[], opts: RenderMemoryDocsBlockOptions): string | undefined {
+  if (docs.length === 0) return undefined;
+  if (opts.pointerMode) {
+    return [
+      "## Memory Docs",
+      `The following instruction files are loaded natively by ${opts.runtimeLabel}; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.`,
+      ...docs.map((doc) => `<memory-doc path="${doc.path}">\n[pointer: loaded natively by ${opts.runtimeLabel} — see file at this path]\n</memory-doc>`),
+    ].join("\n\n");
+  }
+  return [
+    "## Memory Docs",
+    `The following instruction files were explicitly included to emulate memory for ${opts.runtimeLabel} deployments. Follow them unless they conflict with this deployment primer.`,
+    ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
+  ].join("\n\n");
 }

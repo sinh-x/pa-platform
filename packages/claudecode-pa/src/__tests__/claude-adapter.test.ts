@@ -148,6 +148,27 @@ test("cpa dry-run generates primer with claude runtime and does not spawn claude
   });
 });
 
+test("cpa deploy includes repo memory docs as path pointers (claude native load, MIN-3/FR-4)", async () => {
+  await withCpaEnv(async (root) => {
+    writeFileSync(join(root, "repo", "CLAUDE.md"), "# Repo Memory\nAlways follow repo-specific memory.\n");
+    mkdirSync(join(root, "repo", ".claude"), { recursive: true });
+    writeFileSync(join(root, "repo", ".claude", "CLAUDE.md"), "# Nested Memory\nUse nested Claude memory too.\n");
+    const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--repo", "pa-platform"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /## Memory Docs/);
+    // claude loads CLAUDE.md natively — pointer mode lists paths without re-injecting full bodies.
+    assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+    assert.match(primer, /loaded natively by Claude Code/);
+    assert.doesNotMatch(primer, /Always follow repo-specific memory/);
+    assert.doesNotMatch(primer, /Use nested Claude memory too/);
+  });
+});
+
 test("cpa dry-run picks up builder mode YAML model", async () => {
   await withCpaEnv(async (root) => {
     writeBuilderTeamConfig(root);

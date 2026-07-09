@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
+import { closeDb, createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
@@ -896,5 +896,64 @@ describe("droid safety hook masking", () => {
     const summary = readActivitySummary();
     assert.ok(summary.includes("REDACTED"), `summary should redact password field: ${summary}`);
     assert.ok(!summary.includes("password"), `summary should NOT contain raw password field: ${summary}`);
+  });
+});
+
+function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "dpa-deploy-env-"));
+  const config = join(root, "config");
+  const teams = join(root, "teams");
+  const repo = join(root, "repo");
+  mkdirSync(config, { recursive: true });
+  mkdirSync(teams, { recursive: true });
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
+  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
+  const previous = {
+    config: process.env["PA_PLATFORM_CONFIG"],
+    teams: process.env["PA_PLATFORM_TEAMS"],
+    registry: process.env["PA_REGISTRY_DB"],
+    aiUsage: process.env["PA_AI_USAGE_HOME"],
+    home: process.env["HOME"],
+  };
+  process.env["PA_PLATFORM_CONFIG"] = config;
+  process.env["PA_PLATFORM_TEAMS"] = teams;
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["PA_AI_USAGE_HOME"] = root;
+  process.env["HOME"] = root;
+  return fn(root).finally(() => {
+    closeDb();
+    restoreEnv("PA_PLATFORM_CONFIG", previous.config);
+    restoreEnv("PA_PLATFORM_TEAMS", previous.teams);
+    restoreEnv("PA_REGISTRY_DB", previous.registry);
+    restoreEnv("PA_AI_USAGE_HOME", previous.aiUsage);
+    restoreEnv("HOME", previous.home);
+    rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  });
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+describe("dpa deploy memory-doc injection (MIN-3/FR-4)", () => {
+  it("droid dry-run retains full memory-doc bodies (droid native load unconfirmed, OQ-1)", async () => {
+    await withDpaEnv(async (root) => {
+      writeFileSync(join(root, "repo", "CLAUDE.md"), "# Repo Memory\nKeep this content visible to droid.\n");
+      const adapter = new DroidCodeAdapter({ cwd: join(root, "repo"), env: { FACTORY_API_KEY: TEST_API_KEY } });
+      const result = await deployWithDroid({ team: "daily", mode: "plan", dryRun: true, repo: "pa-platform" }, adapter);
+      assert.equal(result.status, "pending");
+      const deploymentId = result.deploymentId;
+      assert.ok(deploymentId);
+      const primerPath = join(root, "deployments", deploymentId, "primer.md");
+      assert.ok(existsSync(primerPath), "primer must be written on dry-run");
+      const primer = readFileSync(primerPath, "utf-8");
+      assert.match(primer, /## Memory Docs/);
+      assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+      // droid defaults to FULL injection (MEMORY_DOC_POINTER_MODE = false, OQ-1 unconfirmed)
+      assert.match(primer, /Keep this content visible to droid/);
+      assert.doesNotMatch(primer, /loaded natively by droid/);
+    });
   });
 });

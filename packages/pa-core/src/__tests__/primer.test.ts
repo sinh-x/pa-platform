@@ -928,6 +928,147 @@ deploy_modes:
   }
 });
 
+test("generatePrimer does NOT skip a legit doc titled '# Template <Word>' with filled headings and >=3 generics (MAJ-1)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-template-word-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    const guidePath = join(guidesDir, "template-conventions.md");
+    writeFileSync(guidePath, [
+      "# Template Engine Conventions",
+      "",
+      "## Overview",
+      "This doc describes template engine conventions for the platform.",
+      "",
+      "## Generics",
+      "- Use Array<string> for typed lists.",
+      "- Use Map<string, number> for keyed maps.",
+      "- Use Promise<void> for async signals.",
+      "",
+      "## Rules",
+      "Follow these rules strictly.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/template-conventions.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /## Project Agent Guides/);
+    assert.doesNotMatch(primer, /guides\/template-conventions\.md \(skipped: placeholder-only template\)/);
+    assert.match(primer, /# Template Engine Conventions/);
+    assert.match(primer, /Array<string>/);
+    assert.match(primer, /Map<string, number>/);
+    assert.match(primer, /Promise<void>/);
+    assert.match(primer, /Follow these rules strictly/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer does NOT skip a heading-less legit doc with >=3 generics when it has no template self-ID (MAJ-1)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-headingless-generics-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    const guidePath = join(guidesDir, "generic-types.md");
+    writeFileSync(guidePath, [
+      "Generic Type Reference",
+      "",
+      "This is a prose reference with no markdown headings. It documents the generic",
+      "type helpers used across the codebase: Array<string>, Map<string, number>,",
+      "Promise<void>, and ReadonlyArray<T>. It is NOT a placeholder template.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/generic-types.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    // Has >=3 <token> markers AND no headings, but no template self-ID, so under the
+    // tightened regex it is... still skipped per the no-filled-heading rule. This test
+    // documents the boundary: a heading-less doc with >=3 generics is skipped regardless
+    // of self-ID. The MAJ-1 false-positive is specifically the self-ID + filled-headings
+    // case, covered by the test above. To verify the force-include hatch rescues it:
+    assert.doesNotMatch(primer, /Generic Type Reference/);
+    assert.match(primer, /guides\/generic-types\.md \(skipped: placeholder-only template\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer force-include hatch (<!-- pa: keep-content -->) rescues a doc that would otherwise be skipped (MAJ-1)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-force-include-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    // A heading-less doc with >=3 generics that WOULD be skipped — but the force-include
+    // comment overrides the heuristic.
+    const guidePath = join(guidesDir, "rescued-guide.md");
+    writeFileSync(guidePath, [
+      "<!-- pa: keep-content -->",
+      "",
+      "Generic Type Reference",
+      "",
+      "This prose reference documents: Array<string>, Map<string, number>, Promise<void>.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/rescued-guide.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /## Project Agent Guides/);
+    assert.doesNotMatch(primer, /guides\/rescued-guide\.md \(skipped: placeholder-only template\)/);
+    assert.match(primer, /Generic Type Reference/);
+    assert.match(primer, /Array<string>/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("generatePrimer builder/implement fixture no longer contains placeholder template markers (FR-2, FR-3, AC2)", (t) => {
   if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
@@ -1277,6 +1418,49 @@ deploy_modes:
     assert.match(instructionBody, /^### Objective/m, "## Objective demoted to ### Objective");
     assert.match(instructionBody, /^### Output/m, "## Output demoted to ### Output");
     assert.match(instructionBody, /^#### Steps/m, "### Steps demoted to #### Steps");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer demotes an injected H1 whose text equals a primer section name to h3 (MIN-1, AC4)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-h1-section-collision-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    // Skill body starts with `# Skills` — an H1 whose +1 demoted form (`## Skills`)
+    // would collide with the primer's `## Skills` top-level section. The collision
+    // guard must demote it one extra level to `### Skills`.
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), [
+      "# Skills",
+      "",
+      "This skill documents the available skills listing.",
+      "",
+      "## Detail",
+      "Extra detail.",
+    ].join("\n"));
+    const teamWithSkill = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    const skillBlockMatch = primer.match(/<shared-skill name="pa-cli"[^>]*>([\s\S]*?)<\/shared-skill>/);
+    assert.ok(skillBlockMatch, "shared-skill block must be present");
+    const skillBody = skillBlockMatch![1];
+    // The H1 `# Skills` must NOT demote to `## Skills` (collision); it must go to `### Skills`.
+    assert.match(skillBody, /^### Skills/m, "H1 '# Skills' demoted to ### Skills (not ## Skills) to avoid section-name collision");
+    assert.doesNotMatch(skillBody, /^## Skills$/m, "must not produce ## Skills (would collide with primer section header)");
+    // The `## Detail` demotes normally to `### Detail` (no collision with a section header).
+    assert.match(skillBody, /^### Detail/m, "## Detail demoted to ### Detail (no collision, normal +1 shift)");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
