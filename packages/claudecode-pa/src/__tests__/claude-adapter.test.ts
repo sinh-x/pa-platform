@@ -882,6 +882,30 @@ test("ClaudeCodeAdapter.installHooks invokes installPaClaudeHooks on real adapte
   });
 });
 
+test("cpa dry-run deployment-context block includes pa_env_vars subsection (MIN-C)", async () => {
+  await withCpaEnv(async (root) => {
+    const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211", "--repo", "pa-platform", "--provider", "anthropic", "--model", "claude-sonnet-4-6", "--team-model", "claude-opus-4-7"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /pa_env_vars:/);
+    assert.match(primer, /PA_DEPLOYMENT_ID: d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_DEPLOYMENT_DIR: .+deployments\/d-[a-f0-9]{6}/);
+    assert.match(primer, /PA_ACTIVITY_LOG: .+activity\.jsonl/);
+    assert.match(primer, /PA_TEAM: daily/);
+    assert.match(primer, /PA_MODE: plan/);
+    assert.match(primer, /PA_TICKET_ID: DG-211/);
+    assert.match(primer, /PA_REPO:/);
+    assert.match(primer, /PA_PROVIDER: anthropic/);
+    assert.match(primer, /PA_MODEL: claude-sonnet-4-6/);
+    assert.match(primer, /PA_TEAM_MODEL: claude-opus-4-7/);
+    assert.match(primer, /PA_AGENT_MODEL:/);
+  });
+});
+
 function restore(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;

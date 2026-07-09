@@ -221,7 +221,12 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
 }
 
 const PLACEHOLDER_TOKEN_RE = /<[A-Za-z][A-Za-z0-9 _./-]*>/g;
-const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+<[A-Za-z][A-Za-z0-9 _./-]*>/m;
+// MIN-B: also match headings with an EMBEDDED placeholder token (e.g.
+// `### C1: <Convention Title>`), not just headings that start with one. This
+// narrows the future risk window where a template heading slips past detection
+// because the placeholder is not the first token. Headings only — generic
+// `<T>` inside prose/code is handled separately by PLACEHOLDER_TOKEN_RE.
+const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+.*<[A-Za-z][A-Za-z0-9 _./-]*>/m;
 // Self-ID requires an explicit `# Template:` front-matter marker (colon required).
 // A bare `# Template Engine Conventions` prose title (space, no colon) must NOT
 // self-identify as a placeholder, so a legit doc with such a title and ≥3 generics
@@ -440,10 +445,22 @@ function renderSizeSignal(primerBody: string, modeId: string | undefined): strin
   const lines = bodyLines + 1;
   const budget = PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
   const over = lines > budget;
-  const sizeLine = `<!--pa:primer-size lines=${lines} chars=0 mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
-  // chars counts the final primer (body + newline + size line), replacing the placeholder 0.
-  const chars = primerBody.length + 1 + sizeLine.length;
-  return `<!--pa:primer-size lines=${lines} chars=${chars} mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
+  // MIN-A: compute chars from the FINAL size line length, not the placeholder.
+  // The final size line embeds `chars=${chars}` whose digit count depends on chars
+  // itself; building the line from a `chars=0` placeholder under-counts by
+  // (digitCount - 1). Construct the final line first, then derive chars so it
+  // equals the primer's real character count (body + "\n" + final size line).
+  const template = (charsValue: string) => `<!--pa:primer-size lines=${lines} chars=${charsValue} mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
+  // Solve for the stable char count: the size line length grows with the digit
+  // count of `chars`. Iterate to a fixed point — at most a few passes since each
+  // extra digit only adds one char.
+  let chars = primerBody.length + 1 + template("0").length;
+  for (let pass = 0; pass < 4; pass += 1) {
+    const next = primerBody.length + 1 + template(String(chars)).length;
+    if (next === chars) break;
+    chars = next;
+  }
+  return template(String(chars));
 }
 
 function defaultToolReference(runtime: RuntimeName): string {
@@ -514,4 +531,40 @@ export function renderMemoryDocsBlock(docs: MemoryDocEntry[], opts: RenderMemory
     `The following instruction files were explicitly included to emulate memory for ${opts.runtimeLabel} deployments. Follow them unless they conflict with this deployment primer.`,
     ...docs.map((doc) => `<memory-doc path="${doc.path}">\n${doc.content}\n</memory-doc>`),
   ].join("\n\n");
+}
+
+// --- Shared deployment-context env-vars helper (MIN-C DRY extraction) ---
+// All three runtime adapters (opencode/claude/droid) inject a `pa_env_vars:`
+// subsection into the `<deployment-context>` block. Centralizing the key list
+// and the rendering keeps the three adapters consistent and avoids drift.
+
+export const PA_ENV_KEYS = [
+  "PA_DEPLOYMENT_ID",
+  "PA_DEPLOYMENT_DIR",
+  "PA_ACTIVITY_LOG",
+  "PA_TEAM",
+  "PA_MODE",
+  "PA_TICKET_ID",
+  "PA_REPO",
+  "PA_PROVIDER",
+  "PA_MODEL",
+  "PA_TEAM_MODEL",
+  "PA_AGENT_MODEL",
+] as const;
+
+export type PaEnvKey = (typeof PA_ENV_KEYS)[number];
+
+/**
+ * Renders the `pa_env_vars:` subsection for the `<deployment-context>` block.
+ * Returns the empty string when no env vars are supplied so the block stays
+ * unchanged for adapters that opt out (kept for back-compat). Each key line is
+ * `  KEY: value` (empty string when the key is absent), matching the existing
+ * opencode-pa format byte-for-byte.
+ */
+export function renderEnvVarsBlock(envVars: Partial<Record<PaEnvKey, string>> | undefined): string {
+  if (!envVars) return "";
+  return [
+    "pa_env_vars:",
+    ...PA_ENV_KEYS.map((key) => `  ${key}: ${envVars[key] ?? ""}`),
+  ].join("\n");
 }

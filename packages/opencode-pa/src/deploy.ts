@@ -2,24 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
-
-const PA_ENV_KEYS = [
-  "PA_DEPLOYMENT_ID",
-  "PA_DEPLOYMENT_DIR",
-  "PA_ACTIVITY_LOG",
-  "PA_TEAM",
-  "PA_MODE",
-  "PA_TICKET_ID",
-  "PA_REPO",
-  "PA_PROVIDER",
-  "PA_MODEL",
-  "PA_TEAM_MODEL",
-  "PA_AGENT_MODEL",
-] as const;
-
-type PaEnvKey = (typeof PA_ENV_KEYS)[number];
 
 function buildPaEnvVars(args: {
   deploymentId: string;
@@ -280,12 +264,7 @@ function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
   const workspaceBase = getDeploymentDir(opts.deploymentId);
   const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
   const now = nowUtc();
-  const envVarLines = opts.envVars
-    ? [
-        "pa_env_vars:",
-        ...PA_ENV_KEYS.map((key) => `  ${key}: ${opts.envVars?.[key] ?? ""}`),
-      ].join("\n")
-    : "";
+  const envVarLines = renderEnvVarsBlock(opts.envVars);
   return `<deployment-context>
 deployment_id: ${opts.deploymentId}
 team_name: ${opts.teamConfig.name}

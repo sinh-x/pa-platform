@@ -1512,3 +1512,149 @@ test("generatePrimer size line reports over=false when primer is under threshold
     assert.equal(overStr, "false", "over must be false when under budget");
   }
 });
+
+test("generatePrimer size line chars equals the real final primer character count (MIN-A)", () => {
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
+  const sizeLineMatch = primer.match(/<!--pa:primer-size lines=(\d+) chars=(\d+) mode=([^\s]+) budget=(\d+) over=(true|false)-->/);
+  assert.ok(sizeLineMatch, "size line must be present");
+  const charsStr = sizeLineMatch![2];
+  const reportedChars = Number(charsStr);
+  const realChars = Buffer.byteLength(primer, "utf-8");
+  assert.equal(reportedChars, realChars, `chars (${reportedChars}) must equal the real final primer length (${realChars}); was off by ${reportedChars - realChars}`);
+});
+
+test("generatePrimer size line chars stays accurate for a large multi-digit primer (MIN-A fixed-point)", () => {
+  // A large objective produces a primer whose char count has 4+ digits; the
+  // placeholder-derived computation was off by (digitCount - 1). Verify the
+  // fixed-point computation yields chars equal to the real length.
+  const bigObjective = `${"y".repeat(80)}\n`.repeat(500);
+  const bigTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: bigTeam, mode: "implement", objective: bigObjective });
+  const sizeLineMatch = primer.match(/<!--pa:primer-size lines=(\d+) chars=(\d+) mode=([^\s]+) budget=(\d+) over=(true|false)-->/);
+  assert.ok(sizeLineMatch, "size line must be present");
+  const reportedChars = Number(sizeLineMatch![2]);
+  const realChars = Buffer.byteLength(primer, "utf-8");
+  assert.ok(reportedChars >= 1000, "fixture must produce a multi-digit char count");
+  assert.equal(reportedChars, realChars, `chars (${reportedChars}) must equal real length (${realChars}); off by ${reportedChars - realChars}`);
+});
+
+test("generatePrimer detects a heading with an EMBEDDED placeholder token as placeholder (MIN-B)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-embedded-heading-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    const guidePath = join(guidesDir, "embedded-heading-template.md");
+    // A template whose headings embed placeholder tokens AFTER a label prefix
+    // (e.g. `### C1: <Convention Title>`). Without TEMPLATE_SELF_ID and without a
+    // leading-`<` heading, the old regex missed these — now the broadened regex
+    // detects every heading as a placeholder. Every heading here embeds a token,
+    // so isPlaceholderTemplate's "all headings are placeholder headings" branch
+    // fires (previously the `### C1: <...>` headings were treated as filled).
+    writeFileSync(guidePath, [
+      "# <Guide Title>",
+      "",
+      "## <Section Two>",
+      "",
+      "### C1: <Convention Title>",
+      "",
+      "### C2: <Convention Title>",
+      "",
+      "## <Section Three>",
+      "",
+      "### P1: <Pattern Name>",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/embedded-heading-template.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /## Project Agent Guides/);
+    assert.match(primer, /guides\/embedded-heading-template\.md \(skipped: placeholder-only template\)/);
+    assert.doesNotMatch(primer, /<Convention Title>/);
+    assert.doesNotMatch(primer, /<Pattern Name>/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer broadened heading regex does NOT flag legit headings with inline generic code (MIN-B no false positives)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-heading-generic-"));
+  try {
+    const guidesDir = join(root, "guides");
+    mkdirSync(guidesDir, { recursive: true });
+    const guidePath = join(guidesDir, "generic-headings.md");
+    // Some headings embed generic syntax (`<T>`, `<void>`) which the broadened
+    // regex matches as placeholder headings. But the doc also has FILLED
+    // headings (no `<token>`), so isPlaceholderTemplate keeps it — the broadened
+    // regex does not introduce a false positive when at least one heading is
+    // clearly filled. Token count is >=3 so the "no heading" branch is not the
+    // saving grace; the filled-heading branch is.
+    writeFileSync(guidePath, [
+      "# Generic Helpers",
+      "",
+      "## Map<string, number> usage",
+      "Use the helper below for keyed maps.",
+      "",
+      "## Array<T> helpers",
+      "Use the helper below for typed lists.",
+      "",
+      "## Promise<void> signals",
+      "Use the helper below for async signals.",
+      "",
+      "## Guidance",
+      "Prefer these helpers over hand-rolled generics.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    global_docs:
+      - guides/generic-headings.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => join(guidesDir, relativePath.replace(/^guides\//, "")),
+    });
+
+    assert.match(primer, /## Project Agent Guides/);
+    assert.doesNotMatch(primer, /guides\/generic-headings\.md \(skipped: placeholder-only template\)/);
+    assert.match(primer, /Generic Helpers/);
+    assert.match(primer, /Array<T> helpers/);
+    assert.match(primer, /Prefer these helpers/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

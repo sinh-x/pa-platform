@@ -957,3 +957,30 @@ describe("dpa deploy memory-doc injection (MIN-3/FR-4)", () => {
     });
   });
 });
+
+describe("dpa deploy env-vars injection (MIN-C)", () => {
+  it("droid dry-run deployment-context block includes pa_env_vars subsection", async () => {
+    await withDpaEnv(async (root) => {
+      writeFileSync(join(root, "repo", "CLAUDE.md"), "# Repo Memory\nKeep this content visible to droid.\n");
+      const adapter = new DroidCodeAdapter({ cwd: join(root, "repo"), env: { FACTORY_API_KEY: TEST_API_KEY } });
+      const result = await deployWithDroid({ team: "daily", mode: "plan", dryRun: true, repo: "pa-platform", ticket: "DG-211", provider: "deepseek", model: "deepseek-v4-pro", teamModel: "deepseek-chat", agentModel: "deepseek-coder" }, adapter);
+      assert.equal(result.status, "pending");
+      const deploymentId = result.deploymentId;
+      assert.ok(deploymentId);
+      const primerPath = join(root, "deployments", deploymentId, "primer.md");
+      const primer = readFileSync(primerPath, "utf-8");
+      assert.match(primer, /pa_env_vars:/);
+      assert.match(primer, /PA_DEPLOYMENT_ID: d-[a-f0-9]{6}/);
+      assert.match(primer, /PA_DEPLOYMENT_DIR: .+deployments\/d-[a-f0-9]{6}/);
+      assert.match(primer, /PA_ACTIVITY_LOG: .+activity\.jsonl/);
+      assert.match(primer, /PA_TEAM: daily/);
+      assert.match(primer, /PA_MODE: plan/);
+      assert.match(primer, /PA_TICKET_ID: DG-211/);
+      assert.match(primer, /PA_REPO:/);
+      assert.match(primer, /PA_PROVIDER: deepseek/);
+      assert.match(primer, /PA_MODEL: deepseek-v4-pro/);
+      assert.match(primer, /PA_TEAM_MODEL: deepseek-chat/);
+      assert.match(primer, /PA_AGENT_MODEL: deepseek-coder/);
+    });
+  });
+});
