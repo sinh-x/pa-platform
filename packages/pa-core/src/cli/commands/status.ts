@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { readActivityEvents } from "../../activity/index.js";
+import { maskSecrets, readActivityEvents } from "../../activity/index.js";
+import type { ActivityEvent } from "../../activity/index.js";
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS } from "../../deploy/index.js";
 import { getAiUsageDir, getDeploymentDir } from "../../paths.js";
 import { appendRegistryEvent, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../../registry/index.js";
@@ -22,8 +23,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } | { error: string } {
-  const opts: { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean } = {};
+function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean; verbose?: boolean } | { error: string } {
+  const opts: { deployId?: string; running?: boolean; team?: string; recent?: number; today?: boolean; wait?: boolean; report?: boolean; artifacts?: boolean; activity?: boolean; verbose?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--running") opts.running = true;
@@ -32,6 +33,7 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else if (arg === "--report") opts.report = true;
     else if (arg === "--artifacts") opts.artifacts = true;
     else if (arg === "--activity") opts.activity = true;
+    else if (arg === "--verbose") opts.verbose = true;
     else if (arg === "--team") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: "--team requires a value" };
@@ -49,6 +51,15 @@ function parseStatusArgs(argv: string[]): { deployId?: string; running?: boolean
     else return { error: `Unexpected status argument: ${arg}` };
   }
   if (opts.wait && !opts.deployId) return { error: "status --wait requires deploy-id" };
+  if (opts.wait) opts.activity = true;
+  if (opts.verbose && !opts.activity) return { error: "--verbose requires --activity" };
+  const standaloneFlags: Array<keyof typeof opts> = ["report", "artifacts"];
+  for (const flag of standaloneFlags) {
+    if (opts[flag]) {
+      const conflict = (["wait", "activity", "report", "artifacts"] as const).find((other) => other !== flag && opts[other]);
+      if (conflict) return { error: `--${flag} is standalone and not combinable with --${conflict}` };
+    }
+  }
   return opts;
 }
 
@@ -70,7 +81,12 @@ function resolveStatusWaitTimeout(deployment: DeploymentStatus): { seconds: numb
   return { seconds: deployment.effective_timeout_seconds ?? DEFAULT_DEPLOY_TIMEOUT_SECONDS };
 }
 
-async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime): Promise<number> {
+interface WaitForDeploymentOptions {
+  activity?: boolean;
+  verbose?: boolean;
+}
+
+async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime, options?: WaitForDeploymentOptions): Promise<number> {
   const initial = queryDeploymentStatus(deployId);
   if (!initial) return printError(`Deployment not found: ${deployId}`, io);
   const timeout = resolveStatusWaitTimeout(initial);
@@ -82,6 +98,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
   io.stdout(`Override env: ${STATUS_WAIT_OVERRIDE_ENV}`);
 
   const startedAt = runtime.clock();
+  let activityCursor: number | undefined;
   while (true) {
     const deployment = queryDeploymentStatus(deployId);
     if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
@@ -104,9 +121,11 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       return 1;
     }
     if (deployment.status !== "running") {
+      if (options?.activity) showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
+    if (options?.activity) activityCursor = showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
     if (runtime.clock() - startedAt >= timeout.seconds * 1000) {
       io.stderr(`Timed out waiting for deployment ${deployId} after ${timeout.seconds}s`);
       return 1;
@@ -147,7 +166,7 @@ function showDeploymentArtifacts(deployId: string, io: Required<CliIo>): number 
   return 0;
 }
 
-function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
+function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose = false): number {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
   if (!existsSync(activityFile)) {
     io.stdout(`No activity log found for deployment: ${deployId}`);
@@ -160,14 +179,114 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>): number {
     return 0;
   }
   const events = readActivityEvents(activityFile);
-  io.stdout(`Activity timeline - ${deployId} (${events.length} events)`);
-  for (const event of events) {
-    const ts = formatLocalShort(event.timestamp);
-    const kind = event.partType ? `${event.kind}/${event.partType}` : event.kind;
-    const body = event.body.slice(0, 100);
-    io.stdout(`${ts.padEnd(26)} ${event.source.padEnd(20)} ${kind.padEnd(18)} ${body}`.trimEnd());
+  const visible = verbose ? events : events.filter((event) => !isNoiseActivityEvent(event));
+  io.stdout(`Activity timeline - ${deployId} (${visible.length}${verbose ? "" : `/${events.length}`} events${verbose ? " [verbose]" : ""})`);
+  for (const [source, group] of groupBy(visible, (event) => event.source)) {
+    io.stdout(`--- ${source} (${group.length}) ---`);
+    for (const event of group) io.stdout(formatActivityEvent(event));
   }
   return 0;
+}
+
+const ACTIVITY_TAIL_LIMIT = 10;
+
+function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
+  const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
+  if (!existsSync(activityFile)) return cursor;
+  const events = readActivityEvents(activityFile);
+  if (events.length === 0) return cursor;
+  const visible = verbose ? events : events.filter((event) => !isNoiseActivityEvent(event));
+  const startIndex = cursor === undefined ? Math.max(0, visible.length - ACTIVITY_TAIL_LIMIT) : cursor;
+  const tail = visible.slice(startIndex);
+  if (tail.length === 0) return startIndex;
+  const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
+  io.stdout(`--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`);
+  for (const event of tail) io.stdout(formatActivityEvent(event));
+  return startIndex + tail.length;
+}
+
+// Noise prefixes match the `<event>: <summary>` body format produced by summarizePluginEvent()
+// in activity/index.ts. Keep in sync with that function's `${event}${summary ? `: ${summary}` : ""}` template.
+const NOISE_EVENT_PREFIXES = ["session.status", "session.diff", "file.watcher.updated", "session.updated"];
+
+function isNoiseActivityEvent(event: ActivityEvent): boolean {
+  for (const prefix of NOISE_EVENT_PREFIXES) {
+    if (event.body.startsWith(`${prefix}:`) || event.body.startsWith(`${prefix} `)) {
+      if (prefix === "session.diff") {
+        return /\bdiff=\[\]/.test(event.body);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatActivityEvent(event: ActivityEvent): string {
+  const ts = formatLocalShort(event.timestamp);
+  if (isReasoningEvent(event)) return formatReasoningEvent(event, ts);
+  if (isToolActionEvent(event)) return formatToolActionEvent(event, ts);
+  const kind = event.partType ? `${event.kind}/${event.partType}` : event.kind;
+  return `${ts.padEnd(26)} ${kind.padEnd(18)} ${event.body}`.trimEnd();
+}
+
+function isReasoningEvent(event: ActivityEvent): boolean {
+  return event.kind === "thinking" || event.partType === "reasoning";
+}
+
+function formatReasoningEvent(event: ActivityEvent, ts: string): string {
+  const content = extractReasoningContent(event.body);
+  if (!content) return `${ts.padEnd(26)} reasoning`.trimEnd();
+  const indented = content.split("\n").map((line) => `    ${line}`).join("\n");
+  return `${ts.padEnd(26)} reasoning\n${indented}`;
+}
+
+function extractReasoningContent(body: string): string {
+  const match = /^part=(\S+)(?:\s+role=(\S+))?\s+/.exec(body);
+  if (!match) return body;
+  return body.slice(match[0].length);
+}
+
+function isToolActionEvent(event: ActivityEvent): boolean {
+  return event.kind === "tool_use" || event.kind === "tool_result";
+}
+
+function formatToolActionEvent(event: ActivityEvent, ts: string): string {
+  const meta = event.metadata;
+  const tool = typeof meta?.["tool"] === "string" ? meta["tool"] : extractToolNameFromBody(event.body);
+  const target = extractToolTarget(event);
+  const label = event.kind === "tool_use" ? "tool" : "result";
+  const summary = target ? `${tool}: ${target}` : tool;
+  return `${ts.padEnd(26)} ${label.padEnd(18)} ${summary}`.trimEnd();
+}
+
+function extractToolNameFromBody(body: string): string {
+  const match = /tool=(\S+)/.exec(body);
+  return match?.[1] ?? "unknown";
+}
+
+function extractToolTarget(event: ActivityEvent): string {
+  const meta = event.metadata;
+  if (!meta) return "";
+  const args = recordValue(meta["args"]);
+  if (args) {
+    const target = firstMetaString(args, ["command", "filePath", "file_path", "pattern", "url", "path", "description", "query"]);
+    if (target) return maskSecrets(target);
+  }
+  const summary = typeof meta["summary"] === "string" ? meta["summary"] : "";
+  if (summary) return maskSecrets(summary.slice(0, 80));
+  return maskSecrets(firstMetaString(meta, ["summary", "description", "command", "error", "message"]) ?? "");
+}
+
+function firstMetaString(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) return maskSecrets(value.slice(0, 80));
+  }
+  return undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function reportSearchDirs(): string[] {
@@ -208,10 +327,10 @@ export async function runStatusCommand(argv: string[], io: Required<CliIo>, now:
       io.stderr(`Deployment not found: ${opts.deployId}`);
       return 1;
     }
-    if (opts.wait) return waitForDeployment(opts.deployId, io, runtime);
+    if (opts.wait) return waitForDeployment(opts.deployId, io, runtime, { activity: opts.activity, verbose: opts.verbose });
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
-    if (opts.activity) return showDeploymentActivity(opts.deployId, io);
+    if (opts.activity) return showDeploymentActivity(opts.deployId, io, opts.verbose);
     io.stdout(formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length));
     return 0;
   }

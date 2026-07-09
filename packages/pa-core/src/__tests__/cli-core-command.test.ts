@@ -136,6 +136,9 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
   }
   assert.match(captured.stdout.join("\n"), /Usage: opa /);
   assert.match(captured.stdout.join("\n"), /PA_STATUS_WAIT_TIMEOUT/);
+  assert.match(captured.stdout.join("\n"), /--activity \[--verbose\]/);
+  assert.match(captured.stdout.join("\n"), /--verbose requires --activity/);
+  assert.match(captured.stdout.join("\n"), /--report and --artifacts are standalone/);
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
@@ -218,6 +221,337 @@ test("runCoreCommand exposes status list and detail", async () => {
     const artifactReport = capture();
     assert.equal(await runCoreCommand(["status", "d-cli-artifact", "--report"], { io: artifactReport.io }), 0);
     assert.match(artifactReport.stdout.join("\n"), /Artifact report for d-cli-artifact/);
+  });
+});
+
+test("status --activity filters noise events from output", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-filter", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-filter");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.status: idle" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "file.watcher.updated: /some/path" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:03.000Z", kind: "text", source: "opencode", body: "session.updated: stuff" }),
+      JSON.stringify({ deployId: "d-act-filter", timestamp: "2026-04-26T00:00:04.000Z", kind: "text", source: "opencode", body: "visible text event" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-filter", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /1\/5 events/);
+    assert.match(output, /visible text event/);
+    assert.doesNotMatch(output, /session\.status/);
+    assert.doesNotMatch(output, /session\.diff/);
+    assert.doesNotMatch(output, /file\.watcher\.updated/);
+    assert.doesNotMatch(output, /session\.updated/);
+  });
+});
+
+test("status --activity formats reasoning events with indented content", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-reasoning", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-reasoning");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-reasoning", timestamp: "2026-04-26T00:00:00.000Z", kind: "thinking", source: "opencode", body: "part=reasoning Let me analyze the problem and find a solution." }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-reasoning", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /reasoning/);
+    assert.match(output, /    Let me analyze the problem and find a solution\./);
+    assert.doesNotMatch(output, /part=reasoning/);
+  });
+});
+
+test("status --activity strips part=thinking role=assistant prefix for kind=thinking events", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-thinking", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-thinking");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      // Realistic opencode plugin schema: kind="thinking" with body produced by summarizeMessageData:
+      // "part=thinking role=assistant <thinking content>"
+      JSON.stringify({ deployId: "d-act-thinking", timestamp: "2026-04-26T00:00:00.000Z", kind: "thinking", source: "opencode", body: "part=thinking role=assistant I should consider the edge cases first." }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-thinking", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /reasoning/);
+    assert.match(output, /    I should consider the edge cases first\./);
+    assert.doesNotMatch(output, /part=thinking/);
+    assert.doesNotMatch(output, /role=assistant/);
+  });
+});
+
+test("status --report combined with --activity is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-report-conflict", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-report-conflict", "--report", "--activity"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--report is standalone and not combinable with --activity/);
+  });
+});
+
+test("status --artifacts combined with --wait is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-artifacts-conflict", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-artifacts-conflict", "--artifacts", "--wait"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--artifacts is standalone and not combinable with --wait/);
+  });
+});
+
+test("status --report combined with --artifacts is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-both-standalone", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-both-standalone", "--report", "--artifacts"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--report is standalone and not combinable with --artifacts/);
+  });
+});
+
+test("status --activity formats tool actions with concise tool name and target", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-tools", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-tools");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-tools", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "git status" } } }),
+      JSON.stringify({ deployId: "d-act-tools", timestamp: "2026-04-26T00:00:01.000Z", kind: "tool_result", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "git status" } } }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-tools", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /tool\s+bash: git status/);
+    assert.match(output, /result\s+bash: git status/);
+    assert.doesNotMatch(output, /"command"/);
+    assert.doesNotMatch(output, /"args"/);
+  });
+});
+
+test("status --activity redacts secrets in tool-action target from metadata.args.command", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-secret", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-secret");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:00.000Z", kind: "tool_use", source: "opencode", body: "tool=bash", metadata: { tool: "bash", args: { command: "curl -H 'Authorization: Bearer sk-leaked-token-12345' https://api.example.com" } } }),
+      JSON.stringify({ deployId: "d-act-secret", timestamp: "2026-04-26T00:00:01.000Z", kind: "tool_result", source: "opencode", body: "tool=bash", metadata: { tool: "bash", summary: "export TOKEN=sk-leaked-token-12345 && npm publish" } }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-secret", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /tool\s+bash: curl -H 'Authorization: \[REDACTED\]/);
+    assert.match(output, /result\s+bash: export \[REDACTED\]/);
+    assert.doesNotMatch(output, /sk-leaked-token-12345/);
+  });
+});
+
+test("status --activity groups events by agent/session source", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-group", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-group");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-group", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "ses_abc", body: "event from session abc" }),
+      JSON.stringify({ deployId: "d-act-group", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "ses_def", body: "event from session def" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-group", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /--- ses_abc \(1\) ---/);
+    assert.match(output, /--- ses_def \(1\) ---/);
+    assert.match(output, /event from session abc/);
+    assert.match(output, /event from session def/);
+  });
+});
+
+test("status --activity --verbose shows all events including noise", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-verbose", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-verbose");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.status: idle" }),
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+      JSON.stringify({ deployId: "d-act-verbose", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "visible text event" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-verbose", "--activity", "--verbose"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /3 events \[verbose\]/);
+    assert.match(output, /session\.status/);
+    assert.match(output, /session\.diff/);
+    assert.match(output, /visible text event/);
+  });
+});
+
+test("status --wait --activity shows activity tail during poll", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-act", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-act");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+      JSON.stringify({ deployId: "d-wait-act", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "opencode", body: "event three" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-act", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        appendRegistryEvent({ deployment_id: "d-wait-act", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 1);
+    const output = captured.stdout.join("\n");
+    assert.match(output, /Waiting for deployment: d-wait-act/);
+    assert.match(output, /--- activity tail/);
+    assert.match(output, /event three/);
+    assert.match(output, /success - done/);
+  });
+});
+
+test("status --wait --activity tail is incremental across polls", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-incr", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-incr");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-incr", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        if (sleeps === 1) {
+          // unchanged activity: no new events appended
+          return;
+        }
+        if (sleeps === 2) {
+          // append a new event then mark completed on the third sleep
+          writeFileSync(activityFile, [
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+            JSON.stringify({ deployId: "d-wait-incr", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event three" }),
+          ].join("\n") + "\n");
+          return;
+        }
+        appendRegistryEvent({ deployment_id: "d-wait-incr", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 3);
+    const output = captured.stdout.join("\n");
+    // first poll prints initial tail (last 10 of visible = 2 events)
+    // second poll: unchanged activity prints nothing (incremental)
+    // third poll: only the new event three is emitted
+    const tailHeaders = output.match(/--- activity tail/g) ?? [];
+    assert.equal(tailHeaders.length, 2, "should print tail only when there is something new to show");
+    // event two must appear exactly once (initial tail, not reprinted on unchanged poll)
+    const eventTwoOccurrences = output.match(/event two/g) ?? [];
+    assert.equal(eventTwoOccurrences.length, 1, "unchanged activity must not reprint previous events");
+    // event three should be emitted once (on the third poll after it was appended)
+    const eventThreeOccurrences = output.match(/event three/g) ?? [];
+    assert.equal(eventThreeOccurrences.length, 1, "new event should be emitted once");
+    assert.match(output, /success - done/);
+  });
+});
+
+test("status --wait --activity flushes final activity batch on terminal status", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-wait-final", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-wait-final");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+    ].join("\n") + "\n");
+
+    const captured = capture();
+    let sleeps = 0;
+    let nowMs = 0;
+    const code = await runCoreCommand(["status", "d-wait-final", "--wait", "--activity"], {
+      io: captured.io,
+      clock: () => nowMs,
+      sleep: async (ms) => {
+        sleeps += 1;
+        nowMs += ms;
+        if (sleeps === 1) {
+          // append a late event then mark completed on the second sleep
+          writeFileSync(activityFile, [
+            JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+            JSON.stringify({ deployId: "d-wait-final", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event two (final)" }),
+          ].join("\n") + "\n");
+          return;
+        }
+        appendRegistryEvent({ deployment_id: "d-wait-final", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+      },
+    });
+
+    assert.equal(code, 0);
+    assert.equal(sleeps, 2);
+    const output = captured.stdout.join("\n");
+    // The late event "event two (final)" must appear in the final flush
+    assert.match(output, /event two \(final\)/, "final activity batch must be flushed on terminal status");
+    assert.match(output, /success - done/);
+  });
+});
+
+test("status --activity keeps non-empty session.diff events visible", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-diff", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-diff");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-diff", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[file.ts]" }),
+      JSON.stringify({ deployId: "d-act-diff", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "session.diff: diff=[]" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-diff", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /diff=\[file\.ts\]/, "non-empty diff must remain visible");
+    assert.doesNotMatch(output, /diff=\[\]\s*\n/, "empty diff must be filtered out");
+  });
+});
+
+test("status --verbose without --activity is a parse error", async () => {
+  await withCliEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-verbose-err", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const captured = capture();
+    const code = await runCoreCommand(["status", "d-verbose-err", "--verbose"], { io: captured.io });
+    assert.equal(code, 1);
+    assert.match(captured.stderr.join("\n"), /--verbose requires --activity/);
   });
 });
 

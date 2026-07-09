@@ -191,7 +191,7 @@ const MAX_BODY_LENGTH = 500;
 const SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)password(?:\b|_)/i, /(?:\b|_)key(?:\b|_)/i, /bearer\s+\S+/i, /sk-\S+/i];
 const SENSITIVE_PATH_PATTERNS = [/(^|\s)\S*\/(?:\.env(?:\.|\s|$)|\.ssh\/id_\S*|credentials\S*|secrets?\S*\.(?:json|ya?ml)|[-_]token\.json|[-_]api[-_]?key\.json|\.netrc|\.npmrc|\.pypirc)/gi, /(^|\s)(?:\.env(?:\.\S*)?|credentials\S*|secrets?\S*\.(?:json|ya?ml)|[-_]?token\.json|[-_]?api[-_]?key\.json)(?=\s|$)/gi];
 
-function maskSecrets(value: string): string {
+export function maskSecrets(value: string): string {
   let masked = value;
   for (const pattern of SECRET_PATTERNS) {
     masked = masked.replace(pattern, "[REDACTED]");
