@@ -48,7 +48,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `## Agents`,
     renderAgents(agents, options, options.runtime),
     ``,
-    renderAvailableProcedures(skills, options.runtime),
+    renderAvailableProcedures(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
     ``,
     renderProjectAgentGuides(globalDocs, options.resolveFile, options.runtime),
     ``,
@@ -56,7 +56,6 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
-    renderReferenceSkillCatalog(skills, options.skillsDir ?? getSkillsDir()),
     extraInstructions ? `\n## Extra Instructions\n${extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
 }
@@ -129,22 +128,6 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
   }).join("\n\n");
 }
 
-function renderReferenceSkillCatalog(skills: SkillEntry[], skillsDir: string): string {
-  const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
-  if (referenceSkills.length === 0) return "";
-  const intro = "Use the Read tool to load any skill below when you need it.";
-  const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
-    ? " Start by reading pa-cli for CLI reference."
-    : "";
-  const lines = ["## Reference Skills", `${intro}${paCliHint}`];
-  for (const skill of referenceSkills) {
-    const path = resolve(skillsDir, skill.name, "SKILL.md");
-    const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
-    lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
-  }
-  return lines.join("\n");
-}
-
 function renderActiveBulletins(runtime: RuntimeName): string {
   switch (runtime) {
     case "opencode":
@@ -183,17 +166,33 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
   ["pa-bulletin", "blocking bulletin protocol and resolution workflow"],
 ];
 
-function renderAvailableProcedures(skills: SkillEntry[], runtime: RuntimeName): string {
+function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
   if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
-  const skillNames = new Set(skills.map((skill) => skill.name));
-  const procedures = PROCEDURE_CATALOG.filter(([name]) => skillNames.has(name));
   const intro = runtime === "claude"
     ? "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content and take precedence over any Claude Code skills loaded from `~/.claude/skills`."
     : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
   const lines = ["## Available Procedures", intro];
-  if (procedures.length > 0) {
-    for (const [name, description] of procedures) lines.push(`- ${name}: ${description}.`);
-  } else {
+  const inlined = skills.filter((skill) => skill["inject-as"] !== "reference");
+  const referenceSkills = skills.filter((skill) => skill["inject-as"] === "reference");
+  if (inlined.length > 0) {
+    for (const skill of inlined) {
+      const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
+      lines.push(description ? `- ${skill.name}: ${description}.` : `- ${skill.name}: injected below.`);
+    }
+  }
+  if (referenceSkills.length > 0) {
+    if (inlined.length > 0) lines.push("");
+    const paCliHint = referenceSkills.some((skill) => skill.name === "pa-cli")
+      ? " Start by reading pa-cli for CLI reference."
+      : "";
+    lines.push(`Reference skills (use the Read tool to load any skill below when you need it)${paCliHint}:`);
+    for (const skill of referenceSkills) {
+      const path = resolve(skillsDir, skill.name, "SKILL.md");
+      const description = PROCEDURE_CATALOG.find(([name]) => name === skill.name)?.[1];
+      lines.push(description ? `- ${skill.name}: ${description}. Path: \`${path}\`` : `- ${skill.name}: Path: \`${path}\``);
+    }
+  }
+  if (inlined.length === 0 && referenceSkills.length === 0) {
     lines.push("- No PA operational skills are injected for this mode. Follow the objective and runtime tool guidance.");
   }
   return lines.join("\n");

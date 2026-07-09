@@ -208,9 +208,10 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assert.match(primer, /requirements:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /uat:agent-teams\/requirements\/artifacts/);
   assert.match(primer, /Use the injected pa-platform skills below as the canonical operational procedures/);
-  assert.match(primer, /## Reference Skills/);
+  assert.match(primer, /## Available Procedures/);
   assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
   assert.match(primer, /- pa-session-log:.*Path: `.*skills\/global\/pa-session-log\/SKILL\.md`/);
+  assert.doesNotMatch(primer, /## Reference Skills/);
   assertNoLegacyPaCliExamples(primer);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
@@ -305,9 +306,10 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assert.match(primer, /`opa` is the default deployment adapter/);
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /## Deployment Instructions/);
-  assert.match(primer, /## Reference Skills/);
+  assert.match(primer, /## Available Procedures/);
   assert.match(primer, /- pa-cli:.*Path: `.*skills\/global\/pa-cli\/SKILL\.md`/);
   assert.match(primer, /- google-workspace:.*Path: `.*skills\/global\/google-workspace\/SKILL\.md`/);
+  assert.doesNotMatch(primer, /## Reference Skills/);
   assert.doesNotMatch(primer, /missing skill/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
@@ -554,7 +556,7 @@ deploy_modes:
   }
 });
 
-test("generatePrimer renders reference skills in ## Reference Skills section, not inlined", () => {
+test("generatePrimer lists reference skills in ## Available Procedures, not inlined or in a separate section", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-ref-"));
   try {
     mkdirSync(join(root, "pa-cli"));
@@ -574,9 +576,11 @@ deploy_modes:
         inject-as: reference
 `);
     const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithRef, mode: "implement", skillsDir: root });
-    assert.match(primer, /## Reference Skills/);
-    assert.match(primer, /Use the Read tool to load any skill below when you need it/);
+    assert.match(primer, /## Available Procedures/);
+    assert.match(primer, /Reference skills \(use the Read tool to load any skill below when you need it\)/);
+    assert.match(primer, /Start by reading pa-cli for CLI reference\./);
     assert.match(primer, /- pa-cli:.*Path: `.*pa-cli\/SKILL\.md`/);
+    assert.doesNotMatch(primer, /## Reference Skills/);
     assert.doesNotMatch(primer, /Inlined body that should NOT appear in Skills section/);
     assert.match(primer, /## Skills\n\(none\)/);
   } finally {
@@ -584,7 +588,7 @@ deploy_modes:
   }
 });
 
-test("generatePrimer renders mixed inject-as types: shared-skill inlined, reference cataloged", () => {
+test("generatePrimer consolidates shared-skill and reference listings in one ## Available Procedures section", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-mixed-"));
   try {
     mkdirSync(join(root, "pa-cli"));
@@ -610,9 +614,62 @@ deploy_modes:
     const primer = generatePrimer({ runtime: "opencode", teamConfig: mixedTeam, mode: "implement", skillsDir: root });
     assert.match(primer, /## Skills/);
     assert.match(primer, /Shared skill body to inline/);
-    assert.match(primer, /## Reference Skills/);
+    assert.match(primer, /## Available Procedures/);
+    assert.match(primer, /- pa-cli:/);
+    assert.match(primer, /Reference skills \(use the Read tool to load any skill below when you need it\)/);
     assert.match(primer, /- pa-session-log:.*Path: `.*pa-session-log\/SKILL\.md`/);
+    assert.doesNotMatch(primer, /## Reference Skills/);
     assert.doesNotMatch(primer, /Reference skill body/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer lists each skill name once across skill-listing sections (FR-6, AC5)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-dedupe-"));
+  try {
+    mkdirSync(join(root, "pa-cli"), { recursive: true });
+    mkdirSync(join(root, "pa-session-log"), { recursive: true });
+    mkdirSync(join(root, "pa-startup"), { recursive: true });
+    mkdirSync(join(root, "pa-ticket-workflow"), { recursive: true });
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), "# PA CLI Reference\nBody.\n");
+    writeFileSync(join(root, "pa-session-log", "SKILL.md"), "# Session Logging\nBody.\n");
+    writeFileSync(join(root, "pa-startup", "SKILL.md"), "# Startup\nBody.\n");
+    writeFileSync(join(root, "pa-ticket-workflow", "SKILL.md"), "# Ticket Workflow\nBody.\n");
+    const mixedTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-startup
+        inject-as: shared-skill
+      - name: pa-ticket-workflow
+        inject-as: shared-skill
+      - name: pa-cli
+        inject-as: reference
+      - name: pa-session-log
+        inject-as: reference
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: mixedTeam, mode: "implement", skillsDir: root });
+    // No standalone ## Reference Skills section remains — consolidated into ## Available Procedures
+    assert.doesNotMatch(primer, /## Reference Skills/);
+    // Extract the listing context: from "## Available Procedures" to the next primer section header.
+    const listingMatch = primer.match(/## Available Procedures\n([\s\S]*?)\n## /);
+    assert.ok(listingMatch, "## Available Procedures section must be present");
+    const listing = listingMatch![1];
+    for (const skillName of ["pa-cli", "pa-session-log", "pa-startup", "pa-ticket-workflow"]) {
+      const matches = listing.match(new RegExp(`- ${skillName}:`, "g"));
+      assert.equal(matches?.length ?? 0, 1, `skill ${skillName} must appear exactly once in the listing context (got ${matches?.length ?? 0})`);
+    }
+    // Reference-skill catalog still resolves correct paths.
+    assert.match(listing, /- pa-cli:.*Path: `.*pa-cli\/SKILL\.md`/);
+    assert.match(listing, /- pa-session-log:.*Path: `.*pa-session-log\/SKILL\.md`/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -887,7 +944,7 @@ test("generatePrimer builder/implement fixture no longer contains placeholder te
   assert.doesNotMatch(primer, /<Pattern Name>/);
 });
 
-test("generatePrimer omits ## Reference Skills section when no skills use inject-as: reference", () => {
+test("generatePrimer lists non-reference skills in ## Available Procedures without a Reference sub-block", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-no-ref-"));
   try {
     mkdirSync(join(root, "pa-cli"));
@@ -908,6 +965,9 @@ deploy_modes:
 `);
     const primer = generatePrimer({ runtime: "opencode", teamConfig: teamNoRef, mode: "implement", skillsDir: root });
     assert.doesNotMatch(primer, /## Reference Skills/);
+    assert.doesNotMatch(primer, /Reference skills \(use the Read tool/);
+    assert.match(primer, /## Available Procedures/);
+    assert.match(primer, /- pa-cli:/);
     assert.match(primer, /## Skills/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1056,7 +1116,6 @@ deploy_modes:
       "## Project Agent Guides",
       "## Deployment Instructions",
       "## Skills",
-      "## Reference Skills",
       "## Extra Instructions",
       "## Memory Docs",
     ];
