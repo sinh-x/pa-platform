@@ -1281,3 +1281,50 @@ deploy_modes:
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("generatePrimer emits a machine-readable size line with all fields (FR-7)", () => {
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
+  // Size line is an HTML comment carrying lines, chars, mode, budget, over.
+  const sizeLineMatch = primer.match(/<!--pa:primer-size lines=(\d+) chars=(\d+) mode=([^\s]+) budget=(\d+) over=(true|false)-->/);
+  assert.ok(sizeLineMatch, "machine-readable size line must be present");
+  const [, linesStr, charsStr, mode, budgetStr, overStr] = sizeLineMatch!;
+  assert.equal(Number(linesStr) > 0, true, "lines must be a positive number");
+  assert.equal(Number(charsStr) > 0, true, "chars must be a positive number");
+  assert.equal(mode, "plan", "mode must match the deploy mode id");
+  assert.equal(Number(budgetStr) > 0, true, "budget must be a positive number");
+  assert.ok(overStr === "true" || overStr === "false", "over must be a boolean literal");
+});
+
+test("generatePrimer size line reports over=true when primer exceeds per-mode threshold (FR-7, AC6)", () => {
+  // Build a large user objective that pushes the primer over the implement budget (800 lines).
+  const bigObjective = `${"x".repeat(80)}\n`.repeat(900);
+  const bigTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: bigTeam, mode: "implement", objective: bigObjective });
+  const sizeLineMatch = primer.match(/<!--pa:primer-size lines=(\d+) chars=(\d+) mode=([^\s]+) budget=(\d+) over=(true|false)-->/);
+  assert.ok(sizeLineMatch, "size line must be present");
+  const [, linesStr, , mode, budgetStr, overStr] = sizeLineMatch!;
+  assert.equal(mode, "implement", "mode must match implement");
+  assert.equal(budgetStr, "800", "budget must be the implement threshold (800)");
+  assert.equal(Number(linesStr) > 800, true, "fixture must exceed the budget");
+  assert.equal(overStr, "true", "over must be true when lines exceed budget (AC6)");
+});
+
+test("generatePrimer size line reports over=false when primer is under threshold", () => {
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
+  const sizeLineMatch = primer.match(/<!--pa:primer-size lines=(\d+) chars=(\d+) mode=([^\s]+) budget=(\d+) over=(true|false)-->/);
+  assert.ok(sizeLineMatch, "size line must be present");
+  const [, linesStr, , , , overStr] = sizeLineMatch!;
+  if (Number(linesStr) <= 1200) {
+    assert.equal(overStr, "false", "over must be false when under budget");
+  }
+});

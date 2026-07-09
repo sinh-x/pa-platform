@@ -26,7 +26,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const toolReference = adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime);
   const extraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
 
-  return [
+  const body = [
     `# PA Deployment Primer`,
     ``,
     `Runtime: ${options.runtime}`,
@@ -58,6 +58,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
     extraInstructions ? `\n## Extra Instructions\n${extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
+  return `${body}\n${renderSizeSignal(body, mode?.id)}`;
 }
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
@@ -385,6 +386,25 @@ function demoteHeadings(content: string): string {
     lines[i] = `${"#".repeat(level + 1)}${m[2]}`;
   }
   return lines.join("\n");
+}
+
+const PRIMER_LINE_BUDGET: Readonly<Record<string, number>> = {
+  orchestrator: 1200,
+  analyze: 1200,
+  review: 1000,
+  "review-auto": 1000,
+  implement: 800,
+  default: 1200,
+};
+
+function renderSizeSignal(primer: string, modeId: string | undefined): string {
+  const lines = primer.split("\n").length;
+  const chars = primer.length;
+  const budget = PRIMER_LINE_BUDGET[modeId ?? "default"] ?? PRIMER_LINE_BUDGET["default"]!;
+  const over = lines > budget;
+  // Always emit a machine-readable size line as an HTML comment so downstream
+  // tooling/agents can parse primer size without scanning the full body.
+  return `<!--pa:primer-size lines=${lines} chars=${chars} mode=${modeId ?? "default"} budget=${budget} over=${over}-->`;
 }
 
 function defaultToolReference(runtime: RuntimeName): string {
