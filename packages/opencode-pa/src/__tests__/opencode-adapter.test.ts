@@ -379,9 +379,11 @@ test("opa deploy includes repo memory docs in generated primer", async () => {
     assert.ok(deployId);
     const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
     assert.match(primer, /## Memory Docs/);
-    assert.match(primer, /Always follow repo-specific memory/);
-    assert.match(primer, /Use nested Claude memory too/);
+    // opencode loads CLAUDE.md/AGENTS.md natively — pointer mode lists paths without re-injecting full bodies.
     assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+    assert.match(primer, /loaded natively by opencode/);
+    assert.doesNotMatch(primer, /Always follow repo-specific memory/);
+    assert.doesNotMatch(primer, /Use nested Claude memory too/);
   });
 });
 

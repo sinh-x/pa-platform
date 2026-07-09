@@ -176,6 +176,10 @@ interface DeploymentContextOpts {
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
+// claude (Claude Code) loads CLAUDE.md natively, so the full bodies are not re-injected here.
+// A path pointer keeps the files discoverable (and preserves the <memory-doc path="..."> tag
+// the dashboard parses for memory-doc sources) without duplicating natively-loaded content.
+const MEMORY_DOC_POINTER_MODE = true;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
   const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
@@ -185,6 +189,13 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
   if (docs.length === 0) return undefined;
+  if (MEMORY_DOC_POINTER_MODE) {
+    return [
+      "## Memory Docs",
+      "The following instruction files are loaded natively by Claude Code; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.",
+      ...docs.map((doc) => `<memory-doc path="${doc.path}">\n[pointer: loaded natively by Claude Code — see file at this path]\n</memory-doc>`),
+    ].join("\n\n");
+  }
   return [
     "## Memory Docs",
     "The following instruction files were explicitly included so cpa deployments inherit Claude Code memory regardless of how the spawned process resolves CLAUDE.md. Follow them unless they conflict with this deployment primer.",

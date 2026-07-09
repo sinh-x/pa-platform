@@ -913,3 +913,94 @@ deploy_modes:
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("generatePrimer opencode memory-doc section is a path pointer, not the full re-injected body (FR-4, AC3)", (t) => {
+  if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
+  // Simulate pointer-mode extraInstructions as produced by opencode-pa deploy.ts (MEMORY_DOC_POINTER_MODE = true).
+  const pointerExtra = [
+    "## Memory Docs",
+    "The following instruction files are loaded natively by opencode; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.",
+    '<memory-doc path="/home/sinh/.claude/CLAUDE.md">',
+    "[pointer: loaded natively by opencode — see file at this path]",
+    "</memory-doc>",
+    '<memory-doc path="/repo/CLAUDE.md">',
+    "[pointer: loaded natively by opencode — see file at this path]",
+    "</memory-doc>",
+  ].join("\n");
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: builder,
+    mode: "implement",
+    objective: "Implement PAP-110 phase 3.",
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
+    extraInstructions: pointerExtra,
+  });
+  assert.match(primer, /## Memory Docs/);
+  assert.match(primer, /loaded natively by opencode/);
+  assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+  assert.match(primer, /\[pointer: loaded natively by opencode/);
+  assert.doesNotMatch(primer, /## ai-usage System Awareness/);
+});
+
+test("generatePrimer builder/orchestrator fixture drops >=150 lines between full memory-doc injection and pointer mode (NFR-3)", (t) => {
+  if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
+  // A realistic natively-loaded memory-doc body (the ~/.claude/CLAUDE.md tail is 155–457 lines).
+  const memoryBody = Array.from({ length: 200 }, (_, i) => `Line ${i}: memory doc content line for testing the natively-loaded tail.`).join("\n");
+  const fullExtra = [
+    "## Memory Docs",
+    "The following instruction files were explicitly included to emulate Claude Code memory for opencode deployments. Follow them unless they conflict with this deployment primer.",
+    '<memory-doc path="/home/sinh/.claude/CLAUDE.md">',
+    memoryBody,
+    "</memory-doc>",
+  ].join("\n");
+  const pointerExtra = [
+    "## Memory Docs",
+    "The following instruction files are loaded natively by opencode; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.",
+    '<memory-doc path="/home/sinh/.claude/CLAUDE.md">',
+    "[pointer: loaded natively by opencode — see file at this path]",
+    "</memory-doc>",
+  ].join("\n");
+  const baseOpts = {
+    runtime: "opencode" as const,
+    teamConfig: builder,
+    mode: "implement",
+    objective: "Implement PAP-110 phase 3.",
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
+  };
+  const baselinePrimer = generatePrimer({ ...baseOpts, extraInstructions: fullExtra });
+  const pointerPrimer = generatePrimer({ ...baseOpts, extraInstructions: pointerExtra });
+  const baselineLines = baselinePrimer.split("\n").length;
+  const pointerLines = pointerPrimer.split("\n").length;
+  const drop = baselineLines - pointerLines;
+  assert.ok(drop >= 150, `expected >=150 line drop, got ${drop} (baseline ${baselineLines}, pointer ${pointerLines})`);
+});
+
+test("generatePrimer droid fixture keeps full memory-doc body injection per OQ-1 native-load matrix (FR-4, OQ-1)", (t) => {
+  if (!existsSync(configPath("teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  const builder = parseTeamYamlContent(readFileSync(configPath("teams", "builder.yaml"), "utf-8"));
+  // droidcode-pa deploy.ts defaults to MEMORY_DOC_POINTER_MODE = false (OQ-1 unconfirmed), so full bodies stay injected.
+  const fullExtra = [
+    "## Memory Docs",
+    "The following instruction files were explicitly included to emulate memory for droid deployments. Follow them unless they conflict with this deployment primer.",
+    '<memory-doc path="/repo/CLAUDE.md">',
+    "# Repo Memory\nKeep this content visible to droid.",
+    "</memory-doc>",
+  ].join("\n");
+  const primer = generatePrimer({
+    runtime: "droid",
+    teamConfig: builder,
+    mode: "implement",
+    objective: "Implement PAP-110 phase 3.",
+    resolveFile: resolveConfigFile,
+    skillsDir: configPath("skills", "global"),
+    extraInstructions: fullExtra,
+  });
+  assert.match(primer, /## Memory Docs/);
+  assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
+  assert.match(primer, /Keep this content visible to droid/);
+  assert.doesNotMatch(primer, /loaded natively by droid/);
+});

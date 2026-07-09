@@ -211,6 +211,11 @@ interface DeploymentContextOpts {
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
+// OQ-1 (per plan): droid runtime's native memory-doc loading is UNCONFIRMED. To avoid dropping
+// real context, droid defaults to FULL injection (not pointer mode). A dead pointer here would
+// remove context the runtime may not load on its own. Only switch droid to pointer mode if
+// native loading is confirmed.
+const MEMORY_DOC_POINTER_MODE = false;
 
 function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
   const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
@@ -220,6 +225,13 @@ function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined
 function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
   const docs = collectMemoryDocs(opts);
   if (docs.length === 0) return undefined;
+  if (MEMORY_DOC_POINTER_MODE) {
+    return [
+      "## Memory Docs",
+      "The following instruction files are loaded natively by droid; the full bodies are not re-injected here. They are listed as path pointers for discoverability. Follow them unless they conflict with this deployment primer.",
+      ...docs.map((doc) => `<memory-doc path="${doc.path}">\n[pointer: loaded natively by droid — see file at this path]\n</memory-doc>`),
+    ].join("\n\n");
+  }
   return [
     "## Memory Docs",
     "The following instruction files were explicitly included to emulate memory for droid deployments. Follow them unless they conflict with this deployment primer.",
