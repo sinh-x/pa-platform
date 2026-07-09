@@ -107,7 +107,7 @@ function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptio
     if (agent.model) lines.push(`Model: ${agent.model}`);
     if (agent.instruction) {
       const content = resolveInstruction(options, agent.instruction);
-      lines.push("", `<instruction-file name="${agent.name}">`, adaptContentForRuntime(content, runtime), `</instruction-file>`);
+      lines.push("", `<instruction-file name="${agent.name}">`, demoteHeadings(adaptContentForRuntime(content, runtime)), `</instruction-file>`);
     }
     return lines.join("\n");
   }).join("\n\n");
@@ -124,7 +124,7 @@ function renderSkills(skills: SkillEntry[], skillsDir: string, runtime: RuntimeN
   if (inlined.length === 0) return "(none)";
   return inlined.map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
-    const body = adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime);
+    const body = demoteHeadings(adaptContentForRuntime(existsSync(path) ? readFileSync(path, "utf-8") : `(missing skill: ${path})`, runtime));
     return `<${skill["inject-as"]} name="${skill.name}" path="${path}">\n${body}\n</${skill["inject-as"]}>`;
   }).join("\n\n");
 }
@@ -360,6 +360,32 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Task sub-agent");
   }
   return content;
+}
+
+const ATX_HEADING_LINE_RE = /^(#{1,6})(?=\s)(.*)$/;
+
+function demoteHeadings(content: string): string {
+  const lines = content.split("\n");
+  let inFence: string | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const openMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (openMatch && !inFence) {
+      inFence = openMatch[1]!.charAt(0);
+      continue;
+    }
+    if (inFence) {
+      const closeMatch = line.match(new RegExp(`^\\s*${inFence === "`" ? "`{3,}" : "~{3,}"}\\s*$`));
+      if (closeMatch) inFence = null;
+      continue;
+    }
+    const m = line.match(ATX_HEADING_LINE_RE);
+    if (!m) continue;
+    const level = m[1]!.length;
+    if (level >= 6) continue;
+    lines[i] = `${"#".repeat(level + 1)}${m[2]}`;
+  }
+  return lines.join("\n");
 }
 
 function defaultToolReference(runtime: RuntimeName): string {

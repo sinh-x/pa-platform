@@ -1004,3 +1004,221 @@ test("generatePrimer droid fixture keeps full memory-doc body injection per OQ-1
   assert.match(primer, /Keep this content visible to droid/);
   assert.doesNotMatch(primer, /loaded natively by droid/);
 });
+
+test("generatePrimer demotes inlined skill headings so they stop colliding with primer top-level sections (FR-5, AC4)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-demote-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), [
+      "# PA CLI Reference",
+      "",
+      "All agents have access to the `pa` CLI.",
+      "",
+      "## Objective",
+      "Describe the task here.",
+      "",
+      "## Output",
+      "Produce a markdown report.",
+      "",
+      "## Rules",
+      "- Be terse.",
+      "",
+      "### Subsection",
+      "Nested detail.",
+      "",
+      "#### Deeper",
+      "Deeper detail.",
+    ].join("\n"));
+    const teamWithSkill = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    const primerSectionHeaders = [
+      "## User Objective",
+      "## Objective",
+      "## Runtime Tools",
+      "## Active Bulletins",
+      "## Team",
+      "## Agents",
+      "## Available Procedures",
+      "## Project Agent Guides",
+      "## Deployment Instructions",
+      "## Skills",
+      "## Reference Skills",
+      "## Extra Instructions",
+      "## Memory Docs",
+    ];
+    const skillBlockMatch = primer.match(/<shared-skill name="pa-cli"[^>]*>([\s\S]*?)<\/shared-skill>/);
+    assert.ok(skillBlockMatch, "shared-skill block must be present");
+    const skillBody = skillBlockMatch![1];
+    assert.match(skillBody, /^## OPA CLI Reference/m, "h1 title demoted to h2 (all injected headings shift +1, preserving relative nesting)");
+    // After demotion: skill ## Objective -> ### Objective; assert no ## line in skill body matches a primer header
+    const skillHeaderLines = skillBody.split("\n").filter((line) => /^#{1,6}\s/.test(line));
+    const colliding = skillHeaderLines.filter((line) => primerSectionHeaders.includes(line.trim()));
+    assert.deepEqual(colliding, [], "no injected skill heading may collide with a primer top-level section header");
+    assert.match(skillBody, /^### Objective/m, "## Objective demoted to ### Objective");
+    assert.match(skillBody, /^### Output/m, "## Output demoted to ### Output");
+    assert.match(skillBody, /^### Rules/m, "## Rules demoted to ### Rules");
+    assert.match(skillBody, /^#### Subsection/m, "### Subsection demoted to #### Subsection");
+    assert.match(skillBody, /^##### Deeper/m, "#### Deeper demoted to ##### Deeper");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer demotion is capped at h6 — a skill heading already at h6 stays at h6 (FR-5 edge case)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-cap-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), [
+      "# PA CLI Reference",
+      "",
+      "## Rules",
+      "",
+      "###### H6 Heading",
+      "",
+      "####### Not a heading (7 hashes is not ATX)",
+    ].join("\n"));
+    const teamWithSkill = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    const skillBlockMatch = primer.match(/<shared-skill name="pa-cli"[^>]*>([\s\S]*?)<\/shared-skill>/);
+    const skillBody = skillBlockMatch![1];
+    assert.match(skillBody, /^## OPA CLI Reference/m, "h1 title demoted to h2");
+    assert.match(skillBody, /^###### H6 Heading/m, "h6 heading stays at h6 (demotion capped)");
+    assert.match(skillBody, /^### Rules/m, "## Rules demoted to ### Rules");
+    assert.doesNotMatch(skillBody, /^####### H6 Heading/m, "must not exceed h6");
+    assert.doesNotMatch(skillBody, /^######## Not a heading/m, "non-heading 7-hash line must not become a heading");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer demotion skips headings inside fenced code blocks (FR-5)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-fence-"));
+  try {
+    mkdirSync(join(root, "pa-cli"));
+    writeFileSync(join(root, "pa-cli", "SKILL.md"), [
+      "# PA CLI Reference",
+      "",
+      "## Rules",
+      "",
+      "```markdown",
+      "## Objective",
+      "## Output",
+      "```",
+      "",
+      "~~~",
+      "## Team",
+      "~~~",
+      "",
+      "## Output",
+    ].join("\n"));
+    const teamWithSkill = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    skills:
+      - name: pa-cli
+        inject-as: shared-skill
+`);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    const skillBlockMatch = primer.match(/<shared-skill name="pa-cli"[^>]*>([\s\S]*?)<\/shared-skill>/);
+    const skillBody = skillBlockMatch![1];
+    // Inside fenced block — must stay at original level (not demoted)
+    const fencedMarkdown = skillBody.match(/```markdown\n([\s\S]*?)\n```/);
+    assert.ok(fencedMarkdown, "```markdown fenced block must be present");
+    assert.match(fencedMarkdown![1], /^## Objective/m, "## Objective inside ```markdown fence must NOT be demoted");
+    assert.match(fencedMarkdown![1], /^## Output/m, "## Output inside ```markdown fence must NOT be demoted");
+    const fencedTilde = skillBody.match(/~~~\n([\s\S]*?)\n~~~\n\n### Output/);
+    assert.ok(fencedTilde, "~~~ fence block must be present");
+    assert.match(fencedTilde![1], /^## Team/m, "## Team inside ~~~ fence must NOT be demoted");
+    // Outside fences — demoted
+    assert.match(skillBody, /^### Rules/m, "## Rules outside fences demoted to ### Rules");
+    assert.match(skillBody, /^## OPA CLI Reference/m, "h1 title demoted to h2");
+    // The trailing ## Output outside fences is demoted to ### Output
+    assert.match(skillBody, /~~~\n## Team\n~~~\n\n### Output/m, "trailing ## Output outside fence demoted to ### Output");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer demotes instruction-file headings so injected content has no colliding ## (FR-5, AC4)", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-instruction-demote-"));
+  try {
+    const instructionPath = join(root, "agent-instruction.md");
+    writeFileSync(instructionPath, [
+      "# Agent Instructions",
+      "",
+      "## Objective",
+      "Do the work.",
+      "",
+      "## Output",
+      "Produce artifacts.",
+      "",
+      "### Steps",
+      "1. Read code.",
+    ].join("\n"));
+    const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build
+agents:
+  - name: builder-agent
+    role: Builds things
+    instruction: agent-instruction.md
+deploy_modes:
+  - id: implement
+    label: Implement
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: builderTeam,
+      mode: "implement",
+      resolveFile: (relativePath) => (relativePath === "agent-instruction.md" ? instructionPath : undefined),
+    });
+    const instructionBlockMatch = primer.match(/<instruction-file name="builder-agent">([\s\S]*?)<\/instruction-file>/);
+    assert.ok(instructionBlockMatch, "instruction-file block must be present");
+    const instructionBody = instructionBlockMatch![1];
+    const primerSectionHeaders = ["## Objective", "## Output", "## Team", "## Agents", "## Rules", "## Skills"];
+    const instructionHeaderLines = instructionBody.split("\n").filter((line) => /^#{1,6}\s/.test(line));
+    const colliding = instructionHeaderLines.filter((line) => primerSectionHeaders.includes(line.trim()));
+    assert.deepEqual(colliding, [], "no injected instruction-file heading may collide with a primer top-level section header");
+    assert.match(instructionBody, /^## Agent Instructions/m, "h1 title demoted to h2");
+    assert.match(instructionBody, /^### Objective/m, "## Objective demoted to ### Objective");
+    assert.match(instructionBody, /^### Output/m, "## Output demoted to ### Output");
+    assert.match(instructionBody, /^#### Steps/m, "### Steps demoted to #### Steps");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
