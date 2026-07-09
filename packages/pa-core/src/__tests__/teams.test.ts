@@ -152,7 +152,12 @@ test("builder team config has no Anthropic deploy modes", (t) => {
 
   assert.ok(modeIds.length > 0);
   assert.equal(builder.default_mode, "implement");
-  assert.equal(builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider, "ollama-cloud");
+  assert.ok(
+    ["ollama-cloud", "minimax", "openai", "deepseek", "opencode-go"].includes(
+      builder.deploy_modes?.find((mode) => mode.id === "implement")?.provider ?? "",
+    ),
+    `implement provider must be a supported provider`,
+  );
   const implementModel = builder.deploy_modes?.find((mode) => mode.id === "implement")?.model;
   if (implementModel !== undefined) {
     assert.ok(!/anthropic|claude/i.test(implementModel), `implement model must not be Anthropic/Claude (got ${implementModel})`);

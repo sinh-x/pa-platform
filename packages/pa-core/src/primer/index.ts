@@ -226,6 +226,12 @@ const PLACEHOLDER_TOKEN_RE = /<[A-Za-z][A-Za-z0-9 _./-]*>/g;
 // narrows the future risk window where a template heading slips past detection
 // because the placeholder is not the first token. Headings only — generic
 // `<T>` inside prose/code is handled separately by PLACEHOLDER_TOKEN_RE.
+// MIN-C3-3 (accepted limitation): PLACEHOLDER_TOKEN_RE also matches legit
+// generic/HTML angle tokens (`Array<string>`, `<div>`), so a heading-less prose
+// doc with >=3 such tokens is skipped as a placeholder. Narrowing to exclude
+// code-fence content would break the existing test where all placeholder tokens
+// are inside a ``` fence. The `pa: keep-content` opt-out is the documented escape
+// hatch for docs that are falsely classified as placeholder templates.
 const PLACEHOLDER_HEADING_RE = /^#{1,6}\s+.*<[A-Za-z][A-Za-z0-9 _./-]*>/m;
 // Self-ID requires an explicit `# Template:` front-matter marker (colon required).
 // A bare `# Template Engine Conventions` prose title (space, no colon) must NOT
@@ -375,8 +381,9 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
 
 const ATX_HEADING_LINE_RE = /^(#{1,6})(?=\s)(.*)$/;
 // Hoisted fence-close regexes (MIN-5): avoid compiling a new RegExp per in-fence line.
-const BACKTICK_FENCE_CLOSE_RE = /^\s*`{3,}\s*$/;
-const TILDE_FENCE_CLOSE_RE = /^\s*~{3,}\s*$/;
+// Capture group provides the close-run string so we can verify its length >= opening count (MIN-C3-2).
+const BACKTICK_FENCE_CLOSE_RE = /^\s*(`{3,})\s*$/;
+const TILDE_FENCE_CLOSE_RE = /^\s*(~{3,})\s*$/;
 // Known primer top-level section headers (h2). An injected heading whose demoted
 // form exactly matches one of these is demoted one extra level to avoid collision (MIN-1).
 const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
@@ -396,17 +403,17 @@ const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
 
 function demoteHeadings(content: string): string {
   const lines = content.split("\n");
-  let inFence: string | null = null;
+  let inFence: { char: string; count: number } | null = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const openMatch = line.match(/^\s*(`{3,}|~{3,})/);
     if (openMatch && !inFence) {
-      inFence = openMatch[1]!.charAt(0);
+      inFence = { char: openMatch[1]!.charAt(0), count: openMatch[1]!.length };
       continue;
     }
     if (inFence) {
-      const closeMatch = line.match(inFence === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
-      if (closeMatch) inFence = null;
+      const closeMatch = line.match(inFence.char === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
+      if (closeMatch && closeMatch[1]!.length >= inFence.count) inFence = null;
       continue;
     }
     const m = line.match(ATX_HEADING_LINE_RE);
