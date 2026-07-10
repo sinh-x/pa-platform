@@ -209,7 +209,7 @@ interface ParsedPartUpdated {
 }
 
 function parseMessagePartUpdatedBody(body: string): ParsedPartUpdated | null {
-  const match = /^message\.part\.updated:\s+part=(\S+)(?:\s+role=(\S+))?\s*(.*)$/s.exec(body);
+  const match = /^message\.part\.updated:\s+part=(\S+)(?:\s+role=(\S+))?\s?(.*)$/s.exec(body);
   if (!match) return null;
   return { partType: match[1]!, role: match[2] || undefined, content: match[3]! };
 }

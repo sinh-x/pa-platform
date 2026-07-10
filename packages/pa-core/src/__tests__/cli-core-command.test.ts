@@ -527,6 +527,127 @@ test("status --wait --activity flushes final activity batch on terminal status",
   });
 });
 
+test("status --wait --activity emits zero ANSI codes in non-TTY mode (AC2, NFR3)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-noansi", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-noansi");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-noansi", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-noansi", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const originalIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+      process.stdout.write = ((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stdout.write;
+
+      const captured = capture();
+      let nowMs = 0;
+      const code = await runCoreCommand(["status", "d-noansi", "--wait", "--activity"], {
+        io: captured.io,
+        clock: () => nowMs,
+        sleep: async (ms) => {
+          nowMs += ms;
+          appendRegistryEvent({ deployment_id: "d-noansi", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "success", summary: "done" });
+        },
+      });
+
+      assert.equal(code, 0);
+      const allOutput = [...writes, ...captured.stdout].join("\n");
+      assert.doesNotMatch(allOutput, /\x1b/, "non-TTY output must contain zero ANSI escape codes");
+      assert.match(captured.stdout.join("\n"), /event one/);
+      assert.match(captured.stdout.join("\n"), /event two/);
+    } finally {
+      process.stdout.write = originalWrite;
+      if (originalIsTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    }
+  });
+});
+
+test("status --wait --activity uses ANSI cursor control in TTY mode (AC1, FR1)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-tty-act", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-tty-act");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const originalIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+      process.stdout.write = ((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stdout.write;
+
+      const captured = capture();
+      let sleeps = 0;
+      let nowMs = 0;
+      const code = await runCoreCommand(["status", "d-tty-act", "--wait", "--activity"], {
+        io: captured.io,
+        clock: () => nowMs,
+        sleep: async (ms) => {
+          sleeps += 1;
+          nowMs += ms;
+          if (sleeps === 1) {
+            writeFileSync(activityFile, [
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event three" }),
+            ].join("\n") + "\n");
+            return;
+          }
+          appendRegistryEvent({ deployment_id: "d-tty-act", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+        },
+      });
+
+      assert.equal(code, 0);
+      assert.equal(sleeps, 2);
+      const ansiOutput = writes.join("");
+      assert.match(ansiOutput, /\x1b\[\d+A/, "TTY mode must emit cursor-up ANSI code");
+      assert.match(ansiOutput, /\x1b\[K/, "TTY mode must emit line-clear ANSI code");
+      assert.match(ansiOutput, /\x1b\[J/, "TTY mode must emit screen-clear-from-cursor ANSI code");
+      const ioOutput = captured.stdout.join("\n");
+      assert.match(ioOutput, /--- activity tail/);
+      assert.match(ioOutput, /event three/, "new events must appear in TTY output");
+    } finally {
+      process.stdout.write = originalWrite;
+      if (originalIsTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    }
+  });
+});
+
+test("status --activity standalone shows full grouped activity unchanged (AC3, FR10)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-regression", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-regression");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "ses_alpha", body: "alpha event one" }),
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "ses_alpha", body: "alpha event two" }),
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "ses_beta", body: "beta event one" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-regression", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /Activity timeline - d-act-regression \(3\/3 events\)/);
+    assert.match(output, /--- ses_alpha \(2\) ---/);
+    assert.match(output, /alpha event one/);
+    assert.match(output, /alpha event two/);
+    assert.match(output, /--- ses_beta \(1\) ---/);
+    assert.match(output, /beta event one/);
+    assert.doesNotMatch(output, /\[verbose\]/, "standalone --activity must not show verbose label without --verbose");
+  });
+});
+
 test("status --activity keeps non-empty session.diff events visible", async () => {
   await withCliEnv(async (root) => {
     appendRegistryEvent({ deployment_id: "d-act-diff", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
