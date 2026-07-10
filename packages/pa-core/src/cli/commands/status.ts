@@ -190,6 +190,8 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose =
 
 const ACTIVITY_TAIL_LIMIT = 10;
 
+let ttyTailLineCount = 0;
+
 function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
   if (!existsSync(activityFile)) return cursor;
@@ -200,8 +202,20 @@ function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolea
   const tail = visible.slice(startIndex);
   if (tail.length === 0) return startIndex;
   const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
-  io.stdout(`--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`);
-  for (const event of tail) io.stdout(formatActivityEvent(event));
+  const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
+  const eventLines = tail.flatMap((event) => formatActivityEvent(event).split("\n"));
+  const lines = [headerLine, ...eventLines];
+
+  if (process.stdout.isTTY) {
+    if (ttyTailLineCount > 0) {
+      process.stdout.write(`\x1b[${ttyTailLineCount}A\r\x1b[K\x1b[J`);
+    }
+    for (const line of lines) io.stdout(line);
+    ttyTailLineCount = lines.length;
+  } else {
+    for (const line of lines) io.stdout(line);
+  }
+
   return startIndex + tail.length;
 }
 
