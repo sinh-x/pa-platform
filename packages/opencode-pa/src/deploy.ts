@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -27,6 +27,29 @@ function buildPaEnvVars(args: {
   };
 }
 
+export function sanitizeSessionTitle(title: string): string {
+  let sanitized = title
+    .replace(/:/g, "-")
+    .replace(/[^\w .\-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (sanitized.length > 60) sanitized = sanitized.slice(0, 60).trim();
+  return sanitized;
+}
+
+export function deriveSessionName(args: {
+  ticketId: string;
+  ticketTitle?: string;
+  mode?: string;
+  deploymentId: string;
+}): string | undefined {
+  if (!args.ticketTitle) return undefined;
+  const sanitized = sanitizeSessionTitle(args.ticketTitle);
+  const modeLabel = args.mode ?? "default";
+  const raw = `${args.ticketId}: ${sanitized} (${modeLabel}, ${args.deploymentId})`;
+  return raw.length > 128 ? raw.slice(0, 128) : raw;
+}
+
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return { deploy: (request) => deployWithOpencode(request, adapter) };
 }
@@ -45,6 +68,15 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
+  let sessionName: string | undefined;
+  if (ticketId) {
+    try {
+      const ticket = new TicketStore().get(ticketId);
+      sessionName = deriveSessionName({ ticketId, ticketTitle: ticket?.title, mode: request.mode ?? teamConfig.default_mode, deploymentId });
+    } catch {
+      console.warn(`Failed to derive session name from ticket ${ticketId}: ticket file may be corrupt, continuing without session name`);
+    }
+  }
   const paths = getDeployPaths(deploymentId);
   const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
@@ -89,7 +121,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env });
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionName });
     // Only persist a session file when a real opencode session token was captured.
     // Foreground TUI runs cannot observe one (inherited stdio) and earlier code wrote
     // the deploy id as a placeholder, which silently broke `opa deploy --resume`.

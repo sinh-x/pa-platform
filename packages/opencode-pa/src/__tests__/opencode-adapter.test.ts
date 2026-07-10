@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, getPlatformHomeDir, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
-import { createDefaultOpencodeHooks, createOpencodeHooks } from "../deploy.js";
+import { createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
@@ -1242,6 +1242,120 @@ test("builder data-analysis primer requires framing and IPOV checklist fields", 
   assert.match(primer, /- \[ \] \*\*Validation result\*\*/);
   // Documented-write rule guards the no-extra-prompt behavior
   assert.match(primer, /Documented-Write Rule/);
+});
+
+test("sanitizeSessionTitle replaces colons with hyphens", () => {
+  assert.equal(sanitizeSessionTitle("Fix: login bug"), "Fix- login bug");
+  assert.equal(sanitizeSessionTitle("a:b:c"), "a-b-c");
+});
+
+test("sanitizeSessionTitle strips unsafe CLI characters", () => {
+  assert.equal(sanitizeSessionTitle('hello `world` $HOME "quote"'), "hello world HOME quote");
+  assert.equal(sanitizeSessionTitle("cmd | grep &; echo"), "cmd grep echo");
+  assert.equal(sanitizeSessionTitle("<script>alert(1)</script>"), "scriptalert1script");
+});
+
+test("sanitizeSessionTitle strips ASCII control characters", () => {
+  assert.equal(sanitizeSessionTitle("hello\x00world"), "helloworld");
+  assert.equal(sanitizeSessionTitle("test\x1Fvalue"), "testvalue");
+  assert.equal(sanitizeSessionTitle("line\x0Bbreak"), "linebreak");
+  assert.equal(sanitizeSessionTitle("keep\u0020space"), "keep space");
+});
+
+test("sanitizeSessionTitle truncates title to 60 chars", () => {
+  const longTitle = "a".repeat(100);
+  const result = sanitizeSessionTitle(longTitle);
+  assert.ok(result.length <= 60);
+  assert.equal(result.length, 60);
+});
+
+test("sanitizeSessionTitle handles empty and whitespace-only titles", () => {
+  assert.equal(sanitizeSessionTitle(""), "");
+  assert.equal(sanitizeSessionTitle("   "), "");
+  assert.equal(sanitizeSessionTitle("\n\t\r"), "");
+});
+
+test("deriveSessionName returns undefined when ticket title is missing", () => {
+  assert.equal(deriveSessionName({ ticketId: "PAP-022", ticketTitle: undefined, mode: "analyze", deploymentId: "d-abc123" }), undefined);
+  assert.equal(deriveSessionName({ ticketId: "PAP-022", ticketTitle: "", mode: "analyze", deploymentId: "d-abc123" }), undefined);
+});
+
+test("deriveSessionName produces correct format when ticket found", () => {
+  const result = deriveSessionName({ ticketId: "PAP-022", ticketTitle: "Fix login bug", mode: "analyze", deploymentId: "d-5f6085" });
+  assert.equal(result, "PAP-022: Fix login bug (analyze, d-5f6085)");
+});
+
+test("deriveSessionName falls back to default mode label when mode is undefined", () => {
+  const result = deriveSessionName({ ticketId: "PAP-022", ticketTitle: "Fix login bug", mode: undefined, deploymentId: "d-5f6085" });
+  assert.equal(result, "PAP-022: Fix login bug (default, d-5f6085)");
+});
+
+test("deriveSessionName truncates total session name to 128 chars", () => {
+  const longTitle = "A very long ticket title that has many words and should be truncated appropriately".repeat(3);
+  const result = deriveSessionName({ ticketId: "PAP-022", ticketTitle: longTitle, mode: "analyze", deploymentId: "d-5f6085" });
+  assert.ok(result, "expected a non-null result");
+  assert.ok(result!.length <= 128);
+});
+
+test("deriveSessionName replaces colons in title with hyphens", () => {
+  const result = deriveSessionName({ ticketId: "PAP-022", ticketTitle: "Fix: login: bug", mode: "analyze", deploymentId: "d-abc123" });
+  assert.equal(result, "PAP-022: Fix- login- bug (analyze, d-abc123)");
+});
+
+test("adapter.spawn foreground mode passes --session flag with sessionName", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-session-"));
+  try {
+    const bin = join(root, "bin");
+    const argsPath = join(root, "opencode-args.json");
+    const primerPath = join(root, "primer.md");
+    mkdirSync(bin, { recursive: true });
+    const opencode = join(bin, "opencode");
+    writeFileSync(opencode, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+`, "utf-8");
+    chmodSync(opencode, 0o755);
+    writeFileSync(primerPath, "dummy");
+    const previousPath = process.env["PATH"];
+    const previousArgsPath = process.env["OPA_ARGS_PATH"];
+    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
+    process.env["OPA_ARGS_PATH"] = argsPath;
+    try {
+      const adapter = new OpencodeAdapter();
+      await adapter.spawn({ primerPath, deployId: "d-fg-session", mode: "foreground", model: "test/model", sessionName: "My Test Session", timeoutMs: 5000, env: {} });
+      const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
+      const sessionIdx = args.indexOf("--session");
+      assert.ok(sessionIdx >= 0, "expected --session flag in foreground args");
+      assert.equal(args[sessionIdx + 1], "My Test Session");
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+      if (previousArgsPath === undefined) delete process.env["OPA_ARGS_PATH"];
+      else process.env["OPA_ARGS_PATH"] = previousArgsPath;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("adapter.spawn streaming mode passes --title flag with sessionName", async () => {
+  let capturedArgs: string[] = [];
+  const adapter = new OpencodeAdapter({
+    runCommand: (args) => {
+      capturedArgs = args;
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  const primerPath = join(tmpdir(), "opa-stream-session-primer.md");
+  writeFileSync(primerPath, "dummy");
+  try {
+    await adapter.spawn({ primerPath, deployId: "d-stream-session", mode: "dry-run", model: "test/model", sessionName: "My Test Session", timeoutMs: 5000, env: {} });
+    const titleIdx = capturedArgs.indexOf("--title");
+    assert.ok(titleIdx >= 0, "expected --title flag in streaming args");
+    assert.equal(capturedArgs[titleIdx + 1], "My Test Session");
+  } finally {
+    rmSync(primerPath, { force: true });
+  }
 });
 
 function restore(key: string, value: string | undefined): void {
