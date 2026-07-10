@@ -25,6 +25,7 @@ export interface SpawnOpts {
   env?: Record<string, string>;
   timeoutMs?: number;
   logFile?: string;
+  sessionName?: string;
 }
 
 export interface ResumeOpts extends SpawnOpts {
