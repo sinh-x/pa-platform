@@ -719,7 +719,7 @@ deploy_modes:
   }
 });
 
-test("generatePrimer implement mode with empty agents still gets solo instruction", () => {
+test("generatePrimer implement mode with empty agents does not get solo instruction", () => {
   const implementTeam = parseTeamYamlContent(`
 name: builder
 description: Builder team
@@ -734,12 +734,12 @@ deploy_modes:
     objective: Implement directly
 `);
   const primer = generatePrimer({ runtime: "opencode", teamConfig: implementTeam, mode: "implement" });
-  assert.match(primer, /This is a solo deployment/);
+  assert.doesNotMatch(primer, /This is a solo deployment/);
   assert.doesNotMatch(primer, /This is a team-mode deployment/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer worker mode with empty agents still gets solo instruction", () => {
+test("generatePrimer worker mode with empty agents does not get solo instruction", () => {
   const workerTeam = parseTeamYamlContent(`
 name: builder
 description: Builder team
@@ -754,7 +754,7 @@ deploy_modes:
     objective: Work directly
 `);
   const primer = generatePrimer({ runtime: "opencode", teamConfig: workerTeam, mode: "worker" });
-  assert.match(primer, /This is a solo deployment/);
+  assert.doesNotMatch(primer, /This is a solo deployment/);
   assert.doesNotMatch(primer, /This is a team-mode deployment/);
   assertNoBannedOpencodeOperationalReferences(primer);
 });

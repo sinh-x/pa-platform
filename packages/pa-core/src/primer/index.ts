@@ -267,9 +267,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `cpa registry complete` or `cpa registry update` when the run finishes.",
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
-    if (executionStyle === "solo") {
-      lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
-    } else {
+    if (executionStyle === "team") {
       lines.push("This is a team-mode deployment: spawn sub-agents via the Agent tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
     }
     return lines.join("\n");
@@ -283,9 +281,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `dpa registry complete` or `dpa registry update` when the run finishes.",
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
-    if (executionStyle === "solo") {
-      lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
-    } else {
+    if (executionStyle === "team") {
       lines.push("This is a team-mode deployment: spawn sub-agents via the Task tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
     }
     return lines.join("\n");
@@ -302,9 +298,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
   if (teamConfig.name === "requirements") {
     lines.push("For requirements workflows, treat structured ticket and deployment records as authoritative over semantic similarity.");
   }
-  if (executionStyle === "solo") {
-    lines.push("This is a solo deployment: do the work directly unless the objective explicitly says otherwise.");
-  } else {
+  if (executionStyle === "team") {
     lines.push("This is a team-mode deployment: coordinate through opencode-exposed tools only, and keep ticket comments as the durable handoff channel.");
   }
   return lines.join("\n");
