@@ -70,8 +70,12 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   let sessionName: string | undefined;
   if (ticketId) {
-    const ticket = new TicketStore().get(ticketId);
-    sessionName = deriveSessionName({ ticketId, ticketTitle: ticket?.title, mode: request.mode ?? teamConfig.default_mode, deploymentId });
+    try {
+      const ticket = new TicketStore().get(ticketId);
+      sessionName = deriveSessionName({ ticketId, ticketTitle: ticket?.title, mode: request.mode ?? teamConfig.default_mode, deploymentId });
+    } catch {
+      console.warn(`Failed to derive session name from ticket ${ticketId}: ticket file may be corrupt, continuing without session name`);
+    }
   }
   const paths = getDeployPaths(deploymentId);
   const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
