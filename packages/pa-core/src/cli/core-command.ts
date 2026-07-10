@@ -16,7 +16,7 @@ import { runTimersCommand } from "./commands/timers.js";
 import { runSignalCommand } from "./commands/signal.js";
 import { runScheduleCommand, runRemoveTimerCommand } from "./commands/schedule.js";
 import { runServeCommand } from "./commands/serve.js";
-import { runStatusCommand } from "./commands/status.js";
+import { runStatusCommand, compactActivityTail } from "./commands/status.js";
 import { runSemanticCommand } from "./commands/semantic.js";
 import type { CliIo } from "./utils.js";
 import { normalizeIo } from "./utils.js";
@@ -24,6 +24,8 @@ import { normalizeIo } from "./utils.js";
 export type { CliIo } from "./utils.js";
 
 export { STATUS_WAIT_OVERRIDE_ENV };
+
+export { compactActivityTail };
 
 export interface RunCoreCommandOptions {
   hooks?: CoreExecutionHooks;

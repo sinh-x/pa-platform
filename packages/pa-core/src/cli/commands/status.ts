@@ -193,8 +193,91 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose =
 }
 
 const ACTIVITY_TAIL_LIMIT = 10;
+const MESSAGE_PART_UPDATED_PREFIX = "message.part.updated:";
+const COMPACT_TEXT_PREVIEW_LENGTH = 60;
 
 let ttyTailLineCount = 0;
+
+function isMessagePartUpdatedBody(body: string): boolean {
+  return body.startsWith(MESSAGE_PART_UPDATED_PREFIX);
+}
+
+interface ParsedPartUpdated {
+  partType: string;
+  role?: string;
+  content: string;
+}
+
+function parseMessagePartUpdatedBody(body: string): ParsedPartUpdated | null {
+  const match = /^message\.part\.updated:\s+part=(\S+)(?:\s+role=(\S+))?\s*(.*)$/s.exec(body);
+  if (!match) return null;
+  return { partType: match[1]!, role: match[2] || undefined, content: match[3]! };
+}
+
+function normalizeMessagePartType(partType: string): string {
+  if (partType === "text") return "text";
+  if (partType === "tool_use" || partType === "tool" || partType === "tool_result") return "tool";
+  return partType;
+}
+
+function buildCompactedBody(source: string, text: string, normalizedPartType: string): string {
+  if (normalizedPartType === "tool") {
+    return `${source}: tool chunks received`;
+  }
+  const preview = text.length > COMPACT_TEXT_PREVIEW_LENGTH ? `${text.slice(0, COMPACT_TEXT_PREVIEW_LENGTH)}...` : text;
+  return `${source}: ${preview}`;
+}
+
+interface CompactGroup {
+  source: string;
+  partType: string;
+  accumulatedText: string;
+  lastEvent: ActivityEvent;
+}
+
+export function compactActivityTail(tail: ActivityEvent[]): ActivityEvent[] {
+  const result: ActivityEvent[] = [];
+  let group: CompactGroup | null = null;
+  const flush = () => {
+    if (!group) return;
+    const compacted: ActivityEvent = {
+      ...group.lastEvent,
+      body: buildCompactedBody(group.source, group.accumulatedText, group.partType),
+    };
+    result.push(compacted);
+    group = null;
+  };
+  for (const event of tail) {
+    if (!isMessagePartUpdatedBody(event.body)) {
+      flush();
+      result.push(event);
+      continue;
+    }
+    const parsed = parseMessagePartUpdatedBody(event.body);
+    if (!parsed) {
+      flush();
+      result.push(event);
+      continue;
+    }
+    const trimmed = parsed.content.trim();
+    if (!trimmed) continue;
+    const normalized = normalizeMessagePartType(parsed.partType);
+    if (normalized !== "text" && normalized !== "tool") {
+      flush();
+      result.push(event);
+      continue;
+    }
+    if (group && group.source === event.source && group.partType === normalized) {
+      group.accumulatedText += parsed.content;
+      group.lastEvent = event;
+    } else {
+      flush();
+      group = { source: event.source, partType: normalized, accumulatedText: trimmed, lastEvent: event };
+    }
+  }
+  flush();
+  return result;
+}
 
 function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
@@ -206,17 +289,21 @@ function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolea
   const tail = visible.slice(startIndex);
   if (tail.length === 0) return startIndex;
   const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
-  const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
-  const eventLines = tail.flatMap((event) => formatActivityEvent(event).split("\n"));
-  const lines = [headerLine, ...eventLines];
 
   if (process.stdout.isTTY) {
+    const compacted = compactActivityTail(tail);
+    const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
+    const eventLines = compacted.flatMap((event) => formatActivityEvent(event).split("\n"));
+    const lines = [headerLine, ...eventLines];
     if (ttyTailLineCount > 0) {
       process.stdout.write(`\x1b[${ttyTailLineCount}A\r\x1b[K\x1b[J`);
     }
     for (const line of lines) io.stdout(line);
     ttyTailLineCount = lines.length;
   } else {
+    const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
+    const eventLines = tail.flatMap((event) => formatActivityEvent(event).split("\n"));
+    const lines = [headerLine, ...eventLines];
     for (const line of lines) io.stdout(line);
   }
 

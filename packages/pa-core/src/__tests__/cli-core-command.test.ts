@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = getPlatformHomeDir();
 
@@ -553,6 +553,87 @@ test("status --verbose without --activity is a parse error", async () => {
     assert.equal(code, 1);
     assert.match(captured.stderr.join("\n"), /--verbose requires --activity/);
   });
+});
+
+test("compactActivityTail suppresses message.part.updated events with empty content (FR6, AC4)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant " },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant actual content" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: actual content/);
+});
+
+test("compactActivityTail collapses consecutive same-source same-type text events (FR4, AC5)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant checking" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant  the" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant  file" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: checking the file/);
+});
+
+test("compactActivityTail collapses consecutive tool_use events (FR5)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant chunk 1" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant chunk 2" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: tool chunks received/);
+});
+
+test("compactActivityTail starts new group on type change text to tool (FR8)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant some text" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant tool call" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant more text" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 3);
+  assert.match(compacted[0].body, /agent: some text/);
+  assert.match(compacted[1].body, /agent: tool chunks received/);
+  assert.match(compacted[2].body, /agent: more text/);
+});
+
+test("compactActivityTail starts new group on source change", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent-a", body: "message.part.updated: part=text role=assistant text from a" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent-b", body: "message.part.updated: part=text role=assistant text from b" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 2);
+  assert.match(compacted[0].body, /agent-a: text from a/);
+  assert.match(compacted[1].body, /agent-b: text from b/);
+});
+
+test("compactActivityTail passes non-message.part.updated events through unchanged", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "opencode", body: "normal event one" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant text" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "opencode", body: "normal event two" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 3);
+  assert.equal(compacted[0].body, "normal event one");
+  assert.match(compacted[1].body, /agent: text/);
+  assert.equal(compacted[2].body, "normal event two");
+});
+
+test("compactActivityTail truncates long text preview at 60 characters (FR7)", () => {
+  const longText = "a".repeat(100);
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: `message.part.updated: part=text role=assistant ${longText}` },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  const body = compacted[0].body;
+  assert.ok(!body.includes("a".repeat(61)), "body should not contain more than 60 chars");
+  assert.ok(body.endsWith("..."), "body should end with ellipsis");
+  assert.equal(body.length, "agent: ".length + 60 + 3);
 });
 
 test("runCoreCommand exposes registry list, show, and complete", async () => {
