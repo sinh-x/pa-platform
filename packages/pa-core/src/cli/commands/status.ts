@@ -197,6 +197,11 @@ const ACTIVITY_TAIL_LIMIT = 10;
 const MESSAGE_PART_UPDATED_PREFIX = "message.part.updated:";
 const COMPACT_TEXT_PREVIEW_LENGTH = 60;
 
+// ttyTailLineCount is safe as module-level mutable state because this
+// module is CLI-only and each invocation creates a fresh Node.js process.
+// In long-lived server or concurrent contexts an instance-scoped variable
+// would be required, but for a single-invocation CLI there is no risk of
+// shared-state interleaving.
 let ttyTailLineCount = 0;
 
 function isMessagePartUpdatedBody(body: string): boolean {
@@ -236,6 +241,25 @@ interface CompactGroup {
   lastEvent: ActivityEvent;
 }
 
+/**
+ * Compacts consecutive same-source, same-type `message.part.updated` events
+ * in a tail of activity events into a single summary event per group.
+ *
+ * Compaction rules:
+ * - Consecutive events from the same source with the same normalized part
+ *   type (`text` or `tool`) are merged: text is accumulated, the last
+ *   event's timestamp/metadata is preserved, and the body is replaced with
+ *   a compacted preview (truncated at 60 characters for text, or a fixed
+ *   "tool chunks received" summary for tool).
+ * - Empty-content events are dropped.
+ * - Non-`message.part.updated` events and unparseable events pass through
+ *   unchanged.
+ * - A `CompactGroup` flush occurs on source/type change or non-compactable
+ *   event, emitting the accumulated group as a single event.
+ *
+ * @param tail - Activity events to compact (typically the last N events).
+ * @returns A compacted array, shorter or equal in length to the input.
+ */
 export function compactActivityTail(tail: ActivityEvent[]): ActivityEvent[] {
   const result: ActivityEvent[] = [];
   let group: CompactGroup | null = null;
@@ -280,6 +304,13 @@ export function compactActivityTail(tail: ActivityEvent[]): ActivityEvent[] {
   return result;
 }
 
+function prepareTailLines(tail: ActivityEvent[], scope: string, compact: boolean, verbose: boolean): string[] {
+  const events = compact ? compactActivityTail(tail) : tail;
+  const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
+  const eventLines = events.flatMap((event) => formatActivityEvent(event).split("\n"));
+  return [headerLine, ...eventLines];
+}
+
 function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
   if (!existsSync(activityFile)) return cursor;
@@ -292,19 +323,14 @@ function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolea
   const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
 
   if (process.stdout.isTTY) {
-    const compacted = compactActivityTail(tail);
-    const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
-    const eventLines = compacted.flatMap((event) => formatActivityEvent(event).split("\n"));
-    const lines = [headerLine, ...eventLines];
+    const lines = prepareTailLines(tail, scope, true, verbose);
     if (ttyTailLineCount > 0) {
       process.stdout.write(`\x1b[${ttyTailLineCount}A\r\x1b[K\x1b[J`);
     }
     for (const line of lines) io.stdout(line);
     ttyTailLineCount = lines.length;
   } else {
-    const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
-    const eventLines = tail.flatMap((event) => formatActivityEvent(event).split("\n"));
-    const lines = [headerLine, ...eventLines];
+    const lines = prepareTailLines(tail, scope, false, verbose);
     for (const line of lines) io.stdout(line);
   }
 
