@@ -30,7 +30,7 @@ function buildPaEnvVars(args: {
 export function sanitizeSessionTitle(title: string): string {
   let sanitized = title
     .replace(/:/g, "-")
-    .replace(/[$`"'\\!|&;<>{}()[\]\]#*?\n\r\t]/g, "")
+    .replace(/[^\w .\-]/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (sanitized.length > 60) sanitized = sanitized.slice(0, 60).trim();
