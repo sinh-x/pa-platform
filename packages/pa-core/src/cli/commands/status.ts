@@ -87,6 +87,7 @@ interface WaitForDeploymentOptions {
 }
 
 async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime, options?: WaitForDeploymentOptions): Promise<number> {
+  ttyTailLineCount = 0;
   const initial = queryDeploymentStatus(deployId);
   if (!initial) return printError(`Deployment not found: ${deployId}`, io);
   const timeout = resolveStatusWaitTimeout(initial);
@@ -224,7 +225,7 @@ function buildCompactedBody(source: string, text: string, normalizedPartType: st
   if (normalizedPartType === "tool") {
     return `${source}: tool chunks received`;
   }
-  const preview = text.length > COMPACT_TEXT_PREVIEW_LENGTH ? `${text.slice(0, COMPACT_TEXT_PREVIEW_LENGTH)}...` : text;
+  const preview = text.length > COMPACT_TEXT_PREVIEW_LENGTH ? `${[...text].slice(0, COMPACT_TEXT_PREVIEW_LENGTH).join('')}...` : text;
   return `${source}: ${preview}`;
 }
 
