@@ -87,6 +87,7 @@ interface WaitForDeploymentOptions {
 }
 
 async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime: StatusWaitRuntime, options?: WaitForDeploymentOptions): Promise<number> {
+  ttyTailLineCount = 0;
   const initial = queryDeploymentStatus(deployId);
   if (!initial) return printError(`Deployment not found: ${deployId}`, io);
   const timeout = resolveStatusWaitTimeout(initial);
@@ -121,7 +122,11 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       return 1;
     }
     if (deployment.status !== "running") {
-      if (options?.activity) showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
+      if (options?.activity) {
+        const flushCursor = process.stdout.isTTY ? undefined : activityCursor;
+        showActivityTail(deployId, io, options.verbose ?? false, flushCursor);
+        if (process.stdout.isTTY) ttyTailLineCount = 0;
+      }
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
@@ -189,6 +194,122 @@ function showDeploymentActivity(deployId: string, io: Required<CliIo>, verbose =
 }
 
 const ACTIVITY_TAIL_LIMIT = 10;
+const MESSAGE_PART_UPDATED_PREFIX = "message.part.updated:";
+const COMPACT_TEXT_PREVIEW_LENGTH = 60;
+
+// ttyTailLineCount is safe as module-level mutable state because this
+// module is CLI-only and each invocation creates a fresh Node.js process.
+// In long-lived server or concurrent contexts an instance-scoped variable
+// would be required, but for a single-invocation CLI there is no risk of
+// shared-state interleaving.
+let ttyTailLineCount = 0;
+
+function isMessagePartUpdatedBody(body: string): boolean {
+  return body.startsWith(MESSAGE_PART_UPDATED_PREFIX);
+}
+
+interface ParsedPartUpdated {
+  partType: string;
+  role?: string;
+  content: string;
+}
+
+function parseMessagePartUpdatedBody(body: string): ParsedPartUpdated | null {
+  const match = /^message\.part\.updated:\s+part=(\S+)(?:\s+role=(\S+))?\s?(.*)$/s.exec(body);
+  if (!match) return null;
+  return { partType: match[1]!, role: match[2] || undefined, content: match[3]! };
+}
+
+function normalizeMessagePartType(partType: string): string {
+  if (partType === "text") return "text";
+  if (partType === "tool_use" || partType === "tool" || partType === "tool_result") return "tool";
+  return partType;
+}
+
+function buildCompactedBody(source: string, text: string, normalizedPartType: string): string {
+  if (normalizedPartType === "tool") {
+    return `${source}: tool chunks received`;
+  }
+  const preview = text.length > COMPACT_TEXT_PREVIEW_LENGTH ? `${[...text].slice(0, COMPACT_TEXT_PREVIEW_LENGTH).join('')}...` : text;
+  return `${source}: ${preview}`;
+}
+
+interface CompactGroup {
+  source: string;
+  partType: string;
+  accumulatedText: string;
+  lastEvent: ActivityEvent;
+}
+
+/**
+ * Compacts consecutive same-source, same-type `message.part.updated` events
+ * in a tail of activity events into a single summary event per group.
+ *
+ * Compaction rules:
+ * - Consecutive events from the same source with the same normalized part
+ *   type (`text` or `tool`) are merged: text is accumulated, the last
+ *   event's timestamp/metadata is preserved, and the body is replaced with
+ *   a compacted preview (truncated at 60 characters for text, or a fixed
+ *   "tool chunks received" summary for tool).
+ * - Empty-content events are dropped.
+ * - Non-`message.part.updated` events and unparseable events pass through
+ *   unchanged.
+ * - A `CompactGroup` flush occurs on source/type change or non-compactable
+ *   event, emitting the accumulated group as a single event.
+ *
+ * @param tail - Activity events to compact (typically the last N events).
+ * @returns A compacted array, shorter or equal in length to the input.
+ */
+export function compactActivityTail(tail: ActivityEvent[]): ActivityEvent[] {
+  const result: ActivityEvent[] = [];
+  let group: CompactGroup | null = null;
+  const flush = () => {
+    if (!group) return;
+    const compacted: ActivityEvent = {
+      ...group.lastEvent,
+      body: buildCompactedBody(group.source, group.accumulatedText, group.partType),
+    };
+    result.push(compacted);
+    group = null;
+  };
+  for (const event of tail) {
+    if (!isMessagePartUpdatedBody(event.body)) {
+      flush();
+      result.push(event);
+      continue;
+    }
+    const parsed = parseMessagePartUpdatedBody(event.body);
+    if (!parsed) {
+      flush();
+      result.push(event);
+      continue;
+    }
+    const trimmed = parsed.content.trim();
+    if (!trimmed) continue;
+    const normalized = normalizeMessagePartType(parsed.partType);
+    if (normalized !== "text" && normalized !== "tool") {
+      flush();
+      result.push(event);
+      continue;
+    }
+    if (group && group.source === event.source && group.partType === normalized) {
+      group.accumulatedText += parsed.content;
+      group.lastEvent = event;
+    } else {
+      flush();
+      group = { source: event.source, partType: normalized, accumulatedText: trimmed, lastEvent: event };
+    }
+  }
+  flush();
+  return result;
+}
+
+function prepareTailLines(tail: ActivityEvent[], scope: string, compact: boolean, verbose: boolean): string[] {
+  const events = compact ? compactActivityTail(tail) : tail;
+  const headerLine = `--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`;
+  const eventLines = events.flatMap((event) => formatActivityEvent(event).split("\n"));
+  return [headerLine, ...eventLines];
+}
 
 function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolean, cursor?: number): number | undefined {
   const activityFile = resolve(getDeploymentDir(deployId), "activity.jsonl");
@@ -200,8 +321,19 @@ function showActivityTail(deployId: string, io: Required<CliIo>, verbose: boolea
   const tail = visible.slice(startIndex);
   if (tail.length === 0) return startIndex;
   const scope = verbose ? `${visible.length}` : `${visible.length}/${events.length}`;
-  io.stdout(`--- activity tail (${tail.length} new of ${scope} events${verbose ? " [verbose]" : ""}) ---`);
-  for (const event of tail) io.stdout(formatActivityEvent(event));
+
+  if (process.stdout.isTTY) {
+    const lines = prepareTailLines(tail, scope, true, verbose);
+    if (ttyTailLineCount > 0) {
+      process.stdout.write(`\x1b[${ttyTailLineCount}A\r\x1b[K\x1b[J`);
+    }
+    for (const line of lines) io.stdout(line);
+    ttyTailLineCount = lines.length;
+  } else {
+    const lines = prepareTailLines(tail, scope, false, verbose);
+    for (const line of lines) io.stdout(line);
+  }
+
   return startIndex + tail.length;
 }
 

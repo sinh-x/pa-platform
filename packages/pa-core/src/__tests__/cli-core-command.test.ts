@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = getPlatformHomeDir();
 
@@ -527,6 +527,127 @@ test("status --wait --activity flushes final activity batch on terminal status",
   });
 });
 
+test("status --wait --activity emits zero ANSI codes in non-TTY mode (AC2, NFR3)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-noansi", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-noansi");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-noansi", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-noansi", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const originalIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+      process.stdout.write = ((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stdout.write;
+
+      const captured = capture();
+      let nowMs = 0;
+      const code = await runCoreCommand(["status", "d-noansi", "--wait", "--activity"], {
+        io: captured.io,
+        clock: () => nowMs,
+        sleep: async (ms) => {
+          nowMs += ms;
+          appendRegistryEvent({ deployment_id: "d-noansi", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:10.000Z", status: "success", summary: "done" });
+        },
+      });
+
+      assert.equal(code, 0);
+      const allOutput = [...writes, ...captured.stdout].join("\n");
+      assert.doesNotMatch(allOutput, /\x1b/, "non-TTY output must contain zero ANSI escape codes");
+      assert.match(captured.stdout.join("\n"), /event one/);
+      assert.match(captured.stdout.join("\n"), /event two/);
+    } finally {
+      process.stdout.write = originalWrite;
+      if (originalIsTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    }
+  });
+});
+
+test("status --wait --activity uses ANSI cursor control in TTY mode (AC1, FR1)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-tty-act", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z", effective_timeout_seconds: 120 });
+    const deployDir = join(root, "deployments", "d-tty-act");
+    mkdirSync(deployDir, { recursive: true });
+    const activityFile = join(deployDir, "activity.jsonl");
+    writeFileSync(activityFile, [
+      JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+      JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+    ].join("\n") + "\n");
+
+    const originalIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+      process.stdout.write = ((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stdout.write;
+
+      const captured = capture();
+      let sleeps = 0;
+      let nowMs = 0;
+      const code = await runCoreCommand(["status", "d-tty-act", "--wait", "--activity"], {
+        io: captured.io,
+        clock: () => nowMs,
+        sleep: async (ms) => {
+          sleeps += 1;
+          nowMs += ms;
+          if (sleeps === 1) {
+            writeFileSync(activityFile, [
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "opencode", body: "event one" }),
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "opencode", body: "event two" }),
+              JSON.stringify({ deployId: "d-tty-act", timestamp: "2026-04-26T00:00:20.000Z", kind: "text", source: "opencode", body: "event three" }),
+            ].join("\n") + "\n");
+            return;
+          }
+          appendRegistryEvent({ deployment_id: "d-tty-act", team: "builder", event: "completed", timestamp: "2026-04-26T00:00:30.000Z", status: "success", summary: "done" });
+        },
+      });
+
+      assert.equal(code, 0);
+      assert.equal(sleeps, 2);
+      const ansiOutput = writes.join("");
+      assert.match(ansiOutput, /\x1b\[\d+A/, "TTY mode must emit cursor-up ANSI code");
+      assert.match(ansiOutput, /\x1b\[K/, "TTY mode must emit line-clear ANSI code");
+      assert.match(ansiOutput, /\x1b\[J/, "TTY mode must emit screen-clear-from-cursor ANSI code");
+      const ioOutput = captured.stdout.join("\n");
+      assert.match(ioOutput, /--- activity tail/);
+      assert.match(ioOutput, /event three/, "new events must appear in TTY output");
+    } finally {
+      process.stdout.write = originalWrite;
+      if (originalIsTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", originalIsTtyDescriptor);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    }
+  });
+});
+
+test("status --activity standalone shows full grouped activity unchanged (AC3, FR10)", async () => {
+  await withCliEnv(async (root) => {
+    appendRegistryEvent({ deployment_id: "d-act-regression", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
+    const deployDir = join(root, "deployments", "d-act-regression");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "activity.jsonl"), [
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:00.000Z", kind: "text", source: "ses_alpha", body: "alpha event one" }),
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:01.000Z", kind: "text", source: "ses_alpha", body: "alpha event two" }),
+      JSON.stringify({ deployId: "d-act-regression", timestamp: "2026-04-26T00:00:02.000Z", kind: "text", source: "ses_beta", body: "beta event one" }),
+    ].join("\n") + "\n");
+
+    const activity = capture();
+    assert.equal(await runCoreCommand(["status", "d-act-regression", "--activity"], { io: activity.io }), 0);
+    const output = activity.stdout.join("\n");
+    assert.match(output, /Activity timeline - d-act-regression \(3\/3 events\)/);
+    assert.match(output, /--- ses_alpha \(2\) ---/);
+    assert.match(output, /alpha event one/);
+    assert.match(output, /alpha event two/);
+    assert.match(output, /--- ses_beta \(1\) ---/);
+    assert.match(output, /beta event one/);
+    assert.doesNotMatch(output, /\[verbose\]/, "standalone --activity must not show verbose label without --verbose");
+  });
+});
+
 test("status --activity keeps non-empty session.diff events visible", async () => {
   await withCliEnv(async (root) => {
     appendRegistryEvent({ deployment_id: "d-act-diff", team: "builder", event: "started", timestamp: "2026-04-26T00:00:00.000Z" });
@@ -553,6 +674,87 @@ test("status --verbose without --activity is a parse error", async () => {
     assert.equal(code, 1);
     assert.match(captured.stderr.join("\n"), /--verbose requires --activity/);
   });
+});
+
+test("compactActivityTail suppresses message.part.updated events with empty content (FR6, AC4)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant " },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant actual content" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: actual content/);
+});
+
+test("compactActivityTail collapses consecutive same-source same-type text events (FR4, AC5)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant checking" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant  the" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant  file" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: checking the file/);
+});
+
+test("compactActivityTail collapses consecutive tool_use events (FR5)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant chunk 1" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant chunk 2" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  assert.match(compacted[0].body, /agent: tool chunks received/);
+});
+
+test("compactActivityTail starts new group on type change text to tool (FR8)", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant some text" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=tool_use role=assistant tool call" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant more text" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 3);
+  assert.match(compacted[0].body, /agent: some text/);
+  assert.match(compacted[1].body, /agent: tool chunks received/);
+  assert.match(compacted[2].body, /agent: more text/);
+});
+
+test("compactActivityTail starts new group on source change", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent-a", body: "message.part.updated: part=text role=assistant text from a" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent-b", body: "message.part.updated: part=text role=assistant text from b" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 2);
+  assert.match(compacted[0].body, /agent-a: text from a/);
+  assert.match(compacted[1].body, /agent-b: text from b/);
+});
+
+test("compactActivityTail passes non-message.part.updated events through unchanged", () => {
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "opencode", body: "normal event one" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:01.000Z", kind: "text" as const, source: "agent", body: "message.part.updated: part=text role=assistant text" },
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:02.000Z", kind: "text" as const, source: "opencode", body: "normal event two" },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 3);
+  assert.equal(compacted[0].body, "normal event one");
+  assert.match(compacted[1].body, /agent: text/);
+  assert.equal(compacted[2].body, "normal event two");
+});
+
+test("compactActivityTail truncates long text preview at 60 characters (FR7)", () => {
+  const longText = "a".repeat(100);
+  const events = [
+    { deployId: "d-test", timestamp: "2026-04-26T00:00:00.000Z", kind: "text" as const, source: "agent", body: `message.part.updated: part=text role=assistant ${longText}` },
+  ];
+  const compacted = compactActivityTail(events);
+  assert.equal(compacted.length, 1);
+  const body = compacted[0].body;
+  assert.ok(!body.includes("a".repeat(61)), "body should not contain more than 60 chars");
+  assert.ok(body.endsWith("..."), "body should end with ellipsis");
+  assert.equal(body.length, "agent: ".length + 60 + 3);
 });
 
 test("runCoreCommand exposes registry list, show, and complete", async () => {
