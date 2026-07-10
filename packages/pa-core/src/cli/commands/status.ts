@@ -121,7 +121,11 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       return 1;
     }
     if (deployment.status !== "running") {
-      if (options?.activity) showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
+      if (options?.activity) {
+        const flushCursor = process.stdout.isTTY ? undefined : activityCursor;
+        showActivityTail(deployId, io, options.verbose ?? false, flushCursor);
+        if (process.stdout.isTTY) ttyTailLineCount = 0;
+      }
       io.stdout(`${deployment.status} - ${deployment.summary ?? deployment.status}`);
       return deployment.status === "success" || deployment.status === "partial" ? 0 : 1;
     }
