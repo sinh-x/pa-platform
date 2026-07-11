@@ -114,8 +114,6 @@ export class OpencodeAdapter implements RuntimeAdapter {
       const args = ["-m", opts.model ?? this.defaultModel];
       if (sessionId) {
         args.push("--session", sessionId);
-      } else if (opts.sessionName) {
-        args.push("--session", opts.sessionName);
       }
       args.push("--prompt", wrapperPrompt);
       const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
