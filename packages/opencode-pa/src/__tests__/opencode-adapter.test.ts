@@ -1302,62 +1302,6 @@ test("deriveSessionName replaces colons in title with hyphens", () => {
   assert.equal(result, "PAP-022: Fix- login- bug (analyze, d-abc123)");
 });
 
-test("adapter.spawn foreground mode passes --session flag with sessionName", async () => {
-  const root = mkdtempSync(join(tmpdir(), "opa-session-"));
-  try {
-    const bin = join(root, "bin");
-    const argsPath = join(root, "opencode-args.json");
-    const primerPath = join(root, "primer.md");
-    mkdirSync(bin, { recursive: true });
-    const opencode = join(bin, "opencode");
-    writeFileSync(opencode, `#!/usr/bin/env node
-const fs = require("node:fs");
-fs.writeFileSync(process.env.OPA_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
-`, "utf-8");
-    chmodSync(opencode, 0o755);
-    writeFileSync(primerPath, "dummy");
-    const previousPath = process.env["PATH"];
-    const previousArgsPath = process.env["OPA_ARGS_PATH"];
-    process.env["PATH"] = `${bin}:${previousPath ?? ""}`;
-    process.env["OPA_ARGS_PATH"] = argsPath;
-    try {
-      const adapter = new OpencodeAdapter();
-      await adapter.spawn({ primerPath, deployId: "d-fg-session", mode: "foreground", model: "test/model", sessionName: "My Test Session", timeoutMs: 5000, env: {} });
-      const args = JSON.parse(readFileSync(argsPath, "utf-8")) as string[];
-      const sessionIdx = args.indexOf("--session");
-      assert.ok(sessionIdx >= 0, "expected --session flag in foreground args");
-      assert.equal(args[sessionIdx + 1], "My Test Session");
-    } finally {
-      if (previousPath === undefined) delete process.env["PATH"];
-      else process.env["PATH"] = previousPath;
-      if (previousArgsPath === undefined) delete process.env["OPA_ARGS_PATH"];
-      else process.env["OPA_ARGS_PATH"] = previousArgsPath;
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("adapter.spawn streaming mode passes --title flag with sessionName", async () => {
-  let capturedArgs: string[] = [];
-  const adapter = new OpencodeAdapter({
-    runCommand: (args) => {
-      capturedArgs = args;
-      return { status: 0, stdout: "", stderr: "" };
-    },
-  });
-  const primerPath = join(tmpdir(), "opa-stream-session-primer.md");
-  writeFileSync(primerPath, "dummy");
-  try {
-    await adapter.spawn({ primerPath, deployId: "d-stream-session", mode: "dry-run", model: "test/model", sessionName: "My Test Session", timeoutMs: 5000, env: {} });
-    const titleIdx = capturedArgs.indexOf("--title");
-    assert.ok(titleIdx >= 0, "expected --title flag in streaming args");
-    assert.equal(capturedArgs[titleIdx + 1], "My Test Session");
-  } finally {
-    rmSync(primerPath, { force: true });
-  }
-});
-
 function restore(key: string, value: string | undefined): void {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;

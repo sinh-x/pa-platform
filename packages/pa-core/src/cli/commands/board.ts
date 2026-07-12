@@ -4,6 +4,23 @@ import { formatBoard } from "../formatters.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
+export function printBoardHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: board [options]");
+  io.stdout("");
+  io.stdout("Display the project board with ticket columns.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <name>    Show board for a specific project");
+  io.stdout("  --assignee <name>   Filter tickets by assignee");
+  io.stdout("  --all               Show all tickets including backlog and archived");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  board");
+  io.stdout("  board --project pa-platform");
+  io.stdout("  board --assignee sinh");
+  io.stdout("  board --all");
+}
+
 export function shouldUseBoardColors(): boolean {
   if (process.env["NO_COLOR"]) return false;
   return process.stdout.isTTY === true;
@@ -44,6 +61,10 @@ function resolveBoardProject(opts: { project?: string; all?: boolean }): { proje
 }
 
 export function runBoardCommand(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printBoardHelp(io);
+    return 0;
+  }
   const opts = parseBoardArgs(argv);
   if ("error" in opts) {
     io.stderr(opts.error);

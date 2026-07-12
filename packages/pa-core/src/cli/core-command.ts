@@ -78,9 +78,32 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
 
 function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
-  io.stdout("Commands: repos list, status, deploy, evaluate, serve, stop, restart, serve-status, schedule, remove-timer, board, branch, teams, registry, ticket, bulletin, health, trash, codectx, timers, signal, semantic");
-  io.stdout(`Status wait: ${binaryName} status <deploy-id> --wait polls until terminal status; override wait seconds with ${STATUS_WAIT_OVERRIDE_ENV}.`);
-  io.stdout(`Status: ${binaryName} status <deploy-id> [--activity [--verbose]] [--wait]; --wait implies --activity; --report and --artifacts are standalone (rejected when combined with other display flags); --verbose requires --activity.`);
+  io.stdout("");
+  io.stdout("Commands:");
+  io.stdout("  status              Show deployment status and activity");
+  io.stdout("  deploy              Deploy a team configuration");
+  io.stdout("  evaluate            Evaluate a deployment");
+  io.stdout("  serve               Start the Agent API server");
+  io.stdout("  stop                Stop the Agent API server");
+  io.stdout("  restart             Restart the Agent API server");
+  io.stdout("  serve-status        Show server status");
+  io.stdout("  schedule            Schedule a recurring deployment timer");
+  io.stdout("  remove-timer        Remove a scheduled timer");
+  io.stdout("  board               Display the project board");
+  io.stdout("  branch              Manage feature branches");
+  io.stdout("  teams               List teams or show team details");
+  io.stdout("  registry            Manage the deployment registry");
+  io.stdout("  ticket              Manage tickets");
+  io.stdout("  bulletin            Manage bulletins");
+  io.stdout("  health              Show system health report");
+  io.stdout("  trash               Manage trash");
+  io.stdout("  codectx             Manage code context");
+  io.stdout("  timers              List active systemd timers");
+  io.stdout("  signal              Manage signals");
+  io.stdout("  semantic            Semantic briefing");
+  io.stdout("  repos               List registered repositories");
+  io.stdout("");
+  io.stdout("Run '<command> --help' for detailed usage of a specific command.");
 }
 
 function defaultBinaryName(): string {

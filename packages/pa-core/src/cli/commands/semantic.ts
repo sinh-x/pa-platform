@@ -10,8 +10,26 @@ import {
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
+export function printSemanticHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: semantic <subcommand> [options]");
+  io.stdout("");
+  io.stdout("Semantic briefing and search over indexed knowledge sources.");
+  io.stdout("");
+  io.stdout("Subcommands:");
+  io.stdout("  rebuild             Rebuild the semantic candidate index");
+  io.stdout("  refresh             Alias for rebuild");
+  io.stdout("  query               Query semantic candidates");
+  io.stdout("  briefing            Generate a semantic briefing bundle");
+  io.stdout("");
+  io.stdout("Run 'semantic <subcommand> --help' for detailed usage.");
+}
+
 export function runSemanticCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
+  if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    printSemanticHelp(io);
+    return 0;
+  }
   if (subcommand === "rebuild" || subcommand === "refresh") {
     const index = rebuildSemanticCandidateIndex();
     io.stdout(`Semantic index rebuilt: ${index.documents.length} sources`);

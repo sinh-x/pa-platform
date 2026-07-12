@@ -9,9 +9,93 @@ import type { CliIo } from "../utils.js";
 import { formatTicketList, formatTicketShow } from "../formatters.js";
 import { sanitizeTextInput } from "../../deploy/control.js";
 
+function printTicketMoveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket move <id> [options]");
+  io.stdout("");
+  io.stdout("Move a ticket to a different project.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <name>    Target project (required)");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket move PAP-120 --project pa-platform");
+  io.stdout("  ticket move PAP-120 --project other-project --actor sinh");
+}
+
+function printTicketDeleteHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket delete <id> [options]");
+  io.stdout("");
+  io.stdout("Delete a ticket (soft-delete by default, changing status to cancelled).");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --force             Hard-delete the ticket");
+  io.stdout("  --yes               Confirm destructive action");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket delete PAP-120");
+  io.stdout("  ticket delete PAP-120 --force --yes");
+}
+
+function printTicketCheckRefsHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket check-refs [options]");
+  io.stdout("");
+  io.stdout("Check doc_refs for all tickets in a project and report orphaned paths.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <name>    Project to check (required)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket check-refs --project pa-platform");
+}
+
+function printTicketSubticketHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket subticket <subcommand> <parent-id> [sub-id] [options]");
+  io.stdout("");
+  io.stdout("Manage sub-tickets within a parent ticket.");
+  io.stdout("");
+  io.stdout("Subcommands:");
+  io.stdout("  create              Create a new sub-ticket");
+  io.stdout("  list                List sub-tickets");
+  io.stdout("  update              Update a sub-ticket");
+  io.stdout("  complete            Mark a sub-ticket as done");
+  io.stdout("");
+  io.stdout("Run 'ticket subticket <subcommand> --help' for detailed usage.");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket subticket list PAP-120");
+  io.stdout("  ticket subticket create PAP-120 --title \"Sub task\"");
+  io.stdout("  ticket subticket complete PAP-120 ST-001");
+}
+
+function printTicketHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket <subcommand> [options]");
+  io.stdout("");
+  io.stdout("Manage tickets.");
+  io.stdout("");
+  io.stdout("Subcommands:");
+  io.stdout("  list                List tickets");
+  io.stdout("  show                Show ticket details");
+  io.stdout("  create              Create a new ticket");
+  io.stdout("  update              Update a ticket");
+  io.stdout("  comment             Add a comment to a ticket");
+  io.stdout("  attach              Attach a file to a ticket");
+  io.stdout("  move                Move ticket to another project");
+  io.stdout("  delete              Delete a ticket");
+  io.stdout("  check-refs          Check doc_ref validity");
+  io.stdout("  subticket           Manage sub-tickets");
+  io.stdout("");
+  io.stdout("Run 'ticket <subcommand> --help' for detailed usage.");
+}
+
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
   const store = new TicketStore();
+  if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    printTicketHelp(io);
+    return 0;
+  }
   if (subcommand === "list") {
     const opts = parseTicketListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
@@ -69,6 +153,10 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "move") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketMoveHelp(io);
+      return 0;
+    }
     const id = rest[0];
     if (!id) return printError("ticket move requires id", io);
     const parsed = parseFlagPairs(rest.slice(1), new Set(["--project", "--actor"]));
@@ -80,6 +168,10 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "delete") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketDeleteHelp(io);
+      return 0;
+    }
     const id = rest[0];
     if (!id) return printError("ticket delete requires id", io);
     const opts = parseTicketDeleteArgs(rest.slice(1));
@@ -196,6 +288,10 @@ function parseTicketDeleteArgs(argv: string[]): { force: boolean; yes: boolean; 
 }
 
 function runTicketCheckRefs(argv: string[], io: Required<CliIo>, store: TicketStore): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printTicketCheckRefsHelp(io);
+    return 0;
+  }
   const parsed = parseFlagPairs(argv, new Set(["--project"]));
   if ("error" in parsed) return printError(parsed.error, io);
   const project = parsed.values["--project"];
@@ -216,11 +312,74 @@ function runTicketCheckRefs(argv: string[], io: Required<CliIo>, store: TicketSt
   return 1;
 }
 
+function printSubticketCreateHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket subticket create <parent-id> [options]");
+  io.stdout("");
+  io.stdout("Create a new sub-ticket under a parent ticket.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --title <text>      Sub-ticket title (required)");
+  io.stdout("  --summary <text>    Sub-ticket summary");
+  io.stdout("  --assignee <name>   Assignee");
+  io.stdout("  --priority <p>      Priority (low, medium, high, critical)");
+  io.stdout("  --estimate <size>   Estimate (XS, S, M, L, XL)");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket subticket create PAP-120 --title \"Sub task\"");
+  io.stdout("  ticket subticket create PAP-120 --title \"Bug fix\" --priority high");
+}
+
+function printSubticketListHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket subticket list <parent-id>");
+  io.stdout("");
+  io.stdout("List all sub-tickets for a parent ticket.");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket subticket list PAP-120");
+}
+
+function printSubticketUpdateHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket subticket update <parent-id> <sub-id> [options]");
+  io.stdout("");
+  io.stdout("Update a sub-ticket's properties.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --status <status>   Sub-ticket status");
+  io.stdout("  --assignee <name>   Assignee");
+  io.stdout("  --title <text>      New title");
+  io.stdout("  --summary <text>    New summary");
+  io.stdout("  --priority <p>      Priority (low, medium, high, critical)");
+  io.stdout("  --estimate <size>   Estimate (XS, S, M, L, XL)");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket subticket update PAP-120 ST-001 --status in-progress");
+  io.stdout("  ticket subticket update PAP-120 ST-001 --assignee sinh");
+}
+
+function printSubticketCompleteHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket subticket complete <parent-id> <sub-id>");
+  io.stdout("");
+  io.stdout("Mark a sub-ticket as done.");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket subticket complete PAP-120 ST-001");
+}
+
 function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketStore): number {
   const [subcommand, parentId, maybeSubId, ...rest] = argv;
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printTicketSubticketHelp(io);
+    return 0;
+  }
   if (!subcommand) return printError("ticket subticket requires subcommand", io);
   if (!parentId) return printError("ticket subticket requires parent id", io);
   if (subcommand === "create") {
+    if (parentId === "--help" || parentId === "-h" || maybeSubId === "--help" || maybeSubId === "-h") {
+      printSubticketCreateHelp(io);
+      return 0;
+    }
     const parsed = parseFlagPairs([maybeSubId, ...rest].filter((value): value is string => !!value), new Set(["--title", "--summary", "--assignee", "--priority", "--estimate", "--actor"]));
     if ("error" in parsed) return printError(parsed.error, io);
     const title = parsed.values["--title"];
@@ -235,15 +394,23 @@ function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketS
     return 0;
   }
   if (subcommand === "list") {
+    if (parentId === "--help" || parentId === "-h") {
+      printSubticketListHelp(io);
+      return 0;
+    }
     const subTickets = store.listSubTickets(parentId);
     for (const sub of subTickets) io.stdout(`${sub.id.padEnd(18)} ${sub.status.padEnd(12)} ${sub.priority.padEnd(8)} ${sub.title}`);
     io.stdout(`Count: ${subTickets.length}`);
     return 0;
   }
-  if (subcommand === "update" || subcommand === "complete") {
+  if (subcommand === "update") {
+    if (parentId === "--help" || parentId === "-h" || maybeSubId === "--help" || maybeSubId === "-h") {
+      printSubticketUpdateHelp(io);
+      return 0;
+    }
     const subTicketId = maybeSubId;
-    if (!subTicketId) return printError(`ticket subticket ${subcommand} requires sub-ticket id`, io);
-    const parsed: { values: Record<string, string> } | { error: string } = subcommand === "complete" ? { values: { "--status": "done" } } : parseFlagPairs(rest, new Set(["--status", "--assignee", "--title", "--summary", "--priority", "--estimate", "--actor"]));
+    if (!subTicketId) return printError("ticket subticket update requires sub-ticket id", io);
+    const parsed = parseFlagPairs(rest, new Set(["--status", "--assignee", "--title", "--summary", "--priority", "--estimate", "--actor"]));
     if ("error" in parsed) return printError(parsed.error, io);
     const values = parsed.values;
     const input: { status?: SubTicketStatus; assignee?: string; title?: string; summary?: string; priority?: TicketPriority; estimate?: Estimate } = {};
@@ -262,7 +429,18 @@ function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketS
     if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
     if (values["--estimate"]) input.estimate = values["--estimate"] as Estimate;
     const result = store.updateSubTicket(parentId, subTicketId, input, values["--actor"] ?? "pa-core");
-    io.stdout(`${subcommand === "complete" ? "Completed" : "Updated"}: ${result.subTicket.id}`);
+    io.stdout(`Updated: ${result.subTicket.id}`);
+    return 0;
+  }
+  if (subcommand === "complete") {
+    if (parentId === "--help" || parentId === "-h" || maybeSubId === "--help" || maybeSubId === "-h") {
+      printSubticketCompleteHelp(io);
+      return 0;
+    }
+    const subTicketId = maybeSubId;
+    if (!subTicketId) return printError("ticket subticket complete requires sub-ticket id", io);
+    const result = store.updateSubTicket(parentId, subTicketId, { status: "done" }, "pa-core");
+    io.stdout(`Completed: ${result.subTicket.id}`);
     return 0;
   }
   return printError(`Unknown ticket subticket subcommand: ${subcommand}`, io);

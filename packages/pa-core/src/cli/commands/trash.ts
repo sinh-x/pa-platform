@@ -34,10 +34,106 @@ function parseTrashPurgeArgs(argv: string[]): { days?: number; dryRun?: boolean 
   return opts;
 }
 
+function printTrashListHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash list [options]");
+  io.stdout("");
+  io.stdout("List trash entries.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --status <status>   Filter by status");
+  io.stdout("  --type <type>       Filter by file type");
+  io.stdout("  --search <query>    Search by keyword");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  trash list");
+  io.stdout("  trash list --type file --json");
+}
+
+function printTrashMoveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash move <path> [options]");
+  io.stdout("");
+  io.stdout("Move a file or directory to the trash.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --reason <text>     Reason for trashing (required)");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("  --type <type>       File type classification");
+  io.stdout("  --yes               Confirm destructive action (required)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  trash move ./temp.log --reason \"Cleanup\" --yes");
+  io.stdout("  trash move ./old-dir --reason \"No longer needed\" --type directory --yes");
+}
+
+function printTrashShowHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash show <id> [options]");
+  io.stdout("");
+  io.stdout("Show details for a trashed entry.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  trash show t-001");
+  io.stdout("  trash show t-001 --json");
+}
+
+function printTrashRestoreHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash restore <id> [options]");
+  io.stdout("");
+  io.stdout("Restore a trashed entry to its original location.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --force             Overwrite existing files");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  trash restore t-001");
+  io.stdout("  trash restore t-001 --force");
+}
+
+function printTrashPurgeHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash purge [options]");
+  io.stdout("");
+  io.stdout("Permanently purge trashed entries (soft-delete by default).");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --days <n>          Purge entries older than N days");
+  io.stdout("  --dry-run           Show what would be purged without deleting");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  trash purge");
+  io.stdout("  trash purge --days 30");
+  io.stdout("  trash purge --days 90 --dry-run");
+}
+
+function printTrashHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: trash <subcommand> [options]");
+  io.stdout("");
+  io.stdout("Manage trashed files and directories.");
+  io.stdout("");
+  io.stdout("Subcommands:");
+  io.stdout("  list                List trash entries");
+  io.stdout("  move                Move file to trash");
+  io.stdout("  show                Show trash entry details");
+  io.stdout("  restore             Restore from trash");
+  io.stdout("  purge               Permanently purge trash");
+  io.stdout("");
+  io.stdout("Run 'trash <subcommand> --help' for detailed usage.");
+}
+
 export function runTrashCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
   const store = new TrashStore();
+  if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    printTrashHelp(io);
+    return 0;
+  }
   if (subcommand === "list") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTrashListHelp(io);
+      return 0;
+    }
     const opts = parseTrashListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
     const { json, ...filters } = opts;
@@ -46,6 +142,10 @@ export function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "move") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTrashMoveHelp(io);
+      return 0;
+    }
     const path = rest[0];
     if (!path) return printError("trash move requires path", io);
     const parsed = parseTrashMoveArgs(rest.slice(1));
@@ -57,6 +157,10 @@ export function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "show") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTrashShowHelp(io);
+      return 0;
+    }
     const id = rest[0];
     if (!id) return printError("trash show requires id", io);
     const entry = store.get(id);
@@ -67,6 +171,10 @@ export function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "restore") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTrashRestoreHelp(io);
+      return 0;
+    }
     const id = rest[0];
     if (!id) return printError("trash restore requires id", io);
     const force = rest.includes("--force");
@@ -75,6 +183,10 @@ export function runTrashCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "purge") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTrashPurgeHelp(io);
+      return 0;
+    }
     const opts = parseTrashPurgeArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
     const purged = store.purge(opts);
