@@ -6,6 +6,46 @@ import { loadTeamConfig } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
+export function printScheduleHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: schedule <team> <spec> <repeat> [times...] [options]");
+  io.stdout("");
+  io.stdout("Schedule a recurring deployment timer via systemd user timers.");
+  io.stdout("");
+  io.stdout("Positional:");
+  io.stdout("  <team>              Team name or team:mode or daily:mode");
+  io.stdout("  <spec>              Schedule spec (team name, team:mode, daily:mode)");
+  io.stdout("  <repeat>            Repeat frequency: hourly, daily, weekly, monthly (default: daily)");
+  io.stdout("  [times...]          Trigger times in HH:MM format (default: 09:00)");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --time <HH:MM>      Trigger time(s) in HH:MM format (repeatable)");
+  io.stdout("  --command <path>    Override the pa command path");
+  io.stdout("  --dry-run           Print what would be done without executing");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  schedule builder daily 09:00");
+  io.stdout("  schedule daily:plan daily --time 08:00");
+  io.stdout("  schedule builder:implement daily --time 06:00 --time 18:00");
+  io.stdout("  schedule builder --dry-run");
+}
+
+export function printRemoveTimerHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: remove-timer <name> [options]");
+  io.stdout("");
+  io.stdout("Remove a scheduled systemd timer.");
+  io.stdout("");
+  io.stdout("Positional:");
+  io.stdout("  <name>              Timer name (with or without pa- prefix)");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --dry-run           Print what would be done without executing");
+  io.stdout("  --yes               Confirm removal (required for actual removal)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  remove-timer builder --dry-run");
+  io.stdout("  remove-timer pa-builder --yes");
+}
+
 function isRepeatValue(value: string): value is "hourly" | "daily" | "weekly" | "monthly" {
   return value === "hourly" || value === "daily" || value === "weekly" || value === "monthly";
 }
@@ -138,6 +178,10 @@ function tryExecSystemctl(args: string[]): void {
 }
 
 export function runScheduleCommand(argv: string[], io: Required<CliIo>): number {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printScheduleHelp(io);
+    return 0;
+  }
   const parsed = parseScheduleArgs(argv);
   if ("error" in parsed) return printError(parsed.error, io);
   const resolved = resolveSchedule(parsed.spec, parsed.repeat, parsed.times, parsed.command);
@@ -159,6 +203,10 @@ export function runScheduleCommand(argv: string[], io: Required<CliIo>): number 
 }
 
 export function runRemoveTimerCommand(argv: string[], io: Required<CliIo>): number {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printRemoveTimerHelp(io);
+    return 0;
+  }
   const parsed = parseRemoveTimerArgs(argv);
   if ("error" in parsed) return printError(parsed.error, io);
   if (!parsed.dryRun && !parsed.yes) return printError("remove-timer is destructive; rerun with --yes to confirm", io);

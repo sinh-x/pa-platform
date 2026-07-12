@@ -4,6 +4,22 @@ import { formatTeamDetail, formatTeamList, formatTeamsJson } from "../formatters
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
+export function printTeamsHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: teams [name] [options]");
+  io.stdout("");
+  io.stdout("List agent teams and their status, or show details for a specific team.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --all               Include backlog and archived tickets in board");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  teams");
+  io.stdout("  teams builder");
+  io.stdout("  teams --all");
+  io.stdout("  teams --json");
+}
+
 function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean; json?: boolean } | { error: string } {
   const opts: { name?: string; all?: boolean; json?: boolean } = {};
   for (const arg of argv) {
@@ -17,6 +33,10 @@ function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean; json?: 
 }
 
 export function runTeamsCommand(argv: string[], io: Required<CliIo>): number {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printTeamsHelp(io);
+    return 0;
+  }
   const opts = parseTeamsArgs(argv);
   if ("error" in opts) {
     io.stderr(opts.error);

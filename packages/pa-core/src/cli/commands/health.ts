@@ -3,6 +3,29 @@ import type { HealthCategory } from "../../health/index.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
 
+export function printHealthHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: health [category] [options]");
+  io.stdout("");
+  io.stdout("Show system health report with scores and findings by category.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --days <n>          Number of days to analyze (positive integer)");
+  io.stdout("  --since <iso>       ISO date to start analysis from");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("  --primer-summary    Output a compact primer-ready summary");
+  io.stdout("  --history           Show recent health snapshot history");
+  io.stdout("");
+  io.stdout("Categories: deployments, tickets, repos-teams, signals, storage, knowledge");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  health");
+  io.stdout("  health deployments");
+  io.stdout("  health --days 14");
+  io.stdout("  health --since 2026-06-01");
+  io.stdout("  health --json");
+  io.stdout("  health --history");
+}
+
 function parseHealthArgs(argv: string[]): { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean; primerSummary?: boolean; history?: boolean } | { error: string } {
   const opts: { category?: HealthCategory; days?: number; since?: string; json?: boolean; save?: boolean; primerSummary?: boolean; history?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -31,6 +54,10 @@ function parseHealthArgs(argv: string[]): { category?: HealthCategory; days?: nu
 }
 
 export function runHealthCommand(argv: string[], io: Required<CliIo>): number {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printHealthHelp(io);
+    return 0;
+  }
   const parsed = parseHealthArgs(argv);
   if ("error" in parsed) return printError(parsed.error, io);
   if (parsed.history) {

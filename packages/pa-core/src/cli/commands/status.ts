@@ -11,6 +11,32 @@ import { formatRegistryList, formatRegistryShow } from "../formatters.js";
 import type { CliIo } from "../utils.js";
 import { consumeJsonFlag, groupBy, isDeploymentStatus, isProcessAlive, parseLimitOnly, parseRatingOptions, printError } from "../utils.js";
 
+export function printStatusHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: status [deploy-id] [options]");
+  io.stdout("");
+  io.stdout("Show deployment status and activity.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --running           Show only currently running deployments");
+  io.stdout("  --today             Show deployments started today");
+  io.stdout("  --wait              Wait for a deployment to finish (requires deploy-id)");
+  io.stdout("  --report            Show the work report for a deployment (standalone)");
+  io.stdout("  --artifacts         List workspace files for a deployment (standalone)");
+  io.stdout("  --activity          Show activity timeline for a deployment");
+  io.stdout("  --verbose           Include noise events in activity output (requires --activity)");
+  io.stdout("  --team <name>       Filter deployments by team");
+  io.stdout("  --recent <n>        Show only the N most recent deployments");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  status");
+  io.stdout("  status <deploy-id>");
+  io.stdout("  status <deploy-id> --activity");
+  io.stdout("  status <deploy-id> --wait");
+  io.stdout("  status --running");
+  io.stdout("  status --today");
+  io.stdout("  status --team builder --recent 5");
+}
+
 const STATUS_WAIT_POLL_INTERVAL_SECONDS = 10;
 const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
 
@@ -448,6 +474,10 @@ function localDate(timestamp: string): string {
 }
 
 export async function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date, runtime: StatusWaitRuntime): Promise<number> {
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+    printStatusHelp(io);
+    return 0;
+  }
   const opts = parseStatusArgs(argv);
   if ("error" in opts) {
     io.stderr(opts.error);
