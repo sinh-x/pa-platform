@@ -61,7 +61,7 @@ function resolveBoardProject(opts: { project?: string; all?: boolean }): { proje
 }
 
 export function runBoardCommand(argv: string[], io: Required<CliIo>): number {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printBoardHelp(io);
     return 0;
   }

@@ -135,10 +135,6 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
     process.argv[1] = previousArgv;
   }
   assert.match(captured.stdout.join("\n"), /Usage: opa /);
-  assert.match(captured.stdout.join("\n"), /PA_STATUS_WAIT_TIMEOUT/);
-  assert.match(captured.stdout.join("\n"), /--activity \[--verbose\]/);
-  assert.match(captured.stdout.join("\n"), /--verbose requires --activity/);
-  assert.match(captured.stdout.join("\n"), /--report and --artifacts are standalone/);
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {

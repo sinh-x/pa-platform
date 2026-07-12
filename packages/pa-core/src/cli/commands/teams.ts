@@ -33,7 +33,7 @@ function parseTeamsArgs(argv: string[]): { name?: string; all?: boolean; json?: 
 }
 
 export function runTeamsCommand(argv: string[], io: Required<CliIo>): number {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printTeamsHelp(io);
     return 0;
   }

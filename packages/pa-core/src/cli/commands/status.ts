@@ -474,7 +474,7 @@ function localDate(timestamp: string): string {
 }
 
 export async function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date, runtime: StatusWaitRuntime): Promise<number> {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
+  if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printStatusHelp(io);
     return 0;
   }
