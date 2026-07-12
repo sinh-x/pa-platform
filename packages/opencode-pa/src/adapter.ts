@@ -132,8 +132,6 @@ export class OpencodeAdapter implements RuntimeAdapter {
     const args = ["run", "-m", opts.model ?? this.defaultModel, "--dangerously-skip-permissions"];
     if (sessionId) {
       args.push("--session", sessionId);
-    } else if (opts.sessionName) {
-      args.push("--title", opts.sessionName);
     }
     args.push("--format", "json");
     args.push(wrapperPrompt);
