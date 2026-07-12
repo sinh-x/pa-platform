@@ -38,7 +38,153 @@ function parseRegistryListArgs(argv: string[]): { team?: string; status?: Deploy
   return opts;
 }
 
+function printRegistryListHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry list [options]");
+  io.stdout("");
+  io.stdout("List deployments in the registry.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("  --team <name>       Filter by team");
+  io.stdout("  --status <status>   Filter by status (running, success, partial, failed, crashed, dead, unknown)");
+  io.stdout("  --since <date>      Filter by start date (ISO 8601)");
+  io.stdout("  --limit <n>         Limit results (default: 20)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry list");
+  io.stdout("  registry list --team builder --status running");
+  io.stdout("  registry list --limit 5 --json");
+}
+
+function printRegistryShowHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry show <deploy-id> [options]");
+  io.stdout("");
+  io.stdout("Show details for a specific deployment.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --json              Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry show d-abc123");
+  io.stdout("  registry show d-abc123 --json");
+}
+
+function printRegistryCompleteHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry complete <deploy-id> [options]");
+  io.stdout("");
+  io.stdout("Mark a deployment as complete with a final status.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --status <status>   Completion status: success, partial, failed (required)");
+  io.stdout("  --summary <text>    Summary of results");
+  io.stdout("  --log-file <path>   Path to log file");
+  io.stdout("  --fallback          Skip if terminal event already exists");
+  io.stdout("  --rating-* <n>      Rating values (--rating-overall, --rating-productivity, etc.)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry complete d-abc123 --status success --summary \"All tasks done\"");
+  io.stdout("  registry complete d-abc123 --status partial --fallback");
+}
+
+function printRegistryUpdateHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry update <deploy-id> [options]");
+  io.stdout("");
+  io.stdout("Update a deployment record with new status or metadata.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --status <status>   Update status (success, partial, failed)");
+  io.stdout("  --summary <text>    Update summary");
+  io.stdout("  --log-file <path>   Update log file path");
+  io.stdout("  --note <text>       Add a note");
+  io.stdout("  --rating-* <n>      Rating values (--rating-overall, --rating-productivity, etc.)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry update d-abc123 --status success --summary \"Completed\"");
+  io.stdout("  registry update d-abc123 --note \"Follow-up needed\"");
+}
+
+function printRegistrySearchHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry search <query> [options]");
+  io.stdout("");
+  io.stdout("Search deployments by keyword across IDs, teams, summaries, and notes.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --limit <n>         Limit results (default: 20)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry search builder");
+  io.stdout("  registry search failed --limit 10");
+}
+
+function printRegistryAnalyticsHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry analytics [options]");
+  io.stdout("");
+  io.stdout("Show deployment analytics and trends.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --view <name>       View type: daily, teams, ratings");
+  io.stdout("  --team <name>       Filter by team");
+  io.stdout("  --since <date>      Filter by start date (ISO 8601)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry analytics");
+  io.stdout("  registry analytics --view ratings");
+  io.stdout("  registry analytics --team builder --since 2026-07-01");
+}
+
+function printRegistryCleanHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry clean [options]");
+  io.stdout("");
+  io.stdout("Find and optionally mark orphaned running deployments as crashed.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --mark-dead         Actually mark orphans as crashed (dry-run by default)");
+  io.stdout("  --dry-run           Explicit dry-run (default behavior)");
+  io.stdout("  --threshold <hours> Age threshold in hours (default: 6)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry clean");
+  io.stdout("  registry clean --mark-dead");
+  io.stdout("  registry clean --threshold 12 --mark-dead");
+}
+
+function printRegistrySweepHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry sweep [options]");
+  io.stdout("");
+  io.stdout("Sweep orphaned deployments with no running process.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --fix               Write fallback completion markers (dry-run by default)");
+  io.stdout("  --dry-run           Explicit dry-run (default behavior)");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  registry sweep");
+  io.stdout("  registry sweep --fix");
+}
+
+function printRegistryHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: registry <subcommand> [options]");
+  io.stdout("");
+  io.stdout("Manage the deployment registry.");
+  io.stdout("");
+  io.stdout("Subcommands:");
+  io.stdout("  list                List deployments");
+  io.stdout("  show                Show deployment details");
+  io.stdout("  complete            Mark deployment as complete");
+  io.stdout("  update              Update deployment metadata");
+  io.stdout("  search              Search deployments");
+  io.stdout("  analytics           Show deployment analytics");
+  io.stdout("  clean               Clean orphaned deployments");
+  io.stdout("  sweep               Sweep orphaned deployments");
+  io.stdout("");
+  io.stdout("Run 'registry <subcommand> --help' for detailed usage.");
+}
+
 function runRegistryComplete(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistryCompleteHelp(io);
+    return 0;
+  }
   const [deployId, ...rest] = argv;
   if (!deployId) {
     io.stderr("registry complete requires deploy-id");
@@ -98,6 +244,10 @@ function parseRegistryCompleteArgs(argv: string[]): { status: "success" | "parti
 }
 
 function runRegistryUpdate(argv: string[], io: Required<CliIo>, deprecatedAlias: boolean): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistryUpdateHelp(io);
+    return 0;
+  }
   const [deployId, ...rest] = argv;
   if (!deployId) return printError("registry update requires deploy-id", io);
   const events = getDeploymentEvents(deployId);
@@ -142,6 +292,10 @@ function parseRegistryUpdateArgs(argv: string[]): { status?: "success" | "partia
 }
 
 function runRegistrySearch(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistrySearchHelp(io);
+    return 0;
+  }
   const [query, ...rest] = argv;
   if (!query?.trim()) return printError("Search query cannot be empty", io);
   const parsed = parseLimitOnly(rest, "registry search");
@@ -160,6 +314,10 @@ function runRegistrySearch(argv: string[], io: Required<CliIo>): number {
 }
 
 function runRegistryAnalytics(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistryAnalyticsHelp(io);
+    return 0;
+  }
   const opts = parseRegistryAnalyticsArgs(argv);
   if ("error" in opts) return printError(opts.error, io);
   let deployments = queryDeploymentStatuses();
@@ -228,6 +386,10 @@ function parseRegistryAnalyticsArgs(argv: string[]): { view?: "daily" | "teams" 
 }
 
 function runRegistryClean(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistryCleanHelp(io);
+    return 0;
+  }
   const opts = parseRegistryCleanArgs(argv);
   if ("error" in opts) return printError(opts.error, io);
   const thresholdMs = opts.thresholdHours * 60 * 60 * 1000;
@@ -267,6 +429,10 @@ function parseRegistryCleanArgs(argv: string[]): { thresholdHours: number; markD
 }
 
 function runRegistrySweep(argv: string[], io: Required<CliIo>): number {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printRegistrySweepHelp(io);
+    return 0;
+  }
   const fix = argv.includes("--fix");
   const unsupported = argv.find((arg) => arg !== "--fix" && arg !== "--dry-run");
   if (unsupported) return printError(`Unsupported registry sweep option: ${unsupported}`, io);
@@ -288,7 +454,15 @@ function runRegistrySweep(argv: string[], io: Required<CliIo>): number {
 
 export function runRegistryCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
+  if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+    printRegistryHelp(io);
+    return 0;
+  }
   if (subcommand === "list") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printRegistryListHelp(io);
+      return 0;
+    }
     const opts = parseRegistryListArgs(rest);
     if ("error" in opts) {
       io.stderr(opts.error);
@@ -303,6 +477,10 @@ export function runRegistryCommand(argv: string[], io: Required<CliIo>): number 
     return 0;
   }
   if (subcommand === "show") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printRegistryShowHelp(io);
+      return 0;
+    }
     const deployId = rest[0];
     if (!deployId) {
       io.stderr("registry show requires deploy-id");
