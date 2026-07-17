@@ -252,19 +252,34 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
   if (values["--remove-linked-commit"]) input.remove_linked_commit = values["--remove-linked-commit"];
   const warnings: string[] = [];
   if (values["--title"] !== undefined) {
-    const titleResult = sanitizeTextInput(values["--title"] ?? "");
-    input.title = titleResult.sanitized;
-    if (titleResult.removed > 0) warnings.push(`sanitized ticket title: removed ${titleResult.removed} invalid character(s)`);
+    const rawTitle = values["--title"] ?? "";
+    const titleResult = sanitizeTextInput(rawTitle);
+    if (rawTitle.length > 0 && titleResult.sanitized.length === 0) {
+      warnings.push(`title update skipped: sanitization removed all ${titleResult.removed} character(s); keeping existing title`);
+    } else {
+      input.title = titleResult.sanitized;
+      if (titleResult.removed > 0) warnings.push(`sanitized ticket title: removed ${titleResult.removed} invalid character(s)`);
+    }
   }
   if (values["--summary"] !== undefined) {
-    const summaryResult = sanitizeTextInput(values["--summary"] ?? "");
-    input.summary = summaryResult.sanitized;
-    if (summaryResult.removed > 0) warnings.push(`sanitized ticket summary: removed ${summaryResult.removed} invalid character(s)`);
+    const rawSummary = values["--summary"] ?? "";
+    const summaryResult = sanitizeTextInput(rawSummary);
+    if (rawSummary.length > 0 && summaryResult.sanitized.length === 0) {
+      warnings.push(`summary update skipped: sanitization removed all ${summaryResult.removed} character(s); keeping existing summary`);
+    } else {
+      input.summary = summaryResult.sanitized;
+      if (summaryResult.removed > 0) warnings.push(`sanitized ticket summary: removed ${summaryResult.removed} invalid character(s)`);
+    }
   }
   if (values["--description"] !== undefined) {
-    const descriptionResult = sanitizeTextInput(values["--description"] ?? "");
-    input.description = descriptionResult.sanitized;
-    if (descriptionResult.removed > 0) warnings.push(`sanitized ticket description: removed ${descriptionResult.removed} invalid character(s)`);
+    const rawDescription = values["--description"] ?? "";
+    const descriptionResult = sanitizeTextInput(rawDescription);
+    if (rawDescription.length > 0 && descriptionResult.sanitized.length === 0) {
+      warnings.push(`description update skipped: sanitization removed all ${descriptionResult.removed} character(s); keeping existing description`);
+    } else {
+      input.description = descriptionResult.sanitized;
+      if (descriptionResult.removed > 0) warnings.push(`sanitized ticket description: removed ${descriptionResult.removed} invalid character(s)`);
+    }
   }
   const parsed: { input: typeof input; actor: string; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
   if (warnings.length > 0) parsed.warnings = warnings;
