@@ -69,6 +69,35 @@ function printTicketSubticketHelp(io: Required<CliIo>): void {
   io.stdout("  ticket subticket complete PAP-120 ST-001");
 }
 
+function printTicketUpdateHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket update <id> [options]");
+  io.stdout("");
+  io.stdout("Update a ticket's properties. Only the options you pass are applied.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --status <status>           New status");
+  io.stdout("  --assignee <name>           New assignee");
+  io.stdout("  --priority <p>              Priority (low, medium, high, critical)");
+  io.stdout("  --tags <csv>                 Comma-separated tags (replaces existing)");
+  io.stdout("  --blocked-by <csv>           Comma-separated blocked-by ticket ids");
+  io.stdout("  --estimate <size>           Estimate (XS, S, M, L, XL)");
+  io.stdout("  --title <text>               New title");
+  io.stdout("  --summary <text>            New summary");
+  io.stdout("  --description <text>        New description");
+  io.stdout("  --doc-ref <type:path>       Add a doc_ref (optionally --doc-ref-primary)");
+  io.stdout("  --remove-doc-ref <path>      Remove a doc_ref by path");
+  io.stdout("  --linked-branch <repo|branch|sha> Add a linked branch");
+  io.stdout("  --remove-linked-branch <repo> Remove a linked branch by repo");
+  io.stdout("  --linked-commit <repo|sha|msg|author|ts> Add a linked commit");
+  io.stdout("  --remove-linked-commit <sha> Remove a linked commit by sha");
+  io.stdout("  --actor <name>              Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket update PAP-120 --status implementing --assignee builder/team-manager");
+  io.stdout("  ticket update PAP-120 --title \"New title\" --summary \"New summary\"");
+  io.stdout("  ticket update PAP-120 --doc-ref \"requirements:agent-teams/builder/req.md\"");
+}
+
 function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("Usage: ticket <subcommand> [options]");
   io.stdout("");
@@ -123,6 +152,10 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "update") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketUpdateHelp(io);
+      return 0;
+    }
     const id = rest[0];
     if (!id) return printError("ticket update requires id", io);
     const parsed = parseTicketUpdateArgs(rest.slice(1));

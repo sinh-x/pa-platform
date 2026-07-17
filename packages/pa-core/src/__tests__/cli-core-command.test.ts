@@ -1978,6 +1978,59 @@ test("ticket update --status without new flags continues to work without regress
   });
 });
 
+test("ticket update --title sanitizes to empty keeps existing title and warns on stderr", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Empty guard title", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+
+    const allStripped = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--title", ";;;"], { io: allStripped.io }), 0);
+    assert.match(allStripped.stderr.join("\n"), /title update skipped: sanitization removed all 3 character\(s\); keeping existing title/);
+    assert.match(allStripped.stdout.join("\n"), /Updated PAP-001/);
+
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.title, "Empty guard title");
+  });
+});
+
+test("ticket update --summary sanitizes to empty keeps existing summary and warns on stderr", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Empty guard summary", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Keep me"], { io: capture().io }), 0);
+
+    const allStripped = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--summary", "$$$"], { io: allStripped.io }), 0);
+    assert.match(allStripped.stderr.join("\n"), /summary update skipped: sanitization removed all 3 character\(s\); keeping existing summary/);
+    assert.match(allStripped.stdout.join("\n"), /Updated PAP-001/);
+
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.summary, "Keep me");
+  });
+});
+
+test("ticket update --description sanitizes to empty keeps existing description and warns on stderr", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Empty guard desc", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary", "--description", "Original desc"], { io: capture().io }), 0);
+
+    const allStripped = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--description", "&&&"], { io: allStripped.io }), 0);
+    assert.match(allStripped.stderr.join("\n"), /description update skipped: sanitization removed all 3 character\(s\); keeping existing description/);
+    assert.match(allStripped.stdout.join("\n"), /Updated PAP-001/);
+
+    const ticket = new TicketStore().get("PAP-001");
+    assert.equal(ticket?.description, "Original desc");
+  });
+});
+
+test("ticket update --help shows usage and returns exit 0 without touching store", async () => {
+  await withCliEnv(async () => {
+    const help = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "--help"], { io: help.io }), 0);
+    assert.match(help.stdout.join("\n"), /Usage: ticket update <id> \[options\]/);
+    assert.match(help.stdout.join("\n"), /--title <text>/);
+    assert.match(help.stdout.join("\n"), /Examples:/);
+    assert.equal(help.stderr.length, 0);
+  });
+});
+
 test("bulletin create sanitizes invalid characters from title and message with stderr warning", async () => {
   await withCliEnv(async () => {
     const withSemicolon = capture();
