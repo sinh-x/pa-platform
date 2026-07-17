@@ -232,11 +232,11 @@ function availableProjectGuidance(): string {
   return available ? ` Available projects: ${available}` : "";
 }
 
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string } | { error: string } {
+function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; warnings?: string[] } | { error: string } {
   const result = parseTicketUpdateFlagPairs(argv);
   if ("error" in result) return result;
   const values = result.values;
-  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
+  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
   if (values["--status"]) input.status = values["--status"] as TicketStatus;
   if (values["--assignee"]) input.assignee = values["--assignee"];
   if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
@@ -249,7 +249,25 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
   if (values["--remove-linked-branch"]) input.remove_linked_branch = values["--remove-linked-branch"];
   if (values["--linked-commit"]) input.add_linked_commit = parseLinkedCommitFlag(values["--linked-commit"]!);
   if (values["--remove-linked-commit"]) input.remove_linked_commit = values["--remove-linked-commit"];
-  return { input, actor: values["--actor"] ?? "pa-core" };
+  const warnings: string[] = [];
+  if (values["--title"] !== undefined) {
+    const titleResult = sanitizeTextInput(values["--title"] ?? "");
+    input.title = titleResult.sanitized;
+    if (titleResult.removed > 0) warnings.push(`sanitized ticket title: removed ${titleResult.removed} invalid character(s)`);
+  }
+  if (values["--summary"] !== undefined) {
+    const summaryResult = sanitizeTextInput(values["--summary"] ?? "");
+    input.summary = summaryResult.sanitized;
+    if (summaryResult.removed > 0) warnings.push(`sanitized ticket summary: removed ${summaryResult.removed} invalid character(s)`);
+  }
+  if (values["--description"] !== undefined) {
+    const descriptionResult = sanitizeTextInput(values["--description"] ?? "");
+    input.description = descriptionResult.sanitized;
+    if (descriptionResult.removed > 0) warnings.push(`sanitized ticket description: removed ${descriptionResult.removed} invalid character(s)`);
+  }
+  const parsed: { input: typeof input; actor: string; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
+  if (warnings.length > 0) parsed.warnings = warnings;
+  return parsed;
 }
 
 function parseTicketCommentArgs(argv: string[]): { author: string; content: string; warnings?: string[] } | { error: string } {
