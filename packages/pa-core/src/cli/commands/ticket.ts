@@ -284,7 +284,7 @@ function parseTicketCommentArgs(argv: string[]): { author: string; content: stri
 }
 
 function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
-  const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor"]);
+  const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor", "--title", "--summary", "--description"]);
   const booleanFlags = new Set(["--doc-ref-primary", "--force"]);
   return parseFlagPairs(argv, new Set([...valueFlags, ...booleanFlags]), booleanFlags);
 }
