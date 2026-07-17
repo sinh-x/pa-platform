@@ -503,6 +503,9 @@ complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-branch -d 'Remove linked branch' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-commit -d 'Remove linked commit' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l force -d 'Suppress doc-ref warnings'
+complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l title -d 'Update ticket title' -r
+complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l summary -d 'Update ticket summary' -r
+complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l description -d 'Update ticket description' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from attach' -l file -d 'File or doc-ref path' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l author -d 'Comment author' -r -a '(__dpa_assignees)'
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l content -d 'Comment content' -r
