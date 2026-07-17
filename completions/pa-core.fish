@@ -504,6 +504,7 @@ complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subc
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from delete' -l yes -d 'Confirm hard delete'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket; and not __fish_seen_subcommand_from create update complete list' -a 'create update complete list'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l title -d 'Subticket title' -r
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l summary -d 'Subticket summary' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l assignee -d 'Assignee' -r -a '(__pa_core_assignees)'
 complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l priority -d 'Priority' -r -a 'critical high medium low'
 complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l estimate -d 'Estimate' -r -a 'XS S M L XL'

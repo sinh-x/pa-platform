@@ -512,6 +512,7 @@ complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from delete' -l yes -d 'Confirm hard delete'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket; and not __fish_seen_subcommand_from create update complete list' -a 'create update complete list'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l title -d 'Subticket title' -r
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l summary -d 'Subticket summary' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l assignee -d 'Assignee' -r -a '(__opa_assignees)'
 complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l priority -d 'Priority' -r -a 'critical high medium low'
 complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l estimate -d 'Estimate' -r -a 'XS S M L XL'
