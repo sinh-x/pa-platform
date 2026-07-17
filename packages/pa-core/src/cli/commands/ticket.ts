@@ -127,6 +127,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket update requires id", io);
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
+    if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     const ticket = store.update(id, parsed.input, parsed.actor);
     io.stdout(`Updated ${ticket.id}: ${ticket.status}`);
     return 0;
