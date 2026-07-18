@@ -503,6 +503,9 @@ complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-branch -d 'Remove linked branch' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-commit -d 'Remove linked commit' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l force -d 'Suppress doc-ref warnings'
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l title -d 'Update ticket title' -r
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l summary -d 'Update ticket summary' -r
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l description -d 'Update ticket description' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from attach' -l file -d 'File or doc-ref path' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l author -d 'Comment author' -r -a '(__cpa_assignees)'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l content -d 'Comment content' -r
@@ -512,6 +515,7 @@ complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from delete' -l yes -d 'Confirm hard delete'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket; and not __fish_seen_subcommand_from create update complete list' -a 'create update complete list'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l title -d 'Subticket title' -r
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l summary -d 'Subticket summary' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l assignee -d 'Assignee' -r -a '(__cpa_assignees)'
 complete -c cpa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l priority -d 'Priority' -r -a 'critical high medium low'
 complete -c cpa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from subticket create' -l estimate -d 'Estimate' -r -a 'XS S M L XL'
