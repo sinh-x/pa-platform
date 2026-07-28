@@ -89,6 +89,25 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer ticket banner shows the ticket id when templateVars.TICKET_ID is set", () => {
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: team,
+    mode: "plan",
+    templateVars: { TICKET_ID: "PAP-125" },
+  });
+  assert.match(primer, /> \*\*Ticket:\*\* PAP-125/);
+});
+
+test("generatePrimer ticket banner shows 'none' when templateVars.TICKET_ID is missing", () => {
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: team,
+    mode: "plan",
+  });
+  assert.match(primer, /> \*\*Ticket:\*\* none/);
+});
+
 test("generatePrimer skips missing terse-mode until pa-platform source exists", () => {
   const terseTeam = parseTeamYamlContent(`
 name: builder

@@ -33,6 +33,8 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `Team: ${options.teamConfig.name}`,
     `Mode: ${mode?.id ?? "default"}`,
     ``,
+    `> **Ticket:** ${options.templateVars?.TICKET_ID || "none"}`,
+    ``,
     userObjective ? `## User Objective\n${userObjective}` : "",
     `## Objective`,
     objective,
