@@ -68,6 +68,9 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
+  if (!ticketId) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: "Hard block: no resolvable ticket id. Provide --ticket <id> or set PA_TICKET_ID before deploying. The opencode adapter refuses to launch without a ticket for traceability." };
+  }
   let sessionName: string | undefined;
   if (ticketId) {
     try {
