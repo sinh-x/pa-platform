@@ -61,11 +61,12 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
-  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"] };
+  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  process.env["PA_TICKET_ID"] = "PAP-TEST";
   delete process.env["PA_MAX_RUNTIME"];
   return fn(root).finally(() => {
     closeDb();
@@ -74,6 +75,7 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     restore("PA_REGISTRY_DB", previous.registry);
     restore("PA_AI_USAGE_HOME", previous.aiUsage);
     restore("PA_MAX_RUNTIME", previous.maxRuntime);
+    restore("PA_TICKET_ID", previous.ticketId);
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -713,6 +715,18 @@ test("opa deploy rejects mutually exclusive background and dry-run flags", async
     const code = await runCoreCommand(["deploy", "daily", "--background", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.equal(code, 1);
     assert.match(stderr.join("\n"), /mutually exclusive/);
+  });
+});
+
+test("opa deploy hard-fails when no ticket id is resolvable", async () => {
+  await withOpaEnv(async () => {
+    delete process.env["PA_TICKET_ID"];
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.equal(code, 1);
+    assert.match(stderr.join("\n"), /Hard block: no resolvable ticket id/);
+    assert.match(stderr.join("\n"), /Provide --ticket <id> or set PA_TICKET_ID/);
+    assert.equal(queryDeploymentStatuses().length, 0);
   });
 });
 
