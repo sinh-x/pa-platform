@@ -90,12 +90,15 @@ function printTicketUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  --remove-linked-branch <repo> Remove a linked branch by repo");
   io.stdout("  --linked-commit <repo|sha|msg|author|ts> Add a linked commit");
   io.stdout("  --remove-linked-commit <sha> Remove a linked commit by sha");
+  io.stdout("  --archive                   Archive the ticket (adds \"archived\" tag; ticket must be in a terminal status)");
   io.stdout("  --actor <name>              Actor name for history");
   io.stdout("");
   io.stdout("Examples:");
   io.stdout("  ticket update PAP-120 --status implementing --assignee builder/team-manager");
   io.stdout("  ticket update PAP-120 --title \"New title\" --summary \"New summary\"");
   io.stdout("  ticket update PAP-120 --doc-ref \"requirements:agent-teams/builder/req.md\"");
+  io.stdout("  ticket update PAP-120 --status done --archive");
+  io.stdout("  ticket update PAP-120 --tags \"bug,urgent\" --archive");
 }
 
 function printTicketArchiveHelp(io: Required<CliIo>): void {
@@ -192,6 +195,15 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if ("error" in parsed) return printError(parsed.error, io);
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     const ticket = store.update(id, parsed.input, parsed.actor);
+    if (parsed.archive) {
+      try {
+        const archived = store.archive(id, parsed.actor);
+        io.stdout(`Updated ${archived.id}: ${archived.status} (archived)`);
+        return 0;
+      } catch (err) {
+        return printError(err instanceof Error ? err.message : String(err), io);
+      }
+    }
     io.stdout(`Updated ${ticket.id}: ${ticket.status}`);
     return 0;
   }
@@ -330,7 +342,7 @@ function availableProjectGuidance(): string {
   return available ? ` Available projects: ${available}` : "";
 }
 
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; warnings?: string[] } | { error: string } {
+function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; archive?: boolean; warnings?: string[] } | { error: string } {
   const result = parseTicketUpdateFlagPairs(argv);
   if ("error" in result) return result;
   const values = result.values;
@@ -378,7 +390,8 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
       if (descriptionResult.removed > 0) warnings.push(`sanitized ticket description: removed ${descriptionResult.removed} invalid character(s)`);
     }
   }
-  const parsed: { input: typeof input; actor: string; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
+  const parsed: { input: typeof input; actor: string; archive?: boolean; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
+  if (result.booleans.has("--archive")) parsed.archive = true;
   if (warnings.length > 0) parsed.warnings = warnings;
   return parsed;
 }
@@ -398,7 +411,7 @@ function parseTicketCommentArgs(argv: string[]): { author: string; content: stri
 
 function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
   const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor", "--title", "--summary", "--description"]);
-  const booleanFlags = new Set(["--doc-ref-primary", "--force"]);
+  const booleanFlags = new Set(["--doc-ref-primary", "--force", "--archive"]);
   return parseFlagPairs(argv, new Set([...valueFlags, ...booleanFlags]), booleanFlags);
 }
 
