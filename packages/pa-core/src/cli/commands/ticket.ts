@@ -129,6 +129,30 @@ function printTicketUnarchiveHelp(io: Required<CliIo>): void {
   io.stdout("  ticket unarchive PAP-120 --actor sinh");
 }
 
+function printTicketListHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket list [options]");
+  io.stdout("");
+  io.stdout("List tickets matching the given filters.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <key>        Filter by project key");
+  io.stdout("  --status <status>      Filter by status (idea, pending-implementation, implementing, review-uat, done, rejected, cancelled)");
+  io.stdout("  --assignee <name>      Filter by assignee");
+  io.stdout("  --priority <priority>  Filter by priority (low, medium, high, urgent)");
+  io.stdout("  --type <type>          Filter by type (bug, feature, task, fyi, epic, work-report)");
+  io.stdout("  --search <text>        Full-text search across title and summary");
+  io.stdout("  --tags <csv>           Comma-separated tags to match (ticket must include all)");
+  io.stdout("  --exclude-tags <csv>   Comma-separated tags to exclude");
+  io.stdout("  --archived             Show only tickets tagged \"archived\" (composable with other filters)");
+  io.stdout("  --json                 Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket list --project pa-platform --status done");
+  io.stdout("  ticket list --archived");
+  io.stdout("  ticket list --archived --status done --project pa-platform");
+  io.stdout("  ticket list --tags \"bug,urgent\" --json");
+}
+
 function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("Usage: ticket <subcommand> [options]");
   io.stdout("");
@@ -159,9 +183,13 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "list") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketListHelp(io);
+      return 0;
+    }
     const opts = parseTicketListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
-    const { json, ...filters } = opts;
+    const { json, archived: _archived, ...filters } = opts;
     const tickets = store.list(filters);
     io.stdout(json ? JSON.stringify(tickets, null, 2) : formatTicketList(tickets));
     return 0;
@@ -298,9 +326,9 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   return 1;
 }
 
-function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; json?: boolean } | { error: string } {
-  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; json?: boolean } = {};
-  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--json"]), new Set(["--json"]));
+function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } | { error: string } {
+  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } = {};
+  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--json", "--archived"]), new Set(["--json", "--archived"]));
   if ("error" in result) return result;
   if (result.values["--project"]) opts.project = result.values["--project"];
   if (result.values["--status"]) opts.status = result.values["--status"] as TicketStatus;
@@ -311,6 +339,10 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
   if (result.values["--tags"]) opts.tags = splitCsv(result.values["--tags"]);
   if (result.values["--exclude-tags"]) opts.excludeTags = splitCsv(result.values["--exclude-tags"]);
   if (result.booleans.has("--json")) opts.json = true;
+  if (result.booleans.has("--archived")) opts.archived = true;
+  if (opts.archived) {
+    opts.tags = Array.from(new Set([...(opts.tags ?? []), "archived"]));
+  }
   return opts;
 }
 
