@@ -143,6 +143,31 @@ export class TicketStore {
     this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
   }
 
+  archive(id: string, actor = "pa-core"): Ticket {
+    const current = this.get(id);
+    if (!current) throw new Error(`Ticket not found: ${id}`);
+    if (!TERMINAL_STATUSES.includes(current.status)) {
+      throw new Error(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`);
+    }
+    if (current.tags.includes("archived")) return current;
+    const now = nowUtc();
+    const next: Ticket = { ...current, tags: [...current.tags, "archived"], updatedAt: now };
+    this.writeTicket(next);
+    this.appendAudit(id, "archived", actor, { tags: [current.tags, next.tags] });
+    return next;
+  }
+
+  unarchive(id: string, actor = "pa-core"): Ticket {
+    const current = this.get(id);
+    if (!current) throw new Error(`Ticket not found: ${id}`);
+    if (!current.tags.includes("archived")) return current;
+    const now = nowUtc();
+    const next: Ticket = { ...current, tags: current.tags.filter((tag) => tag !== "archived"), updatedAt: now };
+    this.writeTicket(next);
+    this.appendAudit(id, "unarchived", actor, { tags: [current.tags, next.tags] });
+    return next;
+  }
+
   addSubTicket(parentId: string, input: Pick<SubTicket, "title" | "summary" | "assignee" | "priority" | "estimate">, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
     const ticket = this.get(parentId);
     if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
