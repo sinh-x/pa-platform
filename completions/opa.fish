@@ -445,6 +445,7 @@ complete -c opa -n '__fish_seen_subcommand_from board' -l project -d 'Filter by 
 complete -c opa -n '__fish_seen_subcommand_from board; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l assignee -d 'Filter by assignee' -r -a '(__opa_assignees)'
 complete -c opa -n '__fish_seen_subcommand_from board' -l all -d 'Accepted for compatibility'
+complete -c opa -n '__fish_seen_subcommand_from board' -l include-archived -d 'Include archived tickets'
 
 complete -c opa -n '__fish_seen_subcommand_from teams; and not __fish_seen_subcommand_from (__opa_teams)' -a '(__opa_teams)' -d 'Team name'
 complete -c opa -n '__fish_seen_subcommand_from teams' -l all -d 'Include backlog and archived tickets'
@@ -475,8 +476,8 @@ complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcom
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from sweep' -l dry-run -d 'Preview only'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from sweep' -l fix -d 'Write fallback markers'
 
-complete -c opa -n '__fish_seen_subcommand_from ticket; and not __fish_seen_subcommand_from create update list show attach comment move delete check-refs subticket' -a 'create update list show attach comment move delete check-refs subticket'
-complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show update attach comment move delete' -a '(__opa_ticket_ids)'
+complete -c opa -n '__fish_seen_subcommand_from ticket; and not __fish_seen_subcommand_from create update list show attach comment move delete check-refs subticket archive unarchive' -a 'create update list show attach comment move delete check-refs subticket archive unarchive'
+complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show update attach comment move delete archive unarchive' -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create' -l project -d 'Project' -r -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create' -l title -d 'Title' -r
 complete -c opa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from create list' -l type -d 'Ticket type' -r -a 'feature bug task review-request work-report fyi idea question'
@@ -491,6 +492,7 @@ complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __opa_completing_option_value --project' -a '(__opa_projects)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l archived -d 'Only archived tickets'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
@@ -506,6 +508,7 @@ complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l title -d 'Update ticket title' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l summary -d 'Update ticket summary' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l description -d 'Update ticket description' -r
+complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l archive -d 'Archive ticket (terminal status only)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from attach' -l file -d 'File or doc-ref path' -r
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l author -d 'Comment author' -r -a '(__opa_assignees)'
 complete -c opa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from comment' -l content -d 'Comment content' -r
