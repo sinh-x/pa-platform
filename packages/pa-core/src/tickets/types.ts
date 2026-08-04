@@ -66,7 +66,7 @@ export interface DocRef {
 
 export interface AuditEntry {
   ticket_id: string;
-  action: "created" | "updated" | "commented" | "attached" | "doc_ref_added" | "doc_ref_removed" | "branch_link_added" | "branch_link_removed" | "commit_link_added" | "commit_link_removed" | "deleted";
+  action: "created" | "updated" | "commented" | "attached" | "doc_ref_added" | "doc_ref_removed" | "branch_link_added" | "branch_link_removed" | "commit_link_added" | "commit_link_removed" | "deleted" | "archived" | "unarchived";
   actor: string;
   timestamp: string;
   changes: Record<string, [unknown, unknown]>;

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { TicketStore } from "../../tickets/index.js";
+import { TERMINAL_STATUSES } from "../../tickets/types.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
@@ -90,12 +91,67 @@ function printTicketUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  --remove-linked-branch <repo> Remove a linked branch by repo");
   io.stdout("  --linked-commit <repo|sha|msg|author|ts> Add a linked commit");
   io.stdout("  --remove-linked-commit <sha> Remove a linked commit by sha");
+  io.stdout("  --archive                   Archive the ticket (adds \"archived\" tag; ticket must be in a terminal status)");
   io.stdout("  --actor <name>              Actor name for history");
   io.stdout("");
   io.stdout("Examples:");
   io.stdout("  ticket update PAP-120 --status implementing --assignee builder/team-manager");
   io.stdout("  ticket update PAP-120 --title \"New title\" --summary \"New summary\"");
   io.stdout("  ticket update PAP-120 --doc-ref \"requirements:agent-teams/builder/req.md\"");
+  io.stdout("  ticket update PAP-120 --status done --archive");
+  io.stdout("  ticket update PAP-120 --tags \"bug,urgent\" --archive");
+}
+
+function printTicketArchiveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket archive <id> [options]");
+  io.stdout("");
+  io.stdout("Archive a terminal-status ticket by adding the \"archived\" tag.");
+  io.stdout("Only tickets in a terminal status (done, rejected, cancelled) can be archived.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket archive PAP-120");
+  io.stdout("  ticket archive PAP-120 --actor sinh");
+}
+
+function printTicketUnarchiveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket unarchive <id> [options]");
+  io.stdout("");
+  io.stdout("Unarchive a ticket by removing the \"archived\" tag.");
+  io.stdout("No-op if the ticket is not currently archived.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket unarchive PAP-120");
+  io.stdout("  ticket unarchive PAP-120 --actor sinh");
+}
+
+function printTicketListHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket list [options]");
+  io.stdout("");
+  io.stdout("List tickets matching the given filters.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <key>        Filter by project key");
+  io.stdout("  --status <status>      Filter by status (idea, pending-implementation, implementing, review-uat, done, rejected, cancelled)");
+  io.stdout("  --assignee <name>      Filter by assignee");
+  io.stdout("  --priority <priority>  Filter by priority (low, medium, high, urgent)");
+  io.stdout("  --type <type>          Filter by type (bug, feature, task, fyi, epic, work-report)");
+  io.stdout("  --search <text>        Full-text search across title and summary");
+  io.stdout("  --tags <csv>           Comma-separated tags to match (ticket must include all)");
+  io.stdout("  --exclude-tags <csv>   Comma-separated tags to exclude");
+  io.stdout("  --archived             Show only tickets tagged \"archived\" (composable with other filters)");
+  io.stdout("  --json                 Output as JSON");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket list --project pa-platform --status done");
+  io.stdout("  ticket list --archived");
+  io.stdout("  ticket list --archived --status done --project pa-platform");
+  io.stdout("  ticket list --tags \"bug,urgent\" --json");
 }
 
 function printTicketHelp(io: Required<CliIo>): void {
@@ -112,6 +168,8 @@ function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("  attach              Attach a file to a ticket");
   io.stdout("  move                Move ticket to another project");
   io.stdout("  delete              Delete a ticket");
+  io.stdout("  archive             Archive a terminal-status ticket");
+  io.stdout("  unarchive           Unarchive a ticket");
   io.stdout("  check-refs          Check doc_ref validity");
   io.stdout("  subticket           Manage sub-tickets");
   io.stdout("");
@@ -126,9 +184,13 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     return 0;
   }
   if (subcommand === "list") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketListHelp(io);
+      return 0;
+    }
     const opts = parseTicketListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
-    const { json, ...filters } = opts;
+    const { json, archived: _archived, ...filters } = opts;
     const tickets = store.list(filters);
     io.stdout(json ? JSON.stringify(tickets, null, 2) : formatTicketList(tickets));
     return 0;
@@ -161,7 +223,24 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
+    if (parsed.archive) {
+      const current = store.get(id);
+      if (!current) return printError(`Ticket not found: ${id}`, io);
+      const effectiveStatus = parsed.input.status ?? current.status;
+      if (!TERMINAL_STATUSES.includes(effectiveStatus)) {
+        return printError(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`, io);
+      }
+    }
     const ticket = store.update(id, parsed.input, parsed.actor);
+    if (parsed.archive) {
+      try {
+        const archived = store.archive(id, parsed.actor);
+        io.stdout(`Updated ${archived.id}: ${archived.status} (archived)`);
+        return 0;
+      } catch (err) {
+        return printError(err instanceof Error ? err.message : String(err), io);
+      }
+    }
     io.stdout(`Updated ${ticket.id}: ${ticket.status}`);
     return 0;
   }
@@ -215,16 +294,50 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
     return 0;
   }
+  if (subcommand === "archive") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketArchiveHelp(io);
+      return 0;
+    }
+    const id = rest[0];
+    if (!id) return printError("ticket archive requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    try {
+      const ticket = store.archive(id, parsed.values["--actor"] ?? "pa-core");
+      io.stdout(`Archived ${ticket.id}: ${ticket.status}`);
+      return 0;
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
+  }
+  if (subcommand === "unarchive") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketUnarchiveHelp(io);
+      return 0;
+    }
+    const id = rest[0];
+    if (!id) return printError("ticket unarchive requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    try {
+      const ticket = store.unarchive(id, parsed.values["--actor"] ?? "pa-core");
+      io.stdout(`Unarchived ${ticket.id}: ${ticket.status}`);
+      return 0;
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
+  }
   if (subcommand === "check-refs") return runTicketCheckRefs(rest, io, store);
   if (subcommand === "subticket") return runSubTicketCommand(rest, io, store);
   io.stderr(`Unknown ticket subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, check-refs, subticket");
+  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, archive, unarchive, check-refs, subticket");
   return 1;
 }
 
-function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; json?: boolean } | { error: string } {
-  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; json?: boolean } = {};
-  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--json"]), new Set(["--json"]));
+function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } | { error: string } {
+  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } = {};
+  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--json", "--archived"]), new Set(["--json", "--archived"]));
   if ("error" in result) return result;
   if (result.values["--project"]) opts.project = result.values["--project"];
   if (result.values["--status"]) opts.status = result.values["--status"] as TicketStatus;
@@ -235,6 +348,10 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
   if (result.values["--tags"]) opts.tags = splitCsv(result.values["--tags"]);
   if (result.values["--exclude-tags"]) opts.excludeTags = splitCsv(result.values["--exclude-tags"]);
   if (result.booleans.has("--json")) opts.json = true;
+  if (result.booleans.has("--archived")) opts.archived = true;
+  if (opts.archived) {
+    opts.tags = Array.from(new Set([...(opts.tags ?? []), "archived"]));
+  }
   return opts;
 }
 
@@ -266,7 +383,7 @@ function availableProjectGuidance(): string {
   return available ? ` Available projects: ${available}` : "";
 }
 
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; warnings?: string[] } | { error: string } {
+function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; archive?: boolean; warnings?: string[] } | { error: string } {
   const result = parseTicketUpdateFlagPairs(argv);
   if ("error" in result) return result;
   const values = result.values;
@@ -314,7 +431,8 @@ function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus
       if (descriptionResult.removed > 0) warnings.push(`sanitized ticket description: removed ${descriptionResult.removed} invalid character(s)`);
     }
   }
-  const parsed: { input: typeof input; actor: string; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
+  const parsed: { input: typeof input; actor: string; archive?: boolean; warnings?: string[] } = { input, actor: values["--actor"] ?? "pa-core" };
+  if (result.booleans.has("--archive")) parsed.archive = true;
   if (warnings.length > 0) parsed.warnings = warnings;
   return parsed;
 }
@@ -334,7 +452,7 @@ function parseTicketCommentArgs(argv: string[]): { author: string; content: stri
 
 function parseTicketUpdateFlagPairs(argv: string[]): { values: Record<string, string>; booleans: Set<string> } | { error: string } {
   const valueFlags = new Set(["--status", "--assignee", "--priority", "--tags", "--blocked-by", "--estimate", "--doc-ref", "--remove-doc-ref", "--linked-branch", "--linked-commit", "--remove-linked-branch", "--remove-linked-commit", "--actor", "--title", "--summary", "--description"]);
-  const booleanFlags = new Set(["--doc-ref-primary", "--force"]);
+  const booleanFlags = new Set(["--doc-ref-primary", "--force", "--archive"]);
   return parseFlagPairs(argv, new Set([...valueFlags, ...booleanFlags]), booleanFlags);
 }
 

@@ -129,3 +129,153 @@ test("tickets validate and store linked git branches and commits", () => {
     assert.equal(unlinked.linkedCommits.length, 0);
   });
 });
+
+test("archive and unarchive store methods toggle the archived tag and enforce terminal status", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    const store = new TicketStore(ticketsDir);
+    const ticket = store.create({
+      project: "pa-platform",
+      title: "Archive candidate",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+
+    assert.throws(
+      () => store.archive(ticket.id, "test"),
+      /Cannot archive/,
+      "archive should reject non-terminal-status tickets",
+    );
+    assert.equal(store.get(ticket.id)?.tags.includes("archived"), false, "no archive tag after failed archive");
+
+    store.update(ticket.id, { status: "done" }, "test");
+    const archived = store.archive(ticket.id, "test");
+    assert.equal(archived.tags.includes("archived"), true, "archive adds archived tag");
+    const reArchived = store.archive(ticket.id, "test");
+    assert.equal(reArchived.tags.filter((t) => t === "archived").length, 1, "archive is idempotent");
+
+    const unarchived = store.unarchive(ticket.id, "test");
+    assert.equal(unarchived.tags.includes("archived"), false, "unarchive removes archived tag");
+    const reUnarchived = store.unarchive(ticket.id, "test");
+    assert.equal(reUnarchived.tags.includes("archived"), false, "unarchive is idempotent");
+  });
+});
+
+test("board --include-archived surfaces archived tickets while default board hides them", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    const store = new TicketStore(ticketsDir);
+    const active = store.create({
+      project: "pa-platform",
+      title: "Active work",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    const done = store.create({
+      project: "pa-platform",
+      title: "Done and archived",
+      summary: "Summary",
+      description: "",
+      status: "done",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    store.archive(done.id, "test");
+
+    const defaultBoard = buildBoardView("pa-platform", { excludeTags: ["backlog", "archived"] });
+    const defaultTitles = defaultBoard.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
+    assert.equal(defaultTitles.includes("Active work"), true, "active ticket appears on default board");
+    assert.equal(defaultTitles.includes("Done and archived"), false, "archived ticket hidden on default board");
+
+    const includeArchivedBoard = buildBoardView("pa-platform", { excludeTags: ["backlog"] });
+    const includeTitles = includeArchivedBoard.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
+    assert.equal(includeTitles.includes("Active work"), true, "active ticket appears on include-archived board");
+    assert.equal(includeTitles.includes("Done and archived"), true, "archived ticket visible on include-archived board");
+
+    assert.equal(active.tags.includes("archived"), false);
+  });
+});
+
+test("ticket list --archived filters down to archived tickets only", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    const store = new TicketStore(ticketsDir);
+    const active = store.create({
+      project: "pa-platform",
+      title: "Active list item",
+      summary: "Summary",
+      description: "",
+      status: "implementing",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    const archived = store.create({
+      project: "pa-platform",
+      title: "Archived list item",
+      summary: "Summary",
+      description: "",
+      status: "done",
+      priority: "medium",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: [],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    store.archive(archived.id, "test");
+
+    const all = store.list({ project: "pa-platform" });
+    const allTitles = all.map((ticket) => ticket.title);
+    assert.equal(allTitles.includes("Active list item"), true);
+    assert.equal(allTitles.includes("Archived list item"), true);
+
+    const archivedOnly = store.list({ project: "pa-platform", tags: ["archived"] });
+    const archivedTitles = archivedOnly.map((ticket) => ticket.title);
+    assert.equal(archivedTitles.includes("Archived list item"), true);
+    assert.equal(archivedTitles.includes("Active list item"), false);
+
+    const excludeArchived = store.list({ project: "pa-platform", excludeTags: ["archived"] });
+    const excludeTitles = excludeArchived.map((ticket) => ticket.title);
+    assert.equal(excludeTitles.includes("Active list item"), true);
+    assert.equal(excludeTitles.includes("Archived list item"), false);
+  });
+});
