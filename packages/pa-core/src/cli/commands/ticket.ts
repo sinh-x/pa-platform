@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { TicketStore } from "../../tickets/index.js";
+import { TERMINAL_STATUSES } from "../../tickets/types.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
@@ -222,6 +223,14 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
+    if (parsed.archive) {
+      const current = store.get(id);
+      if (!current) return printError(`Ticket not found: ${id}`, io);
+      const effectiveStatus = parsed.input.status ?? current.status;
+      if (!TERMINAL_STATUSES.includes(effectiveStatus)) {
+        return printError(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`, io);
+      }
+    }
     const ticket = store.update(id, parsed.input, parsed.actor);
     if (parsed.archive) {
       try {
