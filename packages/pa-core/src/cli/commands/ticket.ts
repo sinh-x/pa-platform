@@ -98,6 +98,34 @@ function printTicketUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  ticket update PAP-120 --doc-ref \"requirements:agent-teams/builder/req.md\"");
 }
 
+function printTicketArchiveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket archive <id> [options]");
+  io.stdout("");
+  io.stdout("Archive a terminal-status ticket by adding the \"archived\" tag.");
+  io.stdout("Only tickets in a terminal status (done, rejected, cancelled) can be archived.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket archive PAP-120");
+  io.stdout("  ticket archive PAP-120 --actor sinh");
+}
+
+function printTicketUnarchiveHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket unarchive <id> [options]");
+  io.stdout("");
+  io.stdout("Unarchive a ticket by removing the \"archived\" tag.");
+  io.stdout("No-op if the ticket is not currently archived.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --actor <name>      Actor name for history");
+  io.stdout("");
+  io.stdout("Examples:");
+  io.stdout("  ticket unarchive PAP-120");
+  io.stdout("  ticket unarchive PAP-120 --actor sinh");
+}
+
 function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("Usage: ticket <subcommand> [options]");
   io.stdout("");
@@ -112,6 +140,8 @@ function printTicketHelp(io: Required<CliIo>): void {
   io.stdout("  attach              Attach a file to a ticket");
   io.stdout("  move                Move ticket to another project");
   io.stdout("  delete              Delete a ticket");
+  io.stdout("  archive             Archive a terminal-status ticket");
+  io.stdout("  unarchive           Unarchive a ticket");
   io.stdout("  check-refs          Check doc_ref validity");
   io.stdout("  subticket           Manage sub-tickets");
   io.stdout("");
@@ -215,10 +245,44 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
     return 0;
   }
+  if (subcommand === "archive") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketArchiveHelp(io);
+      return 0;
+    }
+    const id = rest[0];
+    if (!id) return printError("ticket archive requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    try {
+      const ticket = store.archive(id, parsed.values["--actor"] ?? "pa-core");
+      io.stdout(`Archived ${ticket.id}: ${ticket.status}`);
+      return 0;
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
+  }
+  if (subcommand === "unarchive") {
+    if (rest[0] === "--help" || rest[0] === "-h") {
+      printTicketUnarchiveHelp(io);
+      return 0;
+    }
+    const id = rest[0];
+    if (!id) return printError("ticket unarchive requires id", io);
+    const parsed = parseFlagPairs(rest.slice(1), new Set(["--actor"]));
+    if ("error" in parsed) return printError(parsed.error, io);
+    try {
+      const ticket = store.unarchive(id, parsed.values["--actor"] ?? "pa-core");
+      io.stdout(`Unarchived ${ticket.id}: ${ticket.status}`);
+      return 0;
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
+  }
   if (subcommand === "check-refs") return runTicketCheckRefs(rest, io, store);
   if (subcommand === "subticket") return runSubTicketCommand(rest, io, store);
   io.stderr(`Unknown ticket subcommand: ${subcommand ?? ""}`.trim());
-  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, check-refs, subticket");
+  io.stderr("Available subcommands: list, show, create, update, attach, comment, move, delete, archive, unarchive, check-refs, subticket");
   return 1;
 }
 
