@@ -3,17 +3,25 @@ import { cors } from "hono/cors";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { Server } from "node:http";
 import type { Http2SecureServer, Http2Server } from "node:http2";
+import type { spawn as spawnType } from "node:child_process";
 import type { Context, Next } from "hono";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
+import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
 import { TicketStore } from "../tickets/store.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
   hooks?: CoreExecutionHooks;
   enableLiveUpdates?: boolean;
+  /**
+   * Test seam for the /ws/session SessionManager spawn function. Production
+   * callers leave this unset so the real `child_process.spawn` is used; tests
+   * inject a fake to verify WebSocket message handling without spawning opencode.
+   */
+  sessionSpawnFn?: typeof spawnType;
 }
 
 export interface AgentApiInstance {
@@ -60,6 +68,97 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       hub.removeClient(ws);
     },
   })));
+  // Phase 2: WebSocket session endpoint at /ws/session.
+  // One SessionManager is shared across all connections; each connection
+  // tracks its own active session id and auto-terminates on disconnect.
+  const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
+  app.get("/ws/session", upgradeWebSocket(() => {
+    let activeSessionId: string | undefined;
+    const sink = {
+      send(event: SessionStreamEvent): void {
+        // WSContext.send is provided by @hono/node-ws at runtime; readyState 1 = OPEN.
+        // Late sends after close are silently dropped by the sink guard below.
+        try { sessionWs.send(JSON.stringify(event)); } catch { /* socket closed */ }
+      },
+    };
+    let sessionWs: { send(message: string): void; readyState: number } = { send() {}, readyState: 3 };
+    return {
+      onOpen(_event, ws) {
+        sessionWs = ws as unknown as { send(message: string): void; readyState: number };
+      },
+      onMessage(event) {
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+        } catch {
+          sink.send({ type: "error", message: "Invalid JSON message", timestamp: new Date().toISOString() });
+          return;
+        }
+        const type = typeof parsed["type"] === "string" ? parsed["type"] : undefined;
+        if (type === "start") {
+          if (activeSessionId) {
+            sink.send({ type: "error", message: "Session already started on this connection", timestamp: new Date().toISOString() });
+            return;
+          }
+          const prompt = typeof parsed["prompt"] === "string" ? parsed["prompt"] : "";
+          if (!prompt) {
+            sink.send({ type: "error", message: "Missing prompt", timestamp: new Date().toISOString() });
+            return;
+          }
+          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+          const result = sessionManager.start({ prompt, ...(model ? { model } : {}) }, sink);
+          if (result.ok) {
+            activeSessionId = result.session.id;
+            sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
+          } else {
+            sink.send({ type: "error", message: result.error, timestamp: new Date().toISOString() });
+          }
+        } else if (type === "resume") {
+          if (activeSessionId) {
+            sink.send({ type: "error", message: "Session already started on this connection", timestamp: new Date().toISOString() });
+            return;
+          }
+          const sessionId = typeof parsed["sessionId"] === "string" ? parsed["sessionId"] : "";
+          const prompt = typeof parsed["prompt"] === "string" ? parsed["prompt"] : "";
+          if (!sessionId || !prompt) {
+            sink.send({ type: "error", message: "Missing sessionId or prompt", timestamp: new Date().toISOString() });
+            return;
+          }
+          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+          const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}) }, sink);
+          if (result.ok) {
+            activeSessionId = result.session.id;
+            sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
+          } else {
+            sink.send({ type: "error", message: result.error, timestamp: new Date().toISOString() });
+          }
+        } else if (type === "stop") {
+          if (!activeSessionId) {
+            sink.send({ type: "error", message: "No active session to stop", timestamp: new Date().toISOString() });
+            return;
+          }
+          const stopped = sessionManager.stop(activeSessionId);
+          activeSessionId = undefined;
+          if (stopped.ok) sink.send({ type: "end", data: { reason: "stopped" }, timestamp: new Date().toISOString() });
+          else sink.send({ type: "error", message: stopped.error, timestamp: new Date().toISOString() });
+        } else {
+          sink.send({ type: "error", message: `Unknown message type: ${type ?? "missing"}`, timestamp: new Date().toISOString() });
+        }
+      },
+      onClose() {
+        if (activeSessionId) {
+          sessionManager.disconnect(activeSessionId);
+          activeSessionId = undefined;
+        }
+      },
+      onError() {
+        if (activeSessionId) {
+          sessionManager.disconnect(activeSessionId);
+          activeSessionId = undefined;
+        }
+      },
+    };
+  }));
   app.route("/", configRoutes());
   app.route("/", deployControlRoutes(opts.hooks));
   app.route("/", deploymentsRoutes());
@@ -92,6 +191,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       watchers?.cleanup();
       watchers = null;
       hub.cleanup();
+      sessionManager.cleanup();
     },
   };
 }

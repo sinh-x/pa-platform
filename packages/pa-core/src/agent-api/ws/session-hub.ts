@@ -145,7 +145,7 @@ export class SessionManager {
     return { ok: true, session: { ...record } };
   }
 
-  resume(id: string, opts: Omit<SessionSpawnOptions, "sessionId"> & { sessionId: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+  resume(opts: Omit<SessionSpawnOptions, "sessionId"> & { sessionId: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }

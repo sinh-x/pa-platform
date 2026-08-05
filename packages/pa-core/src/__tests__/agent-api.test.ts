@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -864,5 +865,349 @@ test("agent API PATCH ticket with add_linked_branch returns warning for non-conf
     assert.equal(conforming.status, 200);
     const conformingBody = await conforming.json() as { ticket: Record<string, unknown>; warning?: string };
     assert.equal(conformingBody.warning, undefined);
+  });
+});
+
+// ---- Phase 2: /ws/session integration tests ----
+
+class FakeOpencodeChild extends EventEmitter {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  killed = false;
+  exitCode: number | null = null;
+  killSignal?: string;
+  kill(signal?: string): boolean {
+    this.killed = true;
+    this.killSignal = signal;
+    return true;
+  }
+}
+
+function createSessionSpawnSpy(): { fn: typeof import("node:child_process").spawn; children: FakeOpencodeChild[] } {
+  const list: FakeOpencodeChild[] = [];
+  const fn = ((_cmd: string, _args: string[], _opts: unknown): FakeOpencodeChild => {
+    const child = new FakeOpencodeChild();
+    list.push(child);
+    return child as unknown as import("node:child_process").ChildProcess;
+  }) as unknown as typeof import("node:child_process").spawn;
+  return { fn, children: list };
+}
+
+interface SessionWsMessage {
+  type: string;
+  data?: Record<string, unknown>;
+  message?: string;
+  sessionId?: string;
+  timestamp: string;
+}
+
+function openSessionWs(port: number): WebSocket {
+  return new WebSocket(`ws://127.0.0.1:${port}/ws/session`);
+}
+
+async function recvSessionMessages(ws: WebSocket, count: number, timeoutMs = 1500): Promise<SessionWsMessage[]> {
+  const out: SessionWsMessage[] = [];
+  return new Promise<SessionWsMessage[]>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeEventListener("message", onMessage);
+      if (out.length >= count) resolve(out);
+      else reject(new Error(`Timed out waiting for ${count} messages, got ${out.length}`));
+    }, timeoutMs);
+    const onMessage = (event: MessageEvent): void => {
+      out.push(JSON.parse(String(event.data)) as SessionWsMessage);
+      if (out.length >= count) {
+        clearTimeout(timer);
+        ws.removeEventListener("message", onMessage);
+        resolve(out);
+      }
+    };
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`ws error: ${String(e)}`));
+    }, { once: true });
+  });
+}
+
+test("/ws/session accepts start message and streams JSONL events back over the WebSocket", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", (e) => rejectOpen(new Error(`ws connect failed: ${String(e)}`)), { once: true });
+      });
+
+      ws.send(JSON.stringify({ type: "start", prompt: "Hello", model: "openai/gpt-5.5" }));
+      const messages = await recvSessionMessages(ws, 1);
+      assert.equal(messages[0]?.type, "session-id");
+      const sessionId = messages[0]?.sessionId;
+      assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+
+      // Emit JSONL lines from the spawned opencode process.
+      const child = children[0]!;
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "text", text: "Hi there" }) + "\n"));
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "thinking", thinking: "reasoning" }) + "\n"));
+      child.emit("close", 0);
+
+      const streamed = await recvSessionMessages(ws, 3);
+      const types = streamed.map((m) => m.type);
+      assert.equal(types[0], "event");
+      assert.equal(types[1], "event");
+      assert.equal(types[2], "end");
+      const firstData = streamed[0]?.data as Record<string, unknown>;
+      assert.equal(firstData?.kind, "text");
+      assert.equal(firstData?.deployId, `session-${sessionId}`);
+      const endData = streamed[2]?.data as Record<string, unknown>;
+      assert.equal(endData?.exitCode, 0);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+    assert.equal(children.length, 1);
+  });
+});
+
+test("/ws/session resume message spawns opencode with the provided session id", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+
+      ws.send(JSON.stringify({ type: "resume", sessionId: "opencode-token-123", prompt: "continue" }));
+      const messages = await recvSessionMessages(ws, 1);
+      assert.equal(messages[0]?.type, "session-id");
+      assert.ok(typeof messages[0]?.sessionId === "string");
+
+      const child = children[0]!;
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "text", text: "resumed" }) + "\n"));
+      child.emit("close", 0);
+      await recvSessionMessages(ws, 2);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+    assert.equal(children.length, 1);
+  });
+});
+
+test("/ws/session auto-terminates the opencode process when the WebSocket disconnects", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+
+      ws.send(JSON.stringify({ type: "start", prompt: "Hello" }));
+      await recvSessionMessages(ws, 1);
+
+      ws.close();
+      await waitFor(() => (children[0]?.killed ? true : undefined), 1500);
+      assert.equal(children[0]?.killed, true);
+      assert.equal(children[0]?.killSignal, "SIGTERM");
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("/ws/session stop message terminates the session and emits an end event", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+
+      ws.send(JSON.stringify({ type: "start", prompt: "Hello" }));
+      await recvSessionMessages(ws, 1);
+      ws.send(JSON.stringify({ type: "stop" }));
+      const messages = await recvSessionMessages(ws, 1);
+      assert.equal(messages[0]?.type, "end");
+      const data = messages[0]?.data as Record<string, unknown>;
+      assert.equal(data?.reason, "stopped");
+      assert.equal(children[0]?.killed, true);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("/ws/session rejects invalid JSON and unknown message types with error events", async () => {
+  await withApiEnv(async () => {
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+
+      ws.send("not-json");
+      const error1 = await recvSessionMessages(ws, 1);
+      assert.equal(error1[0]?.type, "error");
+      assert.match(error1[0]?.message ?? "", /Invalid JSON/);
+
+      ws.send(JSON.stringify({ type: "bogus" }));
+      const error2 = await recvSessionMessages(ws, 1);
+      assert.equal(error2[0]?.type, "error");
+      assert.match(error2[0]?.message ?? "", /Unknown message type/);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("/ws/session rejects start with missing prompt and resume with missing fields", async () => {
+  await withApiEnv(async () => {
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+
+      ws.send(JSON.stringify({ type: "start" }));
+      const error1 = await recvSessionMessages(ws, 1);
+      assert.match(error1[0]?.message ?? "", /Missing prompt/);
+
+      ws.send(JSON.stringify({ type: "resume", prompt: "continue" }));
+      const error2 = await recvSessionMessages(ws, 1);
+      assert.match(error2[0]?.message ?? "", /Missing sessionId or prompt/);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("/ws/session respects PA_MAX_SESSIONS and emits a max-sessions error event when full", async () => {
+  await withApiEnv(async () => {
+    const previous = process.env["PA_MAX_SESSIONS"];
+    process.env["PA_MAX_SESSIONS"] = "1";
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws1 = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws1.addEventListener("open", () => resolveOpen(), { once: true });
+        ws1.addEventListener("error", () => rejectOpen(new Error("ws1 connect failed")), { once: true });
+      });
+      ws1.send(JSON.stringify({ type: "start", prompt: "first" }));
+      await recvSessionMessages(ws1, 1);
+
+      const ws2 = await openSessionWs(port);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws2.addEventListener("open", () => resolveOpen(), { once: true });
+        ws2.addEventListener("error", () => rejectOpen(new Error("ws2 connect failed")), { once: true });
+      });
+      ws2.send(JSON.stringify({ type: "start", prompt: "second" }));
+      const messages = await recvSessionMessages(ws2, 1);
+      assert.equal(messages[0]?.type, "error");
+      assert.match(messages[0]?.message ?? "", /Max sessions reached/);
+      ws1.close();
+      ws2.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+      if (previous === undefined) delete process.env["PA_MAX_SESSIONS"];
+      else process.env["PA_MAX_SESSIONS"] = previous;
+    }
+  });
+});
+
+test("existing /ws endpoint is unaffected by /ws/session addition", async () => {
+  await withApiEnv(async () => {
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ enableLiveUpdates: true, sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolveOpen, rejectOpen) => {
+        ws.addEventListener("open", () => resolveOpen(), { once: true });
+        ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+      });
+      const received = new Promise<WsEvent>((resolveMessage) => {
+        ws.addEventListener("message", (event) => resolveMessage(JSON.parse(String(event.data)) as WsEvent), { once: true });
+      });
+      hub.broadcast({ type: "ticket-changed", data: { ticketId: "PAP-009" }, timestamp: "2026-08-05T00:00:00.000Z" });
+      assert.deepEqual(await received, { type: "ticket-changed", data: { ticketId: "PAP-009" }, timestamp: "2026-08-05T00:00:00.000Z" });
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
   });
 });

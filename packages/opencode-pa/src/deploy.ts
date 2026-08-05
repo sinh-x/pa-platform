@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
-import { OpencodeAdapter, resolveOpencodeModel } from "./adapter.js";
+import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "./adapter.js";
 
 function buildPaEnvVars(args: {
   deploymentId: string;
@@ -51,7 +51,12 @@ export function deriveSessionName(args: {
 }
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
-  return { deploy: (request) => deployWithOpencode(request, adapter) };
+  return {
+    deploy: (request) => deployWithOpencode(request, adapter),
+    // Phase 2: inject the opencode activity normalizer so the Agent API
+    // session hub streams structured ActivityEvents instead of raw JSONL.
+    sessionNormalizer: opencodeJsonToActivityEvent,
+  };
 }
 
 export function createDefaultOpencodeHooks(): CoreExecutionHooks {
