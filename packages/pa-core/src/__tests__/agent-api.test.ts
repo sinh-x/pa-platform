@@ -1211,3 +1211,237 @@ test("existing /ws endpoint is unaffected by /ws/session addition", async () => 
     }
   });
 });
+
+// ---- Phase 3: /api/sessions REST integration tests ----
+
+async function startSessionViaWs(port: number, prompt = "Hello"): Promise<{ ws: WebSocket; sessionId: string }> {
+  const ws = openSessionWs(port);
+  await new Promise<void>((resolveOpen, rejectOpen) => {
+    ws.addEventListener("open", () => resolveOpen(), { once: true });
+    ws.addEventListener("error", () => rejectOpen(new Error("ws connect failed")), { once: true });
+  });
+  ws.send(JSON.stringify({ type: "start", prompt }));
+  const messages = await recvSessionMessages(ws, 1);
+  assert.equal(messages[0]?.type, "session-id");
+  const sessionId = messages[0]?.sessionId;
+  assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+  return { ws, sessionId: sessionId as string };
+}
+
+function readSseStream(response: Response): Promise<string[]> {
+  // Returns collected SSE event payload strings. Resolves as soon as an "end"
+  // event is observed, or after a short timeout if the stream never ends.
+  return new Promise<string[]>(async (resolve, reject) => {
+    if (!response.body) {
+      reject(new Error("No response body"));
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const events: string[] = [];
+    let sawEnd = false;
+    const timeout = setTimeout(() => {
+      reader.cancel().catch(() => undefined);
+      resolve(events);
+    }, 1500);
+    const finish = (): void => {
+      clearTimeout(timeout);
+      reader.cancel().catch(() => undefined);
+      resolve(events);
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          const block = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          for (const line of block.split("\n")) {
+            if (line.startsWith("data: ")) {
+              const payload = line.slice(6);
+              events.push(payload);
+              try {
+                const msg = JSON.parse(payload) as { type?: string };
+                if (msg.type === "end") sawEnd = true;
+              } catch {
+                // ignore non-JSON
+              }
+            }
+          }
+        }
+        if (sawEnd) {
+          finish();
+          return;
+        }
+      }
+      clearTimeout(timeout);
+      resolve(events);
+    } catch (e) {
+      clearTimeout(timeout);
+      reject(e);
+    }
+  });
+}
+
+test("GET /api/sessions returns an empty array when no sessions are active", async () => {
+  await withApiEnv(async () => {
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    try {
+      const res = await api.app.request("/api/sessions");
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), []);
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+test("GET /api/sessions returns active session after WebSocket start", async () => {
+  await withApiEnv(async () => {
+    const { fn } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const { ws, sessionId } = await startSessionViaWs(port);
+
+      const res = await api.app.request("/api/sessions");
+      assert.equal(res.status, 200);
+      const sessions = (await res.json()) as Array<Record<string, unknown>>;
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0]?.id, sessionId);
+      assert.equal(sessions[0]?.status, "running");
+      assert.ok(typeof sessions[0]?.model === "string");
+      assert.ok(typeof sessions[0]?.startedAt === "string");
+      assert.ok(typeof sessions[0]?.deploymentId === "string");
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("POST /api/sessions/:id/stop terminates and removes the session", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const { ws, sessionId } = await startSessionViaWs(port);
+
+      const stopRes = await api.app.request(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, { method: "POST" });
+      assert.equal(stopRes.status, 200);
+      assert.deepEqual(await stopRes.json(), { status: "stopped" });
+      assert.equal(children[0]?.killed, true);
+
+      const listRes = await api.app.request("/api/sessions");
+      assert.deepEqual(await listRes.json(), []);
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("POST /api/sessions/:id/stop returns 404 for unknown session", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    try {
+      const res = await api.app.request("/api/sessions/no-such-session/stop", { method: "POST" });
+      assert.equal(res.status, 404);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body["error"], "Session not found");
+      assert.equal(body["code"], "NOT_FOUND");
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+test("GET /api/sessions/:id/stream serves SSE with session events", async () => {
+  await withApiEnv(async () => {
+    const { fn, children } = createSessionSpawnSpy();
+    const api = createAgentApiApp({ sessionSpawnFn: fn });
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const { ws, sessionId } = await startSessionViaWs(port);
+
+      // Start consuming the SSE stream before emitting events.
+      const abortController = new AbortController();
+      const streamRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
+        headers: { Accept: "text/event-stream" },
+        signal: abortController.signal,
+      });
+      assert.equal(streamRes.status, 200);
+      assert.equal(streamRes.headers.get("content-type"), "text/event-stream");
+
+      const eventsPromise = readSseStream(streamRes);
+
+      // Emit JSONL lines from the spawned opencode process.
+      const child = children[0]!;
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "text", text: "streamed via SSE" }) + "\n"));
+      child.emit("close", 0);
+
+      const events = await eventsPromise;
+      // Expect at least a "ready" event and an "event" event.
+      const parsed = events.map((e) => JSON.parse(e) as SessionWsMessage);
+      assert.ok(parsed.some((m) => m.type === "ready" && m.sessionId === sessionId), "missing ready event");
+      assert.ok(parsed.some((m) => m.type === "event"), "missing event");
+      assert.ok(parsed.some((m) => m.type === "end"), "missing end event");
+      // Ensure the SSE connection is closed so server.close() can complete.
+      abortController.abort();
+      ws.close();
+    } finally {
+      api.cleanup();
+      if (server) {
+        // Force-close lingering SSE/HTTP connections before closing the server,
+        // otherwise server.close() waits forever for the open SSE stream.
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server!.close(() => r()));
+      }
+    }
+  });
+});
+
+test("GET /api/sessions/:id/stream returns 404 for unknown session", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions/missing/stream`, {
+        headers: { Accept: "text/event-stream" },
+      });
+      assert.equal(res.status, 404);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body["error"], "Session not found");
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});

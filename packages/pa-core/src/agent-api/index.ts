@@ -7,7 +7,7 @@ import type { spawn as spawnType } from "node:child_process";
 import type { Context, Next } from "hono";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
-import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
+import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, sessionRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
 import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
 import { TicketStore } from "../tickets/store.js";
@@ -179,6 +179,8 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", bulletinRoutes());
   app.route("/", documentsRoutes());
   app.route("/", foldersRoutes());
+  // Phase 3: REST endpoints for session lifecycle (list / stop / SSE stream).
+  app.route("/", sessionRoutes(sessionManager));
   let watchers: ReturnType<typeof startWatchers> | null = null;
   if (opts.enableLiveUpdates) {
     hub.startPing();

@@ -54,7 +54,7 @@ const TERMINATION_TIMEOUT_MS = 5_000;
 interface ActiveSession {
   record: SessionRecord;
   child: ChildProcess;
-  sink: SessionStreamSink;
+  sinks: Set<SessionStreamSink>;
   sessionIdParser: { write(text: string): void; flush(): string | undefined };
   stdoutBuffer: string;
   stderrBuffer: string;
@@ -128,7 +128,7 @@ export class SessionManager {
     const session: ActiveSession = {
       record,
       child: null as unknown as ChildProcess,
-      sink,
+      sinks: new Set<SessionStreamSink>([sink]),
       sessionIdParser: createSessionIdParser(),
       stdoutBuffer: "",
       stderrBuffer: "",
@@ -162,7 +162,7 @@ export class SessionManager {
     const session: ActiveSession = {
       record,
       child: null as unknown as ChildProcess,
-      sink,
+      sinks: new Set<SessionStreamSink>([sink]),
       sessionIdParser: createSessionIdParser(),
       stdoutBuffer: "",
       stderrBuffer: "",
@@ -177,6 +177,20 @@ export class SessionManager {
       return { ok: false, error: `Failed to spawn opencode: ${message}`, limit: this.maxSessions };
     }
     return { ok: true, session: { ...record } };
+  }
+
+  /**
+   * Attach an additional read-only sink to an existing session so a client
+   * can observe the live JSONL stream (e.g. via the SSE endpoint). Returns
+   * an unsubscribe function, or `undefined` if the session does not exist.
+   */
+  subscribe(id: string, sink: SessionStreamSink): (() => void) | undefined {
+    const session = this.sessions.get(id);
+    if (!session) return undefined;
+    session.sinks.add(sink);
+    return () => {
+      session.sinks.delete(sink);
+    };
   }
 
   stop(id: string): { ok: true; status: "stopped" } | { ok: false; error: string } {
@@ -274,10 +288,12 @@ export class SessionManager {
 
   private emitEvent(session: ActiveSession, event: Omit<SessionStreamEvent, "timestamp">): void {
     const full: SessionStreamEvent = { ...event, timestamp: nowUtc(this.now()) };
-    try {
-      session.sink.send(full);
-    } catch {
-      // Sink may be closed; ignore.
+    for (const sink of session.sinks) {
+      try {
+        sink.send(full);
+      } catch {
+        // Sink may be closed; ignore. Keep broadcasting to remaining sinks.
+      }
     }
   }
 
