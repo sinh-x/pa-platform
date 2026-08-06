@@ -25,6 +25,12 @@ export interface ServeLifecycleOptions {
   background: boolean;
   cors: boolean;
   force: boolean;
+  /**
+   * When true, dev mode is active for the serve process. Propagated through
+   * `createAgentApiApp` to the `SessionManager` so binary resolution consults
+   * the `PA_OPENCODE_BINARY` env var. See FR1/FR6.
+   */
+  devMode?: boolean;
   io: ServeLifecycleIo;
   hooks?: CoreExecutionHooks;
   executable?: string;
@@ -127,7 +133,7 @@ async function serveStartCommand(opts: ServeLifecycleOptions): Promise<number> {
   });
   process.once("exit", cleanupPid);
 
-  const api = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks, enableLiveUpdates: true });
+  const api = createAgentApiApp({ enableCors: opts.cors, hooks: opts.hooks, enableLiveUpdates: true, devMode: opts.devMode === true });
   opts.io.stdout(`[pa-core serve] Starting agent API on http://${opts.host}:${opts.port}`);
   const server = serve({ fetch: api.app.fetch, port: opts.port, hostname: opts.host }, (info) => {
     opts.io.stdout(`[pa-core serve] Listening on http://${info.address}:${info.port}`);
@@ -149,6 +155,7 @@ async function startBackgroundProcess(opts: ServeLifecycleOptions): Promise<numb
   const args = ["serve", "--port", String(opts.port), "--host", opts.host, "--background"];
   if (opts.cors) args.push("--cors");
   if (opts.force) args.push("--force");
+  if (opts.devMode) args.push("--dev");
   const child = spawn(opts.executable ?? process.execPath, [script, ...args], {
     detached: true,
     stdio: ["ignore", out, out],

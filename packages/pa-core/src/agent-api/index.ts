@@ -22,6 +22,12 @@ export interface AgentApiOptions {
    * inject a fake to verify WebSocket message handling without spawning opencode.
    */
   sessionSpawnFn?: typeof spawnType;
+  /**
+   * When true, dev mode is active and the `SessionManager` consults the
+   * `PA_OPENCODE_BINARY` env var before falling back to `"opencode"` on PATH.
+   * Propagated from `pa-core serve --dev` / `PA_DEV_MODE`. See FR6.
+   */
+  devMode?: boolean;
 }
 
 export interface AgentApiInstance {
@@ -71,7 +77,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   // Phase 2: WebSocket session endpoint at /ws/session.
   // One SessionManager is shared across all connections; each connection
   // tracks its own active session id and auto-terminates on disconnect.
-  const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
+  const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, devMode: opts.devMode === true, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
   app.get("/ws/session", upgradeWebSocket(() => {
     let activeSessionId: string | undefined;
     const pendingMessages: string[] = [];

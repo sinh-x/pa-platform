@@ -10,10 +10,33 @@ interface ParsedServeArgs {
   background: boolean;
   cors: boolean;
   force: boolean;
+  dev: boolean;
+}
+
+/**
+ * Environment variable that activates dev mode without the `--dev` CLI flag.
+ * When set to a truthy value (`"1"`, `"true"`, `"yes"`), dev mode is active
+ * and binary resolution consults {@link PA_OPENCODE_BINARY_ENV}. See FR2.
+ *
+ * Dev mode is per-process and never persisted — NFR3. Setting this in
+ * production is not supported; dev mode only affects binary resolution and
+ * does not disable auth, CORS, or capacity limits.
+ */
+export const PA_DEV_MODE_ENV = "PA_DEV_MODE";
+
+/**
+ * Returns true when `value` is one of the truthy string literals the
+ * `PA_DEV_MODE` env var accepts. Empty string and unknown values are
+ * treated as falsy so that `PA_DEV_MODE=` does not silently activate
+ * dev mode.
+ */
+function isDevModeTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
 function parseServeArgs(argv: string[], action: ServeAction): ParsedServeArgs | { error: string } {
-  const opts: ParsedServeArgs = { port: DEFAULT_SERVE_PORT, host: DEFAULT_SERVE_HOST, background: false, cors: false, force: false };
+  const opts: ParsedServeArgs = { port: DEFAULT_SERVE_PORT, host: DEFAULT_SERVE_HOST, background: false, cors: false, force: false, dev: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--port") {
@@ -31,9 +54,10 @@ function parseServeArgs(argv: string[], action: ServeAction): ParsedServeArgs | 
     } else if (arg === "--background") opts.background = true;
     else if (arg === "--cors") opts.cors = true;
     else if (arg === "--force") opts.force = true;
+    else if (arg === "--dev") opts.dev = true;
     else return { error: `Unsupported serve option: ${arg}` };
   }
-  if ((action === "stop" || action === "status") && (opts.background || opts.force || opts.cors)) return { error: `${action} only supports --host and --port options` };
+  if ((action === "stop" || action === "status") && (opts.background || opts.force || opts.cors || opts.dev)) return { error: `${action} only supports --host and --port options` };
   return opts;
 }
 
@@ -47,11 +71,13 @@ export async function runServeCommand(command: string, argv: string[], io: Requi
   }
   const parsed = parseServeArgs(args, action);
   if ("error" in parsed) return printError(parsed.error, io);
-  return runServeLifecycle({ ...parsed, action, io, hooks, env: process.env });
+  // FR1/FR2: --dev flag OR PA_DEV_MODE env var activates dev mode.
+  const devMode = parsed.dev || isDevModeTruthy(process.env[PA_DEV_MODE_ENV]);
+  return runServeLifecycle({ ...parsed, devMode, action, io, hooks, env: process.env });
 }
 
 function serveUsageText(action: ServeAction): string {
-  if (action === "start") return "Usage: serve [--port <port>] [--host <host>] [--background] [--cors] [--force]";
-  if (action === "restart") return "Usage: restart [--port <port>] [--host <host>] [--background] [--cors]";
+  if (action === "start") return "Usage: serve [--port <port>] [--host <host>] [--background] [--cors] [--force] [--dev]";
+  if (action === "restart") return "Usage: restart [--port <port>] [--host <host>] [--background] [--cors] [--dev]";
   return `Usage: ${action}`;
 }
