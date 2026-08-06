@@ -38,6 +38,7 @@ export interface DeployMode {
   timeout?: number;
   global_docs?: string[];
   runtimes?: RuntimeConfigMap;
+  require_ticket?: boolean;
 }
 
 export interface HierarchyMember {
