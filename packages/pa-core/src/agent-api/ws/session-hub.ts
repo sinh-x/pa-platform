@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { type ActivityEvent, normalizeActivityEvent } from "../../activity/index.js";
+import { resolve } from "node:path";
+import { appendActivityEvent, createActivityEvent, type ActivityEvent, normalizeActivityEvent } from "../../activity/index.js";
+import { getDeploymentDir } from "../../paths.js";
 import { nowUtc } from "../../time.js";
 
 export type SessionStatus = "running" | "stopping";
@@ -45,20 +47,33 @@ export interface SessionManagerOptions {
   spawnFn?: typeof spawn;
   normalizer?: SessionEventNormalizer;
   now?: () => Date;
+  /**
+   * Milliseconds to wait after SIGTERM before escalating to SIGKILL when
+   * terminating a session. Defaults to 5000 (5 seconds).
+   */
+  terminationTimeoutMs?: number;
+  /**
+   * Maximum prompt length in bytes. Prompts exceeding this limit are rejected
+   * before spawn to avoid argv overflow and oversized payloads. Defaults to
+   * 128KB (131072 bytes).
+   */
+  maxPromptLength?: number;
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
 const DEFAULT_MODEL = "ollama-cloud/deepseek-v4-pro";
-const TERMINATION_TIMEOUT_MS = 5_000;
+const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_PROMPT_LENGTH = 128 * 1024;
 
 interface ActiveSession {
   record: SessionRecord;
-  child: ChildProcess;
+  child: ChildProcess | null;
   sinks: Set<SessionStreamSink>;
   sessionIdParser: { write(text: string): void; flush(): string | undefined };
   stdoutBuffer: string;
   stderrBuffer: string;
   terminated: boolean;
+  terminateReason?: string;
 }
 
 function readMaxSessionsFromEnv(): number {
@@ -78,6 +93,8 @@ export class SessionManager {
   private readonly spawnFn: typeof spawn;
   private readonly normalizer: SessionEventNormalizer;
   private readonly now: () => Date;
+  private readonly terminationTimeoutMs: number;
+  private readonly maxPromptLength: number;
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -88,6 +105,8 @@ export class SessionManager {
     this.spawnFn = opts.spawnFn ?? spawn;
     this.normalizer = opts.normalizer ?? defaultNormalizer;
     this.now = opts.now ?? (() => new Date());
+    this.terminationTimeoutMs = opts.terminationTimeoutMs ?? DEFAULT_TERMINATION_TIMEOUT_MS;
+    this.maxPromptLength = opts.maxPromptLength ?? DEFAULT_MAX_PROMPT_LENGTH;
   }
 
   get limit(): number {
@@ -115,40 +134,21 @@ export class SessionManager {
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }
-    const id = this.allocateId();
-    const model = opts.model ?? this.defaultModel;
-    const deploymentId = opts.deploymentId ?? `session-${id}`;
-    const record: SessionRecord = {
-      id,
-      model,
-      status: "running",
-      startedAt: nowUtc(this.now()),
-      deploymentId,
-    };
-    const session: ActiveSession = {
-      record,
-      child: null as unknown as ChildProcess,
-      sinks: new Set<SessionStreamSink>([sink]),
-      sessionIdParser: createSessionIdParser(),
-      stdoutBuffer: "",
-      stderrBuffer: "",
-      terminated: false,
-    };
-    this.sessions.set(id, session);
-    try {
-      this.spawnOpencode(session, opts);
-    } catch (error) {
-      this.sessions.delete(id);
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `Failed to spawn opencode: ${message}`, limit: this.maxSessions };
-    }
-    return { ok: true, session: { ...record } };
+    const promptError = this.validatePromptLength(opts.prompt);
+    if (promptError) return promptError;
+    return this.createSession(opts, sink);
   }
 
   resume(opts: Omit<SessionSpawnOptions, "sessionId"> & { sessionId: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }
+    const promptError = this.validatePromptLength(opts.prompt);
+    if (promptError) return promptError;
+    return this.createSession(opts, sink);
+  }
+
+  private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     const newId = this.allocateId();
     const model = opts.model ?? this.defaultModel;
     const deploymentId = opts.deploymentId ?? `session-${newId}`;
@@ -161,7 +161,7 @@ export class SessionManager {
     };
     const session: ActiveSession = {
       record,
-      child: null as unknown as ChildProcess,
+      child: null,
       sinks: new Set<SessionStreamSink>([sink]),
       sessionIdParser: createSessionIdParser(),
       stdoutBuffer: "",
@@ -169,14 +169,23 @@ export class SessionManager {
       terminated: false,
     };
     this.sessions.set(newId, session);
+    this.logLifecycle(session, "session_started");
     try {
       this.spawnOpencode(session, opts);
     } catch (error) {
       this.sessions.delete(newId);
+      this.logLifecycle(session, "session_spawn_error", error instanceof Error ? error.message : String(error));
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: `Failed to spawn opencode: ${message}`, limit: this.maxSessions };
     }
     return { ok: true, session: { ...record } };
+  }
+
+  private validatePromptLength(prompt: string): { ok: false; error: string; limit: number } | undefined {
+    if (Buffer.byteLength(prompt, "utf-8") > this.maxPromptLength) {
+      return { ok: false, error: `Prompt exceeds maximum length (${this.maxPromptLength} bytes)`, limit: this.maxSessions };
+    }
+    return undefined;
   }
 
   /**
@@ -278,12 +287,14 @@ export class SessionManager {
   private handleError(session: ActiveSession, error: Error): void {
     if (session.terminated) return;
     this.emitEvent(session, { type: "error", message: error.message });
+    this.logLifecycle(session, "session_error", error.message);
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
     session.sessionIdParser.flush();
     if (session.terminated) return;
-    this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0 } });
+    this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
+    this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
   }
 
   private emitEvent(session: ActiveSession, event: Omit<SessionStreamEvent, "timestamp">): void {
@@ -297,13 +308,15 @@ export class SessionManager {
     }
   }
 
-  private terminate(session: ActiveSession, _reason: string): void {
+  private terminate(session: ActiveSession, reason: string): void {
     if (session.terminated) return;
     session.terminated = true;
+    session.terminateReason = reason;
     session.record.status = "stopping";
+    this.logLifecycle(session, "session_stopping", reason);
     const child = session.child;
     if (!child || child.exitCode !== null || child.killed) {
-      session.record.status = "stopping";
+      this.emitEvent(session, { type: "end", data: { reason } });
       return;
     }
     try {
@@ -315,8 +328,23 @@ export class SessionManager {
       if (child.exitCode === null && !child.killed) {
         try { child.kill("SIGKILL"); } catch { /* ignore */ }
       }
-    }, TERMINATION_TIMEOUT_MS);
+    }, this.terminationTimeoutMs);
     timer.unref?.();
+  }
+
+  private logLifecycle(session: ActiveSession, event: string, detail?: string): void {
+    try {
+      const activityEvent = createActivityEvent({
+        deployId: session.record.deploymentId,
+        kind: "text",
+        source: "session-hub",
+        body: detail ? `${event}: ${detail}` : event,
+        metadata: { event, sessionId: session.record.id, model: session.record.model, ...(detail ? { detail } : {}) },
+      });
+      appendActivityEvent(activityEvent, resolve(getDeploymentDir(session.record.deploymentId), "activity.jsonl"));
+    } catch {
+      // Logging is best-effort; never let it crash session lifecycle.
+    }
   }
 }
 

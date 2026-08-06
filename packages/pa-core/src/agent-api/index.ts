@@ -74,6 +74,8 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
   app.get("/ws/session", upgradeWebSocket(() => {
     let activeSessionId: string | undefined;
+    const pendingMessages: string[] = [];
+    let sessionWs: { send(message: string): void; readyState: number } = { send(message: string) { pendingMessages.push(message); }, readyState: 3 };
     const sink = {
       send(event: SessionStreamEvent): void {
         // WSContext.send is provided by @hono/node-ws at runtime; readyState 1 = OPEN.
@@ -81,10 +83,16 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
         try { sessionWs.send(JSON.stringify(event)); } catch { /* socket closed */ }
       },
     };
-    let sessionWs: { send(message: string): void; readyState: number } = { send() {}, readyState: 3 };
     return {
       onOpen(_event, ws) {
         sessionWs = ws as unknown as { send(message: string): void; readyState: number };
+        // Flush any messages buffered before the WebSocket opened.
+        while (pendingMessages.length > 0) {
+          const buffered = pendingMessages.shift();
+          if (buffered !== undefined) {
+            try { sessionWs.send(buffered); } catch { /* socket closed during flush */ }
+          }
+        }
       },
       onMessage(event) {
         let parsed: Record<string, unknown>;
