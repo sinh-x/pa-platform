@@ -1,4 +1,5 @@
 import type { AutonomyLevel } from "../types.js";
+import type { SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
 export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
@@ -57,6 +58,14 @@ export interface CoreExecutionHooks {
   serve?(action: "start" | "stop" | "restart" | "status"): Promise<{ status: string; message?: string }> | { status: string; message?: string };
   selfUpdate?(): Promise<SelfUpdateStartResult> | SelfUpdateStartResult;
   getSelfUpdateStatus?(): Promise<SelfUpdateStatusResult> | SelfUpdateStatusResult;
+  /**
+   * Optional activity-event normalizer injected by the runtime adapter
+   * (e.g. opencodeJsonToActivityEvent from @pa-platform/opencode-pa).
+   * When provided, the Agent API session hub uses it to normalize raw
+   * opencode JSONL output into structured ActivityEvents streamed over
+   * the /ws/session WebSocket endpoint.
+   */
+  sessionNormalizer?: SessionEventNormalizer;
 }
 
 export interface SanitizeResult {

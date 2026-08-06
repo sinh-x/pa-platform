@@ -18,3 +18,4 @@ export * from "./actions.js";
 export * from "./skills.js";
 export * from "./knowledge.js";
 export * from "./dashboard.js";
+export * from "./sessions.js";
