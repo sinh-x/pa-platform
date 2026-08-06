@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { SessionManager, type SessionStreamEvent, type SessionStreamSink, type SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
+import { PA_OPENCODE_BINARY_ENV, resolveBinary, SessionManager, type SessionStreamEvent, type SessionStreamSink, type SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 import { createActivityEvent } from "../activity/index.js";
 
 class FakeChild extends EventEmitter {
@@ -30,14 +30,22 @@ interface FakeSpawnOptions {
   stdio?: unknown;
 }
 
-function createFakeSpawn(children: FakeChild[] = []): { fn: typeof import("node:child_process").spawn; children: FakeChild[] } {
+interface SpawnedCall {
+  command: string;
+  args: string[];
+  opts: FakeSpawnOptions;
+}
+
+function createFakeSpawn(children: FakeChild[] = []): { fn: typeof import("node:child_process").spawn; children: FakeChild[]; calls: SpawnedCall[] } {
   const list = children;
-  const fn = ((_command: string, _args: string[], _opts: FakeSpawnOptions): FakeChild => {
+  const calls: SpawnedCall[] = [];
+  const fn = ((command: string, args: string[], opts: FakeSpawnOptions): FakeChild => {
+    calls.push({ command, args, opts });
     const child = new FakeChild();
     list.push(child);
     return child as unknown as import("node:child_process").ChildProcess;
   }) as unknown as typeof import("node:child_process").spawn;
-  return { fn, children: list };
+  return { fn, children: list, calls };
 }
 
 test("SessionManager.start spawns opencode with model, --dangerously-skip-permissions, --format json, and prompt", () => {
@@ -300,4 +308,177 @@ test("SessionManager does not emit events after termination", () => {
   child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "text", text: "late" }) + "\n"));
 
   assert.equal(sink.events.length, beforeCount);
+});
+
+test("resolveBinary returns explicitPath when provided (takes precedence over dev mode env var)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "/env/bin/opencode";
+  try {
+    assert.equal(
+      resolveBinary({ devMode: true, explicitPath: "/explicit/opencode", env: process.env }),
+      "/explicit/opencode",
+    );
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("resolveBinary reads PA_OPENCODE_BINARY env var in dev mode", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "/custom/bin/opencode";
+  try {
+    assert.equal(
+      resolveBinary({ devMode: true, env: process.env }),
+      "/custom/bin/opencode",
+    );
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("resolveBinary falls back to 'opencode' on PATH in dev mode when env var unset", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  delete process.env[PA_OPENCODE_BINARY_ENV];
+  try {
+    assert.equal(resolveBinary({ devMode: true, env: process.env }), "opencode");
+  } finally {
+    if (previous !== undefined) process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("resolveBinary ignores PA_OPENCODE_BINARY env var in production mode (devMode=false) — zero behavior change (FR4)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "/should/be/ignored/opencode";
+  try {
+    assert.equal(resolveBinary({ devMode: false, env: process.env }), "opencode");
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("resolveBinary treats empty/whitespace PA_OPENCODE_BINARY as unset (falls back to PATH)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "   ";
+  try {
+    assert.equal(resolveBinary({ devMode: true, env: process.env }), "opencode");
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("SessionManager spawns from binaryPath option when provided (AC1)", () => {
+  const { fn, calls } = createFakeSpawn();
+  const mgr = new SessionManager({
+    spawnFn: fn,
+    maxSessions: 3,
+    binaryPath: "/explicit/path/to/opencode",
+  });
+  const sink = new CapturingSink();
+  const result = mgr.start({ prompt: "Hello" }, sink);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0]?.command, "/explicit/path/to/opencode");
+});
+
+test("SessionManager spawns from PA_OPENCODE_BINARY env var in dev mode (FR3/AC1)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "/dev/bin/opencode";
+  try {
+    const { fn, calls } = createFakeSpawn();
+    const mgr = new SessionManager({
+      spawnFn: fn,
+      maxSessions: 3,
+      devMode: true,
+      env: process.env,
+    });
+    const sink = new CapturingSink();
+    const result = mgr.start({ prompt: "Hello" }, sink);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls[0]?.command, "/dev/bin/opencode");
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("SessionManager falls back to 'opencode' on PATH in dev mode when PA_OPENCODE_BINARY unset (FR3 fallback)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  delete process.env[PA_OPENCODE_BINARY_ENV];
+  try {
+    const { fn, calls } = createFakeSpawn();
+    const mgr = new SessionManager({
+      spawnFn: fn,
+      maxSessions: 3,
+      devMode: true,
+      env: process.env,
+    });
+    const sink = new CapturingSink();
+    const result = mgr.start({ prompt: "Hello" }, sink);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls[0]?.command, "opencode");
+  } finally {
+    if (previous !== undefined) process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("SessionManager production mode (no devMode, no binaryPath) spawns 'opencode' — identical to current behavior (NFR1/AC6)", () => {
+  const previous = process.env[PA_OPENCODE_BINARY_ENV];
+  process.env[PA_OPENCODE_BINARY_ENV] = "/should/be/ignored/opencode";
+  try {
+    const { fn, calls } = createFakeSpawn();
+    const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3, env: process.env });
+    const sink = new CapturingSink();
+    const result = mgr.start({ prompt: "Hello" }, sink);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls[0]?.command, "opencode");
+  } finally {
+    if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+    else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+  }
+});
+
+test("SessionManager ENOENT error includes attempted binary path in async error event (FR5/AC4)", () => {
+  const { fn, children } = createFakeSpawn();
+  const mgr = new SessionManager({
+    spawnFn: fn,
+    maxSessions: 3,
+    binaryPath: "/missing/opencode",
+  });
+  const sink = new CapturingSink();
+  const result = mgr.start({ prompt: "Hello" }, sink);
+  if (!result.ok) throw new Error("expected start to succeed");
+
+  const child = children[0]!;
+  const enoent = Object.assign(new Error("spawn /missing/opencode ENOENT"), { code: "ENOENT" });
+  child.emit("error", enoent);
+
+  const errorEvent = sink.events.find((e) => e.type === "error");
+  assert.ok(errorEvent, "expected an error event");
+  assert.ok(errorEvent?.message?.includes("/missing/opencode"), "error message must include the attempted binary path");
+  assert.ok(errorEvent?.message?.includes("ENOENT"), "error message must mention ENOENT");
+});
+
+test("SessionManager ENOENT on sync spawn throw returns error including attempted binary path (FR5/AC4)", () => {
+  const throwFn = ((): import("node:child_process").ChildProcess => {
+    throw Object.assign(new Error("spawn /missing/opencode ENOENT"), { code: "ENOENT" });
+  }) as unknown as typeof import("node:child_process").spawn;
+  const mgr = new SessionManager({
+    spawnFn: throwFn,
+    maxSessions: 3,
+    binaryPath: "/missing/opencode",
+  });
+  const sink = new CapturingSink();
+  const result = mgr.start({ prompt: "Hello" }, sink);
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.ok(result.error.includes("/missing/opencode"), "error must include attempted binary path");
+  assert.ok(result.error.includes("ENOENT"), "error must mention ENOENT");
 });

@@ -58,12 +58,60 @@ export interface SessionManagerOptions {
    * 128KB (131072 bytes).
    */
   maxPromptLength?: number;
+  /**
+   * When true, binary resolution consults the {@link PA_OPENCODE_BINARY_ENV}
+   * environment variable before falling back to "opencode" on PATH. When false
+   * (the default), the binary is always resolved as "opencode" on PATH —
+   * preserving the production behavior. See FR3/FR4.
+   */
+  devMode?: boolean;
+  /**
+   * Explicit opencode binary path to spawn. Takes precedence over
+   * {@link devMode} env-var resolution. When omitted, resolution falls back
+   * to {@link resolveBinary}.
+   */
+  binaryPath?: string;
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
 const DEFAULT_MODEL = "ollama-cloud/deepseek-v4-pro";
 const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_PROMPT_LENGTH = 128 * 1024;
+const DEFAULT_BINARY = "opencode";
+
+/**
+ * Environment variable consulted by {@link resolveBinary} when an explicit
+ * binary path is not provided. In dev mode, setting this to an absolute path
+ * (e.g. `PA_OPENCODE_BINARY=/usr/local/bin/opencode`) overrides the PATH
+ * fallback. See FR3.
+ */
+export const PA_OPENCODE_BINARY_ENV = "PA_OPENCODE_BINARY";
+
+/**
+ * Resolve the opencode binary path to spawn.
+ *
+ * Resolution order (FR3/FR4):
+ *   1. `explicitPath` — caller-supplied override (e.g. CLI flag).
+ *   2. `PA_OPENCODE_BINARY` env var — when `devMode` is true.
+ *   3. `"opencode"` on PATH — production default, identical to prior behavior.
+ *
+ * Returns the resolved command string. No PATH lookup I/O is performed —
+ * Node's `spawn` resolves the PATH at spawn time, keeping this function under
+ * the 1ms budget (NFR2).
+ */
+export function resolveBinary(opts: {
+  devMode?: boolean;
+  explicitPath?: string;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  if (opts.explicitPath) return opts.explicitPath;
+  if (opts.devMode) {
+    const env = opts.env ?? process.env;
+    const override = env[PA_OPENCODE_BINARY_ENV];
+    if (override && override.trim().length > 0) return override;
+  }
+  return DEFAULT_BINARY;
+}
 
 interface ActiveSession {
   record: SessionRecord;
@@ -95,6 +143,8 @@ export class SessionManager {
   private readonly now: () => Date;
   private readonly terminationTimeoutMs: number;
   private readonly maxPromptLength: number;
+  private readonly devMode: boolean;
+  private readonly binaryPath: string;
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -107,6 +157,12 @@ export class SessionManager {
     this.now = opts.now ?? (() => new Date());
     this.terminationTimeoutMs = opts.terminationTimeoutMs ?? DEFAULT_TERMINATION_TIMEOUT_MS;
     this.maxPromptLength = opts.maxPromptLength ?? DEFAULT_MAX_PROMPT_LENGTH;
+    this.devMode = opts.devMode ?? false;
+    this.binaryPath = resolveBinary({
+      devMode: this.devMode,
+      explicitPath: opts.binaryPath,
+      env: this.env,
+    });
   }
 
   get limit(): number {
@@ -174,9 +230,13 @@ export class SessionManager {
       this.spawnOpencode(session, opts);
     } catch (error) {
       this.sessions.delete(newId);
-      this.logLifecycle(session, "session_spawn_error", error instanceof Error ? error.message : String(error));
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `Failed to spawn opencode: ${message}`, limit: this.maxSessions };
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const isEnoent = error instanceof Error && (error as Error & { code?: string }).code === "ENOENT";
+      const message = isEnoent
+        ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+        : `Failed to spawn opencode: ${rawMessage}`;
+      this.logLifecycle(session, "session_spawn_error", message);
+      return { ok: false, error: message, limit: this.maxSessions };
     }
     return { ok: true, session: { ...record } };
   }
@@ -235,7 +295,7 @@ export class SessionManager {
     if (opts.sessionId) args.push("--session", opts.sessionId);
     args.push("--format", "json");
     args.push(opts.prompt);
-    const child = this.spawnFn("opencode", args, {
+    const child = this.spawnFn(this.binaryPath, args, {
       cwd: opts.cwd ?? this.cwd,
       env: { ...this.env, ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -244,7 +304,7 @@ export class SessionManager {
 
     child.stdout?.on("data", (chunk: Buffer) => this.handleStdout(session, chunk));
     child.stderr?.on("data", (chunk: Buffer) => this.handleStderr(session, chunk));
-    child.on("error", (error: Error) => this.handleError(session, error));
+    child.on("error", (error: Error & { code?: string }) => this.handleError(session, error));
     child.on("close", (code: number | null) => this.handleClose(session, code));
   }
 
@@ -284,10 +344,13 @@ export class SessionManager {
     }
   }
 
-  private handleError(session: ActiveSession, error: Error): void {
+  private handleError(session: ActiveSession, error: Error & { code?: string }): void {
     if (session.terminated) return;
-    this.emitEvent(session, { type: "error", message: error.message });
-    this.logLifecycle(session, "session_error", error.message);
+    const message = isEnoentError(error)
+      ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+      : error.message;
+    this.emitEvent(session, { type: "error", message });
+    this.logLifecycle(session, "session_error", message);
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
@@ -346,6 +409,10 @@ export class SessionManager {
       // Logging is best-effort; never let it crash session lifecycle.
     }
   }
+}
+
+function isEnoentError(error: Error & { code?: string }): boolean {
+  return error.code === "ENOENT";
 }
 
 function activityEventToData(event: ActivityEvent): Record<string, unknown> {
