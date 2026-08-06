@@ -258,11 +258,27 @@ test("phase 4 regression: opa deploy rejects removed TUI flags and mutually excl
   });
 });
 
-test("phase 4 regression: opa deploy still hard-fails when no ticket id is resolvable (traceability invariant unchanged)", async () => {
-  await withOpaEnv(async () => {
+test("phase 4 regression: opa deploy still hard-fails when require_ticket mode lacks a ticket id (traceability invariant unchanged)", async () => {
+  await withOpaEnv(async (root) => {
+    writeFileSync(join(root, "teams", "builder.yaml"), [
+      "name: builder",
+      "description: Builder",
+      "default_mode: implement",
+      "objective: Build",
+      "agents:",
+      "  - name: builder-agent",
+      "    role: Builds things",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    mode_type: work",
+      "    provider: openai",
+      "    model: gpt-5.3-codex-spark",
+      "    require_ticket: true",
+    ].join("\n"));
     delete process.env["PA_TICKET_ID"];
     const stderr: string[] = [];
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.equal(code, 1);
     assert.match(stderr.join("\n"), /Hard block: no resolvable ticket id/);
     assert.equal(queryDeploymentStatuses().length, 0);
