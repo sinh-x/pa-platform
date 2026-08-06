@@ -99,6 +99,13 @@ function writeBuilderTeamConfig(root: string): void {
     "    mode_type: work",
     "    provider: openai",
     "    model: gpt-5.3-codex-spark",
+    "    require_ticket: true",
+    "  - id: orchestrator",
+    "    label: Orchestrator",
+    "    mode_type: work",
+    "    provider: openai",
+    "    model: gpt-5.3-codex-spark",
+    "    require_ticket: true",
     "  - id: routine",
     "    label: Routine",
     "    mode_type: work",
@@ -108,6 +115,24 @@ function writeBuilderTeamConfig(root: string): void {
     "    label: Data Analysis",
     "    mode_type: interactive",
     "    provider: openai",
+  ].join("\n"));
+}
+
+function writeRequirementsTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "requirements.yaml"), [
+    "name: requirements",
+    "description: Requirements",
+    "default_mode: analyze",
+    "objective: Analyze",
+    "agents:",
+    "  - name: researcher",
+    "    role: Researches",
+    "deploy_modes:",
+    "  - id: analyze",
+    "    label: Analyze",
+    "    mode_type: work",
+    "    provider: openai",
+    "    model: gpt-5.5",
   ].join("\n"));
 }
 
@@ -718,15 +743,146 @@ test("opa deploy rejects mutually exclusive background and dry-run flags", async
   });
 });
 
-test("opa deploy hard-fails when no ticket id is resolvable", async () => {
-  await withOpaEnv(async () => {
+test("opa deploy hard-fails when require_ticket mode is selected and no ticket id is resolvable (AC1)", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
     delete process.env["PA_TICKET_ID"];
     const stderr: string[] = [];
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.equal(code, 1);
     assert.match(stderr.join("\n"), /Hard block: no resolvable ticket id/);
     assert.match(stderr.join("\n"), /Provide --ticket <id> or set PA_TICKET_ID/);
     assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa deploy proceeds when require_ticket is false and no ticket id is resolvable (AC2)", async () => {
+  await withOpaEnv(async (root) => {
+    writeFileSync(join(root, "teams", "flex.yaml"), [
+      "name: flex",
+      "description: Flex",
+      "default_mode: optional",
+      "objective: Flex",
+      "agents:",
+      "  - name: flex-agent",
+      "    role: flex",
+      "deploy_modes:",
+      "  - id: optional",
+      "    label: Optional",
+      "    mode_type: work",
+      "    provider: openai",
+      "    model: gpt-5.5",
+      "    require_ticket: false",
+    ].join("\n"));
+    delete process.env["PA_TICKET_ID"];
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "flex", "--mode", "optional", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.ok(existsSync(join(root, "deployments", deployId, "primer.md")));
+  });
+});
+
+test("opa deploy builder --mode implement hard-fails without --ticket (AC3)", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    delete process.env["PA_TICKET_ID"];
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.equal(code, 1);
+    assert.match(stderr.join("\n"), /Hard block: no resolvable ticket id/);
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa deploy builder --mode orchestrator hard-fails without --ticket (AC4)", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    delete process.env["PA_TICKET_ID"];
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "orchestrator", "--dry-run"], { hooks: createOpencodeHooks(new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } })), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
+    assert.equal(code, 1);
+    assert.match(stderr.join("\n"), /Hard block: no resolvable ticket id/);
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("opa deploy requirements --mode analyze succeeds without --ticket (AC5)", async () => {
+  await withOpaEnv(async (root) => {
+    writeRequirementsTeamConfig(root);
+    delete process.env["PA_TICKET_ID"];
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.ok(existsSync(join(root, "deployments", deployId, "primer.md")));
+  });
+});
+
+test("opa deploy proceeds when require_ticket is true and a valid --ticket is provided (AC6)", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--dry-run", "--ticket", "PAP-200"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
+    assert.match(primer, /ticket_id: PAP-200/);
+  });
+});
+
+test("opa deploy treats absent require_ticket field as ticket-optional (FR6 conservative fallback)", async () => {
+  await withOpaEnv(async (root) => {
+    writeFileSync(join(root, "teams", "bare.yaml"), [
+      "name: bare",
+      "description: Bare",
+      "default_mode: plain",
+      "objective: Bare",
+      "agents:",
+      "  - name: bare-agent",
+      "    role: bare",
+      "deploy_modes:",
+      "  - id: plain",
+      "    label: Plain",
+      "    mode_type: work",
+      "    provider: openai",
+      "    model: gpt-5.5",
+    ].join("\n"));
+    delete process.env["PA_TICKET_ID"];
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "bare", "--mode", "plain", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.ok(existsSync(join(root, "deployments", deployId, "primer.md")));
+  });
+});
+
+test("opa deploy treats unresolved mode as ticket-optional (FR6 no-mode fallback)", async () => {
+  await withOpaEnv(async (root) => {
+    writeFileSync(join(root, "teams", "nomode.yaml"), [
+      "name: nomode",
+      "description: NoMode",
+      "objective: NoMode",
+      "agents:",
+      "  - name: nomode-agent",
+      "    role: nomode",
+    ].join("\n"));
+    delete process.env["PA_TICKET_ID"];
+    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "nomode", "--dry-run"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.ok(existsSync(join(root, "deployments", deployId, "primer.md")));
   });
 });
 

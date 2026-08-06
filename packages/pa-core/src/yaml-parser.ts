@@ -38,6 +38,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       timeout: mode["timeout"] as number | undefined,
       global_docs: mode["global_docs"] as string[] | undefined,
       runtimes: parseRuntimes(mode["runtimes"] as Record<string, unknown> | undefined),
+      require_ticket: mode["require_ticket"] as boolean | undefined,
     };
   });
 

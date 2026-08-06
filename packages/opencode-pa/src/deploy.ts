@@ -73,15 +73,17 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const selectedMode = selectDeployMode(teamConfig, request.mode);
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  if (!ticketId) {
+  if (!ticketId && selectedMode?.require_ticket === true) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: "Hard block: no resolvable ticket id. Provide --ticket <id> or set PA_TICKET_ID before deploying. The opencode adapter refuses to launch without a ticket for traceability." };
   }
   let sessionName: string | undefined;
-  try {
-    const ticket = new TicketStore().get(ticketId);
-    sessionName = deriveSessionName({ ticketId, ticketTitle: ticket?.title, mode: request.mode ?? teamConfig.default_mode, deploymentId });
-  } catch {
-    console.warn(`Failed to derive session name from ticket ${ticketId}: ticket file may be corrupt, continuing without session name`);
+  if (ticketId) {
+    try {
+      const ticket = new TicketStore().get(ticketId);
+      sessionName = deriveSessionName({ ticketId, ticketTitle: ticket?.title, mode: request.mode ?? teamConfig.default_mode, deploymentId });
+    } catch {
+      console.warn(`Failed to derive session name from ticket ${ticketId}: ticket file may be corrupt, continuing without session name`);
+    }
   }
   const paths = getDeployPaths(deploymentId);
   const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
