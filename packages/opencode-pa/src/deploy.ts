@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -48,6 +48,34 @@ export function deriveSessionName(args: {
   const modeLabel = args.mode ?? "default";
   const raw = `${args.ticketId}: ${sanitized} (${modeLabel}, ${args.deploymentId})`;
   return raw.length > 128 ? raw.slice(0, 128) : raw;
+}
+
+/**
+ * PAP-131 FR8 / AC8: best-effort registration of a CLI `opa deploy` session
+ * with the running `pa-core serve` Agent API. Resolves the server port from
+ * the serve PID file (falling back to {@link DEFAULT_SERVE_PORT}) and POSTs
+ * `{ deploymentId, model }` to `POST /api/sessions`. Any failure (server not
+ * running, network error, non-2xx response) is swallowed and logged to stderr
+ * so the deploy itself never fails due to registration.
+ */
+export async function registerDeploySessionBestEffort(args: { deploymentId: string; model: string }): Promise<void> {
+  const pidInfo = readServePidFile();
+  const port = pidInfo?.port ?? DEFAULT_SERVE_PORT;
+  const url = `http://${DEFAULT_SERVE_HOST}:${port}/api/sessions`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deploymentId: args.deploymentId, model: args.model }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!response.ok) {
+      process.stderr.write(`opa deploy: session registration returned ${response.status} ${response.statusText} from ${url} (deploy continues)\n`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`opa deploy: session registration failed (${reason}) — deploy continues\n`);
+  }
 }
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
@@ -109,6 +137,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
 
   if (request.dryRun) {
     writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
+    await registerDeploySessionBestEffort({ deploymentId, model });
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
 
@@ -140,6 +169,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `opencode background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
+      await registerDeploySessionBestEffort({ deploymentId, model });
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
     // Finalization appends to activity.jsonl instead of overwriting — live events from
@@ -158,9 +188,11 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
       : `opa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    return result.exitCode === 0
-      ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
-      : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
+    if (result.exitCode === 0) {
+      await registerDeploySessionBestEffort({ deploymentId, model });
+      return { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId };
+    }
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
   } catch (error) {
     emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
