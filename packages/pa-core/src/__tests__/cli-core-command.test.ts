@@ -2151,3 +2151,59 @@ test("runCoreCommand exposes signal collect reprocess dry-run", async () => {
     assert.match(signal.stdout.join("\n"), /ticket-task/);
   });
 });
+
+// ---- Phase 3: serve.ts --dev flag parsing (FR1) ----
+//
+// `--dev` is accepted on start/restart and rejected on stop/status. The
+// `PA_DEV_MODE` env var also activates dev mode (FR2). These tests exercise the
+// parsing surface that does not bind a port: --help text and stop/status
+// rejection. Full start-path propagation is covered by the agent-api layer
+// dev mode tests (createAgentApiApp devMode → SessionManager).
+
+test("runCoreCommand serve --help documents --dev flag for start action (FR1)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "--help"], { io: captured.io }), 0);
+    assert.match(captured.stdout.join("\n"), /--dev/);
+  });
+});
+
+test("runCoreCommand serve start --help documents --dev flag (FR1)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "start", "--help"], { io: captured.io }), 0);
+    assert.match(captured.stdout.join("\n"), /--dev/);
+  });
+});
+
+test("runCoreCommand serve restart --help documents --dev flag (FR1)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "restart", "--help"], { io: captured.io }), 0);
+    assert.match(captured.stdout.join("\n"), /--dev/);
+  });
+});
+
+test("runCoreCommand serve stop rejects --dev flag (FR1 — --dev only on start/restart)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "stop", "--dev"], { io: captured.io }), 1);
+    assert.match(captured.stderr.join("\n"), /stop only supports --host and --port options/);
+  });
+});
+
+test("runCoreCommand serve status rejects --dev flag (FR1 — --dev only on start/restart)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "status", "--dev"], { io: captured.io }), 1);
+    assert.match(captured.stderr.join("\n"), /status only supports --host and --port options/);
+  });
+});
+
+test("runCoreCommand serve stop rejects --cors, --force, --background alongside --dev (parser order independent)", async () => {
+  await withCliEnv(async () => {
+    const captured = capture();
+    assert.equal(await runCoreCommand(["serve", "stop", "--cors"], { io: captured.io }), 1);
+    assert.match(captured.stderr.join("\n"), /stop only supports --host and --port options/);
+  });
+});

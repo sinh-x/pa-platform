@@ -9,6 +9,7 @@ import test from "node:test";
 import { serve } from "@hono/node-server";
 import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
 import type { WsClient, WsEvent } from "../index.js";
+import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -883,14 +884,16 @@ class FakeOpencodeChild extends EventEmitter {
   }
 }
 
-function createSessionSpawnSpy(): { fn: typeof import("node:child_process").spawn; children: FakeOpencodeChild[] } {
+function createSessionSpawnSpy(): { fn: typeof import("node:child_process").spawn; children: FakeOpencodeChild[]; commands: string[] } {
   const list: FakeOpencodeChild[] = [];
-  const fn = ((_cmd: string, _args: string[], _opts: unknown): FakeOpencodeChild => {
+  const commands: string[] = [];
+  const fn = ((cmd: string, _args: string[], _opts: unknown): FakeOpencodeChild => {
+    commands.push(cmd);
     const child = new FakeOpencodeChild();
     list.push(child);
     return child as unknown as import("node:child_process").ChildProcess;
   }) as unknown as typeof import("node:child_process").spawn;
-  return { fn, children: list };
+  return { fn, children: list, commands };
 }
 
 interface SessionWsMessage {
@@ -1442,6 +1445,117 @@ test("GET /api/sessions/:id/stream returns 404 for unknown session", async () =>
     } finally {
       api.cleanup();
       if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+// ---- Phase 3: dev mode propagation through agent-api → SessionManager (FR6) ----
+//
+// These tests verify that `devMode` on `AgentApiOptions` threads through to the
+// `SessionManager` so that binary resolution consults `PA_OPENCODE_BINARY` only
+// in dev mode (FR3) and falls back to `"opencode"` in production (FR4/NFR1).
+// The /ws/session WebSocket endpoint is the observable seam: the spawn command
+// captured by the injected `sessionSpawnFn` reflects the resolved binary path.
+
+test("createAgentApiApp devMode:true propagates to SessionManager — /ws/session start spawns PA_OPENCODE_BINARY (FR3/FR6/AC1)", async () => {
+  await withApiEnv(async () => {
+    const previous = process.env[PA_OPENCODE_BINARY_ENV];
+    process.env[PA_OPENCODE_BINARY_ENV] = "/dev/bin/opencode";
+    try {
+      const { fn, commands } = createSessionSpawnSpy();
+      const api = createAgentApiApp({ devMode: true, sessionSpawnFn: fn });
+      let server: Server | undefined;
+      try {
+        server = await new Promise<Server>((resolveListen) => {
+          const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+          api.injectWebSocket(listening);
+        });
+        const port = (server.address() as { port: number }).port;
+        const ws = await openSessionWs(port);
+        await new Promise<void>((resolveOpen, rejectOpen) => {
+          ws.addEventListener("open", () => resolveOpen(), { once: true });
+          ws.addEventListener("error", (e) => rejectOpen(new Error(`ws connect failed: ${String(e)}`)), { once: true });
+        });
+        ws.send(JSON.stringify({ type: "start", prompt: "Hello" }));
+        await recvSessionMessages(ws, 1);
+        ws.close();
+      } finally {
+        api.cleanup();
+        if (server) await new Promise<void>((r) => server!.close(() => r()));
+      }
+      // The spawn spy captures the resolved binary path as the first arg.
+      assert.equal(commands[0], "/dev/bin/opencode");
+    } finally {
+      if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+      else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+    }
+  });
+});
+
+test("createAgentApiApp devMode:false ignores PA_OPENCODE_BINARY — /ws/session start spawns 'opencode' (FR4/NFR1 production no-regression)", async () => {
+  await withApiEnv(async () => {
+    const previous = process.env[PA_OPENCODE_BINARY_ENV];
+    process.env[PA_OPENCODE_BINARY_ENV] = "/should/be/ignored/opencode";
+    try {
+      const { fn, commands } = createSessionSpawnSpy();
+      const api = createAgentApiApp({ devMode: false, sessionSpawnFn: fn });
+      let server: Server | undefined;
+      try {
+        server = await new Promise<Server>((resolveListen) => {
+          const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+          api.injectWebSocket(listening);
+        });
+        const port = (server.address() as { port: number }).port;
+        const ws = await openSessionWs(port);
+        await new Promise<void>((resolveOpen, rejectOpen) => {
+          ws.addEventListener("open", () => resolveOpen(), { once: true });
+          ws.addEventListener("error", (e) => rejectOpen(new Error(`ws connect failed: ${String(e)}`)), { once: true });
+        });
+        ws.send(JSON.stringify({ type: "start", prompt: "Hello" }));
+        await recvSessionMessages(ws, 1);
+        ws.close();
+      } finally {
+        api.cleanup();
+        if (server) await new Promise<void>((r) => server!.close(() => r()));
+      }
+      assert.equal(commands[0], "opencode");
+    } finally {
+      if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+      else process.env[PA_OPENCODE_BINARY_ENV] = previous;
+    }
+  });
+});
+
+test("createAgentApiApp without devMode defaults to production — /ws/session start spawns 'opencode' (FR4 default)", async () => {
+  await withApiEnv(async () => {
+    const previous = process.env[PA_OPENCODE_BINARY_ENV];
+    process.env[PA_OPENCODE_BINARY_ENV] = "/should/be/ignored/opencode";
+    try {
+      const { fn, commands } = createSessionSpawnSpy();
+      const api = createAgentApiApp({ sessionSpawnFn: fn });
+      let server: Server | undefined;
+      try {
+        server = await new Promise<Server>((resolveListen) => {
+          const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+          api.injectWebSocket(listening);
+        });
+        const port = (server.address() as { port: number }).port;
+        const ws = await openSessionWs(port);
+        await new Promise<void>((resolveOpen, rejectOpen) => {
+          ws.addEventListener("open", () => resolveOpen(), { once: true });
+          ws.addEventListener("error", (e) => rejectOpen(new Error(`ws connect failed: ${String(e)}`)), { once: true });
+        });
+        ws.send(JSON.stringify({ type: "start", prompt: "Hello" }));
+        await recvSessionMessages(ws, 1);
+        ws.close();
+      } finally {
+        api.cleanup();
+        if (server) await new Promise<void>((r) => server!.close(() => r()));
+      }
+      assert.equal(commands[0], "opencode");
+    } finally {
+      if (previous === undefined) delete process.env[PA_OPENCODE_BINARY_ENV];
+      else process.env[PA_OPENCODE_BINARY_ENV] = previous;
     }
   });
 });

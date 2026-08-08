@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { RuntimeAdapter } from "../runtime-api/types.js";
 import type { RuntimeName } from "../types.js";
+import { resolveBinary } from "../agent-api/ws/session-hub.js";
 
 export interface RunCliOptions {
   adapter: RuntimeAdapter;
@@ -24,7 +25,11 @@ export interface RunCliResult {
  */
 export async function runCli(options: RunCliOptions): Promise<RunCliResult> {
   const { adapter, binaryName, args = [], env = {}, cwd = process.cwd() } = options;
-  const binaryPath = resolveBinary(binaryName);
+  const binaryPath = resolveBinary({
+    devMode: Boolean(process.env["PA_DEV_MODE"]),
+    explicitPath: process.env["PA_OPENCODE_BINARY"] ?? binaryName,
+    env: process.env,
+  });
 
   return new Promise((resolve, reject) => {
     const child = spawn(binaryPath, args, {
@@ -54,12 +59,6 @@ export async function runCli(options: RunCliOptions): Promise<RunCliResult> {
       reject(err);
     });
   });
-}
-
-function resolveBinary(binaryName: string): string {
-  // Return binaryName to let it be found via PATH
-  // Binary resolution can be enhanced with explicit paths later
-  return binaryName;
 }
 
 export function createMockRuntimeAdapter(name: RuntimeName = "opencode"): RuntimeAdapter {
