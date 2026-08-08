@@ -174,7 +174,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
     };
   }));
   app.route("/", configRoutes());
-  app.route("/", deployControlRoutes(opts.hooks));
+  app.route("/", deployControlRoutes(opts.hooks, sessionManager));
   app.route("/", deploymentsRoutes());
   app.route("/", deployRoutingRoutes());
   app.route("/", deployStatusRoutes());

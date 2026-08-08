@@ -575,6 +575,42 @@ test("agent API defaults deploy requests to background mode when omitted", async
   });
 });
 
+test("agent API /api/deploy registers deploy session with SessionManager on success (PAP-131 FR2/AC1)", async () => {
+  await withApiEnv(async () => {
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: () => ({ status: "pending", deploymentId: "d-deploy-register" }),
+    } });
+
+    const deploy = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", teamModel: "ollama-cloud/glm-5.2", timeout: 120 }),
+    });
+    assert.equal(deploy.status, 202);
+    assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-deploy-register" });
+
+    const sessions = await app.request("/api/sessions");
+    assert.equal(sessions.status, 200);
+    const list = await sessions.json() as { id: string; deploymentId: string; model: string; status: string }[];
+    const deploySession = list.find((s) => s.deploymentId === "d-deploy-register");
+    assert.ok(deploySession, "deploy session must appear in GET /api/sessions");
+    assert.equal(deploySession?.model, "ollama-cloud/glm-5.2");
+    assert.equal(deploySession?.status, "running");
+  });
+});
+
+test("agent API /api/deploy does not register session on failed deploy (PAP-131 FR2)", async () => {
+  await withApiEnv(async () => {
+    const failing = createAgentApiApp({ hooks: { deploy: () => { throw new Error("adapter unavailable"); } } });
+    const failedDeploy = await failing.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan" }) });
+    assert.equal(failedDeploy.status, 202);
+
+    const sessions = await failing.app.request("/api/sessions");
+    const list = await sessions.json() as unknown[];
+    assert.equal(list.length, 0, "no session should be registered for a failed deploy");
+  });
+});
+
 test("agent API exposes /ws and broadcasts typed events to connected clients", async () => {
   await withApiEnv(async () => {
     const api = createAgentApiApp({ enableLiveUpdates: true });

@@ -204,6 +204,40 @@ export class SessionManager {
     return this.createSession(opts, sink);
   }
 
+  /**
+   * Register a deploy session without spawning a child process. Creates a
+   * {@link SessionRecord} with `child: null` so deploy sessions appear in
+   * `GET /api/sessions` alongside WebSocket sessions. Respects the
+   * `maxSessions` limit (NFR4 — combined count). Lifecycle events are logged
+   * best-effort; no I/O beyond the activity log append (NFR1).
+   */
+  register(deploymentId: string, model?: string): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+    if (this.atCapacity()) {
+      return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
+    }
+    const newId = this.allocateId();
+    const resolvedModel = model ?? this.defaultModel;
+    const record: SessionRecord = {
+      id: newId,
+      model: resolvedModel,
+      status: "running",
+      startedAt: nowUtc(this.now()),
+      deploymentId,
+    };
+    const session: ActiveSession = {
+      record,
+      child: null,
+      sinks: new Set<SessionStreamSink>(),
+      sessionIdParser: createSessionIdParser(),
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      terminated: false,
+    };
+    this.sessions.set(newId, session);
+    this.logLifecycle(session, "session_started");
+    return { ok: true, session: { ...record } };
+  }
+
   private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     const newId = this.allocateId();
     const model = opts.model ?? this.defaultModel;
