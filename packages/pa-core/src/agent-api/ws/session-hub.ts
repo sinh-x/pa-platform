@@ -182,6 +182,17 @@ export class SessionManager {
     return session ? { ...session.record } : undefined;
   }
 
+  /**
+   * Returns `true` if the session exists and has no child process (i.e. was
+   * registered via {@link register} as a deploy session rather than spawned
+   * via {@link start} / {@link resume}). Used by the stream endpoint to return
+   * a distinct 404 message for deploy sessions (FR6).
+   */
+  isDeploySession(id: string): boolean {
+    const session = this.sessions.get(id);
+    return session ? session.child === null : false;
+  }
+
   atCapacity(): boolean {
     return this.sessions.size >= this.maxSessions;
   }

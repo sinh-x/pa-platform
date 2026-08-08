@@ -1485,6 +1485,214 @@ test("GET /api/sessions/:id/stream returns 404 for unknown session", async () =>
   });
 });
 
+// ---- Phase 2 & 4: POST /api/sessions and deploy session stream behavior ----
+
+test("POST /api/sessions registers a deploy session that appears in GET /api/sessions (PAP-131 FR3/AC2)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deploymentId: "d-abc123", model: "ollama-cloud/deepseek-v4-pro" }),
+      });
+      assert.equal(res.status, 201);
+      const body = (await res.json()) as { sessionId: string; deploymentId: string; model: string; status: string };
+      assert.ok(typeof body.sessionId === "string" && body.sessionId.length > 0);
+      assert.equal(body.deploymentId, "d-abc123");
+      assert.equal(body.model, "ollama-cloud/deepseek-v4-pro");
+      assert.equal(body.status, "running");
+
+      const listRes = await api.app.request("/api/sessions");
+      assert.equal(listRes.status, 200);
+      const list = (await listRes.json()) as Array<Record<string, unknown>>;
+      const deploySession = list.find((s) => s["deploymentId"] === "d-abc123");
+      assert.ok(deploySession, "deploy session must appear in GET /api/sessions");
+      assert.equal(deploySession?.["model"], "ollama-cloud/deepseek-v4-pro");
+      assert.equal(deploySession?.["status"], "running");
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("POST /api/sessions defaults model when omitted (PAP-131 FR3)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deploymentId: "d-default-model" }),
+      });
+      assert.equal(res.status, 201);
+      const body = (await res.json()) as { model: string };
+      assert.ok(typeof body.model === "string" && body.model.length > 0);
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("POST /api/sessions rejects missing deploymentId with 400 (PAP-131 FR3)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    try {
+      const res = await api.app.request("/api/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "some-model" }),
+      });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { error: string; code: string };
+      assert.equal(body.code, "BAD_REQUEST");
+      assert.match(body.error, /Missing deploymentId/);
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+test("POST /api/sessions rejects invalid JSON with 400 (PAP-131 FR3)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    try {
+      const res = await api.app.request("/api/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "not-json",
+      });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { code: string };
+      assert.equal(body.code, "BAD_REQUEST");
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+test("POST /api/sessions returns 503 when at capacity (PAP-131 NFR4)", async () => {
+  await withApiEnv(async () => {
+    const previous = process.env["PA_MAX_SESSIONS"];
+    process.env["PA_MAX_SESSIONS"] = "1";
+    try {
+      const api = createAgentApiApp();
+      let server: Server | undefined;
+      try {
+        server = await new Promise<Server>((resolveListen) => {
+          const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+          api.injectWebSocket(listening);
+        });
+        const port = (server.address() as { port: number }).port;
+
+        const first = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deploymentId: "d-cap-1" }),
+        });
+        assert.equal(first.status, 201);
+
+        const second = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deploymentId: "d-cap-2" }),
+        });
+        assert.equal(second.status, 503);
+        const body = (await second.json()) as { error: string; code: string; limit: number };
+        assert.equal(body.code, "CAPACITY_REACHED");
+        assert.equal(body.limit, 1);
+      } finally {
+        api.cleanup();
+        if (server) await new Promise<void>((r) => server!.close(() => r()));
+      }
+    } finally {
+      if (previous === undefined) delete process.env["PA_MAX_SESSIONS"];
+      else process.env["PA_MAX_SESSIONS"] = previous;
+    }
+  });
+});
+
+test("POST /api/sessions/:id/stop removes a deploy session (PAP-131 AC3)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+
+      const registerRes = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deploymentId: "d-stop-test" }),
+      });
+      assert.equal(registerRes.status, 201);
+      const { sessionId } = (await registerRes.json()) as { sessionId: string };
+
+      const stopRes = await api.app.request(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, { method: "POST" });
+      assert.equal(stopRes.status, 200);
+      assert.deepEqual(await stopRes.json(), { status: "stopped" });
+
+      const listRes = await api.app.request("/api/sessions");
+      assert.deepEqual(await listRes.json(), []);
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
+test("GET /api/sessions/:id/stream returns 404 with distinct message for deploy sessions (PAP-131 FR6/AC4)", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp();
+    let server: Server | undefined;
+    try {
+      server = await new Promise<Server>((resolveListen) => {
+        const listening = serve({ fetch: api.app.fetch, port: 0, hostname: "127.0.0.1" }, () => resolveListen(listening));
+        api.injectWebSocket(listening);
+      });
+      const port = (server.address() as { port: number }).port;
+
+      const registerRes = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deploymentId: "d-stream-test" }),
+      });
+      assert.equal(registerRes.status, 201);
+      const { sessionId } = (await registerRes.json()) as { sessionId: string };
+
+      const streamRes = await fetch(`http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
+        headers: { Accept: "text/event-stream" },
+      });
+      assert.equal(streamRes.status, 404);
+      const body = (await streamRes.json()) as { error: string; code: string };
+      assert.equal(body.error, "Deploy sessions do not support streaming");
+      assert.equal(body.code, "NOT_FOUND");
+    } finally {
+      api.cleanup();
+      if (server) await new Promise<void>((r) => server!.close(() => r()));
+    }
+  });
+});
+
 // ---- Phase 3: dev mode propagation through agent-api → SessionManager (FR6) ----
 //
 // These tests verify that `devMode` on `AgentApiOptions` threads through to the
