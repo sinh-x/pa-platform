@@ -482,3 +482,108 @@ test("SessionManager ENOENT on sync spawn throw returns error including attempte
   assert.ok(result.error.includes("/missing/opencode"), "error must include attempted binary path");
   assert.ok(result.error.includes("ENOENT"), "error must mention ENOENT");
 });
+
+test("SessionManager.register creates a session record without spawning a child process (FR1)", () => {
+  const { fn, calls } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3, now: () => new Date("2026-08-08T00:00:00.000Z") });
+  const result = mgr.register("d-abc123", "ollama-cloud/deepseek-v4-pro");
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(calls.length, 0, "register must not spawn a child process");
+  assert.match(result.session.id, /^s/);
+  assert.equal(result.session.deploymentId, "d-abc123");
+  assert.equal(result.session.model, "ollama-cloud/deepseek-v4-pro");
+  assert.equal(result.session.status, "running");
+  assert.equal(result.session.startedAt, "2026-08-08T00:00:00.000Z");
+  assert.equal(mgr.activeCount, 1);
+  assert.equal(mgr.get(result.session.id)?.deploymentId, "d-abc123");
+});
+
+test("SessionManager.register uses default model when model not provided (FR1)", () => {
+  const { fn } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3, defaultModel: "openai/gpt-5.5" });
+  const result = mgr.register("d-test456");
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.session.model, "openai/gpt-5.5");
+});
+
+test("SessionManager.register appears in list alongside WebSocket sessions (FR4/NFR4 combined count)", () => {
+  const { fn } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 5 });
+  const sink = new CapturingSink();
+  mgr.start({ prompt: "ws-prompt" }, sink);
+  const regResult = mgr.register("d-deploy789", "minimax/abab-7");
+
+  assert.equal(regResult.ok, true);
+  const records = mgr.list();
+  assert.equal(records.length, 2);
+  const deploySession = records.find((r) => r.deploymentId === "d-deploy789");
+  assert.ok(deploySession, "deploy session must appear in list");
+  assert.equal(deploySession?.model, "minimax/abab-7");
+  assert.equal(deploySession?.status, "running");
+});
+
+test("SessionManager.register respects maxSessions limit (FR1/NFR4)", () => {
+  const { fn } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 2 });
+  const first = mgr.register("d-1");
+  const second = mgr.register("d-2");
+  const third = mgr.register("d-3");
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(third.ok, false);
+  if (third.ok) return;
+  assert.equal(third.error, "Max sessions reached");
+  assert.equal(third.limit, 2);
+  assert.equal(mgr.atCapacity(), true);
+});
+
+test("SessionManager.register combined with WebSocket sessions respects shared maxSessions limit (NFR4)", () => {
+  const { fn } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 2 });
+  const sink = new CapturingSink();
+  const ws1 = mgr.start({ prompt: "ws-1" }, sink);
+  const reg1 = mgr.register("d-deploy-1");
+  const overflow = mgr.start({ prompt: "ws-2" }, sink);
+
+  assert.equal(ws1.ok, true);
+  assert.equal(reg1.ok, true);
+  assert.equal(overflow.ok, false, "combined count must hit limit");
+  if (overflow.ok) return;
+  assert.equal(overflow.limit, 2);
+});
+
+test("SessionManager.stop handles registered deploy sessions with null child (FR5)", () => {
+  const { fn, children } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3 });
+  const regResult = mgr.register("d-stop-test");
+  if (!regResult.ok) throw new Error("expected register to succeed");
+  const id = regResult.session.id;
+
+  const stopResult = mgr.stop(id);
+  assert.equal(stopResult.ok, true);
+  if (!stopResult.ok) return;
+  assert.equal(stopResult.status, "stopped");
+  assert.equal(children.length, 0, "no child process was spawned");
+  assert.equal(mgr.get(id), undefined);
+  assert.equal(mgr.activeCount, 0);
+});
+
+test("SessionManager.cleanup removes registered deploy sessions (FR7/AC5)", () => {
+  const { fn, children } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, maxSessions: 5 });
+  const sink = new CapturingSink();
+  mgr.start({ prompt: "ws-1" }, sink);
+  mgr.register("d-cleanup-1");
+  mgr.register("d-cleanup-2");
+
+  assert.equal(mgr.activeCount, 3);
+  mgr.cleanup();
+  assert.equal(mgr.activeCount, 0);
+  assert.equal(children.length, 1, "only the WebSocket session had a child process");
+  assert.ok(children[0]?.killed, "WebSocket child was terminated");
+});

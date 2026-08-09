@@ -6,6 +6,7 @@ import type { SessionManager, SessionStreamEvent, SessionStreamSink } from "../w
  * REST routes for opencode session lifecycle.
  *
  * - `GET  /api/sessions`         — list active sessions
+ * - `POST /api/sessions`         — register a deploy session (CLI `opa deploy`)
  * - `POST /api/sessions/:id/stop` — terminate a session by id
  * - `GET  /api/sessions/:id/stream` — SSE stream of a session's JSONL events
  *
@@ -19,6 +20,34 @@ export function sessionRoutes(sessionManager: SessionManager): Hono {
   app.get("/api/sessions", (c) => {
     const sessions = sessionManager.list();
     return c.json(sessions);
+  });
+
+  // FR3 / AC2: register a deploy session from CLI `opa deploy`.
+  // Accepts `{ deploymentId: string, model?: string }` and returns the new
+  // session record. Responds 503 when the hub is at capacity (NFR4).
+  app.post("/api/sessions", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await c.req.json();
+      body = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+    } catch {
+      return c.json({ error: "Invalid JSON body", code: "BAD_REQUEST" }, 400);
+    }
+    const deploymentId = typeof body["deploymentId"] === "string" ? body["deploymentId"] : "";
+    if (!deploymentId) {
+      return c.json({ error: "Missing deploymentId", code: "BAD_REQUEST" }, 400);
+    }
+    const model = typeof body["model"] === "string" && body["model"].length > 0 ? body["model"] : undefined;
+    const result = sessionManager.register(deploymentId, model);
+    if (!result.ok) {
+      return c.json({ error: result.error, code: "CAPACITY_REACHED", limit: result.limit }, 503);
+    }
+    return c.json({
+      sessionId: result.session.id,
+      deploymentId: result.session.deploymentId,
+      model: result.session.model,
+      status: result.session.status,
+    }, 201);
   });
 
   // FR5 / AC4: terminate a session's opencode process and remove it.
@@ -36,6 +65,11 @@ export function sessionRoutes(sessionManager: SessionManager): Hono {
     const id = c.req.param("id");
     if (!sessionManager.get(id)) {
       return c.json({ error: "Session not found", code: "NOT_FOUND" }, 404);
+    }
+    // FR6 / AC4: deploy sessions have no child process — return a distinct
+    // 404 message so clients can distinguish "no stream support" from "unknown".
+    if (sessionManager.isDeploySession(id)) {
+      return c.json({ error: "Deploy sessions do not support streaming", code: "NOT_FOUND" }, 404);
     }
     return streamSSE(c, async (stream) => {
       // Resolve this promise when either the client disconnects (AbortSignal)

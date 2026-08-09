@@ -1091,7 +1091,19 @@ test("opa deploy preserves pre-existing live activity events", async () => {
     for (let i = 0; i < 5; i++) {
       assert.equal(lines[i], JSON.stringify({ ts: 1714000000000 + i, deploy_id: deployId, agent: "opencode", event: i === 0 ? "session_started" : "tool_call", data: { idx: i } }));
     }
-    const terminal = JSON.parse(lines.at(-1)!) as Record<string, unknown>;
+    // CQ-2: a best-effort session registration failure event may be appended
+    // after the terminal event (the test harness has no /api/sessions route).
+    // Find the terminal event by content rather than assuming it is last.
+    const terminalLine = lines.find((l) => {
+      try {
+        const row = JSON.parse(l) as Record<string, unknown>;
+        return row["kind"] === "text" && /opencode exited with code 0/.test(String(row["body"]));
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(terminalLine, "expected a terminal 'opencode exited with code 0' event");
+    const terminal = JSON.parse(terminalLine!) as Record<string, unknown>;
     assert.equal(terminal["kind"], "text");
     assert.match(String(terminal["body"]), /opencode exited with code 0/);
   });

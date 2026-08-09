@@ -116,10 +116,21 @@ export function resolveBinary(opts: {
 interface ActiveSession {
   record: SessionRecord;
   child: ChildProcess | null;
-  sinks: Set<SessionStreamSink>;
-  sessionIdParser: { write(text: string): void; flush(): string | undefined };
-  stdoutBuffer: string;
-  stderrBuffer: string;
+  /**
+   * Streaming sinks for live SSE observation. Absent for deploy sessions
+   * (registered via {@link SessionManager.register}) which have no child
+   * process and therefore no stream to broadcast.
+   */
+  sinks?: Set<SessionStreamSink>;
+  /**
+   * Parses the opencode session id from the child's JSONL stdout. Absent
+   * for deploy sessions (no child stdout to parse).
+   */
+  sessionIdParser?: { write(text: string): void; flush(): string | undefined };
+  /** Accumulates incomplete stdout lines; absent for deploy sessions. */
+  stdoutBuffer?: string;
+  /** Accumulates incomplete stderr lines; absent for deploy sessions. */
+  stderrBuffer?: string;
   terminated: boolean;
   terminateReason?: string;
 }
@@ -182,6 +193,17 @@ export class SessionManager {
     return session ? { ...session.record } : undefined;
   }
 
+  /**
+   * Returns `true` if the session exists and has no child process (i.e. was
+   * registered via {@link register} as a deploy session rather than spawned
+   * via {@link start} / {@link resume}). Used by the stream endpoint to return
+   * a distinct 404 message for deploy sessions (FR6).
+   */
+  isDeploySession(id: string): boolean {
+    const session = this.sessions.get(id);
+    return session ? session.child === null : false;
+  }
+
   atCapacity(): boolean {
     return this.sessions.size >= this.maxSessions;
   }
@@ -202,6 +224,46 @@ export class SessionManager {
     const promptError = this.validatePromptLength(opts.prompt);
     if (promptError) return promptError;
     return this.createSession(opts, sink);
+  }
+
+  /**
+   * Register a deploy session without spawning a child process. Creates a
+   * {@link SessionRecord} with `child: null` so deploy sessions appear in
+   * `GET /api/sessions` alongside WebSocket sessions. Respects the
+   * `maxSessions` limit (NFR4 — combined count). Lifecycle events are logged
+   * best-effort; no I/O beyond the activity log append (NFR1).
+   *
+   * Deploy sessions do not allocate streaming infrastructure (`sinks`,
+   * `sessionIdParser`, `stdout/stderrBuffer`) — those are only needed for
+   * sessions with a live child process and would otherwise sit unused (CQ-1).
+   *
+   * Known limitation (CQ-3): deploy sessions have no TTL or heartbeat. They
+   * persist in memory until an explicit {@link stop} / {@link disconnect} /
+   * {@link cleanup} call or server restart. The {@link maxSessions} cap and
+   * server restart provide the only automatic bounds. Auto-expiry would be an
+   * effort-M enhancement and is intentionally out of scope for now.
+   */
+  register(deploymentId: string, model?: string): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+    if (this.atCapacity()) {
+      return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
+    }
+    const newId = this.allocateId();
+    const resolvedModel = model ?? this.defaultModel;
+    const record: SessionRecord = {
+      id: newId,
+      model: resolvedModel,
+      status: "running",
+      startedAt: nowUtc(this.now()),
+      deploymentId,
+    };
+    const session: ActiveSession = {
+      record,
+      child: null,
+      terminated: false,
+    };
+    this.sessions.set(newId, session);
+    this.logLifecycle(session, "session_started");
+    return { ok: true, session: { ...record } };
   }
 
   private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
@@ -256,9 +318,12 @@ export class SessionManager {
   subscribe(id: string, sink: SessionStreamSink): (() => void) | undefined {
     const session = this.sessions.get(id);
     if (!session) return undefined;
+    // Deploy sessions (registered, not spawned) have no streaming sinks and
+    // cannot be observed live — return undefined so callers can 404 (FR6).
+    if (!session.sinks) return undefined;
     session.sinks.add(sink);
     return () => {
-      session.sinks.delete(sink);
+      session.sinks?.delete(sink);
     };
   }
 
@@ -311,7 +376,7 @@ export class SessionManager {
   private handleStdout(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stdoutBuffer += text;
+    session.stdoutBuffer = (session.stdoutBuffer ?? "") + text;
     const lines = session.stdoutBuffer.split("\n");
     session.stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -320,7 +385,7 @@ export class SessionManager {
   private handleStderr(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stderrBuffer += text;
+    session.stderrBuffer = (session.stderrBuffer ?? "") + text;
     const lines = session.stderrBuffer.split("\n");
     session.stderrBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -335,7 +400,7 @@ export class SessionManager {
       this.emitEvent(session, { type: "event", data: { kind: "text", body: line } });
       return;
     }
-    session.sessionIdParser.write(line);
+    session.sessionIdParser?.write(line);
     try {
       const event = this.normalizer(raw, session.record.deploymentId);
       this.emitEvent(session, { type: "event", data: activityEventToData(event) });
@@ -354,7 +419,7 @@ export class SessionManager {
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
-    session.sessionIdParser.flush();
+    session.sessionIdParser?.flush();
     if (session.terminated) return;
     this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
     this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
@@ -362,7 +427,9 @@ export class SessionManager {
 
   private emitEvent(session: ActiveSession, event: Omit<SessionStreamEvent, "timestamp">): void {
     const full: SessionStreamEvent = { ...event, timestamp: nowUtc(this.now()) };
-    for (const sink of session.sinks) {
+    const sinks = session.sinks;
+    if (!sinks) return;
+    for (const sink of sinks) {
       try {
         sink.send(full);
       } catch {

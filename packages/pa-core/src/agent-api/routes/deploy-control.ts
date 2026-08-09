@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
+import type { SessionManager } from "../ws/session-hub.js";
 
-export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
+export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: SessionManager): Hono {
   const app = new Hono();
 
   app.post("/api/deploy", async (c) => {
@@ -16,6 +17,12 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}): Hono {
       const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
       const result = await hooks.deploy(deployRequest);
       const response = toPhoneDeployResponse({ team: deployRequest.team, mode: deployRequest.mode ?? null, ...result });
+      // PAP-131 FR2: register deploy session with SessionManager on success/pending.
+      // Best-effort — a missing deploymentId or at-capacity hub must not fail the deploy.
+      if (sessionManager && result.deploymentId && result.status !== "failed") {
+        const model = deployRequest.teamModel;
+        sessionManager.register(result.deploymentId, model);
+      }
       return c.json(response, 202);
     } catch (error) {
       // PAP-042 AC2 phone contract: always 202 with structured failed JSON — never 500, never throws
