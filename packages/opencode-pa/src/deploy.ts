@@ -57,11 +57,29 @@ export function deriveSessionName(args: {
  * `{ deploymentId, model }` to `POST /api/sessions`. Any failure (server not
  * running, network error, non-2xx response) is swallowed and logged to stderr
  * so the deploy itself never fails due to registration.
+ *
+ * CQ-2: when registration fails, a lightweight text activity event is
+ * appended to the deployment activity log (when `activityLogPath` is
+ * provided) for post-hoc observability. The best-effort contract is
+ * unchanged — deploy still succeeds.
  */
-export async function registerDeploySessionBestEffort(args: { deploymentId: string; model: string }): Promise<void> {
+export async function registerDeploySessionBestEffort(args: { deploymentId: string; model: string; activityLogPath?: string }): Promise<void> {
   const pidInfo = readServePidFile();
   const port = pidInfo?.port ?? DEFAULT_SERVE_PORT;
   const url = `http://${DEFAULT_SERVE_HOST}:${port}/api/sessions`;
+  const logRegistrationFailure = (reason: string): void => {
+    process.stderr.write(`opa deploy: session registration failed (${reason}) — deploy continues\n`);
+    if (args.activityLogPath) {
+      try {
+        appendActivityEvent(
+          createActivityEvent({ deployId: args.deploymentId, kind: "text", source: "opencode", body: `session registration failed: ${reason}` }),
+          args.activityLogPath,
+        );
+      } catch {
+        // Activity log is best-effort; never let it block the deploy.
+      }
+    }
+  };
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -70,11 +88,11 @@ export async function registerDeploySessionBestEffort(args: { deploymentId: stri
       signal: AbortSignal.timeout(2000),
     });
     if (!response.ok) {
-      process.stderr.write(`opa deploy: session registration returned ${response.status} ${response.statusText} from ${url} (deploy continues)\n`);
+      logRegistrationFailure(`HTTP ${response.status} ${response.statusText} from ${url}`);
     }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`opa deploy: session registration failed (${reason}) — deploy continues\n`);
+    logRegistrationFailure(reason);
   }
 }
 
@@ -137,7 +155,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
 
   if (request.dryRun) {
     writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
-    await registerDeploySessionBestEffort({ deploymentId, model });
+    await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
 
@@ -169,7 +187,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `opencode background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
-      await registerDeploySessionBestEffort({ deploymentId, model });
+      await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
     // Finalization appends to activity.jsonl instead of overwriting — live events from
@@ -189,7 +207,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     if (result.exitCode === 0) {
-      await registerDeploySessionBestEffort({ deploymentId, model });
+      await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
       return { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
