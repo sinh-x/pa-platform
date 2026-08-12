@@ -46,7 +46,7 @@ Connect to `ws://127.0.0.1:9848/ws` to receive push notifications when platform 
 3. **Close** — the server removes the client from the hub (`hub.removeClient(ws)`).
 4. **Error** — the server removes the client from the hub.
 
-> The hub is only active when the server is started with live updates enabled (`enableLiveUpdates: true`, set by `pa-core serve --live-updates` or the equivalent adapter flag). When live updates are disabled, the `/ws` endpoint still accepts connections but no file-watchers are started and no events are broadcast (other than `ping` heartbeats, which are started alongside watchers).
+> Live updates are always enabled in `pa-core serve` — the start command hardcodes `enableLiveUpdates: true` when creating the app (see [server-lifecycle.md §5.1](./server-lifecycle.md#51-start)). There is no flag to toggle live updates. The `/ws` endpoint always starts file-watchers and broadcasts events (along with `ping` heartbeats) to connected clients.
 
 ### Event Types (6)
 
@@ -217,7 +217,7 @@ The WebSocket hub is a **stateless broadcast** — there is no per-client messag
    - `GET /api/tickets` (for `ticket-changed` events)
    - `GET /api/bulletin` (for `bulletin-update` events)
    - `GET /api/deployments` (for `deployment-status-change` events)
-   - `GET /api/actions/inbox` or inspect the inbox directory (for `new-inbox-item` / `inbox-item-moved` events)
+   - `GET /api/inbox` or inspect the inbox directory (for `new-inbox-item` / `inbox-item-moved` events)
 5. **Treat events as invalidation hints, not diffs.** Each event tells you *what changed* (a ticket id, a bulletin id, a deployment), not *how it changed*. Always re-fetch the resource to get the current state.
 
 > The server does not send a "you missed N events" message on reconnect. There is no event id, sequence number, or cursor.

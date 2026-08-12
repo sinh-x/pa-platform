@@ -1191,15 +1191,21 @@ Trigger a deployment. Returns `202` on accepted/failed per the phone contract (n
 |-------|------|----------|-------|
 | `team` | string | yes | Team name |
 | `mode` | string | no | Deploy mode id |
-| `objective` | string | no | |
-| `repo` | string | no | |
-| `ticket` / `ticket_id` | string | no | Ticket id |
-| `provider` | string | no | |
-| `team_model` / `teamModel` | string | no | |
-| `timeout` | number | no | Resolved via `withResolvedDeployTimeout` |
-| `background` | boolean | no | Defaults to `true` |
-| `agents` | string[] | no | |
-| `models` | object | no | |
+| `objective` | string | no | Free-text objective (max 10000 chars) |
+| `evaluateDeployment` | string | no | Deployment id to evaluate (`d-xxxxxx`) |
+| `repo` | string | no | Repo key or path |
+| `ticket` | string | no | Ticket id (`^[A-Z][A-Z0-9]+-[0-9]+$`) |
+| `provider` | string | no | Provider name |
+| `model` | string | no | Model override |
+| `teamModel` | string | no | Team model override |
+| `agentModel` | string | no | Agent model override |
+| `resume` | string | no | Deployment id to resume |
+| `autonomy` | string | no | `low`, `medium`, or `high` |
+| `timeout` | number | no | Seconds; resolved via `withResolvedDeployTimeout` |
+| `dryRun` | boolean | no | Mutually exclusive with `background` |
+| `background` | boolean | no | Defaults to `true`; mutually exclusive with `dryRun` |
+| `listModes` | boolean | no | List available modes for the team instead of deploying |
+| `validate` | boolean | no | Validate the request without deploying |
 
 **Response schema (202):**
 

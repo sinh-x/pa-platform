@@ -361,13 +361,17 @@ curl -s http://127.0.0.1:9848/api/projects | jq .
   "projects": [
     {
       "key": "pa",
-      "name": "pa-platform",
-      "path": "/home/sinh/git-repos/sinh-x/tools/pa-platform"
+      "prefix": "PAP",
+      "description": "PA platform runtime and tooling",
+      "path": "/home/sinh/git-repos/sinh-x/tools/pa-platform",
+      "activeTicketCount": 3
     },
     {
       "key": "avodah",
-      "name": "avodah",
-      "path": "/home/sinh/git-repos/sinh-x/tools/avodah"
+      "prefix": "AVO",
+      "description": "Avodah task and time tracking",
+      "path": "/home/sinh/git-repos/sinh-x/tools/avodah",
+      "activeTicketCount": 1
     }
   ]
 }
@@ -380,7 +384,7 @@ const response = await fetch("http://127.0.0.1:9848/api/projects");
 const { projects } = await response.json();
 
 for (const project of projects) {
-  console.log(`${project.key}: ${project.name} (${project.path})`);
+  console.log(`${project.key} (${project.prefix}): ${project.description} — ${project.activeTicketCount} active tickets @ ${project.path}`);
 }
 ```
 
@@ -506,12 +510,12 @@ ws.on("error", (err: Error) => console.error("WebSocket error:", err));
 
 | Type | Payload | Trigger |
 |------|---------|---------|
-| `new-inbox-item` | `{ team, folder, item }` | New file in a team inbox |
-| `inbox-item-moved` | `{ team, from, to, item }` | File moved between folders |
-| `deployment-status-change` | `{ deployId, status, team }` | Deployment status updated |
-| `ticket-changed` | `{ ticketId, project, change }` | Ticket created/updated |
-| `bulletin-update` | `{ bulletinId, action }` | Bulletin created/resolved |
-| `ping` | `{ timestamp }` | Server ping (30s interval) |
+| `new-inbox-item` | `{ filename, title }` | New `.md` file in `sinh-inputs/inbox` |
+| `inbox-item-moved` | `{ filename, from, to }` | Previously known inbox `.md` no longer present |
+| `deployment-status-change` | spread registry entry | New row appended to the deployment registry |
+| `ticket-changed` | `{ ticketId }` | Ticket JSON file created or modified |
+| `bulletin-update` | `{ bulletinId }` | Active bulletin `.md` created, modified, or removed |
+| `ping` | *(none)* | Server ping (30s interval) |
 
 ---
 
@@ -587,7 +591,7 @@ Check for active blocking bulletins before starting work.
 ### curl
 
 ```bash
-curl -s http://127.0.0.1:9848/api/bulletins | jq .
+curl -s http://127.0.0.1:9848/api/bulletin | jq .
 ```
 
 **Response (200 OK):**
@@ -598,11 +602,12 @@ curl -s http://127.0.0.1:9848/api/bulletins | jq .
     {
       "id": "B-007",
       "title": "Schema migration in progress",
-      "block": ["all"],
+      "status": "active",
+      "block": "all",
       "except": ["maintenance"],
-      "message": "Wait for PA-100 to complete before deploying.",
-      "active": true,
-      "createdAt": "2026-08-13T09:00:00.000Z"
+      "created": "2026-08-13T09:00:00.000Z",
+      "body": "Wait for PA-100 to complete before deploying.",
+      "filename": "B-007-schema-migration.md"
     }
   ],
   "count": 1
@@ -612,7 +617,7 @@ curl -s http://127.0.0.1:9848/api/bulletins | jq .
 ### TypeScript
 
 ```typescript
-const response = await fetch("http://127.0.0.1:9848/api/bulletins");
+const response = await fetch("http://127.0.0.1:9848/api/bulletin");
 const { bulletins, count } = await response.json();
 
 if (count === 0) {
@@ -620,8 +625,8 @@ if (count === 0) {
 } else {
   for (const bulletin of bulletins) {
     console.log(`[${bulletin.id}] ${bulletin.title}`);
-    console.log(`  Blocks: ${bulletin.block.join(", ")}`);
-    console.log(`  Message: ${bulletin.message}`);
+    console.log(`  Blocks: ${bulletin.block}`);
+    console.log(`  Body: ${bulletin.body}`);
   }
 }
 ```

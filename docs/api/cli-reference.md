@@ -560,7 +560,7 @@ Manage tickets. Subcommands: `list`, `show`, `create`, `update`, `comment`, `att
 | `--status <status>` | status | Filter by status: `idea`, `requirement-review`, `pending-approval`, `pending-implementation`, `implementing`, `review-uat`, `done`, `rejected`, `cancelled` |
 | `--assignee <name>` | assignee | Filter by assignee |
 | `--priority <priority>` | priority | Filter by priority: `low`, `medium`, `high`, `critical` |
-| `--type <type>` | type | Filter by type: `bug`, `feature`, `task`, `fyi`, `epic`, `work-report` |
+| `--type <type>` | type | Filter by type: `feature`, `bug`, `task`, `review-request`, `work-report`, `fyi`, `idea`, `question` |
 | `--search <text>` | text | Full-text search across title and summary |
 | `--tags <csv>` | csv | Comma-separated tags to match (ticket must include all) |
 | `--exclude-tags <csv>` | csv | Comma-separated tags to exclude |
