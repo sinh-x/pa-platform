@@ -87,7 +87,7 @@ stop only supports --host and --port options
 Usage: restart [--port <port>] [--host <host>] [--background] [--cors] [--dev]
 ```
 
-Restart supports `--port`, `--host`, `--background`, `--cors`, and `--dev`. It does **not** support `--force` — `force` is hard-set to `false` during restart.
+Restart supports `--port`, `--host`, `--background`, `--cors`, and `--dev`. `--force` is accepted but has no effect on restart (force is hard-set to false).
 
 ---
 
@@ -225,7 +225,7 @@ Server stopped.
 [pa-core serve] Listening on http://127.0.0.1:9848
 ```
 
-> **Note:** Restart hard-sets `force: false` — it relies on stop having cleared the PID file. The `--force` flag is not accepted by restart.
+> **Note:** Restart hard-sets `force: false` — it relies on stop having cleared the PID file. `--force` is accepted but has no effect on restart (force is hard-set to false).
 
 ### 5.4 Status
 

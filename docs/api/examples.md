@@ -309,8 +309,8 @@ await waitForDeployment("d-a1b2c3");
 ### Notes
 
 - `GET /api/deploy/status/:id` returns the full `DeploymentStatus` object.
-- The `status` field can be: `"running"`, `"success"`, `"partial"`, `"failed"`, `"crashed"`, or `"unknown"`.
-- Terminal states: `success`, `partial`, `failed`, `crashed`. Non-terminal: `running`, `unknown`.
+- The `status` field can be: `"running"`, `"success"`, `"partial"`, `"failed"`, `"crashed"`, `"dead"`, or `"unknown"`.
+- Terminal states: `success`, `partial`, `failed`, `crashed`, `dead` (`dead` is a computed terminal state for a running deployment whose PID is no longer alive). Non-terminal: `running`, `unknown`.
 - The endpoint does not validate the ID format — an unknown ID simply returns `404`.
 
 ---

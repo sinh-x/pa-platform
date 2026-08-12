@@ -250,7 +250,7 @@ test("agent API document, image, and folder routes reject outside-root paths", a
 
 ### 4.1 Deploy Objective Sanitization
 
-Source: `packages/pa-core/src/deploy/control.ts:71-78`
+Source: `packages/pa-core/src/deploy/control.ts:76`
 
 ```ts
 export function sanitizeTextInput(text: string): SanitizeResult {
@@ -268,7 +268,7 @@ This prevents shell injection via the deploy objective before it is passed to th
 
 ### 4.2 Deploy Request Field Validation
 
-All fields in `POST /api/deploy` are validated against strict regex patterns:
+Validated text fields are checked against strict regex patterns:
 
 | Field | Validation |
 |-------|-----------|
@@ -280,8 +280,11 @@ All fields in `POST /api/deploy` are validated against strict regex patterns:
 | `timeout` | Integer, 60–7200 seconds |
 | `provider` | `/^[a-zA-Z0-9_-]+$/` |
 | `model` | `/^[-a-zA-Z0-9_.:\/]+$/` |
+| `teamModel` | `/^[-a-zA-Z0-9_.:\/]+$/` |
+| `agentModel` | `/^[-a-zA-Z0-9_.:\/]+$/` |
 | `resume` | `/^[a-zA-Z0-9-]+$/` |
 | `autonomy` | Enum: `low`, `medium`, `high` |
+| `evaluateDeployment` | `/^d-[a-z0-9]{6}$/` |
 
 Invalid fields return `400 BAD_REQUEST` with a descriptive `error` message.
 
