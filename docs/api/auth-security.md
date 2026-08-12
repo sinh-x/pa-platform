@@ -361,7 +361,7 @@ function sanitizeStreamBody(value: string): string {
 - Max stream body length: 500 characters (truncated with `...`)
 - Applied to: activity log output streamed through the API
 
-This prevents secret leakage through the API's activity endpoints. The same patterns are duplicated across `opa` (opencode-pa), `cpa` (claudecode-pa), and `dpa` (droidcode-pa) adapters.
+This prevents secret leakage through the API's activity endpoints. Similar but not identical patterns are used across `opa` (opencode-pa), `cpa` (claudecode-pa), and `dpa` (droidcode-pa) adapters — each adapter maintains its own list (e.g. `dpa` adds `fk-...` keys and uses case-insensitive global matching; `cpa`/`dpa` match `api_key`/`access_key` variants that `opa` does not).
 
 ### 6.2 Bash Command Guarding (Tool Layer)
 
@@ -373,9 +373,9 @@ The opencode adapter installs a safety plugin that guards bash commands executed
 
 | Pattern | Action |
 |---------|--------|
-| `rm` / `rmdir` | Throws `BLOCKED: rm/rmdir is not allowed. Use pa trash move instead.` |
-| `find ... -delete` | Throws `BLOCKED: find -delete is not allowed.` |
-| `xargs ... rm` | Throws `BLOCKED: xargs rm is not allowed.` |
+| `rm` / `rmdir` | Throws `BLOCKED: rm/rmdir is not allowed. Use pa trash move instead. Use opa trash move instead.` |
+| `find ... -delete` | Throws `BLOCKED: find -delete is not allowed. Use pa trash move instead. Use opa trash move instead.` |
+| `xargs ... rm` | Throws `BLOCKED: xargs rm is not allowed. Use pa trash move instead. Use opa trash move instead.` |
 
 **Blocked file patterns:**
 

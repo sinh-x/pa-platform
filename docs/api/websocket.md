@@ -412,7 +412,7 @@ The session has terminated — either the opencode child process closed, or the 
 | field | Type | Description |
 |-------|------|-------------|
 | `type` | `"end"` | Event kind. |
-| `data` | `object` | Either `{ "exitCode": number }` (child closed) or `{ "reason": string }` (stopped/disconnected/cleanup). When the child closes after a `stop`, both `exitCode` and `reason` may be present. |
+| `data` | `object` | Either `{ "exitCode": number }` (child closed naturally) or `{ "reason": string }` (stopped/disconnected/cleanup). A single `end` event carries one or the other — `handleClose` short-circuits when `session.terminated` is already set, so an `end` containing both `exitCode` and `reason` is unreachable. |
 | `timestamp` | `string` | ISO 8601 UTC. |
 
 ### Session Lifecycle
@@ -438,10 +438,10 @@ Client                          Server (SessionManager)
 1. The session is marked `terminated`; `record.status` is set to `"stopping"`.
 2. If the child has no exit code and is not killed, SIGTERM is sent.
 3. After `terminationTimeoutMs` (default `5000` ms = 5 seconds), if the child is still alive, SIGKILL is sent.
-4. An `end` event is emitted with `{ reason: "stopped" | "disconnect" | "cleanup" }`.
+4. The `end { reason: "stopped" | "disconnect" | "cleanup" }` event is emitted by the **WebSocket handler** (e.g. `index.ts` sends `end { reason: "stopped" }` after `sessionManager.stop()` returns), not by `terminate()` itself. `terminate()` only emits `end { reason }` when the child has already exited at the moment termination is requested.
 5. The session is removed from the sessions map.
 
-If the child has already exited (`exitCode !== null` or `killed === true`) when termination is requested, no signal is sent and an `end` event is emitted immediately.
+If the child has already exited (`exitCode !== null` or `killed === true`) when termination is requested, no signal is sent and `terminate()` emits an `end { reason }` event immediately. This can produce a **double-`end` edge case** when `stop` follows an already-exited child: the WebSocket handler emits `end { reason: "stopped" }` after `sessionManager.stop()` returns, and `terminate()` had already emitted `end { reason }` from inside `stop()` — clients should tolerate receiving two `end` events in this case.
 
 ### Capacity Limits
 

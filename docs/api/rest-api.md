@@ -12,7 +12,7 @@ Complete reference for all 68 REST endpoints exposed by the pa-platform Agent AP
 - [Conventions](#conventions)
 - [Error Response Shape](#error-response-shape)
 - [Health (1)](#health)
-- [Tickets (8)](#tickets)
+- [Tickets (6)](#tickets)
 - [Board & Projects (2)](#board--projects)
 - [Bulletins (3)](#bulletins)
 - [Focus (1)](#focus)
@@ -233,8 +233,13 @@ Update ticket fields. Supports adding a linked branch (with optional branch-name
 | `tags` | string[] | no | |
 | `blockedBy` | string[] | no | |
 | `doc_refs` | object[] | no | |
-| `add_linked_branch` | `{ repo: string, branch: string }` | no | Triggers branch-name pattern validation; a `warning` field is added to the response when validation fails or the repo is unknown |
-| `linked_commits` | object[] | no | |
+| `add_linked_branch` | `{ repo: string, branch: string, sha?: string, linkedBy?: string }` | no | Triggers branch-name pattern validation; a `warning` field is added to the response when validation fails or the repo is unknown |
+| `remove_linked_branch` | string | no | `"<repo>:<branch>"` to remove |
+| `add_linked_commit` | `{ repo: string, sha: string, message?: string, author?: string, timestamp?: string, linkedBy?: string }` | no | Appends to `linkedCommits` |
+| `remove_linked_commit` | string | no | SHA to remove from `linkedCommits` |
+| `add_doc_ref` | `{ type?: string, path: string, primary?: boolean, addedBy?: string }` | no | Appends to `doc_refs` |
+| `remove_doc_ref` | string | no | Path to remove from `doc_refs` |
+| `linkedCommits` | `LinkedCommit[]` | no | Direct replacement (camelCase); mutation helpers above are preferred |
 | `actor` | string | no | Audit actor; defaults to `"api"` |
 
 **Response schema (200):**
@@ -1741,7 +1746,7 @@ Move a ticket to a different project.
 |------|------|-----------|
 | 400 | `BAD_REQUEST` | Invalid JSON body or missing `project` |
 | 400 | `SAME_PROJECT` | Ticket is already in the target project |
-| 400 | `INVALID_PROJECT` | Unknown project (response includes `validProjects`) |
+| 400 | `INVALID_PROJECT` | Unknown project (response includes `validProjects` as a comma-joined string) |
 | 404 | `NOT_FOUND` | Ticket not found |
 | 400 | `MOVE_FAILED` | Other move failure |
 

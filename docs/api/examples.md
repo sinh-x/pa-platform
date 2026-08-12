@@ -102,7 +102,7 @@ console.log(result);
 
 ### Notes
 
-- `POST /api/deploy` always returns HTTP `202` (even on adapter failure — never `500`). Check the `status` field in the response body: `"pending"` (success), `"success"`, or `"failed"`.
+- `POST /api/deploy` returns `202` on accepted deployment, `400` on validation failure, and `501` if no adapter hook is configured. On adapter failure the response is still `202` with a structured `failed` body — never `500`. Check the `status` field in the response body: `"pending"` (success), `"success"`, or `"failed"`.
 - `background` defaults to `true` when omitted. Use `"dryRun": true` for validation without deployment (mutually exclusive with `background`).
 - The `objective` field is sanitized — control characters and shell metacharacters (`$`, `\`, `;`, `&`) are stripped.
 - The `deployment_id` from the response is used to track deployment status (see Example 3).
@@ -163,7 +163,7 @@ curl -s "http://127.0.0.1:9848/api/tickets?excludeTags=failed,archived" | jq .
       "linkedCommits": [],
       "comments": [],
       "subTickets": [],
-      "nextSubTicketCounter": 1,
+      "nextSubTicketCounter": 0,
       "createdAt": "2026-08-13T00:55:11.000Z",
       "updatedAt": "2026-08-13T01:35:18.000Z",
       "resolvedAt": null
@@ -309,8 +309,8 @@ await waitForDeployment("d-a1b2c3");
 ### Notes
 
 - `GET /api/deploy/status/:id` returns the full `DeploymentStatus` object.
-- The `status` field can be: `"running"`, `"success"`, `"partial"`, `"failed"`, `"crashed"`, `"dead"`, or `"unknown"`.
-- Terminal states: `success`, `partial`, `failed`, `crashed`, `dead`. Non-terminal: `running`, `unknown`.
+- The `status` field can be: `"running"`, `"success"`, `"partial"`, `"failed"`, `"crashed"`, or `"unknown"`.
+- Terminal states: `success`, `partial`, `failed`, `crashed`. Non-terminal: `running`, `unknown`.
 - The endpoint does not validate the ID format — an unknown ID simply returns `404`.
 
 ---
@@ -434,7 +434,7 @@ curl -s -X POST http://127.0.0.1:9848/api/tickets \
     "linkedCommits": [],
     "comments": [],
     "subTickets": [],
-    "nextSubTicketCounter": 1,
+    "nextSubTicketCounter": 0,
     "createdAt": "2026-08-13T12:00:00.000Z",
     "updatedAt": "2026-08-13T12:00:00.000Z",
     "resolvedAt": null

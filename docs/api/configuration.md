@@ -314,14 +314,15 @@ See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `
 | `PA_PLATFORM_TEAMS` | `<platformHome>/teams` | `paths.ts`, `config.ts` | Teams config directory |
 | `PA_PLATFORM_SKILLS` | `<platformHome>/skills/global` | `paths.ts`, `config.ts` | Skills directory |
 | `PA_AI_USAGE_HOME` | `~/Documents/ai-usage` | `paths.ts` | Root for `deployments/`, `tickets/`, `bulletins/`, `trash/`, `signal/`, `sessions/`, `daily/`, `knowledge-base/`, `sinh-inputs/`, `agent-teams/` |
+| `PA_PLATFORM_SKILL_ROOTS` | (unset) | `skills/index.ts` | Colon-separated extra skill scan roots appended after the built-in skills dir and `config.yaml#skills_dir`; empty segments are ignored, non-existent paths are filtered out |
 | `PA_REGISTRY_DB` | `<deploymentsDir>/registry.db` | `paths.ts`, `registry/` | Deployment registry SQLite database path |
-| `XDG_CONFIG_HOME` | `~/.config` | `schedule.ts`, `serve-lifecycle.ts` | Used to locate `systemd/user/` for timers and (indirectly) the config dir default |
+| `XDG_CONFIG_HOME` | `~/.config` | `schedule.ts`, `opencode-pa/src/adapter.ts` (`pickBackgroundEnv`) | Used to locate `systemd/user/` for timers; `pickBackgroundEnv` forwards it to spawned background processes so opencode resolves its config dir |
 
 ### Server Lifecycle
 
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
-| `PA_DEV_MODE` | (unset) | `serve.ts`, `agent-api/index.ts`, `cli/run.ts` | Truthy values (`"1"`, `"true"`, `"yes"`) activate dev mode (per-process; binary resolution consults `PA_OPENCODE_BINARY`) |
+| `PA_DEV_MODE` | (unset) | `serve.ts`, `cli/run.ts` | Truthy values (`"1"`, `"true"`, `"yes"`) activate dev mode (per-process; binary resolution consults `PA_OPENCODE_BINARY`). `agent-api/index.ts` only references it in JSDoc, not at runtime |
 | `PA_OPENCODE_BINARY` | (unset → `"opencode"` on PATH) | `session-hub.ts`, `cli/run.ts` | Explicit opencode binary path; only consulted when dev mode is active |
 | `PA_MAX_SESSIONS` | `3` | `session-hub.ts` | Maximum concurrent WebSocket sessions; invalid/non-positive values fall back to default |
 | `NO_COLOR` | (unset) | `board.ts` | When set, disables colored board output |
@@ -331,6 +332,7 @@ See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
 | `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode`, `claude`, `droid`) |
+| `PA_MAX_RUNTIME` | (unset → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800) | `deploy/control.ts` | Deploy timeout in seconds, consulted between the `--timeout` flag and the built-in default. Bounded to `[60, 7200]`; invalid values are rejected before the deployment hook runs |
 
 ### Deployment Context (injected by adapters)
 
@@ -398,7 +400,7 @@ Used by `schedule`/`remove-timer` to determine the pa command invoked by systemd
 **Server binary (dev)** → `PA_OPENCODE_BINARY` → `"opencode"` on PATH.
 **Max sessions** → `PA_MAX_SESSIONS` → `3` (invalid → default).
 **Provider default model** → `OPA_*_MODEL` → hard-coded defaults per provider (see [Provider Model Overrides](#provider-model-overrides-opa)).
-**Deploy timeout** → `--timeout` → deployment `effective_timeout_seconds` → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); bounded by `[60, 7200]`.
+**Deploy timeout** → `--timeout` → deployment `effective_timeout_seconds` → `PA_MAX_RUNTIME` (env, bounded `[60, 7200]`) → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); final value is bounded by `[60, 7200]`.
 **Health config** → `<configDir>/health.yaml` (parse failure → defaults).
 **Repo registry** → `<configDir>/repos.yaml` → `~/.config/sinh-x/personal-assistant/repos.yaml` → `<platformHome>/repos.yaml` (first existing file).
 

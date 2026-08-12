@@ -52,7 +52,7 @@ Complete reference for the pa-platform command-line interface. The runtime-neutr
 
 ## Command Index
 
-18 top-level commands are dispatched by `runCoreCommand` (the four serve-lifecycle verbs `serve` / `stop` / `restart` / `serve-status` are grouped as one "serve" command with four actions):
+19 top-level commands are dispatched by `runCoreCommand` (the four serve-lifecycle verbs `serve` / `stop` / `restart` / `serve-status` are grouped as one "serve" command with four actions):
 
 | # | Command | Subcommands | Summary |
 |---|---------|-------------|---------|
@@ -76,7 +76,7 @@ Complete reference for the pa-platform command-line interface. The runtime-neutr
 | 18 | [semantic](#semantic) | rebuild, refresh, query, briefing | Semantic briefing and search |
 | 19 | [repos](#repos) | list | List registered repositories |
 
-> **Note on count:** The dispatch in `core-command.ts` routes 21 distinct command names. The four serve-lifecycle verbs (`serve`, `stop`, `restart`, `serve-status`) are grouped here as a single "serve" command with four actions, and `remove-timer` is grouped with `schedule` (both implemented in `schedule.ts`), yielding the 18 top-level commands referenced in the requirements plan. Each verb is documented individually below for clarity.
+> **Note on count:** The dispatch in `core-command.ts` routes 22 distinct command names. The four serve-lifecycle verbs (`serve`, `stop`, `restart`, `serve-status`) are grouped here as a single "serve" command with four actions, yielding the 19 top-level commands referenced in the requirements plan. Each verb is documented individually below for clarity.
 
 ---
 
@@ -257,7 +257,7 @@ Manage the Agent API server lifecycle. The four verbs are dispatched separately 
 
 **Usage:** `restart [--port <port>] [--host <host>] [--background] [--cors] [--dev]`
 
-Supports the same flags as `start` except `--force`. Stops any existing instance then starts.
+Supports the same flags as `start`. `--force` is accepted but ignored — `restart` always stops any existing instance first, then starts (equivalent to `stop` + `start`). The usage line omits `--force` because it has no effect.
 
 ### stop
 
@@ -307,6 +307,7 @@ Schedule a recurring deployment timer via systemd user timers. Also creates the 
 | Flag | Value | Description |
 |------|-------|-------------|
 | `--time <HH:MM>` | time | Trigger time(s), repeatable |
+| `--repeat <hourly\|daily\|weekly\|monthly>` | enum | Repeat frequency (default: `daily`); also accepted as the second positional argument |
 | `--command <path>` | path | Override the pa command path |
 | `--dry-run` | — | Print what would be done without executing |
 
@@ -1004,6 +1005,6 @@ opa repos list --json
 | signal | 1 | collect |
 | semantic | 4 | rebuild, refresh, query, briefing |
 | repos | 1 | list |
-| **Total** | **~60** | |
+| **Total** | **46** (50 counting `ticket subticket` sub-subcommands) | |
 
 All commands and flags above are derived from `packages/pa-core/src/cli/commands/` and `packages/pa-core/src/cli/core-command.ts`. The `opa` binary (`packages/opencode-pa/src/cli.ts`) delegates to `runCoreCommand` with OpenCode adapter hooks; no additional `opa`-only subcommands exist beyond the provider model resolution documented under [deploy](#deploy) and in [Configuration](./configuration.md).
