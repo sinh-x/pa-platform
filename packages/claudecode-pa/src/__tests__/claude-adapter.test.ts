@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { spawnSync } from "node:child_process";
-import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
+import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
@@ -122,6 +122,10 @@ test("normalizeProvider accepts anthropic/undefined and rejects others", () => {
   assert.equal(normalizeProvider("anthropic"), "anthropic");
   assert.throws(() => normalizeProvider("openai"), /Unsupported cpa provider: openai/);
   assert.throws(() => normalizeProvider("minimax"), /Supported providers: anthropic/);
+});
+
+test("cpa background environment preserves team and mode context", () => {
+  assert.deepEqual(pickBackgroundEnv({ PA_TEAM: "builder", PA_MODE: "implement" }), { PA_TEAM: "builder", PA_MODE: "implement" });
 });
 
 test("cpa tool guidance describes anthropic-only provider", () => {

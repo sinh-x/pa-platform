@@ -27,6 +27,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousData = process.env["PA_PLATFORM_DATA"];
   const previousMaxRuntime = process.env["PA_MAX_RUNTIME"];
   const previousStatusWaitTimeout = process.env["PA_STATUS_WAIT_TIMEOUT"];
+  const previousTeam = process.env["PA_TEAM"];
+  const previousMode = process.env["PA_MODE"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
@@ -34,6 +36,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   process.env["PA_PLATFORM_DATA"] = join(root, "data");
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_STATUS_WAIT_TIMEOUT"];
+  delete process.env["PA_TEAM"];
+  delete process.env["PA_MODE"];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -50,6 +54,10 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_MAX_RUNTIME"] = previousMaxRuntime;
     if (previousStatusWaitTimeout === undefined) delete process.env["PA_STATUS_WAIT_TIMEOUT"];
     else process.env["PA_STATUS_WAIT_TIMEOUT"] = previousStatusWaitTimeout;
+    if (previousTeam === undefined) delete process.env["PA_TEAM"];
+    else process.env["PA_TEAM"] = previousTeam;
+    if (previousMode === undefined) delete process.env["PA_MODE"];
+    else process.env["PA_MODE"] = previousMode;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -1994,6 +2002,32 @@ test("builder implement status updates are rejected before ticket and audit muta
       assert.match(rejected.stderr.join("\n"), /parent.*(flow|owns).*status/i);
       assert.deepEqual(new TicketStore().get("PAP-001"), before);
       assert.equal(new TicketStore().readAudit().length, auditBefore);
+    } finally {
+      if (previousTeam === undefined) delete process.env["PA_TEAM"];
+      else process.env["PA_TEAM"] = previousTeam;
+      if (previousMode === undefined) delete process.env["PA_MODE"];
+      else process.env["PA_MODE"] = previousMode;
+    }
+  });
+});
+
+test("builder implement rejects every status value but allows non-status updates", async () => {
+  await withCliEnv(async () => {
+    const previousTeam = process.env["PA_TEAM"];
+    const previousMode = process.env["PA_MODE"];
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "implement";
+    try {
+      assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "All statuses", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original"], { io: capture().io }), 0);
+      for (const status of ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]) {
+        const rejected = capture();
+        assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", status], { io: rejected.io }), 0);
+        assert.match(rejected.stderr.join("\n"), /parent flow/);
+      }
+
+      const allowed = capture();
+      assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--summary", "Updated"], { io: allowed.io }), 0);
+      assert.equal(new TicketStore().get("PAP-001")?.summary, "Updated");
     } finally {
       if (previousTeam === undefined) delete process.env["PA_TEAM"];
       else process.env["PA_TEAM"] = previousTeam;

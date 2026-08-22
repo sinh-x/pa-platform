@@ -222,6 +222,9 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket update requires id", io);
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
+    if (parsed.input.status !== undefined && process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "implement") {
+      return printError("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.", io);
+    }
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     if (parsed.archive) {
       const current = store.get(id);

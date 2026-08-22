@@ -76,7 +76,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
+  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_MODE: request.mode ?? teamConfig.default_mode ?? "", PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
