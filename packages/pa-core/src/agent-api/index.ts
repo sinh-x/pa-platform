@@ -4,6 +4,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import type { Server } from "node:http";
 import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { spawn as spawnType } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
@@ -230,12 +231,19 @@ function authenticateMutationPrincipal(c: Context, auth: NonNullable<AgentApiOpt
   const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
   const claimedDeploymentId = c.req.header("X-PA-Deployment-ID");
   if (!token) return {};
-  if (auth.operatorCredential && token === auth.operatorCredential) {
+  if (credentialsMatch(token, auth.operatorCredential)) {
     return claimedDeploymentId ? {} : { operator: true };
   }
-  if (!auth.credential || !auth.deploymentId || token !== auth.credential) return {};
+  if (!auth.deploymentId || !credentialsMatch(token, auth.credential)) return {};
   if (claimedDeploymentId !== undefined && claimedDeploymentId !== auth.deploymentId) return {};
   return { deploymentId: auth.deploymentId };
+}
+
+function credentialsMatch(presented: string | undefined, configured: string | undefined): boolean {
+  if (!presented || !configured) return false;
+  const presentedDigest = createHash("sha256").update(presented, "utf8").digest();
+  const configuredDigest = createHash("sha256").update(configured, "utf8").digest();
+  return timingSafeEqual(presentedDigest, configuredDigest);
 }
 
 export const createApp = createAgentApiApp;
