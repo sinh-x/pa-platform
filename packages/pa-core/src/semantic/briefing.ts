@@ -45,12 +45,21 @@ export function buildSemanticBriefingBundle(result: SemanticQueryResult, options
     ...result.system.map((candidate) => sourceClaim(candidate)),
     ...resolveSummaryClaims(options.summaryClaims ?? []),
   ];
+  const evidence = evidenceMap[0]?.claim ?? "No matching evidence was retrieved";
   return {
     query: result.query,
     groups,
     evidence_map: evidenceMap,
-    confirmation_question: "Proposal: continue deeper analysis for this query. Evidence/Findings: retrieved context and the evidence map above. Implications: continue applies the proposal; stop keeps findings read-only. Decision: Should I continue with deeper analysis now?",
+    confirmation_question: buildConfirmationQuestion(result.query, evidence),
   };
+}
+
+function buildConfirmationQuestion(query: string, evidence: string): string {
+  const clean = (value: string): string => value.replace(/\?/g, ".").replace(/\s+/g, " ").trim();
+  const suffix = " Implications: continue applies the proposal; stop keeps findings read-only. Decision: Should I continue with deeper analysis now?";
+  const prefix = `Proposal: continue deeper analysis for query "${clean(query)}". Evidence/Findings: ${clean(evidence)}.`;
+  const maxPrefixLength = 1500 - suffix.length;
+  return `${prefix.slice(0, maxPrefixLength)}${suffix}`;
 }
 
 export function renderSemanticBriefingBundle(bundle: SemanticBriefingBundle): string {

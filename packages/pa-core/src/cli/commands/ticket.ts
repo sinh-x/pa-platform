@@ -178,7 +178,7 @@ function printTicketHelp(io: Required<CliIo>): void {
 
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
-  const store = new TicketStore();
+  const store = new TicketStore(undefined, { team: process.env["PA_TEAM"], mode: process.env["PA_MODE"] });
   if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
     printTicketHelp(io);
     return 0;
@@ -222,9 +222,6 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     if (!id) return printError("ticket update requires id", io);
     const parsed = parseTicketUpdateArgs(rest.slice(1));
     if ("error" in parsed) return printError(parsed.error, io);
-    if (parsed.input.status !== undefined && process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "implement") {
-      return printError("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.", io);
-    }
     if (parsed.warnings) for (const w of parsed.warnings) io.stderr(w);
     if (parsed.archive) {
       const current = store.get(id);
@@ -293,7 +290,11 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     const opts = parseTicketDeleteArgs(rest.slice(1));
     if ("error" in opts) return printError(opts.error, io);
     if (opts.force && !opts.yes) return printError("--force requires --yes in pa-core non-interactive mode", io);
-    store.delete(id, opts.actor, opts.force);
+    try {
+      store.delete(id, opts.actor, opts.force);
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
     io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
     return 0;
   }

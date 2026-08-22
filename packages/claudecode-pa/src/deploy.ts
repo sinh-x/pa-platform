@@ -53,7 +53,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const paths = getDeployPaths(deploymentId);
   const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
-  const primer = generatePrimer({ runtime: "claude", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
+  const primer = generatePrimer({ runtime: "claude", teamConfig, mode: selectedMode?.id, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 

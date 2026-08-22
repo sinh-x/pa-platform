@@ -45,7 +45,8 @@ test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate",
   assert.match(modeDoc, /Phase 5\.x confirmation gate rule: this gate applies only when Sinh\/user feedback\s+is involved\./);
   assert.match(modeDoc, /the orchestrator MUST record the result and ask Sinh for\s+explicit confirmation before any Phase 6 action, routine merge work, or ticket\s+handoff\./);
   assert.match(modeDoc, /Continue this loop until Sinh approves or explicitly stops the loop\./);
-  assert.match(modeDoc, /Phase 6\s+is blocked\s+unless state is `approved` or `stopped`\./);
+  assert.match(modeDoc, /normal Phase 6\s+is\s+allowed only when state is `approved`/);
+  assert.match(modeDoc, /stopped.*partial terminal return/s);
   assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
 });
 
@@ -81,8 +82,8 @@ test("builder orchestrator Phase 5.6 gates preserve independent decision payload
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
   const modeDoc = readFileSync(modePath, "utf-8");
   const gates = [
-    ["Step 3.5", "Step 4", /Proposal \(exact objective\)/, /Evidence\/Findings/, /Implications \(approval, rejection, and stop\)/],
-    ["Step 6.5", "Step 7", /Proposal \(completed fix\)/, /Evidence\/Findings/, /Implications \(approve, reject\/request-changes, and stop\)/],
+    ["Step 3.5", "Step 4", /Proposal:/, /Evidence\/Findings/, /Options: Proceed.*Reject.*Stop/s],
+    ["Step 6.5", "Step 7", /Proposal:/, /Evidence\/Findings/, /Options:\s+Approve.*Reject\/request\s+changes.*Stop/s],
   ] as const;
 
   for (const [step, nextStep, proposal, evidence, implications] of gates) {
@@ -93,7 +94,9 @@ test("builder orchestrator Phase 5.6 gates preserve independent decision payload
     assert.match(gate, proposal);
     assert.match(gate, evidence);
     assert.match(gate, implications);
-    assert.match(gate, /exact decision\s+requested/);
+    assert.match(gate, /Exact decision requested:/);
+    assert.match(gate, /PAP-134/);
+    assert.match(gate, /CQ-1|verification\s+passed/);
     const payloadStart = gate.indexOf("Question-tool payload:");
     const payloadEnd = gate.indexOf("\n\n", payloadStart);
     assert.ok(payloadStart >= 0 && payloadEnd > payloadStart, `${step} payload must be present`);

@@ -86,3 +86,13 @@ test("semantic confirmation gate blocks writes before confirmation", () => {
   const clear = enforceSemanticConfirmationGate(false, []);
   assert.equal(clear.allowed, true);
 });
+
+test("semantic confirmation payload bounds long and adversarial input", () => {
+  const bundle = buildSemanticBriefingBundle({
+    query: `${"query? ".repeat(500)}?`,
+    reflections: [],
+    system: [],
+  }, { summaryClaims: [{ claim: `${"finding? ".repeat(500)}?` }] });
+  assert.ok(bundle.confirmation_question.length <= 1500);
+  assert.equal((bundle.confirmation_question.match(/\?/g) ?? []).length, 1);
+});

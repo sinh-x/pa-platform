@@ -38,7 +38,7 @@ export interface AgentApiInstance {
 
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
-  const ticketStore = new TicketStore();
+  const ticketStore = new TicketStore(undefined, { team: process.env["PA_TEAM"], mode: process.env["PA_MODE"] });
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   if (opts.enableCors) app.use("*", cors({
     origin: "*",

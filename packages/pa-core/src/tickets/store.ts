@@ -10,11 +10,18 @@ import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditE
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
 
+export interface TicketMutationContext {
+  team?: string;
+  mode?: string;
+}
+
 export class TicketStore {
   private readonly dir: string;
+  private readonly context: TicketMutationContext;
 
-  constructor(dir = getTicketsDir()) {
+  constructor(dir = getTicketsDir(), context: TicketMutationContext = {}) {
     this.dir = dir;
+    this.context = context;
     mkdirSync(this.dir, { recursive: true });
   }
 
@@ -48,6 +55,7 @@ export class TicketStore {
   }
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core"): Ticket {
+    assertLifecycleOwnership(input.status, this.context);
     const current = this.get(id);
     if (!current) throw new Error(`Ticket not found: ${id}`);
     if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
@@ -139,6 +147,7 @@ export class TicketStore {
       this.appendAudit(id, "deleted", actor, { hard: [false, true] });
       return;
     }
+    assertLifecycleOwnership("cancelled", this.context);
     this.update(id, { status: "cancelled" }, actor);
     this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
   }
@@ -286,6 +295,12 @@ export class TicketStore {
   private appendAudit(ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]): void {
     const entry: AuditEntry = { ticket_id: ticketId, action, actor, timestamp: nowUtc(), changes };
     writeFileSync(resolve(this.dir, "audit.jsonl"), `${JSON.stringify(entry)}\n`, { flag: "a" });
+  }
+}
+
+function assertLifecycleOwnership(status: TicketStatus | undefined, context: TicketMutationContext): void {
+  if (status !== undefined && context.team === "builder" && context.mode === "implement") {
+    throw new Error("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.");
   }
 }
 

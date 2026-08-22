@@ -192,6 +192,9 @@ test("cpa dry-run defaults builder to implement mode YAML model", async () => {
     const code = await runCoreCommand(["deploy", "builder", "--dry-run"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
     assert.equal(code, 0);
     assert.match(readDryRunBody(root, stdout), /using claude-sonnet-4-6/);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /status updates are prohibited/);
   });
 });
 
