@@ -11,6 +11,7 @@ import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployCont
 import { hub, startWatchers } from "./ws/index.js";
 import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
 import { resolveTrustedTicketMutationContext, TicketStore } from "../tickets/store.js";
+import type { TicketMutationPrincipal } from "../tickets/store.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
@@ -28,6 +29,12 @@ export interface AgentApiOptions {
    * Propagated from `pa-core serve --dev` / `PA_DEV_MODE`. See FR6.
    */
   devMode?: boolean;
+  /** Credentials issued/configured by the server owner for ticket mutations. */
+  ticketMutationAuth?: {
+    deploymentId?: string;
+    credential?: string;
+    operatorCredential?: string;
+  };
 }
 
 export interface AgentApiInstance {
@@ -39,7 +46,12 @@ export interface AgentApiInstance {
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
   const ticketStore = new TicketStore(undefined, { privileged: false });
-  const callerMutationContext = (c: Context) => resolveTrustedTicketMutationContext(c.req.header("X-PA-Deployment-ID"), false);
+  const mutationAuth = opts.ticketMutationAuth ?? {
+    deploymentId: process.env["PA_DEPLOYMENT_ID"],
+    credential: process.env["PA_AGENT_API_CREDENTIAL"],
+    operatorCredential: process.env["PA_AGENT_API_OPERATOR_CREDENTIAL"],
+  };
+  const callerMutationContext = (c: Context) => resolveTrustedTicketMutationContext(authenticateMutationPrincipal(c, mutationAuth), true);
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   if (opts.enableCors) app.use("*", cors({
     origin: "*",
@@ -211,6 +223,19 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       sessionManager.cleanup();
     },
   };
+}
+
+function authenticateMutationPrincipal(c: Context, auth: NonNullable<AgentApiOptions["ticketMutationAuth"]>): TicketMutationPrincipal {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+  const claimedDeploymentId = c.req.header("X-PA-Deployment-ID");
+  if (!token) return {};
+  if (auth.operatorCredential && token === auth.operatorCredential) {
+    return claimedDeploymentId ? {} : { operator: true };
+  }
+  if (!auth.credential || !auth.deploymentId || token !== auth.credential) return {};
+  if (claimedDeploymentId !== undefined && claimedDeploymentId !== auth.deploymentId) return {};
+  return { deploymentId: auth.deploymentId };
 }
 
 export const createApp = createAgentApiApp;

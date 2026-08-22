@@ -17,6 +17,11 @@ export interface TicketMutationContext {
   privileged?: boolean;
 }
 
+export interface TicketMutationPrincipal {
+  deploymentId?: string;
+  operator?: boolean;
+}
+
 export class TicketStore {
   private readonly dir: string;
   private readonly context: TicketMutationContext;
@@ -306,10 +311,12 @@ function assertLifecycleOwnership(status: TicketStatus | undefined, context: Tic
   }
 }
 
-export function resolveTrustedTicketMutationContext(deploymentId = process.env["PA_DEPLOYMENT_ID"], allowLocalOperator = true): TicketMutationContext {
-  if (!deploymentId) return { privileged: allowLocalOperator };
+export function resolveTrustedTicketMutationContext(principal: TicketMutationPrincipal = { deploymentId: process.env["PA_DEPLOYMENT_ID"], operator: !process.env["PA_DEPLOYMENT_ID"] }, allowLocalOperator = true): TicketMutationContext {
+  const deploymentId = principal.deploymentId;
+  if (principal.operator === true && allowLocalOperator) return { privileged: true };
+  if (!deploymentId) return { privileged: false };
   const deployment = queryDeploymentStatus(deploymentId);
-  if (!deployment) return { privileged: false };
+  if (!deployment || deployment.status !== "running") return { privileged: false };
   return { team: deployment.team, mode: deployment.mode, privileged: true };
 }
 
