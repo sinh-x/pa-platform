@@ -135,4 +135,19 @@ test("decision payload builder renders unrelated tickets exactly and stays bound
     assert.ok(payload.length <= 1500);
     assert.equal((payload.match(/\?/g) ?? []).length, 1);
   });
+
+  for (const step of ["Step 3.5", "Step 6.5"]) {
+    const payload = buildDecisionPayload({
+      ticketId: "PAP-999",
+      objective: `${step} ${"objective ".repeat(300)}`,
+      findings: "finding evidence",
+      verification: "verification evidence",
+      question: "Proceed with this bounded decision",
+      options: "Proceed applies the fix; Reject requests changes; Stop preserves status",
+    });
+    assert.ok(payload.length <= 1500);
+    assert.match(payload, /Options: Proceed applies the fix; Reject requests changes; Stop preserves status/);
+    assert.match(payload, /Decision: Proceed with this bounded decision\?$/);
+    assert.equal((payload.match(/\?/g) ?? []).length, 1);
+  }
 });

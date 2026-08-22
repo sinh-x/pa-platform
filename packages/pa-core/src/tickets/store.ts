@@ -56,8 +56,8 @@ export class TicketStore {
     return this.normalizeTicket(raw);
   }
 
-  update(id: string, input: UpdateTicketInput, actor = "pa-core"): Ticket {
-    assertLifecycleOwnership(input.status, this.context);
+  update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
+    assertLifecycleOwnership(input.status, context);
     const current = this.get(id);
     if (!current) throw new Error(`Ticket not found: ${id}`);
     if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
@@ -141,16 +141,16 @@ export class TicketStore {
     return moved;
   }
 
-  delete(id: string, actor = "pa-core", hard = false): void {
+  delete(id: string, actor = "pa-core", hard = false, context = this.context): void {
     const ticket = this.get(id);
     if (!ticket) throw new Error(`Ticket not found: ${id}`);
+    assertLifecycleOwnership("cancelled", context);
     if (hard) {
       unlinkSync(this.ticketPath(id));
       this.appendAudit(id, "deleted", actor, { hard: [false, true] });
       return;
     }
-    assertLifecycleOwnership("cancelled", this.context);
-    this.update(id, { status: "cancelled" }, actor);
+    this.update(id, { status: "cancelled" }, actor, context);
     this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
   }
 
@@ -306,9 +306,8 @@ function assertLifecycleOwnership(status: TicketStatus | undefined, context: Tic
   }
 }
 
-export function resolveTrustedTicketMutationContext(): TicketMutationContext {
-  const deploymentId = process.env["PA_DEPLOYMENT_ID"];
-  if (!deploymentId) return { privileged: true };
+export function resolveTrustedTicketMutationContext(deploymentId = process.env["PA_DEPLOYMENT_ID"], allowLocalOperator = true): TicketMutationContext {
+  if (!deploymentId) return { privileged: allowLocalOperator };
   const deployment = queryDeploymentStatus(deploymentId);
   if (!deployment) return { privileged: false };
   return { team: deployment.team, mode: deployment.mode, privileged: true };

@@ -228,6 +228,19 @@ test("board --include-archived surfaces archived tickets while default board hid
   });
 });
 
+test("implement context rejects hard and soft delete without mutation", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    const store = new TicketStore(ticketsDir, { team: "builder", mode: "implement", privileged: true });
+    const ticket = store.create({ project: "pa-platform", title: "Protected", summary: "Summary", description: "", status: "implementing", priority: "high", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const before = store.get(ticket.id);
+    const auditBefore = store.readAudit();
+    assert.throws(() => store.delete(ticket.id, "implement-child", false), /implement-child agents/);
+    assert.throws(() => store.delete(ticket.id, "implement-child", true), /implement-child agents/);
+    assert.deepEqual(store.get(ticket.id), before);
+    assert.deepEqual(store.readAudit(), auditBefore);
+  });
+});
+
 test("ticket list --archived filters down to archived tickets only", () => {
   withTicketEnv((_root, ticketsDir) => {
     const store = new TicketStore(ticketsDir);

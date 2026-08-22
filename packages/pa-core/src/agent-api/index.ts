@@ -38,12 +38,13 @@ export interface AgentApiInstance {
 
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
-  const ticketStore = new TicketStore(undefined, resolveTrustedTicketMutationContext());
+  const ticketStore = new TicketStore(undefined, { privileged: false });
+  const callerMutationContext = (c: Context) => resolveTrustedTicketMutationContext(c.req.header("X-PA-Deployment-ID"), false);
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   if (opts.enableCors) app.use("*", cors({
     origin: "*",
     allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id", "X-PA-Deployment-ID"],
     exposeHeaders: ["Content-Length", "Content-Type"],
     maxAge: 600,
   }));
@@ -187,7 +188,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", knowledgeRoutes());
   app.route("/", dashboardRoutes(ticketStore));
   app.route("/", timersRoutes());
-  app.route("/", ticketRoutes(ticketStore));
+  app.route("/", ticketRoutes(ticketStore, callerMutationContext));
   app.route("/", actionRoutes(ticketStore));
   app.route("/", focusRoutes());
   app.route("/", bulletinRoutes());

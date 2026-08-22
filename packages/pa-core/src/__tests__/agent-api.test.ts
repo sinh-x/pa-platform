@@ -184,6 +184,23 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
   });
 });
 
+test("persistent API requires trusted caller identity for status mutation", async () => {
+  await withApiEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-api-implement", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001" });
+    appendRegistryEvent({ deployment_id: "d-api-parent", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:01.000Z", ticket_id: "PAP-001" });
+    const { app } = createAgentApiApp();
+    const created = await app.request("/api/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: "pa-platform", title: "Protected API ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }) });
+    const id = (await created.json() as { ticket: { id: string } }).ticket.id;
+    const before = await app.request(`/api/tickets/${id}`);
+    const auditBefore = (await before.json() as { ticket: { status: string } }).ticket.status;
+    const rejected = await app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", "X-PA-Deployment-ID": "d-api-implement" }, body: JSON.stringify({ status: "review-uat" }) });
+    assert.equal(rejected.status, 400);
+    const accepted = await app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", "X-PA-Deployment-ID": "d-api-parent" }, body: JSON.stringify({ status: "review-uat" }) });
+    assert.equal(accepted.status, 200);
+    assert.equal(auditBefore, "idea");
+  });
+});
+
 test("dashboard shell endpoints are read-only, include empty states, and stay fast with local fixture sizes", async () => {
   await withApiEnv(async (root) => {
     const { app } = createAgentApiApp();
