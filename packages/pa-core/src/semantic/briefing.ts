@@ -49,7 +49,7 @@ export function buildSemanticBriefingBundle(result: SemanticQueryResult, options
     query: result.query,
     groups,
     evidence_map: evidenceMap,
-    confirmation_question: "I found related context. Should I continue with deeper analysis now?",
+    confirmation_question: "Proposal: continue deeper analysis for this query. Evidence/Findings: retrieved context and the evidence map above. Implications: continue applies the proposal; stop keeps findings read-only. Decision: Should I continue with deeper analysis now?",
   };
 }
 

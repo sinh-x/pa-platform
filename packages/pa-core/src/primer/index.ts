@@ -260,6 +260,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
   const executionStyle = mode?.solo === true ? "solo"
     : mode?.solo === false ? "team"
     : (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
+  const implementReportOnly = teamConfig.name === "builder" && mode?.id === "implement";
   if (runtime === "claude") {
     const lines = [
       "## Deployment Instructions",
@@ -296,6 +297,9 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `opa registry complete` or `opa registry update` when the run finishes.",
     "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
   ];
+  if (implementReportOnly) {
+    lines.push("Builder/implement is report-only: status updates are prohibited. Report completion through the ticket comment and persistent artifact output; status transitions belong to the parent flow or orchestrator.");
+  }
   lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links, then ask exactly one confirmation question before deeper analysis or mutation.");
   if (teamConfig.name === "requirements") {
     lines.push("For requirements workflows, treat structured ticket and deployment records as authoritative over semantic similarity.");
