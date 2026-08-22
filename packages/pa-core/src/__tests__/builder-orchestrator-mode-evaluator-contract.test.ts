@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
 import { getPlatformHomeDir } from "../index.js";
+import { buildDecisionPayload } from "../decision-payload.js";
 
 const configRoot = getPlatformHomeDir();
 const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
@@ -95,15 +96,43 @@ test("builder orchestrator Phase 5.6 gates preserve independent decision payload
     assert.match(gate, evidence);
     assert.match(gate, implications);
     assert.match(gate, /Exact decision requested:/);
-    assert.match(gate, /PAP-134/);
-    assert.match(gate, /CQ-1|verification\s+passed/);
-    const payloadStart = gate.indexOf("Question-tool payload:");
-    const payloadEnd = gate.indexOf("\n\n", payloadStart);
-    assert.ok(payloadStart >= 0 && payloadEnd > payloadStart, `${step} payload must be present`);
-    const payload = gate.slice(payloadStart, payloadEnd);
-    assert.ok(payload.length <= 1500, `${step} payload is ${payload.length} characters`);
-    assert.equal((payload.match(/\?/g) ?? []).length, 1, `${step} must contain exactly one question mark`);
+    assert.match(gate, /current `ticket_id`/);
+    assert.match(gate, /exact objective/);
+    assert.match(gate, /current findings\/file evidence/);
+    assert.match(gate, /verification summary/);
+    assert.match(gate, /shared decision-payload builder\/template/);
   }
 
   assert.doesNotMatch(modeDoc, /### Phase 5\.6: Fix Loop/);
+});
+
+test("decision payload builder renders unrelated tickets exactly and stays bounded", () => {
+  const fixtures = [
+    {
+      ticketId: "PAP-101",
+      objective: "Refresh the import boundary",
+      findings: "The loader bypasses the documented adapter at src/import.ts:42",
+      verification: "Focused import tests pass",
+      question: "Proceed with this fix",
+      options: "Proceed applies the patch; Reject re-scopes it; Stop preserves the ticket",
+    },
+    {
+      ticketId: "OPS-202",
+      objective: "Rotate the staging credential",
+      findings: "The deployment manifest still references the expired secret at deploy.yaml:8",
+      verification: "Config validation and dry-run pass",
+      question: "Accept this completed change",
+      options: "Approve permits handoff; Reject requests changes; Stop preserves status",
+    },
+  ];
+  const expected = [
+    "Ticket: PAP-101 Proposal: Refresh the import boundary Evidence/Findings: The loader bypasses the documented adapter at src/import.ts:42 Verification: Focused import tests pass. Options: Proceed applies the patch; Reject re-scopes it; Stop preserves the ticket Decision: Proceed with this fix?",
+    "Ticket: OPS-202 Proposal: Rotate the staging credential Evidence/Findings: The deployment manifest still references the expired secret at deploy.yaml:8 Verification: Config validation and dry-run pass. Options: Approve permits handoff; Reject requests changes; Stop preserves status Decision: Accept this completed change?",
+  ];
+  fixtures.forEach((fixture, index) => {
+    const payload = buildDecisionPayload(fixture);
+    assert.equal(payload, expected[index]);
+    assert.ok(payload.length <= 1500);
+    assert.equal((payload.match(/\?/g) ?? []).length, 1);
+  });
 });

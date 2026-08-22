@@ -19,10 +19,12 @@ function withTicketEnv(fn: (root: string, ticketsDir: string) => void): void {
   const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
+  const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  delete process.env["PA_DEPLOYMENT_ID"];
   try {
     fn(root, tickets);
   } finally {
@@ -35,6 +37,8 @@ function withTicketEnv(fn: (root: string, ticketsDir: string) => void): void {
     else process.env["PA_REGISTRY_DB"] = previousRegistry;
     if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
+    if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+    else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -58,7 +62,7 @@ test("assignee matching supports team and agent filters", () => {
 
 test("board, focus, and metrics build from TicketStore", () => {
   withTicketEnv((_root, ticketsDir) => {
-    const store = new TicketStore(ticketsDir);
+    const store = new TicketStore(ticketsDir, { privileged: true });
     const ticket = store.create({
       project: "pa-platform",
       title: "Core parity",
@@ -99,7 +103,7 @@ test("tickets validate and store linked git branches and commits", () => {
     const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf-8" }).trim();
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repoDir}\n    prefix: PAP\n`);
 
-    const store = new TicketStore(ticketsDir);
+    const store = new TicketStore(ticketsDir, { privileged: true });
     const ticket = store.create({
       project: "pa-platform",
       title: "Link git work",
@@ -132,7 +136,7 @@ test("tickets validate and store linked git branches and commits", () => {
 
 test("archive and unarchive store methods toggle the archived tag and enforce terminal status", () => {
   withTicketEnv((_root, ticketsDir) => {
-    const store = new TicketStore(ticketsDir);
+    const store = new TicketStore(ticketsDir, { privileged: true });
     const ticket = store.create({
       project: "pa-platform",
       title: "Archive candidate",

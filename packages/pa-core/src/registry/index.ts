@@ -20,11 +20,11 @@ export function appendRegistryEvent(event: RegistryEvent): void {
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, provider, rating,
-      objective, repo, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds
+      objective, repo, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
-      @objective, @repo, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds
+      @objective, @repo, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds
     )
   `).run(row);
   upsertDeployment(db, event);
@@ -140,10 +140,10 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare(`
       INSERT INTO deployments (
         deployment_id, team, status, started_at, pid, primer, agents, models,
-        ticket_id, objective, repo, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds
+        ticket_id, objective, repo, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds
       ) VALUES (
         @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
-        @ticket_id, @objective, @repo, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds
+        @ticket_id, @objective, @repo, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         status = excluded.status,
         started_at = excluded.started_at,
@@ -154,6 +154,7 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         ticket_id = excluded.ticket_id,
         objective = excluded.objective,
         repo = excluded.repo,
+        mode = excluded.mode,
         provider = excluded.provider,
         resumed_from_deployment_id = excluded.resumed_from_deployment_id,
         runtime = excluded.runtime,
@@ -193,6 +194,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     rating: event.rating ? JSON.stringify(event.rating) : null,
     objective: event.objective ?? null,
     repo: event.repo ?? null,
+    mode: event.mode ?? null,
     fallback: event.fallback ? 1 : 0,
     resumed_from_deployment_id: event.resumed_from_deployment_id ?? null,
     note: event.note ?? null,
@@ -222,6 +224,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     rating: parseJson<RegistryEvent["rating"]>(row["rating"]),
     objective: optionalString(row["objective"]),
     repo: optionalString(row["repo"]),
+    mode: optionalString(row["mode"]),
     fallback: Boolean(row["fallback"]),
     resumed_from_deployment_id: optionalString(row["resumed_from_deployment_id"]),
     note: optionalString(row["note"]),
@@ -248,6 +251,7 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     models: parseJson<Record<string, string>>(row["models"]),
     provider: optionalString(row["provider"]),
     repo: optionalString(row["repo"]),
+    mode: optionalString(row["mode"]),
     fallback: Boolean(row["fallback"]),
     resumed_from_deployment_id: optionalString(row["resumed_from_deployment_id"]),
     runtime: row["runtime"] as DeploymentStatus["runtime"],

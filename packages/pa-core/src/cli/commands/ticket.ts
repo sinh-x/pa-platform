@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
-import { TicketStore } from "../../tickets/index.js";
+import { resolveTrustedTicketMutationContext, TicketStore } from "../../tickets/index.js";
 import { TERMINAL_STATUSES } from "../../tickets/types.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
@@ -178,7 +178,7 @@ function printTicketHelp(io: Required<CliIo>): void {
 
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
-  const store = new TicketStore(undefined, { team: process.env["PA_TEAM"], mode: process.env["PA_MODE"] });
+  const store = new TicketStore(undefined, resolveTrustedTicketMutationContext());
   if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
     printTicketHelp(io);
     return 0;

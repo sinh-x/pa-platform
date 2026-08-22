@@ -10,7 +10,7 @@ import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, sessionRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
 import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
-import { TicketStore } from "../tickets/store.js";
+import { resolveTrustedTicketMutationContext, TicketStore } from "../tickets/store.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
@@ -38,7 +38,7 @@ export interface AgentApiInstance {
 
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
-  const ticketStore = new TicketStore(undefined, { team: process.env["PA_TEAM"], mode: process.env["PA_MODE"] });
+  const ticketStore = new TicketStore(undefined, resolveTrustedTicketMutationContext());
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   if (opts.enableCors) app.use("*", cors({
     origin: "*",
@@ -187,8 +187,8 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", knowledgeRoutes());
   app.route("/", dashboardRoutes(ticketStore));
   app.route("/", timersRoutes());
-  app.route("/", ticketRoutes());
-  app.route("/", actionRoutes());
+  app.route("/", ticketRoutes(ticketStore));
+  app.route("/", actionRoutes(ticketStore));
   app.route("/", focusRoutes());
   app.route("/", bulletinRoutes());
   app.route("/", documentsRoutes());

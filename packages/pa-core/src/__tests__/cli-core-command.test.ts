@@ -29,6 +29,7 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousStatusWaitTimeout = process.env["PA_STATUS_WAIT_TIMEOUT"];
   const previousTeam = process.env["PA_TEAM"];
   const previousMode = process.env["PA_MODE"];
+  const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
@@ -38,6 +39,7 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   delete process.env["PA_STATUS_WAIT_TIMEOUT"];
   delete process.env["PA_TEAM"];
   delete process.env["PA_MODE"];
+  delete process.env["PA_DEPLOYMENT_ID"];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -58,6 +60,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_TEAM"] = previousTeam;
     if (previousMode === undefined) delete process.env["PA_MODE"];
     else process.env["PA_MODE"] = previousMode;
+    if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+    else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -1990,8 +1994,11 @@ test("builder implement status updates are rejected before ticket and audit muta
   await withCliEnv(async () => {
     const previousTeam = process.env["PA_TEAM"];
     const previousMode = process.env["PA_MODE"];
+    const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
     process.env["PA_TEAM"] = "builder";
     process.env["PA_MODE"] = "implement";
+    process.env["PA_DEPLOYMENT_ID"] = "d-builder-guard";
+    appendRegistryEvent({ deployment_id: "d-builder-guard", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00Z" });
     try {
       assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Guard target", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original summary"], { io: capture().io }), 0);
       const before = new TicketStore().get("PAP-001");
@@ -2007,6 +2014,8 @@ test("builder implement status updates are rejected before ticket and audit muta
       else process.env["PA_TEAM"] = previousTeam;
       if (previousMode === undefined) delete process.env["PA_MODE"];
       else process.env["PA_MODE"] = previousMode;
+      if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+      else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
     }
   });
 });
@@ -2015,8 +2024,11 @@ test("builder implement rejects every status value but allows non-status updates
   await withCliEnv(async () => {
     const previousTeam = process.env["PA_TEAM"];
     const previousMode = process.env["PA_MODE"];
+    const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
     process.env["PA_TEAM"] = "builder";
     process.env["PA_MODE"] = "implement";
+    process.env["PA_DEPLOYMENT_ID"] = "d-builder-statuses";
+    appendRegistryEvent({ deployment_id: "d-builder-statuses", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00Z" });
     try {
       assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "All statuses", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original"], { io: capture().io }), 0);
       for (const status of ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]) {
@@ -2033,6 +2045,8 @@ test("builder implement rejects every status value but allows non-status updates
       else process.env["PA_TEAM"] = previousTeam;
       if (previousMode === undefined) delete process.env["PA_MODE"];
       else process.env["PA_MODE"] = previousMode;
+      if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+      else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
     }
   });
 });

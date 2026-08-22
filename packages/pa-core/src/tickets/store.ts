@@ -6,6 +6,7 @@ import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
 import { matchAssignee } from "./validate.js";
+import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
@@ -13,6 +14,7 @@ const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_ST
 export interface TicketMutationContext {
   team?: string;
   mode?: string;
+  privileged?: boolean;
 }
 
 export class TicketStore {
@@ -299,9 +301,17 @@ export class TicketStore {
 }
 
 function assertLifecycleOwnership(status: TicketStatus | undefined, context: TicketMutationContext): void {
-  if (status !== undefined && context.team === "builder" && context.mode === "implement") {
+  if (status !== undefined && (context.privileged !== true || (context.team === "builder" && context.mode === "implement"))) {
     throw new Error("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.");
   }
+}
+
+export function resolveTrustedTicketMutationContext(): TicketMutationContext {
+  const deploymentId = process.env["PA_DEPLOYMENT_ID"];
+  if (!deploymentId) return { privileged: true };
+  const deployment = queryDeploymentStatus(deploymentId);
+  if (!deployment) return { privileged: false };
+  return { team: deployment.team, mode: deployment.mode, privileged: true };
 }
 
 function normalizeTimestamp(value: unknown): string {
