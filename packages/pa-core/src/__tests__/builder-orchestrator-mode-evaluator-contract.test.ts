@@ -77,18 +77,30 @@ test("builder orchestrator mode requires one-bundle objective shape and branch r
   assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
 });
 
-test("builder orchestrator Phase 5.6 decision gate is standalone and bounded", (t) => {
+test("builder orchestrator Phase 5.6 gates preserve independent decision payload contracts", (t) => {
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
   const modeDoc = readFileSync(modePath, "utf-8");
-  const gateStart = modeDoc.indexOf("### Phase 5.6: Fix Loop");
-  const gateEnd = modeDoc.indexOf("### Phase 6: Final Report and Shutdown");
-  assert.ok(gateStart >= 0 && gateEnd > gateStart, "Phase 5.6 gate must be present");
-  const gate = modeDoc.slice(gateStart, gateEnd);
+  const gates = [
+    ["Step 3.5", "Step 4", /Proposal \(exact objective\)/, /Evidence\/Findings/, /Implications \(approval, rejection, and stop\)/],
+    ["Step 6.5", "Step 7", /Proposal \(completed fix\)/, /Evidence\/Findings/, /Implications \(approve, reject\/request-changes, and stop\)/],
+  ] as const;
 
-  assert.match(gate, /proposal|objective summary/i);
-  assert.match(gate, /evidence|findings/i);
-  assert.match(gate, /implication|impact/i);
-  assert.match(gate, /exact decision|decision requested/i);
-  assert.ok(gate.length <= 1500, `Phase 5.6 contract is ${gate.length} characters`);
-  assert.equal((gate.match(/\?/g) ?? []).length, 1);
+  for (const [step, nextStep, proposal, evidence, implications] of gates) {
+    const gateStart = modeDoc.indexOf(`**${step}`);
+    const gateEnd = modeDoc.indexOf(`**${nextStep}`, gateStart);
+    assert.ok(gateStart >= 0 && gateEnd > gateStart, `${step} gate must be present before ${nextStep}`);
+    const gate = modeDoc.slice(gateStart, gateEnd);
+    assert.match(gate, proposal);
+    assert.match(gate, evidence);
+    assert.match(gate, implications);
+    assert.match(gate, /exact decision\s+requested/);
+    const payloadStart = gate.indexOf("Question-tool payload:");
+    const payloadEnd = gate.indexOf("\n\n", payloadStart);
+    assert.ok(payloadStart >= 0 && payloadEnd > payloadStart, `${step} payload must be present`);
+    const payload = gate.slice(payloadStart, payloadEnd);
+    assert.ok(payload.length <= 1500, `${step} payload is ${payload.length} characters`);
+    assert.equal((payload.match(/\?/g) ?? []).length, 1, `${step} must contain exactly one question mark`);
+  }
+
+  assert.doesNotMatch(modeDoc, /### Phase 5\.6: Fix Loop/);
 });

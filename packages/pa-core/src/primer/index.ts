@@ -261,12 +261,15 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     : mode?.solo === false ? "team"
     : (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
   const implementReportOnly = teamConfig.name === "builder" && mode?.id === "implement";
+  const lifecycleInstruction = implementReportOnly
+    ? "For builder/implement ticket work, status updates are prohibited. Report completion through the ticket comment and persistent artifact output; status transitions belong to the parent flow or orchestrator."
+    : "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.";
   if (runtime === "claude") {
     const lines = [
       "## Deployment Instructions",
       "Use `cpa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use the Claude Code tools and skills exposed in the active session — including Skill (slash commands), AskUserQuestion, Agent, TeamCreate, SendMessage, and ScheduleWakeup — when they are needed.",
       "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
-      "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
+      lifecycleInstruction,
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `cpa registry complete` or `cpa registry update` when the run finishes.",
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
@@ -280,7 +283,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "## Deployment Instructions",
       "Use `dpa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use Droid tools exposed in the active session: Read, Edit, Create, Execute, Grep, Glob, LS, Task (sub-agent spawning), AskUser, Skill, WebSearch, FetchUrl, and TodoWrite.",
       "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
-      "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
+      lifecycleInstruction,
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `dpa registry complete` or `dpa registry update` when the run finishes.",
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ];
@@ -293,13 +296,10 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
     "## Deployment Instructions",
     "Use `opa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use only tools exposed in the current opencode session.",
     "Start by checking active bulletins, then verify ticket/objective alignment before changing files or producing artifacts.",
-    "For ticket work, keep lifecycle updates on the ticket: claim when starting, comment on meaningful progress, attach persistent doc_refs before handoff, and advance status only after required artifacts exist.",
+    lifecycleInstruction,
     "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `opa registry complete` or `opa registry update` when the run finishes.",
     "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
   ];
-  if (implementReportOnly) {
-    lines.push("Builder/implement is report-only: status updates are prohibited. Report completion through the ticket comment and persistent artifact output; status transitions belong to the parent flow or orchestrator.");
-  }
   lines.push("For semantic briefing-style requests (for example: startup context refresh or get up to date), render `opa semantic briefing <query>` output with evidence links, then ask exactly one confirmation question before deeper analysis or mutation.");
   if (teamConfig.name === "requirements") {
     lines.push("For requirements workflows, treat structured ticket and deployment records as authoritative over semantic similarity.");
