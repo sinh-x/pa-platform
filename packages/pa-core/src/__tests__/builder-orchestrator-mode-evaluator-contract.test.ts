@@ -76,3 +76,19 @@ test("builder orchestrator mode requires one-bundle objective shape and branch r
   assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
   assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
 });
+
+test("builder orchestrator Phase 5.6 decision gate is standalone and bounded", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+  const gateStart = modeDoc.indexOf("### Phase 5.6: Fix Loop");
+  const gateEnd = modeDoc.indexOf("### Phase 6: Final Report and Shutdown");
+  assert.ok(gateStart >= 0 && gateEnd > gateStart, "Phase 5.6 gate must be present");
+  const gate = modeDoc.slice(gateStart, gateEnd);
+
+  assert.match(gate, /proposal|objective summary/i);
+  assert.match(gate, /evidence|findings/i);
+  assert.match(gate, /implication|impact/i);
+  assert.match(gate, /exact decision|decision requested/i);
+  assert.ok(gate.length <= 1500, `Phase 5.6 contract is ${gate.length} characters`);
+  assert.equal((gate.match(/\?/g) ?? []).length, 1);
+});

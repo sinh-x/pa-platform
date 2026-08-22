@@ -1978,6 +1978,31 @@ test("ticket update --status without new flags continues to work without regress
   });
 });
 
+test("builder implement status updates are rejected before ticket and audit mutation", async () => {
+  await withCliEnv(async () => {
+    const previousTeam = process.env["PA_TEAM"];
+    const previousMode = process.env["PA_MODE"];
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "implement";
+    try {
+      assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Guard target", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original summary"], { io: capture().io }), 0);
+      const before = new TicketStore().get("PAP-001");
+      const auditBefore = new TicketStore().readAudit().length;
+      const rejected = capture();
+
+      assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "review-uat", "--summary", "Must not apply"], { io: rejected.io }), 0);
+      assert.match(rejected.stderr.join("\n"), /parent.*(flow|owns).*status/i);
+      assert.deepEqual(new TicketStore().get("PAP-001"), before);
+      assert.equal(new TicketStore().readAudit().length, auditBefore);
+    } finally {
+      if (previousTeam === undefined) delete process.env["PA_TEAM"];
+      else process.env["PA_TEAM"] = previousTeam;
+      if (previousMode === undefined) delete process.env["PA_MODE"];
+      else process.env["PA_MODE"] = previousMode;
+    }
+  });
+});
+
 test("ticket update --title sanitizes to empty keeps existing title and warns on stderr", async () => {
   await withCliEnv(async () => {
     assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Empty guard title", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);

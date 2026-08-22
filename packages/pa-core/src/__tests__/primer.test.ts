@@ -333,6 +333,26 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer implement instructions are report-only and parent-owned", () => {
+  const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    objective: Implement work
+`);
+  const primer = generatePrimer({ runtime: "opencode", teamConfig: builderTeam, mode: "implement" });
+
+  assert.match(primer, /status updates? (are )?(prohibited|not allowed)|must not.*status|never.*status/i);
+  assert.match(primer, /completion (report|comment).*artifact|report.*comments?|comments?.*artifacts?/i);
+  assert.match(primer, /parent (flow|orchestrator).*status|status.*parent (flow|orchestrator)/i);
+});
+
 test("generatePrimer omits auto-evaluation deployment instruction", () => {
   const builderTeam = parseTeamYamlContent(`
 name: builder
