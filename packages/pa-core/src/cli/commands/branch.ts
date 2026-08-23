@@ -88,7 +88,7 @@ function runBranchValidate(io: Required<CliIo>): number {
   const repo = resolveRepo(project.key);
   const pattern = getBranchPattern(repo);
 
-  const currentBranch = git(["branch", "--show-current"], repo.path, io);
+  const currentBranch = git(["branch", "--show-current"], process.cwd(), io);
   if (!currentBranch) return printError("Failed to determine current branch", io);
 
   if (validateBranchName(currentBranch, pattern)) return 0;

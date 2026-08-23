@@ -4,6 +4,12 @@ import yaml from "js-yaml";
 import { expandHome, getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
 import type { PlatformConfig, ProviderDefaults, RepoConfig } from "./types.js";
 
+export interface RawRepoConfig extends RepoConfig {
+  main_branch?: string;
+  develop_branch?: string;
+  feature_branch_pattern?: string;
+}
+
 interface RawConfig {
   config_dir?: string;
   data_dir?: string;
@@ -11,7 +17,7 @@ interface RawConfig {
   skills_dir?: string;
   defaults?: PlatformConfig["defaults"];
   provider_defaults?: ProviderDefaults;
-  repos?: Record<string, RepoConfig>;
+  repos?: Record<string, RawRepoConfig>;
 }
 
 function mergeProviderDefaults(base: ProviderDefaults | undefined, override: ProviderDefaults | undefined): ProviderDefaults | undefined {
@@ -54,8 +60,22 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
     homeDir,
     teamsDir,
     skillsDir,
-    repos: Object.fromEntries(Object.entries({ ...externalRepos, ...raw.repos }).map(([key, repo]) => [key, { ...repo, path: expandHome(repo.path) }])),
+    repos: Object.fromEntries(Object.entries({ ...externalRepos, ...raw.repos }).map(([key, repo]) => [key, normalizeRepoConfig(repo)])),
     provider_defaults: mergeProviderDefaults(externalProviderDefaults, raw.provider_defaults),
     defaults: raw.defaults,
+  };
+}
+
+export function normalizeRepoConfig(repo: RawRepoConfig): RepoConfig {
+  const { main_branch, develop_branch, feature_branch_pattern, ...canonical } = repo;
+  const mainBranch = repo.mainBranch ?? main_branch;
+  const developBranch = repo.developBranch ?? develop_branch;
+  const featureBranchPattern = repo.featureBranchPattern ?? feature_branch_pattern;
+  return {
+    ...canonical,
+    path: expandHome(repo.path),
+    ...(mainBranch === undefined ? {} : { mainBranch }),
+    ...(developBranch === undefined ? {} : { developBranch }),
+    ...(featureBranchPattern === undefined ? {} : { featureBranchPattern }),
   };
 }

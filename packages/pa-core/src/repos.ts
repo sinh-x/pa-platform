@@ -1,9 +1,9 @@
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import yaml from "js-yaml";
-import { loadConfig } from "./config.js";
+import { loadConfig, normalizeRepoConfig } from "./config.js";
 import { expandHome, getPlatformHomeDir, getUserConfigPath } from "./paths.js";
 
 // Ported from PA repos.ts at frozen PA source on 2026-04-26; search paths adjusted for pa-platform coexistence.
@@ -15,16 +15,13 @@ export interface RepoEntry {
   mainBranch?: string;
   developBranch?: string;
   featureBranchPattern?: string;
-  main_branch?: string;
-  develop_branch?: string;
-  feature_branch_pattern?: string;
   remote_url?: string;
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
 
 export function getBranchPattern(repo: RepoEntry): string {
-  return repo.featureBranchPattern ?? repo.feature_branch_pattern ?? DEFAULT_BRANCH_PATTERN;
+  return repo.featureBranchPattern ?? DEFAULT_BRANCH_PATTERN;
 }
 
 function candidateReposFiles(): string[] {
@@ -49,7 +46,7 @@ export function loadReposYaml(): Record<string, RepoEntry> {
     if (!raw?.repos) continue;
     const repos: Record<string, RepoEntry> = {};
     for (const [key, entry] of Object.entries(raw.repos)) {
-      repos[key] = { ...entry, path: expandHome(entry.path) };
+      repos[key] = normalizeRepoConfig(entry);
     }
     return repos;
   }
@@ -85,7 +82,7 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
 
   const path = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
   if (!parsed.host || !path) throw new Error(`Invalid remote URL: ${remoteUrl}`);
-  return `${parsed.host.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}/${path.toLowerCase()}`;
+  return `${parsed.host.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}/${path}`;
 }
 
 function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & RepoEntry>): ({ name: string } & RepoEntry) | null {
@@ -137,15 +134,40 @@ export function getRepoPrefix(projectName: string): string | undefined {
 export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefix: string } | undefined {
   let repoRoot: string;
   try {
-    repoRoot = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    repoRoot = gitOutput(["rev-parse", "--show-toplevel"], cwd);
   } catch {
     return undefined;
   }
 
-  return listRepos().find((repo) => repo.path === repoRoot && repo.prefix)
-    ? (() => {
-        const repo = listRepos().find((candidate) => candidate.path === repoRoot && candidate.prefix)!;
-        return { key: repo.name, prefix: repo.prefix! };
-      })()
-    : undefined;
+  const repos = listRepos();
+  const exactMatch = repos.find((repo) => repo.path === repoRoot && repo.prefix);
+  if (exactMatch) return { key: exactMatch.name, prefix: exactMatch.prefix! };
+
+  const cwdCommonDir = gitCommonDir(repoRoot);
+  if (cwdCommonDir) {
+    const commonDirMatches = repos.filter((repo) => repo.prefix && gitCommonDir(repo.path) === cwdCommonDir);
+    if (commonDirMatches.length === 1) return { key: commonDirMatches[0]!.name, prefix: commonDirMatches[0]!.prefix! };
+    if (commonDirMatches.length > 1) return undefined;
+  }
+
+  let origin: string;
+  try {
+    origin = gitOutput(["config", "--get", "remote.origin.url"], repoRoot);
+  } catch {
+    return undefined;
+  }
+  const remoteMatch = resolveRepoByRemote(origin, repos);
+  return remoteMatch?.prefix ? { key: remoteMatch.name, prefix: remoteMatch.prefix } : undefined;
+}
+
+function gitOutput(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+
+function gitCommonDir(cwd: string): string | undefined {
+  try {
+    return realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd));
+  } catch {
+    return undefined;
+  }
 }

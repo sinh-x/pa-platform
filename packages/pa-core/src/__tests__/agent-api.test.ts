@@ -877,6 +877,27 @@ test("agent API exposes repo commits and repo deployment filters", async () => {
   });
 });
 
+test("agent API honors snake-case custom repository base branches", async () => {
+  await withApiEnv(async (root) => {
+    const repo = join(root, "repo");
+    execFileSync("git", ["init", "-b", "trunk"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(repo, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["branch", "integration"], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n    main_branch: trunk\n    develop_branch: integration\n`);
+
+    const { app } = createAgentApiApp();
+    const response = await app.request("/api/repos/pa-platform/git-info");
+    assert.equal(response.status, 200);
+    const body = await response.json() as { main_branch: { name: string; exists: boolean }; develop_branch: { name: string; exists: boolean } };
+    assert.equal(body.main_branch.name, "trunk");
+    assert.equal(body.main_branch.exists, true);
+    assert.equal(body.develop_branch.name, "integration");
+    assert.equal(body.develop_branch.exists, true);
+  });
+});
+
 test("agent API exposes repo diff and compare routes", async () => {
   await withApiEnv(async (root) => {
     const repo = join(root, "repo");

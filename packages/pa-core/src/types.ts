@@ -211,8 +211,5 @@ export interface RepoConfig {
   mainBranch?: string;
   developBranch?: string;
   featureBranchPattern?: string;
-  main_branch?: string;
-  develop_branch?: string;
-  feature_branch_pattern?: string;
   remote_url?: string;
 }
