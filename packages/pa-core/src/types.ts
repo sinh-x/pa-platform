@@ -194,6 +194,7 @@ export interface PlatformConfig {
   homeDir: string;
   teamsDir: string;
   skillsDir: string;
+  repos: Record<string, RepoConfig>;
   provider_defaults?: ProviderDefaults;
   defaults?: {
     runtime?: RuntimeName;
@@ -201,4 +202,17 @@ export interface PlatformConfig {
     claudecode?: { model?: string; minimax_via_claude?: boolean };
     droidcode?: { model?: string; autonomy?: AutonomyLevel };
   };
+}
+
+export interface RepoConfig {
+  path: string;
+  description?: string;
+  prefix?: string;
+  mainBranch?: string;
+  developBranch?: string;
+  featureBranchPattern?: string;
+  main_branch?: string;
+  develop_branch?: string;
+  feature_branch_pattern?: string;
+  remote_url?: string;
 }

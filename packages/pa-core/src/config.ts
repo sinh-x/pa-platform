@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
 import { expandHome, getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
-import type { PlatformConfig, ProviderDefaults } from "./types.js";
+import type { PlatformConfig, ProviderDefaults, RepoConfig } from "./types.js";
 
 interface RawConfig {
   config_dir?: string;
@@ -11,6 +11,7 @@ interface RawConfig {
   skills_dir?: string;
   defaults?: PlatformConfig["defaults"];
   provider_defaults?: ProviderDefaults;
+  repos?: Record<string, RepoConfig>;
 }
 
 function mergeProviderDefaults(base: ProviderDefaults | undefined, override: ProviderDefaults | undefined): ProviderDefaults | undefined {
@@ -37,11 +38,13 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
   // so that provider credentials (e.g. factory api_key) stored in the external repo
   // flow through to all adapters. The main config overrides the external config.
   let externalProviderDefaults: ProviderDefaults | undefined;
+  let externalRepos: Record<string, RepoConfig> | undefined;
   if (raw.config_dir) {
     const externalConfigPath = resolve(homeDir, "config.yaml");
     if (existsSync(externalConfigPath)) {
       const externalRaw = yaml.load(readFileSync(externalConfigPath, "utf-8")) as RawConfig | undefined;
       externalProviderDefaults = externalRaw?.provider_defaults;
+      externalRepos = externalRaw?.repos;
     }
   }
 
@@ -51,6 +54,7 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
     homeDir,
     teamsDir,
     skillsDir,
+    repos: Object.fromEntries(Object.entries({ ...externalRepos, ...raw.repos }).map(([key, repo]) => [key, { ...repo, path: expandHome(repo.path) }])),
     provider_defaults: mergeProviderDefaults(externalProviderDefaults, raw.provider_defaults),
     defaults: raw.defaults,
   };

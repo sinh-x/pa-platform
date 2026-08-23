@@ -14,16 +14,22 @@ export interface RepoEntry {
   mainBranch?: string;
   developBranch?: string;
   featureBranchPattern?: string;
+  main_branch?: string;
+  develop_branch?: string;
+  feature_branch_pattern?: string;
+  remote_url?: string;
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
 
 export function getBranchPattern(repo: RepoEntry): string {
-  return repo.featureBranchPattern ?? DEFAULT_BRANCH_PATTERN;
+  return repo.featureBranchPattern ?? repo.feature_branch_pattern ?? DEFAULT_BRANCH_PATTERN;
 }
 
 function candidateReposFiles(): string[] {
   return [
+    getUserConfigPath(),
+    resolve(getPlatformHomeDir(), "config.yaml"),
     resolve(dirname(getUserConfigPath()), "repos.yaml"),
     resolve(homedir(), ".config/sinh-x/personal-assistant/repos.yaml"),
     resolve(getPlatformHomeDir(), "repos.yaml"),
@@ -34,8 +40,9 @@ export function loadReposYaml(): Record<string, RepoEntry> {
   for (const filePath of candidateReposFiles()) {
     if (!existsSync(filePath)) continue;
     const raw = yaml.load(readFileSync(filePath, "utf-8")) as { repos?: Record<string, RepoEntry> } | undefined;
+    if (!raw?.repos) continue;
     const repos: Record<string, RepoEntry> = {};
-    for (const [key, entry] of Object.entries(raw?.repos ?? {})) {
+    for (const [key, entry] of Object.entries(raw.repos)) {
       repos[key] = { ...entry, path: expandHome(entry.path) };
     }
     return repos;
@@ -51,11 +58,49 @@ export function loadRepoEntry(key: string): ({ name: string } & RepoEntry) | nul
   return listRepos().find((repo) => repo.name === key) ?? null;
 }
 
-export function resolveRepo(name: string): { name: string } & RepoEntry {
-  const repo = loadRepoEntry(name);
-  if (!repo) throw new Error(`Unknown repo: ${name}`);
-  if (!existsSync(repo.path)) throw new Error(`Repo path does not exist: ${repo.path} (repo: ${name})`);
+export function normalizeRemoteUrl(remoteUrl: string): string {
+  const value = remoteUrl.trim();
+  if (!value) throw new Error("Remote URL cannot be empty");
+
+  const scpMatch = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
+  const parsed = scpMatch
+    && !/^[a-z][a-z\d+.-]*:\/\//i.test(value)
+    ? { host: scpMatch[1], pathname: scpMatch[2] }
+    : (() => {
+        let url: URL;
+        try {
+          url = new URL(value);
+        } catch {
+          throw new Error(`Invalid remote URL: ${remoteUrl}`);
+        }
+        return { host: url.hostname, pathname: url.pathname };
+      })();
+
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
+  if (!parsed.host || !path) throw new Error(`Invalid remote URL: ${remoteUrl}`);
+  return `${parsed.host.toLowerCase()}/${path.toLowerCase()}`;
+}
+
+function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & RepoEntry>): ({ name: string } & RepoEntry) | null {
+  const normalized = normalizeRemoteUrl(remoteUrl);
+  const matches = repos.filter((repo) => repo.remote_url && normalizeRemoteUrl(repo.remote_url) === normalized);
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous repository remote "${remoteUrl}" matches: ${matches.map((repo) => `${repo.name} (${repo.path})`).join(", ")}`);
+  }
+  return matches[0] ?? null;
+}
+
+export function resolveRepo(nameOrPath: string, remoteUrl?: string): { name: string } & RepoEntry {
+  const repos = listRepos();
+  const remoteMatch = remoteUrl ? resolveRepoByRemote(remoteUrl, repos) : null;
+  const repo = remoteMatch ?? repos.find((candidate) => candidate.name === nameOrPath || candidate.path === expandHome(nameOrPath));
+  if (!repo) throw new Error(`Unknown repo: ${nameOrPath}`);
+  if (!existsSync(repo.path)) throw new Error(`Repo path does not exist: ${repo.path} (repo: ${repo.name})`);
   return repo;
+}
+
+export function resolveRepoByRemoteIdentity(remoteUrl: string): ({ name: string } & RepoEntry) | null {
+  return resolveRepoByRemote(remoteUrl, listRepos());
 }
 
 export function resolveProject(input: string): { key: string; prefix: string } {
