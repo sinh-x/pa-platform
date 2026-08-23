@@ -27,6 +27,9 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousData = process.env["PA_PLATFORM_DATA"];
   const previousMaxRuntime = process.env["PA_MAX_RUNTIME"];
   const previousStatusWaitTimeout = process.env["PA_STATUS_WAIT_TIMEOUT"];
+  const previousTeam = process.env["PA_TEAM"];
+  const previousMode = process.env["PA_MODE"];
+  const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
@@ -34,6 +37,9 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   process.env["PA_PLATFORM_DATA"] = join(root, "data");
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_STATUS_WAIT_TIMEOUT"];
+  delete process.env["PA_TEAM"];
+  delete process.env["PA_MODE"];
+  delete process.env["PA_DEPLOYMENT_ID"];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -50,6 +56,12 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_MAX_RUNTIME"] = previousMaxRuntime;
     if (previousStatusWaitTimeout === undefined) delete process.env["PA_STATUS_WAIT_TIMEOUT"];
     else process.env["PA_STATUS_WAIT_TIMEOUT"] = previousStatusWaitTimeout;
+    if (previousTeam === undefined) delete process.env["PA_TEAM"];
+    else process.env["PA_TEAM"] = previousTeam;
+    if (previousMode === undefined) delete process.env["PA_MODE"];
+    else process.env["PA_MODE"] = previousMode;
+    if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+    else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -1975,6 +1987,67 @@ test("ticket update --status without new flags continues to work without regress
 
     const ticket = new TicketStore().get("PAP-001");
     assert.equal(ticket?.status, "implementing");
+  });
+});
+
+test("builder implement status updates are rejected before ticket and audit mutation", async () => {
+  await withCliEnv(async () => {
+    const previousTeam = process.env["PA_TEAM"];
+    const previousMode = process.env["PA_MODE"];
+    const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "implement";
+    process.env["PA_DEPLOYMENT_ID"] = "d-builder-guard";
+    appendRegistryEvent({ deployment_id: "d-builder-guard", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00Z" });
+    try {
+      assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Guard target", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original summary"], { io: capture().io }), 0);
+      const before = new TicketStore().get("PAP-001");
+      const auditBefore = new TicketStore().readAudit().length;
+      const rejected = capture();
+
+      assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", "review-uat", "--summary", "Must not apply"], { io: rejected.io }), 0);
+      assert.match(rejected.stderr.join("\n"), /parent.*(flow|owns).*status/i);
+      assert.deepEqual(new TicketStore().get("PAP-001"), before);
+      assert.equal(new TicketStore().readAudit().length, auditBefore);
+    } finally {
+      if (previousTeam === undefined) delete process.env["PA_TEAM"];
+      else process.env["PA_TEAM"] = previousTeam;
+      if (previousMode === undefined) delete process.env["PA_MODE"];
+      else process.env["PA_MODE"] = previousMode;
+      if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+      else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
+    }
+  });
+});
+
+test("builder implement rejects every status value but allows non-status updates", async () => {
+  await withCliEnv(async () => {
+    const previousTeam = process.env["PA_TEAM"];
+    const previousMode = process.env["PA_MODE"];
+    const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "implement";
+    process.env["PA_DEPLOYMENT_ID"] = "d-builder-statuses";
+    appendRegistryEvent({ deployment_id: "d-builder-statuses", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00Z" });
+    try {
+      assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "All statuses", "--type", "task", "--priority", "medium", "--estimate", "S", "--assignee", "builder/team-manager", "--summary", "Original"], { io: capture().io }), 0);
+      for (const status of ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]) {
+        const rejected = capture();
+        assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--status", status], { io: rejected.io }), 0);
+        assert.match(rejected.stderr.join("\n"), /parent flow/);
+      }
+
+      const allowed = capture();
+      assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--summary", "Updated"], { io: allowed.io }), 0);
+      assert.equal(new TicketStore().get("PAP-001")?.summary, "Updated");
+    } finally {
+      if (previousTeam === undefined) delete process.env["PA_TEAM"];
+      else process.env["PA_TEAM"] = previousTeam;
+      if (previousMode === undefined) delete process.env["PA_MODE"];
+      else process.env["PA_MODE"] = previousMode;
+      if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
+      else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
+    }
   });
 });
 

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
-import { TicketStore } from "../../tickets/index.js";
+import { resolveTrustedTicketMutationContext, TicketStore } from "../../tickets/index.js";
 import { TERMINAL_STATUSES } from "../../tickets/types.js";
 import { nowUtc } from "../../time.js";
 import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
@@ -178,7 +178,7 @@ function printTicketHelp(io: Required<CliIo>): void {
 
 export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   const [subcommand, ...rest] = argv;
-  const store = new TicketStore();
+  const store = new TicketStore(undefined, resolveTrustedTicketMutationContext());
   if (argv.length === 0 || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
     printTicketHelp(io);
     return 0;
@@ -290,7 +290,11 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     const opts = parseTicketDeleteArgs(rest.slice(1));
     if ("error" in opts) return printError(opts.error, io);
     if (opts.force && !opts.yes) return printError("--force requires --yes in pa-core non-interactive mode", io);
-    store.delete(id, opts.actor, opts.force);
+    try {
+      store.delete(id, opts.actor, opts.force);
+    } catch (err) {
+      return printError(err instanceof Error ? err.message : String(err), io);
+    }
     io.stdout(opts.force ? `Deleted (hard): ${id}` : `Deleted (soft): ${id} (status -> cancelled)`);
     return 0;
   }

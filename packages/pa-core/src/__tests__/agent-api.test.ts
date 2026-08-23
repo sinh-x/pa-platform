@@ -184,6 +184,57 @@ test("agent API exposes health, tickets, bulletins, teams, and documents", async
   });
 });
 
+test("persistent API requires trusted caller identity for status mutation", async () => {
+  await withApiEnv(async () => {
+    appendRegistryEvent({ deployment_id: "d-api-implement", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T00:00:00.000Z", ticket_id: "PAP-001" });
+    appendRegistryEvent({ deployment_id: "d-api-parent", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:01.000Z", ticket_id: "PAP-001" });
+    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "started", timestamp: "2026-04-26T00:00:02.000Z", ticket_id: "PAP-001" });
+    appendRegistryEvent({ deployment_id: "d-api-stale", team: "builder", mode: "orchestrator", event: "completed", timestamp: "2026-04-26T00:00:03.000Z", status: "success", ticket_id: "PAP-001" });
+    const implementApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-implement", credential: "implement-credential", operatorCredential: "operator-credential" } });
+    const staleApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-stale", credential: "stale-credential" } });
+    const unknownApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-unknown", credential: "unknown-deployment-credential" } });
+    const created = await implementApp.app.request("/api/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: "pa-platform", title: "Protected API ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }) });
+    const id = (await created.json() as { ticket: { id: string } }).ticket.id;
+    const store = new TicketStore();
+    const rejectedRequests: Array<{ app: ReturnType<typeof createAgentApiApp>["app"]; headers: Record<string, string> }> = [
+      { app: implementApp.app, headers: { "content-type": "application/json" } },
+      { app: implementApp.app, headers: { "content-type": "application/json", Authorization: "Bearer implement-credential", "X-PA-Deployment-ID": "d-api-parent" } },
+      { app: implementApp.app, headers: { "content-type": "application/json", Authorization: "Bearer unknown-credential" } },
+      { app: implementApp.app, headers: { "content-type": "application/json", Authorization: "Bearer implement-credential", "X-PA-Deployment-ID": "d-api-implement" } },
+      { app: implementApp.app, headers: { "content-type": "application/json", Authorization: "Bearer wrong-implement-credential" } },
+      { app: staleApp.app, headers: { "content-type": "application/json", Authorization: "Bearer stale-credential", "X-PA-Deployment-ID": "d-api-stale" } },
+      { app: unknownApp.app, headers: { "content-type": "application/json", Authorization: "Bearer unknown-deployment-credential", "X-PA-Deployment-ID": "d-api-unknown" } },
+    ];
+    for (const { app, headers } of rejectedRequests) {
+      const beforeTicket = store.get(id);
+      const beforeAudit = store.readAudit();
+      const rejected = await app.request(`/api/tickets/${id}`, { method: "PATCH", headers, body: JSON.stringify({ status: "review-uat" }) });
+      assert.equal(rejected.status, 400);
+      assert.deepEqual(store.get(id), beforeTicket);
+      assert.deepEqual(store.readAudit(), beforeAudit);
+    }
+    const parentApp = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-parent", credential: "parent-credential" } });
+    const accepted = await parentApp.app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", Authorization: "Bearer parent-credential", "X-PA-Deployment-ID": "d-api-parent" }, body: JSON.stringify({ status: "review-uat" }) });
+    assert.equal(accepted.status, 200);
+    assert.equal(store.get(id)?.status, "review-uat");
+    assert.equal(store.readAudit().at(-1)?.action, "updated");
+    const operatorApp = createAgentApiApp({ ticketMutationAuth: { operatorCredential: "operator-credential" } });
+    const beforeOperatorMismatchTicket = store.get(id);
+    const beforeOperatorMismatchAudit = store.readAudit();
+    const operatorMismatch = await operatorApp.app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", Authorization: "Bearer wrong-operator-credential" }, body: JSON.stringify({ status: "cancelled" }) });
+    assert.equal(operatorMismatch.status, 400);
+    assert.deepEqual(store.get(id), beforeOperatorMismatchTicket);
+    assert.deepEqual(store.readAudit(), beforeOperatorMismatchAudit);
+    const operatorAccepted = await operatorApp.app.request(`/api/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json", Authorization: "Bearer operator-credential" }, body: JSON.stringify({ status: "done" }) });
+    assert.equal(operatorAccepted.status, 200);
+    parentApp.cleanup();
+    operatorApp.cleanup();
+    implementApp.cleanup();
+    staleApp.cleanup();
+    unknownApp.cleanup();
+  });
+});
+
 test("dashboard shell endpoints are read-only, include empty states, and stay fast with local fixture sizes", async () => {
   await withApiEnv(async (root) => {
     const { app } = createAgentApiApp();

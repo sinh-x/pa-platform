@@ -4,13 +4,15 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import type { Server } from "node:http";
 import type { Http2SecureServer, Http2Server } from "node:http2";
 import type { spawn as spawnType } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { isInsideSandbox, normalizeSandboxPath } from "./utils/sandbox.js";
 import { actionRoutes, bulletinRoutes, configRoutes, dashboardRoutes, deployControlRoutes, deploymentsRoutes, deployRoutingRoutes, deployStatusRoutes, documentsRoutes, focusRoutes, foldersRoutes, knowledgeRoutes, repoCommitsRoutes, repoDeploymentsRoutes, repoGitExtRoutes, reposRoutes, sessionRoutes, skillsRoutes, teamsRoutes, ticketRoutes, timersRoutes } from "./routes/index.js";
 import { hub, startWatchers } from "./ws/index.js";
 import { SessionManager, type SessionStreamEvent } from "./ws/session-hub.js";
-import { TicketStore } from "../tickets/store.js";
+import { resolveTrustedTicketMutationContext, TicketStore } from "../tickets/store.js";
+import type { TicketMutationPrincipal } from "../tickets/store.js";
 
 export interface AgentApiOptions {
   enableCors?: boolean;
@@ -28,6 +30,12 @@ export interface AgentApiOptions {
    * Propagated from `pa-core serve --dev` / `PA_DEV_MODE`. See FR6.
    */
   devMode?: boolean;
+  /** Credentials issued/configured by the server owner for ticket mutations. */
+  ticketMutationAuth?: {
+    deploymentId?: string;
+    credential?: string;
+    operatorCredential?: string;
+  };
 }
 
 export interface AgentApiInstance {
@@ -38,12 +46,18 @@ export interface AgentApiInstance {
 
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
   const app = new Hono();
-  const ticketStore = new TicketStore();
+  const ticketStore = new TicketStore(undefined, { privileged: false });
+  const mutationAuth = opts.ticketMutationAuth ?? {
+    deploymentId: process.env["PA_DEPLOYMENT_ID"],
+    credential: process.env["PA_AGENT_API_CREDENTIAL"],
+    operatorCredential: process.env["PA_AGENT_API_OPERATOR_CREDENTIAL"],
+  };
+  const callerMutationContext = (c: Context) => resolveTrustedTicketMutationContext(authenticateMutationPrincipal(c, mutationAuth), true);
   const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
   if (opts.enableCors) app.use("*", cors({
     origin: "*",
     allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Av-Pair-Token", "X-Av-Node-Id", "X-PA-Deployment-ID"],
     exposeHeaders: ["Content-Length", "Content-Type"],
     maxAge: 600,
   }));
@@ -187,8 +201,8 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   app.route("/", knowledgeRoutes());
   app.route("/", dashboardRoutes(ticketStore));
   app.route("/", timersRoutes());
-  app.route("/", ticketRoutes());
-  app.route("/", actionRoutes());
+  app.route("/", ticketRoutes(ticketStore, callerMutationContext));
+  app.route("/", actionRoutes(ticketStore));
   app.route("/", focusRoutes());
   app.route("/", bulletinRoutes());
   app.route("/", documentsRoutes());
@@ -210,6 +224,26 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       sessionManager.cleanup();
     },
   };
+}
+
+function authenticateMutationPrincipal(c: Context, auth: NonNullable<AgentApiOptions["ticketMutationAuth"]>): TicketMutationPrincipal {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+  const claimedDeploymentId = c.req.header("X-PA-Deployment-ID");
+  if (!token) return {};
+  if (credentialsMatch(token, auth.operatorCredential)) {
+    return claimedDeploymentId ? {} : { operator: true };
+  }
+  if (!auth.deploymentId || !credentialsMatch(token, auth.credential)) return {};
+  if (claimedDeploymentId !== undefined && claimedDeploymentId !== auth.deploymentId) return {};
+  return { deploymentId: auth.deploymentId };
+}
+
+function credentialsMatch(presented: string | undefined, configured: string | undefined): boolean {
+  if (!presented || !configured) return false;
+  const presentedDigest = createHash("sha256").update(presented, "utf8").digest();
+  const configuredDigest = createHash("sha256").update(configured, "utf8").digest();
+  return timingSafeEqual(presentedDigest, configuredDigest);
 }
 
 export const createApp = createAgentApiApp;

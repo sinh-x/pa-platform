@@ -14,7 +14,7 @@ test("TicketStore creates, updates, comments, and filters tickets", () => {
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   try {
-    const store = new TicketStore(tickets);
+    const store = new TicketStore(tickets, { privileged: true });
     const ticket = store.create({
       project: "pa-platform",
       title: "Port core",

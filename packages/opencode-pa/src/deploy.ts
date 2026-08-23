@@ -136,7 +136,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
-  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: request.mode, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
+  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: selectedMode?.id, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
@@ -166,7 +166,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
+  emitStartedEvent({ deploymentId, team: teamConfig.name, mode: request.mode ?? teamConfig.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
 
   if (request.sanitizedCharsRemoved && request.sanitizedCharsRemoved > 0) {
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `sanitized objective: removed ${request.sanitizedCharsRemoved} invalid character(s)` }), paths.activityLogPath);

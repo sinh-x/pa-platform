@@ -23,6 +23,7 @@ export * from "./deploy/index.js";
 export * from "./agent-api/index.js";
 export * from "./serve-lifecycle.js";
 export * from "./semantic/index.js";
+export * from "./decision-payload.js";
 export * from "./evaluator/index.js";
 export * from "./skills/index.js";
 export * from "./knowledge/index.js";

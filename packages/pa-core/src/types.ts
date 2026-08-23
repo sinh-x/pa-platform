@@ -137,6 +137,7 @@ export interface RegistryEvent {
   rating?: Rating;
   objective?: string;
   repo?: string;
+  mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;
@@ -160,6 +161,7 @@ export interface DeploymentStatus {
   models?: Record<string, string>;
   provider?: string;
   repo?: string;
+  mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;

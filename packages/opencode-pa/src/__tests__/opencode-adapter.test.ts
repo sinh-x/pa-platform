@@ -333,6 +333,9 @@ test("opa dry-run defaults builder to implement mode YAML model", async () => {
 
     assert.equal(code, 0);
     assert.match(readDryRunBody(root, stdout), /using openai\/gpt-5\.3-codex-spark/);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /status updates are prohibited/);
   });
 });
 

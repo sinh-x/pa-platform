@@ -53,7 +53,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const paths = getDeployPaths(deploymentId);
   const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
-  const primer = generatePrimer({ runtime: "claude", teamConfig, mode: request.mode, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, request.mode, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
+  const primer = generatePrimer({ runtime: "claude", teamConfig, mode: selectedMode?.id, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
@@ -76,7 +76,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
+  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_MODE: request.mode ?? teamConfig.default_mode ?? "", PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   if (request.dryRun) {
@@ -91,7 +91,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  emitStartedEvent({ deploymentId, team: teamConfig.name, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "claude", binary: "cpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
+  emitStartedEvent({ deploymentId, team: teamConfig.name, mode: request.mode ?? teamConfig.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "claude", binary: "cpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
 
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });

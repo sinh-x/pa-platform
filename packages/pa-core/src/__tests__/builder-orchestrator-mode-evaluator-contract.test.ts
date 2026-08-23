@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
 import { getPlatformHomeDir } from "../index.js";
+import { buildDecisionPayload } from "../decision-payload.js";
 
 const configRoot = getPlatformHomeDir();
 const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
@@ -45,7 +46,8 @@ test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate",
   assert.match(modeDoc, /Phase 5\.x confirmation gate rule: this gate applies only when Sinh\/user feedback\s+is involved\./);
   assert.match(modeDoc, /the orchestrator MUST record the result and ask Sinh for\s+explicit confirmation before any Phase 6 action, routine merge work, or ticket\s+handoff\./);
   assert.match(modeDoc, /Continue this loop until Sinh approves or explicitly stops the loop\./);
-  assert.match(modeDoc, /Phase 6\s+is blocked\s+unless state is `approved` or `stopped`\./);
+  assert.match(modeDoc, /normal Phase 6\s+is\s+allowed only when state is `approved`/);
+  assert.match(modeDoc, /stopped.*partial terminal return/s);
   assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
 });
 
@@ -75,4 +77,77 @@ test("builder orchestrator mode requires one-bundle objective shape and branch r
   assert.match(modeDoc, /- `Guardrails`/);
   assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
   assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
+});
+
+test("builder orchestrator Phase 5.6 gates preserve independent decision payload contracts", (t) => {
+  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
+  const modeDoc = readFileSync(modePath, "utf-8");
+  const gates = [
+    ["Step 3.5", "Step 4", /Proposal:/, /Evidence\/Findings/, /Options: Proceed.*Reject.*Stop/s],
+    ["Step 6.5", "Step 7", /Proposal:/, /Evidence\/Findings/, /Options:\s+Approve.*Reject\/request\s+changes.*Stop/s],
+  ] as const;
+
+  for (const [step, nextStep, proposal, evidence, implications] of gates) {
+    const gateStart = modeDoc.indexOf(`**${step}`);
+    const gateEnd = modeDoc.indexOf(`**${nextStep}`, gateStart);
+    assert.ok(gateStart >= 0 && gateEnd > gateStart, `${step} gate must be present before ${nextStep}`);
+    const gate = modeDoc.slice(gateStart, gateEnd);
+    assert.match(gate, proposal);
+    assert.match(gate, evidence);
+    assert.match(gate, implications);
+    assert.match(gate, /Exact decision requested:/);
+    assert.match(gate, /current `ticket_id`/);
+    assert.match(gate, /exact objective/);
+    assert.match(gate, /current findings\/file evidence/);
+    assert.match(gate, /verification summary/);
+    assert.match(gate, /shared decision-payload builder\/template/);
+  }
+
+  assert.doesNotMatch(modeDoc, /### Phase 5\.6: Fix Loop/);
+});
+
+test("decision payload builder renders unrelated tickets exactly and stays bounded", () => {
+  const fixtures = [
+    {
+      ticketId: "PAP-101",
+      objective: "Refresh the import boundary",
+      findings: "The loader bypasses the documented adapter at src/import.ts:42",
+      verification: "Focused import tests pass",
+      question: "Proceed with this fix",
+      options: "Proceed applies the patch; Reject re-scopes it; Stop preserves the ticket",
+    },
+    {
+      ticketId: "OPS-202",
+      objective: "Rotate the staging credential",
+      findings: "The deployment manifest still references the expired secret at deploy.yaml:8",
+      verification: "Config validation and dry-run pass",
+      question: "Accept this completed change",
+      options: "Approve permits handoff; Reject requests changes; Stop preserves status",
+    },
+  ];
+  const expected = [
+    "Ticket: PAP-101 Proposal: Refresh the import boundary Evidence/Findings: The loader bypasses the documented adapter at src/import.ts:42 Verification: Focused import tests pass. Options: Proceed applies the patch; Reject re-scopes it; Stop preserves the ticket Decision: Proceed with this fix?",
+    "Ticket: OPS-202 Proposal: Rotate the staging credential Evidence/Findings: The deployment manifest still references the expired secret at deploy.yaml:8 Verification: Config validation and dry-run pass. Options: Approve permits handoff; Reject requests changes; Stop preserves status Decision: Accept this completed change?",
+  ];
+  fixtures.forEach((fixture, index) => {
+    const payload = buildDecisionPayload(fixture);
+    assert.equal(payload, expected[index]);
+    assert.ok(payload.length <= 1500);
+    assert.equal((payload.match(/\?/g) ?? []).length, 1);
+  });
+
+  for (const step of ["Step 3.5", "Step 6.5"]) {
+    const payload = buildDecisionPayload({
+      ticketId: "PAP-999",
+      objective: `${step} ${"objective ".repeat(300)}`,
+      findings: "finding evidence",
+      verification: "verification evidence",
+      question: "Proceed with this bounded decision",
+      options: "Proceed applies the fix; Reject requests changes; Stop preserves status",
+    });
+    assert.ok(payload.length <= 1500);
+    assert.match(payload, /Options: Proceed applies the fix; Reject requests changes; Stop preserves status/);
+    assert.match(payload, /Decision: Proceed with this bounded decision\?$/);
+    assert.equal((payload.match(/\?/g) ?? []).length, 1);
+  }
 });

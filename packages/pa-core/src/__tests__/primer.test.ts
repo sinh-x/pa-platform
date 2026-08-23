@@ -333,6 +333,28 @@ test("generatePrimer representative builder fixture stays free of legacy opencod
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer implement instructions are report-only and parent-owned across runtimes", () => {
+  const builderTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build things
+agents:
+  - name: builder-agent
+    role: Builds things
+deploy_modes:
+  - id: implement
+    label: Implement
+    objective: Implement work
+`);
+  const lifecycleGuidance = /status updates? are prohibited\. Report completion through the ticket comment and persistent artifact output; status transitions belong to the parent flow or orchestrator\./;
+  for (const runtime of ["opencode", "claude", "droid"] as const) {
+    const primer = generatePrimer({ runtime, teamConfig: builderTeam, mode: "implement" });
+    assert.match(primer, lifecycleGuidance, `${runtime} must include report-only lifecycle guidance`);
+    assert.doesNotMatch(primer, /advance status only after required artifacts exist/,
+      `${runtime} must not include generic status-advance guidance`);
+  }
+});
+
 test("generatePrimer omits auto-evaluation deployment instruction", () => {
   const builderTeam = parseTeamYamlContent(`
 name: builder

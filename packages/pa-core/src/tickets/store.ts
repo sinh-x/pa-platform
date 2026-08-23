@@ -6,15 +6,29 @@ import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
 import { matchAssignee } from "./validate.js";
+import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
 
+export interface TicketMutationContext {
+  team?: string;
+  mode?: string;
+  privileged?: boolean;
+}
+
+export interface TicketMutationPrincipal {
+  deploymentId?: string;
+  operator?: boolean;
+}
+
 export class TicketStore {
   private readonly dir: string;
+  private readonly context: TicketMutationContext;
 
-  constructor(dir = getTicketsDir()) {
+  constructor(dir = getTicketsDir(), context: TicketMutationContext = {}) {
     this.dir = dir;
+    this.context = context;
     mkdirSync(this.dir, { recursive: true });
   }
 
@@ -47,7 +61,8 @@ export class TicketStore {
     return this.normalizeTicket(raw);
   }
 
-  update(id: string, input: UpdateTicketInput, actor = "pa-core"): Ticket {
+  update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
+    assertLifecycleOwnership(input.status, context);
     const current = this.get(id);
     if (!current) throw new Error(`Ticket not found: ${id}`);
     if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
@@ -131,15 +146,16 @@ export class TicketStore {
     return moved;
   }
 
-  delete(id: string, actor = "pa-core", hard = false): void {
+  delete(id: string, actor = "pa-core", hard = false, context = this.context): void {
     const ticket = this.get(id);
     if (!ticket) throw new Error(`Ticket not found: ${id}`);
+    assertLifecycleOwnership("cancelled", context);
     if (hard) {
       unlinkSync(this.ticketPath(id));
       this.appendAudit(id, "deleted", actor, { hard: [false, true] });
       return;
     }
-    this.update(id, { status: "cancelled" }, actor);
+    this.update(id, { status: "cancelled" }, actor, context);
     this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
   }
 
@@ -287,6 +303,21 @@ export class TicketStore {
     const entry: AuditEntry = { ticket_id: ticketId, action, actor, timestamp: nowUtc(), changes };
     writeFileSync(resolve(this.dir, "audit.jsonl"), `${JSON.stringify(entry)}\n`, { flag: "a" });
   }
+}
+
+function assertLifecycleOwnership(status: TicketStatus | undefined, context: TicketMutationContext): void {
+  if (status !== undefined && (context.privileged !== true || (context.team === "builder" && context.mode === "implement"))) {
+    throw new Error("Ticket status transitions belong to the parent flow; implement-child agents must report completion without changing status.");
+  }
+}
+
+export function resolveTrustedTicketMutationContext(principal: TicketMutationPrincipal = { deploymentId: process.env["PA_DEPLOYMENT_ID"], operator: !process.env["PA_DEPLOYMENT_ID"] }, allowLocalOperator = true): TicketMutationContext {
+  const deploymentId = principal.deploymentId;
+  if (principal.operator === true && allowLocalOperator) return { privileged: true };
+  if (!deploymentId) return { privileged: false };
+  const deployment = queryDeploymentStatus(deploymentId);
+  if (!deployment || deployment.status !== "running") return { privileged: false };
+  return { team: deployment.team, mode: deployment.mode, privileged: true };
 }
 
 function normalizeTimestamp(value: unknown): string {

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { spawnSync } from "node:child_process";
-import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider } from "../adapter.js";
+import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
@@ -124,6 +124,10 @@ test("normalizeProvider accepts anthropic/undefined and rejects others", () => {
   assert.throws(() => normalizeProvider("minimax"), /Supported providers: anthropic/);
 });
 
+test("cpa background environment preserves team and mode context", () => {
+  assert.deepEqual(pickBackgroundEnv({ PA_TEAM: "builder", PA_MODE: "implement" }), { PA_TEAM: "builder", PA_MODE: "implement" });
+});
+
 test("cpa tool guidance describes anthropic-only provider", () => {
   const guidance = new ClaudeCodeAdapter().describeTools().markdown;
   assert.match(guidance, /Runtime: Claude Code via `cpa`/);
@@ -188,6 +192,9 @@ test("cpa dry-run defaults builder to implement mode YAML model", async () => {
     const code = await runCoreCommand(["deploy", "builder", "--dry-run"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
     assert.equal(code, 0);
     assert.match(readDryRunBody(root, stdout), /using claude-sonnet-4-6/);
+    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
+    assert.ok(deployId);
+    assert.match(readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8"), /status updates are prohibited/);
   });
 });
 

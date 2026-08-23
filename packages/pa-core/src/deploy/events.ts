@@ -14,6 +14,7 @@ export interface StartDeploymentOpts {
   objective?: string;
   provider?: string;
   repo?: string;
+  mode?: string;
   runtime?: RuntimeName;
   binary?: string;
   resumedFromDeploymentId?: string;
@@ -36,6 +37,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     objective: opts.objective,
     provider: opts.provider,
     repo: opts.repo,
+    mode: opts.mode,
     runtime: opts.runtime,
     binary: opts.binary,
     resumed_from_deployment_id: opts.resumedFromDeploymentId,

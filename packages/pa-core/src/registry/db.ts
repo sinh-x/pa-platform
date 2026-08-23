@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   if (singleton && dbPath === getRegistryDbPath()) return singleton;
@@ -46,6 +46,7 @@ function migrate(db: Database.Database): void {
       rating TEXT,
       objective TEXT,
       repo TEXT,
+      mode TEXT,
       fallback INTEGER DEFAULT 0,
       resumed_from_deployment_id TEXT,
       note TEXT,
@@ -68,6 +69,7 @@ function migrate(db: Database.Database): void {
       ticket_id TEXT,
       objective TEXT,
       repo TEXT,
+      mode TEXT,
       provider TEXT,
       error TEXT,
       exit_code INTEGER,
@@ -119,11 +121,13 @@ function migrate(db: Database.Database): void {
   addColumn(db, "registry_events", "runtime", "TEXT");
   addColumn(db, "registry_events", "binary", "TEXT");
   addColumn(db, "registry_events", "effective_timeout_seconds", "INTEGER");
+  addColumn(db, "registry_events", "mode", "TEXT");
   addColumn(db, "deployments", "fallback", "INTEGER DEFAULT 0");
   addColumn(db, "deployments", "resumed_from_deployment_id", "TEXT");
   addColumn(db, "deployments", "runtime", "TEXT");
   addColumn(db, "deployments", "binary", "TEXT");
   addColumn(db, "deployments", "effective_timeout_seconds", "INTEGER");
+  addColumn(db, "deployments", "mode", "TEXT");
   db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
 }
 

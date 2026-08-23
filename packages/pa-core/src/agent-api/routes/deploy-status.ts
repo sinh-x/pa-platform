@@ -13,6 +13,7 @@ export interface StartDeployBody {
   objective?: string;
   provider?: string;
   repo?: string;
+  mode?: string;
   runtime?: RuntimeName;
   binary?: string;
   resumedFromDeploymentId?: string;
@@ -83,6 +84,7 @@ export function deployStatusRoutes(): Hono {
       objective: body.objective,
       provider: body.provider,
       repo: body.repo,
+      mode: body.mode,
       runtime: body.runtime,
       binary: body.binary,
       resumedFromDeploymentId: body.resumedFromDeploymentId,

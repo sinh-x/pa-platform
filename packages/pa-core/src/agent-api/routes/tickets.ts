@@ -1,8 +1,10 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { marked } from "marked";
 import { buildBoardView } from "../../tickets/board.js";
 import { deriveDocRefTitle } from "../../tickets/doc-ref.js";
 import { TicketStore } from "../../tickets/store.js";
+import type { TicketMutationContext } from "../../tickets/store.js";
 import type { CreateTicketInput, TicketListFilters, UpdateTicketInput } from "../../tickets/types.js";
 import { validateAssignee, validateAuthor } from "../../tickets/validate.js";
 import { validateBranchName } from "../../tickets/git-validation.js";
@@ -13,7 +15,7 @@ const BOARD_DEFAULT_EXCLUDE_TAGS = ["backlog", "archived"];
 const BOARD_DEFAULT_EXCLUDE_TYPES: TicketListFilters["excludeTypes"] = ["fyi", "work-report"];
 const TICKET_TYPES = new Set(["feature", "bug", "task", "review-request", "work-report", "fyi", "idea", "question"]);
 
-export function ticketRoutes(store = new TicketStore()): Hono {
+export function ticketRoutes(store = new TicketStore(), resolveMutationContext: (c: Context) => TicketMutationContext = () => ({})): Hono {
   const app = new Hono();
 
   app.get("/api/tickets", (c) => {
@@ -87,7 +89,7 @@ export function ticketRoutes(store = new TicketStore()): Hono {
       try { validateAssignee(input.assignee); } catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error), code: "BAD_REQUEST" }, 400); }
     }
     try {
-      const ticket = store.update(c.req.param("id"), input, actor);
+      const ticket = store.update(c.req.param("id"), input, actor, resolveMutationContext(c));
       const result: Record<string, unknown> = { ticket };
       if (input.add_linked_branch) {
         const repoEntry = loadRepoEntry(input.add_linked_branch.repo);
