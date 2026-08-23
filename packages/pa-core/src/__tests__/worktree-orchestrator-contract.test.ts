@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
@@ -82,101 +82,183 @@ test("routine merge contract validates reports and merged PR ancestry before clo
   const routine = readFileSync(routinePath, "utf-8");
 
   assert.match(routine, /--json number,state,headRefName,baseRefName,/);
-  assert.match(routine, /gh pr view <number>[\s\S]*?--json mergeCommit --jq '\.mergeCommit\.oid \/\/ empty'/);
-  assert.match(routine, /\[\[ ! "\$merge_commit" =~ \^\[0-9a-fA-F\]\{40\}\$ \]\]/);
-  assert.match(routine, /git -C "\$canonical_repo" merge-base --is-ancestor "\$merge_commit" "origin\/\$target_branch"/);
-  assert.match(routine, /persist_merge_evidence <TICKET-ID> "\$merge_evidence" \|\| continue/);
-  assert.ok((routine.match(/persist_merge_evidence <TICKET-ID> "\$merge_evidence" \|\| continue/g) ?? []).length >= 4);
+  assert.match(routine, /merge_evidence=\$\(routine_github_merge_evidence <TICKET-ID> <number> \{\{GH_REPO\}\} "\$target_branch" unverified\) \|\| continue/);
+  assert.match(routine, /merge_evidence=\$\(routine_local_merge_evidence <TICKET-ID> <linked-branch> "\$target_branch"\) \|\| continue/);
+  assert.match(routine, /routine_github_merge_evidence\(\)[\s\S]*?merge-base --is-ancestor "\$merge_commit" "origin\/\$target_branch"/);
+  assert.match(routine, /routine_local_merge_evidence\(\)[\s\S]*?\[ "\$remote_target" != "\$merge_commit" \]/);
+  assert.match(routine, /push failed; restored \$target_branch to \$before_target/);
 });
 
-test("routine atomic local evidence fixture persists safely and failure leaves ticket open", (t) => {
+test("routine exact merge and cleanup helpers fail closed around durable evidence", (t) => {
   if (!existsSync(routinePath)) return t.skip("external pa-platform-config fixture not available");
   const routine = readFileSync(routinePath, "utf-8");
-  const helpers = routine.match(/```bash\n(validated_primary_orchestration_report\(\)[\s\S]*?)\n\ncleanup_worktree_if_eligible\(\)/)?.[1];
-  assert.ok(helpers, "routine validator and evidence helpers must be executable shell");
+  const helpers = routine.match(/# BEGIN ROUTINE MERGE HELPERS\n([\s\S]*?)\n# END ROUTINE MERGE HELPERS/)?.[1];
+  const cleanupHelper = routine.match(/\n(cleanup_worktree_if_eligible\(\) \{[\s\S]*?\n\})\n```/)?.[1];
+  assert.ok(helpers, "routine merge helpers must be delimited executable shell");
+  assert.ok(cleanupHelper, "routine cleanup helper must be executable shell");
 
   const root = mkdtempSync(join(tmpdir(), "pa-routine-evidence-"));
   const home = join(root, "home");
   const artifacts = join(home, "Documents", "ai-usage", "agent-teams", "builder", "artifacts");
   const bin = join(root, "bin");
-  const repo = join(root, "repo");
-  const remote = join(root, "remote.git");
   mkdirSync(artifacts, { recursive: true });
   mkdirSync(bin);
-  mkdirSync(repo);
-  execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "ignore" });
-  writeFileSync(join(repo, "README.md"), "fixture\n");
-  execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
-  execFileSync("git", ["remote", "add", "origin", remote], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["push", "-u", "origin", "develop"], { cwd: repo, stdio: "ignore" });
-  const mergeSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim();
-
-  const report = join(artifacts, "report.md");
-  const missingEvidence = join(artifacts, "missing-evidence.md");
-  const invalidRepo = join(artifacts, "invalid-repo.md");
-  const linkedReport = join(artifacts, "linked-report.md");
-  writeFileSync(report, `Canonical Repository: ${repo}\nMerge Evidence: pending\n`);
-  writeFileSync(missingEvidence, `Canonical Repository: ${repo}\n`);
-  writeFileSync(invalidRepo, "Canonical Repository: /does/not/exist\nMerge Evidence: pending\n");
-  symlinkSync(report, linkedReport);
   const opa = join(bin, "opa");
-  writeFileSync(opa, "#!/usr/bin/env bash\nprintf '{\"doc_refs\":[{\"type\":\"orchestration\",\"primary\":true,\"path\":\"%s\"}]}\\n' \"$OPA_REPORT\"\n");
+  writeFileSync(opa, "#!/usr/bin/env bash\nprintf '{\"status\":\"%s\",\"doc_refs\":[{\"type\":\"orchestration\",\"primary\":true,\"path\":\"%s\"}]}\\n' \"${OPA_STATUS:-review-uat}\" \"$OPA_REPORT\"\n");
   chmodSync(opa, 0o755);
   const gh = join(bin, "gh");
-  writeFileSync(gh, "#!/usr/bin/env bash\nprintf '%s\\n' \"$OPA_MERGE_SHA\"\n");
+  writeFileSync(gh, "#!/usr/bin/env bash\nprintf '%s\\n' \"${OPA_MERGE_SHA:-}\"\n");
   chmodSync(gh, 0o755);
 
-  const sha = "0123456789abcdef0123456789abcdef01234567";
-  const evidence = `local:develop/${sha};ancestor=true;remote=${sha};verified=true`;
   const fixture = `set -euo pipefail
 ${helpers}
-report_path=$(validated_primary_orchestration_report PAP-135)
-[ "$report_path" = "$OPA_EXPECTED_REPORT" ]
-[ "$(validated_report_field "$report_path" "Canonical Repository")" = "$OPA_EXPECTED_REPO" ]
-merge_commit=$(gh pr view 13 --repo fixture/repo --json mergeCommit --jq '.mergeCommit.oid // empty')
-[[ "$merge_commit" =~ ^[0-9a-fA-F]{40}$ ]]
-git -C "$OPA_EXPECTED_REPO" fetch origin develop
-git -C "$OPA_EXPECTED_REPO" merge-base --is-ancestor "$merge_commit" origin/develop
-OPA_MERGE_SHA=0000000000000000000000000000000000000000; export OPA_MERGE_SHA
-invalid_merge=$(gh pr view 13 --repo fixture/repo --json mergeCommit --jq '.mergeCommit.oid // empty')
-! git -C "$OPA_EXPECTED_REPO" merge-base --is-ancestor "$invalid_merge" origin/develop
-persist_merge_evidence PAP-135 "$OPA_EVIDENCE"
-[ "$(awk -F': ' '/^Merge Evidence: / {print $2}' "$report_path")" = "$OPA_EVIDENCE" ]
-OPA_REPORT="$OPA_LINKED_REPORT"; export OPA_REPORT
-! validated_primary_orchestration_report PAP-135
-OPA_REPORT="$OPA_INVALID_REPO"; export OPA_REPORT
-invalid_path=$(validated_primary_orchestration_report PAP-135)
-! validated_report_field "$invalid_path" "Canonical Repository"
-OPA_REPORT="$OPA_MISSING_EVIDENCE"; export OPA_REPORT
+${cleanupHelper}
+
+git_config=( -c user.name=Test -c user.email=test@example.com )
+make_repo() {
+  local name="$1" merge_first="$2" reject_push="$3" repo remote
+  repo="$OPA_ROOT/$name"
+  remote="$OPA_ROOT/$name.git"
+  mkdir -p "$repo"
+  git init -b develop "$repo" >/dev/null
+  git -C "$repo" config user.name Test
+  git -C "$repo" config user.email test@example.com
+  printf 'base\\n' > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" "\${git_config[@]}" commit -m base >/dev/null
+  git -C "$repo" checkout -b feature/PAP-135 >/dev/null
+  printf '%s\\n' "$name" > "$repo/feature.txt"
+  git -C "$repo" add feature.txt
+  git -C "$repo" "\${git_config[@]}" commit -m feature >/dev/null
+  git -C "$repo" checkout develop >/dev/null
+  git init --bare "$remote" >/dev/null
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push -u origin develop feature/PAP-135 >/dev/null
+  if [ "$merge_first" = true ]; then
+    git -C "$repo" "\${git_config[@]}" merge --no-ff feature/PAP-135 -m merged >/dev/null
+    git -C "$repo" push origin develop >/dev/null
+  fi
+  if [ "$reject_push" = true ]; then
+    printf '#!/usr/bin/env bash\\nexit 1\\n' > "$remote/hooks/pre-receive"
+    chmod +x "$remote/hooks/pre-receive"
+  fi
+}
+
+write_report() {
+  local path="$1" repo="$2"
+  printf 'Canonical Repository: %s\\nMerge Evidence: pending\\n' "$repo" > "$path"
+}
+
+make_repo github true false
+make_repo local-fresh false false
+make_repo local-merged true false
+make_repo local-reject false true
+write_report "$OPA_ARTIFACTS/github.md" "$OPA_ROOT/github"
+write_report "$OPA_ARTIFACTS/local-fresh.md" "$OPA_ROOT/local-fresh"
+write_report "$OPA_ARTIFACTS/local-merged.md" "$OPA_ROOT/local-merged"
+write_report "$OPA_ARTIFACTS/local-reject.md" "$OPA_ROOT/local-reject"
+printf 'Canonical Repository: %s\\n' "$OPA_ROOT/github" > "$OPA_ARTIFACTS/persist-fail.md"
+
+# The exact GitHub helper generates durable evidence before allowing closure.
+OPA_REPORT="$OPA_ARTIFACTS/github.md"
+OPA_MERGE_SHA=$(git -C "$OPA_ROOT/github" rev-parse develop)
+export OPA_REPORT OPA_MERGE_SHA
 ticket_status=open
-for ticket in PAP-135; do
-  persist_merge_evidence "$ticket" "$OPA_EVIDENCE" || continue
-  ticket_status=done
+if merge_evidence=$(routine_github_merge_evidence PAP-135 13 fixture/repo develop unverified); then ticket_status=done; fi
+[ "$ticket_status" = done ]
+[ "$(awk -F': ' '/^Merge Evidence: / {print $2}' "$OPA_REPORT")" = "$merge_evidence" ]
+
+# Missing, malformed, non-ancestor, and persistence-failure inputs stay open.
+for bad_sha in missing malformed nonancestor persistence; do
+  OPA_REPORT="$OPA_ARTIFACTS/github.md"
+  case "$bad_sha" in
+    missing) OPA_MERGE_SHA= ;;
+    malformed) OPA_MERGE_SHA=not-a-sha ;;
+    nonancestor) OPA_MERGE_SHA=0000000000000000000000000000000000000000 ;;
+    persistence) OPA_MERGE_SHA=$(git -C "$OPA_ROOT/github" rev-parse develop); OPA_REPORT="$OPA_ARTIFACTS/persist-fail.md" ;;
+  esac
+  export OPA_REPORT OPA_MERGE_SHA
+  ticket_status=open
+  if routine_github_merge_evidence PAP-135 13 fixture/repo develop unverified >/dev/null; then ticket_status=done; fi
+  [ "$ticket_status" = open ]
 done
-[ "$ticket_status" = open ]
+
+# Fresh and already-merged local paths execute the same helper and close only
+# after generated evidence is durable.
+for kind in local-fresh local-merged; do
+  OPA_REPORT="$OPA_ARTIFACTS/$kind.md"; export OPA_REPORT
+  ticket_status=open
+  if merge_evidence=$(routine_local_merge_evidence PAP-135 feature/PAP-135 develop); then ticket_status=done; fi
+  [ "$ticket_status" = done ]
+  [ "$(awk -F': ' '/^Merge Evidence: / {print $2}' "$OPA_REPORT")" = "$merge_evidence" ]
+  local_sha=$(git -C "$OPA_ROOT/$kind" rev-parse develop)
+  remote_sha=$(git -C "$OPA_ROOT/$kind" ls-remote origin refs/heads/develop | awk '{print $1}')
+  [ "$local_sha" = "$remote_sha" ]
+done
+
+# A failed push restores the before-state; retry cannot see an unpushed merge as complete.
+OPA_REPORT="$OPA_ARTIFACTS/local-reject.md"; export OPA_REPORT
+before_sha=$(git -C "$OPA_ROOT/local-reject" rev-parse develop)
+for attempt in 1 2; do
+  ticket_status=open
+  if routine_local_merge_evidence PAP-135 feature/PAP-135 develop >/dev/null; then ticket_status=done; fi
+  [ "$ticket_status" = open ]
+  [ "$(git -C "$OPA_ROOT/local-reject" rev-parse develop)" = "$before_sha" ]
+  ! git -C "$OPA_ROOT/local-reject" merge-base --is-ancestor feature/PAP-135 develop
+  [ "$(awk -F': ' '/^Merge Evidence: / {print $2}' "$OPA_REPORT")" = pending ]
+done
+
+# Cleanup must reject remotes whose case-distinct repository paths identify
+# different generic/self-hosted repositories.
+cleanup_repo="$OPA_ROOT/local-merged"
+git -C "$cleanup_repo" remote set-url origin ssh://git@Git.Example/Org/Repo.git
+cleanup_worktree="$OPA_CLEANUP_WORKTREE"
+mkdir -p "$(dirname "$cleanup_worktree")"
+git -C "$cleanup_repo" worktree add "$cleanup_worktree" feature/PAP-135 >/dev/null
+cleanup_sha=$(git -C "$cleanup_repo" rev-parse develop)
+OPA_REPORT="$OPA_ARTIFACTS/cleanup.md"; OPA_STATUS=done; export OPA_REPORT OPA_STATUS
+cat > "$OPA_REPORT" <<EOF
+Canonical Repository: $cleanup_repo
+Normalized Remote: git.example/Org/repo.git
+Worktree: $cleanup_worktree
+Branch: feature/PAP-135
+Ticket: PAP-135
+Owner Deployment: d-fixture
+Execution strategy: worktree
+Merge Evidence: local:develop/$cleanup_sha;ancestor=true;remote=$cleanup_sha;verified=true
+- Canonical repository: $cleanup_repo
+- Worktree path: $cleanup_worktree
+- Feature branch: feature/PAP-135
+- Owner deployment: d-fixture
+Lifecycle Status: created
+Cleanup Result: pending
+EOF
+report_before=$(git hash-object "$OPA_REPORT")
+canonical_before=$(git -C "$cleanup_repo" status --porcelain=v1; git -C "$cleanup_repo" rev-parse HEAD)
+DRY_RUN=false
+DECISION_LOG="$OPA_ROOT/decision.log"
+cleanup_worktree_if_eligible PAP-135 "local:develop/$cleanup_sha;ancestor=true;remote=$cleanup_sha;verified=true" "ancestor=true;remote=$cleanup_sha;verified=true"
+[ -d "$cleanup_worktree" ]
+[ "$(git hash-object "$OPA_REPORT")" = "$report_before" ]
+[ "$(git -C "$cleanup_repo" status --porcelain=v1; git -C "$cleanup_repo" rev-parse HEAD)" = "$canonical_before" ]
+grep -q 'rejected:ownership-or-done-validation-failed' "$DECISION_LOG"
 `;
 
+  const cleanupWorktree = join("/tmp", "pa-worktrees", "case-remote", "PAP-135", root.slice(root.lastIndexOf("/") + 1));
   try {
     execFileSync("bash", ["-c", fixture], {
       env: {
         ...process.env,
         HOME: home,
         PATH: `${bin}:${process.env["PATH"] ?? ""}`,
-        OPA_REPORT: report,
-        OPA_EXPECTED_REPORT: report,
-        OPA_EXPECTED_REPO: repo,
-        OPA_EVIDENCE: evidence,
-        OPA_LINKED_REPORT: linkedReport,
-        OPA_INVALID_REPO: invalidRepo,
-        OPA_MISSING_EVIDENCE: missingEvidence,
-        OPA_MERGE_SHA: mergeSha,
+        OPA_ROOT: root,
+        OPA_ARTIFACTS: artifacts,
+        OPA_CLEANUP_WORKTREE: cleanupWorktree,
       },
       stdio: "pipe",
     });
-    assert.match(readFileSync(report, "utf-8"), new RegExp(`Merge Evidence: ${evidence.replaceAll("/", "\\/")}`));
   } finally {
+    rmSync(cleanupWorktree, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
