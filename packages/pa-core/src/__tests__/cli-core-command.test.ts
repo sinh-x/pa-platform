@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
-const CONFIG_ROOT = getPlatformHomeDir();
+const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));

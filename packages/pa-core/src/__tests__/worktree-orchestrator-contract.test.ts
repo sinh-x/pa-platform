@@ -4,7 +4,7 @@ import test from "node:test";
 import { join } from "node:path";
 import { getPlatformHomeDir } from "../index.js";
 
-const configRoot = getPlatformHomeDir();
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
 const objectivePath = join(configRoot, "skills", "templates", "builder-objective.md");
 const reportPath = join(configRoot, "skills", "templates", "orchestration-report.md");

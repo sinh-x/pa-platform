@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
 
-const configRoot = getPlatformHomeDir();
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 
 function withConfigEnv(fn: (root: string, platform: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-teams-config-"));

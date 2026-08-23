@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { getPlatformHomeDir } from "../index.js";
 import { buildDecisionPayload } from "../decision-payload.js";
 
-const configRoot = getPlatformHomeDir();
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
 
 test("builder orchestrator mode excludes evaluator child coverage contract", (t) => {

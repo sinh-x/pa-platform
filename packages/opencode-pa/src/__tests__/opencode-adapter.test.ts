@@ -136,7 +136,7 @@ function writeRequirementsTeamConfig(root: string): void {
   ].join("\n"));
 }
 
-const CONFIG_ROOT = getPlatformHomeDir();
+const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 const DATA_ANALYSIS_PRIMER_PATH = join(CONFIG_ROOT, "teams", "builder", "modes", "data-analysis.md");
 
 function readDryRunBody(root: string, stdout: string[]): string {

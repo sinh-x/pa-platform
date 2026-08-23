@@ -4,7 +4,7 @@ import test from "node:test";
 import { join } from "node:path";
 import { getPlatformHomeDir } from "../index.js";
 
-const configRoot = getPlatformHomeDir();
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
 const templatePath = join(configRoot, "skills", "templates", "orchestration-report.md");
 
 test("orchestration report template excludes evaluator child coverage columns", (t) => {
