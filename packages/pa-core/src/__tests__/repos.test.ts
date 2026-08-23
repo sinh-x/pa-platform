@@ -100,7 +100,7 @@ test("resolves a registered repository from a real linked worktree without an or
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   try {
-    assert.deepEqual(resolveProjectFromCwd(worktree), { key: "pa-platform", prefix: "PAP" });
+    assert.deepEqual(resolveProjectFromCwd(worktree), { key: "pa-platform", prefix: "PAP", repoRoot: worktree });
   } finally {
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
@@ -123,7 +123,7 @@ test("falls back to the actual worktree origin and rejects ambiguous remote iden
     writeFileSync(join(config, "config.yaml"), `repos:\n  wrong-case:\n    path: ${first}\n    prefix: WRONG\n    remote_url: git@git.example.com:owner/project.git\n`);
     assert.equal(resolveProjectFromCwd(actual), undefined);
     writeFileSync(join(config, "config.yaml"), `repos:\n  first:\n    path: ${first}\n    prefix: ONE\n    remote_url: git@git.example.com:Owner/Project.git\n`);
-    assert.deepEqual(resolveProjectFromCwd(actual), { key: "first", prefix: "ONE" });
+    assert.deepEqual(resolveProjectFromCwd(actual), { key: "first", prefix: "ONE", repoRoot: actual });
     writeFileSync(join(config, "config.yaml"), `repos:\n  first:\n    path: ${first}\n    prefix: ONE\n    remote_url: git@git.example.com:Owner/Project.git\n  second:\n    path: ${second}\n    prefix: TWO\n    remote_url: https://git.example.com/Owner/Project\n`);
     assert.throws(() => resolveProjectFromCwd(actual), /Ambiguous.*first.*second/);
   } finally {

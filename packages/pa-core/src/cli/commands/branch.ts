@@ -61,17 +61,17 @@ function runBranchCreate(argv: string[], io: Required<CliIo>): number {
     return printError(error instanceof Error ? error.message : String(error), io);
   }
 
-  const existing = gitQuiet(["rev-parse", "--verify", `refs/heads/${branch}`], repo.path);
+  const existing = gitQuiet(["rev-parse", "--verify", `refs/heads/${branch}`], project.repoRoot);
   if (existing) return printError(`Branch "${branch}" already exists`, io);
 
   const developBranch = repo.developBranch ?? "develop";
   try {
-    const developRef = gitQuiet(["rev-parse", "--verify", `refs/heads/${developBranch}`], repo.path);
+    const developRef = gitQuiet(["rev-parse", "--verify", `refs/heads/${developBranch}`], project.repoRoot);
     if (!developRef) {
-      git(["fetch", "origin", developBranch], repo.path, io);
-      git(["checkout", "-b", branch, `origin/${developBranch}`], repo.path, io);
+      git(["fetch", "origin", developBranch], project.repoRoot, io);
+      git(["checkout", "-b", branch, `origin/${developBranch}`], project.repoRoot, io);
     } else {
-      git(["checkout", "-b", branch, developBranch], repo.path, io);
+      git(["checkout", "-b", branch, developBranch], project.repoRoot, io);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

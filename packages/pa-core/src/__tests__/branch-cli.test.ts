@@ -164,6 +164,26 @@ test("branch validate reads the invoking linked worktree branch", async () => {
   });
 });
 
+test("branch create operates on the invoking linked worktree", async () => {
+  await withBranchCliEnv(async (root, repo) => {
+    const worktree = join(root, "linked-worktree");
+    git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
+    const canonicalBefore = execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo });
+    const captured = capture();
+    const cwd = process.cwd();
+    process.chdir(worktree);
+    try {
+      assert.equal(await runCoreCommand(["branch", "create", "PAP-135", "--topic", "isolated"], { io: captured.io }), 0);
+    } finally {
+      process.chdir(cwd);
+    }
+
+    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-isolated");
+    assert.equal(git(["branch", "--show-current"], repo), "develop");
+    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
+  });
+});
+
 test("branch validate on non-conforming branch prints warning", async () => {
   await withBranchCliEnv(async (root, repo) => {
     git(["checkout", "-b", "my-random-branch", "develop"], repo);

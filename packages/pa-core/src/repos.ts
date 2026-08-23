@@ -131,7 +131,7 @@ export function getRepoPrefix(projectName: string): string | undefined {
   }
 }
 
-export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefix: string } | undefined {
+export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefix: string; repoRoot: string } | undefined {
   let repoRoot: string;
   try {
     repoRoot = gitOutput(["rev-parse", "--show-toplevel"], cwd);
@@ -141,12 +141,12 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
 
   const repos = listRepos();
   const exactMatch = repos.find((repo) => repo.path === repoRoot && repo.prefix);
-  if (exactMatch) return { key: exactMatch.name, prefix: exactMatch.prefix! };
+  if (exactMatch) return { key: exactMatch.name, prefix: exactMatch.prefix!, repoRoot };
 
   const cwdCommonDir = gitCommonDir(repoRoot);
   if (cwdCommonDir) {
     const commonDirMatches = repos.filter((repo) => repo.prefix && gitCommonDir(repo.path) === cwdCommonDir);
-    if (commonDirMatches.length === 1) return { key: commonDirMatches[0]!.name, prefix: commonDirMatches[0]!.prefix! };
+    if (commonDirMatches.length === 1) return { key: commonDirMatches[0]!.name, prefix: commonDirMatches[0]!.prefix!, repoRoot };
     if (commonDirMatches.length > 1) return undefined;
   }
 
@@ -157,7 +157,7 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
     return undefined;
   }
   const remoteMatch = resolveRepoByRemote(origin, repos);
-  return remoteMatch?.prefix ? { key: remoteMatch.name, prefix: remoteMatch.prefix } : undefined;
+  return remoteMatch?.prefix ? { key: remoteMatch.name, prefix: remoteMatch.prefix, repoRoot } : undefined;
 }
 
 function gitOutput(args: string[], cwd: string): string {
