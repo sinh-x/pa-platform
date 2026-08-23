@@ -6,6 +6,7 @@
   "scripts": {
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
+    "test:paired": "bash scripts/dev/test_paired_repository.sh",
     "typecheck": "corepack pnpm -r typecheck",
     "bump:ci-patch": "node scripts/dev/ci_patch_bump.mjs",
     "bump:patch:ci": "node scripts/dev/ci_patch_bump.mjs",

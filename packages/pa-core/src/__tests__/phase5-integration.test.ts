@@ -75,8 +75,11 @@ test("phase 5: config and builder contracts form one lifecycle", (t) => {
     assert.match(value, /Worktree/);
     assert.match(value, /Branch/);
   }
-  assert.match(mode, /opa deploy builder --mode implement[\s\S]*--repo "<worktree_path>"/);
-  assert.match(mode, /opa deploy requirements --mode review-auto[\s\S]*--repo "<worktree_path>"/);
+  assert.match(mode, /execution_path = worktree_path when strategy=worktree, otherwise canonical_repo/);
+  assert.match(mode, /Persist execution_path in the orchestration report and reuse this exact value/);
+  assert.match(mode, /opa deploy builder --mode implement[\s\S]*--repo "<execution_path>"/);
+  assert.match(mode, /opa deploy requirements --mode review-auto[\s\S]*--repo "<execution_path>"/);
+  assert.match(mode, /Canonical strategy gate:[\s\S]*exclusive lock/);
   assert.match(routine, /merge-confirmed path/);
   assert.match(report, /Cleanup Result/);
   assert.match(report, /Parent Ticket Status/);
@@ -94,7 +97,7 @@ test("phase 5: routine cleanup stays fail-closed and idempotent", () => {
   assert.match(routine, /The orchestration doc-ref is the only accepted ownership source/);
   assert.match(routine, /require the deterministic ticket-owned path prefix/);
   assert.match(routine, /\[ "\$ticket_status" != "done" \]/);
-  assert.match(routine, /\[ "\$worktree" != "\$recorded_worktree" \]/);
+  assert.match(routine, /\[ "\$canonical_worktree" != "\$recorded_worktree" \]/);
   assert.match(routine, /cleanup_result="already-absent"/);
   assert.match(routine, /retries converge on cleaned\/already-absent/);
 
