@@ -82,8 +82,10 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
       })();
 
   const host = parsed.host.toLowerCase();
-  const rawPath = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
-  const path = CASE_INSENSITIVE_REMOTE_HOSTS.has(host) ? rawPath.toLowerCase() : rawPath;
+  const caseInsensitivePath = CASE_INSENSITIVE_REMOTE_HOSTS.has(host);
+  const pathWithoutSlashes = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  const rawPath = pathWithoutSlashes.replace(caseInsensitivePath ? /\.git$/i : /\.git$/, "");
+  const path = caseInsensitivePath ? rawPath.toLowerCase() : rawPath;
   if (!parsed.host || !path) throw new Error(`Invalid remote URL: ${remoteUrl}`);
   return `${host}${parsed.port ? `:${parsed.port}` : ""}/${path}`;
 }
@@ -95,6 +97,12 @@ function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & 
     throw new Error(`Ambiguous repository remote "${remoteUrl}" matches: ${matches.map((repo) => `${repo.name} (${repo.path})`).join(", ")}`);
   }
   return matches[0] ?? null;
+}
+
+function isLocalGitOrigin(origin: string): boolean {
+  if (/^file:\/\//i.test(origin)) return true;
+  if (/^(?:\.{1,2}\/|\/)/.test(origin)) return true;
+  return !/^[a-z][a-z\d+.-]*:\/\//i.test(origin) && !/^(?:[^@]+@)?[^:/]+:.+$/.test(origin);
 }
 
 export function resolveRepo(nameOrPath: string, remoteUrl?: string): { name: string } & RepoEntry {
@@ -159,13 +167,8 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
   } catch {
     return undefined;
   }
-  let remoteMatch: ({ name: string } & RepoEntry) | null;
-  try {
-    remoteMatch = resolveRepoByRemote(origin, repos);
-  } catch (error) {
-    if (/^(?:\.{1,2}\/|\/)/.test(origin)) return undefined;
-    throw error;
-  }
+  if (isLocalGitOrigin(origin)) return undefined;
+  const remoteMatch = resolveRepoByRemote(origin, repos);
   return remoteMatch?.prefix ? { key: remoteMatch.name, prefix: remoteMatch.prefix, repoRoot } : undefined;
 }
 

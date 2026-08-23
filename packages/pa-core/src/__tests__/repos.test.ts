@@ -33,6 +33,8 @@ test("keeps host and repository path distinct during normalization", () => {
 test("lowercases only remote hosts and preserves generic repository path case", () => {
   assert.equal(normalizeRemoteUrl("ssh://git@GIT.EXAMPLE.COM/Owner/Project.git"), "git.example.com/Owner/Project");
   assert.notEqual(normalizeRemoteUrl("git@git.example.com:Owner/Project.git"), normalizeRemoteUrl("git@git.example.com:owner/project.git"));
+  assert.notEqual(normalizeRemoteUrl("git@git.example.com:Owner/Project.GIT"), normalizeRemoteUrl("git@git.example.com:Owner/Project"));
+  assert.equal(normalizeRemoteUrl("git@github.com:Owner/Project.GIT"), normalizeRemoteUrl("git@github.com:owner/project"));
 });
 
 test("preserves non-default remote ports and omits default ports", () => {
@@ -150,7 +152,7 @@ test("treats local-path CWD origins as unregistered", () => {
   try {
     writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${registered}\n    prefix: REG\n    remote_url: git@github.com:owner/project.git\n`);
     git(["remote", "add", "origin", "/srv/git/project.git"], actual);
-    for (const origin of ["/srv/git/project.git", "../project.git"]) {
+    for (const origin of ["/srv/git/project.git", "./project.git", "../project.git", "project.git", "subdir/project.git", "file:///srv/git/project.git"]) {
       git(["remote", "set-url", "origin", origin], actual);
       assert.equal(resolveProjectFromCwd(actual), undefined);
     }
