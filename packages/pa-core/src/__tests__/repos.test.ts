@@ -20,6 +20,11 @@ test("normalizes equivalent SSH and HTTPS GitHub remotes", () => {
   assert.deepEqual(new Set(urls.map(normalizeRemoteUrl)), new Set(["github.com/sinh-x/pa-platform"]));
 });
 
+test("normalizes mixed-case GitHub repository paths", () => {
+  assert.equal(normalizeRemoteUrl("git@GitHub.com:Sinh-X/PA-Platform.git"), "github.com/sinh-x/pa-platform");
+  assert.equal(normalizeRemoteUrl("https://github.com/SINH-X/pa-platform"), "github.com/sinh-x/pa-platform");
+});
+
 test("keeps host and repository path distinct during normalization", () => {
   assert.notEqual(normalizeRemoteUrl("git@github.com:sinh-x/pa-platform.git"), normalizeRemoteUrl("git@gitlab.com:sinh-x/pa-platform.git"));
   assert.notEqual(normalizeRemoteUrl("git@github.com:sinh-x/pa-platform.git"), normalizeRemoteUrl("git@github.com:other/pa-platform.git"));
@@ -126,6 +131,49 @@ test("falls back to the actual worktree origin and rejects ambiguous remote iden
     assert.deepEqual(resolveProjectFromCwd(actual), { key: "first", prefix: "ONE", repoRoot: actual });
     writeFileSync(join(config, "config.yaml"), `repos:\n  first:\n    path: ${first}\n    prefix: ONE\n    remote_url: git@git.example.com:Owner/Project.git\n  second:\n    path: ${second}\n    prefix: TWO\n    remote_url: https://git.example.com/Owner/Project\n`);
     assert.throws(() => resolveProjectFromCwd(actual), /Ambiguous.*first.*second/);
+  } finally {
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("treats local-path CWD origins as unregistered", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-repos-cwd-local-origin-"));
+  const actual = join(root, "actual");
+  const registered = join(root, "registered");
+  const config = join(root, "config");
+  for (const path of [actual, registered, config]) mkdirSync(path);
+  git(["init"], actual);
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  process.env["PA_PLATFORM_CONFIG"] = config;
+  try {
+    writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${registered}\n    prefix: REG\n    remote_url: git@github.com:owner/project.git\n`);
+    git(["remote", "add", "origin", "/srv/git/project.git"], actual);
+    for (const origin of ["/srv/git/project.git", "../project.git"]) {
+      git(["remote", "set-url", "origin", origin], actual);
+      assert.equal(resolveProjectFromCwd(actual), undefined);
+    }
+  } finally {
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("surfaces malformed configured remote URLs during CWD fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-repos-cwd-invalid-config-"));
+  const actual = join(root, "actual");
+  const registered = join(root, "registered");
+  const config = join(root, "config");
+  for (const path of [actual, registered, config]) mkdirSync(path);
+  git(["init"], actual);
+  git(["remote", "add", "origin", "git@github.com:owner/project.git"], actual);
+  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${registered}\n    prefix: REG\n    remote_url: not-a-remote\n`);
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  process.env["PA_PLATFORM_CONFIG"] = config;
+  try {
+    assert.throws(() => resolveProjectFromCwd(actual), /Invalid remote URL: not-a-remote/);
   } finally {
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;

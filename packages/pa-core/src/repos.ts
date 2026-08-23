@@ -19,6 +19,7 @@ export interface RepoEntry {
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
+const CASE_INSENSITIVE_REMOTE_HOSTS = new Set(["github.com"]);
 
 export function getBranchPattern(repo: RepoEntry): string {
   return repo.featureBranchPattern ?? DEFAULT_BRANCH_PATTERN;
@@ -80,9 +81,11 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
         return { host: url.hostname, port: url.port && url.port !== defaultPort ? url.port : undefined, pathname: url.pathname };
       })();
 
-  const path = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
+  const host = parsed.host.toLowerCase();
+  const rawPath = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
+  const path = CASE_INSENSITIVE_REMOTE_HOSTS.has(host) ? rawPath.toLowerCase() : rawPath;
   if (!parsed.host || !path) throw new Error(`Invalid remote URL: ${remoteUrl}`);
-  return `${parsed.host.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}/${path}`;
+  return `${host}${parsed.port ? `:${parsed.port}` : ""}/${path}`;
 }
 
 function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & RepoEntry>): ({ name: string } & RepoEntry) | null {
@@ -156,7 +159,13 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
   } catch {
     return undefined;
   }
-  const remoteMatch = resolveRepoByRemote(origin, repos);
+  let remoteMatch: ({ name: string } & RepoEntry) | null;
+  try {
+    remoteMatch = resolveRepoByRemote(origin, repos);
+  } catch (error) {
+    if (/^(?:\.{1,2}\/|\/)/.test(origin)) return undefined;
+    throw error;
+  }
   return remoteMatch?.prefix ? { key: remoteMatch.name, prefix: remoteMatch.prefix, repoRoot } : undefined;
 }
 

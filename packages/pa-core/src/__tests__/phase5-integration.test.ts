@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -57,13 +57,19 @@ test("phase 5: two ticket worktrees leave the canonical checkout unchanged", () 
 test("phase 5: config and builder contracts form one lifecycle", (t) => {
   const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
   if (!configRoot) return t.skip("PA_PHASE5_CONFIG_ROOT is not set");
+  assert.equal(configRoot, realpathSync(configRoot));
   const configPath = join(configRoot, "config.yaml");
-  const raw = yaml.load(readFileSync(configPath, "utf-8")) as { repos?: Record<string, { path?: string; prefix?: string; remote_url?: string }> };
+  const raw = yaml.load(readFileSync(configPath, "utf-8")) as {
+    repos?: Record<string, { path?: string; description?: string; prefix?: string; remote_url?: string; modes?: unknown; "and skills"?: unknown }>;
+  };
   const repos = raw.repos ?? {};
   assert.ok(repos["pa-platform"]?.path);
   assert.ok(repos["pa-platform-config"]?.path);
   assert.equal(repos["pa-platform"]?.prefix, "PAP");
   assert.equal(repos["pa-platform-config"]?.prefix, "PAPC");
+  assert.equal(repos["pa-platform-config"]?.description, "PA platform configuration repository — teams, modes, and skills");
+  assert.equal("modes" in (repos["pa-platform-config"] ?? {}), false);
+  assert.equal("and skills" in (repos["pa-platform-config"] ?? {}), false);
   assert.match(repos["pa-platform"]?.remote_url ?? "", /github\.com:sinh-x\/pa-platform\.git/);
 
   const mode = readFileSync(join(configRoot, "teams/builder/modes/orchestrator.md"), "utf-8");
