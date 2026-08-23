@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import yaml from "js-yaml";
+import { loadConfig } from "./config.js";
 import { expandHome, getPlatformHomeDir, getUserConfigPath } from "./paths.js";
 
 // Ported from PA repos.ts at frozen PA source on 2026-04-26; search paths adjusted for pa-platform coexistence.
@@ -37,6 +38,11 @@ function candidateReposFiles(): string[] {
 }
 
 export function loadReposYaml(): Record<string, RepoEntry> {
+  const configuredRepos = loadConfig().repos;
+  if (Object.keys(configuredRepos).length > 0) {
+    return Object.fromEntries(Object.entries(configuredRepos).map(([key, entry]) => [key, { ...entry, path: expandHome(entry.path) }]));
+  }
+
   for (const filePath of candidateReposFiles()) {
     if (!existsSync(filePath)) continue;
     const raw = yaml.load(readFileSync(filePath, "utf-8")) as { repos?: Record<string, RepoEntry> } | undefined;
@@ -65,7 +71,7 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
   const scpMatch = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
   const parsed = scpMatch
     && !/^[a-z][a-z\d+.-]*:\/\//i.test(value)
-    ? { host: scpMatch[1], pathname: scpMatch[2] }
+    ? { host: scpMatch[1], port: undefined, pathname: scpMatch[2] }
     : (() => {
         let url: URL;
         try {
@@ -73,12 +79,13 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
         } catch {
           throw new Error(`Invalid remote URL: ${remoteUrl}`);
         }
-        return { host: url.hostname, pathname: url.pathname };
+        const defaultPort = url.protocol === "ssh:" ? "22" : url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : undefined;
+        return { host: url.hostname, port: url.port && url.port !== defaultPort ? url.port : undefined, pathname: url.pathname };
       })();
 
   const path = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").replace(/\/+$/g, "");
   if (!parsed.host || !path) throw new Error(`Invalid remote URL: ${remoteUrl}`);
-  return `${parsed.host.toLowerCase()}/${path.toLowerCase()}`;
+  return `${parsed.host.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}/${path.toLowerCase()}`;
 }
 
 function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & RepoEntry>): ({ name: string } & RepoEntry) | null {

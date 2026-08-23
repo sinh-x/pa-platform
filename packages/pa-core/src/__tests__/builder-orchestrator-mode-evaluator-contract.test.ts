@@ -2,11 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
-import { getPlatformHomeDir } from "../index.js";
 import { buildDecisionPayload } from "../decision-payload.js";
 
-const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
-const modePath = join(configRoot, "teams", "builder", "modes", "orchestrator.md");
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
+const modePath = configRoot ? join(configRoot, "teams", "builder", "modes", "orchestrator.md") : "";
 
 test("builder orchestrator mode excludes evaluator child coverage contract", (t) => {
   if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");

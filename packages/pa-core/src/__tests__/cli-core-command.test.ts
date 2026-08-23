@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
 
-const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
+const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
 
 function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-cli-"));
@@ -150,6 +150,7 @@ test("runCoreCommand help uses invoking binary fallback", async () => {
 });
 
 test("packaged team and skill guidance avoids removed deploy mode flags", (t) => {
+  if (!CONFIG_ROOT) return t.skip("external pa-platform-config fixture not available");
   const teamsDir = join(CONFIG_ROOT, "teams");
   const skillsDir = join(CONFIG_ROOT, "skills");
   if (!existsSync(teamsDir) || !existsSync(skillsDir)) return t.skip("external pa-platform-config fixture not available");
@@ -162,6 +163,7 @@ test("packaged team and skill guidance avoids removed deploy mode flags", (t) =>
 });
 
 test("packaged PA CLI guidance describes opa adapter and core-owned serve", (t) => {
+  if (!CONFIG_ROOT) return t.skip("external pa-platform-config fixture not available");
   if (!existsSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"))) return t.skip("external pa-platform-config fixture not available");
   const guidance = readFileSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
   assert.match(guidance, /# OPA CLI Reference/);

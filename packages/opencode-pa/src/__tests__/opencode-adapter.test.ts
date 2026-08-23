@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, getPlatformHomeDir, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
@@ -136,8 +136,8 @@ function writeRequirementsTeamConfig(root: string): void {
   ].join("\n"));
 }
 
-const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"] ?? getPlatformHomeDir();
-const DATA_ANALYSIS_PRIMER_PATH = join(CONFIG_ROOT, "teams", "builder", "modes", "data-analysis.md");
+const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
+const DATA_ANALYSIS_PRIMER_PATH = CONFIG_ROOT ? join(CONFIG_ROOT, "teams", "builder", "modes", "data-analysis.md") : "";
 
 function readDryRunBody(root: string, stdout: string[]): string {
   const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
