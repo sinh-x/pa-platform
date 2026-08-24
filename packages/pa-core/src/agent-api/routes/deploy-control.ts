@@ -23,7 +23,7 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
       // Best-effort — a missing deploymentId or at-capacity hub must not fail the deploy.
       if (sessionManager && result.deploymentId && result.status !== "failed") {
         const model = deployRequest.teamModel;
-        sessionManager.register(result.deploymentId, model);
+         sessionManager.register(result.deploymentId, model, selectedRuntime);
       }
       return c.json(response, 202);
     } catch (error) {

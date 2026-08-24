@@ -42,6 +42,7 @@ export interface SessionSpawnOptions {
 }
 
 export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string) => ActivityEvent;
+export type SessionCommandBuilder = (opts: SessionSpawnOptions & { session: SessionRecord }) => { binary: string; args: string[] };
 
 export interface SessionManagerOptions {
   maxSessions?: number;
@@ -77,6 +78,7 @@ export interface SessionManagerOptions {
   binaryPath?: string;
   runtimes?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
   runtimeNormalizers?: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
+  runtimeCommands?: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
@@ -165,6 +167,7 @@ export class SessionManager {
   private readonly binaryPath: string;
   private readonly runtimes: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
   private readonly runtimeNormalizers: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
+  private readonly runtimeCommands: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -185,6 +188,7 @@ export class SessionManager {
     });
     this.runtimes = opts.runtimes ?? {};
     this.runtimeNormalizers = opts.runtimeNormalizers ?? {};
+    this.runtimeCommands = opts.runtimeCommands ?? {};
   }
 
   get limit(): number {
@@ -254,7 +258,7 @@ export class SessionManager {
    * server restart provide the only automatic bounds. Auto-expiry would be an
    * effort-M enhancement and is intentionally out of scope for now.
    */
-  register(deploymentId: string, model?: string): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+  register(deploymentId: string, model?: string, runtime: ApiRuntimeName = DEFAULT_RUNTIME): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }
@@ -266,7 +270,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
-      runtime: DEFAULT_RUNTIME,
+      runtime,
     };
     const session: ActiveSession = {
       record,
@@ -375,13 +379,8 @@ export class SessionManager {
 
   private spawnOpencode(session: ActiveSession, opts: SessionSpawnOptions): void {
     const runtime = opts.runtime ?? DEFAULT_RUNTIME;
-    const args = runtime === "opencode"
-      ? ["run", "-m", opts.model ?? session.record.model, "--dangerously-skip-permissions"]
-      : ["--mode", "json"];
-    if (opts.sessionId) args.push("--session", opts.sessionId);
-    args.push("--format", "json");
-    args.push(opts.prompt);
-    const binary = runtime === "opencode" ? this.binaryPath : runtime;
+    const command = this.runtimeCommands[runtime]?.({ ...opts, session: session.record }) ?? defaultSessionCommand(runtime, this.binaryPath, opts, session.record);
+    const { binary, args } = command;
     const child = this.spawnFn(binary, args, {
       cwd: opts.cwd ?? this.cwd,
       env: { ...this.env, ...opts.env },
@@ -435,7 +434,9 @@ export class SessionManager {
   private handleError(session: ActiveSession, error: Error & { code?: string }): void {
     if (session.terminated) return;
     const message = isEnoentError(error)
-      ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+      ? session.record.runtime === "opencode"
+        ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+        : `${session.record.runtime} binary not found (ENOENT). Ensure ${session.record.runtime} is on PATH.`
       : error.message;
     this.emitEvent(session, { type: "error", message });
     this.logLifecycle(session, "session_error", message);
@@ -499,6 +500,15 @@ export class SessionManager {
       // Logging is best-effort; never let it crash session lifecycle.
     }
   }
+}
+
+function defaultSessionCommand(runtime: ApiRuntimeName, opencodeBinary: string, opts: SessionSpawnOptions, session: SessionRecord): { binary: string; args: string[] } {
+  const args = runtime === "opencode"
+    ? ["run", "-m", opts.model ?? session.model, "--dangerously-skip-permissions"]
+    : ["--mode", "json"];
+  if (opts.sessionId) args.push(runtime === "opencode" ? "--session" : "--session-id", opts.sessionId);
+  args.push("--format", "json", opts.prompt);
+  return { binary: runtime === "opencode" ? opencodeBinary : runtime, args };
 }
 
 function isEnoentError(error: Error & { code?: string }): boolean {

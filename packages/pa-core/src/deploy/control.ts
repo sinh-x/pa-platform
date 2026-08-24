@@ -1,5 +1,5 @@
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
-import type { SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
+import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
 export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
@@ -67,6 +67,7 @@ export interface CoreExecutionHooks {
    * the /ws/session WebSocket endpoint.
    */
   sessionNormalizer?: SessionEventNormalizer;
+  sessionCommand?: SessionCommandBuilder;
   runtimeHooks?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
 }
 

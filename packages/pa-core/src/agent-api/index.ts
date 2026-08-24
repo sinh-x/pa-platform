@@ -98,6 +98,10 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       ...(opts.hooks?.runtimeHooks?.opencode?.sessionNormalizer ? { opencode: opts.hooks.runtimeHooks.opencode.sessionNormalizer } : {}),
       ...(opts.hooks?.runtimeHooks?.pi?.sessionNormalizer ? { pi: opts.hooks.runtimeHooks.pi.sessionNormalizer } : {}),
     },
+    runtimeCommands: {
+      ...(opts.hooks?.runtimeHooks?.opencode?.sessionCommand ? { opencode: opts.hooks.runtimeHooks.opencode.sessionCommand } : {}),
+      ...(opts.hooks?.runtimeHooks?.pi?.sessionCommand ? { pi: opts.hooks.runtimeHooks.pi.sessionCommand } : {}),
+    },
     devMode: opts.devMode === true,
     ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}),
   });
