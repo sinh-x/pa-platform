@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
-import { createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
+import { composeOpaExecutionHooks, createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
@@ -371,6 +371,20 @@ test("opa default hooks route agent API deploy requests through opencode adapter
     assert.match(body.deployment_id ?? "", /^d-[a-f0-9]{6}$/);
     assert.equal(queryDeploymentStatuses()[0]?.runtime, "opencode");
   });
+});
+
+test("opa deploy selects OpenCode when both runtime hooks are registered", async () => {
+  let opencodeCalls = 0;
+  let piCalls = 0;
+  const hooks = composeOpaExecutionHooks(
+    { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
+    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } },
+  );
+
+  const code = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "opa" });
+  assert.equal(code, 0);
+  assert.equal(opencodeCalls, 1);
+  assert.equal(piCalls, 0);
 });
 
 test("opa exposes an explicit default hook boundary for core-owned serve", () => {

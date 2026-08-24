@@ -2,8 +2,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, composeRuntimeHooks, type CoreExecutionHooks } from "@pa-platform/pa-core";
-import { createDefaultOpencodeHooks } from "./deploy.js";
+import { runCoreCommand, type CoreExecutionHooks } from "@pa-platform/pa-core";
+import { composeOpaExecutionHooks, createDefaultOpencodeHooks } from "./deploy.js";
 
 interface PiRuntimeModule { createDefaultPiHooks: () => CoreExecutionHooks }
 
@@ -15,5 +15,5 @@ if (process.argv.includes("--version") || process.argv.includes("-V")) {
 }
 
 const pi = await import("@pa-platform/pi-pa" as string) as PiRuntimeModule;
-const code = await runCoreCommand(process.argv.slice(2), { hooks: composeRuntimeHooks(createDefaultOpencodeHooks(), pi.createDefaultPiHooks()), binaryName: "opa" });
+const code = await runCoreCommand(process.argv.slice(2), { hooks: composeOpaExecutionHooks(createDefaultOpencodeHooks(), pi.createDefaultPiHooks()), binaryName: "opa" });
 process.exitCode = code;

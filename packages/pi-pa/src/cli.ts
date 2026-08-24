@@ -2,8 +2,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCoreCommand, composeRuntimeHooks, type CoreExecutionHooks } from "@pa-platform/pa-core";
-import { createDefaultPiHooks } from "./deploy.js";
+import { runCoreCommand, type CoreExecutionHooks } from "@pa-platform/pa-core";
+import { composePpaExecutionHooks } from "./deploy.js";
 
 interface OpencodeRuntimeModule { createDefaultOpencodeHooks: () => CoreExecutionHooks }
 
@@ -13,4 +13,4 @@ if (process.argv.includes("--version") || process.argv.includes("-V")) {
   process.exit(0);
 }
 const opencode = await import("@pa-platform/opencode-pa" as string) as OpencodeRuntimeModule;
-process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: composeRuntimeHooks(opencode.createDefaultOpencodeHooks(), createDefaultPiHooks()), binaryName: "ppa" });
+process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: composePpaExecutionHooks(opencode.createDefaultOpencodeHooks()), binaryName: "ppa" });

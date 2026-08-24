@@ -72,8 +72,9 @@ export interface CoreExecutionHooks {
   runtimeHooks?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
 }
 
-export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks): CoreExecutionHooks {
-  return { ...opencode, runtimeHooks: { opencode, pi } };
+export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks, cliDeployRuntime: ApiRuntimeName = "opencode"): CoreExecutionHooks {
+  const cliDeployHooks = cliDeployRuntime === "pi" ? pi : opencode;
+  return { ...opencode, deploy: cliDeployHooks.deploy, runtimeHooks: { opencode, pi } };
 }
 
 export interface SanitizeResult {
