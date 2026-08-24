@@ -257,7 +257,7 @@ Start a new OpenCode or Pi session with the given prompt. The selected runtime c
 |-------|------|----------|-------------|
 | `type` | `"start"` | yes | Message type. |
 | `runtime` | `"opencode"` or `"pi"` | no | Runtime adapter. Omission selects OpenCode. |
-| `prompt` | `string` | yes | The prompt to send to opencode. Must not be empty. Maximum 131072 bytes (128 KB) — larger prompts are rejected. |
+| `prompt` | `string` | yes | The prompt to send to the selected runtime. Must not be empty. Maximum 131072 bytes (128 KB) — larger prompts are rejected. |
 | `model` | `string` | no | Model override. If omitted, the server default (`ollama-cloud/deepseek-v4-pro`) is used. |
 
 **Server responses:**
@@ -294,12 +294,12 @@ Resume an existing native session by id. OpenCode receives `--session <sessionId
 |-------|------|----------|-------------|
 | `type` | `"resume"` | yes | Message type. |
 | `runtime` | `"opencode"` or `"pi"` | no | Runtime adapter. Omission selects OpenCode. |
-| `sessionId` | `string` | yes | The opencode session id to resume. Must not be empty. |
+| `sessionId` | `string` | yes | The native session id for the selected runtime. Must not be empty. |
 | `prompt` | `string` | yes | The prompt for the resumed turn. Must not be empty. Maximum 131072 bytes (128 KB). |
 | `model` | `string` | no | Model override. If omitted, the server default is used. |
 
 **Server responses:**
-- On success: a `session-id` event with the new (server-allocated) session id, then a stream of events. (Note: the server allocates a *new* internal session id even for resumes; the `sessionId` you provide is passed to opencode as `--session`, not used as the internal id.)
+- On success: a `session-id` event with the new (server-allocated) session id, then a stream of events. (Note: the server allocates a *new* internal session id even for resumes; the supplied native session id is passed to OpenCode as `--session` or Pi as `--session-id`, according to the selected runtime, and is not used as the internal id.)
 - If a session is already active on this connection: an `error` event with message `"Session already started on this connection"`.
 - If `sessionId` or `prompt` is missing: an `error` event with message `"Missing sessionId or prompt"`.
 - If at capacity: an `error` event with message `"Max sessions reached"`.

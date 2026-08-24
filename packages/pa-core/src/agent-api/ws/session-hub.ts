@@ -91,6 +91,7 @@ const DEFAULT_BINARY = "opencode";
 const DEFAULT_RUNTIME: ApiRuntimeName = "opencode";
 const MAX_STREAM_CARRY = 8192;
 const MAX_EVENT_BODY = 500;
+const MAX_SERIALIZED_EVENT = 8192;
 const MAX_STDERR = 2000;
 const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
 const SECRET_TEXT = [/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, /bearer\s+\S+/gi, /sk-[\w-]+/gi];
@@ -448,7 +449,7 @@ export class SessionManager {
       event.body = redact(event.body, this.sessionSecrets(session)).slice(0, MAX_EVENT_BODY);
       this.emitEvent(session, { type: "event", data: activityEventToData(event) });
     } catch {
-      this.emitEvent(session, { type: "event", data: redactRecord(raw, this.sessionSecrets(session)) });
+      this.emitEvent(session, { type: "event", data: boundedRecord(raw, this.sessionSecrets(session)) });
     }
   }
 
@@ -627,14 +628,20 @@ function redact(value: string, secrets: string[]): string {
   return result;
 }
 
-function redactRecord(value: Record<string, unknown>, secrets: string[]): Record<string, unknown> {
-  const redactValue = (item: unknown): unknown => {
-    if (typeof item === "string") return redact(item, secrets);
-    if (Array.isArray(item)) return item.map(redactValue);
-    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, SECRET_KEY.test(key) ? "[REDACTED]" : redactValue(child)]));
+function boundedRecord(value: Record<string, unknown>, secrets: string[]): Record<string, unknown> {
+  const boundedValue = (item: unknown): unknown => {
+    if (typeof item === "string") {
+      const safe = redact(item, secrets);
+      return safe.length > MAX_EVENT_BODY ? `${safe.slice(0, MAX_EVENT_BODY - 3)}...` : safe;
+    }
+    if (Array.isArray(item)) return item.map(boundedValue);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, SECRET_KEY.test(key) ? "[REDACTED]" : boundedValue(child)]));
     return item;
   };
-  return redactValue(value) as Record<string, unknown>;
+  const bounded = boundedValue(value) as Record<string, unknown>;
+  if (JSON.stringify(bounded).length <= MAX_SERIALIZED_EVENT) return bounded;
+  const serialized = JSON.stringify(bounded);
+  return { kind: "text", body: `${serialized.slice(0, MAX_EVENT_BODY - 3)}...` };
 }
 
 function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }

@@ -187,6 +187,21 @@ test("SessionManager streams JSONL stdout lines as structured event messages", (
   assert.equal(secondData?.kind, "thinking");
 });
 
+test("SessionManager bounds and redacts normalizer-error fallback events", () => {
+  const { fn, children } = createFakeSpawn();
+  const normalizer: SessionEventNormalizer = () => { throw new Error("invalid timestamp"); };
+  const mgr = new SessionManager({ spawnFn: fn, runtimeNormalizers: { opencode: normalizer }, env: { PA_API_KEY: "fallback-secret-value" } });
+  const sink = new CapturingSink();
+  const result = mgr.start({ prompt: "Hello" }, sink);
+  if (!result.ok) throw new Error("expected start to succeed");
+  children[0]!.stdout.emit("data", Buffer.from(JSON.stringify({ type: "message", body: "x".repeat(7000), authorization: "fallback-secret-value" }) + "\n"));
+  const event = sink.events.find((item) => item.type === "event");
+  assert.ok(event);
+  assert.ok(JSON.stringify(event?.data).length <= 8192);
+  assert.doesNotMatch(JSON.stringify(event?.data), /fallback-secret-value/);
+  assert.ok(String((event?.data as Record<string, unknown>)?.body).length <= 500);
+});
+
 test("SessionManager emits end event when opencode process closes", () => {
   const { fn, children } = createFakeSpawn();
   const mgr = new SessionManager({ spawnFn: fn, maxSessions: 3 });
