@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pi-pa",
-  "version": "0.1.85",
+  "version": "0.1.86",
   "type": "module",
   "description": "Pi runtime adapter for the PA platform",
   "bin": { "ppa": "dist/cli.js" },
