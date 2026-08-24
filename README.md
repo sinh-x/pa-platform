@@ -2,7 +2,7 @@
 
 Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 
-`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters such as `cpa` and `opa` provide execution hooks without duplicating core behavior. `opa` is the OpenCode deployment adapter; `cpa` is the Claude Code adapter (anthropic-only); `pa-core` still owns runtime-neutral server lifecycle behavior.
+`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters provide execution hooks without duplicating core behavior. `opa` is the OpenCode deployment adapter, `cpa` is the Claude Code adapter, `dpa` is the Droid adapter, and `ppa` is the Pi adapter; `pa-core` still owns runtime-neutral server lifecycle behavior.
 
 ## Packages
 
@@ -12,6 +12,7 @@ Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 | `@pa-platform/opencode-pa` | OpenCode adapter that provides the `opa` CLI and runtime hooks |
 | `@pa-platform/claudecode-pa` | Claude Code adapter that provides the `cpa` CLI, settings.json hooks, and stream-json activity capture |
 | `@pa-platform/droidcode-pa` | Droid adapter that provides the `dpa` CLI driven by the Factory SDK with streaming activity capture |
+| `@pa-platform/pi-pa` | Pi adapter that provides the `ppa` CLI and normalized Pi activity capture |
 
 ## CLI
 
@@ -25,17 +26,32 @@ pa-core ticket list --project pa-platform
 pa-core status
 ```
 
-Deployment execution is adapter-hooked. Use `opa` for OpenCode runs, `cpa` for Claude Code runs, and `dpa` for Droid runs:
+Deployment execution is adapter-hooked. Use `opa` for OpenCode runs, `cpa` for Claude Code runs, `dpa` for Droid runs, and `ppa` for Pi runs:
 
 ```bash
 opa deploy builder --mode implement
 cpa deploy builder --mode implement
 dpa deploy builder --mode implement
+ppa deploy builder --mode implement
 ```
 
 `cpa` defaults to model `claude-opus-4-7` and `--provider anthropic`; see `docs/cpa-claude-code-adapter.md` for the full adapter overview.
 
 `dpa` defaults to model `deepseek-v4-pro` and requires `FACTORY_API_KEY` in the environment. Provider hints map to Droid model IDs. See `docs/dpa-droid-adapter.md` for the full adapter overview.
+
+### Pi Adapter
+
+Pi 0.80.8 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
+
+Pi provider/model precedence is CLI flags, selected mode `runtimes.pi`, team `runtimes.pi`, then Pi's own configuration. Unresolved values are not passed as flags:
+
+```bash
+ppa deploy builder --mode implement --provider anthropic --model claude-sonnet-4-6
+ppa deploy builder --mode implement --background
+ppa deploy builder --mode implement --dry-run
+```
+
+Every non-dry Pi deployment stores a session UUID in `session-id-pi.txt`. Resume it with `ppa deploy --resume <deployment-id>`; cross-runtime resumes are rejected before spawn and identify the correct adapter.
 
 The Agent API server is core-owned:
 
@@ -95,7 +111,7 @@ corepack pnpm build
 nix flake show --no-write-lock-file
 ```
 
-Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`, `completions/opa.fish`, and `completions/cpa.fish`.
+Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`, `completions/opa.fish`, `completions/cpa.fish`, `completions/dpa.fish`, and `completions/ppa.fish`.
 
 Regenerate adapter completions and run the staged secret scanner with:
 

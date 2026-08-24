@@ -226,7 +226,7 @@ The WebSocket hub is a **stateless broadcast** — there is no per-client messag
 
 ## Session Protocol (`/ws/session`)
 
-Connect to `ws://127.0.0.1:9848/ws/session` to run an interactive opencode session. A client sends one of three message types (`start`, `resume`, `stop`) and receives a stream of session events back over the same socket. Each WebSocket connection tracks exactly one active session id; once a session is started or resumed, the connection cannot start another until the current one stops.
+Connect to `ws://127.0.0.1:9848/ws/session` to run an interactive OpenCode or Pi session. A client sends one of three message types (`start`, `resume`, `stop`) and receives a stream of session events back over the same socket. Each WebSocket connection tracks exactly one active session id; once a session is started or resumed, the connection cannot start another until the current one stops. Omit `runtime` to retain the OpenCode default.
 
 ### Connection Lifecycle
 
@@ -242,7 +242,7 @@ All client messages are JSON objects with a required `type` field.
 
 #### 1. `start`
 
-Start a new opencode session with the given prompt. The server spawns an opencode child process and streams its JSONL output as session events.
+Start a new OpenCode or Pi session with the given prompt. The selected runtime child process streams JSONL output as session events.
 
 ```json
 {
@@ -267,6 +267,12 @@ Start a new opencode session with the given prompt. The server spawns an opencod
 - If the opencode binary cannot be spawned (ENOENT): an `error` event with message `"opencode binary not found at \"<path>\" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH."`.
 
 #### 2. `resume`
+
+Add `runtime: "pi"` to select Pi, or omit it for the existing OpenCode behavior. The same runtime must be used when resuming; unsupported or mismatched runtime requests are rejected before spawn.
+
+```json
+{"type":"start","runtime":"pi","prompt":"Continue the deployment"}
+```
 
 Resume an existing opencode session by id. Behaves like `start` but passes `--session <sessionId>` to opencode so the session context is restored.
 
