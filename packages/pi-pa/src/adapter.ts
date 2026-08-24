@@ -83,7 +83,8 @@ export class PiAdapter implements RuntimeAdapter {
     try { version = await bounded(this.versionProbe(), VERSION_TIMEOUT); } catch (error) { return failure(`Pi version preflight failed: ${error instanceof Error ? error.message : String(error)}`); }
     if (!meetsMinimum(version)) return failure(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
-    const args = ["--print", "--mode", "json", "--session-id", id];
+    const interactive = opts.mode === "foreground";
+    const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
     if (opts.model) args.push("--model", opts.model);
     if (opts.env?.["PA_PROVIDER"]) args.push("--provider", opts.env["PA_PROVIDER"]);
     args.push(readFileSync(opts.primerPath, "utf8"));
@@ -91,8 +92,8 @@ export class PiAdapter implements RuntimeAdapter {
     const secrets = [...new Set([...this.secretValues, ...Object.entries(env).filter(([key, value]) => SECRET_KEY.test(key) && value !== undefined && value.length >= 8).map(([, value]) => value!)])];
     const result = this.runCommand
       ? await this.runCommand(args, { cwd: this.cwd, env })
-      : await runPi(args, this.cwd, env, opts, id, secrets, this.supervision);
-    if (this.runCommand) {
+      : await runPi(args, this.cwd, env, opts, id, secrets, this.supervision, interactive);
+    if (this.runCommand && !interactive) {
       persistOutput(opts, result.stdout, result.stderr, secrets);
     }
     if (result.status !== 0) {
@@ -107,7 +108,7 @@ export class PiAdapter implements RuntimeAdapter {
 export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 80 || actual[1] === 80 && actual[2] >= 8); }
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent { const safe = deepRedact(raw, secrets) as Record<string, unknown>; const type = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase(); const kind: ActivityEvent["kind"] = type === "tool_execution_end" || type === "tool_result" || type === "tool_execution_result" ? "tool_result" : type === "tool_execution_start" || type === "tool_use" || type === "tool_call" ? "tool_use" : type.includes("error") ? "error" : type.includes("think") ? "thinking" : type.includes("tool") ? "tool_use" : "text"; const body = redact(extractText(safe) || type, secrets); return createActivityEvent({ deployId, kind, source: "pi", body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY - 3)}...` : body, partType: type, metadata: allowMetadata(safe), timestamp: typeof safe.timestamp === "string" ? parseTimestamp(safe.timestamp).toISOString() : undefined }); }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: redact(line, secrets).slice(0, MAX_BODY) }); } }
-function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}): Promise<PiCommandResult> {
+function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, interactive = false): Promise<PiCommandResult> {
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -117,7 +118,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   const writeLog = supervision.writeLog ?? writeFileSync;
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
-  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: interactive ? "inherit" : ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
@@ -152,8 +153,10 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
     const finish = (): void => {
       if (settled || cleanupPending) return;
       try {
-        if (carry) persist(carry, outputPath, opts.deployId, secrets);
-        if (opts.logFile) writeLog(opts.logFile, redact(stdout + stderr, secrets), "utf8");
+        if (!interactive) {
+          if (carry) persist(carry, outputPath, opts.deployId, secrets);
+          if (opts.logFile) writeLog(opts.logFile, redact(stdout + stderr, secrets), "utf8");
+        }
         settle(0);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };

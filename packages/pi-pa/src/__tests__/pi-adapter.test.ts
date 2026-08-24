@@ -15,12 +15,17 @@ class FakePiChild extends EventEmitter {
   readonly pid = 42;
 }
 
-function controlledAdapter(child: FakePiChild, options: { persistLine?: () => void; onSignal?: (signal: NodeJS.Signals) => void; onTimeout?: (callback: () => void) => void; processGroupGone?: () => boolean } = {}): PiAdapter {
+function controlledAdapter(child: FakePiChild, options: { persistLine?: () => void; onSignal?: (signal: NodeJS.Signals) => void; onTimeout?: (callback: () => void) => void; processGroupGone?: () => boolean; onSpawn?: (args: string[], stdio: unknown) => void } = {}): PiAdapter {
   return new PiAdapter({
     cwd: tmpdir(),
     versionProbe: () => "0.80.8",
     supervision: {
-      spawnProcess: (() => child as never) as typeof spawn,
+      spawnProcess: ((...spawnArgs: unknown[]) => {
+        const args = spawnArgs[1] as string[];
+        const spawnOptions = spawnArgs[2] as { stdio?: unknown };
+        options.onSpawn?.(args, spawnOptions.stdio);
+        return child as never;
+      }) as typeof spawn,
       persistLine: () => options.persistLine?.(),
       sendSignal: (_pid, signal) => options.onSignal?.(signal),
       processGroupGone: options.processGroupGone ?? (() => false),
@@ -32,11 +37,18 @@ function controlledAdapter(child: FakePiChild, options: { persistLine?: () => vo
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
-test("checks the Pi version and uses the 0.80.8 JSON argument contract per deployment", async () => {
+test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
   assert.equal(meetsMinimum("0.80.7"), false); assert.equal(meetsMinimum("0.80.8"), true); assert.equal(meetsMinimum("0.81.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
-  const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.80.8"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { assert.deepEqual(args.slice(0, 5), ["--print", "--mode", "json", "--session-id", "00000000-0000-0000-0000-000000000001"]); assert.ok(!args.includes("--json")); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
-  await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" }); await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "foreground" }); assert.equal(probes, 2);
+  const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0; const invocations: string[][] = [];
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.80.8"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
+  await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" });
+  await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "background" });
+  assert.equal(probes, 2);
+  assert.deepEqual(invocations[0]?.slice(0, 2), ["--session-id", "00000000-0000-0000-0000-000000000001"]);
+  assert.ok(!invocations[0]?.includes("--print"));
+  assert.ok(!invocations[0]?.includes("--mode"));
+  assert.deepEqual(invocations[1]?.slice(0, 5), ["--print", "--mode", "json", "--session-id", "00000000-0000-0000-0000-000000000001"]);
+  assert.ok(!invocations[1]?.includes("--json"));
 });
 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
@@ -75,17 +87,21 @@ test("requires an exact supported Pi version and redacts nested array content", 
   assert.doesNotMatch(event.body, /configured-secret|pw/);
 });
 
-test("waits for normal direct-child close before settling", async () => {
+test("foreground Pi inherits terminal stdio and waits for direct-child close", async () => {
   const child = new FakePiChild();
   const primer = join(mkdtempSync(join(tmpdir(), "pi-close-")), "primer.md"); writeFileSync(primer, "work");
-  const signals: NodeJS.Signals[] = [];
-  const adapter = controlledAdapter(child, { onSignal: (signal) => signals.push(signal) });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground" });
+  const signals: NodeJS.Signals[] = []; let spawnedArgs: string[] = []; let spawnedStdio: unknown;
+  const adapter = controlledAdapter(child, { onSignal: (signal) => signals.push(signal), onSpawn: (args, stdio) => { spawnedArgs = args; spawnedStdio = stdio; } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground", sessionId: "interactive-session" });
   await nextTick();
-  child.stdout.emit("data", Buffer.from('{"type":"message","text":"ok"}\n'));
   child.emit("close", 0);
   const result = await resultPromise;
   assert.equal(result.exitCode, 0);
+  assert.equal(result.sessionId, "interactive-session");
+  assert.equal(spawnedStdio, "inherit");
+  assert.deepEqual(spawnedArgs.slice(0, 2), ["--session-id", "interactive-session"]);
+  assert.ok(!spawnedArgs.includes("--print"));
+  assert.ok(!spawnedArgs.includes("--mode"));
   assert.deepEqual(signals, []);
 });
 
@@ -167,7 +183,7 @@ test("settles exactly once when persistence failure, timeout, and late close com
       clearTimeout: () => {},
     },
   });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-competing", mode: "foreground", timeoutMs: 1 });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-competing", mode: "dry-run", timeoutMs: 1 });
   resultPromise.then(() => { outcomes++; });
   await nextTick();
   child.stdout.emit("data", Buffer.from('{"type":"message","text":"fails"}\n'));
@@ -192,7 +208,7 @@ test("cleans up after persistence failure and completes background supervision",
     onSignal: (signal) => { signals.push(signal); if (signal === "SIGKILL") { groupGone = true; child.emit("close", 137); } },
     processGroupGone: () => groupGone,
   });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-persist", mode: "foreground" });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-persist", mode: "dry-run" });
   await nextTick();
   child.stdout.emit("data", Buffer.from('{"type":"message","text":"fails"}\n'));
   const result = await resultPromise;
@@ -200,10 +216,13 @@ test("cleans up after persistence failure and completes background supervision",
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 
   const backgroundChild = new FakePiChild();
-  const background = controlledAdapter(backgroundChild);
+  let backgroundArgs: string[] = []; let backgroundStdio: unknown;
+  const background = controlledAdapter(backgroundChild, { onSpawn: (args, stdio) => { backgroundArgs = args; backgroundStdio = stdio; } });
   const started = await background.spawn({ primerPath: primer, deployId: "d-background", mode: "background" });
   const monitor = started.metadata?.monitor as { completion: Promise<{ status: number | null }> };
   backgroundChild.emit("close", 0);
   assert.equal((await monitor.completion).status, 0);
+  assert.deepEqual(backgroundStdio, ["ignore", "pipe", "pipe"]);
+  assert.deepEqual(backgroundArgs.slice(0, 5), ["--print", "--mode", "json", "--session-id", started.sessionId]);
   assert.equal(groupGone, true);
 });
