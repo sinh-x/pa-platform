@@ -92,6 +92,71 @@ test("escalates resistant timeout cleanup and settles once after the process gro
   assert.equal(result.metadata?.cleanupVerified, true);
 });
 
+test("settles at the cleanup deadline when the child and process group never disappear", async () => {
+  const child = new FakePiChild();
+  let now = 0;
+  let timeoutCallback: (() => void) | undefined;
+  const signals: NodeJS.Signals[] = [];
+  const primer = join(mkdtempSync(join(tmpdir(), "pi-deadline-")), "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({
+    cwd: tmpdir(), versionProbe: () => "0.80.8",
+    supervision: {
+      spawnProcess: (() => child as never) as typeof spawn,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds; },
+      processGroupGone: () => false,
+      sendSignal: (_pid, signal) => { signals.push(signal); },
+      setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
+      clearTimeout: () => {},
+    },
+  });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-deadline", mode: "foreground", timeoutMs: 1 });
+  await nextTick();
+  timeoutCallback?.();
+  const result = await resultPromise;
+  assert.equal(now, 4900);
+  assert.equal(result.exitCode, 124);
+  assert.equal(result.metadata?.cleanupVerified, false);
+  assert.equal(result.errorMessage, "Pi deployment timed out; process tree cleanup deadline exceeded");
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("settles exactly once when persistence failure, timeout, and late close compete", async () => {
+  const child = new FakePiChild();
+  let now = 0;
+  let groupGone = false;
+  let timeoutCallback: (() => void) | undefined;
+  let outcomes = 0;
+  const signals: NodeJS.Signals[] = [];
+  const primer = join(mkdtempSync(join(tmpdir(), "pi-competing-")), "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({
+    cwd: tmpdir(), versionProbe: () => "0.80.8",
+    supervision: {
+      spawnProcess: (() => child as never) as typeof spawn,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds; },
+      persistLine: () => { throw new Error("persistence failed"); },
+      processGroupGone: () => groupGone,
+      sendSignal: (_pid, signal) => { signals.push(signal); if (signal === "SIGKILL") groupGone = true; },
+      setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
+      clearTimeout: () => {},
+    },
+  });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-competing", mode: "foreground", timeoutMs: 1 });
+  resultPromise.then(() => { outcomes++; });
+  await nextTick();
+  child.stdout.emit("data", Buffer.from('{"type":"message","text":"fails"}\n'));
+  timeoutCallback?.();
+  child.emit("close", 137);
+  child.emit("close", 137);
+  const result = await resultPromise;
+  await nextTick();
+  assert.equal(outcomes, 1);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.errorMessage, "persistence failed");
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
 test("cleans up after persistence failure and completes background supervision", async () => {
   const child = new FakePiChild();
   let groupGone = false;
