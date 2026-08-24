@@ -43,7 +43,7 @@ ppa deploy builder --mode implement
 
 Pi 0.80.8 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
 
-Pi provider/model precedence is CLI flags, selected mode `runtimes.pi`, team `runtimes.pi`, then Pi's own configuration. Unresolved values are not passed as flags:
+Pi provider/model precedence is CLI flags, selected mode `runtimes.pi`, team `runtimes.pi`, then Pi's own configuration. Foreground `ppa deploy` launches Pi's interactive TUI with terminal input/output attached; `--background` uses non-interactive JSON mode for supervised execution and activity capture. Unresolved provider/model values are not passed as flags:
 
 ```bash
 ppa deploy builder --mode implement --provider anthropic --model claude-sonnet-4-6
