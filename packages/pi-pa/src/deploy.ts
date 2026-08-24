@@ -30,13 +30,31 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
   const sessionPath = resolve(deployDir, adapter.sessionFileName);
-  writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
-  renameSync(`${sessionPath}.tmp`, sessionPath);
+  try {
+    writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
+    renameSync(`${sessionPath}.tmp`, sessionPath);
+  } catch (error) {
+    const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
+    emitCrashedEvent({ deploymentId, team: team.name, error: reason, exitCode: 1 });
+    ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
+  }
   emitStartedEvent({ deploymentId, team: team.name, mode: request.mode ?? team.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: timeout.timeout });
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = prior ? await adapter.resume({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId }) : await adapter.spawn({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId });
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
+    const monitor = result.metadata?.["monitor"];
+    if (request.background && result.metadata?.["pending"] === true && monitor && typeof (monitor as Promise<unknown>).then === "function") {
+      void (monitor as Promise<{ status: number | null; stderr: string; spawnError?: Error }>).then((final) => {
+        const ok = final.status === 0;
+        const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${final.spawnError?.message ?? (final.stderr || `exit ${final.status}`)}`;
+        if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: reason }), paths.activityLogPath);
+        emitCompletedEvent({ deploymentId, team: team.name, status: ok ? "success" : "failed", summary: reason, logFile: resolve(deployDir, "pi.log"), exitCode: ok ? 0 : final.status ?? 1 });
+        ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+      });
+      return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
+    }
     const ok = result.exitCode === 0; emitCompletedEvent({ deploymentId, team: team.name, status: ok ? "success" : "failed", summary: ok ? "ppa deploy completed" : `ppa deploy failed: ${result.errorMessage ?? `exit ${result.exitCode}`}`, logFile: result.logFile, exitCode: result.exitCode }); ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: ok ? "success" : "failed", team: request.team, mode: request.mode ?? null, deploymentId, ...(ok ? {} : { reason: result.errorMessage ?? `pi exited with code ${result.exitCode}` }) };
   } catch (error) { emitCrashedEvent({ deploymentId, team: team.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name }); return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; }

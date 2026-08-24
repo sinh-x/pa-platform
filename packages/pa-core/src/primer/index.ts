@@ -402,7 +402,9 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bpa CLI\b/g, "ppa CLI")
       .replace(/\bpa commands\b/g, "ppa commands")
       .replace(/\bpa command\b/g, "ppa command")
-      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills");
+      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
+      .replace(/\bAskUserQuestion\b/g, "a direct user question")
+      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Pi-exposed workflow guidance");
   }
   return content;
 }

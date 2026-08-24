@@ -15,3 +15,12 @@ test("checks the Pi version and uses the 0.80.8 JSON argument contract per deplo
 test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
   const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
 });
+
+test("requires an exact supported Pi version and redacts nested array content", () => {
+  assert.equal(meetsMinimum("pi 0.80.8"), true);
+  assert.equal(meetsMinimum("0.80.8foo"), false);
+  assert.equal(meetsMinimum("0.80.8-dev"), false);
+  const event = normalizePiEvent({ type: "message", content: [{ text: "hello" }, { authorization: "configured-secret", nested: [{ password: "pw" }] }] }, "d-aaaaaa", ["configured-secret"]);
+  assert.match(event.body, /hello/);
+  assert.doesNotMatch(event.body, /configured-secret|pw/);
+});
