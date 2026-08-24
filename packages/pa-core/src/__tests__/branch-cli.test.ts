@@ -10,21 +10,24 @@ function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
-function withBranchCliEnv(fn: (root: string, repo: string) => Promise<void>): Promise<void> {
+function withBranchCliEnv(
+  fn: (root: string, repo: string) => Promise<void>,
+  options: { initialBranch?: string; repoConfig?: (repo: string) => string } = {},
+): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-branch-"));
   const config = join(root, "config");
   const repo = join(root, "repo");
   mkdirSync(config, { recursive: true });
   mkdirSync(repo, { recursive: true });
 
-  git(["init", "-b", "develop"], repo);
+  git(["init", "-b", options.initialBranch ?? "develop"], repo);
   git(["config", "user.email", "test@example.com"], repo);
   git(["config", "user.name", "Test"], repo);
   writeFileSync(join(repo, "README.md"), "# Test");
   git(["add", "."], repo);
   git(["commit", "-m", "initial"], repo);
 
-  writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n    developBranch: develop\n    mainBranch: main\n`);
+  writeFileSync(join(config, "repos.yaml"), options.repoConfig?.(repo) ?? `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n    developBranch: develop\n    mainBranch: main\n`);
 
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   const previousRegistry = process.env["PA_REGISTRY_DB"];
@@ -62,6 +65,26 @@ test("branch create with valid ticket and topic creates branch", async () => {
     }
     assert.match(captured.stdout.join("\n"), /Created and checked out feature\/PAP-001-fix-login/);
     assert.equal(git(["branch", "--show-current"], repo), "feature/PAP-001-fix-login");
+  });
+});
+
+test("branch create honors snake-case custom base branch and pattern", async () => {
+  const rootPrefix = "change/PAP-001-snake-case";
+  await withBranchCliEnv(async (_root, repo) => {
+    const baseCommit = git(["rev-parse", "integration"], repo);
+    const captured = capture();
+    const cwd = process.cwd();
+    process.chdir(repo);
+    try {
+      assert.equal(await runCoreCommand(["branch", "create", "PAP-001", "--topic", "snake-case"], { io: captured.io }), 0);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(git(["branch", "--show-current"], repo), rootPrefix);
+    assert.equal(git(["rev-parse", "HEAD^0"], repo), baseCommit);
+  }, {
+    initialBranch: "integration",
+    repoConfig: (repo) => `repos:\n  pa-platform:\n    path: ${repo}\n    prefix: PAP\n    main_branch: trunk\n    develop_branch: integration\n    feature_branch_pattern: "change/<ticket>-<topic>"\n`,
   });
 });
 
@@ -121,6 +144,43 @@ test("branch validate on conforming branch returns success", async () => {
       process.chdir(cwd);
     }
     assert.deepEqual(captured.stdout, []);
+  });
+});
+
+test("branch validate reads the invoking linked worktree branch", async () => {
+  await withBranchCliEnv(async (root, repo) => {
+    const worktree = join(root, "linked-worktree");
+    git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
+    const captured = capture();
+    const cwd = process.cwd();
+    process.chdir(worktree);
+    try {
+      assert.equal(await runCoreCommand(["branch", "validate"], { io: captured.io }), 0);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.deepEqual(captured.stdout, []);
+    assert.deepEqual(captured.stderr, []);
+  });
+});
+
+test("branch create operates on the invoking linked worktree", async () => {
+  await withBranchCliEnv(async (root, repo) => {
+    const worktree = join(root, "linked-worktree");
+    git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
+    const canonicalBefore = execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo });
+    const captured = capture();
+    const cwd = process.cwd();
+    process.chdir(worktree);
+    try {
+      assert.equal(await runCoreCommand(["branch", "create", "PAP-135", "--topic", "isolated"], { io: captured.io }), 0);
+    } finally {
+      process.chdir(cwd);
+    }
+
+    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-isolated");
+    assert.equal(git(["branch", "--show-current"], repo), "develop");
+    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
   });
 });
 

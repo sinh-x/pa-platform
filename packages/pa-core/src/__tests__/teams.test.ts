@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
 
-const configRoot = getPlatformHomeDir();
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
 
 function withConfigEnv(fn: (root: string, platform: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-teams-config-"));
@@ -146,7 +146,7 @@ test("validation reports objective, instruction, global doc, and shared skill pa
 });
 
 test("builder team config has no Anthropic deploy modes", (t) => {
-  if (!existsSync(join(configRoot, "teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
+  if (!configRoot || !existsSync(join(configRoot, "teams", "builder.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const builder = parseTeamYamlContent(readFileSync(join(configRoot, "teams", "builder.yaml"), "utf-8"));
   const modeIds = builder.deploy_modes?.map((mode) => mode.id) ?? [];
 
@@ -271,7 +271,7 @@ test("validateTeamSkillReferences resolves production-style paths and reports mi
 });
 
 test("external operator team skill references resolve", (t) => {
-  if (!existsSync(join(configRoot, "teams"))) return t.skip("external pa-platform-config fixture not available");
+  if (!configRoot || !existsSync(join(configRoot, "teams"))) return t.skip("external pa-platform-config fixture not available");
   const missing = validateTeamSkillReferences(join(configRoot, "teams"), configRoot, join(configRoot, "skills", "global"));
   assert.deepEqual(missing, []);
 });

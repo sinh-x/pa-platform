@@ -2,10 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { join } from "node:path";
-import { getPlatformHomeDir } from "../index.js";
 
-const configRoot = getPlatformHomeDir();
-const templatePath = join(configRoot, "skills", "templates", "orchestration-report.md");
+const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
+const templatePath = configRoot ? join(configRoot, "skills", "templates", "orchestration-report.md") : "";
 
 test("orchestration report template excludes evaluator child coverage columns", (t) => {
   if (!existsSync(templatePath)) return t.skip("external pa-platform-config fixture not available");
