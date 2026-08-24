@@ -41,7 +41,7 @@ export interface SessionSpawnOptions {
   runtime?: ApiRuntimeName;
 }
 
-export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string) => ActivityEvent;
+export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string, secrets?: string[]) => ActivityEvent;
 export type SessionCommandBuilder = (opts: SessionSpawnOptions & { session: SessionRecord }) => { binary: string; args: string[] };
 
 export interface SessionManagerOptions {
@@ -80,6 +80,7 @@ export interface SessionManagerOptions {
   runtimeNormalizers?: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
   runtimeCommands?: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
   onTerminal?: (sessionId: string) => void;
+  secretValues?: string[];
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
@@ -88,6 +89,11 @@ const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_PROMPT_LENGTH = 128 * 1024;
 const DEFAULT_BINARY = "opencode";
 const DEFAULT_RUNTIME: ApiRuntimeName = "opencode";
+const MAX_STREAM_CARRY = 8192;
+const MAX_EVENT_BODY = 500;
+const MAX_STDERR = 2000;
+const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
+const SECRET_TEXT = [/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, /bearer\s+\S+/gi, /sk-[\w-]+/gi];
 
 /**
  * Environment variable consulted by {@link resolveBinary} when an explicit
@@ -143,6 +149,7 @@ interface ActiveSession {
   stderrBuffer?: string;
   terminated: boolean;
   terminateReason?: string;
+  secrets?: string[];
 }
 
 function readMaxSessionsFromEnv(): number {
@@ -171,6 +178,7 @@ export class SessionManager {
   private readonly runtimeCommands: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
   private readonly nativeSessionRuntimes = new Map<string, ApiRuntimeName>();
   private readonly onTerminal?: (sessionId: string) => void;
+  private readonly secretValues: string[];
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -193,6 +201,7 @@ export class SessionManager {
     this.runtimeNormalizers = opts.runtimeNormalizers ?? {};
     this.runtimeCommands = opts.runtimeCommands ?? {};
     this.onTerminal = opts.onTerminal;
+    this.secretValues = [...(opts.secretValues ?? collectSecrets(this.env))];
   }
 
   get limit(): number {
@@ -243,7 +252,7 @@ export class SessionManager {
     const promptError = this.validatePromptLength(opts.prompt);
     if (promptError) return promptError;
     const knownRuntime = this.nativeSessionRuntimes.get(opts.sessionId);
-    if (knownRuntime && knownRuntime !== (opts.runtime ?? DEFAULT_RUNTIME)) return { ok: false, error: `Session belongs to runtime ${knownRuntime}; resume it with that runtime`, limit: this.maxSessions };
+    if (knownRuntime && knownRuntime !== (opts.runtime ?? DEFAULT_RUNTIME)) return { ok: false, error: `Session belongs to runtime ${knownRuntime}; resume it with '${runtimeBinary(knownRuntime)}'`, limit: this.maxSessions };
     return this.createSession(opts, sink);
   }
 
@@ -308,6 +317,7 @@ export class SessionManager {
       stdoutBuffer: "",
       stderrBuffer: "",
       terminated: false,
+      secrets: [...new Set([...this.secretValues, ...collectSecrets({ ...this.env, ...opts.env })])],
     };
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
@@ -317,9 +327,12 @@ export class SessionManager {
         this.sessions.delete(newId);
         return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
       }
+      const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
+      if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, record.runtime);
       this.spawnOpencode(session, opts);
-      if (opts.sessionId && isBoundedNativeSessionId(opts.sessionId)) this.nativeSessionRuntimes.set(opts.sessionId, record.runtime);
     } catch (error) {
+      const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
+      if (nativeSessionId) this.nativeSessionRuntimes.delete(nativeSessionId);
       this.sessions.delete(newId);
       const rawMessage = error instanceof Error ? error.message : String(error);
       const isEnoent = error instanceof Error && (error as Error & { code?: string }).code === "ENOENT";
@@ -404,7 +417,7 @@ export class SessionManager {
   private handleStdout(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stdoutBuffer = (session.stdoutBuffer ?? "") + text;
+    session.stdoutBuffer = tail((session.stdoutBuffer ?? "") + text, MAX_STREAM_CARRY);
     const lines = session.stdoutBuffer.split("\n");
     session.stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -413,7 +426,7 @@ export class SessionManager {
   private handleStderr(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stderrBuffer = (session.stderrBuffer ?? "") + text;
+    session.stderrBuffer = tail(redact((session.stderrBuffer ?? "") + text, this.sessionSecrets(session)), MAX_STDERR);
     const lines = session.stderrBuffer.split("\n");
     session.stderrBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -425,16 +438,17 @@ export class SessionManager {
     try {
       raw = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      this.emitEvent(session, { type: "event", data: { kind: "text", body: line } });
+      this.emitEvent(session, { type: "event", data: { kind: "text", body: redact(line, this.sessionSecrets(session)).slice(0, MAX_EVENT_BODY) } });
       return;
     }
     session.sessionIdParser?.write(line);
     try {
       const normalizer = this.runtimeNormalizers[session.record.runtime] ?? this.normalizer;
-      const event = normalizer(raw, session.record.deploymentId);
+      const event = normalizer(raw, session.record.deploymentId, this.sessionSecrets(session));
+      event.body = redact(event.body, this.sessionSecrets(session)).slice(0, MAX_EVENT_BODY);
       this.emitEvent(session, { type: "event", data: activityEventToData(event) });
     } catch {
-      this.emitEvent(session, { type: "event", data: raw });
+      this.emitEvent(session, { type: "event", data: redactRecord(raw, this.sessionSecrets(session)) });
     }
   }
 
@@ -451,11 +465,20 @@ export class SessionManager {
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
-    session.sessionIdParser?.flush();
+    if (session.stdoutBuffer?.trim()) this.processLine(session, session.stdoutBuffer);
+    if (session.stderrBuffer?.trim()) this.processLine(session, session.stderrBuffer);
+    session.stdoutBuffer = "";
+    session.stderrBuffer = "";
+    const nativeSessionId = session.sessionIdParser?.flush();
+    if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, session.record.runtime);
     if (session.terminated) return;
     this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
     this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
     this.finalize(session);
+  }
+
+  private sessionSecrets(session: ActiveSession): string[] {
+    return session.secrets ?? this.secretValues;
   }
 
   private finalize(session: ActiveSession): void {
@@ -536,6 +559,10 @@ function isBoundedNativeSessionId(value: string): boolean {
   return value.length <= 256 && /^[A-Za-z0-9._:-]+$/.test(value);
 }
 
+function runtimeBinary(runtime: ApiRuntimeName): string {
+  return runtime === "pi" ? "ppa" : runtime === "opencode" ? "opa" : runtime;
+}
+
 function activityEventToData(event: ActivityEvent): Record<string, unknown> {
   return {
     deployId: event.deployId,
@@ -587,3 +614,27 @@ function parseSessionIdLine(line: string): string | undefined {
   }
   return undefined;
 }
+
+function collectSecrets(env: NodeJS.ProcessEnv | undefined): string[] {
+  if (!env) return [];
+  return Object.entries(env).filter(([key, value]) => SECRET_KEY.test(key) && value !== undefined && value.length >= 8).map(([, value]) => value as string);
+}
+
+function redact(value: string, secrets: string[]): string {
+  let result = value;
+  for (const secret of secrets) if (secret) result = result.split(secret).join("[REDACTED]");
+  for (const pattern of SECRET_TEXT) result = result.replace(pattern, "[REDACTED]");
+  return result;
+}
+
+function redactRecord(value: Record<string, unknown>, secrets: string[]): Record<string, unknown> {
+  const redactValue = (item: unknown): unknown => {
+    if (typeof item === "string") return redact(item, secrets);
+    if (Array.isArray(item)) return item.map(redactValue);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, SECRET_KEY.test(key) ? "[REDACTED]" : redactValue(child)]));
+    return item;
+  };
+  return redactValue(value) as Record<string, unknown>;
+}
+
+function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }

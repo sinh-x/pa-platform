@@ -226,7 +226,7 @@ The WebSocket hub is a **stateless broadcast** — there is no per-client messag
 
 ## Session Protocol (`/ws/session`)
 
-Connect to `ws://127.0.0.1:9848/ws/session` to run an interactive OpenCode or Pi session. A client sends one of three message types (`start`, `resume`, `stop`) and receives a stream of session events back over the same socket. Each WebSocket connection tracks exactly one active session id; once a session is started or resumed, the connection cannot start another until the current one stops. Omit `runtime` to retain the OpenCode default.
+Connect to `ws://127.0.0.1:9848/ws/session` to run an interactive OpenCode or Pi session. A client sends one of three message types (`start`, `resume`, `stop`) and receives a stream of session events back over the same socket. Each WebSocket connection tracks exactly one active session id; once a session is started or resumed, the connection cannot start another until the current one stops. `runtime` accepts `"opencode"` or `"pi"`; omit it to retain the OpenCode default.
 
 ### Connection Lifecycle
 
@@ -247,6 +247,7 @@ Start a new OpenCode or Pi session with the given prompt. The selected runtime c
 ```json
 {
   "type": "start",
+  "runtime": "opencode",
   "prompt": "Read the primer and follow all instructions",
   "model": "ollama-cloud/deepseek-v4-pro"
 }
@@ -255,6 +256,7 @@ Start a new OpenCode or Pi session with the given prompt. The selected runtime c
 | field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"start"` | yes | Message type. |
+| `runtime` | `"opencode"` or `"pi"` | no | Runtime adapter. Omission selects OpenCode. |
 | `prompt` | `string` | yes | The prompt to send to opencode. Must not be empty. Maximum 131072 bytes (128 KB) — larger prompts are rejected. |
 | `model` | `string` | no | Model override. If omitted, the server default (`ollama-cloud/deepseek-v4-pro`) is used. |
 
@@ -270,15 +272,18 @@ Start a new OpenCode or Pi session with the given prompt. The selected runtime c
 
 Add `runtime: "pi"` to select Pi, or omit it for the existing OpenCode behavior. The same runtime must be used when resuming; unsupported or mismatched runtime requests are rejected before spawn.
 
+Start Pi explicitly with:
+
 ```json
 {"type":"start","runtime":"pi","prompt":"Continue the deployment"}
 ```
 
-Resume an existing opencode session by id. Behaves like `start` but passes `--session <sessionId>` to opencode so the session context is restored.
+Resume an existing native session by id. OpenCode receives `--session <sessionId>`; Pi receives `--session-id <sessionId>`.
 
 ```json
 {
   "type": "resume",
+  "runtime": "opencode",
   "sessionId": "abc123",
   "prompt": "Continue the previous work",
   "model": "ollama-cloud/deepseek-v4-pro"
@@ -288,6 +293,7 @@ Resume an existing opencode session by id. Behaves like `start` but passes `--se
 | field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"resume"` | yes | Message type. |
+| `runtime` | `"opencode"` or `"pi"` | no | Runtime adapter. Omission selects OpenCode. |
 | `sessionId` | `string` | yes | The opencode session id to resume. Must not be empty. |
 | `prompt` | `string` | yes | The prompt for the resumed turn. Must not be empty. Maximum 131072 bytes (128 KB). |
 | `model` | `string` | no | Model override. If omitted, the server default is used. |
@@ -301,7 +307,7 @@ Resume an existing opencode session by id. Behaves like `start` but passes `--se
 
 #### 3. `stop`
 
-Stop the active session on this connection. The server sends SIGTERM to the opencode child process (escalating to SIGKILL after the termination timeout), then removes the session.
+Stop the active session on this connection. The server sends SIGTERM to the selected runtime child process (escalating to SIGKILL after the termination timeout), then removes the session.
 
 ```json
 {
@@ -581,6 +587,7 @@ interface SessionRecord {
   status: SessionStatus;
   startedAt: string;     // ISO 8601 UTC
   deploymentId: string;  // deployment id (for spawned sessions: "session-<id>" unless overridden)
+  runtime: "opencode" | "pi";
 }
 ```
 
@@ -604,7 +611,7 @@ interface SessionStreamEvent {
 interface SessionSpawnOptions {
   model?: string;
   prompt: string;
-  sessionId?: string;    // for resume: passed to opencode --session
+  sessionId?: string;    // for resume: passed to opencode --session or pi --session-id
   deploymentId?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;

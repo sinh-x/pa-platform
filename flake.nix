@@ -77,6 +77,7 @@
             cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist
             mkdir -p $share/packages/opencode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/opencode-pa/node_modules/@pa-platform/pa-core
+            ln -s ../../../pi-pa $share/packages/opencode-pa/node_modules/@pa-platform/pi-pa
             cp packages/claudecode-pa/package.json $share/packages/claudecode-pa/package.json
             cp -r packages/claudecode-pa/dist $share/packages/claudecode-pa/dist
             mkdir -p $share/packages/claudecode-pa/node_modules/@pa-platform
@@ -91,6 +92,7 @@
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
             mkdir -p $share/packages/pi-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/pi-pa/node_modules/@pa-platform/pa-core
+            ln -s ../../../opencode-pa $share/packages/pi-pa/node_modules/@pa-platform/opencode-pa
 
             install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
             import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";

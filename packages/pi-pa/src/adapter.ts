@@ -12,7 +12,7 @@ const TERM_GRACE = 250;
 const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
 const SECRET_TEXT = [/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, /bearer\s+\S+/gi, /sk-[\w-]+/gi];
 const MAX_CARRY = 8192;
-const PROCESS_TREE_TIMEOUT = 5000;
+const PROCESS_TREE_TIMEOUT = 4900;
 const PROCESS_TREE_POLL = 25;
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
@@ -96,29 +96,38 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   const child = spawn("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
-    let stdout = ""; let stderr = ""; let carry = ""; let settled = false; let timedOut = false; let directClosed = false; let cleanupPending = false; let timer: NodeJS.Timeout | undefined; let killTimer: NodeJS.Timeout | undefined;
+    let stdout = ""; let stderr = ""; let carry = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let killTimer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
-    const finish = async (status: number | null, error?: Error): Promise<void> => {
+    const settle = (status: number | null, error?: Error): void => {
+      if (settled) return;
+      if (timer) clearTimeout(timer); if (killTimer) clearTimeout(killTimer);
+      settled = true;
+      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, ...(cleanupPending ? { cleanupVerified } : {}) } });
+    };
+    const requestCleanup = (status: number, error: Error): void => {
       if (settled || cleanupPending) return;
-      if (timedOut && !directClosed) return;
-      if (timedOut && child.pid && !(await processGroupGone(child.pid))) return;
-      cleanupPending = true;
+      cleanupPending = true; cleanupStatus = status; cleanupError = error; cleanupDeadline = Date.now() + PROCESS_TREE_TIMEOUT;
+      if (timer) clearTimeout(timer);
+      try { if (child.pid) process.kill(-child.pid, "SIGTERM"); } catch { /* already exited */ }
+      killTimer = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ } }, TERM_GRACE);
+      void (async () => {
+        cleanupVerified = directClosed && (!child.pid || await processGroupGone(child.pid, cleanupDeadline));
+        if (!cleanupVerified) cleanupError = new Error(`${cleanupError?.message ?? "Pi cleanup failed"}; process tree cleanup deadline exceeded`);
+        settle(cleanupStatus, cleanupError);
+      })();
+    };
+    const finish = (): void => {
+      if (settled || cleanupPending) return;
       try {
-        if (timer) clearTimeout(timer); if (killTimer) clearTimeout(killTimer);
         if (carry) persistLine(carry, outputPath, opts.deployId, secrets);
         if (opts.logFile) writeFileSync(opts.logFile, redact(stdout + stderr, secrets), "utf8");
-        settled = true;
-        resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id } });
-      } catch (persistError) {
-        settled = true;
-        const persistenceError = persistError instanceof Error ? persistError : new Error(String(persistError));
-        resolveResult({ status: 1, stdout, stderr, spawnError: persistenceError, metadata: { pid: child.pid, sessionId: id } });
-      }
+        settle(0);
+      } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { try { persistLine(line, outputPath, opts.deployId, secrets); } catch (error) { void finish(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
-    child.stdout?.on("data", (chunk: Buffer) => consume(chunk, "stdout")); child.stderr?.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
-    child.once("error", (error) => void finish(null, error)); child.once("close", (code) => { directClosed = true; void finish(timedOut ? 124 : code, timedOut ? new Error("Pi deployment timed out") : undefined); });
-    if (opts.timeoutMs) timer = setTimeout(() => { timedOut = true; try { if (child.pid) process.kill(-child.pid, "SIGTERM"); } catch { /* already exited */ } killTimer = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ } void finish(124, new Error("Pi deployment timed out")); }, TERM_GRACE); }, opts.timeoutMs);
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { try { persistLine(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
+    child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
+    child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) { if (code === 0) finish(); else settle(code, new Error(`Pi exited with code ${code ?? 1}`)); } });
+    if (opts.timeoutMs) timer = setTimeout(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
   });
   if (opts.mode === "background") return Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { pid: child.pid, sessionId: id, pending: true, monitor: { completion, pid: child.pid } satisfies PiSupervisionHandle } });
   return completion;
@@ -134,4 +143,4 @@ function extractText(raw: Record<string, unknown>): string { const values = [raw
 function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }
 function basename(path: string): string { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown"; }
 async function bounded<T>(value: T | Promise<T>, timeout: number): Promise<T> { return Promise.race([Promise.resolve(value), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${timeout}ms`)), timeout))]); }
-async function processGroupGone(pid: number): Promise<boolean> { const deadline = Date.now() + PROCESS_TREE_TIMEOUT; while (Date.now() < deadline) { try { process.kill(-pid, 0); } catch { return true; } await new Promise((resolve) => setTimeout(resolve, PROCESS_TREE_POLL)); } return false; }
+async function processGroupGone(pid: number, deadline: number): Promise<boolean> { while (Date.now() < deadline) { try { process.kill(-pid, 0); } catch { return true; } await new Promise((resolve) => setTimeout(resolve, PROCESS_TREE_POLL)); } return false; }

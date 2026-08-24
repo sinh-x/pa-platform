@@ -310,6 +310,40 @@ test("SessionManager does not emit events after termination", () => {
   assert.equal(sink.events.length, beforeCount);
 });
 
+test("Pi sessions use the Pi command and retain runtime provenance for cross-runtime resume", () => {
+  const { fn, children, calls } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, runtimes: { pi: {} }, maxSessions: 3 });
+  const sink = new CapturingSink();
+  const started = mgr.start({ runtime: "pi", sessionId: "pi-native-1", prompt: "Continue" }, sink);
+  assert.equal(started.ok, true);
+  assert.equal(calls[0]?.command, "pi");
+  assert.deepEqual(calls[0]?.args.slice(0, 5), ["--print", "--mode", "json", "--session-id", "pi-native-1"]);
+  const resumed = mgr.resume({ sessionId: "pi-native-1", prompt: "Wrong runtime" }, sink);
+  assert.equal(resumed.ok, false);
+  if (!resumed.ok) assert.match(resumed.error, /'ppa'/);
+  children[0]?.emit("close", 0);
+});
+
+test("Pi WebSocket output bounds and redacts secrets across chunks and malformed lines", () => {
+  const { fn, children } = createFakeSpawn();
+  const mgr = new SessionManager({ spawnFn: fn, runtimes: { pi: {} }, env: { PA_API_KEY: "split-secret-value" }, maxSessions: 3 });
+  const sink = new CapturingSink();
+  const result = mgr.start({ runtime: "pi", prompt: "Hello" }, sink);
+  assert.equal(result.ok, true);
+  const child = children[0]!;
+  child.stdout.emit("data", Buffer.from('{"type":"text","text":"split-secret-'));
+  child.stdout.emit("data", Buffer.from('value"}\n' + "x".repeat(1000) + "\n"));
+  child.stderr.emit("data", Buffer.from("split-secret-value\n"));
+  const events = sink.events.filter((event) => event.type === "event");
+  assert.ok(events.length >= 3);
+  for (const event of events) {
+    const data = event.data as Record<string, unknown>;
+    assert.ok(String(data.body ?? "").length <= 500);
+    assert.doesNotMatch(JSON.stringify(data), /split-secret-value/);
+  }
+  child.emit("close", 0);
+});
+
 test("resolveBinary returns explicitPath when provided (takes precedence over dev mode env var)", () => {
   const previous = process.env[PA_OPENCODE_BINARY_ENV];
   process.env[PA_OPENCODE_BINARY_ENV] = "/env/bin/opencode";

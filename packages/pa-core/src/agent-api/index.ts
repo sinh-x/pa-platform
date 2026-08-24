@@ -106,6 +106,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       ...(hooks?.runtimeHooks?.pi?.sessionCommand ? { pi: hooks.runtimeHooks.pi.sessionCommand } : {}),
     },
     devMode: opts.devMode === true,
+    env: process.env,
     ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}),
   });
   app.get("/ws/session", upgradeWebSocket(() => {
