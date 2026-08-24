@@ -26,6 +26,7 @@ export interface SpawnOpts {
   timeoutMs?: number;
   logFile?: string;
   sessionName?: string;
+  sessionId?: string;
 }
 
 export interface ResumeOpts extends SpawnOpts {
@@ -52,4 +53,5 @@ export interface RuntimeAdapter {
   extractActivity(deployDir: string): Promise<ActivityEvent[]> | ActivityEvent[];
   installHooks(targetDir: string, config: HookConfig): Promise<void> | void;
   describeTools(): ToolReference;
+  allocateSessionId?(): string;
 }

@@ -393,12 +393,16 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Task sub-agent");
   }
   if (runtime === "pi") {
-    return [
-      "Runtime: Pi via `ppa`.",
-      "Use `ppa` for PA platform deployment and workflow commands; it invokes the shared pa-core command set with the canonical `pi` runtime.",
-      "Use `pa-core serve` for Agent API server lifecycle; `ppa` is a deployment adapter, not the server owner.",
-      "Pi deployments use the Pi CLI and retain OpenCode as the default API runtime when no runtime is selected.",
-    ].join("\n");
+    return content
+      .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
+      .replace(PA_CLI_COMMAND_RE, "$1ppa")
+      .replace(CLAUDECODE_PROSE_LINE_RE, "")
+      .replace(/`pa` CLI/g, "`ppa` CLI")
+      .replace(/\bPA CLI\b/g, "PPA CLI")
+      .replace(/\bpa CLI\b/g, "ppa CLI")
+      .replace(/\bpa commands\b/g, "ppa commands")
+      .replace(/\bpa command\b/g, "ppa command")
+      .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills");
   }
   return content;
 }
@@ -522,6 +526,14 @@ function defaultToolReference(runtime: RuntimeName): string {
       "Droid deployments may use all Droid-native tools: Read, Edit, Create, Execute, Grep, Glob, LS, Task (sub-agent spawning), AskUser, Skill, WebSearch, FetchUrl, and TodoWrite.",
       "Droid deploys via the Factory SDK with session streaming; all runs (foreground and background) capture a session id and are resumable.",
       "Default model: `deepseek-v4-pro` (override via `--model`, team-mode YAML, or `PA_DPA_DEFAULT_MODEL`).",
+    ].join("\n");
+  }
+  if (runtime === "pi") {
+    return [
+      "Runtime: Pi via `ppa`.",
+      "Use `ppa` for PA platform deployment and workflow commands; it invokes the shared pa-core command set with the canonical `pi` runtime.",
+      "Use `pa-core serve` for Agent API server lifecycle; `ppa` is a deployment adapter, not the server owner.",
+      "Pi deployments use the Pi CLI and retain OpenCode as the default API runtime when no runtime is selected.",
     ].join("\n");
   }
 

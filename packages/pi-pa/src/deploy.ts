@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent } from "./adapter.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
-  const args = ["--print", "--json", "--session-id", sessionId ?? session.id];
+  const args = ["--print", "--mode", "json", "--session-id", sessionId ?? session.id];
   if (model) args.push("--model", model);
   if (env?.["PA_PROVIDER"]) args.push("--provider", env["PA_PROVIDER"]);
   args.push(prompt);
@@ -28,13 +28,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name}` }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; } }
+  const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
+  const sessionPath = resolve(deployDir, adapter.sessionFileName);
+  writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
+  renameSync(`${sessionPath}.tmp`, sessionPath);
   emitStartedEvent({ deploymentId, team: team.name, mode: request.mode ?? team.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: timeout.timeout });
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const result = prior ? await adapter.resume({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId: prior }) : await adapter.spawn({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env });
-    if (result.sessionId) writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf8");
+    const result = prior ? await adapter.resume({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId }) : await adapter.spawn({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId });
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
-    if (request.background) return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     const ok = result.exitCode === 0; emitCompletedEvent({ deploymentId, team: team.name, status: ok ? "success" : "failed", summary: ok ? "ppa deploy completed" : `ppa deploy failed: ${result.errorMessage ?? `exit ${result.exitCode}`}`, logFile: result.logFile, exitCode: result.exitCode }); ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: ok ? "success" : "failed", team: request.team, mode: request.mode ?? null, deploymentId, ...(ok ? {} : { reason: result.errorMessage ?? `pi exited with code ${result.exitCode}` }) };
   } catch (error) { emitCrashedEvent({ deploymentId, team: team.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name }); return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; }

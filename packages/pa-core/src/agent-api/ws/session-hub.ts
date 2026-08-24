@@ -79,6 +79,7 @@ export interface SessionManagerOptions {
   runtimes?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
   runtimeNormalizers?: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
   runtimeCommands?: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
+  onTerminal?: (sessionId: string) => void;
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
@@ -168,6 +169,8 @@ export class SessionManager {
   private readonly runtimes: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
   private readonly runtimeNormalizers: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
   private readonly runtimeCommands: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
+  private readonly nativeSessionRuntimes = new Map<string, ApiRuntimeName>();
+  private readonly onTerminal?: (sessionId: string) => void;
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -189,6 +192,7 @@ export class SessionManager {
     this.runtimes = opts.runtimes ?? {};
     this.runtimeNormalizers = opts.runtimeNormalizers ?? {};
     this.runtimeCommands = opts.runtimeCommands ?? {};
+    this.onTerminal = opts.onTerminal;
   }
 
   get limit(): number {
@@ -238,6 +242,8 @@ export class SessionManager {
     }
     const promptError = this.validatePromptLength(opts.prompt);
     if (promptError) return promptError;
+    const knownRuntime = this.nativeSessionRuntimes.get(opts.sessionId);
+    if (knownRuntime && knownRuntime !== (opts.runtime ?? DEFAULT_RUNTIME)) return { ok: false, error: `Session belongs to runtime ${knownRuntime}; resume it with that runtime`, limit: this.maxSessions };
     return this.createSession(opts, sink);
   }
 
@@ -303,6 +309,7 @@ export class SessionManager {
       stderrBuffer: "",
       terminated: false,
     };
+    if (opts.sessionId) this.nativeSessionRuntimes.set(opts.sessionId, record.runtime);
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
@@ -440,6 +447,7 @@ export class SessionManager {
       : error.message;
     this.emitEvent(session, { type: "error", message });
     this.logLifecycle(session, "session_error", message);
+    this.finalize(session);
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
@@ -447,6 +455,14 @@ export class SessionManager {
     if (session.terminated) return;
     this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
     this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
+    this.finalize(session);
+  }
+
+  private finalize(session: ActiveSession): void {
+    if (this.sessions.get(session.record.id) !== session) return;
+    this.sessions.delete(session.record.id);
+    session.sinks?.clear();
+    this.onTerminal?.(session.record.id);
   }
 
   private emitEvent(session: ActiveSession, event: Omit<SessionStreamEvent, "timestamp">): void {
@@ -505,9 +521,10 @@ export class SessionManager {
 function defaultSessionCommand(runtime: ApiRuntimeName, opencodeBinary: string, opts: SessionSpawnOptions, session: SessionRecord): { binary: string; args: string[] } {
   const args = runtime === "opencode"
     ? ["run", "-m", opts.model ?? session.model, "--dangerously-skip-permissions"]
-    : ["--mode", "json"];
+    : ["--print", "--mode", "json"];
   if (opts.sessionId) args.push(runtime === "opencode" ? "--session" : "--session-id", opts.sessionId);
-  args.push("--format", "json", opts.prompt);
+  if (runtime === "opencode") args.push("--format", "json");
+  args.push(opts.prompt);
   return { binary: runtime === "opencode" ? opencodeBinary : runtime, args };
 }
 

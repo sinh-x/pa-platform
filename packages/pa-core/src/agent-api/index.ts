@@ -111,6 +111,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
     let sessionWs: { send(message: string): void; readyState: number } = { send(message: string) { pendingMessages.push(message); }, readyState: 3 };
     const sink = {
       send(event: SessionStreamEvent): void {
+        if (event.type === "end" || event.type === "error") activeSessionId = undefined;
         // WSContext.send is provided by @hono/node-ws at runtime; readyState 1 = OPEN.
         // Late sends after close are silently dropped by the sink guard below.
         try { sessionWs.send(JSON.stringify(event)); } catch { /* socket closed */ }

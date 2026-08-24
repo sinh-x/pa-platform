@@ -71,6 +71,10 @@ export interface CoreExecutionHooks {
   runtimeHooks?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
 }
 
+export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks): CoreExecutionHooks {
+  return { ...opencode, runtimeHooks: { opencode, pi } };
+}
+
 export interface SanitizeResult {
   sanitized: string;
   removed: number;
@@ -108,7 +112,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   const validate = booleanField(body, "validate");
 
   if (!team?.trim()) return { error: "team is required" };
-  if (runtime && runtime !== "opencode" && runtime !== "pi") return { error: "runtime must be opencode or pi" };
+  if (Object.prototype.hasOwnProperty.call(body, "runtime") && (runtime === undefined || !runtime.trim() || (runtime !== "opencode" && runtime !== "pi"))) return { error: "runtime must be opencode or pi" };
   if (!isSafeIdentifier(team)) return { error: "Invalid team name" };
   if (mode && !isSafeIdentifier(mode)) return { error: "Invalid mode name" };
   if (evaluateDeployment && !/^d-[a-z0-9]{6}$/.test(evaluateDeployment)) return { error: "Invalid evaluate deployment id" };

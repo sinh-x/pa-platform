@@ -51,7 +51,7 @@ ppa deploy builder --mode implement --background
 ppa deploy builder --mode implement --dry-run
 ```
 
-Every non-dry Pi deployment stores a session UUID in `session-id-pi.txt`. Resume it with `ppa deploy --resume <deployment-id>`; cross-runtime resumes are rejected before spawn and identify the correct adapter.
+Every non-dry Pi deployment stores a session UUID in `session-id-pi.txt`. Resume it with `ppa deploy <team> --resume <deployment-id>`; cross-runtime resumes are rejected before spawn and identify the correct adapter.
 
 The Agent API server is core-owned:
 
