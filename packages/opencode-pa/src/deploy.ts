@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -102,8 +102,16 @@ export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapte
     // Phase 2: inject the opencode activity normalizer so the Agent API
     // session hub streams structured ActivityEvents instead of raw JSONL.
     sessionNormalizer: opencodeJsonToActivityEvent,
+    sessionCommand: opencodeSessionCommand,
   };
 }
+
+export const opencodeSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, session }) => {
+  const args = ["run", "-m", model ?? session.model, "--dangerously-skip-permissions"];
+  if (sessionId) args.push("--session", sessionId);
+  args.push("--format", "json", prompt);
+  return { binary: "opencode", args };
+};
 
 export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
@@ -269,6 +277,7 @@ function detectOtherRuntimeSession(deployDir: string, expectedSessionFileName: s
     "session-id-claude.txt": { runtime: "claude", binary: "cpa" },
     "session-id-opencode.txt": { runtime: "opencode", binary: "opa" },
     "session-id-droid.txt": { runtime: "droid", binary: "dpa" },
+    "session-id-pi.txt": { runtime: "pi", binary: "ppa" },
   };
   for (const [fileName, runtime] of Object.entries(knownSessions)) {
     if (fileName !== expectedSessionFileName && existsSync(resolve(deployDir, fileName))) return runtime;

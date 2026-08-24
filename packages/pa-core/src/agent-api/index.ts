@@ -45,6 +45,9 @@ export interface AgentApiInstance {
 }
 
 export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance {
+  const hooks = opts.hooks
+    ? { ...opts.hooks, runtimeHooks: { ...(opts.hooks.runtimeHooks ?? {}), ...(opts.hooks.runtimeHooks?.opencode ? {} : { opencode: opts.hooks }) } }
+    : undefined;
   const app = new Hono();
   const ticketStore = new TicketStore(undefined, { privileged: false });
   const mutationAuth = opts.ticketMutationAuth ?? {
@@ -91,13 +94,28 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   // Phase 2: WebSocket session endpoint at /ws/session.
   // One SessionManager is shared across all connections; each connection
   // tracks its own active session id and auto-terminates on disconnect.
-  const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, devMode: opts.devMode === true, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
+  const sessionManager = new SessionManager({
+    normalizer: hooks?.sessionNormalizer,
+    runtimes: hooks?.runtimeHooks,
+    runtimeNormalizers: {
+      ...(hooks?.runtimeHooks?.opencode?.sessionNormalizer ? { opencode: hooks.runtimeHooks.opencode.sessionNormalizer } : {}),
+      ...(hooks?.runtimeHooks?.pi?.sessionNormalizer ? { pi: hooks.runtimeHooks.pi.sessionNormalizer } : {}),
+    },
+    runtimeCommands: {
+      ...(hooks?.runtimeHooks?.opencode?.sessionCommand ? { opencode: hooks.runtimeHooks.opencode.sessionCommand } : {}),
+      ...(hooks?.runtimeHooks?.pi?.sessionCommand ? { pi: hooks.runtimeHooks.pi.sessionCommand } : {}),
+    },
+    devMode: opts.devMode === true,
+    env: process.env,
+    ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}),
+  });
   app.get("/ws/session", upgradeWebSocket(() => {
     let activeSessionId: string | undefined;
     const pendingMessages: string[] = [];
     let sessionWs: { send(message: string): void; readyState: number } = { send(message: string) { pendingMessages.push(message); }, readyState: 3 };
     const sink = {
       send(event: SessionStreamEvent): void {
+        if (event.type === "end" || event.type === "error") activeSessionId = undefined;
         // WSContext.send is provided by @hono/node-ws at runtime; readyState 1 = OPEN.
         // Late sends after close are silently dropped by the sink guard below.
         try { sessionWs.send(JSON.stringify(event)); } catch { /* socket closed */ }
@@ -114,7 +132,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
           }
         }
       },
-      onMessage(event) {
+      async onMessage(event) {
         let parsed: Record<string, unknown>;
         try {
           parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
@@ -133,8 +151,15 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
             sink.send({ type: "error", message: "Missing prompt", timestamp: new Date().toISOString() });
             return;
           }
-          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
-          const result = sessionManager.start({ prompt, ...(model ? { model } : {}) }, sink);
+           const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+           const runtime = parseSessionRuntime(parsed["runtime"]);
+           if (parsed["runtime"] !== undefined && !runtime) {
+             sink.send({ type: "error", message: "runtime must be opencode or pi", timestamp: new Date().toISOString() });
+             return;
+           }
+            const selectedRuntime = runtime ?? "opencode";
+            try { await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
+            const result = sessionManager.start({ prompt, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
@@ -152,8 +177,16 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
             sink.send({ type: "error", message: "Missing sessionId or prompt", timestamp: new Date().toISOString() });
             return;
           }
-          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
-          const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}) }, sink);
+           const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+           const runtime = parseSessionRuntime(parsed["runtime"]);
+           if (parsed["runtime"] !== undefined && !runtime) {
+             sink.send({ type: "error", message: "runtime must be opencode or pi", timestamp: new Date().toISOString() });
+             return;
+           }
+            const selectedRuntime = runtime ?? "opencode";
+            if (!/^[A-Za-z0-9._:-]{1,256}$/.test(sessionId)) { sink.send({ type: "error", message: "Invalid sessionId", timestamp: new Date().toISOString() }); return; }
+            try { await hooks?.runtimeHooks?.[selectedRuntime]?.sessionPreflight?.(); } catch (error) { sink.send({ type: "error", message: error instanceof Error ? error.message : String(error), timestamp: new Date().toISOString() }); return; }
+            const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
@@ -188,7 +221,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
     };
   }));
   app.route("/", configRoutes());
-  app.route("/", deployControlRoutes(opts.hooks, sessionManager));
+  app.route("/", deployControlRoutes(hooks, sessionManager));
   app.route("/", deploymentsRoutes());
   app.route("/", deployRoutingRoutes());
   app.route("/", deployStatusRoutes());
@@ -244,6 +277,10 @@ function credentialsMatch(presented: string | undefined, configured: string | un
   const presentedDigest = createHash("sha256").update(presented, "utf8").digest();
   const configuredDigest = createHash("sha256").update(configured, "utf8").digest();
   return timingSafeEqual(presentedDigest, configuredDigest);
+}
+
+function parseSessionRuntime(value: unknown): "opencode" | "pi" | undefined {
+  return value === "opencode" || value === "pi" ? value : undefined;
 }
 
 export const createApp = createAgentApiApp;

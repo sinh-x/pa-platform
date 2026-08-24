@@ -167,7 +167,7 @@ deploy_modes:
     assert.match(primer, /opa status d-123456/);
     assert.match(primer, /opa registry complete d-123456/);
     assert.match(primer, /Project key `pa` remains unchanged/);
-    assert.doesNotMatch(primer, /CLAUDECODE/);
+    assert.match(primer, /Always `unset CLAUDECODE` before nested `opa deploy`/);
     assertNoBannedOpencodeOperationalReferences(primer);
   } finally {
     rmSync(root, { recursive: true, force: true });

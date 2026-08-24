@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, type ActivityEvent, normalizeActivityEvent } from "../../activity/index.js";
 import { getDeploymentDir } from "../../paths.js";
 import { nowUtc } from "../../time.js";
+import type { ApiRuntimeName } from "../../types.js";
+import type { CoreExecutionHooks } from "../../deploy/control.js";
 
 export type SessionStatus = "running" | "stopping";
 
@@ -12,6 +14,7 @@ export interface SessionRecord {
   status: SessionStatus;
   startedAt: string;
   deploymentId: string;
+  runtime: ApiRuntimeName;
 }
 
 export type SessionEventKind = "event" | "error" | "session-id" | "end";
@@ -35,9 +38,11 @@ export interface SessionSpawnOptions {
   deploymentId?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  runtime?: ApiRuntimeName;
 }
 
-export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string) => ActivityEvent;
+export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string, secrets?: string[]) => ActivityEvent;
+export type SessionCommandBuilder = (opts: SessionSpawnOptions & { session: SessionRecord }) => { binary: string; args: string[] };
 
 export interface SessionManagerOptions {
   maxSessions?: number;
@@ -71,6 +76,11 @@ export interface SessionManagerOptions {
    * to {@link resolveBinary}.
    */
   binaryPath?: string;
+  runtimes?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
+  runtimeNormalizers?: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
+  runtimeCommands?: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
+  onTerminal?: (sessionId: string) => void;
+  secretValues?: string[];
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
@@ -78,6 +88,13 @@ const DEFAULT_MODEL = "ollama-cloud/deepseek-v4-pro";
 const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_PROMPT_LENGTH = 128 * 1024;
 const DEFAULT_BINARY = "opencode";
+const DEFAULT_RUNTIME: ApiRuntimeName = "opencode";
+const MAX_STREAM_CARRY = 8192;
+const MAX_EVENT_BODY = 500;
+const MAX_SERIALIZED_EVENT = 8192;
+const MAX_STDERR = 2000;
+const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
+const SECRET_TEXT = [/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, /bearer\s+\S+/gi, /sk-[\w-]+/gi];
 
 /**
  * Environment variable consulted by {@link resolveBinary} when an explicit
@@ -133,6 +150,7 @@ interface ActiveSession {
   stderrBuffer?: string;
   terminated: boolean;
   terminateReason?: string;
+  secrets?: string[];
 }
 
 function readMaxSessionsFromEnv(): number {
@@ -156,6 +174,12 @@ export class SessionManager {
   private readonly maxPromptLength: number;
   private readonly devMode: boolean;
   private readonly binaryPath: string;
+  private readonly runtimes: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
+  private readonly runtimeNormalizers: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
+  private readonly runtimeCommands: Partial<Record<ApiRuntimeName, SessionCommandBuilder>>;
+  private readonly nativeSessionRuntimes = new Map<string, ApiRuntimeName>();
+  private readonly onTerminal?: (sessionId: string) => void;
+  private readonly secretValues: string[];
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -174,6 +198,11 @@ export class SessionManager {
       explicitPath: opts.binaryPath,
       env: this.env,
     });
+    this.runtimes = opts.runtimes ?? {};
+    this.runtimeNormalizers = opts.runtimeNormalizers ?? {};
+    this.runtimeCommands = opts.runtimeCommands ?? {};
+    this.onTerminal = opts.onTerminal;
+    this.secretValues = [...(opts.secretValues ?? collectSecrets(this.env))];
   }
 
   get limit(): number {
@@ -223,6 +252,8 @@ export class SessionManager {
     }
     const promptError = this.validatePromptLength(opts.prompt);
     if (promptError) return promptError;
+    const knownRuntime = this.nativeSessionRuntimes.get(opts.sessionId);
+    if (knownRuntime && knownRuntime !== (opts.runtime ?? DEFAULT_RUNTIME)) return { ok: false, error: `Session belongs to runtime ${knownRuntime}; resume it with '${runtimeBinary(knownRuntime)}'`, limit: this.maxSessions };
     return this.createSession(opts, sink);
   }
 
@@ -243,7 +274,7 @@ export class SessionManager {
    * server restart provide the only automatic bounds. Auto-expiry would be an
    * effort-M enhancement and is intentionally out of scope for now.
    */
-  register(deploymentId: string, model?: string): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+  register(deploymentId: string, model?: string, runtime: ApiRuntimeName = DEFAULT_RUNTIME): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }
@@ -255,6 +286,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
+      runtime,
     };
     const session: ActiveSession = {
       record,
@@ -276,6 +308,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
+      runtime: opts.runtime ?? DEFAULT_RUNTIME,
     };
     const session: ActiveSession = {
       record,
@@ -285,12 +318,22 @@ export class SessionManager {
       stdoutBuffer: "",
       stderrBuffer: "",
       terminated: false,
+      secrets: [...new Set([...this.secretValues, ...collectSecrets({ ...this.env, ...opts.env })])],
     };
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
+      const runtime = opts.runtime ?? DEFAULT_RUNTIME;
+      if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) {
+        this.sessions.delete(newId);
+        return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
+      }
+      const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
+      if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, record.runtime);
       this.spawnOpencode(session, opts);
     } catch (error) {
+      const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
+      if (nativeSessionId) this.nativeSessionRuntimes.delete(nativeSessionId);
       this.sessions.delete(newId);
       const rawMessage = error instanceof Error ? error.message : String(error);
       const isEnoent = error instanceof Error && (error as Error & { code?: string }).code === "ENOENT";
@@ -356,11 +399,10 @@ export class SessionManager {
   }
 
   private spawnOpencode(session: ActiveSession, opts: SessionSpawnOptions): void {
-    const args = ["run", "-m", opts.model ?? session.record.model, "--dangerously-skip-permissions"];
-    if (opts.sessionId) args.push("--session", opts.sessionId);
-    args.push("--format", "json");
-    args.push(opts.prompt);
-    const child = this.spawnFn(this.binaryPath, args, {
+    const runtime = opts.runtime ?? DEFAULT_RUNTIME;
+    const command = this.runtimeCommands[runtime]?.({ ...opts, session: session.record }) ?? defaultSessionCommand(runtime, this.binaryPath, opts, session.record);
+    const { binary, args } = command;
+    const child = this.spawnFn(binary, args, {
       cwd: opts.cwd ?? this.cwd,
       env: { ...this.env, ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -376,7 +418,7 @@ export class SessionManager {
   private handleStdout(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stdoutBuffer = (session.stdoutBuffer ?? "") + text;
+    session.stdoutBuffer = tail((session.stdoutBuffer ?? "") + text, MAX_STREAM_CARRY);
     const lines = session.stdoutBuffer.split("\n");
     session.stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -385,7 +427,7 @@ export class SessionManager {
   private handleStderr(session: ActiveSession, chunk: Buffer): void {
     if (session.terminated) return;
     const text = chunk.toString("utf-8");
-    session.stderrBuffer = (session.stderrBuffer ?? "") + text;
+    session.stderrBuffer = tail(redact((session.stderrBuffer ?? "") + text, this.sessionSecrets(session)), MAX_STDERR);
     const lines = session.stderrBuffer.split("\n");
     session.stderrBuffer = lines.pop() ?? "";
     for (const line of lines) this.processLine(session, line);
@@ -397,32 +439,54 @@ export class SessionManager {
     try {
       raw = JSON.parse(line) as Record<string, unknown>;
     } catch {
-      this.emitEvent(session, { type: "event", data: { kind: "text", body: line } });
+      this.emitEvent(session, { type: "event", data: { kind: "text", body: redact(line, this.sessionSecrets(session)).slice(0, MAX_EVENT_BODY) } });
       return;
     }
     session.sessionIdParser?.write(line);
     try {
-      const event = this.normalizer(raw, session.record.deploymentId);
+      const normalizer = this.runtimeNormalizers[session.record.runtime] ?? this.normalizer;
+      const event = normalizer(raw, session.record.deploymentId, this.sessionSecrets(session));
+      event.body = redact(event.body, this.sessionSecrets(session)).slice(0, MAX_EVENT_BODY);
       this.emitEvent(session, { type: "event", data: activityEventToData(event) });
     } catch {
-      this.emitEvent(session, { type: "event", data: raw });
+      this.emitEvent(session, { type: "event", data: boundedRecord(raw, this.sessionSecrets(session)) });
     }
   }
 
   private handleError(session: ActiveSession, error: Error & { code?: string }): void {
     if (session.terminated) return;
     const message = isEnoentError(error)
-      ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+      ? session.record.runtime === "opencode"
+        ? `opencode binary not found at "${this.binaryPath}" (ENOENT). Set PA_OPENCODE_BINARY or ensure opencode is on PATH.`
+        : `${session.record.runtime} binary not found (ENOENT). Ensure ${session.record.runtime} is on PATH.`
       : error.message;
     this.emitEvent(session, { type: "error", message });
     this.logLifecycle(session, "session_error", message);
+    this.finalize(session);
   }
 
   private handleClose(session: ActiveSession, code: number | null): void {
-    session.sessionIdParser?.flush();
+    if (session.stdoutBuffer?.trim()) this.processLine(session, session.stdoutBuffer);
+    if (session.stderrBuffer?.trim()) this.processLine(session, session.stderrBuffer);
+    session.stdoutBuffer = "";
+    session.stderrBuffer = "";
+    const nativeSessionId = session.sessionIdParser?.flush();
+    if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, session.record.runtime);
     if (session.terminated) return;
     this.emitEvent(session, { type: "end", data: { exitCode: code ?? 0, ...(session.terminateReason ? { reason: session.terminateReason } : {}) } });
     this.logLifecycle(session, "session_ended", `exitCode=${code ?? 0}`);
+    this.finalize(session);
+  }
+
+  private sessionSecrets(session: ActiveSession): string[] {
+    return session.secrets ?? this.secretValues;
+  }
+
+  private finalize(session: ActiveSession): void {
+    if (this.sessions.get(session.record.id) !== session) return;
+    this.sessions.delete(session.record.id);
+    session.sinks?.clear();
+    this.onTerminal?.(session.record.id);
   }
 
   private emitEvent(session: ActiveSession, event: Omit<SessionStreamEvent, "timestamp">): void {
@@ -478,8 +542,26 @@ export class SessionManager {
   }
 }
 
+function defaultSessionCommand(runtime: ApiRuntimeName, opencodeBinary: string, opts: SessionSpawnOptions, session: SessionRecord): { binary: string; args: string[] } {
+  const args = runtime === "opencode"
+    ? ["run", "-m", opts.model ?? session.model, "--dangerously-skip-permissions"]
+    : ["--print", "--mode", "json"];
+  if (opts.sessionId) args.push(runtime === "opencode" ? "--session" : "--session-id", opts.sessionId);
+  if (runtime === "opencode") args.push("--format", "json");
+  args.push(opts.prompt);
+  return { binary: runtime === "opencode" ? opencodeBinary : runtime, args };
+}
+
 function isEnoentError(error: Error & { code?: string }): boolean {
   return error.code === "ENOENT";
+}
+
+function isBoundedNativeSessionId(value: string): boolean {
+  return value.length <= 256 && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function runtimeBinary(runtime: ApiRuntimeName): string {
+  return runtime === "pi" ? "ppa" : runtime === "opencode" ? "opa" : runtime;
 }
 
 function activityEventToData(event: ActivityEvent): Record<string, unknown> {
@@ -533,3 +615,33 @@ function parseSessionIdLine(line: string): string | undefined {
   }
   return undefined;
 }
+
+function collectSecrets(env: NodeJS.ProcessEnv | undefined): string[] {
+  if (!env) return [];
+  return Object.entries(env).filter(([key, value]) => SECRET_KEY.test(key) && value !== undefined && value.length >= 8).map(([, value]) => value as string);
+}
+
+function redact(value: string, secrets: string[]): string {
+  let result = value;
+  for (const secret of secrets) if (secret) result = result.split(secret).join("[REDACTED]");
+  for (const pattern of SECRET_TEXT) result = result.replace(pattern, "[REDACTED]");
+  return result;
+}
+
+function boundedRecord(value: Record<string, unknown>, secrets: string[]): Record<string, unknown> {
+  const boundedValue = (item: unknown): unknown => {
+    if (typeof item === "string") {
+      const safe = redact(item, secrets);
+      return safe.length > MAX_EVENT_BODY ? `${safe.slice(0, MAX_EVENT_BODY - 3)}...` : safe;
+    }
+    if (Array.isArray(item)) return item.map(boundedValue);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, SECRET_KEY.test(key) ? "[REDACTED]" : boundedValue(child)]));
+    return item;
+  };
+  const bounded = boundedValue(value) as Record<string, unknown>;
+  if (JSON.stringify(bounded).length <= MAX_SERIALIZED_EVENT) return bounded;
+  const serialized = JSON.stringify(bounded);
+  return { kind: "text", body: `${serialized.slice(0, MAX_EVENT_BODY - 3)}...` };
+}
+
+function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }

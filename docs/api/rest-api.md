@@ -1204,6 +1204,7 @@ Trigger a deployment. Returns `202` on accepted/failed per the phone contract (n
 | `model` | string | no | Model override |
 | `teamModel` | string | no | Team model override |
 | `agentModel` | string | no | Agent model override |
+| `runtime` | string | no | Runtime adapter: `pi` or `opencode`; omitted defaults to OpenCode. |
 | `resume` | string | no | Deployment id to resume |
 | `autonomy` | string | no | `low`, `medium`, or `high` |
 | `timeout` | number | no | Seconds; resolved via `withResolvedDeployTimeout` |
@@ -1234,6 +1235,22 @@ On success/pending with a `deploymentId`, the deploy session is registered with 
 | 501 | `NOT_IMPLEMENTED` | No adapter `deploy` hook configured |
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-control.ts:9`
+
+An unsupported `runtime` value returns `400 BAD_REQUEST` before any runtime process is spawned. Select Pi explicitly with:
+
+```bash
+curl -X POST http://127.0.0.1:9848/api/deploy \
+  -H 'content-type: application/json' \
+  -d '{"team":"builder","mode":"implement","runtime":"pi","background":true}'
+```
+
+Omit `runtime` to retain the existing OpenCode behavior:
+
+```bash
+curl -X POST http://127.0.0.1:9848/api/deploy \
+  -H 'content-type: application/json' \
+  -d '{"team":"builder","mode":"implement","background":true}'
+```
 
 ### 36. POST /api/self-update
 

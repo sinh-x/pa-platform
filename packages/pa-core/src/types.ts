@@ -1,6 +1,7 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
-export type RuntimeName = "claude" | "opencode" | "droid";
+export type RuntimeName = "claude" | "opencode" | "droid" | "pi";
+export type ApiRuntimeName = "opencode" | "pi";
 export type ProviderName = string;
 export type ModelName = string;
 
@@ -22,6 +23,7 @@ export interface RuntimeConfigMap {
   droid?: RuntimeOverrides;
   opencode?: RuntimeOverrides;
   claude?: RuntimeOverrides;
+  pi?: RuntimeOverrides;
 }
 
 export interface DeployMode {

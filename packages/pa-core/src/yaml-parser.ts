@@ -66,7 +66,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
 function parseRuntimes(raw: Record<string, unknown> | undefined): RuntimeConfigMap | undefined {
   if (!raw) return undefined;
   const result: RuntimeConfigMap = {};
-  for (const runtime of ["droid", "opencode", "claude"] as const) {
+  for (const runtime of ["droid", "opencode", "claude", "pi"] as const) {
     const block = raw[runtime] as Record<string, unknown> | undefined;
     if (!block) continue;
     result[runtime] = {
