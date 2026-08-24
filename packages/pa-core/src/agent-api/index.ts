@@ -91,7 +91,16 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   // Phase 2: WebSocket session endpoint at /ws/session.
   // One SessionManager is shared across all connections; each connection
   // tracks its own active session id and auto-terminates on disconnect.
-  const sessionManager = new SessionManager({ normalizer: opts.hooks?.sessionNormalizer, devMode: opts.devMode === true, ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}) });
+  const sessionManager = new SessionManager({
+    normalizer: opts.hooks?.sessionNormalizer,
+    runtimes: opts.hooks?.runtimeHooks,
+    runtimeNormalizers: {
+      ...(opts.hooks?.runtimeHooks?.opencode?.sessionNormalizer ? { opencode: opts.hooks.runtimeHooks.opencode.sessionNormalizer } : {}),
+      ...(opts.hooks?.runtimeHooks?.pi?.sessionNormalizer ? { pi: opts.hooks.runtimeHooks.pi.sessionNormalizer } : {}),
+    },
+    devMode: opts.devMode === true,
+    ...(opts.sessionSpawnFn ? { spawnFn: opts.sessionSpawnFn } : {}),
+  });
   app.get("/ws/session", upgradeWebSocket(() => {
     let activeSessionId: string | undefined;
     const pendingMessages: string[] = [];
@@ -133,8 +142,13 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
             sink.send({ type: "error", message: "Missing prompt", timestamp: new Date().toISOString() });
             return;
           }
-          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
-          const result = sessionManager.start({ prompt, ...(model ? { model } : {}) }, sink);
+           const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+           const runtime = parseSessionRuntime(parsed["runtime"]);
+           if (parsed["runtime"] !== undefined && !runtime) {
+             sink.send({ type: "error", message: "runtime must be opencode or pi", timestamp: new Date().toISOString() });
+             return;
+           }
+           const result = sessionManager.start({ prompt, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
@@ -152,8 +166,13 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
             sink.send({ type: "error", message: "Missing sessionId or prompt", timestamp: new Date().toISOString() });
             return;
           }
-          const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
-          const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}) }, sink);
+           const model = typeof parsed["model"] === "string" ? parsed["model"] : undefined;
+           const runtime = parseSessionRuntime(parsed["runtime"]);
+           if (parsed["runtime"] !== undefined && !runtime) {
+             sink.send({ type: "error", message: "runtime must be opencode or pi", timestamp: new Date().toISOString() });
+             return;
+           }
+           const result = sessionManager.resume({ prompt, sessionId, ...(model ? { model } : {}), ...(runtime ? { runtime } : {}) }, sink);
           if (result.ok) {
             activeSessionId = result.session.id;
             sink.send({ type: "session-id", sessionId: result.session.id, timestamp: new Date().toISOString() });
@@ -244,6 +263,10 @@ function credentialsMatch(presented: string | undefined, configured: string | un
   const presentedDigest = createHash("sha256").update(presented, "utf8").digest();
   const configuredDigest = createHash("sha256").update(configured, "utf8").digest();
   return timingSafeEqual(presentedDigest, configuredDigest);
+}
+
+function parseSessionRuntime(value: unknown): "opencode" | "pi" | undefined {
+  return value === "opencode" || value === "pi" ? value : undefined;
 }
 
 export const createApp = createAgentApiApp;

@@ -154,6 +154,13 @@ function renderActiveBulletins(runtime: RuntimeName): string {
         "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
         "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
       ].join("\n");
+    case "pi":
+      return [
+        "## Active Bulletins",
+        "Before starting work, run `ppa bulletin list`.",
+        "If any active bulletin blocks this team or all teams, stop immediately and report the blocking bulletin. Do not continue until it is resolved.",
+        "If there are no blocking bulletins, proceed with the startup priority and ticket-alignment checks.",
+      ].join("\n");
     default:
       return "";
   }
@@ -170,7 +177,7 @@ const PROCEDURE_CATALOG: ReadonlyArray<readonly [string, string]> = [
 ];
 
 function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runtime: RuntimeName): string {
-  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid" && runtime !== "pi") return "";
   const intro = runtime === "claude"
     ? "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content and take precedence over any Claude Code skills loaded from `~/.claude/skills`."
     : "Use the injected pa-platform skills below as the canonical operational procedures for this run. They are rendered from packaged `skills/` content, not external skill folders.";
@@ -202,7 +209,7 @@ function renderAvailableProcedures(skills: SkillEntry[], skillsDir: string, runt
 }
 
 function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativePath: string) => string | undefined) | undefined, runtime: RuntimeName): string {
-  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid" && runtime !== "pi") return "";
   if (globalDocs.length === 0) return "";
   const lines = ["## Project Agent Guides"];
   for (const doc of globalDocs) {
@@ -256,7 +263,7 @@ function isPlaceholderTemplate(body: string): boolean {
 }
 
 function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode | undefined, runtime: RuntimeName): string {
-  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid") return "";
+  if (runtime !== "opencode" && runtime !== "claude" && runtime !== "droid" && runtime !== "pi") return "";
   const executionStyle = mode?.solo === true ? "solo"
     : mode?.solo === false ? "team"
     : (mode?.agents?.length ?? teamConfig.agents.length) <= 1 ? "solo" : "team";
@@ -291,6 +298,15 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       lines.push("This is a team-mode deployment: spawn sub-agents via the Task tool when the team plan calls for it, and keep ticket comments as the durable handoff channel.");
     }
     return lines.join("\n");
+  }
+  if (runtime === "pi") {
+    return [
+      "## Deployment Instructions",
+      "Use `ppa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use only tools exposed in the current Pi session.",
+      lifecycleInstruction,
+      "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `ppa registry complete` or `ppa registry update` when the run finishes.",
+      "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
+    ].join("\n");
   }
   const lines = [
     "## Deployment Instructions",
@@ -375,6 +391,14 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
       .replace(/\bAskUserQuestion\b/g, "AskUser tool")
       .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Task sub-agent");
+  }
+  if (runtime === "pi") {
+    return [
+      "Runtime: Pi via `ppa`.",
+      "Use `ppa` for PA platform deployment and workflow commands; it invokes the shared pa-core command set with the canonical `pi` runtime.",
+      "Use `pa-core serve` for Agent API server lifecycle; `ppa` is a deployment adapter, not the server owner.",
+      "Pi deployments use the Pi CLI and retain OpenCode as the default API runtime when no runtime is selected.",
+    ].join("\n");
   }
   return content;
 }

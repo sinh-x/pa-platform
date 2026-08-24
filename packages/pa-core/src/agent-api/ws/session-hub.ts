@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, type ActivityEvent, normalizeActivityEvent } from "../../activity/index.js";
 import { getDeploymentDir } from "../../paths.js";
 import { nowUtc } from "../../time.js";
+import type { ApiRuntimeName } from "../../types.js";
+import type { CoreExecutionHooks } from "../../deploy/control.js";
 
 export type SessionStatus = "running" | "stopping";
 
@@ -12,6 +14,7 @@ export interface SessionRecord {
   status: SessionStatus;
   startedAt: string;
   deploymentId: string;
+  runtime: ApiRuntimeName;
 }
 
 export type SessionEventKind = "event" | "error" | "session-id" | "end";
@@ -35,6 +38,7 @@ export interface SessionSpawnOptions {
   deploymentId?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  runtime?: ApiRuntimeName;
 }
 
 export type SessionEventNormalizer = (raw: Record<string, unknown>, deployId: string) => ActivityEvent;
@@ -71,6 +75,8 @@ export interface SessionManagerOptions {
    * to {@link resolveBinary}.
    */
   binaryPath?: string;
+  runtimes?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
+  runtimeNormalizers?: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
 }
 
 const DEFAULT_MAX_SESSIONS = 3;
@@ -78,6 +84,7 @@ const DEFAULT_MODEL = "ollama-cloud/deepseek-v4-pro";
 const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_PROMPT_LENGTH = 128 * 1024;
 const DEFAULT_BINARY = "opencode";
+const DEFAULT_RUNTIME: ApiRuntimeName = "opencode";
 
 /**
  * Environment variable consulted by {@link resolveBinary} when an explicit
@@ -156,6 +163,8 @@ export class SessionManager {
   private readonly maxPromptLength: number;
   private readonly devMode: boolean;
   private readonly binaryPath: string;
+  private readonly runtimes: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
+  private readonly runtimeNormalizers: Partial<Record<ApiRuntimeName, SessionEventNormalizer>>;
   private nextId = 1;
 
   constructor(opts: SessionManagerOptions = {}) {
@@ -174,6 +183,8 @@ export class SessionManager {
       explicitPath: opts.binaryPath,
       env: this.env,
     });
+    this.runtimes = opts.runtimes ?? {};
+    this.runtimeNormalizers = opts.runtimeNormalizers ?? {};
   }
 
   get limit(): number {
@@ -255,6 +266,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
+      runtime: DEFAULT_RUNTIME,
     };
     const session: ActiveSession = {
       record,
@@ -276,6 +288,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
+      runtime: opts.runtime ?? DEFAULT_RUNTIME,
     };
     const session: ActiveSession = {
       record,
@@ -289,6 +302,11 @@ export class SessionManager {
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
+      const runtime = opts.runtime ?? DEFAULT_RUNTIME;
+      if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) {
+        this.sessions.delete(newId);
+        return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
+      }
       this.spawnOpencode(session, opts);
     } catch (error) {
       this.sessions.delete(newId);
@@ -356,11 +374,15 @@ export class SessionManager {
   }
 
   private spawnOpencode(session: ActiveSession, opts: SessionSpawnOptions): void {
-    const args = ["run", "-m", opts.model ?? session.record.model, "--dangerously-skip-permissions"];
+    const runtime = opts.runtime ?? DEFAULT_RUNTIME;
+    const args = runtime === "opencode"
+      ? ["run", "-m", opts.model ?? session.record.model, "--dangerously-skip-permissions"]
+      : ["--mode", "json"];
     if (opts.sessionId) args.push("--session", opts.sessionId);
     args.push("--format", "json");
     args.push(opts.prompt);
-    const child = this.spawnFn(this.binaryPath, args, {
+    const binary = runtime === "opencode" ? this.binaryPath : runtime;
+    const child = this.spawnFn(binary, args, {
       cwd: opts.cwd ?? this.cwd,
       env: { ...this.env, ...opts.env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -402,7 +424,8 @@ export class SessionManager {
     }
     session.sessionIdParser?.write(line);
     try {
-      const event = this.normalizer(raw, session.record.deploymentId);
+      const normalizer = this.runtimeNormalizers[session.record.runtime] ?? this.normalizer;
+      const event = normalizer(raw, session.record.deploymentId);
       this.emitEvent(session, { type: "event", data: activityEventToData(event) });
     } catch {
       this.emitEvent(session, { type: "event", data: raw });

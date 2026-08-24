@@ -11,11 +11,13 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
     if ("error" in parsed) return c.json({ error: parsed.error, code: "BAD_REQUEST" }, 400);
     const resolved = withResolvedDeployTimeout(parsed.request);
     if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
-    if (!hooks.deploy) return c.json({ error: "Deployment execution requires an adapter hook", code: "NOT_IMPLEMENTED" }, 501);
-
     try {
+      const selectedRuntime = resolved.request.runtime ?? "opencode";
       const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
-      const result = await hooks.deploy(deployRequest);
+      const selectedHooks = selectedRuntime === "opencode" ? hooks.runtimeHooks?.opencode ?? hooks : hooks.runtimeHooks?.pi;
+      if (!selectedHooks) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);
+      if (!selectedHooks.deploy) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);
+      const result = await selectedHooks.deploy(deployRequest);
       const response = toPhoneDeployResponse({ team: deployRequest.team, mode: deployRequest.mode ?? null, ...result });
       // PAP-131 FR2: register deploy session with SessionManager on success/pending.
       // Best-effort — a missing deploymentId or at-capacity hub must not fail the deploy.

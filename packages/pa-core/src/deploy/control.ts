@@ -1,4 +1,4 @@
-import type { AutonomyLevel } from "../types.js";
+import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
 import type { SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
@@ -10,6 +10,7 @@ const VALID_AUTONOMY_LEVELS = new Set<string>(["low", "medium", "high"]);
 
 export interface DeployRequest {
   team: string;
+  runtime?: ApiRuntimeName;
   mode?: string;
   objective?: string;
   evaluateDeployment?: string;
@@ -66,6 +67,7 @@ export interface CoreExecutionHooks {
    * the /ws/session WebSocket endpoint.
    */
   sessionNormalizer?: SessionEventNormalizer;
+  runtimeHooks?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
 }
 
 export interface SanitizeResult {
@@ -85,6 +87,7 @@ export interface ValidateDeployResult {
 
 export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string } {
   const team = stringField(body, "team");
+  const runtime = stringField(body, "runtime");
   const mode = stringField(body, "mode");
   const objective = stringField(body, "objective");
   const evaluateDeployment = stringField(body, "evaluateDeployment");
@@ -104,6 +107,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   const validate = booleanField(body, "validate");
 
   if (!team?.trim()) return { error: "team is required" };
+  if (runtime && runtime !== "opencode" && runtime !== "pi") return { error: "runtime must be opencode or pi" };
   if (!isSafeIdentifier(team)) return { error: "Invalid team name" };
   if (mode && !isSafeIdentifier(mode)) return { error: "Invalid mode name" };
   if (evaluateDeployment && !/^d-[a-z0-9]{6}$/.test(evaluateDeployment)) return { error: "Invalid evaluate deployment id" };
@@ -133,6 +137,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (dryRun && background) return { error: "--background and --dry-run are mutually exclusive" };
 
   const request: DeployRequest = { team };
+  if (runtime) request.runtime = runtime as ApiRuntimeName;
   if (mode) request.mode = mode;
   if (sanitizedObjective) request.objective = sanitizedObjective;
   if (evaluateDeployment) request.evaluateDeployment = evaluateDeployment;
