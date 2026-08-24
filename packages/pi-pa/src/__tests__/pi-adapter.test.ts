@@ -5,7 +5,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { composePpaExecutionHooks } from "../deploy.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -35,6 +37,29 @@ test("checks the Pi version and uses the 0.80.8 JSON argument contract per deplo
   const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0;
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.80.8"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { assert.deepEqual(args.slice(0, 5), ["--print", "--mode", "json", "--session-id", "00000000-0000-0000-0000-000000000001"]); assert.ok(!args.includes("--json")); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
   await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" }); await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "foreground" }); assert.equal(probes, 2);
+});
+
+test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
+  let opencodeCalls = 0;
+  let piCalls = 0;
+  const hooks = composePpaExecutionHooks(
+    { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
+    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } },
+  );
+
+  const cliCode = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "ppa" });
+  assert.equal(cliCode, 0);
+  assert.equal(piCalls, 1);
+  assert.equal(opencodeCalls, 0);
+
+  const api = createAgentApiApp({ hooks });
+  const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
+  const explicitPi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "pi" }) });
+  assert.equal(omitted.status, 202);
+  assert.equal(explicitPi.status, 202);
+  assert.equal(opencodeCalls, 1);
+  assert.equal(piCalls, 2);
+  api.cleanup();
 });
 
 test("normalizes additive, malformed, redacted, and bounded Pi events", () => {

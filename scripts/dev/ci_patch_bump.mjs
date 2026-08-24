@@ -5,6 +5,7 @@ const VERSION_FILES = [
   "package.json",
   "packages/pa-core/package.json",
   "packages/opencode-pa/package.json",
+  "packages/pi-pa/package.json",
 ];
 
 const args = new Set(process.argv.slice(2).filter((arg) => arg !== "--"));

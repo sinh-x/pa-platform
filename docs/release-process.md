@@ -8,7 +8,7 @@ After CI passes for a PR-originated push to `develop`, the `version-bump` workfl
 
 The auto bump path is intentionally not a release path. It does not generate a changelog, create a release commit, create a git tag, or push tags.
 
-The CI helper updates `package.json`, `packages/pa-core/package.json`, and `packages/opencode-pa/package.json` together. It does not edit `pnpm-lock.yaml` or `flake.nix`; Nix package builds read the top-level package version from `package.json`, so an auto patch bump changes the derivation version without requiring a `pnpmDeps.hash` refresh unless dependency or lockfile content changes separately.
+The CI helper updates `package.json`, `packages/pa-core/package.json`, `packages/opencode-pa/package.json`, and `packages/pi-pa/package.json` together. It does not edit `pnpm-lock.yaml` or `flake.nix`; Nix package builds read the top-level package version from `package.json`, so an auto patch bump changes the derivation version without requiring a `pnpmDeps.hash` refresh unless dependency or lockfile content changes separately.
 
 ## Manual Release
 

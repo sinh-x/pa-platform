@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
@@ -14,6 +14,9 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request) => deployWithPi(request, adapter), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
+export function composePpaExecutionHooks(opencodeHooks: CoreExecutionHooks, piHooks: CoreExecutionHooks = createDefaultPiHooks()): CoreExecutionHooks {
+  return composeRuntimeHooks(opencodeHooks, piHooks, "pi");
+}
 
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter()): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
