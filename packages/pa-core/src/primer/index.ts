@@ -350,7 +350,7 @@ const PA_CLI_SUBCOMMANDS = [
 
 const PA_CLI_COMMAND_RE = new RegExp(`(^|[\\s\`'"(=:{])pa(?=\\s+(?:${PA_CLI_SUBCOMMANDS})\\b)`, "gm");
 const CLAUDECODE_COMMAND_PREFIX_RE = new RegExp(`(^|[\\s\`'"(=:{])(?:unset\\s+CLAUDECODE|CLAUDECODE=(?:"[^"]*"|'[^']*'|\\S+))\\s*(?:&&\\s*)?(?=pa\\s+(?:${PA_CLI_SUBCOMMANDS})\\b)`, "gm");
-const CLAUDECODE_PROSE_LINE_RE = /^.*CLAUDECODE.*(?:\n|$)/gm;
+const CLAUDECODE_PROSE_LINE_RE = /^\s*(?:unset\s+CLAUDECODE|CLAUDECODE=(?:"[^"]*"|'[^']*'|\S+))\s*(?:&&\s*)?(?:pa|opa|cpa|dpa|ppa)\s+(?:deploy|status|registry|ticket|board|bulletin)\b.*(?:\n|$)/gm;
 const EXTERNAL_CLAUDE_SKILLS_PATH_RE = /(?:~|\/home\/[^\s"`<>]+)\/\.claude\/skills/g;
 
 function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
@@ -366,7 +366,9 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bpa command\b/g, "opa command")
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
       .replace(/\bAskUserQuestion\b/g, "direct user question")
-      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "opencode-exposed tools");
+      .replace(/\bTeamCreate\b/g, "team coordination capability")
+      .replace(/\bSendMessage\b/g, "durable ticket-comment handoff")
+      .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
   if (runtime === "claude") {
     return content
@@ -390,7 +392,9 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bpa command\b/g, "dpa command")
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
       .replace(/\bAskUserQuestion\b/g, "AskUser tool")
-      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Task sub-agent");
+      .replace(/\bTeamCreate\b/g, "Task sub-agent creation")
+      .replace(/\bSendMessage\b/g, "durable ticket-comment handoff")
+      .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
   if (runtime === "pi") {
     return content
@@ -404,7 +408,9 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bpa command\b/g, "ppa command")
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills")
       .replace(/\bAskUserQuestion\b/g, "a direct user question")
-      .replace(/\bTeamCreate\b|\bSendMessage\b|\bScheduleWakeup\b/g, "Pi-exposed workflow guidance");
+      .replace(/\bTeamCreate\b/g, "team coordination capability")
+      .replace(/\bSendMessage\b/g, "durable ticket-comment handoff")
+      .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
   return content;
 }

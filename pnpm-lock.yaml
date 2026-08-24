@@ -74,6 +74,9 @@ importers:
       '@pa-platform/pa-core':
         specifier: workspace:*
         version: link:../pa-core
+      '@pa-platform/pi-pa':
+        specifier: workspace:*
+        version: link:../pi-pa
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -118,6 +121,9 @@ importers:
 
   packages/pi-pa:
     dependencies:
+      '@pa-platform/opencode-pa':
+        specifier: workspace:*
+        version: link:../opencode-pa
       '@pa-platform/pa-core':
         specifier: workspace:*
         version: link:../pa-core

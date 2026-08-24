@@ -68,6 +68,7 @@ export interface CoreExecutionHooks {
    */
   sessionNormalizer?: SessionEventNormalizer;
   sessionCommand?: SessionCommandBuilder;
+  sessionPreflight?(): Promise<void> | void;
   runtimeHooks?: Partial<Record<ApiRuntimeName, CoreExecutionHooks>>;
 }
 

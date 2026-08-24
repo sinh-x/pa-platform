@@ -309,7 +309,6 @@ export class SessionManager {
       stderrBuffer: "",
       terminated: false,
     };
-    if (opts.sessionId) this.nativeSessionRuntimes.set(opts.sessionId, record.runtime);
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
@@ -319,6 +318,7 @@ export class SessionManager {
         return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
       }
       this.spawnOpencode(session, opts);
+      if (opts.sessionId && isBoundedNativeSessionId(opts.sessionId)) this.nativeSessionRuntimes.set(opts.sessionId, record.runtime);
     } catch (error) {
       this.sessions.delete(newId);
       const rawMessage = error instanceof Error ? error.message : String(error);
@@ -530,6 +530,10 @@ function defaultSessionCommand(runtime: ApiRuntimeName, opencodeBinary: string, 
 
 function isEnoentError(error: Error & { code?: string }): boolean {
   return error.code === "ENOENT";
+}
+
+function isBoundedNativeSessionId(value: string): boolean {
+  return value.length <= 256 && /^[A-Za-z0-9._:-]+$/.test(value);
 }
 
 function activityEventToData(event: ActivityEvent): Record<string, unknown> {

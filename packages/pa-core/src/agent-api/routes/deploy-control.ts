@@ -14,7 +14,7 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
     try {
       const selectedRuntime = resolved.request.runtime ?? "opencode";
       const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
-      const selectedHooks = selectedRuntime === "opencode" ? hooks.runtimeHooks?.opencode ?? hooks : hooks.runtimeHooks?.pi;
+       const selectedHooks = hooks.runtimeHooks?.[selectedRuntime];
       if (!selectedHooks) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);
       if (!selectedHooks.deploy) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);
       const result = await selectedHooks.deploy(deployRequest);
