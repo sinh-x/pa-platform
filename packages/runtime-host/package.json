@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
+    "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm --filter @pa-platform/opencode-pa build && corepack pnpm --filter @pa-platform/pi-pa build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@pa-platform/opencode-pa": "workspace:*",
