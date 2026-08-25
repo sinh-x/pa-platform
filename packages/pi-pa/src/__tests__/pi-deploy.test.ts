@@ -26,11 +26,12 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
     "  - id: implement",
     "    label: Implement",
   ].join("\n") + "\n");
-  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  delete process.env["PA_MAX_RUNTIME"];
   return fn(root).finally(() => {
     closeDb();
     for (const [key, value] of Object.entries(previous)) restore(key, value);
@@ -67,6 +68,7 @@ test("new foreground Pi deployments omit the adapter deadline but retain timeout
     assert.equal(result.status, "success");
     assert.ok(captured);
     assert.equal(captured.mode, "foreground");
+    assert.equal(Object.hasOwn(captured, "timeoutMs"), false);
     assert.equal(captured.timeoutMs, undefined);
     assertTimeoutMetadata(captured, 1800);
   });
@@ -79,6 +81,7 @@ test("new background Pi deployments omit the adapter deadline while retaining su
     assert.equal(result.status, "success");
     assert.ok(captured);
     assert.equal(captured.mode, "background");
+    assert.equal(Object.hasOwn(captured, "timeoutMs"), false);
     assert.equal(captured.timeoutMs, undefined);
     assertTimeoutMetadata(captured, 2400);
   });
