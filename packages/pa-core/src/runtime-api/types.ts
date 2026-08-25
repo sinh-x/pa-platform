@@ -27,6 +27,7 @@ export interface SpawnOpts {
   logFile?: string;
   sessionName?: string;
   sessionId?: string;
+  executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 
 export interface ResumeOpts extends SpawnOpts {

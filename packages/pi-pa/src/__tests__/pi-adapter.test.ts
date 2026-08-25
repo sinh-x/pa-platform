@@ -51,6 +51,41 @@ test("uses interactive Pi arguments for foreground and JSON arguments for backgr
   assert.ok(!invocations[1]?.includes("--json"));
 });
 
+test("managed Pi invocations disable discovery and load only plan resources", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  const invocations: string[][] = [];
+  const adapter = new PiAdapter({
+    cwd: tmpdir(),
+    versionProbe: () => "0.80.8",
+    runCommand: (args, options) => {
+      invocations.push(args);
+      assert.equal(options.cwd, dir);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  await adapter.spawn({
+    primerPath: primer,
+    deployId: "d-managed",
+    mode: "background",
+    executionPlan: {
+      runtime: "pi",
+      team: "builder",
+      mode: "implement",
+      repositoryCwd: dir,
+      ticketRequired: false,
+      objective: "work",
+      skills: [{ name: "pa-cli", injectAs: "reference", path: join(dir, "pa-cli", "SKILL.md") }],
+      memoryDocuments: [],
+      environment: {},
+      timeoutSeconds: 60,
+      lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
+    },
+  });
+  assert.deepEqual(invocations[0]?.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocations[0]?.[4], "--no-skills", "--no-extensions", "--skill", join(dir, "pa-cli", "SKILL.md")]);
+});
+
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
   let opencodeCalls = 0;
   let piCalls = 0;

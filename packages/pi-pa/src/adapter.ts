@@ -87,12 +87,19 @@ export class PiAdapter implements RuntimeAdapter {
     const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
     if (opts.model) args.push("--model", opts.model);
     if (opts.env?.["PA_PROVIDER"]) args.push("--provider", opts.env["PA_PROVIDER"]);
+    const plan = opts.executionPlan;
+    const cwd = plan?.repositoryCwd ?? this.cwd;
+    if (plan) {
+      args.push("--no-skills", "--no-extensions");
+      for (const skill of plan.skills) args.push("--skill", skill.path);
+      if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
+    }
     args.push(readFileSync(opts.primerPath, "utf8"));
     const env = { ...this.env, ...opts.env };
     const secrets = [...new Set([...this.secretValues, ...Object.entries(env).filter(([key, value]) => SECRET_KEY.test(key) && value !== undefined && value.length >= 8).map(([, value]) => value!)])];
     const result = this.runCommand
-      ? await this.runCommand(args, { cwd: this.cwd, env })
-      : await runPi(args, this.cwd, env, opts, id, secrets, this.supervision, interactive);
+      ? await this.runCommand(args, { cwd, env })
+      : await runPi(args, cwd, env, opts, id, secrets, this.supervision, interactive);
     if (this.runCommand && !interactive) {
       persistOutput(opts, result.stdout, result.stderr, secrets);
     }

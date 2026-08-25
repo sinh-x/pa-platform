@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
@@ -26,6 +26,22 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const provider = request.provider ?? mode?.runtimes?.pi?.provider ?? team.runtimes?.pi?.provider;
   const model = request.model ?? mode?.runtimes?.pi?.model ?? team.runtimes?.pi?.model;
   const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
+  let plan;
+  try {
+    plan = resolveExecutionPlan({
+      request: { ...request, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      teamConfig: team,
+      mode,
+      runtime: "pi",
+      deploymentId,
+      deploymentDir: deployDir,
+      activityLogPath: paths.activityLogPath,
+      environment: env,
+      timeoutSeconds: timeout.timeout,
+    });
+  } catch (error) {
+    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+  }
   const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: mode?.id, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${request.mode ?? team.default_mode ?? "default"}\nticket_id: ${request.ticket ?? "none"}\n</deployment-context>` });
   const primerPath = resolve(deployDir, "primer.md"); writeFileSync(primerPath, primer, "utf8"); process.stdout.write(`Deployment: ${deploymentId}\n`);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name}` }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
@@ -46,7 +62,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   emitStartedEvent({ deploymentId, team: team.name, mode: request.mode ?? team.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: timeout.timeout });
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const result = prior ? await adapter.resume({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId }) : await adapter.spawn({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId });
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
+    const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.sessionId !== sessionId || result.metadata?.["sessionId"] !== sessionId) throw new Error("Pi adapter returned a session id different from the persisted session id");
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
