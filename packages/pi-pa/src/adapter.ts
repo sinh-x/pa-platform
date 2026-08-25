@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 
 const MAX_BODY = 500;
 const MAX_STDERR = 2000;
@@ -90,9 +91,10 @@ export class PiAdapter implements RuntimeAdapter {
     finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
     const interactive = opts.mode === "foreground";
+    const normalized = normalizePiRuntimeConfig(opts.env?.["PA_PROVIDER"], opts.model);
     const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
-    if (opts.model) args.push("--model", opts.model);
-    if (opts.env?.["PA_PROVIDER"]) args.push("--provider", opts.env["PA_PROVIDER"]);
+    if (normalized.model) args.push("--model", normalized.model);
+    if (normalized.provider) args.push("--provider", normalized.provider);
     const plan = opts.executionPlan;
     const cwd = plan?.repositoryCwd ?? this.cwd;
     if (plan) {

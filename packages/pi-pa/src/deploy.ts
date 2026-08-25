@@ -4,11 +4,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
+import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
+  const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"], model);
   const args = ["--print", "--mode", "json", "--session-id", sessionId ?? session.id];
-  if (model) args.push("--model", model);
-  if (env?.["PA_PROVIDER"]) args.push("--provider", env["PA_PROVIDER"]);
+  if (normalized.model) args.push("--model", normalized.model);
+  if (normalized.provider) args.push("--provider", normalized.provider);
   args.push(prompt);
   return { binary: "pi", args };
 };
@@ -21,8 +23,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
   const runtimeConfig = resolveRuntimeConfig({ runtime: "pi", request, team, mode });
-  const provider = runtimeConfig.provider;
-  const model = runtimeConfig.model;
+  const { provider, model } = normalizePiRuntimeConfig(runtimeConfig.provider, runtimeConfig.model);
   const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let plan;
   try {

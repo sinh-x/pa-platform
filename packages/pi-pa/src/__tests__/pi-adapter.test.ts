@@ -50,6 +50,16 @@ test("uses interactive Pi arguments for foreground and JSON arguments for backgr
   assert.ok(!invocations[1]?.includes("--json"));
 });
 
+test("managed Pi invocations normalize OpenAI provider and model arguments", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-normalize-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  let invocation: string[] = [];
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: (args) => { invocation = args; return { status: 0, stdout: "", stderr: "" }; } });
+  await adapter.spawn({ primerPath: primer, deployId: "d-normalize", mode: "background", model: "openai/gpt-5.6-luna", env: { PA_PROVIDER: "openai" } });
+  assert.deepEqual(invocation.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocation[4], "--model", "gpt-5.6-luna", "--provider", "openai-codex"]);
+});
+
 test("reuses a successful configurable version preflight and preserves timeout failures", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-preflight-"));
   const primer = join(dir, "primer.md");
