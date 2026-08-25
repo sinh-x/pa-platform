@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
@@ -23,8 +23,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   if ("error" in timeout) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: timeout.error };
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
-  const provider = request.provider ?? mode?.runtimes?.pi?.provider ?? team.runtimes?.pi?.provider;
-  const model = request.model ?? mode?.runtimes?.pi?.model ?? team.runtimes?.pi?.model;
+  const runtimeConfig = resolveRuntimeConfig({ runtime: "pi", request, team, mode });
+  const provider = runtimeConfig.provider;
+  const model = runtimeConfig.model;
   const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let plan;
   try {

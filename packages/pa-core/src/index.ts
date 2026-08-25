@@ -20,6 +20,7 @@ export * from "./sensitive-patterns.js";
 export * from "./repo-health/index.js";
 export * from "./cli/index.js";
 export * from "./deploy/index.js";
+export * from "./deploy/runtime-config.js";
 export * from "./agent-api/index.js";
 export * from "./serve-lifecycle.js";
 export * from "./semantic/index.js";

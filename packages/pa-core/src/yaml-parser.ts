@@ -69,6 +69,8 @@ function parseRuntimes(raw: Record<string, unknown> | undefined): RuntimeConfigM
   for (const runtime of ["droid", "opencode", "claude", "pi"] as const) {
     const block = raw[runtime] as Record<string, unknown> | undefined;
     if (!block) continue;
+    if (typeof block !== "object" || Array.isArray(block)) throw new Error(`runtimes.${runtime} must be a mapping`);
+    if (runtime === "pi") validatePiRuntimeBlock(block);
     result[runtime] = {
       model: block["model"] as string | undefined,
       provider: block["provider"] as string | undefined,
@@ -77,6 +79,23 @@ function parseRuntimes(raw: Record<string, unknown> | undefined): RuntimeConfigM
     };
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function validatePiRuntimeBlock(block: Record<string, unknown>): void {
+  for (const field of ["provider", "model"] as const) {
+    const value = block[field];
+    if (value !== undefined && (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/.test(value))) {
+      throw new Error(`runtimes.pi.${field} must be a non-empty Pi identifier`);
+    }
+  }
+  const autonomy = block["autonomy"];
+  if (autonomy !== undefined && autonomy !== "low" && autonomy !== "medium" && autonomy !== "high") {
+    throw new Error("runtimes.pi.autonomy must be low, medium, or high");
+  }
+  const timeout = block["timeout"];
+  if (timeout !== undefined && (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout <= 0)) {
+    throw new Error("runtimes.pi.timeout must be a positive integer");
+  }
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {
