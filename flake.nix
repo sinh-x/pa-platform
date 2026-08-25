@@ -53,7 +53,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-cmDvA1QOHnRezgrARbdDiqOuXxAXbAL0JZYU0mDl4jY=";
+            hash = "sha256-I4NmAnKyiQDEfB71fH9sDY3NCzxgPnZXcpEp3T2CAjs=";
             fetcherVersion = 4;
           };
 
@@ -89,7 +89,9 @@
 
             cp packages/pi-pa/package.json $share/packages/pi-pa/package.json
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
-             test -f packages/pi-pa/package.json
+            cp -r packages/pi-pa/node_modules $share/packages/pi-pa/node_modules
+            test -f packages/pi-pa/package.json
+            rm -f $share/packages/pi-pa/node_modules/@pa-platform/pa-core
             mkdir -p $share/packages/pi-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/pi-pa/node_modules/@pa-platform/pa-core
 

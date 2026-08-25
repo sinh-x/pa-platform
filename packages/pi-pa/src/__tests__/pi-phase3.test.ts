@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Check } from "typebox/value";
 import { createPaTools, interceptToolCall, boundJson } from "../pi-extension/index.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
@@ -23,8 +24,24 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, []);
 });
 
-test("Pi extension exposes only bounded typed PA tools and shared safety policy", () => {
-  assert.deepEqual(createPaTools().map((tool) => tool.name), ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status"]);
+test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {
+  const tools = new Map(createPaTools().map((tool) => [tool.name, tool]));
+  assert.deepEqual([...tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status"]);
+  for (const [name, input] of [
+    ["pa_ticket", { action: "list" }],
+    ["pa_bulletin", { action: "list" }],
+    ["pa_registry", { action: "list" }],
+    ["pa_status", { id: "d-not-found" }],
+  ] as const) {
+    const tool = tools.get(name)!;
+    assert.equal(Check(tool.parameters, input), true);
+    const result = await tool.execute(`tool-call-${name}`, input, undefined, undefined, undefined);
+    assert.deepEqual(result.details, {});
+    assert.equal(result.content.length, 1);
+    assert.equal(result.content[0]?.type, "text");
+    assert.equal(typeof result.content[0]?.text, "string");
+  }
+  await assert.rejects(tools.get("pa_bulletin")!.execute("tool-call-error", { action: "other" }, undefined, undefined, undefined), /Only bulletin list is available/);
   assert.equal(interceptToolCall({ name: "bash", input: { command: "rm -rf build" } }).allowed, false);
   assert.equal(interceptToolCall({ name: "read", input: { path: ".env" } }).allowed, false);
   assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);
