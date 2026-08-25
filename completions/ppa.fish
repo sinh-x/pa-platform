@@ -384,6 +384,9 @@ complete -c ppa -n __fish_use_subcommand -a health -d 'Generate health report'
 complete -c ppa -n __fish_use_subcommand -a trash -d 'Manage trash'
 complete -c ppa -n __fish_use_subcommand -a codectx -d 'Analyze and query code context'
 complete -c ppa -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Self messages'
+complete -c ppa -n __fish_use_subcommand -a pi -d 'Manage Pi package registration'
+complete -c ppa -n '__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove' -a 'setup status remove'
+complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from setup status remove' -l local -d 'Use project-local .pi settings'
 
 complete -c ppa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 

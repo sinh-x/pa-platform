@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAgentApiApp, generatePrimer, parseTeamYamlContent, validateDeployRequestFields } from "../index.js";
+import { createAgentApiApp, generatePrimer, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
 
 test("Pi runtime configuration parses at team and mode scope", () => {
   const team = parseTeamYamlContent(`
@@ -32,6 +32,35 @@ test("deploy request runtime accepts Pi and rejects unsupported runtimes", () =>
   assert.equal("error" in pi, false);
   if (!("error" in pi)) assert.equal(pi.request.runtime, "pi");
   assert.deepEqual(validateDeployRequestFields({ team: "builder", runtime: "claude" }), { error: "runtime must be opencode or pi" });
+});
+
+test("Pi runtime resolution uses CLI, mode, team, then Pi-local values", () => {
+  const team = parseTeamYamlContent(`
+name: builder
+description: Builder
+objective: Build
+agents: []
+runtimes:
+  pi:
+    provider: team-provider
+    model: team-model
+deploy_modes:
+  - id: implement
+    label: Implement
+    runtimes:
+      pi:
+        provider: mode-provider
+        model: mode-model
+`);
+  const mode = team.deploy_modes?.[0];
+  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team, mode, local: { provider: "local-provider", model: "local-model" } }), { provider: "mode-provider", model: "mode-model" });
+  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider", teamModel: "cli-model" }, team, mode, local: { provider: "local-provider", model: "local-model" } }), { provider: "cli-provider", model: "cli-model" });
+  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team: { ...team, runtimes: undefined }, local: { provider: "local-provider", model: "local-model" } }), { provider: "local-provider", model: "local-model" });
+});
+
+test("invalid Pi runtime configuration fails with an actionable field error", () => {
+  assert.throws(() => parseTeamYamlContent(`name: builder\ndescription: Builder\nobjective: Build\nagents: []\nruntimes:\n  pi:\n    model: "bad model"\n`), /runtimes\.pi\.model/);
+  assert.throws(() => parseTeamYamlContent(`name: builder\ndescription: Builder\nobjective: Build\nagents: []\nruntimes:\n  pi:\n    timeout: 0\n`), /runtimes\.pi\.timeout/);
 });
 
 test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawning on invalid input", async () => {

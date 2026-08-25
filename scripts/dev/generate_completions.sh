@@ -80,8 +80,9 @@ perl \
     s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume/;
     s/(complete -c ppa -n __ppa_deploy_completing -l objective -d '\''Deployment objective'\'' -r\n)/$1complete -c ppa -n __ppa_deploy_completing -l objective-file -d '\''Objective from file'\'' -r -a '\''(complete -C "echo " | string match -r "^[^ ]+")'\''\ncomplete -c ppa -n __ppa_deploy_completing -l list-modes -d '\''List available deploy modes'\''\ncomplete -c ppa -n __ppa_deploy_completing -l validate -d '\''Validate without deploying'\''\ncomplete -c ppa -f -n __ppa_deploy_completing -l provider -d '\''Pi provider override'\'' -r\ncomplete -c ppa -f -n __ppa_deploy_completing -l model -d '\''Pi model override'\'' -r\ncomplete -c ppa -f -n __ppa_deploy_completing -l team-model -d '\''Team model override'\'' -r\ncomplete -c ppa -f -n __ppa_deploy_completing -l agent-model -d '\''Agent model override'\'' -r\n/;
     s/(complete -c ppa -n __ppa_deploy_completing -l timeout -d '\''Timeout seconds'\'' -r\n)/$1complete -c ppa -f -n __ppa_deploy_completing -l resume -d '\''Resume from deployment ID'\'' -r -a '\''(__ppa_deployments)'\''\n/;
-    s/(complete -c ppa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/$1/;
-    print;
+     s/(complete -c ppa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/$1/;
+     s/(complete -c ppa -n __fish_use_subcommand -a signal -d '\''Collect Signal Note to Self messages'\''\n)/$1complete -c ppa -n __fish_use_subcommand -a pi -d '\''Manage Pi package registration'\''\ncomplete -c ppa -n '\''__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove'\'' -a '\''setup status remove'\''\ncomplete -c ppa -n '\''__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from setup status remove'\'' -l local -d '\''Use project-local .pi settings'\''\n/;
+     print;
   ' \
   "$PA_CORE" > "$PPA"
 

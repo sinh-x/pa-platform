@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
@@ -14,23 +15,45 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request) => deployWithPi(request, adapter), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
-export function composePpaExecutionHooks(opencodeHooks: CoreExecutionHooks, piHooks: CoreExecutionHooks = createDefaultPiHooks()): CoreExecutionHooks {
-  return composeRuntimeHooks(opencodeHooks, piHooks, "pi");
-}
-
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter()): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: timeout.error };
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
-  const provider = request.provider ?? mode?.runtimes?.pi?.provider ?? team.runtimes?.pi?.provider;
-  const model = request.model ?? mode?.runtimes?.pi?.model ?? team.runtimes?.pi?.model;
+  const runtimeConfig = resolveRuntimeConfig({ runtime: "pi", request, team, mode });
+  const provider = runtimeConfig.provider;
+  const model = runtimeConfig.model;
   const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
-  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: mode?.id, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${request.mode ?? team.default_mode ?? "default"}\nticket_id: ${request.ticket ?? "none"}\n</deployment-context>` });
+  let plan;
+  try {
+    plan = resolveExecutionPlan({
+      request: { ...request, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      teamConfig: team,
+      mode,
+      runtime: "pi",
+      deploymentId,
+      deploymentDir: deployDir,
+      activityLogPath: paths.activityLogPath,
+      environment: env,
+      timeoutSeconds: timeout.timeout,
+      trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
+    });
+  } catch (error) {
+    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+  }
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n</deployment-context>` });
   const primerPath = resolve(deployDir, "primer.md"); writeFileSync(primerPath, primer, "utf8"); process.stdout.write(`Deployment: ${deploymentId}\n`);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name}` }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider: plan.provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
+  const completeFailure = (reason: string, exitCode = 1) => {
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: reason }), paths.activityLogPath);
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: `ppa deploy failed: ${reason}`, exitCode });
+    ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason };
+  };
+  try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
-  if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; } }
+  if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
   const sessionPath = resolve(deployDir, adapter.sessionFileName);
   try {
@@ -43,10 +66,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
-  emitStartedEvent({ deploymentId, team: team.name, mode: request.mode ?? team.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: timeout.timeout });
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const result = prior ? await adapter.resume({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId }) : await adapter.spawn({ primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId });
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, timeoutMs: timeout.timeout * 1000, logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
+    const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
+    if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     if (result.sessionId !== sessionId || result.metadata?.["sessionId"] !== sessionId) throw new Error("Pi adapter returned a session id different from the persisted session id");
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
@@ -64,8 +88,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const ok = result.exitCode === 0; emitCompletedEvent({ deploymentId, team: team.name, status: ok ? "success" : "failed", summary: ok ? "ppa deploy completed" : `ppa deploy failed: ${result.errorMessage ?? `exit ${result.exitCode}`}`, logFile: result.logFile, exitCode: result.exitCode }); ensureTerminalRegistryMarker({ deploymentId, team: team.name });
-    return { status: ok ? "success" : "failed", team: request.team, mode: request.mode ?? null, deploymentId, ...(ok ? {} : { reason: result.errorMessage ?? `pi exited with code ${result.exitCode}` }) };
+    emitCompletedEvent({ deploymentId, team: team.name, status: "success", summary: "ppa deploy completed", logFile: result.logFile, exitCode: 0 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    return { status: "success", team: request.team, mode: request.mode ?? null, deploymentId };
   } catch (error) { emitCrashedEvent({ deploymentId, team: team.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name }); return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; }
 }
 

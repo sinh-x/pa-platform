@@ -1,0 +1,23 @@
+{
+  "name": "@pa-platform/runtime-host",
+  "version": "0.1.88",
+  "type": "module",
+  "description": "Composes PA runtime adapters at the application boundary",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\"",
+    "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm --filter @pa-platform/opencode-pa build && corepack pnpm --filter @pa-platform/pi-pa build && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@pa-platform/opencode-pa": "workspace:*",
+    "@pa-platform/pa-core": "workspace:*",
+    "@pa-platform/pi-pa": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.0"
+  }
+}

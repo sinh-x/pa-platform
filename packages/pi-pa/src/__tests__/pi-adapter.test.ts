@@ -5,9 +5,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
+import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
-import { composePpaExecutionHooks } from "../deploy.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -51,12 +50,76 @@ test("uses interactive Pi arguments for foreground and JSON arguments for backgr
   assert.ok(!invocations[1]?.includes("--json"));
 });
 
+test("reuses a successful configurable version preflight and preserves timeout failures", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-preflight-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  let probes = 0;
+  const slowAdapter = new PiAdapter({
+    cwd: dir,
+    versionTimeoutMs: 30,
+    versionProbe: () => new Promise((resolve) => { probes++; setTimeout(() => resolve("0.80.8"), 10); }),
+    runCommand: () => ({ status: 0, stdout: "", stderr: "" }),
+  });
+  await slowAdapter.preflight();
+  const result = await slowAdapter.spawn({ primerPath: primer, deployId: "d-slow", mode: "foreground" });
+  assert.equal(result.exitCode, 0);
+  assert.equal(probes, 1);
+
+  let spawned = false;
+  const timedOutAdapter = new PiAdapter({
+    cwd: dir,
+    versionTimeoutMs: 1,
+    versionProbe: () => new Promise((resolve) => setTimeout(() => resolve("0.80.8"), 20)),
+    runCommand: () => { spawned = true; return { status: 0, stdout: "", stderr: "" }; },
+  });
+  const timedOut = await timedOutAdapter.spawn({ primerPath: primer, deployId: "d-timeout-probe", mode: "foreground" });
+  assert.equal(timedOut.exitCode, 1);
+  assert.match(timedOut.errorMessage ?? "", /Pi version probe timed out after 1ms/);
+  assert.equal(spawned, false);
+});
+
+test("managed Pi invocations disable discovery and load only plan resources", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  const invocations: string[][] = [];
+  const adapter = new PiAdapter({
+    cwd: tmpdir(),
+    versionProbe: () => "0.80.8",
+    runCommand: (args, options) => {
+      invocations.push(args);
+      assert.equal(options.cwd, dir);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  await adapter.spawn({
+    primerPath: primer,
+    deployId: "d-managed",
+    mode: "background",
+    executionPlan: {
+      runtime: "pi",
+      team: "builder",
+      mode: "implement",
+      repositoryCwd: dir,
+      ticketRequired: false,
+      objective: "work",
+      skills: [{ name: "pa-cli", injectAs: "reference", path: join(dir, "pa-cli", "SKILL.md") }],
+      memoryDocuments: [],
+      environment: {},
+      timeoutSeconds: 60,
+      lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
+    },
+  });
+  assert.deepEqual(invocations[0]?.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocations[0]?.[4], "--no-skills", "--no-extensions", "--skill", join(dir, "pa-cli", "SKILL.md")]);
+});
+
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
   let opencodeCalls = 0;
   let piCalls = 0;
-  const hooks = composePpaExecutionHooks(
+  const hooks = composeRuntimeHooks(
     { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
-    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } },
+    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } }, "pi",
   );
 
   const cliCode = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "ppa" });

@@ -14,8 +14,7 @@
     "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@pa-platform/pa-core": "workspace:*",
-    "@pa-platform/pi-pa": "workspace:*"
+    "@pa-platform/pa-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
