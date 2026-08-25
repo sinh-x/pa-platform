@@ -5,9 +5,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
+import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
-import { composePpaExecutionHooks } from "../deploy.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -89,9 +88,9 @@ test("managed Pi invocations disable discovery and load only plan resources", as
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
   let opencodeCalls = 0;
   let piCalls = 0;
-  const hooks = composePpaExecutionHooks(
+  const hooks = composeRuntimeHooks(
     { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
-    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } },
+    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } }, "pi",
   );
 
   const cliCode = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "ppa" });

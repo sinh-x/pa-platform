@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, composeRuntimeHooks, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -115,10 +115,6 @@ export const opencodeSessionCommand: SessionCommandBuilder = ({ model, prompt, s
 
 export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
-}
-
-export function composeOpaExecutionHooks(opencodeHooks: CoreExecutionHooks, piHooks: CoreExecutionHooks): CoreExecutionHooks {
-  return composeRuntimeHooks(opencodeHooks, piHooks, "opencode");
 }
 
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter()) {

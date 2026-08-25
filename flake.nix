@@ -67,7 +67,7 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $out/bin $out/share/fish/vendor_completions.d
+            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
@@ -77,7 +77,6 @@
             cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist
             mkdir -p $share/packages/opencode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/opencode-pa/node_modules/@pa-platform/pa-core
-            ln -s ../../../pi-pa $share/packages/opencode-pa/node_modules/@pa-platform/pi-pa
             cp packages/claudecode-pa/package.json $share/packages/claudecode-pa/package.json
             cp -r packages/claudecode-pa/dist $share/packages/claudecode-pa/dist
             mkdir -p $share/packages/claudecode-pa/node_modules/@pa-platform
@@ -92,7 +91,13 @@
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
             mkdir -p $share/packages/pi-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/pi-pa/node_modules/@pa-platform/pa-core
-            ln -s ../../../opencode-pa $share/packages/pi-pa/node_modules/@pa-platform/opencode-pa
+
+            cp packages/runtime-host/package.json $share/packages/runtime-host/package.json
+            cp -r packages/runtime-host/dist $share/packages/runtime-host/dist
+            mkdir -p $share/packages/runtime-host/node_modules/@pa-platform
+            ln -s ../../../pa-core $share/packages/runtime-host/node_modules/@pa-platform/pa-core
+            ln -s ../../../opencode-pa $share/packages/runtime-host/node_modules/@pa-platform/opencode-pa
+            ln -s ../../../pi-pa $share/packages/runtime-host/node_modules/@pa-platform/pi-pa
 
             install -Dm644 /dev/stdin $share/pa-core-cli.mjs <<'EOF'
             import { runCoreCommand } from "./packages/pa-core/dist/cli/core-command.js";

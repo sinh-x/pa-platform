@@ -1,14 +1,8 @@
 {
-  "name": "@pa-platform/pi-pa",
+  "name": "@pa-platform/runtime-host",
   "version": "0.1.88",
   "type": "module",
-  "description": "Pi runtime adapter for the PA platform",
-  "pi": {
-    "extensions": ["./dist/pi-extension/index.js"]
-  },
-  "bin": {
-    "ppa": "dist/cli.js"
-  },
+  "description": "Composes PA runtime adapters at the application boundary",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -17,7 +11,9 @@
     "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@pa-platform/pa-core": "workspace:*"
+    "@pa-platform/opencode-pa": "workspace:*",
+    "@pa-platform/pa-core": "workspace:*",
+    "@pa-platform/pi-pa": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
