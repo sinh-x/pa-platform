@@ -50,6 +50,35 @@ test("uses interactive Pi arguments for foreground and JSON arguments for backgr
   assert.ok(!invocations[1]?.includes("--json"));
 });
 
+test("reuses a successful configurable version preflight and preserves timeout failures", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-preflight-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  let probes = 0;
+  const slowAdapter = new PiAdapter({
+    cwd: dir,
+    versionTimeoutMs: 30,
+    versionProbe: () => new Promise((resolve) => { probes++; setTimeout(() => resolve("0.80.8"), 10); }),
+    runCommand: () => ({ status: 0, stdout: "", stderr: "" }),
+  });
+  await slowAdapter.preflight();
+  const result = await slowAdapter.spawn({ primerPath: primer, deployId: "d-slow", mode: "foreground" });
+  assert.equal(result.exitCode, 0);
+  assert.equal(probes, 1);
+
+  let spawned = false;
+  const timedOutAdapter = new PiAdapter({
+    cwd: dir,
+    versionTimeoutMs: 1,
+    versionProbe: () => new Promise((resolve) => setTimeout(() => resolve("0.80.8"), 20)),
+    runCommand: () => { spawned = true; return { status: 0, stdout: "", stderr: "" }; },
+  });
+  const timedOut = await timedOutAdapter.spawn({ primerPath: primer, deployId: "d-timeout-probe", mode: "foreground" });
+  assert.equal(timedOut.exitCode, 1);
+  assert.match(timedOut.errorMessage ?? "", /Pi version probe timed out after 1ms/);
+  assert.equal(spawned, false);
+});
+
 test("managed Pi invocations disable discovery and load only plan resources", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
   const primer = join(dir, "primer.md");

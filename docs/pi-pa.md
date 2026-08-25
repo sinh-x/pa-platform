@@ -29,7 +29,7 @@ Existing `ppa deploy` users can run `ppa pi setup` once at the desired scope. Ex
 
 ## Troubleshooting
 
-- `Pi version must be 0.80.8 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`.
+- `Pi version must be 0.80.8 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe allows up to 15 seconds for a loaded system to start Pi.
 - `Pi PA extension package path is missing`: reinstall/build pa-platform or use the current packaged `ppa`; inspect the path printed by `ppa pi status`.
 - `PA config package path is missing`: set `PA_PLATFORM_CONFIG_DIR` to the existing `pa-platform-config` checkout.
 - Skills changed but Pi still shows old content: run `/reload`; managed deployments pick up changes on their next invocation.

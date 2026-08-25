@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { meetsMinimum } from "./adapter.js";
+import { meetsMinimum, PI_VERSION_TIMEOUT_MS } from "./adapter.js";
 
 export interface PiSetupOptions { local?: boolean; cwd?: string; configDir?: string; extensionPath?: string; piVersion?: string; confirm?: (message: string) => Promise<boolean> }
 export interface PiSetupResult { settingsPath: string; packages: string[]; changed: boolean }
@@ -15,8 +15,11 @@ export async function setupPi(options: PiSetupOptions = {}): Promise<PiSetupResu
   const { cwd, extensionPath, configDir } = paths;
   if (!existsSync(extensionPath)) throw new Error(`Pi PA extension package path is missing: ${extensionPath}`);
   if (!existsSync(configDir)) throw new Error(`PA config package path is missing: ${configDir}`);
-  const probe = options.piVersion ? undefined : spawnSync("pi", ["--version"], { encoding: "utf8", timeout: 2000 });
-  if (probe?.error) throw new Error(`Pi is unavailable. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
+  const probe = options.piVersion ? undefined : spawnSync("pi", ["--version"], { encoding: "utf8", timeout: PI_VERSION_TIMEOUT_MS });
+  if (probe?.error) {
+    if ((probe.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(`Pi version probe timed out after ${PI_VERSION_TIMEOUT_MS}ms.`);
+    throw new Error(`Pi is unavailable. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
+  }
   const version = options.piVersion ?? `${probe?.stdout ?? ""}`.trim();
   if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
   const settingsPath = settingsPathFor(options.local, cwd);

@@ -7,7 +7,7 @@ import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parse
 const MAX_BODY = 500;
 const MAX_STDERR = 2000;
 const MAX_CAPTURE = 8000;
-const VERSION_TIMEOUT = 2000;
+export const PI_VERSION_TIMEOUT_MS = 15_000;
 const TERM_GRACE = 250;
 const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
 const SECRET_TEXT = [/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, /bearer\s+\S+/gi, /sk-[\w-]+/gi];
@@ -21,6 +21,7 @@ export interface PiAdapterOptions {
   env?: NodeJS.ProcessEnv;
   runCommand?: (args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => PiCommandResult | Promise<PiCommandResult>;
   versionProbe?: () => string | Promise<string>;
+  versionTimeoutMs?: number;
   sessionIdFactory?: () => string;
   secretValues?: string[];
   supervision?: PiSupervisionOptions;
@@ -46,18 +47,17 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly runCommand?: PiAdapterOptions["runCommand"];
   private readonly versionProbe: () => string | Promise<string>;
+  private readonly versionTimeoutMs: number;
+  private preflightPromise?: Promise<void>;
   private readonly sessionIdFactory: () => string;
   private readonly secretValues: string[];
   private readonly supervision: PiSupervisionOptions;
 
   constructor(options: PiAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd(); this.env = options.env ?? process.env;
-    this.runCommand = options.runCommand; this.versionProbe = options.versionProbe ?? (() => {
-      const result = spawnSync("pi", ["--version"], { cwd: this.cwd, env: this.env, encoding: "utf8", timeout: VERSION_TIMEOUT });
-      if (result.error) throw new Error(`Pi is unavailable: ${result.error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
-      if (result.status !== 0) throw new Error(`Pi version probe failed with exit code ${result.status ?? 1}.`);
-      return `${result.stdout ?? ""}`.trim();
-    });
+    this.runCommand = options.runCommand;
+    this.versionTimeoutMs = options.versionTimeoutMs ?? PI_VERSION_TIMEOUT_MS;
+    this.versionProbe = options.versionProbe ?? (() => probePiVersion(this.cwd, this.env, this.versionTimeoutMs));
     this.sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.secretValues = [...(options.secretValues ?? [])];
     this.supervision = options.supervision ?? {};
@@ -73,15 +73,21 @@ export class PiAdapter implements RuntimeAdapter {
   describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.80.8 or later must be installed as `pi`." }; }
 
   async preflight(): Promise<void> {
-    const version = await bounded(this.versionProbe(), VERSION_TIMEOUT);
-    if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
+    if (!this.preflightPromise) {
+      const probe = (async () => {
+        const version = await bounded(this.versionProbe(), this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`);
+        if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
+      })();
+      this.preflightPromise = probe;
+      void probe.catch(() => { if (this.preflightPromise === probe) this.preflightPromise = undefined; });
+    }
+    return this.preflightPromise;
   }
 
   allocateSessionId(): string { return this.sessionIdFactory(); }
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
-    let version: string;
-    try { version = await bounded(this.versionProbe(), VERSION_TIMEOUT); } catch (error) { return failure(`Pi version preflight failed: ${error instanceof Error ? error.message : String(error)}`); }
-    if (!meetsMinimum(version)) return failure(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
+    try { await this.preflight(); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
+    finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
     const interactive = opts.mode === "foreground";
     const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
@@ -105,7 +111,6 @@ export class PiAdapter implements RuntimeAdapter {
     }
     if (result.status !== 0) {
       const message = redact(tail(result.stderr || result.spawnError?.message || `pi exited with code ${result.status ?? 1}`, MAX_STDERR), secrets);
-      appendActivityEvent(createActivityEvent({ deployId: opts.deployId, kind: "error", source: "pi", body: message }), getDeployPaths(opts.deployId).activityLogPath);
       return { sessionId: id, exitCode: result.status ?? 1, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     }
     return { sessionId: id, exitCode: 0, logFile: opts.logFile, metadata: { ...(result.metadata ?? {}), sessionId: id } };
@@ -185,5 +190,19 @@ function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { 
 function extractText(raw: Record<string, unknown>): string { const values = [raw.text, raw.body, raw.content, raw.message, raw.result, raw.partialResult, raw.assistantMessageEvent, raw.toolName, raw.args]; for (const value of values) { if (typeof value === "string") return value; if (Array.isArray(value)) { const text = value.map((item) => typeof item === "string" ? item : item && typeof item === "object" ? extractText(item as Record<string, unknown>) : "").filter(Boolean).join(" "); if (text) return text; } if (value && typeof value === "object") { const nested = extractText(value as Record<string, unknown>); if (nested) return nested; } } return ""; }
 function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }
 function basename(path: string): string { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown"; }
-async function bounded<T>(value: T | Promise<T>, timeout: number): Promise<T> { return Promise.race([Promise.resolve(value), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${timeout}ms`)), timeout))]); }
+function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): string {
+  const result = spawnSync("pi", ["--version"], { cwd, env, encoding: "utf8", timeout });
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(`Pi version probe timed out after ${timeout}ms.`);
+    throw new Error(`Pi is unavailable: ${result.error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
+  }
+  if (result.status !== 0) throw new Error(`Pi version probe failed with exit code ${result.status ?? 1}.`);
+  return `${result.stdout ?? ""}`.trim();
+}
+async function bounded<T>(value: T | Promise<T>, timeout: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolveValue, rejectValue) => {
+    const timer = setTimeout(() => rejectValue(new Error(timeoutMessage)), timeout);
+    void Promise.resolve(value).then((result) => { clearTimeout(timer); resolveValue(result); }, (error: unknown) => { clearTimeout(timer); rejectValue(error); });
+  });
+}
 function processGroupGone(pid: number): boolean { try { process.kill(-pid, 0); return false; } catch { return true; } }
