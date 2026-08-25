@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
-import { deployWithPi } from "../deploy.js";
+import { deployWithPi, piSessionCommand } from "../deploy.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 
@@ -161,4 +161,20 @@ test("Pi successful results still require both authoritative session IDs", async
       assert.deepEqual(getDeploymentEvents(result.deploymentId!).map((event) => event.event), ["started", "crashed"]);
     });
   }
+});
+
+test("Pi Agent API session commands normalize OpenAI identifiers", () => {
+  const command = piSessionCommand({ model: "openai/gpt-5.6-luna", prompt: "work", sessionId: "session", env: { PA_PROVIDER: "openai" }, session: { id: "unused", model: "", status: "running", startedAt: "", deploymentId: "", runtime: "pi" } });
+  assert.deepEqual(command.args, ["--print", "--mode", "json", "--session-id", "session", "--model", "gpt-5.6-luna", "--provider", "openai-codex", "work"]);
+});
+
+test("managed Pi deployment passes normalized provider and model to the adapter", async () => {
+  await withPiEnv(async () => {
+    let captured: SpawnOpts | undefined;
+    const result = await deployWithPi({ team: "builder", mode: "implement", provider: "openai", model: "openai/gpt-5.6-luna" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    assert.equal(result.status, "success");
+    assert.equal(captured?.model, "gpt-5.6-luna");
+    assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
+    assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-luna");
+  });
 });

@@ -43,6 +43,7 @@
             makeWrapper
             python3
             pkg-config
+            gnumake
             sqlite.dev
             node-gyp
           ];
@@ -53,7 +54,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-I4NmAnKyiQDEfB71fH9sDY3NCzxgPnZXcpEp3T2CAjs=";
+            hash = "sha256-Thcyi5q80jEMQYzjNACqk7BJ7OT25dzQxAuU2ZjP0bE=";
             fetcherVersion = 4;
           };
 
@@ -164,6 +165,15 @@
               export npm_config_nodedir=${pkgs.nodejs_22}
               ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22} --openssl-fips=false
             fi
+
+            for nodePty in "$share"/node_modules/.pnpm/node-pty@*/node_modules/node-pty; do
+              if [ -d "$nodePty" ]; then
+                cd "$nodePty"
+                patchShebangs .
+                export npm_config_nodedir=${pkgs.nodejs_22}
+                ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22}
+              fi
+            done
 
             runHook postInstall
           '';
