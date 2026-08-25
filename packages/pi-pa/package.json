@@ -3,6 +3,9 @@
   "version": "0.1.88",
   "type": "module",
   "description": "Pi runtime adapter for the PA platform",
+  "pi": {
+    "extensions": ["./dist/pi-extension/index.js"]
+  },
   "bin": {
     "ppa": "dist/cli.js"
   },

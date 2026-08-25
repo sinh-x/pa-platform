@@ -17,6 +17,7 @@ export * from "./teams/index.js";
 export * from "./activity/index.js";
 export * from "./signal/index.js";
 export * from "./sensitive-patterns.js";
+export * from "./safety-policy.js";
 export * from "./repo-health/index.js";
 export * from "./cli/index.js";
 export * from "./deploy/index.js";
