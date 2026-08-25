@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
@@ -38,7 +38,8 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   });
 }
 
-function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult; onSpawn?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+  const result = (sessionId: string) => options.result?.(sessionId) ?? { sessionId, exitCode: 0, metadata: { sessionId } };
   return {
     name: "pi",
     defaultModel: "",
@@ -46,12 +47,64 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
     preflight: options.preflight ?? (async () => {}),
     allocateSessionId: () => "authoritative-session-id",
     installHooks() {},
-    spawn(opts) { options.onSpawn?.(); return options.result?.(opts.sessionId ?? "") ?? { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
-    resume(opts) { return this.spawn(opts); },
+    spawn(opts) { options.onSpawn?.(opts); return result(opts.sessionId ?? ""); },
+    resume(opts) { options.onResume?.(opts); return result(opts.sessionId); },
     extractActivity() { return []; },
     describeTools() { return { runtime: "pi", markdown: "stub" }; },
   };
 }
+
+function assertTimeoutMetadata(opts: SpawnOpts, timeoutSeconds: number): void {
+  assert.equal(opts.executionPlan?.timeoutSeconds, timeoutSeconds);
+  assert.equal(readFileSync(opts.primerPath, "utf8").match(new RegExp(`timeout_seconds: ${timeoutSeconds}`, "g"))?.length, 1);
+  assert.equal(getDeploymentEvents(opts.deployId)[0]?.effective_timeout_seconds, timeoutSeconds);
+}
+
+test("new foreground Pi deployments omit the adapter deadline but retain timeout metadata", async () => {
+  await withPiEnv(async () => {
+    let captured: SpawnOpts | undefined;
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    assert.equal(result.status, "success");
+    assert.ok(captured);
+    assert.equal(captured.mode, "foreground");
+    assert.equal(captured.timeoutMs, undefined);
+    assertTimeoutMetadata(captured, 1800);
+  });
+});
+
+test("new background Pi deployments omit the adapter deadline while retaining supervision metadata", async () => {
+  await withPiEnv(async () => {
+    let captured: SpawnOpts | undefined;
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 2400 }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    assert.equal(result.status, "success");
+    assert.ok(captured);
+    assert.equal(captured.mode, "background");
+    assert.equal(captured.timeoutMs, undefined);
+    assertTimeoutMetadata(captured, 2400);
+  });
+});
+
+test("resumed and evaluator Pi deployments retain their resolved adapter deadlines", async () => {
+  await withPiEnv(async () => {
+    const captured: Array<{ kind: "spawn" | "resume"; opts: SpawnOpts }> = [];
+    const adapter = stubAdapter({
+      onSpawn: (opts) => { captured.push({ kind: "spawn", opts }); },
+      onResume: (opts) => { captured.push({ kind: "resume", opts }); },
+    });
+    const initial = await deployWithPi({ team: "builder", mode: "implement", timeout: 1200 }, adapter);
+    assert.equal(initial.status, "success");
+    const resumed = await deployWithPi({ team: "builder", mode: "implement", resume: initial.deploymentId, timeout: 1200 }, adapter);
+    assert.equal(resumed.status, "success");
+    const evaluator = await deployWithPi({ team: "builder", mode: "implement", evaluateDeployment: "d-abcdef", timeout: 600 }, adapter);
+    assert.equal(evaluator.status, "success");
+    assert.equal(captured[1]?.kind, "resume");
+    assert.equal(captured[1]?.opts.timeoutMs, 1_200_000);
+    assertTimeoutMetadata(captured[1]!.opts, 1200);
+    assert.equal(captured[2]?.kind, "spawn");
+    assert.equal(captured[2]?.opts.timeoutMs, 600_000);
+    assertTimeoutMetadata(captured[2]!.opts, 600);
+  });
+});
 
 test("Pi preflight failure is controlled, actionable, and leaves no session file", async () => {
   await withPiEnv(async () => {
