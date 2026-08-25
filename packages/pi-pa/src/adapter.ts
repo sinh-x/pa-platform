@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 
@@ -38,6 +39,11 @@ export interface PiSupervisionOptions {
   writeLog?: typeof writeFileSync;
   setTimeout?: (callback: () => void, milliseconds: number) => NodeJS.Timeout;
   clearTimeout?: (timeout: NodeJS.Timeout) => void;
+  spawnPty?: (file: string, args: string[], options: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string | undefined> }) => IPty;
+  input?: NodeJS.ReadStream;
+  output?: NodeJS.WriteStream;
+  columns?: number;
+  rows?: number;
 }
 
 export class PiAdapter implements RuntimeAdapter {
@@ -109,8 +115,10 @@ export class PiAdapter implements RuntimeAdapter {
       ? await this.runCommand(args, { cwd, env })
       : await runPi(args, cwd, env, opts, id, secrets, this.supervision, interactive);
     if (this.runCommand && !interactive) {
-      persistOutput(opts, result.stdout, result.stderr, secrets);
+      result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
     }
+    const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
+    if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     if (result.status !== 0) {
       const message = redact(tail(result.stderr || result.spawnError?.message || `pi exited with code ${result.status ?? 1}`, MAX_STDERR), secrets);
       return { sessionId: id, exitCode: result.status ?? 1, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
@@ -123,6 +131,7 @@ export function meetsMinimum(version: string): boolean { const match = version.m
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent { const safe = deepRedact(raw, secrets) as Record<string, unknown>; const type = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase(); const kind: ActivityEvent["kind"] = type === "tool_execution_end" || type === "tool_result" || type === "tool_execution_result" ? "tool_result" : type === "tool_execution_start" || type === "tool_use" || type === "tool_call" ? "tool_use" : type.includes("error") ? "error" : type.includes("think") ? "thinking" : type.includes("tool") ? "tool_use" : "text"; const body = redact(extractText(safe) || type, secrets); return createActivityEvent({ deployId, kind, source: "pi", body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY - 3)}...` : body, partType: type, metadata: allowMetadata(safe), timestamp: typeof safe.timestamp === "string" ? parseTimestamp(safe.timestamp).toISOString() : undefined }); }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: redact(line, secrets).slice(0, MAX_BODY) }); } }
 function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, interactive = false): Promise<PiCommandResult> {
+  if (interactive) return runPiForeground(args, cwd, env, opts, id, secrets, supervision);
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -135,13 +144,13 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: interactive ? "inherit" : ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
-    let stdout = ""; let stderr = ""; let carry = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
+    let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
     const settle = (status: number | null, error?: Error): void => {
       if (settled) return;
       if (timer) clearTimer(timer);
       settled = true;
-      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const requestCleanup = (status: number, error: Error): void => {
       if (settled || cleanupPending) return;
@@ -174,7 +183,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
         settle(0);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { try { persist(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) { if (code === 0) finish(); else settle(code, new Error(`Pi exited with code ${code ?? 1}`)); } });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
@@ -182,11 +191,40 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   if (opts.mode === "background") return Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { pid: child.pid, sessionId: id, pending: true, monitor: { completion, pid: child.pid } satisfies PiSupervisionHandle } });
   return completion;
 }
-function persistLine(line: string, path: string, deployId: string, secrets: string[]): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); appendFileSync(path, `${safe}\n`); appendActivityEvent(parsePiLine(safe, deployId, secrets), getDeployPaths(deployId).activityLogPath); }
-function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): void { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); writeFileSync(outputPath, stdout.split("\n").filter(Boolean).map((line) => redactJsonLine(line, secrets)).join("\n") + (stdout ? "\n" : ""), "utf8"); if (opts.logFile) writeFileSync(opts.logFile, redact(stdout + stderr, secrets), "utf8"); }
+function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
+  const pty = (supervision.spawnPty ?? spawnPty)("pi", args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env });
+  const input = supervision.input ?? process.stdin;
+  const output = supervision.output ?? process.stdout;
+  const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
+  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let timer: NodeJS.Timeout | undefined;
+  const previousRaw = input.isTTY ? input.isRaw : undefined;
+  const onInput = (chunk: Buffer | string): void => { pty.write(chunk.toString()); };
+  const onSigint = (): void => { pty.kill("SIGINT"); };
+  const onResize = (): void => { pty.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24); };
+  const onData = (chunk: string): void => {
+    stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk);
+    if (opts.logFile) appendFileSync(opts.logFile, redact(chunk, secrets), "utf8");
+    const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
+    for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persistLine(line, outputPath, opts.deployId, secrets); }
+  };
+  if (input.isTTY) input.setRawMode(true);
+  input.on("data", onInput); process.stdout.on("resize", onResize); process.once("SIGINT", onSigint); pty.onData(onData);
+  return new Promise((resolveResult) => {
+    const finish = (status: number | null, error?: Error): void => {
+      if (settled) return; settled = true; if (timer) clearTimeout(timer); input.off("data", onInput); process.stdout.off("resize", onResize); process.off("SIGINT", onSigint); if (input.isTTY && previousRaw !== undefined) input.setRawMode(previousRaw);
+      if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persistLine(carry, outputPath, opts.deployId, secrets); }
+      resolveResult({ status, stdout, stderr: "", ...(error ? { spawnError: error } : {}), metadata: { pid: pty.pid, sessionId: id, ...(terminalError ? { terminalError } : {}) } });
+    };
+    pty.onExit(({ exitCode, signal }) => finish(exitCode, exitCode === 0 ? undefined : new Error(`Pi exited with code ${exitCode || signal || 1}`)));
+    if (opts.timeoutMs) timer = setTimeout(() => { pty.kill("SIGTERM"); finish(124, new Error("Pi deployment timed out")); }, opts.timeoutMs);
+  });
+}
+function persistLine(line: string, path: string, deployId: string, secrets: string[]): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${safe}\n`); appendActivityEvent(parsePiLine(safe, deployId, secrets), getDeployPaths(deployId).activityLogPath); }
+function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); writeFileSync(outputPath, stdout.split("\n").filter(Boolean).map((line) => redactJsonLine(line, secrets)).join("\n") + (stdout ? "\n" : ""), "utf8"); if (opts.logFile) writeFileSync(opts.logFile, redact(stdout + stderr, secrets), "utf8"); const terminalError = stdout.split("\n").map((line) => terminalErrorFromLine(line, secrets)).find(Boolean); return terminalError ? { terminalError } : {}; }
 function failure(message: string): SpawnResult { return { exitCode: 1, errorMessage: message }; }
 function redactJsonLine(line: string, secrets: string[]): string { try { return JSON.stringify(deepRedact(JSON.parse(line), secrets)); } catch { return redact(line, secrets); } }
 function redact(value: string, secrets: string[] = []): string { let result = value; for (const secret of secrets) if (secret) result = result.split(secret).join("[REDACTED]"); for (const pattern of SECRET_TEXT) result = result.replace(pattern, "[REDACTED]"); return result; }
+function terminalErrorFromLine(line: string, secrets: string[]): string { try { const value = JSON.parse(line) as Record<string, unknown>; const stopReason = value.stopReason ?? value.stop_reason; const type = String(value.type ?? value.event ?? value.kind ?? "").toLowerCase(); const hasError = typeof value.error === "string" || typeof value.errorMessage === "string" || typeof value.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return redact(tail(extractText(value) || String(value.error ?? value.errorMessage ?? stopReason), MAX_STDERR), secrets); } catch { return ""; } }
 function deepRedact(value: unknown, secrets: string[] = []): unknown { if (typeof value === "string") return redact(value, secrets); if (Array.isArray(value)) return value.map((item) => deepRedact(item, secrets)); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => SECRET_KEY.test(key) ? [key, "[REDACTED]"] : [key, deepRedact(item, secrets)])); return value; }
 function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { const metadata: Record<string, unknown> = {}; for (const key of ["type", "event", "kind", "timestamp", "role", "tool", "toolName", "args", "partialResult", "assistantMessageEvent", "partType"]) if (raw[key] !== undefined) metadata[key] = raw[key]; return metadata; }
 function extractText(raw: Record<string, unknown>): string { const values = [raw.text, raw.body, raw.content, raw.message, raw.result, raw.partialResult, raw.assistantMessageEvent, raw.toolName, raw.args]; for (const value of values) { if (typeof value === "string") return value; if (Array.isArray(value)) { const text = value.map((item) => typeof item === "string" ? item : item && typeof item === "object" ? extractText(item as Record<string, unknown>) : "").filter(Boolean).join(" "); if (text) return text; } if (value && typeof value === "object") { const nested = extractText(value as Record<string, unknown>); if (nested) return nested; } } return ""; }

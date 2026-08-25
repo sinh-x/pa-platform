@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,6 +13,30 @@ class FakePiChild extends EventEmitter {
   readonly stderr = new EventEmitter();
   readonly pid = 42;
 }
+
+class FakePiPty extends EventEmitter {
+  readonly pid = 43;
+  readonly writes: string[] = [];
+  readonly resizes: Array<[number, number]> = [];
+  readonly signals: string[] = [];
+  private onDataHandler?: (data: string) => void;
+  private onExitHandler?: (event: { exitCode: number; signal: number }) => void;
+  write(data: string): void { this.writes.push(data); }
+  resize(cols: number, rows: number): void { this.resizes.push([cols, rows]); }
+  kill(signal?: string): void { this.signals.push(signal ?? ""); }
+  onData(handler: (data: string) => void): void { this.onDataHandler = handler; }
+  onExit(handler: (event: { exitCode: number; signal: number }) => void): void { this.onExitHandler = handler; }
+  emitData(data: string): void { this.onDataHandler?.(data); }
+  emitExit(exitCode: number): void { this.onExitHandler?.({ exitCode, signal: 0 }); }
+}
+
+class FakePiInput extends EventEmitter {
+  readonly isTTY = true;
+  isRaw = false;
+  setRawMode(raw: boolean): this { this.isRaw = raw; return this; }
+}
+
+class FakePiOutput { readonly chunks: string[] = []; write(chunk: string): boolean { this.chunks.push(chunk); return true; } }
 
 function controlledAdapter(child: FakePiChild, options: { persistLine?: () => void; onSignal?: (signal: NodeJS.Signals) => void; onTimeout?: (callback: () => void) => void; processGroupGone?: () => boolean; onSpawn?: (args: string[], stdio: unknown) => void } = {}): PiAdapter {
   return new PiAdapter({
@@ -160,22 +184,35 @@ test("requires an exact supported Pi version and redacts nested array content", 
   assert.doesNotMatch(event.body, /configured-secret|pw/);
 });
 
-test("foreground Pi inherits terminal stdio and waits for direct-child close", async () => {
-  const child = new FakePiChild();
+test("foreground Pi relays terminal input, output, resize, interrupt, and exit status", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const primer = join(mkdtempSync(join(tmpdir(), "pi-close-")), "primer.md"); writeFileSync(primer, "work");
-  const signals: NodeJS.Signals[] = []; let spawnedArgs: string[] = []; let spawnedStdio: unknown;
-  const adapter = controlledAdapter(child, { onSignal: (signal) => signals.push(signal), onSpawn: (args, stdio) => { spawnedArgs = args; spawnedStdio = stdio; } });
+  let spawnedArgs: string[] = []; let spawnedOptions: { cols: number; rows: number } | undefined;
+  const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: { spawnPty: (file, args, options) => { spawnedArgs = args; spawnedOptions = options; return pty as never; }, input: input as never, output: output as never, columns: 100, rows: 40 } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground", sessionId: "interactive-session" });
   await nextTick();
-  child.emit("close", 0);
+  input.emit("data", Buffer.from("hello")); pty.emitData("visible\n"); process.stdout.emit("resize"); process.emit("SIGINT"); pty.emitExit(0);
   const result = await resultPromise;
   assert.equal(result.exitCode, 0);
   assert.equal(result.sessionId, "interactive-session");
-  assert.equal(spawnedStdio, "inherit");
+  assert.deepEqual({ cols: spawnedOptions?.cols, rows: spawnedOptions?.rows }, { cols: 100, rows: 40 });
+  assert.deepEqual(pty.resizes, [[process.stdout.columns ?? 80, process.stdout.rows ?? 24]]);
   assert.deepEqual(spawnedArgs.slice(0, 2), ["--session-id", "interactive-session"]);
   assert.ok(!spawnedArgs.includes("--print"));
   assert.ok(!spawnedArgs.includes("--mode"));
-  assert.deepEqual(signals, []);
+  assert.deepEqual(pty.writes, ["hello"]);
+  assert.deepEqual(pty.signals, ["SIGINT"]);
+  assert.deepEqual(output.chunks, ["visible\n"]);
+});
+
+test("terminal Pi error fails on exit 0 and redacts persisted diagnostics", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-semantic-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
+  const secret = "sentinel-secret-value"; const event = JSON.stringify({ type: "agent_end", stopReason: "error", error: `authentication ${secret}` });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [secret], runCommand: () => ({ status: 0, stdout: `${event}\n`, stderr: "" }) });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-semantic", mode: "background", logFile });
+  assert.equal(result.exitCode, 1); assert.match(result.errorMessage ?? "", /authentication/); assert.doesNotMatch(result.errorMessage ?? "", /sentinel-secret-value/); assert.doesNotMatch(readFileSync(logFile, "utf8"), /sentinel-secret-value/);
+  const successful = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => ({ status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" })}\n`, stderr: "" }) });
+  assert.equal((await successful.spawn({ primerPath: primer, deployId: "d-semantic-success", mode: "background" })).exitCode, 0);
 });
 
 test("escalates resistant timeout cleanup and settles once after the process group disappears", async () => {
@@ -197,7 +234,7 @@ test("escalates resistant timeout cleanup and settles once after the process gro
       clearTimeout: () => {},
     },
   });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-timeout", mode: "foreground", timeoutMs: 1 });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-timeout", mode: "dry-run", timeoutMs: 1 });
   await nextTick();
   timeoutCallback?.();
   const result = await resultPromise;
@@ -224,7 +261,7 @@ test("settles at the cleanup deadline when the child and process group never dis
       clearTimeout: () => {},
     },
   });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-deadline", mode: "foreground", timeoutMs: 1 });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-deadline", mode: "dry-run", timeoutMs: 1 });
   await nextTick();
   timeoutCallback?.();
   const result = await resultPromise;

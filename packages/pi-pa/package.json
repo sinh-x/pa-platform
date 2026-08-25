@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@pa-platform/pa-core": "workspace:*",
+    "node-pty": "1.1.0",
     "typebox": "1.1.38"
   },
   "devDependencies": {
