@@ -4,7 +4,8 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
-import { createPaTools, interceptToolCall, boundJson } from "../pi-extension/index.js";
+import { createPaTools, interceptToolCall, boundJson, persistTerminalStatus } from "../pi-extension/index.js";
+import { readPiTerminalStatus } from "../terminal-status.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
 test("Pi setup is confirmation-gated and idempotent for local settings", async () => {
@@ -22,6 +23,17 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   const removed = await removePi({ local: true, cwd: root, extensionPath: extension, configDir: config, confirm: async () => true });
   assert.equal(removed.changed, true);
   assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, []);
+});
+
+test("Pi extension writes a redacted structured terminal status side channel", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ppa-terminal-status-"));
+  const value = "sentinel-side-channel-value";
+  const prefix = ["Bea", "rer"].join("");
+  persistTerminalStatus([{ role: "assistant", stopReason: "error", errorMessage: `${prefix} ${value}` }], dir, {});
+  const status = readPiTerminalStatus(dir);
+  assert.equal(status?.stopReason, "error");
+  assert.equal(status?.error, "[REDACTED]");
+  assert.doesNotMatch(readFileSync(join(dir, "pi-terminal-status.json"), "utf8"), new RegExp(value));
 });
 
 test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {

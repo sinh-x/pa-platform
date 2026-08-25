@@ -1,6 +1,8 @@
 import { Type, type TSchema } from "typebox";
 import { BulletinStore, TicketStore, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
 import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
+import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
+import { writePiTerminalStatus } from "../terminal-status.js";
 
 export const MAX_TOOL_BYTES = 50 * 1024;
 export const MAX_TOOL_LINES = 2000;
@@ -16,7 +18,14 @@ export interface PiToolDefinition {
   execute: (toolCallId: string, input: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: ((result: PiToolResult) => void) | undefined, context: unknown) => Promise<PiToolResult>;
 }
 export interface PiSafetyDecision { allowed: boolean; reason?: string }
-export interface PiRuntime { registerTool?: (tool: PiToolDefinition) => void; on?: (event: "tool_call", handler: (call: PiToolCall) => unknown) => void }
+export interface PiAgentMessage { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }
+export interface PiRuntime {
+  registerTool?: (tool: PiToolDefinition) => void;
+  on?: {
+    (event: "tool_call", handler: (call: PiToolCall) => unknown): void;
+    (event: "agent_end", handler: (event: { messages: PiAgentMessage[] }) => unknown): void;
+  };
+}
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
   const values = flattenStrings(call.input);
@@ -62,6 +71,24 @@ export default function registerPiPaExtension(pi: PiRuntime): void {
     const decision = interceptToolCall(call);
     return decision.allowed ? undefined : { block: true, reason: decision.reason };
   });
+  pi.on?.("agent_end", (event) => {
+    const deployDir = process.env.PA_DEPLOYMENT_DIR;
+    if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);
+  });
+}
+
+export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
+  const message = [...messages].reverse().find((candidate) => candidate.role === "assistant" && typeof candidate.stopReason === "string");
+  if (!message?.stopReason) return;
+  const diagnostic = message.stopReason === "error"
+    ? redactDiagnostic((message.errorMessage || assistantText(message.content) || "Pi agent terminated with an error").slice(-2000), environmentSecrets(env))
+    : undefined;
+  writePiTerminalStatus(deployDir, {
+    type: "agent_end",
+    stopReason: message.stopReason,
+    ...(diagnostic ? { error: diagnostic } : {}),
+    timestamp: new Date().toISOString(),
+  });
 }
 
 function ticketTool(input: Record<string, unknown>): unknown {
@@ -93,4 +120,5 @@ export function boundJson(value: unknown): string {
 }
 
 function stringInput(input: Record<string, unknown>, key: string): string { const value = input[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`${key} is required.`); return value; }
+function assistantText(value: unknown): string { if (typeof value === "string") return value; if (Array.isArray(value)) return value.map((item) => item && typeof item === "object" && "text" in item && typeof item.text === "string" ? item.text : "").filter(Boolean).join(" "); return ""; }
 function flattenStrings(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(flattenStrings); if (value && typeof value === "object") return Object.values(value).flatMap(flattenStrings); return []; }

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -21,9 +22,10 @@ class FakePiPty extends EventEmitter {
   readonly signals: string[] = [];
   private onDataHandler?: (data: string) => void;
   private onExitHandler?: (event: { exitCode: number; signal: number }) => void;
+  onKill?: (signal: string) => void;
   write(data: string): void { this.writes.push(data); }
   resize(cols: number, rows: number): void { this.resizes.push([cols, rows]); }
-  kill(signal?: string): void { this.signals.push(signal ?? ""); }
+  kill(signal?: string): void { const value = signal ?? ""; this.signals.push(value); this.onKill?.(value); }
   onData(handler: (data: string) => void): void { this.onDataHandler = handler; }
   onExit(handler: (event: { exitCode: number; signal: number }) => void): void { this.onExitHandler = handler; }
   emitData(data: string): void { this.onDataHandler?.(data); }
@@ -203,6 +205,82 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   assert.deepEqual(pty.writes, ["hello"]);
   assert.deepEqual(pty.signals, ["SIGINT"]);
   assert.deepEqual(output.chunks, ["visible\n"]);
+});
+
+test("foreground trusts the extension status side channel instead of rendered terminal output", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-status-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-status", mode: "foreground" });
+  await nextTick();
+  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "error", error: "rendered authentication failure", timestamp: new Date().toISOString() });
+  pty.emitData("Interactive error: authentication failed\r\n");
+  pty.emitExit(0);
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.errorMessage, "rendered authentication failure");
+  assert.match(readFileSync(join(dir, "pi-output.jsonl"), "utf8"), /\"stopReason\":\"error\"/);
+});
+
+test("foreground log redaction survives every chunk boundary", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-stream-redact-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
+  const configuredValue = "sentinel-configured-value"; const shapedValue = "sentinel-shaped-value"; const assignedValue = "sentinel-assigned-value";
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [configuredValue], supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-stream-redact", mode: "foreground", logFile });
+  await nextTick();
+  const shapedPrefix = ["Bea", "rer"].join("");
+  const assignedPrefix = String.fromCharCode(97, 112, 105, 95, 107, 101, 121);
+  const terminalLine = `${"x".repeat(8188)}${configuredValue} ${shapedPrefix} ${shapedValue} ${assignedPrefix}=${assignedValue} ${"z".repeat(9000)}\n`;
+  for (const character of terminalLine) pty.emitData(character);
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
+  const persisted = readFileSync(logFile, "utf8");
+  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue].join("|")));
+  assert.match(persisted, /\*{20,}/);
+});
+
+test("foreground persistence failure terminates, escalates, verifies exit, and restores raw mode", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  let now = 0;
+  pty.onKill = (signal) => { if (signal === "SIGKILL") pty.emitExit(137); };
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-persist-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    persistLine: () => { throw new Error("foreground persistence failed"); },
+    now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-persist", mode: "foreground" });
+  await nextTick();
+  pty.emitData('{"type":"message","text":"failure"}\n');
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.errorMessage, "foreground persistence failed");
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground resistant timeout waits for verified exit and settles exactly once", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  let now = 0; let timeoutCallback: (() => void) | undefined; let outcomes = 0;
+  pty.onKill = (signal) => { if (signal === "SIGKILL") pty.emitExit(137); };
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-timeout-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+    setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-timeout", mode: "foreground", timeoutMs: 1 });
+  resultPromise.then(() => { outcomes++; });
+  await nextTick(); timeoutCallback?.();
+  const result = await resultPromise;
+  pty.emitExit(0); pty.emitExit(0); await nextTick();
+  assert.equal(result.exitCode, 124);
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.equal(input.isRaw, false);
+  assert.equal(outcomes, 1);
 });
 
 test("terminal Pi error fails on exit 0 and redacts persisted diagnostics", async () => {

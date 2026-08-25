@@ -56,15 +56,25 @@ alter credentials.
 
 Foreground deployments run Pi through a Node pseudo-terminal. Keyboard input,
 terminal resize, and SIGINT are relayed to the child, while terminal output is
-shown live and written through the existing redaction pipeline. Redacted output
-is persisted in the deployment's `pi.log`, `pi-output.jsonl`, and activity
-timeline; activity error bodies are bounded to 2,000 characters.
+shown live. Log redaction carries bounded overlap across arbitrary PTY chunks,
+so callback boundaries cannot expose a split configured value, bearer value, or
+assignment-shaped credential. Redacted output is persisted in the deployment's
+`pi.log`, `pi-output.jsonl`, and activity timeline; activity error bodies are
+bounded to 2,000 characters.
 
-PPA reports failure for a non-zero Pi process exit. It also reports failure when
-Pi emits a terminal agent error such as `stopReason: "error"` (or an equivalent
-terminal error field), even if Pi exits with status 0. The redacted terminal
-error is retained as activity evidence. A normal terminal stop with exit status
-0 remains successful, and the terminal registry marker is emitted exactly once.
+The trusted PA extension writes each terminal `agent_end` result to an atomic,
+permission-restricted `pi-terminal-status.json` side channel in the deployment
+directory. Foreground supervision consumes this structured status instead of
+trying to parse rendered TUI output. PPA reports failure for a non-zero Pi
+process exit or `stopReason: "error"`, even if Pi exits with status 0. The
+redacted terminal error is retained as activity evidence. A normal terminal
+stop with exit status 0 remains successful.
+
+Foreground failure paths use one exact-once cleanup state machine. Persistence
+and terminal relay errors, timeouts, and interrupts request termination, wait
+for the PTY exit event, escalate from SIGTERM to SIGKILL after a grace period,
+and restore input listeners and raw mode before settling. The terminal registry
+marker is emitted exactly once.
 
 ## Migration
 
