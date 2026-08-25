@@ -4,7 +4,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createPaTools, interceptToolCall, boundJson } from "../pi-extension/index.js";
-import { setupPi } from "../setup.js";
+import { removePi, setupPi, statusPi } from "../setup.js";
 
 test("Pi setup is confirmation-gated and idempotent for local settings", async () => {
   const root = mkdtempSync(join(tmpdir(), "ppa-setup-"));
@@ -17,6 +17,10 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   assert.equal(first.changed, true);
   assert.equal(second.changed, false);
   assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, [extension, config]);
+  assert.equal(statusPi({ local: true, cwd: root, extensionPath: extension, configDir: config }).configured, true);
+  const removed = await removePi({ local: true, cwd: root, extensionPath: extension, configDir: config, confirm: async () => true });
+  assert.equal(removed.changed, true);
+  assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, []);
 });
 
 test("Pi extension exposes only bounded typed PA tools and shared safety policy", () => {

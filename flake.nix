@@ -89,11 +89,13 @@
 
             cp packages/pi-pa/package.json $share/packages/pi-pa/package.json
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
+             test -f packages/pi-pa/package.json
             mkdir -p $share/packages/pi-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/pi-pa/node_modules/@pa-platform/pa-core
 
             cp packages/runtime-host/package.json $share/packages/runtime-host/package.json
             cp -r packages/runtime-host/dist $share/packages/runtime-host/dist
+             test -f packages/runtime-host/package.json
             mkdir -p $share/packages/runtime-host/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/runtime-host/node_modules/@pa-platform/pa-core
             ln -s ../../../opencode-pa $share/packages/runtime-host/node_modules/@pa-platform/opencode-pa
