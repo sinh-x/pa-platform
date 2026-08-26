@@ -54,7 +54,7 @@ test("Pi extension composes attributed modules through the trusted entrypoint", 
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 3);
+  assert.equal(PI_PA_MODULES.length, 4);
   assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
 });
 
