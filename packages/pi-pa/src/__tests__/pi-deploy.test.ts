@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { PiAdapter } from "../adapter.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 
@@ -61,6 +63,52 @@ function assertTimeoutMetadata(opts: SpawnOpts, timeoutSeconds: number): void {
   assert.equal(readFileSync(opts.primerPath, "utf8").match(new RegExp(`timeout_seconds: ${timeoutSeconds}`, "g"))?.length, 1);
   assert.equal(getDeploymentEvents(opts.deployId)[0]?.effective_timeout_seconds, timeoutSeconds);
 }
+
+class ForegroundDeploymentPty extends EventEmitter {
+  readonly pid = 77_001;
+  readonly writes: string[] = [];
+  private onDataHandler?: (data: string) => void;
+  private onExitHandler?: (event: { exitCode: number; signal: number }) => void;
+  constructor(private readonly onQuit: () => void) { super(); }
+  write(data: string): void { this.writes.push(data); if (data === "/quit") this.onQuit(); }
+  resize(): void {}
+  kill(): void {}
+  onData(handler: (data: string) => void): void { this.onDataHandler = handler; }
+  onExit(handler: (event: { exitCode: number; signal: number }) => void): void { this.onExitHandler = handler; }
+  emitData(data: string): void { this.onDataHandler?.(data); }
+  emitExit(exitCode: number): void { this.onExitHandler?.({ exitCode, signal: 0 }); }
+}
+
+class ForegroundDeploymentInput extends EventEmitter {
+  readonly isTTY = true;
+  isRaw = false;
+  setRawMode(raw: boolean): this { this.isRaw = raw; return this; }
+}
+
+function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
+
+test("foreground PPA /quit settles without PTY onExit and emits one terminal registry event", async () => {
+  await withPiEnv(async () => {
+    let running = true;
+    const input = new ForegroundDeploymentInput();
+    const output = { write() { return true; } };
+    const pty = new ForegroundDeploymentPty(() => { running = false; });
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => running,
+    } });
+    const deploymentPromise = deployWithPi({ team: "builder", mode: "implement" }, adapter);
+    await nextTick();
+    input.emit("data", "/quit");
+    const result = await deploymentPromise;
+    assert.equal(result.status, "success");
+    assert.deepEqual(pty.writes, ["/quit"]);
+    assert.equal(input.isRaw, false);
+    const terminalEvents = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminalEvents.length, 1);
+    assert.equal(terminalEvents[0]?.event, "completed");
+  });
+});
 
 test("new foreground Pi deployments omit the adapter deadline but retain timeout metadata", async () => {
   await withPiEnv(async () => {
