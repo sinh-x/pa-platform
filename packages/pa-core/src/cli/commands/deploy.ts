@@ -91,8 +91,8 @@ export function printDeployHelp(io: Required<CliIo>): void {
   io.stdout("Provider options:");
   io.stdout("  --provider <name>      Model provider (minimax, openai, deepseek, ollama-cloud, opencode-go). Default: ollama-cloud");
   io.stdout("  --model <name>         Override default model");
-  io.stdout("  --team-model <name>    Override team-level model");
-  io.stdout("  --agent-model <name>   Override agent-level model");
+  io.stdout("  --team-model <name>    Deprecated alias for --model (removal tracked by PAP-147)");
+  io.stdout("  --agent-model <name>   Unsupported; per-agent overrides are tracked by PAP-148");
 }
 
 export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {

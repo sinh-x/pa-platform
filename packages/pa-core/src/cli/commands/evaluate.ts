@@ -10,7 +10,7 @@ const EVALUATOR_MODE = "deployment-review";
 const DEPLOYMENT_ID_PATTERN = /^d-[a-z0-9]{6}$/;
 
 type EvaluateArgs =
-  | { action: "launch"; request: DeployRequest }
+  | { action: "launch"; request: DeployRequest; warnings?: string[] }
   | { action: "record"; targetDeploymentId: string; evaluatorDeploymentId: string; reportPath?: string; overall?: number; metrics: Partial<Record<EvaluatorMetricName, number>> };
 
 const METRIC_FLAGS: Record<string, EvaluatorMetricName> = {
@@ -33,6 +33,7 @@ export function parseEvaluateArgs(argv: string[]): EvaluateArgs | { error: strin
   let reportPath: string | undefined;
   let overall: number | undefined;
   const metrics: Partial<Record<EvaluatorMetricName, number>> = {};
+  const warnings: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -100,10 +101,10 @@ export function parseEvaluateArgs(argv: string[]): EvaluateArgs | { error: strin
         break;
       case "--team-model":
         request.teamModel = value;
+        warnings.push("Warning: --team-model is deprecated; use --model instead. Final removal is tracked by PAP-147.");
         break;
       case "--agent-model":
-        request.agentModel = value;
-        break;
+        return { error: "--agent-model is not supported; per-agent model overrides are tracked by PAP-148. Use --model for the deployment model." };
       default:
         return { error: `Unsupported evaluate option: ${arg}` };
     }
@@ -129,7 +130,7 @@ export function parseEvaluateArgs(argv: string[]): EvaluateArgs | { error: strin
   if (request.agentModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(request.agentModel)) return { error: "Invalid agent model name" };
   if (request.dryRun && request.background) return { error: "--background and --dry-run are mutually exclusive" };
 
-  return { action: "launch", request };
+  return { action: "launch", request, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function validateScore(score: number, flag: string): string | undefined {
@@ -158,8 +159,8 @@ export function printEvaluateHelp(io: Required<CliIo>): void {
   io.stdout("  --timeout <seconds>         Override evaluator deployment timeout");
   io.stdout("  --provider <name>           Model provider");
   io.stdout("  --model <name>              Override model");
-  io.stdout("  --team-model <name>         Override team-level model");
-  io.stdout("  --agent-model <name>        Override agent-level model");
+  io.stdout("  --team-model <name>         Deprecated alias for --model (removal tracked by PAP-147)");
+  io.stdout("  --agent-model <name>        Unsupported; per-agent overrides are tracked by PAP-148");
   io.stdout("  --record                   Store evaluator result for the target deployment");
   io.stdout("  --evaluator-deployment <id> Evaluator deployment ID for --record (defaults to PA_DEPLOYMENT_ID)");
   io.stdout("  --report-path <path>        Evaluator report path for --record");
@@ -184,6 +185,7 @@ export async function runEvaluateCommand(argv: string[], io: Required<CliIo>, ho
     if (result.report_path) io.stdout(`Report: ${result.report_path}`);
     return 0;
   }
+  if (parsed.warnings) for (const warning of parsed.warnings) io.stderr(warning);
   try {
     assertNoSensitiveMatch("content", parsed.request.evaluateDeployment ?? "");
   } catch (error) {

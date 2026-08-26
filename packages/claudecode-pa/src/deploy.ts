@@ -63,15 +63,10 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   // rejected by `normalizeProvider` below.
   const teamModeProviderIsAnthropic = !selectedMode?.provider || selectedMode.provider === "anthropic";
   const provider = request.provider ?? "anthropic";
-  const teamModeModel = teamModeProviderIsAnthropic
-    ? (selectedMode?.runtimes?.claude?.model ?? selectedMode?.model)
-    : undefined;
+  const teamModeModel = teamModeProviderIsAnthropic ? selectedMode?.model : undefined;
   let model: string;
   try {
-    model = resolveClaudeModel(provider, request.model
-      ?? request.teamModel
-      ?? teamConfig.runtimes?.claude?.model
-      ?? teamModeModel);
+    model = resolveClaudeModel(provider, request.model ?? request.teamModel ?? teamModeModel);
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }

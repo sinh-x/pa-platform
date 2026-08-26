@@ -62,13 +62,9 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   const provider = request.provider ?? selectedMode?.provider ?? "";
   const model = resolveDroidModel(request.model ?? request.teamModel ?? selectedMode?.model, {
     platformDefaults: platformConfig.defaults?.droidcode,
-    modeRuntimes: selectedMode?.runtimes?.droid,
-    teamRuntimes: teamConfig.runtimes?.droid,
   });
   const autonomy = resolveDroidAutonomy({
     cliFlag: request.autonomy,
-    modeRuntimes: selectedMode?.runtimes?.droid,
-    teamRuntimes: teamConfig.runtimes?.droid,
     platformDefaults: platformConfig.defaults?.droidcode,
   });
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
-import type { Agent, AutonomyLevel, DeployMode, Hierarchy, HierarchyMember, RuntimeConfigMap, SkillEntry, TeamConfig } from "./types.js";
+import type { Agent, DeployMode, Hierarchy, HierarchyMember, SkillEntry, TeamConfig } from "./types.js";
 
 // Ported from PA yaml-parser.ts at frozen PA source on 2026-04-26; pa-platform owns future changes.
 
@@ -9,7 +9,9 @@ export function parseTeamYaml(filePath: string): TeamConfig {
 }
 
 export function parseTeamYamlContent(content: string): TeamConfig {
-  const raw = (yaml.load(content) as Record<string, unknown> | undefined) ?? {};
+  const loaded = yaml.load(content);
+  const raw = loaded === undefined ? {} : asRecord(loaded, "team config");
+  rejectRemovedRuntimeConfig(raw, "runtimes");
   const agents = ((raw["agents"] as Array<Record<string, unknown>> | undefined) ?? []).map<Agent>((agent) => ({
     name: String(agent["name"] ?? ""),
     role: String(agent["role"] ?? ""),
@@ -19,31 +21,34 @@ export function parseTeamYamlContent(content: string): TeamConfig {
   }));
 
   const rawModes = raw["deploy_modes"] as Array<Record<string, unknown>> | undefined;
-  const deployModes = rawModes?.map<DeployMode>((mode) => {
-    const skills = (mode["skills"] as Array<Record<string, string>> | undefined)?.map<SkillEntry>((skill) => ({
+  const deployModes = rawModes?.map<DeployMode>((mode, index) => {
+    const modeRecord = asRecord(mode, `deploy_modes[${index}]`);
+    rejectRemovedRuntimeConfig(modeRecord, `deploy_modes[${index}].runtimes`);
+    validateFlatModePair(modeRecord, index);
+    const provider = optionalString(modeRecord["provider"]);
+    const model = optionalString(modeRecord["model"]);
+    const skills = (modeRecord["skills"] as Array<Record<string, string>> | undefined)?.map<SkillEntry>((skill) => ({
       name: skill["name"],
       "inject-as": skill["inject-as"] as SkillEntry["inject-as"],
     }));
     return {
-      id: String(mode["id"] ?? ""),
-      label: String(mode["label"] ?? ""),
-      phone_visible: mode["phone_visible"] as boolean | undefined,
-      objective: mode["objective"] as string | undefined,
-      agents: mode["agents"] as string[] | undefined,
+      id: String(modeRecord["id"] ?? ""),
+      label: String(modeRecord["label"] ?? ""),
+      phone_visible: modeRecord["phone_visible"] as boolean | undefined,
+      objective: modeRecord["objective"] as string | undefined,
+      agents: modeRecord["agents"] as string[] | undefined,
       skills,
-      mode_type: mode["mode_type"] as DeployMode["mode_type"],
-      solo: mode["solo"] as boolean | undefined,
-      model: mode["model"] as DeployMode["model"],
-      provider: mode["provider"] as DeployMode["provider"],
-      timeout: mode["timeout"] as number | undefined,
-      global_docs: mode["global_docs"] as string[] | undefined,
-      runtimes: parseRuntimes(mode["runtimes"] as Record<string, unknown> | undefined),
-      require_ticket: mode["require_ticket"] as boolean | undefined,
+      mode_type: modeRecord["mode_type"] as DeployMode["mode_type"],
+      solo: modeRecord["solo"] as boolean | undefined,
+      model,
+      provider,
+      timeout: modeRecord["timeout"] as number | undefined,
+      global_docs: modeRecord["global_docs"] as string[] | undefined,
+      require_ticket: modeRecord["require_ticket"] as boolean | undefined,
     };
   });
 
   const hierarchy = parseHierarchy(raw["hierarchy"] as Record<string, unknown> | undefined);
-  const runtimes = parseRuntimes(raw["runtimes"] as Record<string, unknown> | undefined);
 
   return {
     name: String(raw["name"] ?? ""),
@@ -59,43 +64,31 @@ export function parseTeamYamlContent(content: string): TeamConfig {
     timeout: raw["timeout"] as number | undefined,
     global_docs: raw["global_docs"] as string[] | undefined,
     terse_mode: raw["terse_mode"] as boolean | undefined,
-    runtimes,
   };
 }
 
-function parseRuntimes(raw: Record<string, unknown> | undefined): RuntimeConfigMap | undefined {
-  if (!raw) return undefined;
-  const result: RuntimeConfigMap = {};
-  for (const runtime of ["droid", "opencode", "claude", "pi"] as const) {
-    const block = raw[runtime] as Record<string, unknown> | undefined;
-    if (!block) continue;
-    if (typeof block !== "object" || Array.isArray(block)) throw new Error(`runtimes.${runtime} must be a mapping`);
-    if (runtime === "pi") validatePiRuntimeBlock(block);
-    result[runtime] = {
-      model: block["model"] as string | undefined,
-      provider: block["provider"] as string | undefined,
-      autonomy: block["autonomy"] as AutonomyLevel | undefined,
-      timeout: block["timeout"] as number | undefined,
-    };
+function rejectRemovedRuntimeConfig(raw: Record<string, unknown>, path: string): void {
+  if (Object.prototype.hasOwnProperty.call(raw, "runtimes")) {
+    throw new Error(`${path} is no longer supported; configure flat deploy_modes[].provider and deploy_modes[].model instead.`);
   }
-  return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function validatePiRuntimeBlock(block: Record<string, unknown>): void {
-  for (const field of ["provider", "model"] as const) {
-    const value = block[field];
-    if (value !== undefined && (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/.test(value))) {
-      throw new Error(`runtimes.pi.${field} must be a non-empty Pi identifier`);
-    }
+function validateFlatModePair(mode: Record<string, unknown>, index: number): void {
+  const basePath = `deploy_modes[${index}]`;
+  const provider = mode["provider"];
+  const model = mode["model"];
+  const hasProvider = provider !== undefined && provider !== null && (typeof provider !== "string" || provider.trim() !== "");
+  const hasModel = model !== undefined && model !== null && (typeof model !== "string" || model.trim() !== "");
+  if (hasProvider && typeof provider !== "string") throw new Error(`${basePath}.provider must be a non-empty string`);
+  if (hasModel && typeof model !== "string") throw new Error(`${basePath}.model must be a non-empty string`);
+  if (hasProvider !== hasModel) {
+    const missingPath = hasProvider ? `${basePath}.model` : `${basePath}.provider`;
+    throw new Error(`${missingPath} is required when configuring a deploy mode pair; deploy_modes[].provider and deploy_modes[].model must both be present or both be absent.`);
   }
-  const autonomy = block["autonomy"];
-  if (autonomy !== undefined && autonomy !== "low" && autonomy !== "medium" && autonomy !== "high") {
-    throw new Error("runtimes.pi.autonomy must be low, medium, or high");
-  }
-  const timeout = block["timeout"];
-  if (timeout !== undefined && (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout <= 0)) {
-    throw new Error("runtimes.pi.timeout must be a positive integer");
-  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {
@@ -110,4 +103,9 @@ function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | u
     ...(teamManager ? { "team-manager": parseMember(teamManager) } : {}),
     ...(agents ? { agents: agents.map((agent) => ({ name: String(agent["name"] ?? ""), ...parseMember(agent) })) } : {}),
   };
+}
+
+function asRecord(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${path} must be a mapping`);
+  return value as Record<string, unknown>;
 }
