@@ -78,6 +78,8 @@ test("Pi extension exposes only bounded typed PA tools and shared safety policy"
   await assert.rejects(tools.get("pa_bulletin")!.execute("tool-call-error", { action: "other" }, undefined, undefined, undefined), /Only bulletin list is available/);
   assert.equal(interceptToolCall({ name: "bash", input: { command: "rm -rf build" } }).allowed, false);
   assert.equal(interceptToolCall({ name: "read", input: { path: ".env" } }).allowed, false);
+  assert.equal(interceptToolCall({ name: "question", input: { question: ".env", options: [] } }).allowed, false);
+  assert.equal(interceptToolCall({ name: "todo", input: { action: "add", text: ".env" } }).allowed, false);
   assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);
   assert.match(boundJson({ output: "x".repeat(60_000) }), /truncated/);
 });
