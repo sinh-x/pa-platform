@@ -19,7 +19,7 @@ After editing skills or package metadata in the config checkout, run `/reload` i
 
 ## Managed Deployments
 
-`ppa deploy` is isolated from ordinary Pi discovery. A managed deployment receives exactly the selected PA skills and the trusted PA extension through explicit resource arguments; it does not load unrelated user or project Pi skills/extensions. A setup registration does not weaken this isolation.
+`ppa deploy` is isolated from ordinary Pi discovery. A managed deployment receives exactly the selected PA skills and the trusted PA extension through explicit resource arguments; it does not load unrelated user or project Pi skills/extensions. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus the interactive tools and context UI below.
 
 Pi provider/model precedence is CLI flags, selected mode `runtimes.pi`, team `runtimes.pi`, then Pi-local Pi configuration. Pi remains an optional runtime; OpenCode remains the default when no runtime is selected.
 
@@ -51,6 +51,40 @@ PPA does not install, provision, or manage OpenAI/Codex authentication. The
 operator must authenticate Pi separately with the `openai-codex` provider. The
 normalization changes identifiers only; it does not select a fallback model or
 alter credentials.
+
+## Interactive Tools
+
+### Structured questions
+
+The sequential `question` tool accepts a question, an optional short header, Pi-style `{ label, description? }` options, and `multiple: true|false`.
+
+- Single-select returns one predefined answer or one non-empty custom answer.
+- Multi-select combines zero or more predefined answers with at most one custom value.
+- Escape returns a typed cancelled outcome.
+- TUI interaction is unavailable in RPC, JSON, and print modes; those modes return immediately with a typed `ui_unavailable` outcome and never wait for terminal input.
+- Empty option lists return a validation outcome without opening a component.
+
+Result details distinguish selected options, custom input, cancellation, unavailable mode, and successful answers. Text sent to the model is bounded to 50 KiB and 2,000 lines and includes a truncation marker when shortened.
+
+### Session todos
+
+The sequential `todo` tool supports `list`, `add`, `update`, `start`, `complete`, `cancel`, and `reorder`. Tasks have monotonic session-local numeric IDs, stable order, status, text, and dependency IDs. Only one task can be `in_progress`; starting another returns the prior active task to `pending`. Completed and cancelled tasks are terminal and cannot be reopened or edited.
+
+Unknown IDs, self-dependencies, dependency cycles, incomplete dependencies, and invalid terminal mutations are rejected atomically. Every result stores the complete task snapshot and next ID in structured details. Pi reconstructs the latest snapshot on the active session branch after reload, resume, and tree navigation. A separate/new session starts empty. Todos are not written to an external file or synchronized between sessions. Full structured snapshots intentionally have no fixed task or text limit, so very large lists can increase Pi session-file size; textual tool output remains bounded to 50 KiB and 2,000 lines.
+
+## Context Status and Sidebar
+
+The extension uses Pi's additive `setStatus` API, so Pi's built-in footer remains installed. Compact status includes available PA deployment/team/mode/ticket identity, provider/model, repository, Git branch/dirty state, and todo progress/active task. Ordinary sessions explicitly show PA as unavailable while retaining model, repository/Git, and todo context.
+
+Run `/pa-context` or press Alt+I to toggle the same initially hidden, right-anchored details sidebar. It is visible only at terminal widths of 120 columns or greater; compact status remains available on narrower terminals. Escape or Alt+I hides it. Rendered lines use Pi's ANSI/Unicode-aware width utilities.
+
+Relevant session, model, todo, tree, and turn events are coalesced to at most one refresh per two seconds. Git and deployment lookups each have a 500 ms deadline. A timed-out lookup retains the prior value with a `stale` label. Timers and overlays are disposed on session shutdown or reload; the extension starts no daemon or external server.
+
+## Compatibility, Reuse, and Collisions
+
+The package targets Node.js 22.19.0 or later and Pi 0.80.8 or later. The question, todo, status, and overlay implementations adapt the MIT-licensed Pi 0.80.8 examples `examples/extensions/question.ts`, `todo.ts`, `status-line.ts`, and `overlay-qa-tests.ts`; comments in the source identify intentional PA changes.
+
+An ordinary session can load unrelated extensions that also register `question`, `todo`, `/pa-context`, or Alt+I. Pi applies its normal collision behavior (including suffixed duplicate command names where supported). Remove or disable the conflicting ordinary-session extension if deterministic names are required. Managed PPA deployments avoid this ambiguity by loading `--no-extensions` plus exactly the trusted `pi-pa` extension path.
 
 ## Failure Diagnostics
 

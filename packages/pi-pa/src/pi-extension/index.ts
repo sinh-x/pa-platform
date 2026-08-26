@@ -3,29 +3,56 @@ import { BulletinStore, TicketStore, getDeploymentEvents, queryDeploymentStatus,
 import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
+import { registerQuestionModule } from "./question.js";
+import { registerTodoModule } from "./todo.js";
+import { registerContextUiModule } from "./context-ui.js";
+
+// PAP-145 modules adapt the MIT-licensed Pi 0.80.8 examples at
+// examples/extensions/{question,todo,status-line,overlay-qa-tests}.ts.
+export const PI_EXAMPLE_VERSION = "0.80.8";
+export const PI_EXAMPLE_SOURCES = [
+  "examples/extensions/question.ts",
+  "examples/extensions/todo.ts",
+  "examples/extensions/status-line.ts",
+  "examples/extensions/overlay-qa-tests.ts",
+] as const;
 
 export const MAX_TOOL_BYTES = 50 * 1024;
 export const MAX_TOOL_LINES = 2000;
 
 export interface PiToolCall { name: string; input: Record<string, unknown> }
 export interface PiTextContent { type: "text"; text: string }
-export interface PiToolResult { content: PiTextContent[]; details: Record<string, unknown> }
-export interface PiToolDefinition {
-  name: "pa_ticket" | "pa_bulletin" | "pa_registry" | "pa_status";
+export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails }
+export interface PiToolTheme {
+  fg: (color: string, text: string) => string;
+  bold: (text: string) => string;
+}
+export interface PiToolComponent { render: (width: number) => string[]; invalidate: () => void }
+export interface PiToolDefinition<TInput extends Record<string, unknown> = Record<string, unknown>, TDetails extends Record<string, unknown> = Record<string, unknown>> {
+  name: string;
   label: string;
   description: string;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
   parameters: TSchema;
-  execute: (toolCallId: string, input: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: ((result: PiToolResult) => void) | undefined, context: unknown) => Promise<PiToolResult>;
+  executionMode?: "parallel" | "sequential";
+  execute: (toolCallId: string, input: TInput, signal: AbortSignal | undefined, onUpdate: ((result: PiToolResult<TDetails>) => void) | undefined, context: unknown) => Promise<PiToolResult<TDetails>>;
+  renderCall?: (args: TInput, theme: PiToolTheme, context: unknown) => PiToolComponent;
+  renderResult?: (result: PiToolResult<TDetails>, options: { expanded: boolean; isPartial?: boolean }, theme: PiToolTheme, context: unknown) => PiToolComponent;
 }
 export interface PiSafetyDecision { allowed: boolean; reason?: string }
 export interface PiAgentMessage { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }
 export interface PiRuntime {
-  registerTool?: (tool: PiToolDefinition) => void;
+  registerTool?: <TInput extends Record<string, unknown>, TDetails extends Record<string, unknown>>(tool: PiToolDefinition<TInput, TDetails>) => void;
   on?: {
     (event: "tool_call", handler: (call: PiToolCall) => unknown): void;
     (event: "agent_end", handler: (event: { messages: PiAgentMessage[] }) => unknown): void;
+    (event: string, handler: (event: unknown, context: unknown) => unknown): void;
   };
+  registerCommand?: (name: string, options: { description: string; handler: (args: string, context: unknown) => unknown }) => void;
+  registerShortcut?: (shortcut: string, options: { description: string; handler: (context: unknown) => unknown }) => void;
 }
+export type PiExtensionModule = (pi: PiRuntime) => void;
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
   const values = flattenStrings(call.input);
@@ -65,7 +92,7 @@ export function createPaExtension(): { name: string; tools: PiToolDefinition[]; 
   return { name: "pi-pa", tools: createPaTools(), tool_call: interceptToolCall };
 }
 
-export default function registerPiPaExtension(pi: PiRuntime): void {
+export const registerPaToolsModule: PiExtensionModule = (pi) => {
   for (const tool of createPaTools()) pi.registerTool?.(tool);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);
@@ -75,6 +102,12 @@ export default function registerPiPaExtension(pi: PiRuntime): void {
     const deployDir = process.env.PA_DEPLOYMENT_DIR;
     if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);
   });
+};
+
+export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModule, registerQuestionModule, registerTodoModule, registerContextUiModule];
+
+export default function registerPiPaExtension(pi: PiRuntime): void {
+  for (const registerModule of PI_PA_MODULES) registerModule(pi);
 }
 
 export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
