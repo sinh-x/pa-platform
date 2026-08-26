@@ -54,8 +54,8 @@ test("Pi extension composes attributed modules through the trusted entrypoint", 
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 2);
-  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question"]);
+  assert.equal(PI_PA_MODULES.length, 3);
+  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
 });
 
 test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {

@@ -4,6 +4,7 @@ import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { registerQuestionModule } from "./question.js";
+import { registerTodoModule } from "./todo.js";
 
 // PAP-145 modules adapt the MIT-licensed Pi 0.80.8 examples at
 // examples/extensions/{question,todo,status-line,overlay-qa-tests}.ts.
@@ -45,6 +46,7 @@ export interface PiRuntime {
   on?: {
     (event: "tool_call", handler: (call: PiToolCall) => unknown): void;
     (event: "agent_end", handler: (event: { messages: PiAgentMessage[] }) => unknown): void;
+    (event: string, handler: (event: unknown, context: unknown) => unknown): void;
   };
 }
 export type PiExtensionModule = (pi: PiRuntime) => void;
@@ -99,7 +101,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi) => {
   });
 };
 
-export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModule, registerQuestionModule];
+export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModule, registerQuestionModule, registerTodoModule];
 
 export default function registerPiPaExtension(pi: PiRuntime): void {
   for (const registerModule of PI_PA_MODULES) registerModule(pi);
