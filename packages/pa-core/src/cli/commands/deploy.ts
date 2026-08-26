@@ -133,7 +133,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     return 1;
   }
 
-  const result = await hooks.deploy(resolved.request);
+  const result = await hooks.deploy(resolved.request, { stderr: io.stderr });
   if (result.status === "failed") {
     io.stderr(result.reason ?? "Deployment failed");
     return 1;

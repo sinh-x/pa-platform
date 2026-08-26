@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { closeDb, createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
-import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
+import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDroidRuntimeConfig, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
@@ -320,6 +320,14 @@ describe("DroidCodeAdapter", () => {
       errorThrown = true;
     }
     assert.equal(errorThrown, false, "background deploy should not throw");
+  });
+});
+
+describe("shared Droid resolution", () => {
+  it("maps the flat model and keeps provider/model evidence together", () => {
+    const result = resolveDroidRuntimeConfig(Object.freeze({ provider: "deepseek", model: "deepseek/deepseek-v4-pro", source: "mode" }));
+    assert.deepEqual(result, { provider: "deepseek", model: "deepseek-v4-pro", source: "mode" });
+    assert.ok(Object.isFrozen(result));
   });
 });
 

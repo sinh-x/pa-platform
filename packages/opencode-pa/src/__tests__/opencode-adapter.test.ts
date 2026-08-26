@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
-import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "../adapter.js";
+import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
@@ -115,6 +115,7 @@ function writeBuilderTeamConfig(root: string): void {
     "    label: Data Analysis",
     "    mode_type: interactive",
     "    provider: openai",
+    "    model: gpt-5.5",
   ].join("\n"));
 }
 
@@ -178,7 +179,7 @@ test("opa dry-run deployment-context block includes pa_env_vars subsection", asy
     assert.match(primer, /PA_TICKET_ID: DG-211/);
     assert.match(primer, /PA_REPO: ~\/demo-repo|demo-repo/);
     assert.match(primer, /PA_PROVIDER: openai/);
-    assert.match(primer, /PA_MODEL: gpt-5/);
+    assert.match(primer, /PA_MODEL: openai\/gpt-5/);
     assert.match(primer, /PA_TEAM_MODEL: o3/);
     assert.match(primer, /PA_AGENT_MODEL:/);
   });
@@ -221,6 +222,16 @@ test("opa dry-run --ticket overrides stale PA_TICKET_ID env var", async () => {
       restore("PA_TICKET_ID", prev);
     }
   });
+});
+
+test("shared OpenCode resolution preserves mappings and falls back incompatible providers", () => {
+  const configured = resolveOpencodeRuntimeConfig(Object.freeze({ provider: "openai", model: "gpt-5.5", source: "mode" }));
+  assert.deepEqual(configured, { provider: "openai", model: "openai/gpt-5.5", source: "mode" });
+  assert.ok(Object.isFrozen(configured));
+  const fallback = resolveOpencodeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "claude-sonnet-4-6", source: "mode" }));
+  assert.equal(fallback.provider, "ollama-cloud");
+  assert.equal(fallback.model, "ollama-cloud/deepseek-v4-pro");
+  assert.match(fallback.warning ?? "", /anthropic\/claude-sonnet-4-6/);
 });
 
 test("resolveOpencodeModel supports minimax and openai providers", () => {
@@ -464,6 +475,7 @@ test("opa evaluate uses evaluator team primer and output path", async () => {
       "  - id: deployment-review",
       "    label: Deployment Review",
       "    provider: openai",
+      "    model: gpt-5.5",
     ].join("\n"));
     appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "started", timestamp: "2026-05-10T09:00:00Z", ticket_id: "PAP-058", objective: "Build feature" });
     appendRegistryEvent({ deployment_id: "d-target", team: "builder", event: "completed", timestamp: "2026-05-10T09:05:00Z", status: "success" });
@@ -528,11 +540,10 @@ test("opa deploy supports pa deploy compatibility flags", async () => {
     assert.match(validateOut.join("\n"), /Valid team config: daily/);
 
     const deployOut: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan", "--objective-file", objectiveFile, "--provider", "openai", "--team-model", "gpt-5.5-fast", "--agent-model", "gpt-5.5-mini", "--background"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => deployOut.push(line), stderr: () => {} } }), 0);
+    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan", "--objective-file", objectiveFile, "--provider", "openai", "--team-model", "gpt-5.5-fast", "--background"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => deployOut.push(line), stderr: () => {} } }), 0);
     const deployment = queryDeploymentStatuses()[0]!;
     assert.equal(deployment.provider, "openai");
     assert.equal(deployment.models?.["team"], "openai/gpt-5.5-fast");
-    assert.equal(deployment.models?.["agents"], "gpt-5.5-mini");
     assert.match(readFileSync(join(root, "deployments", deployment.deploy_id, "primer.md"), "utf-8"), /Ship multi-line\nobjective/);
   });
 });

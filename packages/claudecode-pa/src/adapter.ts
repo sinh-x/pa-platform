@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { installPaClaudeHooks } from "./plugins/pa-claude-hooks.js";
 import { STDERR_TAIL_BYTES, tailString } from "./util.js";
 
@@ -294,6 +294,19 @@ export function resolveClaudeModel(provider: string | undefined, model: string |
 export function normalizeProvider(provider: string | undefined): ClaudeProvider {
   if (!provider || provider === "anthropic") return "anthropic";
   throw new Error(`Unsupported cpa provider: ${provider}. Supported providers: anthropic`);
+}
+
+/** Map the shared provider/model result to Claude Code's anthropic runtime. */
+export function resolveClaudeRuntimeConfig(config: EffectiveRuntimeConfig, env: NodeJS.ProcessEnv = process.env): EffectiveRuntimeConfig {
+  if (config.provider === undefined || config.provider === "anthropic") {
+    return Object.freeze({ provider: "anthropic", model: resolveClaudeModel("anthropic", config.model, env), source: config.source });
+  }
+  const provider = "anthropic";
+  const model = resolveClaudeModel(provider, undefined, env);
+  const warning = redactDiagnostic(
+    `cpa: incompatible provider/model ${formatRuntimePair(config.provider, config.model)}; falling back to ${formatRuntimePair(provider, model)}.`,
+  );
+  return Object.freeze({ provider, model, source: "fallback", warning });
 }
 
 function writeLog(path: string, stdout: string, stderr: string): void {

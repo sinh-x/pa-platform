@@ -35,6 +35,10 @@ export interface DeployTimeoutResolutionInput {
   env?: Record<string, string | undefined>;
 }
 
+export interface DeployDiagnostics {
+  stderr(message: string): void;
+}
+
 export interface DeployHookResult {
   status: "pending" | "success" | "failed";
   team?: string;
@@ -55,7 +59,7 @@ export interface SelfUpdateStartResult extends SelfUpdateStatusResult {
 }
 
 export interface CoreExecutionHooks {
-  deploy?(request: DeployRequest): Promise<DeployHookResult> | DeployHookResult;
+  deploy?(request: DeployRequest, diagnostics?: DeployDiagnostics): Promise<DeployHookResult> | DeployHookResult;
   serve?(action: "start" | "stop" | "restart" | "status"): Promise<{ status: string; message?: string }> | { status: string; message?: string };
   selfUpdate?(): Promise<SelfUpdateStartResult> | SelfUpdateStartResult;
   getSelfUpdateStatus?(): Promise<SelfUpdateStatusResult> | SelfUpdateStatusResult;

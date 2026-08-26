@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
+import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 
@@ -176,5 +177,65 @@ test("managed Pi deployment passes normalized provider and model to the adapter"
     assert.equal(captured?.model, "gpt-5.6-luna");
     assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
     assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-luna");
+  });
+});
+
+test("PPA defaults to Sol and uses one normalized pair for spawn, env, primer, and registry", async () => {
+  await withPiEnv(async () => {
+    let captured: SpawnOpts | undefined;
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    assert.equal(result.status, "success");
+    assert.equal(captured?.model, "gpt-5.6-sol");
+    assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
+    assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-sol");
+    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_PROVIDER: openai-codex/);
+    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_MODEL: gpt-5.6-sol/);
+    const started = getDeploymentEvents(result.deploymentId!)[0];
+    assert.equal(started?.provider, "openai-codex");
+    assert.equal(started?.models?.team, "gpt-5.6-sol");
+  });
+});
+
+test("PPA incompatible pairs fall back with a redacted warning result", () => {
+  const protectedModel = "sk-1234567890abcdef123456";
+  const result = resolvePiRuntimeConfig(Object.freeze({ provider: "anthropic", model: protectedModel, source: "mode" }));
+  assert.equal(result.provider, "openai-codex");
+  assert.equal(result.model, "gpt-5.6-sol");
+  assert.equal(result.source, "fallback");
+  assert.match(result.warning ?? "", /anthropic\/\[REDACTED\]/);
+  assert.doesNotMatch(result.warning ?? "", /1234567890abcdef/);
+  assert.ok(Object.isFrozen(result));
+});
+
+test("PPA fallback warning is activity evidence before the fallback spawn", async () => {
+  await withPiEnv(async (root) => {
+    writeFileSync(join(root, "teams", "builder.yaml"), [
+      "name: builder",
+      "description: Builder",
+      "objective: Build",
+      "agents:",
+      "  - name: builder-agent",
+      "    role: Builds",
+      "deploy_modes:",
+      "  - id: implement",
+      "    label: Implement",
+      "    provider: anthropic",
+      "    model: claude-sonnet-4-6",
+    ].join("\n") + "\n");
+    let captured: SpawnOpts | undefined;
+    const order: string[] = [];
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ onSpawn: (opts) => { order.push("spawn"); captured = opts; } }), { stderr: (warning) => { order.push(`warning:${warning}`); } });
+    assert.equal(result.status, "success");
+    assert.match(order[0] ?? "", /warning:ppa: incompatible provider\/model/);
+    assert.equal(order[1], "spawn");
+    assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
+    assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-sol");
+    const events = getDeploymentEvents(result.deploymentId!);
+    assert.equal(events[0]?.provider, "openai-codex");
+    assert.equal(events[0]?.models?.team, "gpt-5.6-sol");
+    const warning = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
+    assert.equal(warning?.kind, "error");
+    assert.match(warning?.body ?? "", /anthropic\/claude-sonnet-4-6/);
+    assert.match(warning?.body ?? "", /openai-codex\/gpt-5\.6-sol/);
   });
 });

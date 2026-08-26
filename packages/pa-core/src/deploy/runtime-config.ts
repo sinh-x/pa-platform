@@ -1,7 +1,7 @@
 import type { DeployRequest } from "./control.js";
 import type { DeployMode, ModelName, ProviderName, RuntimeName, RuntimeOverrides, TeamConfig } from "../types.js";
 
-export type RuntimeConfigSource = "cli" | "mode" | "default";
+export type RuntimeConfigSource = "cli" | "mode" | "default" | "fallback";
 
 /**
  * The single provider/model result consumed by runtime adapters.
@@ -14,6 +14,8 @@ export interface EffectiveRuntimeConfig extends Readonly<RuntimeOverrides> {
   readonly provider?: ProviderName;
   readonly model?: ModelName;
   readonly source: RuntimeConfigSource;
+  /** Redacted diagnostic explaining why the adapter selected its default. */
+  readonly warning?: string;
 }
 
 /** Alias emphasizing that this is the shared resolution contract. */
@@ -49,4 +51,21 @@ export function resolveRuntimeConfig(input: RuntimeConfigResolutionInput): Effec
     ...(input.local?.timeout !== undefined ? { timeout: input.local.timeout } : {}),
     source,
   });
+}
+
+/**
+ * Keep adapter fallback diagnostics safe even when a caller bypasses the CLI's
+ * identifier validation (for example, an Agent API or direct hook caller).
+ */
+export function redactDiagnostic(value: string, secrets: string[] = []): string {
+  let result = value;
+  for (const secret of secrets) if (secret) result = result.split(secret).join("[REDACTED]");
+  return result
+    .replace(/bearer\s+\S+/gi, "[REDACTED]")
+    .replace(/\b(?:sk|fk)-[A-Za-z0-9][A-Za-z0-9_-]{15,}\b/gi, "[REDACTED]")
+    .replace(/\b(?:api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*[^\s]+/gi, "[REDACTED]");
+}
+
+export function formatRuntimePair(provider?: string, model?: string): string {
+  return `${provider ?? "(unset)"}/${model ?? "(unset)"}`;
 }
