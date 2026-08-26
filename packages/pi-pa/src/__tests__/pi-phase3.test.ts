@@ -4,7 +4,15 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
-import { createPaTools, interceptToolCall, boundJson, persistTerminalStatus } from "../pi-extension/index.js";
+import registerPiPaExtension, {
+  PI_EXAMPLE_SOURCES,
+  PI_EXAMPLE_VERSION,
+  PI_PA_MODULES,
+  createPaTools,
+  interceptToolCall,
+  boundJson,
+  persistTerminalStatus,
+} from "../pi-extension/index.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
@@ -34,6 +42,20 @@ test("Pi extension writes a redacted structured terminal status side channel", (
   assert.equal(status?.stopReason, "error");
   assert.equal(status?.error, "[REDACTED]");
   assert.doesNotMatch(readFileSync(join(dir, "pi-terminal-status.json"), "utf8"), new RegExp(value));
+});
+
+test("Pi extension composes attributed modules through the trusted entrypoint", () => {
+  const registered: string[] = [];
+  registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) });
+  assert.equal(PI_EXAMPLE_VERSION, "0.80.8");
+  assert.deepEqual(PI_EXAMPLE_SOURCES, [
+    "examples/extensions/question.ts",
+    "examples/extensions/todo.ts",
+    "examples/extensions/status-line.ts",
+    "examples/extensions/overlay-qa-tests.ts",
+  ]);
+  assert.equal(PI_PA_MODULES.length, 1);
+  assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status"]);
 });
 
 test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {

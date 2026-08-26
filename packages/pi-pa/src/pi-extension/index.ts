@@ -4,6 +4,16 @@ import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
+// PAP-145 modules adapt the MIT-licensed Pi 0.80.8 examples at
+// examples/extensions/{question,todo,status-line,overlay-qa-tests}.ts.
+export const PI_EXAMPLE_VERSION = "0.80.8";
+export const PI_EXAMPLE_SOURCES = [
+  "examples/extensions/question.ts",
+  "examples/extensions/todo.ts",
+  "examples/extensions/status-line.ts",
+  "examples/extensions/overlay-qa-tests.ts",
+] as const;
+
 export const MAX_TOOL_BYTES = 50 * 1024;
 export const MAX_TOOL_LINES = 2000;
 
@@ -26,6 +36,7 @@ export interface PiRuntime {
     (event: "agent_end", handler: (event: { messages: PiAgentMessage[] }) => unknown): void;
   };
 }
+export type PiExtensionModule = (pi: PiRuntime) => void;
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
   const values = flattenStrings(call.input);
@@ -65,7 +76,7 @@ export function createPaExtension(): { name: string; tools: PiToolDefinition[]; 
   return { name: "pi-pa", tools: createPaTools(), tool_call: interceptToolCall };
 }
 
-export default function registerPiPaExtension(pi: PiRuntime): void {
+export const registerPaToolsModule: PiExtensionModule = (pi) => {
   for (const tool of createPaTools()) pi.registerTool?.(tool);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);
@@ -75,6 +86,12 @@ export default function registerPiPaExtension(pi: PiRuntime): void {
     const deployDir = process.env.PA_DEPLOYMENT_DIR;
     if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);
   });
+};
+
+export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModule];
+
+export default function registerPiPaExtension(pi: PiRuntime): void {
+  for (const registerModule of PI_PA_MODULES) registerModule(pi);
 }
 
 export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
