@@ -50,7 +50,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
     }
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), { sleep: opts.sleep ?? defaultSleep, clock: opts.clock ?? Date.now });
-    if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {});
+    if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {}, opts.binaryName ?? defaultBinaryName());
     if (command === "evaluate") return runEvaluateCommand(rest, io, opts.hooks ?? {});
     if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});
     if (command === "schedule") return runScheduleCommand(rest, io);

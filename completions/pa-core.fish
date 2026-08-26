@@ -410,8 +410,8 @@ complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Rep
 complete -c pa-core -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
 complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r
 complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r
-complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Team model' -r
-complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l agent-model -d 'Agent model' -r
+complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
+
 
 complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
 complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

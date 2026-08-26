@@ -51,6 +51,20 @@ test("deploy CLI preserves team-model alias warning and rejects agent-model with
   });
 });
 
+test("PPA deploy help documents normalized Sol defaults and supported legacy flags", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await import("../cli/core-command.js").then(({ runCoreCommand }) => runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) } }));
+  assert.equal(code, 0);
+  const help = stdout.join("\n");
+  assert.match(help, /openai.*openai-codex/);
+  assert.match(help, /gpt-5\.6-sol/);
+  assert.match(help, /--team-model.*PAP-147/);
+  assert.match(help, /--agent-model.*PAP-148/);
+  assert.doesNotMatch(help, /ollama-cloud/);
+  assert.deepEqual(stderr, []);
+});
+
 test("deploy request runtime accepts Pi and rejects unsupported runtimes", () => {
   const pi = validateDeployRequestFields({ team: "builder", runtime: "pi" });
   assert.equal("error" in pi, false);

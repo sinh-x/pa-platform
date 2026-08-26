@@ -168,7 +168,7 @@ end
 
 function __ppa_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume
+        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume
             return 0
     end
 
@@ -391,16 +391,15 @@ complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_f
 complete -c ppa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c ppa -n __ppa_deploy_needs_team -a '(__ppa_deploy_team_candidates)' -d 'Team name'
-complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
+complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
 complete -c ppa -f -n __ppa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__ppa_modes)'
 complete -c ppa -n __ppa_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c ppa -n __ppa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
 complete -c ppa -n __ppa_deploy_completing -l list-modes -d 'List available deploy modes'
-complete -c ppa -n __ppa_deploy_completing -l validate -d 'Validate without deploying'
-complete -c ppa -f -n __ppa_deploy_completing -l provider -d 'Pi provider override' -r
-complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Pi model override' -r
-complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Team model override' -r
-complete -c ppa -f -n __ppa_deploy_completing -l agent-model -d 'Agent model override' -r
+complete -c ppa -n __ppa_deploy_completing -l validate -d 'Validate config and provider/model pairs'
+complete -c ppa -f -n __ppa_deploy_completing -l provider -d 'Pi provider override (openai/openai-codex)' -r -a 'openai openai-codex'
+complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Pi model override (default gpt-5.6-sol)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Deprecated model alias (PAP-147)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
 complete -c ppa -n __ppa_deploy_completing -l background -d 'Run detached/headless'
 complete -c ppa -n __ppa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
 complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Repository name' -r -a '(__ppa_projects)'
@@ -419,10 +418,10 @@ complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l human-agency -d 'Hu
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticket ID' -r -a '(__ppa_ticket_ids)'
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Repository name' -r -a '(__ppa_projects)'
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Team model' -r
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l agent-model -d 'Agent model' -r
+complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Pi provider (openai/openai-codex)' -r -a 'openai openai-codex'
+complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Pi model (default gpt-5.6-sol)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
+
 
 complete -c ppa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__ppa_deployments)' -d 'Deployment'
 complete -c ppa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
