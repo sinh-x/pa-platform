@@ -19,13 +19,6 @@ export interface RuntimeOverrides {
   timeout?: number;
 }
 
-export interface RuntimeConfigMap {
-  droid?: RuntimeOverrides;
-  opencode?: RuntimeOverrides;
-  claude?: RuntimeOverrides;
-  pi?: RuntimeOverrides;
-}
-
 export interface DeployMode {
   id: string;
   label: string;
@@ -39,7 +32,6 @@ export interface DeployMode {
   provider?: ProviderName;
   timeout?: number;
   global_docs?: string[];
-  runtimes?: RuntimeConfigMap;
   require_ticket?: boolean;
 }
 
@@ -78,7 +70,6 @@ export interface TeamConfig {
   timeout?: number;
   global_docs?: string[];
   terse_mode?: boolean;
-  runtimes?: RuntimeConfigMap;
 }
 
 export interface Rating {

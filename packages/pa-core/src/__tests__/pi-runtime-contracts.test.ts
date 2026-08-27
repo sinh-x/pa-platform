@@ -1,30 +1,99 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAgentApiApp, generatePrimer, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
+import { createAgentApiApp, generatePrimer, modelMatchesProvider, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
 
-test("Pi runtime configuration parses at team and mode scope", () => {
-  const team = parseTeamYamlContent(`
-name: builder
+const baseConfig = `name: builder
 description: Builder
 objective: Build
 agents: []
-runtimes:
-  pi:
-    provider: anthropic
-    model: claude-sonnet
-deploy_modes:
-  - id: implement
-    label: Implement
-    runtimes:
-      pi:
-        provider: openai
-        model: gpt-5
-`);
+`;
 
-  assert.equal(team.runtimes?.pi?.provider, "anthropic");
-  assert.equal(team.runtimes?.pi?.model, "claude-sonnet");
-  assert.equal(team.deploy_modes?.[0]?.runtimes?.pi?.provider, "openai");
-  assert.equal(team.deploy_modes?.[0]?.runtimes?.pi?.model, "gpt-5");
+test("team and deploy-mode runtimes are rejected with migration paths", () => {
+  assert.throws(() => parseTeamYamlContent(`${baseConfig}runtimes:\n  pi:\n    provider: anthropic\n    model: claude-sonnet\n`), (error: unknown) => {
+    assert.match(String(error), /runtimes is no longer supported/);
+    assert.match(String(error), /deploy_modes\[\]\.provider/);
+    return true;
+  });
+  assert.throws(() => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: implement\n    label: Implement\n    runtimes:\n      pi:\n        provider: openai\n        model: gpt-5\n`), /deploy_modes\[0\]\.runtimes.*deploy_modes\[\]\.provider/);
+});
+
+test("deploy mode provider/model must be both present or both absent", () => {
+  assert.throws(() => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: provider-only\n    label: Provider only\n    provider: openai\n`), /deploy_modes\[0\]\.model.*both be present or both be absent/);
+  assert.throws(() => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: model-only\n    label: Model only\n    model: gpt-5\n`), /deploy_modes\[0\]\.provider.*both be present or both be absent/);
+  const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: default\n    label: Default\n`);
+  assert.equal(config.deploy_modes?.[0]?.provider, undefined);
+  assert.equal(config.deploy_modes?.[0]?.model, undefined);
+});
+
+test("explicit malformed provider/model values fail at their exact YAML paths", () => {
+  const malformed = ["\"\"", "\"   \"", "null"];
+  for (const value of malformed) {
+    for (const suffix of ["", "    model: openai/gpt-5\n"]) {
+      assert.throws(
+        () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    provider: ${value}\n${suffix}`),
+        (error: unknown) => error instanceof Error && error.message === "deploy_modes[0].provider must be a non-empty string",
+      );
+    }
+    for (const suffix of ["", "    provider: openai\n"]) {
+      assert.throws(
+        () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    model: ${value}\n${suffix}`),
+        (error: unknown) => error instanceof Error && error.message === "deploy_modes[0].model must be a non-empty string",
+      );
+    }
+  }
+});
+
+test("valid explicit provider/model values are trimmed", () => {
+  const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: valid\n    label: Valid\n    provider: \" openai \"\n    model: \" openai/gpt-5 \"\n`);
+  assert.equal(config.deploy_modes?.[0]?.provider, "openai");
+  assert.equal(config.deploy_modes?.[0]?.model, "openai/gpt-5");
+});
+
+test("qualified models must match the selected provider namespace", () => {
+  assert.equal(modelMatchesProvider("gpt-5", ["openai"]), true);
+  assert.equal(modelMatchesProvider("openai/gpt-5", ["openai"]), true);
+  assert.equal(modelMatchesProvider("deepseek/deepseek-v4-pro", ["openai"]), false);
+  assert.equal(modelMatchesProvider("minimax-coding-plan/MiniMax-M2.7", ["minimax-coding-plan"]), true);
+});
+
+test("shared runtime resolution returns one frozen effective pair and source", () => {
+  const team = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: implement\n    label: Implement\n    provider: mode-provider\n    model: mode-model\n`);
+  const mode = team.deploy_modes?.[0];
+  const fromMode = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team, mode });
+  assert.deepEqual(fromMode, { provider: "mode-provider", model: "mode-model", source: "mode" });
+  assert.ok(Object.isFrozen(fromMode));
+
+  const fromCli = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider" }, team, mode, local: { provider: "default-provider", model: "default-model" } });
+  assert.deepEqual(fromCli, { provider: "cli-provider", model: "mode-model", source: "cli" });
+
+  const fromDefault = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team, local: { provider: "default-provider", model: "default-model" } });
+  assert.deepEqual(fromDefault, { provider: "default-provider", model: "default-model", source: "default" });
+});
+
+test("deploy CLI preserves team-model alias warning and rejects agent-model with PAP-148 guidance", () => {
+  const alias = validateDeployRequestFields({ team: "builder", teamModel: "legacy-model" });
+  assert.equal("error" in alias, false);
+  if (!("error" in alias)) {
+    assert.equal(alias.request.teamModel, "legacy-model");
+    assert.match(alias.warnings?.join("\n") ?? "", /--team-model.*--model.*PAP-147/);
+  }
+  assert.deepEqual(validateDeployRequestFields({ team: "builder", agentModel: "agent-model" }), {
+    error: "--agent-model is not supported; per-agent model overrides are tracked by PAP-148. Use --model for the deployment model.",
+  });
+});
+
+test("PPA deploy help documents normalized Sol defaults and supported legacy flags", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await import("../cli/core-command.js").then(({ runCoreCommand }) => runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) } }));
+  assert.equal(code, 0);
+  const help = stdout.join("\n");
+  assert.match(help, /openai.*openai-codex/);
+  assert.match(help, /gpt-5\.6-sol/);
+  assert.match(help, /--team-model.*PAP-147/);
+  assert.match(help, /--agent-model.*PAP-148/);
+  assert.doesNotMatch(help, /ollama-cloud/);
+  assert.deepEqual(stderr, []);
 });
 
 test("deploy request runtime accepts Pi and rejects unsupported runtimes", () => {
@@ -32,35 +101,6 @@ test("deploy request runtime accepts Pi and rejects unsupported runtimes", () =>
   assert.equal("error" in pi, false);
   if (!("error" in pi)) assert.equal(pi.request.runtime, "pi");
   assert.deepEqual(validateDeployRequestFields({ team: "builder", runtime: "claude" }), { error: "runtime must be opencode or pi" });
-});
-
-test("Pi runtime resolution uses CLI, mode, team, then Pi-local values", () => {
-  const team = parseTeamYamlContent(`
-name: builder
-description: Builder
-objective: Build
-agents: []
-runtimes:
-  pi:
-    provider: team-provider
-    model: team-model
-deploy_modes:
-  - id: implement
-    label: Implement
-    runtimes:
-      pi:
-        provider: mode-provider
-        model: mode-model
-`);
-  const mode = team.deploy_modes?.[0];
-  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team, mode, local: { provider: "local-provider", model: "local-model" } }), { provider: "mode-provider", model: "mode-model" });
-  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider", teamModel: "cli-model" }, team, mode, local: { provider: "local-provider", model: "local-model" } }), { provider: "cli-provider", model: "cli-model" });
-  assert.deepEqual(resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team: { ...team, runtimes: undefined }, local: { provider: "local-provider", model: "local-model" } }), { provider: "local-provider", model: "local-model" });
-});
-
-test("invalid Pi runtime configuration fails with an actionable field error", () => {
-  assert.throws(() => parseTeamYamlContent(`name: builder\ndescription: Builder\nobjective: Build\nagents: []\nruntimes:\n  pi:\n    model: "bad model"\n`), /runtimes\.pi\.model/);
-  assert.throws(() => parseTeamYamlContent(`name: builder\ndescription: Builder\nobjective: Build\nagents: []\nruntimes:\n  pi:\n    timeout: 0\n`), /runtimes\.pi\.timeout/);
 });
 
 test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawning on invalid input", async () => {

@@ -49,7 +49,7 @@ export function printDeployModes(team: string, io: Required<CliIo>): number {
   return 0;
 }
 
-export function validateDeployConfig(team: string, io: Required<CliIo>): number {
+export function validateDeployConfig(team: string, io: Required<CliIo>, binaryName = "opa"): number {
   const config = loadTeamConfig(team);
   const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === config.name);
   if (missingReferences.length > 0) {
@@ -62,18 +62,64 @@ export function validateDeployConfig(team: string, io: Required<CliIo>): number 
     io.stderr(`Fix the missing path(s) or the team references, then rerun: opa deploy ${config.name} --validate`);
     return 1;
   }
+  const modes = config.deploy_modes ?? [];
+  const configuredPairs = modes.filter((mode) => mode.provider !== undefined && mode.model !== undefined).length;
+  const defaultPairs = modes.length - configuredPairs;
   io.stdout(`Valid team config: ${config.name}`);
   io.stdout(`Agents: ${config.agents.length}`);
-  io.stdout(`Modes: ${(config.deploy_modes ?? []).length}`);
+  io.stdout(`Modes: ${modes.length}`);
+  io.stdout(`Provider/model pairs: valid (${configuredPairs} configured, ${defaultPairs} adapter-default)`);
+  io.stdout(`When both fields are absent, ${deployHelpProfile(binaryName).defaultDescription}`);
   return 0;
 }
 
-export function printDeployHelp(io: Required<CliIo>): void {
+interface DeployHelpProfile {
+  runtime: string;
+  providerDescription: string;
+  modelDescription: string;
+  defaultDescription: string;
+}
+
+function deployHelpProfile(binaryName: string): DeployHelpProfile {
+  if (binaryName === "ppa") {
+    return {
+      runtime: "Pi",
+      providerDescription: "Pi provider (`openai` or `openai-codex`; default command value: `openai-codex`)",
+      modelDescription: "Pi model (default command value: `gpt-5.6-sol`; flat config uses `openai/gpt-5.6-sol`)",
+      defaultDescription: "PPA uses OpenAI Sol (`openai-codex` / `gpt-5.6-sol`)",
+    };
+  }
+  if (binaryName === "cpa") {
+    return {
+      runtime: "Claude Code",
+      providerDescription: "Claude provider (`anthropic` only)",
+      modelDescription: "Claude model",
+      defaultDescription: "CPA uses `anthropic` / `claude-opus-4-7`",
+    };
+  }
+  if (binaryName === "dpa") {
+    return {
+      runtime: "Droid",
+      providerDescription: "Droid provider (adapter-specific)",
+      modelDescription: "Droid model (default: `deepseek-v4-pro`)",
+      defaultDescription: "DPA uses its documented adapter default (`deepseek-v4-pro` when unset)",
+    };
+  }
+  return {
+    runtime: "OpenCode",
+    providerDescription: "Model provider (`minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`; default: `ollama-cloud`)",
+    modelDescription: "Override default model",
+    defaultDescription: "OPA uses its provider-specific default (normally `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`)",
+  };
+}
+
+export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
+  const profile = deployHelpProfile(binaryName);
   io.stdout("Usage: deploy <team> [options]");
   io.stdout("");
   io.stdout("Mode flags:");
   io.stdout("  --background        Run detached/headless");
-  io.stdout("  --dry-run           Generate primer and plan without invoking opencode");
+  io.stdout(`  --dry-run           Generate primer and plan without invoking ${profile.runtime}`);
   io.stdout("  --list-modes        Print available deploy modes for the team");
   io.stdout("  --validate          Validate team config without deploying");
   io.stdout("");
@@ -89,15 +135,17 @@ export function printDeployHelp(io: Required<CliIo>): void {
   io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");
   io.stdout("");
   io.stdout("Provider options:");
-  io.stdout("  --provider <name>      Model provider (minimax, openai, deepseek, ollama-cloud, opencode-go). Default: ollama-cloud");
-  io.stdout("  --model <name>         Override default model");
-  io.stdout("  --team-model <name>    Override team-level model");
-  io.stdout("  --agent-model <name>   Override agent-level model");
+  io.stdout(`  --provider <name>      ${profile.providerDescription}`);
+  io.stdout(`  --model <name>         ${profile.modelDescription}`);
+  io.stdout("  --team-model <name>    Deprecated alias for --model; removal tracked by PAP-147");
+  io.stdout("  --agent-model <name>   Rejected; per-agent overrides are tracked by PAP-148");
+  io.stdout(`  Defaults:              ${profile.defaultDescription}`);
+  io.stdout("  Config:                deploy_modes[].provider and deploy_modes[].model must both be present or both absent");
 }
 
-export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks): Promise<number> {
+export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks, binaryName = "opa"): Promise<number> {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
-    printDeployHelp(io);
+    printDeployHelp(io, binaryName);
     return 0;
   }
   const parsed = parseDeployArgs(argv);
@@ -122,7 +170,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     }
   }
   if (validated.request.listModes) return printDeployModes(validated.request.team, io);
-  if (validated.request.validate) return validateDeployConfig(validated.request.team, io);
+  if (validated.request.validate) return validateDeployConfig(validated.request.team, io, binaryName);
   const resolved = withResolvedDeployTimeout(validated.request);
   if ("error" in resolved) {
     io.stderr(resolved.error);
@@ -133,7 +181,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     return 1;
   }
 
-  const result = await hooks.deploy(resolved.request);
+  const result = await hooks.deploy(resolved.request, { stderr: io.stderr });
   if (result.status === "failed") {
     io.stderr(result.reason ?? "Deployment failed");
     return 1;

@@ -7,6 +7,8 @@
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
     "test:paired": "bash scripts/dev/test_paired_repository.sh",
+    "test:paired-gate": "tsx --test scripts/dev/validate_paired_repository.test.mts",
+    "verify:paired-config": "tsx scripts/dev/validate_paired_repository.mts",
     "typecheck": "corepack pnpm -r typecheck",
     "bump:ci-patch": "node scripts/dev/ci_patch_bump.mjs",
     "bump:patch:ci": "node scripts/dev/ci_patch_bump.mjs",

@@ -35,6 +35,10 @@ export interface DeployTimeoutResolutionInput {
   env?: Record<string, string | undefined>;
 }
 
+export interface DeployDiagnostics {
+  stderr(message: string): void;
+}
+
 export interface DeployHookResult {
   status: "pending" | "success" | "failed";
   team?: string;
@@ -55,7 +59,7 @@ export interface SelfUpdateStartResult extends SelfUpdateStatusResult {
 }
 
 export interface CoreExecutionHooks {
-  deploy?(request: DeployRequest): Promise<DeployHookResult> | DeployHookResult;
+  deploy?(request: DeployRequest, diagnostics?: DeployDiagnostics): Promise<DeployHookResult> | DeployHookResult;
   serve?(action: "start" | "stop" | "restart" | "status"): Promise<{ status: string; message?: string }> | { status: string; message?: string };
   selfUpdate?(): Promise<SelfUpdateStartResult> | SelfUpdateStartResult;
   getSelfUpdateStatus?(): Promise<SelfUpdateStatusResult> | SelfUpdateStatusResult;
@@ -123,7 +127,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (provider && !/^[a-zA-Z0-9_-]+$/.test(provider)) return { error: "Invalid provider name" };
   if (model && !/^[-a-zA-Z0-9_.:\/]+$/.test(model)) return { error: "Invalid model name" };
   if (teamModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(teamModel)) return { error: "Invalid team model name" };
-  if (agentModel && !/^[-a-zA-Z0-9_.:\/]+$/.test(agentModel)) return { error: "Invalid agent model name" };
+  if (agentModel) return { error: "--agent-model is not supported; per-agent model overrides are tracked by PAP-148. Use --model for the deployment model." };
   if (resume && !/^[a-zA-Z0-9-]+$/.test(resume)) return { error: "Invalid resume deployment id" };
   if (autonomy && !VALID_AUTONOMY_LEVELS.has(autonomy)) return { error: "Invalid autonomy level: must be low, medium, or high" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
@@ -162,6 +166,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (listModes !== undefined) request.listModes = listModes;
   if (validate !== undefined) request.validate = validate;
   if (sanitizedCharsRemoved !== undefined) request.sanitizedCharsRemoved = sanitizedCharsRemoved;
+  if (teamModel) warnings.push("Warning: --team-model is deprecated; use --model instead. Final removal is tracked by PAP-147.");
   const result: ValidateDeployResult = { request };
   if (warnings.length > 0) result.warnings = warnings;
   return result;

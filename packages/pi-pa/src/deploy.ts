@@ -2,12 +2,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
-import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
+import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
-  const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"], model);
+  const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
   const args = ["--print", "--mode", "json", "--session-id", sessionId ?? session.id];
   if (normalized.model) args.push("--model", normalized.model);
   if (normalized.provider) args.push("--provider", normalized.provider);
@@ -15,15 +15,16 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
   return { binary: "pi", args };
 };
 
-export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request) => deployWithPi(request, adapter), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
+export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
-export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter()): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
+export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: timeout.error };
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
-  const runtimeConfig = resolveRuntimeConfig({ runtime: "pi", request, team, mode });
-  const { provider, model } = normalizePiRuntimeConfig(runtimeConfig.provider, runtimeConfig.model);
+  const runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL } }));
+  const provider = runtimeConfig.provider;
+  const model = runtimeConfig.model;
   const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let plan;
   try {
@@ -42,10 +43,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   } catch (error) {
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
-  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n</deployment-context>` });
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(env)}\n</deployment-context>` });
   const primerPath = resolve(deployDir, "primer.md"); writeFileSync(primerPath, primer, "utf8"); process.stdout.write(`Deployment: ${deploymentId}\n`);
-  if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name}` }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider: plan.provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
+  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
+  if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
   const completeFailure = (reason: string, exitCode = 1) => {
     const boundedReason = reason.length > 2000 ? `${reason.slice(0, 1997)}...` : reason;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedReason }), paths.activityLogPath);
@@ -100,6 +102,12 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
 async function adapterPreflight(adapter: RuntimeAdapter): Promise<void> {
   const pi = adapter as RuntimeAdapter & { preflight?: () => void | Promise<void> };
   await pi.preflight?.();
+}
+
+function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics?: DeployDiagnostics): void {
+  if (!config.warning) return;
+  if (diagnostics) diagnostics.stderr(config.warning); else process.stderr.write(`${config.warning}\n`);
+  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: config.warning, metadata: { resolution: "fallback" } }), activityLogPath);
 }
 
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }

@@ -1264,7 +1264,6 @@ interface TeamConfig {
   timeout?: number;
   global_docs?: string[];
   terse_mode?: boolean;
-  runtimes?: RuntimeConfigMap;
 }
 ```
 
@@ -1283,7 +1282,6 @@ interface TeamConfig {
 | `timeout` | `number` | no | Team timeout (seconds). |
 | `global_docs` | `string[]` | no | Global doc paths injected into primers. |
 | `terse_mode` | `boolean` | no | Enable terse mode for the team. |
-| `runtimes` | [`RuntimeConfigMap`](#runtimeconfigmap) | no | Per-runtime overrides. |
 
 ### `Agent`
 
@@ -1321,7 +1319,6 @@ interface DeployMode {
   provider?: ProviderName;
   timeout?: number;
   global_docs?: string[];
-  runtimes?: RuntimeConfigMap;
   require_ticket?: boolean;
 }
 ```
@@ -1336,11 +1333,10 @@ interface DeployMode {
 | `skills` | [`SkillEntry[]`](#skillentry) | no | Skills to inject. |
 | `mode_type` | `"housekeeping" \| "work" \| "interactive"` | no | Mode category. |
 | `solo` | `boolean` | no | Whether the mode runs a single agent. |
-| `model` | `string` | no | Model override. |
-| `provider` | `string` | no | Provider override. |
+| `model` | `string` | no | Flat mode model; required together with `provider` when either is set. |
+| `provider` | `string` | no | Flat mode provider; required together with `model` when either is set. |
 | `timeout` | `number` | no | Timeout (seconds). |
 | `global_docs` | `string[]` | no | Global doc paths. |
-| `runtimes` | [`RuntimeConfigMap`](#runtimeconfigmap) | no | Per-runtime overrides. |
 | `require_ticket` | `boolean` | no | Whether a ticket id is required to deploy. |
 
 ### `SkillEntry`
@@ -1381,26 +1377,9 @@ interface Hierarchy {
 | `role` | `string` | no | Member role. |
 | `participates_in` | `"all" \| string[]` | no | Which phases the member participates in. |
 
-### `RuntimeConfigMap` / `RuntimeOverrides`
+### Flat provider/model contract
 
-```typescript
-interface RuntimeOverrides {
-  model?: ModelName;
-  provider?: ProviderName;
-  autonomy?: AutonomyLevel;
-  timeout?: number;
-}
-
-interface RuntimeConfigMap {
-  droid?: RuntimeOverrides;
-  opencode?: RuntimeOverrides;
-  claude?: RuntimeOverrides;
-}
-```
-
-| `RuntimeOverrides` field | Type | Required | Description |
-|--------------------------|------|----------|-------------|
-| `model` | `string` | no | Model override. |
-| `provider` | `string` | no | Provider override. |
-| `autonomy` | [`AutonomyLevel`](#autonomylevel) | no | Autonomy level. |
-| `timeout` | `number` | no | Timeout (seconds). |
+`DeployMode.provider` and `DeployMode.model` are flat, runtime-neutral fields.
+They must both be present or both be absent. An absent pair delegates to the
+selected adapter default. Team-level and mode-level runtime maps are removed;
+`parseTeamYaml` rejects them and reports the YAML path.

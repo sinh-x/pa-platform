@@ -168,7 +168,7 @@ end
 
 function __dpa_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume
+        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume
             return 0
     end
 
@@ -388,7 +388,7 @@ complete -c dpa -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Se
 complete -c dpa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c dpa -n __dpa_deploy_needs_team -a '(__dpa_deploy_team_candidates)' -d 'Team name'
-complete -c dpa -f -n __dpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
+complete -c dpa -f -n __dpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
 complete -c dpa -f -n __dpa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__dpa_modes)'
 complete -c dpa -n __dpa_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c dpa -n __dpa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
@@ -397,7 +397,6 @@ complete -c dpa -n __dpa_deploy_completing -l validate -d 'Validate without depl
 complete -c dpa -f -n __dpa_deploy_completing -l provider -d 'Provider' -r -a 'openai deepseek gemini minimax anthropic'
 complete -c dpa -f -n __dpa_deploy_completing -l model -d 'Model' -r -a '(__dpa_models_for_provider)'
 complete -c dpa -f -n __dpa_deploy_completing -l team-model -d 'Team model' -r -a '(__dpa_models_for_provider)'
-complete -c dpa -f -n __dpa_deploy_completing -l agent-model -d 'Agent model' -r -a '(__dpa_models_for_provider)'
 complete -c dpa -n __dpa_deploy_completing -l background -d 'Run detached/headless'
 complete -c dpa -n __dpa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
 complete -c dpa -f -n __dpa_deploy_completing -l repo -d 'Repository name' -r -a '(__dpa_projects)'
@@ -418,8 +417,8 @@ complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Reposit
 complete -c dpa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
 complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r -a 'openai deepseek gemini minimax anthropic'
 complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r
-complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Team model' -r
-complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l agent-model -d 'Agent model' -r
+complete -c dpa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
+
 
 complete -c dpa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__dpa_deployments)' -d 'Deployment'
 complete -c dpa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'

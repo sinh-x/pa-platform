@@ -4,59 +4,68 @@
 
 Team YAML files are active shared configuration and should remain structurally compatible with the frozen PA team YAMLs. Existing mode IDs and fields such as `provider` are preserved in the team files for compatibility and migration traceability.
 
-## Runtime-Aware Configuration (runtimes block)
+## Flat Runtime Configuration
 
-Team and mode YAML can carry an optional `runtimes:` block that provides per-runtime overrides for model, provider, autonomy, and timeout. Generic/shared settings (agents, skills, objective, mode_type, solo, global_docs) stay at the top level and apply to all runtimes.
+Active team YAML has one runtime-neutral schema: each `deploy_modes[]` entry may
+set flat `provider` and `model` fields. The fields must be supplied together or
+omitted together. Team-level and mode-level runtime maps are removed and are
+rejected with the offending YAML path; they must not be added to active config.
 
 ```yaml
-# Team-level example
 name: builder
 description: Build team
-agents: [...]
 objective: "..."
-runtimes:
-  droid:
-    model: deepseek-v4-pro
-    autonomy: high
-  opencode:
-    provider: ollama-cloud
-    model: deepseek-v4-pro
-  claude:
-    model: claude-opus-4-7
-```
-
-```yaml
-# Mode-level example
 deploy_modes:
   - id: implement
     label: Implement
-    objective: ...
-    runtimes:
-      droid:
-        model: gpt-5.5
-      opencode:
-        provider: minimax
+    provider: openai
+    model: openai/gpt-5.6-sol
 ```
 
-### Per-Adapter Precedence
+An intentionally provider/model-absent mode delegates both values to the
+selected adapter's documented default. A provider-only or model-only mode is
+invalid and fails before spawn. `ppa deploy builder --validate` parses every
+mode and reports the configured/default pair counts.
 
-Each adapter resolves model/provider/autonomy from its own runtime block, ignoring other runtimes' hints:
+### Resolution precedence and adapter boundaries
 
-| Adapter | Resolution order |
+The shared resolver combines explicit CLI values with the selected flat mode
+pair: `--provider` and `--model` (with deprecated `--team-model` as the model
+alias) take precedence over `deploy_modes[].provider` and
+`deploy_modes[].model`, then the selected adapter supplies its default for an
+absent pair. A single CLI field may combine with the other field from the mode
+or adapter default. The adapter then validates/maps the pair and returns one
+immutable effective result used for command arguments, environment, activity,
+dry-run output, and registry metadata.
+
+| Adapter | Default and mapping boundary |
 |---|---|
-| dpa | CLI flags > mode `runtimes.droid` > team `runtimes.droid` > `PA_DPA_DEFAULT_MODEL` > platform `defaults.droidcode` > `deepseek-v4-pro` |
-| opa | CLI flags > mode `runtimes.opencode` > team `runtimes.opencode` > legacy flat fields > provider defaults |
-| cpa | CLI flags > mode `runtimes.claude` > team `runtimes.claude` > legacy flat fields > `PA_CPA_DEFAULT_MODEL` > `claude-opus-4-7` |
+| ppa | Defaults to `openai` / `openai/gpt-5.6-sol`, normalized for Pi as `openai-codex` / `gpt-5.6-sol`; incompatible pairs warn and fall back. |
+| opa | Defaults to `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`; provider-specific model mapping remains in the OpenCode adapter. |
+| cpa | Defaults to `anthropic` / `claude-opus-4-7`; non-Anthropic pairs warn and fall back to the Claude default. |
+| dpa | Defaults to `deepseek-v4-pro`; Droid receives its flat model identifier and adapter-specific provider handling. |
 
-### Back-Compat
+`--agent-model` is rejected because per-agent overrides belong to PAP-148.
+`--team-model` remains a warning-emitting compatibility alias for `--model`
+until PAP-147 removes it. Warnings identify incompatible pairs and the
+command-facing fallback, and pass the existing diagnostic redaction checks.
 
-When `runtimes:` is absent, all adapters behave identically to the pre-runtimes era (byte-for-byte unchanged for opa and cpa; dpa defaults to `deepseek-v4-pro` instead of the legacy provider-to-premium map).
+Runtime selection is handled by the adapter CLI (`opa`, `cpa`, `dpa`, or
+`ppa`). Adapter defaults do not cross-inherit: an absent pair under `ppa` uses
+OpenAI Sol, not a Pi-local model or another adapter's default. Use
+`pa-core serve` for the Agent API server lifecycle; adapters provide deployment
+execution hooks only.
 
-Runtime selection is handled by the adapter CLI:
+Team YAML and mode objective files should not require Claude Code, OpenCode,
+Droid, or Pi-specific tools directly. Runtime-specific tool guidance is
+injected by `pa-core` primer generation from the active adapter's metadata.
 
-- `cpa` (`@pa-platform/claudecode-pa`) interprets shared team config for Claude Code execution. Implemented; default model `claude-opus-4-7`; `--provider` accepts only `anthropic`. See `docs/cpa-claude-code-adapter.md` for the operator overview.
-- `opa` (`@pa-platform/opencode-pa`) is the OpenCode adapter and interprets shared team config for opencode execution. Default provider is `ollama-cloud` with default model `ollama-cloud/deepseek-v4-pro`. Supported providers: `minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`.
-- Adapter config decides how provider/model hints are mapped, overridden, or ignored for that runtime.
+Mode objective files under the operator config repo's `teams/<team>/modes/*.md`
+are active configuration. `pa-core` reads them during primer generation and
+applies template variables such as `{{TODAY}}`, `{{DEPLOY_ID}}`, and
+`{{TEAM_NAME}}`.
+
+Examples belong under `docs/examples/`, not under active config directories.
 
 Use `pa-core serve` for the Agent API server lifecycle. Adapters provide deployment execution hooks; they should not own the server lifecycle.
 
@@ -124,7 +133,7 @@ opa deploy builder --mode implement --background --ticket <id> --objective-file 
 Notes:
 
 - `--background` is the default for orchestrated sub-deploys so the child deployment writes its session id and activity log without blocking the orchestrator's foreground loop.
-- Omit `--provider` unless the orchestrator needs to override the team YAML `runtimes.opencode.provider` / mode `provider` for a specific run. Provider overrides are rare and should be intentional.
+- Omit `--provider` unless the orchestrator needs to override the flat team-mode `provider` for a specific run. Provider overrides are rare and should be intentional.
 - `--ticket <id>` links the sub-deploy to its work item for traceability.
 - `--objective-file <path>` supplies the phase objective; the orchestrator writes this file before launching the sub-deploy and the implement agent reads it as the `## User Objective` block of its primer.
 - This is a documentation-level convention. Enforcing it inside the orchestrator mode-instruction content is tracked as a separate follow-up (see PAP-110 / OQ-3).

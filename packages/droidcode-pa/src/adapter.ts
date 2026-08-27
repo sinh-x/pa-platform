@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
 import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
@@ -232,6 +232,23 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       jsonl.end();
     }
   }
+}
+
+/** Map the shared provider/model result to Droid's flat model identifier. */
+export function resolveDroidRuntimeConfig(config: EffectiveRuntimeConfig, opts: DroidModelResolutionOpts = {}): EffectiveRuntimeConfig {
+  if (config.provider && !modelMatchesProvider(config.model, [config.provider])) {
+    const model = resolveDroidModel(undefined, opts);
+    const warning = redactDiagnostic(
+      `dpa: incompatible provider/model ${formatRuntimePair(config.provider, config.model)}; falling back to ${formatRuntimePair(undefined, model)}.`,
+    );
+    return Object.freeze({ provider: "", model, source: "fallback", warning });
+  }
+  const model = resolveDroidModel(config.model, opts);
+  return Object.freeze({
+    provider: config.provider ?? "",
+    model,
+    source: config.source,
+  });
 }
 
 export function resolveDroidModel(

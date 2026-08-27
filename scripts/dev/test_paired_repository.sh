@@ -19,5 +19,8 @@ if [[ ! -f "$PA_PHASE5_CONFIG_ROOT/config.yaml" || ! -d "$PA_PHASE5_CONFIG_ROOT/
 fi
 
 export PA_PHASE5_CONFIG_ROOT
+corepack pnpm verify:paired-config
+corepack pnpm test:paired-gate
 corepack pnpm --filter @pa-platform/pa-core test
 corepack pnpm --filter @pa-platform/opencode-pa test
+corepack pnpm verify:paired-config

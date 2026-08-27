@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, writeActivityEvents, renderEnvVarsBlock, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
-import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel } from "./adapter.js";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveRepo, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, renderEnvVarsBlock, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
   deploymentId: string;
@@ -11,6 +11,8 @@ function buildPaEnvVars(args: {
   activityLogPath: string;
   teamConfig: TeamConfig;
   request: DeployRequest;
+  provider?: string;
+  model?: string;
 }): Record<PaEnvKey, string> {
   return {
     PA_DEPLOYMENT_ID: args.deploymentId,
@@ -20,8 +22,8 @@ function buildPaEnvVars(args: {
     PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
     PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
     PA_REPO: args.request.repo ?? "",
-    PA_PROVIDER: args.request.provider ?? "",
-    PA_MODEL: args.request.model ?? "",
+    PA_PROVIDER: args.provider ?? "",
+    PA_MODEL: args.model ?? "",
     PA_TEAM_MODEL: args.request.teamModel ?? "",
     PA_AGENT_MODEL: args.request.agentModel ?? "",
   };
@@ -98,7 +100,7 @@ export async function registerDeploySessionBestEffort(args: { deploymentId: stri
 
 export function createOpencodeHooks(adapter: RuntimeAdapter = new OpencodeAdapter()): CoreExecutionHooks {
   return {
-    deploy: (request) => deployWithOpencode(request, adapter),
+    deploy: (request, diagnostics) => deployWithOpencode(request, adapter, diagnostics),
     // Phase 2: inject the opencode activity normalizer so the Agent API
     // session hub streams structured ActivityEvents instead of raw JSONL.
     sessionNormalizer: opencodeJsonToActivityEvent,
@@ -117,7 +119,7 @@ export function createDefaultOpencodeHooks(): CoreExecutionHooks {
   return createOpencodeHooks();
 }
 
-export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter()) {
+export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter(), diagnostics?: DeployDiagnostics) {
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
@@ -125,6 +127,9 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
   const selectedMode = selectDeployMode(teamConfig, request.mode);
+  const runtimeConfig = resolveOpencodeRuntimeConfig(resolveRuntimeConfig({ runtime: "opencode", request, team: teamConfig, mode: selectedMode, local: { provider: "ollama-cloud" } }));
+  const provider = runtimeConfig.provider!;
+  const model = runtimeConfig.model!;
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   if (!ticketId && selectedMode?.require_ticket === true) {
@@ -140,7 +145,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     }
   }
   const paths = getDeployPaths(deploymentId);
-  const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
+  const env = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request, provider, model });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: env });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
@@ -148,21 +153,12 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  const provider = request.provider
-    ?? selectedMode?.runtimes?.opencode?.provider
-    ?? teamConfig.runtimes?.opencode?.provider
-    ?? selectedMode?.provider
-    ?? "ollama-cloud";
-  const model = resolveOpencodeModel(provider, request.model
-    ?? request.teamModel
-    ?? selectedMode?.runtimes?.opencode?.model
-    ?? teamConfig.runtimes?.opencode?.model
-    ?? selectedMode?.model);
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
+  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   if (request.dryRun) {
-    writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}`, metadata: { provider, model } }), paths.activityLogPath);
     await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
@@ -244,6 +240,13 @@ function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluat
     "Read-only constraints: do not mutate tickets, docs, statuses, branches, or doc refs.",
     `Output destination: ${outputPath}`,
   ].join("\n");
+}
+
+function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics?: DeployDiagnostics): void {
+  if (!config.warning) return;
+  const warning = redactDiagnostic(config.warning);
+  if (diagnostics) diagnostics.stderr(warning); else process.stderr.write(`${warning}\n`);
+  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "opencode", body: warning, metadata: { resolution: "fallback" } }), activityLogPath);
 }
 
 function selectDeployMode(teamConfig: TeamConfig, requestedMode?: string): DeployMode | undefined {

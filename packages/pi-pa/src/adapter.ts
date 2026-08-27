@@ -35,6 +35,8 @@ export interface PiSupervisionOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   sendSignal?: (pid: number, signal: NodeJS.Signals) => void;
   processGroupGone?: (pid: number) => boolean;
+  /** Return false only when the PTY child is known to have exited. */
+  processExists?: (pid: number) => boolean;
   persistLine?: typeof persistLine;
   writeLog?: typeof writeFileSync;
   appendLog?: typeof appendFileSync;
@@ -205,6 +207,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
+  const processExists = supervision.processExists ?? piProcessExists;
   let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined;
   const previousRaw = input.isTTY ? input.isRaw : undefined;
   const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8")) : undefined;
@@ -241,6 +244,31 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       cleanupVerified = true;
       settle(cleanupStatus, cleanupError);
     };
+    const finishExit = (exitCode: number, signal?: number): void => {
+      if (settled || exited) return;
+      exited = true;
+      if (cleanupPending) { finishCleanup(); return; }
+      try {
+        finishEvidence();
+        settle(exitCode, exitCode === 0 ? undefined : new Error(`Pi exited with code ${exitCode || signal || 1}`));
+      } catch (error) { settle(1, error instanceof Error ? error : new Error(String(error))); }
+    };
+    const confirmProcessExit = (): boolean => {
+      if (pty.pid === undefined) return false;
+      let running = true;
+      try { running = processExists(pty.pid); } catch { /* an indeterminate probe is not exit evidence */ }
+      if (!running) finishExit(0, 0);
+      return !running;
+    };
+    const monitorProcessExit = async (): Promise<void> => {
+      while (!settled && !exited) {
+        await sleep(PROCESS_TREE_POLL);
+        // Keep injected/fake clocks from starving input and PTY callbacks.
+        await new Promise<void>((resolveValue) => setImmediate(resolveValue));
+        if (settled || exited) return;
+        confirmProcessExit();
+      }
+    };
     const requestCleanup = (status: number, error: Error): void => {
       if (settled || cleanupPending) return;
       cleanupPending = true; cleanupStatus = status; cleanupError = error;
@@ -254,9 +282,12 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
         while (!settled && !exited && now() < deadline) {
           if (!killSent && now() >= deadline - PROCESS_TREE_TIMEOUT + TERM_GRACE) {
             killSent = true;
-            try { pty.kill("SIGKILL"); } catch { /* continue waiting for onExit */ }
+            try { pty.kill("SIGKILL"); } catch { /* continue waiting for process evidence */ }
           }
-          if (!exited) await sleep(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
+          if (!exited) {
+            await sleep(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
+            if (!settled && !exited) confirmProcessExit();
+          }
         }
         if (settled) return;
         if (exited) { finishCleanup(); return; }
@@ -279,14 +310,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     try {
       if (input.isTTY) input.setRawMode(true);
       input.on("data", onInput); process.stdout.on("resize", onResize); process.once("SIGINT", onSigint); pty.onData(onData);
-      pty.onExit(({ exitCode, signal }) => {
-        exited = true;
-        if (cleanupPending) { finishCleanup(); return; }
-        try {
-          finishEvidence();
-          settle(exitCode, exitCode === 0 ? undefined : new Error(`Pi exited with code ${exitCode || signal || 1}`));
-        } catch (error) { settle(1, error instanceof Error ? error : new Error(String(error))); }
-      });
+      pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
+      void monitorProcessExit();
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
@@ -319,3 +344,7 @@ async function bounded<T>(value: T | Promise<T>, timeout: number, timeoutMessage
   });
 }
 function processGroupGone(pid: number): boolean { try { process.kill(-pid, 0); return false; } catch { return true; } }
+function piProcessExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+}

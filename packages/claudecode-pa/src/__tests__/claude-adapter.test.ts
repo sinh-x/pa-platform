@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
 import { spawnSync } from "node:child_process";
-import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
+import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, resolveClaudeRuntimeConfig, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
@@ -117,6 +117,22 @@ test("resolveClaudeModel honors precedence (model > env > default)", () => {
   assert.equal(resolveClaudeModel("anthropic", "claude-sonnet-4-6", { PA_CPA_DEFAULT_MODEL: "claude-haiku-4-5-20251001" }), "claude-sonnet-4-6");
 });
 
+test("shared Claude resolution preserves anthropic and falls back incompatible providers", () => {
+  const configured = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "claude-sonnet-4-6", source: "mode" }), {});
+  assert.deepEqual(configured, { provider: "anthropic", model: "claude-sonnet-4-6", source: "mode" });
+  const fallback = resolveClaudeRuntimeConfig(Object.freeze({ provider: "openai", model: "gpt-5.5", source: "mode" }), {});
+  assert.equal(fallback.provider, "anthropic");
+  assert.equal(fallback.model, "claude-opus-4-7");
+  assert.match(fallback.warning ?? "", /openai\/gpt-5\.5/);
+
+  const configuredMismatch = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "openai/gpt-5.5", source: "mode" }), {});
+  assert.equal(configuredMismatch.source, "fallback");
+  const modelOnlyOverrideMismatch = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "deepseek/deepseek-v4-pro", source: "cli" }), {});
+  assert.equal(modelOnlyOverrideMismatch.source, "fallback");
+  const qualified = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "anthropic/claude-sonnet-4-6", source: "mode" }), {});
+  assert.equal(qualified.source, "mode");
+});
+
 test("normalizeProvider accepts anthropic/undefined and rejects others", () => {
   assert.equal(normalizeProvider(undefined), "anthropic");
   assert.equal(normalizeProvider("anthropic"), "anthropic");
@@ -198,17 +214,19 @@ test("cpa dry-run defaults builder to implement mode YAML model", async () => {
   });
 });
 
-test("cpa rejects non-anthropic provider before spawning claude", async () => {
-  await withCpaEnv(async () => {
+test("cpa warns and falls back for an incompatible provider before dry-run completes", async () => {
+  await withCpaEnv(async (root) => {
     const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
-    const stderr: string[] = [];
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "openai"], { hooks: createClaudeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
-    assert.notEqual(code, 0);
-    assert.match(stderr.join("\n"), /Unsupported cpa provider: openai/);
+    const stdout: string[] = [];
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "openai", "--dry-run"], { hooks: createClaudeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    assert.equal(code, 0);
+    const body = readDryRunBody(root, stdout);
+    assert.match(body, /incompatible provider\/model openai\/\(unset\)/);
+    assert.match(body, /falling back to anthropic\/claude-opus-4-7/);
   });
 });
 
-test("cpa ignores non-anthropic team-mode provider and falls back to anthropic", async () => {
+test("cpa warns for a non-anthropic team-mode provider and falls back to anthropic", async () => {
   await withCpaEnv(async (root) => {
     // Team mode declares provider: minimax + a non-claude model — these must be
     // ignored by cpa (they belong to the opa adapter). cpa should pick anthropic
@@ -235,7 +253,8 @@ test("cpa ignores non-anthropic team-mode provider and falls back to anthropic",
     assert.equal(code, 0, `expected dry-run to succeed; stderr: ${stderr.join("\n")}`);
     const body = readDryRunBody(root, stdout);
     assert.match(body, /using claude-opus-4-7/, "must fall back to default claude model when team mode model belongs to a different provider");
-    assert.equal(/minimax/.test(body), false, "must not surface team-mode minimax model in deployment body");
+    assert.match(body, /incompatible provider\/model minimax\/minimax-text-01-spark/);
+    assert.match(body, /falling back to anthropic\/claude-opus-4-7/);
   });
 });
 

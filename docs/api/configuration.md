@@ -26,7 +26,7 @@ Schemas and defaults for the configuration files and environment variables consu
   - [Server Lifecycle](#server-lifecycle)
   - [Runtime / Adapter](#runtime--adapter)
   - [Deployment Context (injected by adapters)](#deployment-context-injected-by-adapters)
-  - [Provider Model Overrides (`opa`)](#provider-model-overrides-opa)
+  - [Provider/model defaults and overrides](#providermodel-defaults-and-overrides)
   - [Command Resolution](#command-resolution)
   - [Status Wait](#status-wait)
 - [Resolution Priority Summary](#resolution-priority-summary)
@@ -81,7 +81,7 @@ skills_dir: string  # optional, ~-expandable path
 
 # Platform-wide defaults
 defaults:           # optional
-  runtime: "claude" | "opencode" | "droid"   # optional, default runtime
+  runtime: "claude" | "opencode" | "droid" | "pi" # optional; adapter selected by CLI when omitted
   opencode:                                   # optional
     provider: string                          # optional, default provider for opencode
     model: string                             # optional, default model for opencode
@@ -113,7 +113,7 @@ provider_defaults: # optional
 | `data_dir` | `~/.local/share/pa-platform` | Overridable by `PA_PLATFORM_DATA` |
 | `teams_dir` | `<platformHome>/teams` (or `<config_dir>/teams` when `config_dir` set) | Overridable by `PA_PLATFORM_TEAMS` |
 | `skills_dir` | `<platformHome>/skills/global` (or `<config_dir>/skills/global`) | Overridable by `PA_PLATFORM_SKILLS` |
-| `defaults.runtime` | (unset — adapter default applies; opencode is default) | One of `claude`, `opencode`, `droid` |
+| `defaults.runtime` | (unset — adapter selected by CLI; `opa`/OpenCode is default for the core API) | One of `claude`, `opencode`, `droid`, `pi` |
 | `defaults.opencode.provider` | (unset; `--provider` flag or `provider_defaults.default_provider`) | |
 | `provider_defaults.default_provider` | `ollama-cloud` (via `opa deploy --provider` fallback) | |
 
@@ -251,7 +251,7 @@ thresholds:
 
 ## Team Config Files (teams/*.yaml)
 
-Team configs live in the teams directory (resolved via `getTeamsDir()`; see [Paths & Dirs](#paths--dirs)) as `<team>.yaml`. The `example.yaml` file is skipped. The full schema is defined by the `TeamConfig`, `Agent`, `DeployMode`, `Hierarchy`, `SkillEntry`, and `RuntimeConfigMap` types in `packages/pa-core/src/types.ts` (see [Data Models](./data-models.md)). Key fields:
+Team configs live in the teams directory (resolved via `getTeamsDir()`; see [Paths & Dirs](#paths--dirs)) as `<team>.yaml`. The `example.yaml` file is skipped. The full schema is defined by the `TeamConfig`, `Agent`, `DeployMode`, `Hierarchy`, and `SkillEntry` types in `packages/pa-core/src/types.ts` (see [Data Models](./data-models.md)). Key fields:
 
 ```yaml
 name: string                # required, team name
@@ -283,20 +283,17 @@ deploy_modes:               # optional, list of deploy modes
     agents: [string]        # optional, subset of agents
     skills: [{ name: string, "inject-as": "global-skill" | "shared-skill" | "reference" }]  # optional
     solo: boolean           # optional
-    model: string           # optional
-    provider: string        # optional
-    timeout: number         # optional
+    model: string           # optional; must pair with provider when either is set
+    provider: string         # optional; must pair with model when either is set
+    timeout: number          # optional
     global_docs: [string]   # optional
-    runtimes:               # optional, per-runtime overrides
-      opencode: { model?: string, provider?: string, autonomy?: "low"|"medium"|"high", timeout?: number }
-      claude:   { ... }
-      droid:    { ... }
     require_ticket: boolean  # optional, require a ticket for deploys in this mode
-runtimes:                   # optional, team-level runtime overrides (same shape as mode.runtimes)
-  opencode: { ... }
-  claude:   { ... }
-  droid:    { ... }
 ```
+
+`deploy_modes[].provider` and `deploy_modes[].model` are the only runtime
+selection fields. They must both be present or both be absent; absent values
+select the chosen adapter's documented default. Team-level or mode-level
+`runtimes` blocks are removed and cause validation to fail with their YAML path.
 
 See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `Agent` field reference.
 
@@ -331,12 +328,12 @@ See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `
 
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
-| `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode`, `claude`, `droid`) |
+| `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode`, `claude`, `droid`, or `pi`) |
 | `PA_MAX_RUNTIME` | (unset → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800) | `deploy/control.ts` | Deploy timeout in seconds, consulted between the `--timeout` flag and the built-in default. Bounded to `[60, 7200]`; invalid values are rejected before the deployment hook runs |
 
 ### Deployment Context (injected by adapters)
 
-These keys are rendered into the `<deployment-context>` primer block by all three runtime adapters. The full key list is defined by `PA_ENV_KEYS` in `packages/pa-core/src/primer/index.ts`:
+These keys are rendered into the `<deployment-context>` primer block by all four runtime adapters. The full key list is defined by `PA_ENV_KEYS` in `packages/pa-core/src/primer/index.ts`:
 
 | Variable | Description |
 |----------|-------------|
@@ -354,7 +351,9 @@ These keys are rendered into the `<deployment-context>` primer block by all thre
 
 `PA_DEPLOYMENT_ID` is also read by `evaluate --record` as the default evaluator deployment id.
 
-### Provider Model Overrides (`opa`)
+### Provider/model defaults and overrides
+
+Each adapter owns its fallback; defaults do not cross-inherit. Flat mode values and CLI `--provider`/`--model` overrides are resolved before adapter mapping. The legacy `--team-model` flag is accepted as a warning-emitting alias for `--model` until PAP-147; `--agent-model` is rejected pending PAP-148.
 
 The OpenCode adapter (`packages/opencode-pa/src/adapter.ts`) resolves default model strings per provider from these env vars. When unset, the hard-coded defaults below apply.
 
@@ -366,7 +365,7 @@ The OpenCode adapter (`packages/opencode-pa/src/adapter.ts`) resolves default mo
 | `OPA_OLLAMA_CLOUD_MODEL` | `ollama-cloud/deepseek-v4-pro` | `ollama-cloud` (default provider) |
 | `OPA_OPENCODE_GO_MODEL` | `opencode-go/deepseek-v4-pro` | `opencode-go` |
 
-Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed (e.g. `--model deepseek-v3.2` → `ollama-cloud/deepseek-v3.2` for the `ollama-cloud` provider).
+Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed. `cpa` defaults to `anthropic` / `claude-opus-4-7`; `dpa` defaults to `deepseek-v4-pro`; and `ppa` defaults to configured `openai` / `openai/gpt-5.6-sol`, normalized for Pi commands to `openai-codex` / `gpt-5.6-sol`. An incompatible pair emits a redacted warning and uses the selected adapter's fallback.
 
 ### Command Resolution
 
@@ -399,7 +398,7 @@ Used by `schedule`/`remove-timer` to determine the pa command invoked by systemd
 **Server dev mode** → `--dev` flag OR truthy `PA_DEV_MODE`.
 **Server binary (dev)** → `PA_OPENCODE_BINARY` → `"opencode"` on PATH.
 **Max sessions** → `PA_MAX_SESSIONS` → `3` (invalid → default).
-**Provider default model** → `OPA_*_MODEL` → hard-coded defaults per provider (see [Provider Model Overrides](#provider-model-overrides-opa)).
+**Provider/model** → CLI `--provider`/`--model` (or warning alias `--team-model`) → selected flat `deploy_modes[]` pair → selected adapter default and compatibility fallback (see [Provider/model defaults and overrides](#providermodel-defaults-and-overrides)).
 **Deploy timeout** → `--timeout` → deployment `effective_timeout_seconds` → `PA_MAX_RUNTIME` (env, bounded `[60, 7200]`) → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); final value is bounded by `[60, 7200]`.
 **Health config** → `<configDir>/health.yaml` (parse failure → defaults).
 **Repo registry** → `<configDir>/repos.yaml` → `~/.config/sinh-x/personal-assistant/repos.yaml` → `<platformHome>/repos.yaml` (first existing file).

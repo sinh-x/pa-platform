@@ -59,6 +59,12 @@ if [[ "$REFRESH_HASH" == true ]]; then
   exit $?
 fi
 
+if [[ -z "${PA_PHASE5_CONFIG_ROOT:-}" ]]; then
+  echo "ERROR: PA_PHASE5_CONFIG_ROOT must point to the pinned pa-platform-config checkout"
+  exit 1
+fi
+corepack pnpm verify:paired-config -- --require-origin-develop
+
 CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 case "$BUMP" in

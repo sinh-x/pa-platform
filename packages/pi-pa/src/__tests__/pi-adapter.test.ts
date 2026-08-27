@@ -222,6 +222,60 @@ test("foreground trusts the extension status side channel instead of rendered te
   assert.match(readFileSync(join(dir, "pi-output.jsonl"), "utf8"), /\"stopReason\":\"error\"/);
 });
 
+test("foreground settles from process exit evidence when PTY onExit is absent", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-no-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let probes = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => probes++ === 0,
+    sleep: async () => {},
+  } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-no-onexit", mode: "foreground" });
+  assert.equal(result.exitCode, 0);
+  assert.ok(probes >= 1);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground ignores a delayed duplicate PTY exit after process evidence settled", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => false,
+    sleep: async () => {},
+  } });
+  let outcomes = 0;
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-delayed-onexit", mode: "foreground" });
+  resultPromise.then(() => { outcomes++; });
+  const result = await resultPromise;
+  pty.emitExit(17); pty.emitExit(17);
+  await nextTick();
+  assert.equal(result.exitCode, 0);
+  assert.equal(outcomes, 1);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground cleanup settles from process evidence without an onExit callback", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-resistant-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let running = true; let timeoutCallback: (() => void) | undefined;
+  pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+    now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+    setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-resistant", mode: "foreground", timeoutMs: 1 });
+  await nextTick(); timeoutCallback?.();
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 124);
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.equal(input.isRaw, false);
+});
+
 test("foreground log redaction survives every chunk boundary", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-stream-redact-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
@@ -247,6 +301,7 @@ test("foreground persistence failure terminates, escalates, verifies exit, and r
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-persist-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => true,
     persistLine: () => { throw new Error("foreground persistence failed"); },
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
   } });
@@ -268,6 +323,7 @@ test("foreground resistant timeout waits for verified exit and settles exactly o
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-timeout-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => true,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
     setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
   } });

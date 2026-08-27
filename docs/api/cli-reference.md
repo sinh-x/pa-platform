@@ -1,9 +1,9 @@
 # CLI Reference
 
-Complete reference for the pa-platform command-line interface. The runtime-neutral core is exposed as `pa-core` (package `@pa-platform/pa-core`), and the OpenCode adapter ships the `opa` binary (package `@pa-platform/opencode-pa`). `opa` wraps `runCoreCommand` from pa-core with the OpenCode adapter hooks, so every command documented here behaves identically under `pa-core` and `opa` except where noted.
+Complete reference for the pa-platform command-line interface. The runtime-neutral core is exposed as `pa-core` (package `@pa-platform/pa-core`), with `opa`, `cpa`, `dpa`, and `ppa` adapter binaries. All adapters wrap the shared `runCoreCommand`; provider/model defaults and mappings are adapter-specific.
 
-> **Source of truth:** `packages/pa-core/src/cli/commands/` (command implementations) and `packages/pa-core/src/cli/core-command.ts` (dispatch). `opa`-specific provider defaults live in `packages/opencode-pa/src/adapter.ts`.
-> **Last updated:** 2026-08-13
+> **Source of truth:** `packages/pa-core/src/cli/commands/` (command implementations), `packages/pa-core/src/cli/core-command.ts` (dispatch), and each adapter's `adapter.ts` (provider/model mapping).
+> **Last updated:** 2026-08-27
 
 ## Table of Contents
 
@@ -35,7 +35,7 @@ Complete reference for the pa-platform command-line interface. The runtime-neutr
 
 ## Conventions
 
-- **Binary:** Use `opa <command>` (OpenCode adapter, default) or `pa-core <command>` (runtime-neutral core). Both dispatch to the same `runCoreCommand` implementation.
+- **Binary:** Use `opa`, `cpa`, `dpa`, or `ppa` for adapter-backed deployments, or `pa-core` for the runtime-neutral core. All dispatch through `runCoreCommand`.
 - **Help:** Every command accepts `--help` / `-h` (and bare `help` for most). With no arguments, most commands print their help text.
 - **Boolean flags** are presence-only (`--flag`); **value flags** require the next argument to be a non-flag value (`--flag value`).
 - **Exit codes:** `0` on success, `1` on error (error message written to stderr).
@@ -158,10 +158,10 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 
 | Flag | Value | Description |
 |------|-------|-------------|
-| `--provider <name>` | provider | Model provider (`minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`). Default: `ollama-cloud` |
-| `--model <name>` | model | Override default model |
-| `--team-model <name>` | model | Override team-level model |
-| `--agent-model <name>` | model | Override agent-level model |
+| `--provider <name>` | provider | Adapter provider override; `opa`: `minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`; `cpa`: `anthropic`; `ppa`: `openai` or `openai-codex`; `dpa`: adapter-specific |
+| `--model <name>` | model | Override the selected flat mode model or adapter default |
+| `--team-model <name>` | model | Deprecated warning alias for `--model`; final removal is PAP-147 |
+| `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
 
 **Removed flags:** `--interactive` and `--direct` were removed; foreground TUI is the default. Passing either returns an error directing the user to `--background` or `--dry-run`.
 
@@ -177,7 +177,7 @@ opa deploy builder --mode implement --ticket PAP-132 --repo ./pa-platform
 opa deploy builder --mode implement --provider deepseek --model deepseek/deepseek-v4-pro
 ```
 
-**`opa`-specific:** The OpenCode adapter resolves provider default models from `OPA_*_MODEL` env vars (see [Configuration](./configuration.md)).
+**Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, `cpa` uses `anthropic` / `claude-opus-4-7`, `dpa` uses `deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-5.6-sol`, normalized to Pi's `openai-codex` / `gpt-5.6-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
 
 ---
 
@@ -203,10 +203,10 @@ A positional `<deploy-id>` matching `d-[a-z0-9]{6}` is shorthand for `--evaluate
 | `--ticket <id>` | ticket id | Associate evaluator run with a ticket |
 | `--repo <path>` | path | Repository context for memory docs |
 | `--timeout <seconds>` | int (60–7200) | Override evaluator deployment timeout |
-| `--provider <name>` | provider | Model provider |
+| `--provider <name>` | provider | Adapter provider override |
 | `--model <name>` | model | Override model |
-| `--team-model <name>` | model | Override team-level model |
-| `--agent-model <name>` | model | Override agent-level model |
+| `--team-model <name>` | model | Deprecated warning alias for `--model` (PAP-147) |
+| `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
 | `--record` | — | Store evaluator result for the target deployment |
 | `--evaluator-deployment <id>` | deploy-id | Evaluator deployment ID for `--record` (defaults to `PA_DEPLOYMENT_ID`) |
 | `--report-path <path>` | path | Evaluator report path for `--record` |
@@ -1007,4 +1007,4 @@ opa repos list --json
 | repos | 1 | list |
 | **Total** | **46** (50 counting `ticket subticket` sub-subcommands) | |
 
-All commands and flags above are derived from `packages/pa-core/src/cli/commands/` and `packages/pa-core/src/cli/core-command.ts`. The `opa` binary (`packages/opencode-pa/src/cli.ts`) delegates to `runCoreCommand` with OpenCode adapter hooks; no additional `opa`-only subcommands exist beyond the provider model resolution documented under [deploy](#deploy) and in [Configuration](./configuration.md).
+All commands and flags above are derived from `packages/pa-core/src/cli/commands/` and `packages/pa-core/src/cli/core-command.ts`. The `opa`, `cpa`, `dpa`, and `ppa` binaries delegate to `runCoreCommand` with their adapter hooks; adapter-specific provider/model defaults and mappings are documented under [deploy](#deploy) and in [Configuration](./configuration.md).

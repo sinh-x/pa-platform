@@ -21,7 +21,7 @@ After editing skills or package metadata in the config checkout, run `/reload` i
 
 `ppa deploy` is isolated from ordinary Pi discovery. A managed deployment receives exactly the selected PA skills and the trusted PA extension through explicit resource arguments; it does not load unrelated user or project Pi skills/extensions. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus the interactive tools and context UI below.
 
-Pi provider/model precedence is CLI flags, selected mode `runtimes.pi`, team `runtimes.pi`, then Pi-local Pi configuration. Pi remains an optional runtime; OpenCode remains the default when no runtime is selected.
+Pi provider/model precedence is explicit CLI flags, the selected flat mode pair (`deploy_modes[].provider` and `deploy_modes[].model`), then the PPA adapter default. A mode must provide both fields or neither. Pi remains an optional runtime; OpenCode remains the default when no runtime is selected.
 
 ## OpenAI-to-Codex Mapping
 
@@ -31,16 +31,17 @@ OpenCode, Claude Code, Droid, or other non-Pi runtime values:
 
 | Effective provider | Effective model | Pi command values |
 | --- | --- | --- |
-| `openai` | `openai/gpt-5.6-luna` | `openai-codex` / `gpt-5.6-luna` |
+| `openai` | `openai/gpt-5.6-sol` | `openai-codex` / `gpt-5.6-sol` |
 | `openai` | `openai/<model>` | `openai-codex` / `<model>` |
 | `openai` | `<model>` | `openai-codex` / `<model>` |
 | `openai-codex` | `openai/<model>` | `openai-codex` / `<model>` |
 | `openai-codex` | `<model>` | `openai-codex` / `<model>` |
 | any other provider | any model | provider and model unchanged |
 
-Only one leading `openai/` model prefix is removed. Empty or unresolved values
-remain omitted from the corresponding Pi command flag, allowing Pi-local
-configuration to supply them.
+Only one leading `openai/` model prefix is removed. PPA defaults to configured `openai` / `openai/gpt-5.6-sol` when the flat pair is
+absent, so Pi-local configuration cannot silently select Luna. Empty values
+remain omitted only for direct low-level session-command callers; managed
+`ppa deploy` resolves a complete pair before spawn.
 
 The same normalized values are used in both command paths:
 
@@ -111,6 +112,12 @@ and restore input listeners and raw mode before settling. The terminal registry
 marker is emitted exactly once.
 
 ## Migration
+
+Replace every team- or mode-level `runtimes` block with flat mode fields. Use
+both fields for an explicit pair, for example `provider: openai` and `model:
+openai/gpt-5.6-sol`, or omit both to use the selected adapter default. Run
+`ppa deploy <team> --validate` after migration; partial pairs and removed maps
+are rejected with their YAML paths.
 
 Existing `ppa deploy` users can run `ppa pi setup` once at the desired scope. Existing Pi settings and packages are retained. To move from global to project-local registration, run `ppa pi setup --local`, verify with `ppa pi status --local`, then run `ppa pi remove` globally if the global registration is no longer wanted.
 

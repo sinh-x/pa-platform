@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, nowUtc, parseTimestamp, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
@@ -291,8 +291,12 @@ export function buildPrimerLoadPrompt(primerPath: string): string {
 }
 
 export function resolveOpencodeModel(provider: string | undefined, model: string | undefined): string {
-  if (model?.includes("/")) return model;
   const normalized = normalizeProvider(provider);
+  const namespace = normalized === "minimax" ? "minimax-coding-plan" : normalized;
+  if (model?.includes("/")) {
+    if (!modelMatchesProvider(model, [namespace])) throw new Error(`Model namespace is incompatible with opa provider ${normalized}`);
+    return model;
+  }
   if (model) {
     if (normalized === "minimax") return `minimax-coding-plan/${model}`;
     return `${normalized}/${model}`;
@@ -307,6 +311,21 @@ export function normalizeProvider(provider: string | undefined): OpencodeProvide
   if (provider === "ollama-cloud") return "ollama-cloud";
   if (provider === "opencode-go") return "opencode-go";
   throw new Error(`Unsupported opa provider: ${provider}. Supported providers: minimax, openai, deepseek, ollama-cloud, opencode-go`);
+}
+
+/** Map the shared provider/model result to OpenCode's qualified model id. */
+export function resolveOpencodeRuntimeConfig(config: EffectiveRuntimeConfig): EffectiveRuntimeConfig {
+  try {
+    const provider = normalizeProvider(config.provider ?? "ollama-cloud");
+    return Object.freeze({ provider, model: resolveOpencodeModel(provider, config.model), source: config.source });
+  } catch {
+    const provider: OpencodeProvider = "ollama-cloud";
+    const model = resolveOpencodeModel(provider, undefined);
+    const warning = redactDiagnostic(
+      `opa: incompatible provider/model ${formatRuntimePair(config.provider, config.model)}; falling back to ${formatRuntimePair(provider, model)}.`,
+    );
+    return Object.freeze({ provider, model, source: "fallback", warning });
+  }
 }
 
 function writeLog(path: string, stdout: string, stderr: string): void {

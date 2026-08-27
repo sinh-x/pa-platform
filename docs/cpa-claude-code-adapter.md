@@ -28,8 +28,14 @@ cpa deploy <team> --validate                   # parse + check team config witho
 ## Provider and model resolution
 
 ```
---model > --team-model > deploy_modes[].model (team YAML) > $PA_CPA_DEFAULT_MODEL > claude-opus-4-7
+--model > --team-model (deprecated alias) > selected flat deploy_modes[].model > $PA_CPA_DEFAULT_MODEL > claude-opus-4-7
 ```
+
+Flat `deploy_modes[].provider` and `deploy_modes[].model` must be configured
+together or both omitted. `cpa` accepts only `anthropic`; an incompatible flat
+pair emits a warning and falls back to `anthropic` / `claude-opus-4-7`.
+`--agent-model` is rejected pending PAP-148, while `--team-model` warns until
+PAP-147 removes the compatibility alias.
 
 `--provider` accepts `anthropic` (or omitted). Any other value — including a YAML-set `provider: openai` for a `cpa` deploy — fails fast with `Unsupported cpa provider: <value>. Supported providers: anthropic`.
 

@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveRepo, writeActivityEvents, type CoreExecutionHooks, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
-import { ClaudeCodeAdapter, resolveClaudeModel } from "./adapter.js";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadTeamConfig, nowUtc, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveRepo, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { ClaudeCodeAdapter, resolveClaudeRuntimeConfig } from "./adapter.js";
 
 export function createClaudeHooks(adapter: RuntimeAdapter = new ClaudeCodeAdapter()): CoreExecutionHooks {
-  return { deploy: (request) => deployWithClaude(request, adapter) };
+  return { deploy: (request, diagnostics) => deployWithClaude(request, adapter, diagnostics) };
 }
 
 export function createDefaultClaudeHooks(): CoreExecutionHooks {
@@ -24,6 +24,8 @@ function buildPaEnvVars(args: {
   activityLogPath: string;
   teamConfig: TeamConfig;
   request: DeployRequest;
+  provider?: string;
+  model?: string;
 }): Record<PaEnvKey, string> {
   return {
     PA_DEPLOYMENT_ID: args.deploymentId,
@@ -33,14 +35,14 @@ function buildPaEnvVars(args: {
     PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
     PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
     PA_REPO: args.request.repo ?? "",
-    PA_PROVIDER: args.request.provider ?? "",
-    PA_MODEL: args.request.model ?? "",
+    PA_PROVIDER: args.provider ?? "",
+    PA_MODEL: args.model ?? "",
     PA_TEAM_MODEL: args.request.teamModel ?? "",
     PA_AGENT_MODEL: args.request.agentModel ?? "",
   };
 }
 
-export async function deployWithClaude(request: DeployRequest, adapter: RuntimeAdapter = new ClaudeCodeAdapter()) {
+export async function deployWithClaude(request: DeployRequest, adapter: RuntimeAdapter = new ClaudeCodeAdapter(), diagnostics?: DeployDiagnostics) {
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
@@ -48,39 +50,25 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
   const selectedMode = selectDeployMode(teamConfig, request.mode);
+  const runtimeConfig = resolveClaudeRuntimeConfig(resolveRuntimeConfig({ runtime: "claude", request, team: teamConfig, mode: selectedMode, local: { provider: "anthropic" } }));
+  const provider = runtimeConfig.provider!;
+  const model = runtimeConfig.model!;
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   const paths = getDeployPaths(deploymentId);
-  const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request });
+  const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request, provider, model });
   const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
   const primer = generatePrimer({ runtime: "claude", teamConfig, mode: selectedMode?.id, objective: request.objective, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
   writeFileSync(primerPath, primer, "utf-8");
 
-  // cpa is anthropic-only. Ignore team-mode YAML `provider:` when it isn't anthropic
-  // so the runtime adapter (cpa) drives provider selection — the team mode setting is
-  // for opa/other adapters. An explicit `--provider <other>` from the user is still
-  // rejected by `normalizeProvider` below.
-  const teamModeProviderIsAnthropic = !selectedMode?.provider || selectedMode.provider === "anthropic";
-  const provider = request.provider ?? "anthropic";
-  const teamModeModel = teamModeProviderIsAnthropic
-    ? (selectedMode?.runtimes?.claude?.model ?? selectedMode?.model)
-    : undefined;
-  let model: string;
-  try {
-    model = resolveClaudeModel(provider, request.model
-      ?? request.teamModel
-      ?? teamConfig.runtimes?.claude?.model
-      ?? teamModeModel);
-  } catch (error) {
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
-  }
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const env = { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: deployDir, PA_ACTIVITY_LOG: paths.activityLogPath, PA_TEAM: teamConfig.name, PA_MODE: request.mode ?? teamConfig.default_mode ?? "", PA_TICKET_ID: request.ticket || process.env["PA_TICKET_ID"] || "" };
+  const env = paEnv;
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
+  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   if (request.dryRun) {
-    writeActivityEvents([createActivityEvent({ deployId: deploymentId, kind: "text", source: "claude", body: `Dry-run primer generated for ${request.team} using ${model}` })], paths.activityLogPath);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "claude", body: `Dry-run primer generated for ${request.team} using ${model} (${provider})`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
   }
 
@@ -131,6 +119,12 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics?: DeployDiagnostics): void {
+  if (!config.warning) return;
+  if (diagnostics) diagnostics.stderr(config.warning); else process.stderr.write(`${config.warning}\n`);
+  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "claude", body: config.warning, metadata: { resolution: "fallback" } }), activityLogPath);
 }
 
 function selectDeployMode(teamConfig: TeamConfig, requestedMode?: string): DeployMode | undefined {

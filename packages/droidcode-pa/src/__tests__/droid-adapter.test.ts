@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { closeDb, createActivityEvent, appendActivityEvent, getDeployPaths, type ActivityEvent, type SpawnOpts, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
-import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDefaultDroidModel } from "../adapter.js";
+import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDroidRuntimeConfig, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
@@ -320,6 +320,28 @@ describe("DroidCodeAdapter", () => {
       errorThrown = true;
     }
     assert.equal(errorThrown, false, "background deploy should not throw");
+  });
+});
+
+describe("shared Droid resolution", () => {
+  it("maps the flat model and keeps provider/model evidence together", () => {
+    const result = resolveDroidRuntimeConfig(Object.freeze({ provider: "deepseek", model: "deepseek/deepseek-v4-pro", source: "mode" }));
+    assert.deepEqual(result, { provider: "deepseek", model: "deepseek-v4-pro", source: "mode" });
+    assert.ok(Object.isFrozen(result));
+  });
+
+  it("falls back for configured and model-only override namespace mismatches", () => {
+    const configured = resolveDroidRuntimeConfig(Object.freeze({ provider: "deepseek", model: "anthropic/claude-sonnet-4-6", source: "mode" }));
+    assert.equal(configured.source, "fallback");
+    assert.equal(configured.model, "deepseek-v4-pro");
+    assert.match(configured.warning ?? "", /deepseek\/anthropic\/claude-sonnet-4-6/);
+    const modelOnlyOverride = resolveDroidRuntimeConfig(Object.freeze({ provider: "deepseek", model: "openai/gpt-5.5", source: "cli" }));
+    assert.equal(modelOnlyOverride.source, "fallback");
+  });
+
+  it("keeps a qualified model adapter-local when no provider is selected", () => {
+    const result = resolveDroidRuntimeConfig(Object.freeze({ provider: undefined, model: "anthropic/claude-sonnet-4-6", source: "cli" }));
+    assert.deepEqual(result, { provider: "", model: "claude-sonnet-4-6", source: "cli" });
   });
 });
 
@@ -981,6 +1003,27 @@ describe("dpa deploy env-vars injection (MIN-C)", () => {
       assert.match(primer, /PA_MODEL: deepseek-v4-pro/);
       assert.match(primer, /PA_TEAM_MODEL: deepseek-chat/);
       assert.match(primer, /PA_AGENT_MODEL: deepseek-coder/);
+    });
+  });
+});
+
+describe("dpa fallback diagnostics", () => {
+  it("writes a namespace mismatch warning to stderr and activity without injected diagnostics", async () => {
+    await withDpaEnv(async (root) => {
+      writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n    provider: deepseek\n    model: anthropic/claude-sonnet-4-6\n`);
+      const adapter = new DroidCodeAdapter({ cwd: join(root, "repo"), env: { FACTORY_API_KEY: TEST_API_KEY } });
+      const stderr: string[] = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+      try {
+        const result = await deployWithDroid({ team: "daily", mode: "plan", dryRun: true, repo: "pa-platform" }, adapter);
+        assert.equal(result.status, "pending");
+        assert.match(stderr.join(""), /dpa: incompatible provider\/model/);
+        const activity = readFileSync(getDeployPaths(result.deploymentId!).activityLogPath, "utf8");
+        assert.match(activity, /dpa: incompatible provider\/model/);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
     });
   });
 });
