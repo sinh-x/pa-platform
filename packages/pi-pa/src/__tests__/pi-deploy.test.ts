@@ -278,21 +278,29 @@ test("Pi Agent API session commands normalize OpenAI identifiers", () => {
   assert.deepEqual(command.args, ["--print", "--mode", "json", "--session-id", "session", "--model", "gpt-5.6-luna", "--provider", "openai-codex", "work"]);
 });
 
-test("managed Pi deployment passes normalized provider and model to the adapter", async () => {
+test("managed Pi deployment keeps provider, model, and ticket identity aligned", async () => {
   await withPiEnv(async () => {
     let captured: SpawnOpts | undefined;
-    const result = await deployWithPi({ team: "builder", mode: "implement", provider: "openai", model: "openai/gpt-5.6-luna" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    const result = await deployWithPi({ team: "builder", mode: "implement", provider: "openai", model: "openai/gpt-5.6-luna", ticket: "PAP-151", objective: "Verify {{TICKET_ID}}" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
     assert.equal(captured?.model, "gpt-5.6-luna");
     assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
     assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-luna");
-    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_PROVIDER: openai-codex/);
-    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_MODEL: gpt-5.6-luna/);
+    assert.equal(captured?.env?.["PA_TICKET_ID"], "PAP-151");
+    assert.equal(captured?.executionPlan?.ticket, "PAP-151");
+    const primer = readFileSync(captured!.primerPath, "utf8");
+    assert.match(primer, /PA_PROVIDER: openai-codex/);
+    assert.match(primer, /PA_MODEL: gpt-5.6-luna/);
+    assert.match(primer, /> \*\*Ticket:\*\* PAP-151/);
+    assert.match(primer, /ticket_id: PAP-151/);
+    assert.match(primer, /Verify PAP-151/);
+    assert.match(primer, /objective: Verify \{\{TICKET_ID\}\}/);
     const resolution = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
     assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-luna", resolution: "cli" });
     const started = getDeploymentEvents(result.deploymentId!)[0];
     assert.equal(started?.provider, "openai-codex");
     assert.equal(started?.models?.team, "gpt-5.6-luna");
+    assert.equal(started?.ticket_id, "PAP-151");
   });
 });
 

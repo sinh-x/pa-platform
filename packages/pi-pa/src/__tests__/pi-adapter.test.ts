@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -264,18 +264,58 @@ test("normalizes nested Pi tool-call activity with exact identity and final argu
   const activity = normalizePiEvent(rawStart, "d-characterization");
   assert.equal(activity.partType, "toolcall_start");
   assert.equal(activity.kind, "tool_use");
+  assert.equal(activity.metadata?.["tool"], "read");
   assert.equal(activity.metadata?.["toolName"], "read");
   assert.equal(activity.metadata?.["toolCallId"], fixture.expected["callId"]);
 
   const rawEnd = fixture.events.find((event) => (event["assistantMessageEvent"] as Record<string, unknown> | undefined)?.["type"] === "toolcall_end")!;
   const completed = normalizePiEvent(rawEnd, "d-characterization");
   assert.equal(completed.partType, "toolcall_end");
+  assert.equal(completed.metadata?.["tool"], "read");
   assert.equal(completed.metadata?.["toolName"], "read");
   assert.deepEqual(completed.metadata?.["args"], fixture.expected["arguments"]);
 
   const execution = normalizePiEvent(fixture.events.find((event) => event["type"] === "tool_execution_start")!, "d-characterization");
   assert.equal(execution.kind, "tool_use");
+  assert.equal(execution.metadata?.["tool"], "read");
   assert.equal(execution.metadata?.["toolName"], "read");
+});
+
+test("persists sanitized d-8970b9-shaped activity without thinking signatures", async () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const root = mkdtempSync(join(tmpdir(), "pi-signature-"));
+  const deployId = "d-signature";
+  const deployDir = join(root, "deployments", deployId);
+  const primer = join(deployDir, "primer.md");
+  const signature = "archived-reasoning-envelope-value";
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  mkdirSync(deployDir, { recursive: true });
+  writeFileSync(primer, "work");
+  try {
+    const child = new FakePiChild();
+    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run" });
+    await nextTick();
+    const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: signature } : event);
+    child.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + "\n"));
+    child.emit("close", 0);
+    assert.equal((await resultPromise).exitCode, 0);
+
+    const output = readFileSync(join(deployDir, "pi-output.jsonl"), "utf8");
+    const activity = readFileSync(join(deployDir, "activity.jsonl"), "utf8");
+    for (const persisted of [output, activity]) {
+      assert.doesNotMatch(persisted, /thinkingSignature/i);
+      assert.doesNotMatch(persisted, new RegExp(signature));
+    }
+    assert.match(output, /bounded useful reasoning/);
+    const knownTools = activity.trim().split("\n").map((line) => JSON.parse(line) as { metadata?: Record<string, unknown> }).map((event) => event.metadata?.["tool"]).filter(Boolean);
+    assert.ok(knownTools.length > 0);
+    assert.ok(knownTools.every((tool) => tool === "read"));
+  } finally {
+    if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousHome;
+  }
 });
 
 test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
