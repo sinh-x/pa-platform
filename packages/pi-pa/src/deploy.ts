@@ -64,25 +64,26 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
   let terminalWritten = false;
-  const writeTerminal = (kind: "completed" | "crashed", reason: string, exitCode: number, logFile?: string): string => {
+  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "failed", reason: string, exitCode: number, logFile?: string): string => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
     if (terminalWritten) return safeReason;
     terminalWritten = true;
-    if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status: exitCode === 0 ? "success" : "failed", summary: safeReason, ...(logFile ? { logFile } : {}), exitCode });
-    else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode });
+    const consistentExitCode = status === "success" ? 0 : exitCode || 1;
+    if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status, summary: safeReason, ...(logFile ? { logFile } : {}), exitCode: consistentExitCode });
+    else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode: consistentExitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return safeReason;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    writeTerminal("completed", `ppa deploy failed: ${safeReason}`, exitCode);
+    writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
   const crashFailure = (reason: string) => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    writeTerminal("crashed", safeReason, 1);
+    writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
   try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
@@ -113,13 +114,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         const failure = final.status !== 0 ? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`) : terminalError;
         const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`;
         if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
-        writeTerminal("completed", reason, ok ? 0 : final.status ?? 1, resolve(deployDir, "pi.log"));
+        writeTerminal("completed", ok ? "success" : "failed", reason, final.status ?? 1, resolve(deployDir, "pi.log"));
       }).catch((error) => {
         crashFailure(error instanceof Error ? error.message : String(error));
       });
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    writeTerminal("completed", "ppa deploy completed", 0, result.logFile);
+    writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
     return { status: "success", team: request.team, mode: request.mode ?? null, deploymentId };
   } catch (error) { return crashFailure(error instanceof Error ? error.message : String(error)); }
 }

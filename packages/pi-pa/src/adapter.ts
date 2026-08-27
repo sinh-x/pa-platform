@@ -156,6 +156,9 @@ interface TrackedPiToolCall extends PiToolProtocolOutcome {
   deltas: string[];
   ended: boolean;
   malformed: boolean;
+  executionToolName?: string;
+  executionArguments?: unknown;
+  executionIdentityMismatch?: boolean;
 }
 
 class PiToolProtocolInspector {
@@ -193,13 +196,22 @@ class PiToolProtocolInspector {
     const callId = String(raw.toolCallId ?? "");
     const tracked = [...this.calls].reverse().find((call) => call.callId === callId);
     if (!tracked) return;
+    if (typeof raw.toolName === "string") {
+      if (tracked.executionToolName !== undefined && tracked.executionToolName !== raw.toolName) tracked.executionIdentityMismatch = true;
+      tracked.executionToolName = raw.toolName;
+    }
+    if (raw.args !== undefined) tracked.executionArguments = raw.args;
     if (type === "tool_execution_start") tracked.executionStarts++;
     else tracked.executionEnds++;
   }
 
   outcomes(): PiToolProtocolOutcome[] {
     return this.calls.map((call) => {
-      const status = !call.ended ? "incomplete" : call.malformed ? "malformed" : call.executionStarts === 1 && call.executionEnds === 1 ? "executed" : "execution-mismatch";
+      const executionMatches = !call.executionIdentityMismatch && (call.executionToolName === undefined || call.executionToolName === call.toolName);
+      const argumentsMatch = call.executionArguments === undefined || call.arguments === undefined || isDeepStrictEqual(call.executionArguments, call.arguments);
+      const executed = call.ended && call.executionStarts === 1 && call.executionEnds === 1 && executionMatches && argumentsMatch;
+      const executionObserved = call.executionStarts > 0 || call.executionEnds > 0;
+      const status = executed ? "executed" : executionObserved ? "execution-mismatch" : !call.ended ? "incomplete" : call.malformed ? "malformed" : "execution-mismatch";
       return { callId: call.callId, toolName: call.toolName, ...(call.arguments !== undefined ? { arguments: call.arguments } : {}), status, executionStarts: call.executionStarts, executionEnds: call.executionEnds };
     });
   }

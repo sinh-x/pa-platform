@@ -238,7 +238,7 @@ test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
 
 test("characterizes PAP-151 archived tool streams deterministically", () => {
   const fixtures = loadToolStreamFixtures();
-  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "opencode-comparative-success"]);
+  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "executed-supersedes-stale-malformed", "opencode-comparative-success"]);
   for (const fixture of fixtures) {
     const started = performance.now();
     const outcomes = Array.from({ length: 20 }, () => replayToolStream(fixture));
@@ -246,7 +246,7 @@ test("characterizes PAP-151 archived tool streams deterministically", () => {
     for (const outcome of outcomes) assert.deepEqual(outcome, fixture.expected, `${fixture.id} replay diverged`);
   }
   const completed = fixtures.filter((fixture) => String(fixture.expected["status"]) === "executed");
-  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "read"]);
+  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "todo", "read"]);
   assert.ok(completed.every((fixture) => fixture.expected["toolName"] !== "unknown"));
   assert.ok(fixtures.filter((fixture) => /incomplete|malformed/.test(String(fixture.expected["status"]))).every((fixture) => fixture.expected["executionStarts"] === 0));
 });
@@ -298,6 +298,16 @@ test("managed Pi stream inspection accepts complete calls and controls malformed
   const duplicated = inspectPiToolProtocol([...complete.events, duplicateStart]);
   assert.equal(duplicated.outcomes[0]?.status, "execution-mismatch");
   assert.match(duplicated.diagnostic, /expected one start\/end, observed 2\/1/);
+
+  const recovery = loadToolStreamFixtures().find((item) => item.id === "executed-supersedes-stale-malformed")!;
+  const recovered = inspectPiToolProtocol(recovery.events);
+  assert.equal(recovered.outcomes[0]?.status, "executed");
+  assert.equal(recovered.diagnostic, "");
+
+  const mismatchedExecution = recovery.events.map((event) => event["type"] === "tool_execution_start" ? { ...event, args: { action: "start", id: 2 } } : event);
+  const mismatch = inspectPiToolProtocol(mismatchedExecution);
+  assert.equal(mismatch.outcomes[0]?.status, "execution-mismatch");
+  assert.doesNotMatch(mismatch.diagnostic, /execution was suppressed/);
 });
 
 test("keeps PAP-151 fixtures sanitized and bounded", () => {

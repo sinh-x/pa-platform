@@ -232,6 +232,30 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
   }
 });
 
+test("background terminal diagnostics cannot retain success status or exit zero", async () => {
+  await withPiEnv(async () => {
+    const adapter = stubAdapter({ result: (sessionId) => ({
+      sessionId,
+      exitCode: 0,
+      metadata: {
+        sessionId,
+        pending: true,
+        monitor: { completion: Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { terminalError: "Malformed Pi tool call todo" } }) },
+      },
+    }) });
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter);
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "completed");
+    assert.equal(terminal[0]?.status, "failed");
+    assert.equal(terminal[0]?.exit_code, 1);
+    assert.match(terminal[0]?.summary ?? "", /^ppa deploy failed: Malformed Pi tool call todo$/);
+    assert.notEqual(terminal[0]?.fallback, true);
+  });
+});
+
 test("Pi successful results still require both authoritative session IDs", async () => {
   for (const resultFor of [
     () => ({ exitCode: 0, metadata: { sessionId: "authoritative-session-id" } }),
