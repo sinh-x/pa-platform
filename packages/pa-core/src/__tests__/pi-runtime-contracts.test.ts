@@ -63,8 +63,17 @@ test("shared runtime resolution returns one frozen effective pair and source", (
   assert.deepEqual(fromMode, { provider: "mode-provider", model: "mode-model", source: "mode" });
   assert.ok(Object.isFrozen(fromMode));
 
-  const fromCli = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider" }, team, mode, local: { provider: "default-provider", model: "default-model" } });
-  assert.deepEqual(fromCli, { provider: "cli-provider", model: "mode-model", source: "cli" });
+  const fromCli = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider", model: "cli-model" }, team, mode, local: { provider: "default-provider", model: "default-model" } });
+  assert.deepEqual(fromCli, { provider: "cli-provider", model: "cli-model", source: "cli" });
+
+  assert.throws(
+    () => resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", provider: "cli-provider" }, team, mode }),
+    /--model is required when --provider is supplied/,
+  );
+  assert.throws(
+    () => resolveRuntimeConfig({ runtime: "pi", request: { team: "builder", model: "cli-model" }, team, mode }),
+    /--provider is required when --model is supplied/,
+  );
 
   const fromDefault = resolveRuntimeConfig({ runtime: "pi", request: { team: "builder" }, team, local: { provider: "default-provider", model: "default-model" } });
   assert.deepEqual(fromDefault, { provider: "default-provider", model: "default-model", source: "default" });

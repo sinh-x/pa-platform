@@ -40,6 +40,11 @@ export function resolveRuntimeConfig(input: RuntimeConfigResolutionInput): Effec
   const cliProvider = input.request.provider;
   const cliModel = input.request.model ?? input.request.teamModel;
   const hasCliOverride = cliProvider !== undefined || cliModel !== undefined;
+  if (hasCliOverride && (cliProvider === undefined || cliModel === undefined)) {
+    const missing = cliProvider === undefined ? "provider" : "model";
+    const supplied = cliProvider === undefined ? "model" : "provider";
+    throw new Error(`CLI provider/model override is incomplete: --${missing} is required when --${supplied} is supplied.`);
+  }
   const provider = cliProvider ?? modeProvider ?? input.local?.provider;
   const model = cliModel ?? modeModel ?? input.local?.model;
   const source: RuntimeConfigSource = hasCliOverride ? "cli" : modeProvider !== undefined ? "mode" : "default";
