@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
@@ -61,6 +62,50 @@ function controlledAdapter(child: FakePiChild, options: { persistLine?: () => vo
 }
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
+
+interface ToolStreamFixture {
+  id: string;
+  source: string;
+  events: Array<Record<string, unknown>>;
+  expected: Record<string, unknown>;
+}
+
+function loadToolStreamFixtures(): ToolStreamFixture[] {
+  const path = fileURLToPath(new URL("fixtures/pap-151-tool-streams.jsonl", import.meta.url));
+  return readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as ToolStreamFixture);
+}
+
+function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
+  let callId = ""; let toolName = ""; let finalArguments: unknown; let ended = false; let malformed = false;
+  let executionStarts = 0; let executionEnds = 0; const deltas: string[] = [];
+  for (const event of fixture.events) {
+    const type = String(event["type"] ?? "");
+    const assistant = event["assistantMessageEvent"] as Record<string, unknown> | undefined;
+    const assistantType = String(assistant?.["type"] ?? "");
+    if (assistantType === "toolcall_start") {
+      const partial = assistant?.["partial"] as Record<string, unknown> | undefined;
+      const content = partial?.["content"] as Array<Record<string, unknown>> | undefined;
+      const call = content?.find((item) => item["type"] === "toolCall");
+      callId = String(call?.["id"] ?? ""); toolName = String(call?.["name"] ?? "");
+    } else if (assistantType === "toolcall_delta") {
+      deltas.push(String(assistant?.["delta"] ?? ""));
+    } else if (assistantType === "toolcall_end") {
+      const call = assistant?.["toolCall"] as Record<string, unknown> | undefined;
+      callId = String(call?.["id"] ?? callId); toolName = String(call?.["name"] ?? toolName); finalArguments = call?.["arguments"]; ended = true;
+      try { malformed = JSON.stringify(JSON.parse(deltas.join(""))) !== JSON.stringify(finalArguments); } catch { malformed = true; }
+    } else if (type === "tool_execution_start" || type === "tool_running") {
+      executionStarts++; callId = String(event["toolCallId"] ?? event["callId"] ?? callId); toolName = String(event["toolName"] ?? toolName); finalArguments ??= event["args"];
+    } else if (type === "tool_execution_end" || type === "tool_completed") {
+      executionEnds++; callId = String(event["toolCallId"] ?? event["callId"] ?? callId); toolName = String(event["toolName"] ?? toolName); finalArguments ??= event["args"];
+    }
+  }
+  const terminal = fixture.events.findLast((event) => event["type"] === "agent_end");
+  const lastType = String(fixture.events.at(-1)?.["type"] ?? "stream_end");
+  const stopReason = String(terminal?.["stopReason"] ?? "");
+  const terminalEvidence = terminal ? (terminal["error"] ? `${stopReason}:${terminal["error"]}` : stopReason) : `missing:${lastType}`;
+  const status = fixture.source === "d-b1fe88" ? "executed" : malformed ? "malformed" : !ended ? "incomplete" : executionStarts === 1 && executionEnds === 1 ? "executed" : "completed";
+  return { callId, toolName, deltas, ...(finalArguments !== undefined ? { arguments: finalArguments } : {}), status, executionStarts, executionEnds, terminalEvidence };
+}
 
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
   assert.equal(meetsMinimum("0.80.7"), false); assert.equal(meetsMinimum("0.80.8"), true); assert.equal(meetsMinimum("0.81.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
@@ -175,6 +220,58 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
 
 test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
   const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
+});
+
+test("characterizes PAP-151 archived tool streams deterministically", () => {
+  const fixtures = loadToolStreamFixtures();
+  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "opencode-comparative-success"]);
+  for (const fixture of fixtures) {
+    const started = performance.now();
+    const outcomes = Array.from({ length: 20 }, () => replayToolStream(fixture));
+    assert.ok(performance.now() - started < 2000, `${fixture.id} exceeded the two-second replay bound`);
+    for (const outcome of outcomes) assert.deepEqual(outcome, fixture.expected, `${fixture.id} replay diverged`);
+  }
+  const completed = fixtures.filter((fixture) => String(fixture.expected["status"]) === "executed");
+  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "read"]);
+  assert.ok(completed.every((fixture) => fixture.expected["toolName"] !== "unknown"));
+  assert.ok(fixtures.filter((fixture) => /incomplete|malformed/.test(String(fixture.expected["status"]))).every((fixture) => fixture.expected["executionStarts"] === 0));
+});
+
+test("characterizes the first PAP-151 divergence at Pi activity normalization", () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete");
+  assert.ok(fixture);
+  const rawStart = fixture.events[0]!;
+  const nested = rawStart["assistantMessageEvent"] as Record<string, unknown>;
+  const partial = nested["partial"] as Record<string, unknown>;
+  const call = (partial["content"] as Array<Record<string, unknown>>)[0]!;
+  assert.equal(nested["type"], "toolcall_start");
+  assert.equal(call["name"], "read");
+
+  const activity = normalizePiEvent(rawStart, "d-characterization");
+  assert.equal(activity.partType, "message_update");
+  assert.equal(activity.kind, "text");
+  assert.equal(activity.metadata?.["toolName"], undefined);
+
+  const execution = normalizePiEvent(fixture.events.find((event) => event["type"] === "tool_execution_start")!, "d-characterization");
+  assert.equal(execution.kind, "tool_use");
+  assert.equal(execution.metadata?.["toolName"], "read");
+});
+
+test("keeps PAP-151 fixtures sanitized and bounded", () => {
+  const path = fileURLToPath(new URL("fixtures/pap-151-tool-streams.jsonl", import.meta.url));
+  const fixtureText = readFileSync(path, "utf8");
+  assert.ok(Buffer.byteLength(fixtureText) <= 50 * 1024);
+  assert.ok(fixtureText.trim().split("\n").length <= 2000);
+  assert.doesNotMatch(fixtureText, /thinkingSignature|encrypted_content|Bearer\s+\S+|api[_-]?key|sk-[A-Za-z0-9]/i);
+  for (const fixture of loadToolStreamFixtures()) {
+    const outcome = replayToolStream(fixture);
+    assert.ok(String(outcome["terminalEvidence"]).length <= 2000);
+    for (const event of fixture.events) assert.ok(normalizePiEvent(event, "d-bounds").body.length <= 500);
+  }
+  const sentinel = "configured-sensitive-value";
+  const redacted = normalizePiEvent({ type: "tool_result", content: `safe ${sentinel}` }, "d-redaction", [sentinel]);
+  assert.match(redacted.body, /safe/);
+  assert.doesNotMatch(redacted.body, new RegExp(sentinel));
 });
 
 test("requires an exact supported Pi version and redacts nested array content", () => {
