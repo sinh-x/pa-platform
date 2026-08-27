@@ -12,6 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read paired config SHA
+        id: paired-config
+        run: echo "sha=$(tr -d '[:space:]' < .pa-platform-config.sha)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: sinh-x/pa-platform-config
+          ref: ${{ steps.paired-config.outputs.sha }}
+          path: paired-config
+          fetch-depth: 0
+          token: ${{ secrets.PA_PLATFORM_CONFIG_TOKEN }}
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -30,6 +42,14 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+      - name: Enforce config-first compatibility
+        env:
+          PA_PHASE5_CONFIG_ROOT: ${{ github.workspace }}/paired-config
+        run: |
+          git -C "$PA_PHASE5_CONFIG_ROOT" fetch origin develop
+          pnpm run verify:paired-config -- --require-origin-develop | tee -a "$GITHUB_STEP_SUMMARY"
+          pnpm run test:paired
 
       - name: Check generated completions
         run: |

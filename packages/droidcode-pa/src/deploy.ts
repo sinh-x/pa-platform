@@ -41,7 +41,7 @@ function buildPaEnvVars(args: {
   };
 }
 
-export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAdapter = new DroidCodeAdapter(), _diagnostics?: DeployDiagnostics) {
+export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAdapter = new DroidCodeAdapter(), diagnostics?: DeployDiagnostics) {
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
@@ -83,6 +83,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   }
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
+  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   if (request.dryRun) {
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "droid", body: `Dry-run primer generated for ${request.team} using ${provider ? `${provider}/` : ""}${model}`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
@@ -133,6 +134,13 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics?: DeployDiagnostics): void {
+  if (!config.warning) return;
+  if (diagnostics) diagnostics.stderr(config.warning);
+  else process.stderr.write(`${config.warning}\n`);
+  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "droid", body: config.warning }), activityLogPath);
 }
 
 function buildEvaluatorObjective(targetDeploymentId: string | undefined, evaluatorDeploymentId: string, evaluatorTeam: string): string | undefined {

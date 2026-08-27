@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAgentApiApp, generatePrimer, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
+import { createAgentApiApp, generatePrimer, modelMatchesProvider, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
 
 const baseConfig = `name: builder
 description: Builder
@@ -23,6 +23,37 @@ test("deploy mode provider/model must be both present or both absent", () => {
   const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: default\n    label: Default\n`);
   assert.equal(config.deploy_modes?.[0]?.provider, undefined);
   assert.equal(config.deploy_modes?.[0]?.model, undefined);
+});
+
+test("explicit malformed provider/model values fail at their exact YAML paths", () => {
+  const malformed = ["\"\"", "\"   \"", "null"];
+  for (const value of malformed) {
+    for (const suffix of ["", "    model: openai/gpt-5\n"]) {
+      assert.throws(
+        () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    provider: ${value}\n${suffix}`),
+        (error: unknown) => error instanceof Error && error.message === "deploy_modes[0].provider must be a non-empty string",
+      );
+    }
+    for (const suffix of ["", "    provider: openai\n"]) {
+      assert.throws(
+        () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    model: ${value}\n${suffix}`),
+        (error: unknown) => error instanceof Error && error.message === "deploy_modes[0].model must be a non-empty string",
+      );
+    }
+  }
+});
+
+test("valid explicit provider/model values are trimmed", () => {
+  const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: valid\n    label: Valid\n    provider: \" openai \"\n    model: \" openai/gpt-5 \"\n`);
+  assert.equal(config.deploy_modes?.[0]?.provider, "openai");
+  assert.equal(config.deploy_modes?.[0]?.model, "openai/gpt-5");
+});
+
+test("qualified models must match the selected provider namespace", () => {
+  assert.equal(modelMatchesProvider("gpt-5", ["openai"]), true);
+  assert.equal(modelMatchesProvider("openai/gpt-5", ["openai"]), true);
+  assert.equal(modelMatchesProvider("deepseek/deepseek-v4-pro", ["openai"]), false);
+  assert.equal(modelMatchesProvider("minimax-coding-plan/MiniMax-M2.7", ["minimax-coding-plan"]), true);
 });
 
 test("shared runtime resolution returns one frozen effective pair and source", () => {

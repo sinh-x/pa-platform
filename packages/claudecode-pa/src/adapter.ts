@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { installPaClaudeHooks } from "./plugins/pa-claude-hooks.js";
 import { STDERR_TAIL_BYTES, tailString } from "./util.js";
 
@@ -298,7 +298,7 @@ export function normalizeProvider(provider: string | undefined): ClaudeProvider 
 
 /** Map the shared provider/model result to Claude Code's anthropic runtime. */
 export function resolveClaudeRuntimeConfig(config: EffectiveRuntimeConfig, env: NodeJS.ProcessEnv = process.env): EffectiveRuntimeConfig {
-  if (config.provider === undefined || config.provider === "anthropic") {
+  if ((config.provider === undefined || config.provider === "anthropic") && modelMatchesProvider(config.model, ["anthropic"])) {
     return Object.freeze({ provider: "anthropic", model: resolveClaudeModel("anthropic", config.model, env), source: config.source });
   }
   const provider = "anthropic";

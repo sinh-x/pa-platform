@@ -1,4 +1,4 @@
-import { formatRuntimePair, redactDiagnostic, type EffectiveRuntimeConfig } from "@pa-platform/pa-core";
+import { formatRuntimePair, modelMatchesProvider, redactDiagnostic, type EffectiveRuntimeConfig } from "@pa-platform/pa-core";
 
 export const PI_DEFAULT_PROVIDER = "openai";
 export const PI_DEFAULT_MODEL = "openai/gpt-5.6-sol";
@@ -12,7 +12,7 @@ export function normalizePiRuntimeConfig(provider?: string, model?: string): PiR
   const isOpenAiProvider = provider === "openai" || provider === "openai-codex";
   return {
     provider: provider === "openai" ? "openai-codex" : provider,
-    model: isOpenAiProvider && model?.startsWith("openai/") ? model.slice("openai/".length) : model,
+    model: isOpenAiProvider && modelMatchesProvider(model, ["openai", "openai-codex"]) && model?.includes("/") ? model.slice(model.indexOf("/") + 1) : model,
   };
 }
 
@@ -20,7 +20,7 @@ export function normalizePiRuntimeConfig(provider?: string, model?: string): PiR
 export function resolvePiRuntimeConfig(config: EffectiveRuntimeConfig): EffectiveRuntimeConfig {
   const provider = config.provider ?? PI_DEFAULT_PROVIDER;
   const model = config.model ?? PI_DEFAULT_MODEL;
-  if (provider !== "openai" && provider !== "openai-codex") {
+  if ((provider !== "openai" && provider !== "openai-codex") || !modelMatchesProvider(model, ["openai", "openai-codex"])) {
     const fallback = normalizePiRuntimeConfig(PI_DEFAULT_PROVIDER, PI_DEFAULT_MODEL);
     const warning = redactDiagnostic(
       `ppa: incompatible provider/model ${formatRuntimePair(config.provider, config.model)}; falling back to ${formatRuntimePair(fallback.provider, fallback.model)}.`,

@@ -69,3 +69,9 @@ export function redactDiagnostic(value: string, secrets: string[] = []): string 
 export function formatRuntimePair(provider?: string, model?: string): string {
   return `${provider ?? "(unset)"}/${model ?? "(unset)"}`;
 }
+
+/** Bare model ids are adapter-local; qualified ids must name an accepted provider namespace. */
+export function modelMatchesProvider(model: string | undefined, namespaces: readonly string[]): boolean {
+  if (!model?.includes("/")) return true;
+  return namespaces.includes(model.slice(0, model.indexOf("/")));
+}

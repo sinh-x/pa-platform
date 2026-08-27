@@ -124,6 +124,13 @@ test("shared Claude resolution preserves anthropic and falls back incompatible p
   assert.equal(fallback.provider, "anthropic");
   assert.equal(fallback.model, "claude-opus-4-7");
   assert.match(fallback.warning ?? "", /openai\/gpt-5\.5/);
+
+  const configuredMismatch = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "openai/gpt-5.5", source: "mode" }), {});
+  assert.equal(configuredMismatch.source, "fallback");
+  const modelOnlyOverrideMismatch = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "deepseek/deepseek-v4-pro", source: "cli" }), {});
+  assert.equal(modelOnlyOverrideMismatch.source, "fallback");
+  const qualified = resolveClaudeRuntimeConfig(Object.freeze({ provider: "anthropic", model: "anthropic/claude-sonnet-4-6", source: "mode" }), {});
+  assert.equal(qualified.source, "mode");
 });
 
 test("normalizeProvider accepts anthropic/undefined and rejects others", () => {

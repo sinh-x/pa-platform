@@ -232,6 +232,12 @@ test("shared OpenCode resolution preserves mappings and falls back incompatible 
   assert.equal(fallback.provider, "ollama-cloud");
   assert.equal(fallback.model, "ollama-cloud/deepseek-v4-pro");
   assert.match(fallback.warning ?? "", /anthropic\/claude-sonnet-4-6/);
+
+  const configuredMismatch = resolveOpencodeRuntimeConfig(Object.freeze({ provider: "openai", model: "deepseek/deepseek-v4-pro", source: "mode" }));
+  assert.equal(configuredMismatch.source, "fallback");
+  assert.equal(configuredMismatch.model, "ollama-cloud/deepseek-v4-pro");
+  const modelOnlyOverrideMismatch = resolveOpencodeRuntimeConfig(Object.freeze({ provider: "openai", model: "anthropic/claude-sonnet-4-6", source: "cli" }));
+  assert.equal(modelOnlyOverrideMismatch.source, "fallback");
 });
 
 test("resolveOpencodeModel supports minimax and openai providers", () => {
@@ -239,6 +245,8 @@ test("resolveOpencodeModel supports minimax and openai providers", () => {
   assert.equal(resolveOpencodeModel("openai", undefined), "openai/gpt-5.5");
   assert.equal(resolveOpencodeModel("openai", "openai/gpt-5.5-fast"), "openai/gpt-5.5-fast");
   assert.equal(resolveOpencodeModel("minimax", "MiniMax-M2.7-highspeed"), "minimax-coding-plan/MiniMax-M2.7-highspeed");
+  assert.equal(resolveOpencodeModel("minimax", "minimax-coding-plan/MiniMax-M2.7-highspeed"), "minimax-coding-plan/MiniMax-M2.7-highspeed");
+  assert.throws(() => resolveOpencodeModel("openai", "deepseek/deepseek-v4-pro"), /namespace is incompatible/);
 });
 
 test("resolveOpencodeModel supports opencode-go provider and deepseek-v4-pro default", () => {

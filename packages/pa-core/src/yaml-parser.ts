@@ -75,12 +75,12 @@ function rejectRemovedRuntimeConfig(raw: Record<string, unknown>, path: string):
 
 function validateFlatModePair(mode: Record<string, unknown>, index: number): void {
   const basePath = `deploy_modes[${index}]`;
+  const hasProvider = Object.prototype.hasOwnProperty.call(mode, "provider");
+  const hasModel = Object.prototype.hasOwnProperty.call(mode, "model");
   const provider = mode["provider"];
   const model = mode["model"];
-  const hasProvider = provider !== undefined && provider !== null && (typeof provider !== "string" || provider.trim() !== "");
-  const hasModel = model !== undefined && model !== null && (typeof model !== "string" || model.trim() !== "");
-  if (hasProvider && typeof provider !== "string") throw new Error(`${basePath}.provider must be a non-empty string`);
-  if (hasModel && typeof model !== "string") throw new Error(`${basePath}.model must be a non-empty string`);
+  if (hasProvider && (typeof provider !== "string" || provider.trim() === "")) throw new Error(`${basePath}.provider must be a non-empty string`);
+  if (hasModel && (typeof model !== "string" || model.trim() === "")) throw new Error(`${basePath}.model must be a non-empty string`);
   if (hasProvider !== hasModel) {
     const missingPath = hasProvider ? `${basePath}.model` : `${basePath}.provider`;
     throw new Error(`${missingPath} is required when configuring a deploy mode pair; deploy_modes[].provider and deploy_modes[].model must both be present or both be absent.`);
@@ -88,7 +88,7 @@ function validateFlatModePair(mode: Record<string, unknown>, index: number): voi
 }
 
 function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {

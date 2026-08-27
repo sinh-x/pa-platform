@@ -253,6 +253,11 @@ test("PPA incompatible pairs fall back with a redacted warning result", () => {
   assert.match(result.warning ?? "", /anthropic\/\[REDACTED\]/);
   assert.doesNotMatch(result.warning ?? "", /1234567890abcdef/);
   assert.ok(Object.isFrozen(result));
+
+  const configuredMismatch = resolvePiRuntimeConfig(Object.freeze({ provider: "openai", model: "anthropic/claude-sonnet-4-6", source: "mode" }));
+  assert.deepEqual({ provider: configuredMismatch.provider, model: configuredMismatch.model, source: configuredMismatch.source }, { provider: "openai-codex", model: "gpt-5.6-sol", source: "fallback" });
+  const modelOnlyOverrideMismatch = resolvePiRuntimeConfig(Object.freeze({ provider: "openai", model: "deepseek/deepseek-v4-pro", source: "cli" }));
+  assert.equal(modelOnlyOverrideMismatch.source, "fallback");
 });
 
 test("PPA fallback warning is activity evidence before the fallback spawn", async () => {
@@ -267,8 +272,8 @@ test("PPA fallback warning is activity evidence before the fallback spawn", asyn
       "deploy_modes:",
       "  - id: implement",
       "    label: Implement",
-      "    provider: anthropic",
-      "    model: claude-sonnet-4-6",
+    "    provider: openai",
+    "    model: anthropic/claude-sonnet-4-6",
     ].join("\n") + "\n");
     let captured: SpawnOpts | undefined;
     const order: string[] = [];
@@ -283,7 +288,7 @@ test("PPA fallback warning is activity evidence before the fallback spawn", asyn
     assert.equal(events[0]?.models?.team, "gpt-5.6-sol");
     const warning = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
     assert.equal(warning?.kind, "error");
-    assert.match(warning?.body ?? "", /anthropic\/claude-sonnet-4-6/);
+    assert.match(warning?.body ?? "", /openai\/anthropic\/claude-sonnet-4-6/);
     assert.match(warning?.body ?? "", /openai-codex\/gpt-5\.6-sol/);
   });
 });
