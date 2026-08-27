@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
+import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
@@ -41,19 +42,38 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
     });
   } catch (error) {
-    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: boundedDiagnostic(`ppa deploy validation failed: ${reason}`, env, 2000), exitCode: 1 });
+    ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(env)}\n</deployment-context>` });
   const primerPath = resolve(deployDir, "primer.md"); writeFileSync(primerPath, primer, "utf8"); process.stdout.write(`Deployment: ${deploymentId}\n`);
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-  const completeFailure = (reason: string, exitCode = 1) => {
-    const boundedReason = reason.length > 2000 ? `${reason.slice(0, 1997)}...` : reason;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedReason }), paths.activityLogPath);
-    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: `ppa deploy failed: ${boundedReason}`, exitCode });
+  let terminalWritten = false;
+  const writeTerminal = (kind: "completed" | "crashed", reason: string, exitCode: number, logFile?: string): string => {
+    const safeReason = boundedDiagnostic(reason, env, 2000);
+    if (terminalWritten) return safeReason;
+    terminalWritten = true;
+    if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status: exitCode === 0 ? "success" : "failed", summary: safeReason, ...(logFile ? { logFile } : {}), exitCode });
+    else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason };
+    return safeReason;
+  };
+  const completeFailure = (reason: string, exitCode = 1) => {
+    const safeReason = boundedDiagnostic(reason, env, 2000);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
+    writeTerminal("completed", `ppa deploy failed: ${safeReason}`, exitCode);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
+  };
+  const crashFailure = (reason: string) => {
+    const safeReason = boundedDiagnostic(reason, env, 2000);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
+    writeTerminal("crashed", safeReason, 1);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
   try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
@@ -66,9 +86,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (readFileSync(sessionPath, "utf8").trim() !== sessionId) throw new Error("persisted Pi session id does not match the authoritative session id");
   } catch (error) {
     const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
-    emitCrashedEvent({ deploymentId, team: team.name, error: reason, exitCode: 1 });
-    ensureTerminalRegistryMarker({ deploymentId, team: team.name });
-    return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
+    return crashFailure(reason);
   }
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
@@ -82,21 +100,18 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       void monitor.completion.then((final) => {
         const terminalError = typeof final.metadata?.["terminalError"] === "string" ? final.metadata["terminalError"] : undefined;
         const ok = final.status === 0 && !terminalError;
-        const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${terminalError ?? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`)}`;
-        const boundedReason = reason.length > 2000 ? `${reason.slice(0, 1997)}...` : reason;
-        try {
-          if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedReason }), paths.activityLogPath);
-          emitCompletedEvent({ deploymentId, team: team.name, status: ok ? "success" : "failed", summary: boundedReason, logFile: resolve(deployDir, "pi.log"), exitCode: ok ? 0 : final.status ?? 1 });
-        } finally { ensureTerminalRegistryMarker({ deploymentId, team: team.name }); }
+        const failure = final.status !== 0 ? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`) : terminalError;
+        const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`;
+        if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
+        writeTerminal("completed", reason, ok ? 0 : final.status ?? 1, resolve(deployDir, "pi.log"));
       }).catch((error) => {
-        emitCrashedEvent({ deploymentId, team: team.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
-        ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+        crashFailure(error instanceof Error ? error.message : String(error));
       });
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    emitCompletedEvent({ deploymentId, team: team.name, status: "success", summary: "ppa deploy completed", logFile: result.logFile, exitCode: 0 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    writeTerminal("completed", "ppa deploy completed", 0, result.logFile);
     return { status: "success", team: request.team, mode: request.mode ?? null, deploymentId };
-  } catch (error) { emitCrashedEvent({ deploymentId, team: team.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 }); ensureTerminalRegistryMarker({ deploymentId, team: team.name }); return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) }; }
+  } catch (error) { return crashFailure(error instanceof Error ? error.message : String(error)); }
 }
 
 async function adapterPreflight(adapter: RuntimeAdapter): Promise<void> {
@@ -108,6 +123,11 @@ function emitResolutionWarning(config: { warning?: string }, deploymentId: strin
   if (!config.warning) return;
   if (diagnostics) diagnostics.stderr(config.warning); else process.stderr.write(`${config.warning}\n`);
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: config.warning, metadata: { resolution: "fallback" } }), activityLogPath);
+}
+
+function boundedDiagnostic(value: string, env: NodeJS.ProcessEnv, max: number): string {
+  const safe = redactDiagnostic(value, environmentSecrets({ ...process.env, ...env }));
+  return safe.length > max ? `${safe.slice(0, Math.max(0, max - 3))}...` : safe;
 }
 
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }

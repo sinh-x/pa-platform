@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
@@ -76,6 +76,20 @@ function loadToolStreamFixtures(): ToolStreamFixture[] {
 }
 
 function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
+  if (fixture.source !== "d-b1fe88") {
+    const inspected = inspectPiToolProtocol(fixture.events);
+    assert.equal(inspected.outcomes.length, 1);
+    const outcome = inspected.outcomes[0]!;
+    const deltas = fixture.events.flatMap((event) => {
+      const assistant = event["assistantMessageEvent"] as Record<string, unknown> | undefined;
+      return assistant?.["type"] === "toolcall_delta" ? [String(assistant["delta"] ?? "")] : [];
+    });
+    const terminal = fixture.events.findLast((event) => event["type"] === "agent_end");
+    const lastType = String(fixture.events.at(-1)?.["type"] ?? "stream_end");
+    const stopReason = String(terminal?.["stopReason"] ?? "");
+    const terminalEvidence = terminal ? (terminal["error"] ? `${stopReason}:${terminal["error"]}` : stopReason) : `missing:${lastType}`;
+    return { callId: outcome.callId, toolName: outcome.toolName, deltas, ...(outcome.arguments !== undefined ? { arguments: outcome.arguments } : {}), status: outcome.status, executionStarts: outcome.executionStarts, executionEnds: outcome.executionEnds, terminalEvidence };
+  }
   let callId = ""; let toolName = ""; let finalArguments: unknown; let ended = false; let malformed = false;
   let executionStarts = 0; let executionEnds = 0; const deltas: string[] = [];
   for (const event of fixture.events) {
@@ -237,7 +251,7 @@ test("characterizes PAP-151 archived tool streams deterministically", () => {
   assert.ok(fixtures.filter((fixture) => /incomplete|malformed/.test(String(fixture.expected["status"]))).every((fixture) => fixture.expected["executionStarts"] === 0));
 });
 
-test("characterizes the first PAP-151 divergence at Pi activity normalization", () => {
+test("normalizes nested Pi tool-call activity with exact identity and final arguments", () => {
   const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete");
   assert.ok(fixture);
   const rawStart = fixture.events[0]!;
@@ -248,13 +262,42 @@ test("characterizes the first PAP-151 divergence at Pi activity normalization", 
   assert.equal(call["name"], "read");
 
   const activity = normalizePiEvent(rawStart, "d-characterization");
-  assert.equal(activity.partType, "message_update");
-  assert.equal(activity.kind, "text");
-  assert.equal(activity.metadata?.["toolName"], undefined);
+  assert.equal(activity.partType, "toolcall_start");
+  assert.equal(activity.kind, "tool_use");
+  assert.equal(activity.metadata?.["toolName"], "read");
+  assert.equal(activity.metadata?.["toolCallId"], fixture.expected["callId"]);
+
+  const rawEnd = fixture.events.find((event) => (event["assistantMessageEvent"] as Record<string, unknown> | undefined)?.["type"] === "toolcall_end")!;
+  const completed = normalizePiEvent(rawEnd, "d-characterization");
+  assert.equal(completed.partType, "toolcall_end");
+  assert.equal(completed.metadata?.["toolName"], "read");
+  assert.deepEqual(completed.metadata?.["args"], fixture.expected["arguments"]);
 
   const execution = normalizePiEvent(fixture.events.find((event) => event["type"] === "tool_execution_start")!, "d-characterization");
   assert.equal(execution.kind, "tool_use");
   assert.equal(execution.metadata?.["toolName"], "read");
+});
+
+test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
+  for (const fixture of loadToolStreamFixtures().filter((item) => item.source !== "d-b1fe88")) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-protocol-"));
+    const primer = join(dir, "primer.md");
+    writeFileSync(primer, "work");
+    const stdout = fixture.events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => ({ status: 0, stdout, stderr: "" }) });
+    const result = await adapter.spawn({ primerPath: primer, deployId: `d-${fixture.id}`, mode: "background" });
+    if (fixture.expected["status"] === "executed") assert.equal(result.exitCode, 0, fixture.id);
+    else {
+      assert.equal(result.exitCode, 1, fixture.id);
+      assert.match(result.errorMessage ?? "", /incomplete|malformed/i);
+    }
+  }
+
+  const complete = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const duplicateStart = complete.events.find((event) => event["type"] === "tool_execution_start")!;
+  const duplicated = inspectPiToolProtocol([...complete.events, duplicateStart]);
+  assert.equal(duplicated.outcomes[0]?.status, "execution-mismatch");
+  assert.match(duplicated.diagnostic, /expected one start\/end, observed 2\/1/);
 });
 
 test("keeps PAP-151 fixtures sanitized and bounded", () => {

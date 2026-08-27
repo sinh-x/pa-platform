@@ -195,6 +195,42 @@ test("Pi adapter failure without session metadata keeps its original reason", as
   });
 });
 
+test("managed Pi outcomes emit one accurate bounded redacted terminal event", async () => {
+  const secret = "configured-terminal-secret";
+  const previous = process.env["PAP_151_API_KEY"];
+  process.env["PAP_151_API_KEY"] = secret;
+  try {
+    const cases: Array<{ name: string; adapter: ReturnType<typeof stubAdapter>; event: "completed" | "crashed"; status?: "success" | "failed"; reason: RegExp }> = [
+      { name: "success", adapter: stubAdapter({}), event: "completed", status: "success", reason: /ppa deploy completed/ },
+      { name: "validation", adapter: stubAdapter({ preflight: async () => { throw new Error(`validation failed ${secret}`); } }), event: "completed", status: "failed", reason: /validation failed/ },
+      { name: "malformed", adapter: stubAdapter({ result: () => ({ exitCode: 1, errorMessage: `Malformed Pi tool call todo ${secret}` }) }), event: "completed", status: "failed", reason: /Malformed Pi tool call/ },
+      { name: "nonzero", adapter: stubAdapter({ result: () => ({ exitCode: 17, errorMessage: `pi exited with code 17 ${secret}` }) }), event: "completed", status: "failed", reason: /code 17/ },
+      { name: "launcher", adapter: stubAdapter({ result: () => { throw new Error(`launcher exception ${secret}`); } }), event: "crashed", reason: /launcher exception/ },
+    ];
+    for (const item of cases) {
+      await withPiEnv(async () => {
+        const result = await deployWithPi({ team: "builder", mode: "implement" }, item.adapter);
+        assert.equal(result.status, item.name === "success" ? "success" : "failed", item.name);
+        const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+        assert.equal(terminal.length, 1, item.name);
+        assert.equal(terminal[0]?.event, item.event, item.name);
+        assert.notEqual(terminal[0]?.fallback, true, item.name);
+        if (item.status) assert.equal(terminal[0]?.status, item.status, item.name);
+        const diagnostic = String(terminal[0]?.summary ?? terminal[0]?.error ?? "");
+        assert.match(diagnostic, item.reason, item.name);
+        assert.ok(diagnostic.length <= 2000, item.name);
+        assert.doesNotMatch(diagnostic, new RegExp(secret), item.name);
+        for (const activity of readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)) {
+          assert.ok(activity.body.length <= 500, item.name);
+          assert.doesNotMatch(activity.body, new RegExp(secret), item.name);
+        }
+      });
+    }
+  } finally {
+    restore("PAP_151_API_KEY", previous);
+  }
+});
+
 test("Pi successful results still require both authoritative session IDs", async () => {
   for (const resultFor of [
     () => ({ exitCode: 0, metadata: { sessionId: "authoritative-session-id" } }),
