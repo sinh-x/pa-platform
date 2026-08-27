@@ -14,7 +14,7 @@ const MAX_STDERR = 2000;
 const MAX_CAPTURE = 8000;
 export const PI_VERSION_TIMEOUT_MS = 15_000;
 const TERM_GRACE = 250;
-const MAX_CARRY = 8192;
+const MAX_CARRY = 256 * 1024;
 const PROCESS_TREE_TIMEOUT = 4900;
 const PROCESS_TREE_POLL = 25;
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }

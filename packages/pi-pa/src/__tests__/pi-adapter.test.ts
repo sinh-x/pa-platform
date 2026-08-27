@@ -238,7 +238,7 @@ test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
 
 test("characterizes PAP-151 archived tool streams deterministically", () => {
   const fixtures = loadToolStreamFixtures();
-  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "executed-supersedes-stale-malformed", "opencode-comparative-success"]);
+  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "executed-supersedes-stale-malformed", "large-read-end-crosses-carry", "opencode-comparative-success"]);
   for (const fixture of fixtures) {
     const started = performance.now();
     const outcomes = Array.from({ length: 20 }, () => replayToolStream(fixture));
@@ -246,7 +246,7 @@ test("characterizes PAP-151 archived tool streams deterministically", () => {
     for (const outcome of outcomes) assert.deepEqual(outcome, fixture.expected, `${fixture.id} replay diverged`);
   }
   const completed = fixtures.filter((fixture) => String(fixture.expected["status"]) === "executed");
-  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "todo", "read"]);
+  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "todo", "read", "read"]);
   assert.ok(completed.every((fixture) => fixture.expected["toolName"] !== "unknown"));
   assert.ok(fixtures.filter((fixture) => /incomplete|malformed/.test(String(fixture.expected["status"]))).every((fixture) => fixture.expected["executionStarts"] === 0));
 });
@@ -308,6 +308,26 @@ test("managed Pi stream inspection accepts complete calls and controls malformed
   const mismatch = inspectPiToolProtocol(mismatchedExecution);
   assert.equal(mismatch.outcomes[0]?.status, "execution-mismatch");
   assert.doesNotMatch(mismatch.diagnostic, /execution was suppressed/);
+});
+
+test("managed Pi stream preserves a large d-851add read execution end across chunks", async () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "large-read-end-crosses-carry")!;
+  const run = async (events: Array<Record<string, unknown>>): Promise<number> => {
+    const child = new FakePiChild();
+    const dir = mkdtempSync(join(tmpdir(), "pi-large-line-"));
+    const primer = join(dir, "primer.md");
+    writeFileSync(primer, "work");
+    const adapter = controlledAdapter(child);
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-large-line", mode: "dry-run" });
+    await nextTick();
+    const stream = events.map((event) => JSON.stringify(event).replace("[bounded large read result]", "x".repeat(16 * 1024))).join("\n") + "\n";
+    for (let offset = 0; offset < stream.length; offset += 4096) child.stdout.emit("data", Buffer.from(stream.slice(offset, offset + 4096)));
+    child.emit("close", 0);
+    return (await resultPromise).exitCode;
+  };
+
+  assert.equal(await run(fixture.events), 0);
+  assert.equal(await run(fixture.events.filter((event) => event["type"] !== "tool_execution_end")), 1);
 });
 
 test("keeps PAP-151 fixtures sanitized and bounded", () => {
