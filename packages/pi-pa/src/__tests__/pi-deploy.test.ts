@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter } from "../adapter.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
@@ -295,6 +295,79 @@ test("supervisor fails closed when an agent-owned crash conflicts with adapter s
     const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
     assert.equal(marker?.stopReason, "error");
     assert.equal(marker?.error, "agent shutdown failed");
+  });
+});
+
+test("foreground supervisor replaces agent success when adapter settlement fails", async () => {
+  for (const item of [
+    { name: "nonzero", result: (sessionId: string) => ({ sessionId, exitCode: 17, errorMessage: "Pi exited with code 17", metadata: { sessionId } }), reason: /code 17/, exitCode: 17 },
+    { name: "semantic", result: (sessionId: string) => ({ sessionId, exitCode: 0, metadata: { sessionId, terminalError: "terminal semantic error" } }), reason: /semantic error/, exitCode: 1 },
+  ]) {
+    await withPiEnv(async () => {
+      let deploymentId = "";
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+        onSpawn: (opts) => { deploymentId = opts.deployId; },
+        result: (sessionId) => {
+          appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+          writePiTerminalStatus(getDeployPaths(deploymentId).deployDir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T05:20:45.081Z" });
+          return item.result(sessionId);
+        },
+      }));
+      assert.equal(result.status, "failed", item.name);
+      assert.match(result.reason ?? "", item.reason, item.name);
+      const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1, item.name);
+      assert.equal(terminal[0]?.status, "failed", item.name);
+      assert.equal(terminal[0]?.exit_code, item.exitCode, item.name);
+      assert.match(terminal[0]?.summary ?? "", item.reason, item.name);
+      assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "failed", item.name);
+      const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+      assert.equal(marker?.stopReason, "error", item.name);
+      assert.match(marker?.error ?? "", item.reason, item.name);
+    });
+  }
+});
+
+test("launcher failure replaces an agent success with one crashed representation", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: () => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+        throw new Error("launcher settlement failed");
+      },
+    }));
+    assert.equal(result.status, "failed");
+    assert.equal(result.reason, "launcher settlement failed");
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "crashed");
+    assert.equal(terminal[0]?.exit_code, 1);
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.stopReason, "error");
+  });
+});
+
+test("background supervisor replaces agent success and stop marker after failed settlement", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+        writePiTerminalStatus(getDeployPaths(deploymentId).deployDir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T05:20:45.081Z" });
+        return { sessionId, exitCode: 0, metadata: { sessionId, pending: true, monitor: { completion: Promise.resolve({ status: 17, stdout: "", stderr: "Pi exited with code 17" }) } } };
+      },
+    }));
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.status, "failed");
+    assert.equal(terminal[0]?.exit_code, 17);
+    assert.match(terminal[0]?.summary ?? "", /code 17/);
+    assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "failed");
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.stopReason, "error");
   });
 });
 

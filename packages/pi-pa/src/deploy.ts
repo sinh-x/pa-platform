@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeploymentEvents, getDeployPaths, loadTeamConfig, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
-import { ensurePiTerminalStatus } from "./terminal-status.js";
+import { ensurePiTerminalStatus, readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -72,19 +72,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const writeTerminal = (kind: "completed" | "crashed", status: "success" | "failed", reason: string, exitCode: number, logFile?: string): { status: "success" | "failed"; reason: string } => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
     if (terminalOutcome) return terminalOutcome;
-    // Adapter settlement follows child exit, so an agent shutdown marker is visible before this ownership handoff.
-    const existing = getDeploymentEvents(deploymentId).find((event) => event.event === "completed" || event.event === "crashed");
-    if (existing) {
-      terminalOutcome = registryTerminalOutcome(existing, env);
-      ensurePiTerminalStatus(deployDir, terminalStatus(terminalOutcome.status, terminalOutcome.reason, existing.timestamp));
-      return terminalOutcome;
-    }
     const consistentExitCode = status === "success" ? 0 : exitCode || 1;
-    if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status, summary: safeReason, ...(logFile ? { logFile } : {}), exitCode: consistentExitCode });
-    else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode: consistentExitCode });
-    ensurePiTerminalStatus(deployDir, terminalStatus(status, safeReason));
-    ensureTerminalRegistryMarker({ deploymentId, team: team.name });
-    terminalOutcome = { status, reason: safeReason };
+    const marker = readPiTerminalStatus(deployDir);
+    const markerMatches = marker?.stopReason === (status === "success" ? "stop" : "error");
+    const timestamp = markerMatches ? marker.timestamp : new Date().toISOString();
+    const requested: RegistryEvent = kind === "completed"
+      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), exit_code: consistentExitCode }
+      : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode };
+    // Agents own shutdown reporting, but supervisor failure evidence has precedence over premature success.
+    const authoritative = reconcileTerminalRegistryEvent(requested).event;
+    terminalOutcome = registryTerminalOutcome(authoritative, env);
+    writePiTerminalStatus(deployDir, terminalStatus(terminalOutcome.status, terminalOutcome.reason, authoritative.timestamp));
     return terminalOutcome;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
@@ -117,6 +115,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.resume || request.evaluateDeployment ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
+    const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
+    if (terminalError) return completeFailure(terminalError);
     if (result.sessionId !== sessionId || result.metadata?.["sessionId"] !== sessionId) throw new Error("Pi adapter returned a session id different from the persisted session id");
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
