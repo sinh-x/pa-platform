@@ -281,34 +281,40 @@ test("normalizes nested Pi tool-call activity with exact identity and final argu
   assert.equal(execution.metadata?.["toolName"], "read");
 });
 
-test("persists sanitized d-8970b9-shaped activity without thinking signatures", async () => {
+test("persists sanitized streamed Pi output without reasoning signatures", async () => {
   const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
   const root = mkdtempSync(join(tmpdir(), "pi-signature-"));
   const deployId = "d-signature";
   const deployDir = join(root, "deployments", deployId);
   const primer = join(deployDir, "primer.md");
   const signature = "archived-reasoning-envelope-value";
+  const encrypted = "representative-encrypted-reasoning-value";
+  const configured = "configured-sensitive-value";
+  const logFile = join(deployDir, "pi.log");
   const previousHome = process.env["PA_AI_USAGE_HOME"];
   process.env["PA_AI_USAGE_HOME"] = root;
   mkdirSync(deployDir, { recursive: true });
   writeFileSync(primer, "work");
   try {
     const child = new FakePiChild();
-    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", supervision: { spawnProcess: (() => child as never) as typeof spawn } });
-    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run" });
+    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", secretValues: [configured], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run", logFile });
     await nextTick();
-    const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: signature } : event);
+    const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: { signature, encrypted_content: encrypted }, repeatedPayload: encrypted, diagnostic: configured } : event);
     child.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + "\n"));
+    child.stderr.emit("data", Buffer.from(`useful stderr diagnostic ${configured}\n`));
     child.emit("close", 0);
     assert.equal((await resultPromise).exitCode, 0);
 
     const output = readFileSync(join(deployDir, "pi-output.jsonl"), "utf8");
     const activity = readFileSync(join(deployDir, "activity.jsonl"), "utf8");
-    for (const persisted of [output, activity]) {
-      assert.doesNotMatch(persisted, /thinkingSignature/i);
-      assert.doesNotMatch(persisted, new RegExp(signature));
+    const log = readFileSync(logFile, "utf8");
+    for (const persisted of [output, activity, log]) {
+      assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
+      assert.doesNotMatch(persisted, new RegExp([signature, encrypted, configured].join("|")));
     }
     assert.match(output, /bounded useful reasoning/);
+    assert.match(log, /useful stderr diagnostic/);
     const knownTools = activity.trim().split("\n").map((line) => JSON.parse(line) as { metadata?: Record<string, unknown> }).map((event) => event.metadata?.["tool"]).filter(Boolean);
     assert.ok(knownTools.length > 0);
     assert.ok(knownTools.every((tool) => tool === "read"));
@@ -316,6 +322,29 @@ test("persists sanitized d-8970b9-shaped activity without thinking signatures", 
     if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousHome;
   }
+});
+
+test("captured Pi logs fail safe on malformed reasoning metadata and preserve diagnostics", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-captured-redact-"));
+  const primer = join(dir, "primer.md");
+  const logFile = join(dir, "pi.log");
+  const configured = "configured-captured-sensitive-value";
+  const encrypted = "captured-encrypted-reasoning-value";
+  writeFileSync(primer, "work");
+  const stdout = [
+    JSON.stringify({ type: "message", text: "useful JSON diagnostic", nested: { thinking_signature: { encryptedContent: encrypted } }, repeatedPayload: encrypted }),
+    `useful malformed diagnostic {"thinkingSignature":{"encrypted_content":"${encrypted}"`,
+    JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" }),
+  ].join("\n") + "\n";
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [configured], runCommand: () => ({ status: 0, stdout, stderr: `useful stderr ${configured}\n` }) });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-captured-redact", mode: "background", logFile });
+  assert.equal(result.exitCode, 0);
+  for (const persisted of [readFileSync(logFile, "utf8"), readFileSync(join(dir, "pi-output.jsonl"), "utf8")]) {
+    assert.match(persisted, /useful JSON diagnostic|useful malformed diagnostic/);
+    assert.doesNotMatch(persisted, /thinking[_-]?signature|encrypted[_-]?content/i);
+    assert.doesNotMatch(persisted, new RegExp([configured, encrypted].join("|")));
+  }
+  assert.match(readFileSync(logFile, "utf8"), /useful stderr/);
 });
 
 test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
@@ -495,12 +524,20 @@ test("foreground log redaction survives every chunk boundary", async () => {
   await nextTick();
   const shapedPrefix = ["Bea", "rer"].join("");
   const assignedPrefix = String.fromCharCode(97, 112, 105, 95, 107, 101, 121);
-  const terminalLine = `${"x".repeat(8188)}${configuredValue} ${shapedPrefix} ${shapedValue} ${assignedPrefix}=${assignedValue} ${"z".repeat(9000)}\n`;
+  const reasoningValue = "foreground-encrypted-reasoning-value";
+  const structuredLine = `${JSON.stringify({ type: "message", text: "useful foreground diagnostic", thinkingSignature: { encrypted_content: reasoningValue }, repeatedPayload: reasoningValue })}\n`;
+  const malformedLine = `useful malformed foreground {"encrypted_content":"${reasoningValue}"\n`;
+  const oversizedMalformedLine = `useful oversized foreground ${"q".repeat(17_000)}{"thinkingSignature":{"signature":"${reasoningValue}"}\n`;
+  const terminalLine = `${structuredLine}${malformedLine}${oversizedMalformedLine}${"x".repeat(8188)}${configuredValue} ${shapedPrefix} ${shapedValue} ${assignedPrefix}=${assignedValue} ${"z".repeat(9000)}\n`;
   for (const character of terminalLine) pty.emitData(character);
   pty.emitExit(0);
   assert.equal((await resultPromise).exitCode, 0);
   const persisted = readFileSync(logFile, "utf8");
-  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue].join("|")));
+  assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
+  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue, reasoningValue].join("|")));
+  assert.match(persisted, /useful foreground diagnostic/);
+  assert.match(persisted, /useful malformed foreground/);
+  assert.match(persisted, /useful oversized foreground/);
   assert.match(persisted, /\*{20,}/);
 });
 
