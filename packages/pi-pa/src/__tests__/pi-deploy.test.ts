@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type 
 import { PiAdapter } from "../adapter.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
+import { readPiTerminalStatus, writePiTerminalStatus } from "../terminal-status.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 
@@ -221,7 +222,13 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
         assert.match(diagnostic, item.reason, item.name);
         assert.ok(diagnostic.length <= 2000, item.name);
         assert.doesNotMatch(diagnostic, new RegExp(secret), item.name);
-        for (const activity of readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)) {
+        const paths = getDeployPaths(result.deploymentId!);
+        const marker = readPiTerminalStatus(paths.deployDir);
+        assert.equal(marker?.stopReason, item.name === "success" ? "stop" : "error", item.name);
+        assert.equal(marker?.error, item.name === "success" ? undefined : diagnostic, item.name);
+        assert.equal(statSync(join(paths.deployDir, "pi-terminal-status.json")).mode & 0o777, 0o600, item.name);
+        assert.doesNotMatch(readFileSync(join(paths.deployDir, "pi-terminal-status.json"), "utf8"), new RegExp(secret), item.name);
+        for (const activity of readActivityEvents(paths.activityLogPath)) {
           assert.ok(activity.body.length <= 500, item.name);
           assert.doesNotMatch(activity.body, new RegExp(secret), item.name);
         }
@@ -230,6 +237,23 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
   } finally {
     restore("PAP_151_API_KEY", previous);
   }
+});
+
+test("deploy completion preserves an extension-owned terminal marker", async () => {
+  await withPiEnv(async () => {
+    const timestamp = "2026-08-28T00:00:00.000Z";
+    let deployDir = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deployDir = getDeployPaths(opts.deployId).deployDir; },
+      result: (sessionId) => {
+        writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "stop", timestamp });
+        return { sessionId, exitCode: 0, metadata: { sessionId } };
+      },
+    }));
+    assert.equal(result.status, "success");
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.timestamp, timestamp);
+    assert.equal(getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+  });
 });
 
 test("background terminal diagnostics cannot retain success status or exit zero", async () => {
@@ -393,6 +417,9 @@ test("PPA rejects partial and mismatched CLI pairs before Pi preflight or spawn"
       assert.equal(preflights, 0);
       assert.equal(spawns, 0);
       assert.deepEqual(getDeploymentEvents(result.deploymentId!).map((event) => event.event), ["completed"]);
+      const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+      assert.equal(marker?.stopReason, "error");
+      assert.match(marker?.error ?? "", item.reason);
     }
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const PI_TERMINAL_STATUS_FILE = "pi-terminal-status.json";
@@ -27,6 +27,22 @@ export function writePiTerminalStatus(deployDir: string, status: PiTerminalStatu
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(status)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, path);
+}
+
+export function ensurePiTerminalStatus(deployDir: string, status: PiTerminalStatus): boolean {
+  mkdirSync(deployDir, { recursive: true });
+  const path = piTerminalStatusPath(deployDir);
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(status)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    linkSync(temporary, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    unlinkSync(temporary);
+  }
 }
 
 export function readPiTerminalStatus(deployDir: string): PiTerminalStatus | undefined {

@@ -6,6 +6,7 @@ import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrash
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
+import { ensurePiTerminalStatus } from "./terminal-status.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -29,7 +30,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   } catch (error) {
     const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }), paths.activityLogPath);
-    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: boundedDiagnostic(`ppa deploy validation failed: ${reason}`, process.env, 2000), exitCode: 1 });
+    const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, process.env, 2000);
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
+    ensurePiTerminalStatus(deployDir, terminalStatus("failed", summary));
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
@@ -53,7 +56,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   } catch (error) {
     const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
-    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: boundedDiagnostic(`ppa deploy validation failed: ${reason}`, env, 2000), exitCode: 1 });
+    const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, env, 2000);
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
+    ensurePiTerminalStatus(deployDir, terminalStatus("failed", summary));
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
@@ -71,6 +76,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const consistentExitCode = status === "success" ? 0 : exitCode || 1;
     if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status, summary: safeReason, ...(logFile ? { logFile } : {}), exitCode: consistentExitCode });
     else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode: consistentExitCode });
+    ensurePiTerminalStatus(deployDir, terminalStatus(status, safeReason));
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return safeReason;
   };
@@ -139,6 +145,10 @@ function emitResolutionWarning(config: { warning?: string }, deploymentId: strin
 function boundedDiagnostic(value: string, env: NodeJS.ProcessEnv, max: number): string {
   const safe = redactDiagnostic(value, environmentSecrets({ ...process.env, ...env }));
   return safe.length > max ? `${safe.slice(0, Math.max(0, max - 3))}...` : safe;
+}
+
+function terminalStatus(status: "success" | "failed", reason: string) {
+  return { type: "agent_end" as const, stopReason: status === "success" ? "stop" : "error", ...(status === "failed" ? { error: reason } : {}), timestamp: new Date().toISOString() };
 }
 
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }

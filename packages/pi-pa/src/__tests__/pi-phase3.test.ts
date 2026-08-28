@@ -83,3 +83,14 @@ test("Pi extension exposes only bounded typed PA tools and shared safety policy"
   assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);
   assert.match(boundJson({ output: "x".repeat(60_000) }), /truncated/);
 });
+
+test("PA JSON output is valid and bounded for ASCII, lines, and multibyte UTF-8", () => {
+  for (const value of ["x".repeat(60_000), "é".repeat(30_000), "漢".repeat(30_000), "🔥".repeat(20_000), Array.from({ length: 2_500 }, (_, index) => `line-${index}`)]) {
+    const output = boundJson({ output: value });
+    assert.ok(Buffer.byteLength(output, "utf8") <= 50 * 1024);
+    assert.ok(output.split("\n").length <= 2_000);
+    const parsed = JSON.parse(output) as { truncated?: boolean; preview?: string };
+    assert.equal(parsed.truncated, true);
+    assert.equal(parsed.preview?.includes("�"), false);
+  }
+});
