@@ -28,6 +28,8 @@ export interface RuntimeConfigResolutionInput {
   mode?: DeployMode;
   /** Adapter-owned defaults and non-pair runtime settings. */
   local?: RuntimeOverrides;
+  /** Reject CLI overrides unless provider and model are both explicit. */
+  requireCompleteCliPair?: boolean;
 }
 
 export function resolveRuntimeConfig(input: RuntimeConfigResolutionInput): EffectiveRuntimeConfig {
@@ -40,7 +42,7 @@ export function resolveRuntimeConfig(input: RuntimeConfigResolutionInput): Effec
   const cliProvider = input.request.provider;
   const cliModel = input.request.model ?? input.request.teamModel;
   const hasCliOverride = cliProvider !== undefined || cliModel !== undefined;
-  if (hasCliOverride && (cliProvider === undefined || cliModel === undefined)) {
+  if (input.requireCompleteCliPair && hasCliOverride && (cliProvider === undefined || cliModel === undefined)) {
     const missing = cliProvider === undefined ? "provider" : "model";
     const supplied = cliProvider === undefined ? "model" : "provider";
     throw new Error(`CLI provider/model override is incomplete: --${missing} is required when --${supplied} is supplied.`);

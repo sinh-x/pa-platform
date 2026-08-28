@@ -25,7 +25,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
   let runtimeConfig: ReturnType<typeof resolvePiRuntimeConfig>;
   try {
-    runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL } }));
+    runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
   } catch (error) {
     const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }), paths.activityLogPath);
