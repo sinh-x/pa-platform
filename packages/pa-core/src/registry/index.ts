@@ -15,6 +15,43 @@ export function validateRegistryEvent(event: RegistryEvent): void {
 export function appendRegistryEvent(event: RegistryEvent): void {
   validateRegistryEvent(event);
   const db = getDb();
+  insertRegistryEvent(db, event);
+  upsertDeployment(db, event);
+}
+
+export interface ReconcileTerminalRegistryEventResult {
+  event: RegistryEvent;
+  retainedExisting: boolean;
+}
+
+/**
+ * Atomically selects exactly one terminal representation. Existing failure is
+ * sticky, matching success is idempotent, and later failure replaces success.
+ */
+export function reconcileTerminalRegistryEvent(requested: RegistryEvent): ReconcileTerminalRegistryEventResult {
+  validateRegistryEvent(requested);
+  if (requested.event !== "completed" && requested.event !== "crashed") throw new Error("Terminal reconciliation requires a completed or crashed event");
+  const db = getDb();
+  return db.transaction(() => {
+    const existingRows = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed') ORDER BY id").all(requested.deployment_id) as Record<string, unknown>[];
+    const existing = existingRows.map(fromRow).find(isFailedTerminal) ?? existingRows.map(fromRow)[0];
+    if (existing && (isFailedTerminal(existing) || !isFailedTerminal(requested))) {
+      if (existingRows.length > 1) {
+        db.prepare("DELETE FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed')").run(requested.deployment_id);
+        insertRegistryEvent(db, existing);
+        upsertDeployment(db, existing);
+      }
+      return { event: existing, retainedExisting: true };
+    }
+
+    db.prepare("DELETE FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed')").run(requested.deployment_id);
+    insertRegistryEvent(db, requested);
+    upsertDeployment(db, requested);
+    return { event: requested, retainedExisting: false };
+  })();
+}
+
+function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent): void {
   const row = toRow(event);
   db.prepare(`
     INSERT INTO registry_events (
@@ -27,7 +64,6 @@ export function appendRegistryEvent(event: RegistryEvent): void {
       @objective, @repo, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds
     )
   `).run(row);
-  upsertDeployment(db, event);
 }
 
 export function readRegistry(): RegistryEvent[] {
@@ -166,12 +202,16 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
   } else if (event.event === "completed") {
     db.prepare(`
       UPDATE deployments SET status = @status, completed_at = @timestamp, summary = @summary,
-        log_file = @log_file, rating = @rating, exit_code = @exit_code, fallback = @fallback
+        log_file = @log_file, rating = @rating, error = NULL, exit_code = @exit_code, fallback = @fallback
       WHERE deployment_id = @deployment_id
     `).run({ ...row, status: event.status ?? "success" });
   } else if (event.event === "crashed") {
-    db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, error = @error, exit_code = @exit_code WHERE deployment_id = @deployment_id").run(row);
+    db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, summary = NULL, log_file = NULL, rating = NULL, error = @error, exit_code = @exit_code, fallback = 0 WHERE deployment_id = @deployment_id").run(row);
   }
+}
+
+function isFailedTerminal(event: RegistryEvent): boolean {
+  return event.event === "crashed" || event.status !== "success" || (event.exit_code ?? 0) !== 0;
 }
 
 function toRow(event: RegistryEvent): Record<string, unknown> {

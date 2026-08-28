@@ -147,11 +147,27 @@ function toolResult(read: () => unknown): PiToolResult {
 export function boundJson(value: unknown): string {
   const json = JSON.stringify(value, null, 2);
   const lines = json.split("\n");
-  if (json.length <= MAX_TOOL_BYTES && lines.length <= MAX_TOOL_LINES) return json;
-  const available = Math.min(MAX_TOOL_BYTES, lines.slice(0, MAX_TOOL_LINES).join("\n").length);
-  return `${json.slice(0, Math.max(0, available - 180))}\n...[truncated; inspect the PA registry, ticket, or deployment artifact for the complete result]`;
+  if (Buffer.byteLength(json, "utf8") <= MAX_TOOL_BYTES && lines.length <= MAX_TOOL_LINES) return json;
+  const candidate = lines.slice(0, MAX_TOOL_LINES).join("\n");
+  const notice = "Inspect the PA registry, ticket, or deployment artifact for the complete result.";
+  let low = 0;
+  let high = candidate.length;
+  let result = JSON.stringify({ truncated: true, preview: "", notice });
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const end = middle > 0 && isHighSurrogate(candidate.charCodeAt(middle - 1)) ? middle - 1 : middle;
+    const encoded = JSON.stringify({ truncated: true, preview: candidate.slice(0, end), notice });
+    if (Buffer.byteLength(encoded, "utf8") <= MAX_TOOL_BYTES) {
+      result = encoded;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return result;
 }
 
 function stringInput(input: Record<string, unknown>, key: string): string { const value = input[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`${key} is required.`); return value; }
 function assistantText(value: unknown): string { if (typeof value === "string") return value; if (Array.isArray(value)) return value.map((item) => item && typeof item === "object" && "text" in item && typeof item.text === "string" ? item.text : "").filter(Boolean).join(" "); return ""; }
 function flattenStrings(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(flattenStrings); if (value && typeof value === "object") return Object.values(value).flatMap(flattenStrings); return []; }
+function isHighSurrogate(value: number): boolean { return value >= 0xd800 && value <= 0xdbff; }

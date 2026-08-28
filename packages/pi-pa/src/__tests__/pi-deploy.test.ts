@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter } from "../adapter.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
+import { readPiTerminalStatus, writePiTerminalStatus } from "../terminal-status.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 
@@ -191,7 +192,206 @@ test("Pi adapter failure without session metadata keeps its original reason", as
     const events = getDeploymentEvents(result.deploymentId!);
     assert.deepEqual(events.map((event) => event.event), ["started", "completed"]);
     assert.equal(events[1]?.summary, "ppa deploy failed: model auth failed");
-    assert.match(readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0]?.body ?? "", /model auth failed/);
+    const error = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath).find((event) => event.kind === "error");
+    assert.match(error?.body ?? "", /model auth failed/);
+  });
+});
+
+test("managed Pi outcomes emit one accurate bounded redacted terminal event", async () => {
+  const secret = "configured-terminal-secret";
+  const previous = process.env["PAP_151_API_KEY"];
+  process.env["PAP_151_API_KEY"] = secret;
+  try {
+    const cases: Array<{ name: string; adapter: ReturnType<typeof stubAdapter>; event: "completed" | "crashed"; status?: "success" | "failed"; reason: RegExp }> = [
+      { name: "success", adapter: stubAdapter({}), event: "completed", status: "success", reason: /ppa deploy completed/ },
+      { name: "validation", adapter: stubAdapter({ preflight: async () => { throw new Error(`validation failed ${secret}`); } }), event: "completed", status: "failed", reason: /validation failed/ },
+      { name: "malformed", adapter: stubAdapter({ result: () => ({ exitCode: 1, errorMessage: `Malformed Pi tool call todo ${secret}` }) }), event: "completed", status: "failed", reason: /Malformed Pi tool call/ },
+      { name: "nonzero", adapter: stubAdapter({ result: () => ({ exitCode: 17, errorMessage: `pi exited with code 17 ${secret}` }) }), event: "completed", status: "failed", reason: /code 17/ },
+      { name: "launcher", adapter: stubAdapter({ result: () => { throw new Error(`launcher exception ${secret}`); } }), event: "crashed", reason: /launcher exception/ },
+    ];
+    for (const item of cases) {
+      await withPiEnv(async () => {
+        const result = await deployWithPi({ team: "builder", mode: "implement" }, item.adapter);
+        assert.equal(result.status, item.name === "success" ? "success" : "failed", item.name);
+        const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+        assert.equal(terminal.length, 1, item.name);
+        assert.equal(terminal[0]?.event, item.event, item.name);
+        assert.notEqual(terminal[0]?.fallback, true, item.name);
+        if (item.status) assert.equal(terminal[0]?.status, item.status, item.name);
+        const diagnostic = String(terminal[0]?.summary ?? terminal[0]?.error ?? "");
+        assert.match(diagnostic, item.reason, item.name);
+        assert.ok(diagnostic.length <= 2000, item.name);
+        assert.doesNotMatch(diagnostic, new RegExp(secret), item.name);
+        const paths = getDeployPaths(result.deploymentId!);
+        const marker = readPiTerminalStatus(paths.deployDir);
+        assert.equal(marker?.stopReason, item.name === "success" ? "stop" : "error", item.name);
+        assert.equal(marker?.error, item.name === "success" ? undefined : diagnostic, item.name);
+        assert.equal(statSync(join(paths.deployDir, "pi-terminal-status.json")).mode & 0o777, 0o600, item.name);
+        assert.doesNotMatch(readFileSync(join(paths.deployDir, "pi-terminal-status.json"), "utf8"), new RegExp(secret), item.name);
+        for (const activity of readActivityEvents(paths.activityLogPath)) {
+          assert.ok(activity.body.length <= 500, item.name);
+          assert.doesNotMatch(activity.body, new RegExp(secret), item.name);
+        }
+      });
+    }
+  } finally {
+    restore("PAP_151_API_KEY", previous);
+  }
+});
+
+test("deploy completion preserves an extension-owned terminal marker", async () => {
+  await withPiEnv(async () => {
+    const timestamp = "2026-08-28T00:00:00.000Z";
+    let deployDir = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deployDir = getDeployPaths(opts.deployId).deployDir; },
+      result: (sessionId) => {
+        writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "stop", timestamp });
+        return { sessionId, exitCode: 0, metadata: { sessionId } };
+      },
+    }));
+    assert.equal(result.status, "success");
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.timestamp, timestamp);
+    assert.equal(getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+  });
+});
+
+test("background supervisor honors an agent-owned successful terminal registry event", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "attachment summary" });
+        return { sessionId, exitCode: 0, metadata: { sessionId, pending: true, monitor: { completion: Promise.resolve({ status: 0, stdout: "", stderr: "" }) } } };
+      },
+    }));
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.summary, "attachment summary");
+    const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+    assert.equal(marker?.stopReason, "stop");
+    assert.equal(marker?.timestamp, "2026-08-28T05:20:45.081Z");
+  });
+});
+
+test("supervisor fails closed when an agent-owned crash conflicts with adapter success", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "crashed", timestamp: "2026-08-28T05:20:45.081Z", error: "agent shutdown failed", exit_code: 1 });
+        return { sessionId, exitCode: 0, metadata: { sessionId } };
+      },
+    }));
+    assert.equal(result.status, "failed");
+    assert.equal(result.reason, "agent shutdown failed");
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "crashed");
+    const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+    assert.equal(marker?.stopReason, "error");
+    assert.equal(marker?.error, "agent shutdown failed");
+  });
+});
+
+test("foreground supervisor replaces agent success when adapter settlement fails", async () => {
+  for (const item of [
+    { name: "nonzero", result: (sessionId: string) => ({ sessionId, exitCode: 17, errorMessage: "Pi exited with code 17", metadata: { sessionId } }), reason: /code 17/, exitCode: 17 },
+    { name: "semantic", result: (sessionId: string) => ({ sessionId, exitCode: 0, metadata: { sessionId, terminalError: "terminal semantic error" } }), reason: /semantic error/, exitCode: 1 },
+  ]) {
+    await withPiEnv(async () => {
+      let deploymentId = "";
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+        onSpawn: (opts) => { deploymentId = opts.deployId; },
+        result: (sessionId) => {
+          appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+          writePiTerminalStatus(getDeployPaths(deploymentId).deployDir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T05:20:45.081Z" });
+          return item.result(sessionId);
+        },
+      }));
+      assert.equal(result.status, "failed", item.name);
+      assert.match(result.reason ?? "", item.reason, item.name);
+      const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1, item.name);
+      assert.equal(terminal[0]?.status, "failed", item.name);
+      assert.equal(terminal[0]?.exit_code, item.exitCode, item.name);
+      assert.match(terminal[0]?.summary ?? "", item.reason, item.name);
+      assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "failed", item.name);
+      const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+      assert.equal(marker?.stopReason, "error", item.name);
+      assert.match(marker?.error ?? "", item.reason, item.name);
+    });
+  }
+});
+
+test("launcher failure replaces an agent success with one crashed representation", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: () => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+        throw new Error("launcher settlement failed");
+      },
+    }));
+    assert.equal(result.status, "failed");
+    assert.equal(result.reason, "launcher settlement failed");
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "crashed");
+    assert.equal(terminal[0]?.exit_code, 1);
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.stopReason, "error");
+  });
+});
+
+test("background supervisor replaces agent success and stop marker after failed settlement", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "agent claimed success", exit_code: 0 });
+        writePiTerminalStatus(getDeployPaths(deploymentId).deployDir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T05:20:45.081Z" });
+        return { sessionId, exitCode: 0, metadata: { sessionId, pending: true, monitor: { completion: Promise.resolve({ status: 17, stdout: "", stderr: "Pi exited with code 17" }) } } };
+      },
+    }));
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.status, "failed");
+    assert.equal(terminal[0]?.exit_code, 17);
+    assert.match(terminal[0]?.summary ?? "", /code 17/);
+    assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "failed");
+    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.stopReason, "error");
+  });
+});
+
+test("background terminal diagnostics cannot retain success status or exit zero", async () => {
+  await withPiEnv(async () => {
+    const adapter = stubAdapter({ result: (sessionId) => ({
+      sessionId,
+      exitCode: 0,
+      metadata: {
+        sessionId,
+        pending: true,
+        monitor: { completion: Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { terminalError: "Malformed Pi tool call todo" } }) },
+      },
+    }) });
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter);
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "completed");
+    assert.equal(terminal[0]?.status, "failed");
+    assert.equal(terminal[0]?.exit_code, 1);
+    assert.match(terminal[0]?.summary ?? "", /^ppa deploy failed: Malformed Pi tool call todo$/);
+    assert.notEqual(terminal[0]?.fallback, true);
   });
 });
 
@@ -217,14 +417,72 @@ test("Pi Agent API session commands normalize OpenAI identifiers", () => {
   assert.deepEqual(command.args, ["--print", "--mode", "json", "--session-id", "session", "--model", "gpt-5.6-luna", "--provider", "openai-codex", "work"]);
 });
 
-test("managed Pi deployment passes normalized provider and model to the adapter", async () => {
+test("managed Pi deployment keeps provider, model, and ticket identity aligned", async () => {
   await withPiEnv(async () => {
     let captured: SpawnOpts | undefined;
-    const result = await deployWithPi({ team: "builder", mode: "implement", provider: "openai", model: "openai/gpt-5.6-luna" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
+    const result = await deployWithPi({ team: "builder", mode: "implement", provider: "openai", model: "openai/gpt-5.6-luna", ticket: "PAP-151", objective: "Verify {{TICKET_ID}}" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
     assert.equal(captured?.model, "gpt-5.6-luna");
     assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
     assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-luna");
+    assert.equal(captured?.env?.["PA_TICKET_ID"], "PAP-151");
+    assert.equal(captured?.executionPlan?.ticket, "PAP-151");
+    const primer = readFileSync(captured!.primerPath, "utf8");
+    assert.match(primer, /PA_PROVIDER: openai-codex/);
+    assert.match(primer, /PA_MODEL: gpt-5.6-luna/);
+    assert.match(primer, /> \*\*Ticket:\*\* PAP-151/);
+    assert.match(primer, /ticket_id: PAP-151/);
+    assert.match(primer, /Verify PAP-151/);
+    assert.match(primer, /objective: Verify \{\{TICKET_ID\}\}/);
+    const resolution = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
+    assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-luna", resolution: "cli" });
+    const started = getDeploymentEvents(result.deploymentId!)[0];
+    assert.equal(started?.provider, "openai-codex");
+    assert.equal(started?.models?.team, "gpt-5.6-luna");
+    assert.equal(started?.ticket_id, "PAP-151");
+  });
+});
+
+test("active builder and requirements modes keep one normalized pair across Pi evidence", async () => {
+  await withPiEnv(async (root) => {
+    writeFileSync(join(root, "teams", "builder.yaml"), [
+      "name: builder", "description: Builder", "objective: Build", "agents: []", "deploy_modes:",
+      "  - id: implement", "    label: Implement", "    provider: openai", "    model: openai/gpt-5.6-sol",
+      "  - id: orchestrator", "    label: Orchestrator", "    provider: openai", "    model: openai/gpt-5.6-sol",
+    ].join("\n") + "\n");
+    writeFileSync(join(root, "teams", "requirements.yaml"), [
+      "name: requirements", "description: Requirements", "objective: Review", "agents: []", "deploy_modes:",
+      "  - id: review-auto", "    label: Review Auto", "    provider: openai", "    model: openai/gpt-5.6-sol",
+    ].join("\n") + "\n");
+    const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const adapter = new PiAdapter({
+      versionProbe: () => "0.80.8",
+      runCommand: (args, opts) => {
+        invocations.push({ args, env: opts.env });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    for (const [team, mode] of [["builder", "implement"], ["builder", "orchestrator"], ["requirements", "review-auto"]] as const) {
+      const result = await deployWithPi({ team, mode }, adapter);
+      assert.equal(result.status, "success");
+      const invocation = invocations.at(-1)!;
+      const modelIndex = invocation.args.indexOf("--model");
+      const providerIndex = invocation.args.indexOf("--provider");
+      assert.equal(invocation.args[modelIndex + 1], "gpt-5.6-sol");
+      assert.equal(invocation.args[providerIndex + 1], "openai-codex");
+      assert.equal(invocation.env["PA_PROVIDER"], "openai-codex");
+      assert.equal(invocation.env["PA_MODEL"], "gpt-5.6-sol");
+      const paths = getDeployPaths(result.deploymentId!);
+      const primer = readFileSync(join(paths.deployDir, "primer.md"), "utf8");
+      assert.match(primer, /PA_PROVIDER: openai-codex/);
+      assert.match(primer, /PA_MODEL: gpt-5.6-sol/);
+      const resolution = readActivityEvents(paths.activityLogPath)[0];
+      assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-sol", resolution: "mode" });
+      const started = getDeploymentEvents(result.deploymentId!)[0];
+      assert.equal(started?.provider, "openai-codex");
+      assert.equal(started?.models?.team, "gpt-5.6-sol");
+    }
   });
 });
 
@@ -238,57 +496,45 @@ test("PPA defaults to Sol and uses one normalized pair for spawn, env, primer, a
     assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-sol");
     assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_PROVIDER: openai-codex/);
     assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_MODEL: gpt-5.6-sol/);
+    const resolution = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
+    assert.equal(resolution?.body, "Resolved Pi runtime openai-codex/gpt-5.6-sol");
+    assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-sol", resolution: "default" });
     const started = getDeploymentEvents(result.deploymentId!)[0];
     assert.equal(started?.provider, "openai-codex");
     assert.equal(started?.models?.team, "gpt-5.6-sol");
   });
 });
 
-test("PPA incompatible pairs fall back with a redacted warning result", () => {
-  const protectedModel = "sk-1234567890abcdef123456";
-  const result = resolvePiRuntimeConfig(Object.freeze({ provider: "anthropic", model: protectedModel, source: "mode" }));
-  assert.equal(result.provider, "openai-codex");
-  assert.equal(result.model, "gpt-5.6-sol");
-  assert.equal(result.source, "fallback");
-  assert.match(result.warning ?? "", /anthropic\/\[REDACTED\]/);
-  assert.doesNotMatch(result.warning ?? "", /1234567890abcdef/);
-  assert.ok(Object.isFrozen(result));
-
-  const configuredMismatch = resolvePiRuntimeConfig(Object.freeze({ provider: "openai", model: "anthropic/claude-sonnet-4-6", source: "mode" }));
-  assert.deepEqual({ provider: configuredMismatch.provider, model: configuredMismatch.model, source: configuredMismatch.source }, { provider: "openai-codex", model: "gpt-5.6-sol", source: "fallback" });
-  const modelOnlyOverrideMismatch = resolvePiRuntimeConfig(Object.freeze({ provider: "openai", model: "deepseek/deepseek-v4-pro", source: "cli" }));
-  assert.equal(modelOnlyOverrideMismatch.source, "fallback");
+test("PPA rejects unsupported and provider-qualified mismatched pairs", () => {
+  assert.throws(
+    () => resolvePiRuntimeConfig(Object.freeze({ provider: "anthropic", model: "claude-sonnet-4-6", source: "mode" })),
+    /provider field is unsupported.*anthropic\/claude-sonnet-4-6/,
+  );
+  assert.throws(
+    () => resolvePiRuntimeConfig(Object.freeze({ provider: "openai", model: "anthropic/claude-sonnet-4-6", source: "mode" })),
+    /provider and model fields do not match.*openai\/anthropic\/claude-sonnet-4-6/,
+  );
 });
 
-test("PPA fallback warning is activity evidence before the fallback spawn", async () => {
-  await withPiEnv(async (root) => {
-    writeFileSync(join(root, "teams", "builder.yaml"), [
-      "name: builder",
-      "description: Builder",
-      "objective: Build",
-      "agents:",
-      "  - name: builder-agent",
-      "    role: Builds",
-      "deploy_modes:",
-      "  - id: implement",
-      "    label: Implement",
-    "    provider: openai",
-    "    model: anthropic/claude-sonnet-4-6",
-    ].join("\n") + "\n");
-    let captured: SpawnOpts | undefined;
-    const order: string[] = [];
-    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ onSpawn: (opts) => { order.push("spawn"); captured = opts; } }), { stderr: (warning) => { order.push(`warning:${warning}`); } });
-    assert.equal(result.status, "success");
-    assert.match(order[0] ?? "", /warning:ppa: incompatible provider\/model/);
-    assert.equal(order[1], "spawn");
-    assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
-    assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-sol");
-    const events = getDeploymentEvents(result.deploymentId!);
-    assert.equal(events[0]?.provider, "openai-codex");
-    assert.equal(events[0]?.models?.team, "gpt-5.6-sol");
-    const warning = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
-    assert.equal(warning?.kind, "error");
-    assert.match(warning?.body ?? "", /openai\/anthropic\/claude-sonnet-4-6/);
-    assert.match(warning?.body ?? "", /openai-codex\/gpt-5\.6-sol/);
+test("PPA rejects partial and mismatched CLI pairs before Pi preflight or spawn", async () => {
+  await withPiEnv(async () => {
+    for (const item of [
+      { request: { provider: "openai" }, reason: /--model is required when --provider is supplied/ },
+      { request: { model: "openai\/gpt-5.6-luna" }, reason: /--provider is required when --model is supplied/ },
+      { request: { provider: "openai", model: "deepseek\/deepseek-v4-pro" }, reason: /provider and model fields do not match/ },
+    ]) {
+      let preflights = 0;
+      let spawns = 0;
+      const adapter = stubAdapter({ preflight: async () => { preflights++; }, onSpawn: () => { spawns++; } });
+      const result = await deployWithPi({ team: "builder", mode: "implement", ...item.request }, adapter);
+      assert.equal(result.status, "failed");
+      assert.match(result.reason ?? "", item.reason);
+      assert.equal(preflights, 0);
+      assert.equal(spawns, 0);
+      assert.deepEqual(getDeploymentEvents(result.deploymentId!).map((event) => event.event), ["completed"]);
+      const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+      assert.equal(marker?.stopReason, "error");
+      assert.match(marker?.error ?? "", item.reason);
+    }
   });
 });

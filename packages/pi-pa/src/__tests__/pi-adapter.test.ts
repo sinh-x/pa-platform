@@ -1,12 +1,13 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
@@ -61,6 +62,64 @@ function controlledAdapter(child: FakePiChild, options: { persistLine?: () => vo
 }
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
+
+interface ToolStreamFixture {
+  id: string;
+  source: string;
+  events: Array<Record<string, unknown>>;
+  expected: Record<string, unknown>;
+}
+
+function loadToolStreamFixtures(): ToolStreamFixture[] {
+  const path = fileURLToPath(new URL("fixtures/pap-151-tool-streams.jsonl", import.meta.url));
+  return readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as ToolStreamFixture);
+}
+
+function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
+  if (fixture.source !== "d-b1fe88") {
+    const inspected = inspectPiToolProtocol(fixture.events);
+    assert.equal(inspected.outcomes.length, 1);
+    const outcome = inspected.outcomes[0]!;
+    const deltas = fixture.events.flatMap((event) => {
+      const assistant = event["assistantMessageEvent"] as Record<string, unknown> | undefined;
+      return assistant?.["type"] === "toolcall_delta" ? [String(assistant["delta"] ?? "")] : [];
+    });
+    const terminal = fixture.events.findLast((event) => event["type"] === "agent_end");
+    const lastType = String(fixture.events.at(-1)?.["type"] ?? "stream_end");
+    const stopReason = String(terminal?.["stopReason"] ?? "");
+    const terminalEvidence = terminal ? (terminal["error"] ? `${stopReason}:${terminal["error"]}` : stopReason) : `missing:${lastType}`;
+    return { callId: outcome.callId, toolName: outcome.toolName, deltas, ...(outcome.arguments !== undefined ? { arguments: outcome.arguments } : {}), status: outcome.status, executionStarts: outcome.executionStarts, executionEnds: outcome.executionEnds, terminalEvidence };
+  }
+  let callId = ""; let toolName = ""; let finalArguments: unknown; let ended = false; let malformed = false;
+  let executionStarts = 0; let executionEnds = 0; const deltas: string[] = [];
+  for (const event of fixture.events) {
+    const type = String(event["type"] ?? "");
+    const assistant = event["assistantMessageEvent"] as Record<string, unknown> | undefined;
+    const assistantType = String(assistant?.["type"] ?? "");
+    if (assistantType === "toolcall_start") {
+      const partial = assistant?.["partial"] as Record<string, unknown> | undefined;
+      const content = partial?.["content"] as Array<Record<string, unknown>> | undefined;
+      const call = content?.find((item) => item["type"] === "toolCall");
+      callId = String(call?.["id"] ?? ""); toolName = String(call?.["name"] ?? "");
+    } else if (assistantType === "toolcall_delta") {
+      deltas.push(String(assistant?.["delta"] ?? ""));
+    } else if (assistantType === "toolcall_end") {
+      const call = assistant?.["toolCall"] as Record<string, unknown> | undefined;
+      callId = String(call?.["id"] ?? callId); toolName = String(call?.["name"] ?? toolName); finalArguments = call?.["arguments"]; ended = true;
+      try { malformed = JSON.stringify(JSON.parse(deltas.join(""))) !== JSON.stringify(finalArguments); } catch { malformed = true; }
+    } else if (type === "tool_execution_start" || type === "tool_running") {
+      executionStarts++; callId = String(event["toolCallId"] ?? event["callId"] ?? callId); toolName = String(event["toolName"] ?? toolName); finalArguments ??= event["args"];
+    } else if (type === "tool_execution_end" || type === "tool_completed") {
+      executionEnds++; callId = String(event["toolCallId"] ?? event["callId"] ?? callId); toolName = String(event["toolName"] ?? toolName); finalArguments ??= event["args"];
+    }
+  }
+  const terminal = fixture.events.findLast((event) => event["type"] === "agent_end");
+  const lastType = String(fixture.events.at(-1)?.["type"] ?? "stream_end");
+  const stopReason = String(terminal?.["stopReason"] ?? "");
+  const terminalEvidence = terminal ? (terminal["error"] ? `${stopReason}:${terminal["error"]}` : stopReason) : `missing:${lastType}`;
+  const status = fixture.source === "d-b1fe88" ? "executed" : malformed ? "malformed" : !ended ? "incomplete" : executionStarts === 1 && executionEnds === 1 ? "executed" : "completed";
+  return { callId, toolName, deltas, ...(finalArguments !== undefined ? { arguments: finalArguments } : {}), status, executionStarts, executionEnds, terminalEvidence };
+}
 
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
   assert.equal(meetsMinimum("0.80.7"), false); assert.equal(meetsMinimum("0.80.8"), true); assert.equal(meetsMinimum("0.81.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
@@ -177,6 +236,186 @@ test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
   const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
 });
 
+test("characterizes PAP-151 archived tool streams deterministically", () => {
+  const fixtures = loadToolStreamFixtures();
+  assert.deepEqual(fixtures.map((fixture) => fixture.id), ["partial-read-complete", "partial-todo-complete", "partial-bash-complete", "incomplete-after-start", "malformed-arguments", "executed-supersedes-stale-malformed", "large-read-end-crosses-carry", "opencode-comparative-success"]);
+  for (const fixture of fixtures) {
+    const started = performance.now();
+    const outcomes = Array.from({ length: 20 }, () => replayToolStream(fixture));
+    assert.ok(performance.now() - started < 2000, `${fixture.id} exceeded the two-second replay bound`);
+    for (const outcome of outcomes) assert.deepEqual(outcome, fixture.expected, `${fixture.id} replay diverged`);
+  }
+  const completed = fixtures.filter((fixture) => String(fixture.expected["status"]) === "executed");
+  assert.deepEqual(completed.map((fixture) => fixture.expected["toolName"]), ["read", "todo", "bash", "todo", "read", "read"]);
+  assert.ok(completed.every((fixture) => fixture.expected["toolName"] !== "unknown"));
+  assert.ok(fixtures.filter((fixture) => /incomplete|malformed/.test(String(fixture.expected["status"]))).every((fixture) => fixture.expected["executionStarts"] === 0));
+});
+
+test("normalizes nested Pi tool-call activity with exact identity and final arguments", () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete");
+  assert.ok(fixture);
+  const rawStart = fixture.events[0]!;
+  const nested = rawStart["assistantMessageEvent"] as Record<string, unknown>;
+  const partial = nested["partial"] as Record<string, unknown>;
+  const call = (partial["content"] as Array<Record<string, unknown>>)[0]!;
+  assert.equal(nested["type"], "toolcall_start");
+  assert.equal(call["name"], "read");
+
+  const activity = normalizePiEvent(rawStart, "d-characterization");
+  assert.equal(activity.partType, "toolcall_start");
+  assert.equal(activity.kind, "tool_use");
+  assert.equal(activity.metadata?.["tool"], "read");
+  assert.equal(activity.metadata?.["toolName"], "read");
+  assert.equal(activity.metadata?.["toolCallId"], fixture.expected["callId"]);
+
+  const rawEnd = fixture.events.find((event) => (event["assistantMessageEvent"] as Record<string, unknown> | undefined)?.["type"] === "toolcall_end")!;
+  const completed = normalizePiEvent(rawEnd, "d-characterization");
+  assert.equal(completed.partType, "toolcall_end");
+  assert.equal(completed.metadata?.["tool"], "read");
+  assert.equal(completed.metadata?.["toolName"], "read");
+  assert.deepEqual(completed.metadata?.["args"], fixture.expected["arguments"]);
+
+  const execution = normalizePiEvent(fixture.events.find((event) => event["type"] === "tool_execution_start")!, "d-characterization");
+  assert.equal(execution.kind, "tool_use");
+  assert.equal(execution.metadata?.["tool"], "read");
+  assert.equal(execution.metadata?.["toolName"], "read");
+});
+
+test("persists sanitized streamed Pi output without reasoning signatures", async () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const root = mkdtempSync(join(tmpdir(), "pi-signature-"));
+  const deployId = "d-signature";
+  const deployDir = join(root, "deployments", deployId);
+  const primer = join(deployDir, "primer.md");
+  const signature = "archived-reasoning-envelope-value";
+  const encrypted = "representative-encrypted-reasoning-value";
+  const configured = "configured-sensitive-value";
+  const logFile = join(deployDir, "pi.log");
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  mkdirSync(deployDir, { recursive: true });
+  writeFileSync(primer, "work");
+  try {
+    const child = new FakePiChild();
+    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", secretValues: [configured], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run", logFile });
+    await nextTick();
+    const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: { signature, encrypted_content: encrypted }, repeatedPayload: encrypted, diagnostic: configured } : event);
+    child.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + "\n"));
+    child.stderr.emit("data", Buffer.from(`useful stderr diagnostic ${configured}\n`));
+    child.emit("close", 0);
+    assert.equal((await resultPromise).exitCode, 0);
+
+    const output = readFileSync(join(deployDir, "pi-output.jsonl"), "utf8");
+    const activity = readFileSync(join(deployDir, "activity.jsonl"), "utf8");
+    const log = readFileSync(logFile, "utf8");
+    for (const persisted of [output, activity, log]) {
+      assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
+      assert.doesNotMatch(persisted, new RegExp([signature, encrypted, configured].join("|")));
+    }
+    assert.match(output, /bounded useful reasoning/);
+    assert.match(log, /useful stderr diagnostic/);
+    const knownTools = activity.trim().split("\n").map((line) => JSON.parse(line) as { metadata?: Record<string, unknown> }).map((event) => event.metadata?.["tool"]).filter(Boolean);
+    assert.ok(knownTools.length > 0);
+    assert.ok(knownTools.every((tool) => tool === "read"));
+  } finally {
+    if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousHome;
+  }
+});
+
+test("captured Pi logs fail safe on malformed reasoning metadata and preserve diagnostics", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-captured-redact-"));
+  const primer = join(dir, "primer.md");
+  const logFile = join(dir, "pi.log");
+  const configured = "configured-captured-sensitive-value";
+  const encrypted = "captured-encrypted-reasoning-value";
+  writeFileSync(primer, "work");
+  const stdout = [
+    JSON.stringify({ type: "message", text: "useful JSON diagnostic", nested: { thinking_signature: { encryptedContent: encrypted } }, repeatedPayload: encrypted }),
+    `useful malformed diagnostic {"thinkingSignature":{"encrypted_content":"${encrypted}"`,
+    JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" }),
+  ].join("\n") + "\n";
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [configured], runCommand: () => ({ status: 0, stdout, stderr: `useful stderr ${configured}\n` }) });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-captured-redact", mode: "background", logFile });
+  assert.equal(result.exitCode, 0);
+  for (const persisted of [readFileSync(logFile, "utf8"), readFileSync(join(dir, "pi-output.jsonl"), "utf8")]) {
+    assert.match(persisted, /useful JSON diagnostic|useful malformed diagnostic/);
+    assert.doesNotMatch(persisted, /thinking[_-]?signature|encrypted[_-]?content/i);
+    assert.doesNotMatch(persisted, new RegExp([configured, encrypted].join("|")));
+  }
+  assert.match(readFileSync(logFile, "utf8"), /useful stderr/);
+});
+
+test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
+  for (const fixture of loadToolStreamFixtures().filter((item) => item.source !== "d-b1fe88")) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-protocol-"));
+    const primer = join(dir, "primer.md");
+    writeFileSync(primer, "work");
+    const stdout = fixture.events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => ({ status: 0, stdout, stderr: "" }) });
+    const result = await adapter.spawn({ primerPath: primer, deployId: `d-${fixture.id}`, mode: "background" });
+    if (fixture.expected["status"] === "executed") assert.equal(result.exitCode, 0, fixture.id);
+    else {
+      assert.equal(result.exitCode, 1, fixture.id);
+      assert.match(result.errorMessage ?? "", /incomplete|malformed/i);
+    }
+  }
+
+  const complete = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const duplicateStart = complete.events.find((event) => event["type"] === "tool_execution_start")!;
+  const duplicated = inspectPiToolProtocol([...complete.events, duplicateStart]);
+  assert.equal(duplicated.outcomes[0]?.status, "execution-mismatch");
+  assert.match(duplicated.diagnostic, /expected one start\/end, observed 2\/1/);
+
+  const recovery = loadToolStreamFixtures().find((item) => item.id === "executed-supersedes-stale-malformed")!;
+  const recovered = inspectPiToolProtocol(recovery.events);
+  assert.equal(recovered.outcomes[0]?.status, "executed");
+  assert.equal(recovered.diagnostic, "");
+
+  const mismatchedExecution = recovery.events.map((event) => event["type"] === "tool_execution_start" ? { ...event, args: { action: "start", id: 2 } } : event);
+  const mismatch = inspectPiToolProtocol(mismatchedExecution);
+  assert.equal(mismatch.outcomes[0]?.status, "execution-mismatch");
+  assert.doesNotMatch(mismatch.diagnostic, /execution was suppressed/);
+});
+
+test("managed Pi stream preserves a large d-851add read execution end across chunks", async () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "large-read-end-crosses-carry")!;
+  const run = async (events: Array<Record<string, unknown>>): Promise<number> => {
+    const child = new FakePiChild();
+    const dir = mkdtempSync(join(tmpdir(), "pi-large-line-"));
+    const primer = join(dir, "primer.md");
+    writeFileSync(primer, "work");
+    const adapter = controlledAdapter(child);
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-large-line", mode: "dry-run" });
+    await nextTick();
+    const stream = events.map((event) => JSON.stringify(event).replace("[bounded large read result]", "x".repeat(16 * 1024))).join("\n") + "\n";
+    for (let offset = 0; offset < stream.length; offset += 4096) child.stdout.emit("data", Buffer.from(stream.slice(offset, offset + 4096)));
+    child.emit("close", 0);
+    return (await resultPromise).exitCode;
+  };
+
+  assert.equal(await run(fixture.events), 0);
+  assert.equal(await run(fixture.events.filter((event) => event["type"] !== "tool_execution_end")), 1);
+});
+
+test("keeps PAP-151 fixtures sanitized and bounded", () => {
+  const path = fileURLToPath(new URL("fixtures/pap-151-tool-streams.jsonl", import.meta.url));
+  const fixtureText = readFileSync(path, "utf8");
+  assert.ok(Buffer.byteLength(fixtureText) <= 50 * 1024);
+  assert.ok(fixtureText.trim().split("\n").length <= 2000);
+  assert.doesNotMatch(fixtureText, /thinkingSignature|encrypted_content|Bearer\s+\S+|api[_-]?key|sk-[A-Za-z0-9]/i);
+  for (const fixture of loadToolStreamFixtures()) {
+    const outcome = replayToolStream(fixture);
+    assert.ok(String(outcome["terminalEvidence"]).length <= 2000);
+    for (const event of fixture.events) assert.ok(normalizePiEvent(event, "d-bounds").body.length <= 500);
+  }
+  const sentinel = "configured-sensitive-value";
+  const redacted = normalizePiEvent({ type: "tool_result", content: `safe ${sentinel}` }, "d-redaction", [sentinel]);
+  assert.match(redacted.body, /safe/);
+  assert.doesNotMatch(redacted.body, new RegExp(sentinel));
+});
+
 test("requires an exact supported Pi version and redacts nested array content", () => {
   assert.equal(meetsMinimum("pi 0.80.8"), true);
   assert.equal(meetsMinimum("0.80.8foo"), false);
@@ -285,12 +524,20 @@ test("foreground log redaction survives every chunk boundary", async () => {
   await nextTick();
   const shapedPrefix = ["Bea", "rer"].join("");
   const assignedPrefix = String.fromCharCode(97, 112, 105, 95, 107, 101, 121);
-  const terminalLine = `${"x".repeat(8188)}${configuredValue} ${shapedPrefix} ${shapedValue} ${assignedPrefix}=${assignedValue} ${"z".repeat(9000)}\n`;
+  const reasoningValue = "foreground-encrypted-reasoning-value";
+  const structuredLine = `${JSON.stringify({ type: "message", text: "useful foreground diagnostic", thinkingSignature: { encrypted_content: reasoningValue }, repeatedPayload: reasoningValue })}\n`;
+  const malformedLine = `useful malformed foreground {"encrypted_content":"${reasoningValue}"\n`;
+  const oversizedMalformedLine = `useful oversized foreground ${"q".repeat(17_000)}{"thinkingSignature":{"signature":"${reasoningValue}"}\n`;
+  const terminalLine = `${structuredLine}${malformedLine}${oversizedMalformedLine}${"x".repeat(8188)}${configuredValue} ${shapedPrefix} ${shapedValue} ${assignedPrefix}=${assignedValue} ${"z".repeat(9000)}\n`;
   for (const character of terminalLine) pty.emitData(character);
   pty.emitExit(0);
   assert.equal((await resultPromise).exitCode, 0);
   const persisted = readFileSync(logFile, "utf8");
-  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue].join("|")));
+  assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
+  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue, reasoningValue].join("|")));
+  assert.match(persisted, /useful foreground diagnostic/);
+  assert.match(persisted, /useful malformed foreground/);
+  assert.match(persisted, /useful oversized foreground/);
   assert.match(persisted, /\*{20,}/);
 });
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, reconcileTerminalRegistryEvent } from "../index.js";
 
 test("registry appends WAL-backed events and materializes deployment status", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-"));
@@ -35,6 +35,70 @@ test("registry materializes effective timeout metadata from started events", () 
   ]);
   assert.equal(statuses[0]?.status, "running");
   assert.equal(statuses[0]?.effective_timeout_seconds, 1800);
+});
+
+test("terminal reconciliation atomically replaces success with failure and is idempotent", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-registry-reconcile-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try {
+    appendRegistryEvent({ deployment_id: "d-reconcile", team: "builder", event: "started", timestamp: "2026-08-28T00:00:00Z" });
+    appendRegistryEvent({ deployment_id: "d-reconcile", team: "builder", event: "completed", timestamp: "2026-08-28T00:01:00Z", status: "success", summary: "agent success", exit_code: 0 });
+    const failure = { deployment_id: "d-reconcile", team: "builder", event: "completed", timestamp: "2026-08-28T00:02:00Z", status: "failed", summary: "adapter exit 17", exit_code: 17 } as const;
+
+    assert.equal(reconcileTerminalRegistryEvent(failure).retainedExisting, false);
+    assert.equal(reconcileTerminalRegistryEvent(failure).retainedExisting, true);
+    const terminal = getDeploymentEvents("d-reconcile").filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.deepEqual(terminal.map((event) => [event.status, event.summary, event.exit_code]), [["failed", "adapter exit 17", 17]]);
+    assert.equal(queryDeploymentStatus("d-reconcile")?.status, "failed");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal reconciliation rolls back history when projection persistence fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-registry-atomic-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try {
+    appendRegistryEvent({ deployment_id: "d-atomic", team: "builder", event: "started", timestamp: "2026-08-28T00:00:00Z" });
+    appendRegistryEvent({ deployment_id: "d-atomic", team: "builder", event: "completed", timestamp: "2026-08-28T00:01:00Z", status: "success", summary: "agent success", exit_code: 0 });
+    getDb().exec("CREATE TRIGGER reject_terminal_projection BEFORE UPDATE ON deployments WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'projection failed'); END");
+
+    assert.throws(() => reconcileTerminalRegistryEvent({ deployment_id: "d-atomic", team: "builder", event: "completed", timestamp: "2026-08-28T00:02:00Z", status: "failed", summary: "adapter failure", exit_code: 1 }), /projection failed/);
+    const terminal = getDeploymentEvents("d-atomic").filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.deepEqual(terminal.map((event) => [event.status, event.summary]), [["success", "agent success"]]);
+    assert.equal(queryDeploymentStatus("d-atomic")?.status, "success");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal reconciliation collapses conflicting history to the failed representation", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-registry-conflict-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try {
+    appendRegistryEvent({ deployment_id: "d-conflict", team: "builder", event: "started", timestamp: "2026-08-28T00:00:00Z" });
+    appendRegistryEvent({ deployment_id: "d-conflict", team: "builder", event: "completed", timestamp: "2026-08-28T00:01:00Z", status: "success", summary: "agent success", exit_code: 0 });
+    appendRegistryEvent({ deployment_id: "d-conflict", team: "builder", event: "crashed", timestamp: "2026-08-28T00:02:00Z", error: "agent crash", exit_code: 1 });
+
+    reconcileTerminalRegistryEvent({ deployment_id: "d-conflict", team: "builder", event: "completed", timestamp: "2026-08-28T00:03:00Z", status: "success", summary: "adapter success", exit_code: 0 });
+    const terminal = getDeploymentEvents("d-conflict").filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.deepEqual(terminal.map((event) => [event.event, event.error, event.exit_code]), [["crashed", "agent crash", 1]]);
+    assert.equal(queryDeploymentStatus("d-conflict")?.status, "crashed");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("registry migration preserves legacy deployments without timeout metadata", () => {

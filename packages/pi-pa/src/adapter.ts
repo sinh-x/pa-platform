@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
@@ -13,11 +14,19 @@ const MAX_STDERR = 2000;
 const MAX_CAPTURE = 8000;
 export const PI_VERSION_TIMEOUT_MS = 15_000;
 const TERM_GRACE = 250;
-const MAX_CARRY = 8192;
+const MAX_CARRY = 256 * 1024;
 const PROCESS_TREE_TIMEOUT = 4900;
 const PROCESS_TREE_POLL = 25;
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
+export interface PiToolProtocolOutcome {
+  callId: string;
+  toolName: string;
+  arguments?: unknown;
+  status: "executed" | "malformed" | "incomplete" | "execution-mismatch";
+  executionStarts: number;
+  executionEnds: number;
+}
 export interface PiAdapterOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -120,18 +129,111 @@ export class PiAdapter implements RuntimeAdapter {
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
     }
-    const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
-    if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     if (result.status !== 0) {
-      const message = redact(tail(result.stderr || result.spawnError?.message || `pi exited with code ${result.status ?? 1}`, MAX_STDERR), secrets);
+      const message = redactPiLog(tail(result.stderr || result.spawnError?.message || `pi exited with code ${result.status ?? 1}`, MAX_STDERR), secrets);
       return { sessionId: id, exitCode: result.status ?? 1, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     }
+    const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
+    if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     return { sessionId: id, exitCode: 0, logFile: opts.logFile, metadata: { ...(result.metadata ?? {}), sessionId: id } };
   }
 }
 
 export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 80 || actual[1] === 80 && actual[2] >= 8); }
-export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent { const safe = deepRedact(raw, secrets) as Record<string, unknown>; const type = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase(); const kind: ActivityEvent["kind"] = type === "tool_execution_end" || type === "tool_result" || type === "tool_execution_result" ? "tool_result" : type === "tool_execution_start" || type === "tool_use" || type === "tool_call" ? "tool_use" : type.includes("error") ? "error" : type.includes("think") ? "thinking" : type.includes("tool") ? "tool_use" : "text"; const body = redact(extractText(safe) || type, secrets); return createActivityEvent({ deployId, kind, source: "pi", body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY - 3)}...` : body, partType: type, metadata: allowMetadata(safe), timestamp: typeof safe.timestamp === "string" ? parseTimestamp(safe.timestamp).toISOString() : undefined }); }
+export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent {
+  const safe = deepRedact(raw, secrets) as Record<string, unknown>;
+  const outerType = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase();
+  const assistant = record(safe.assistantMessageEvent);
+  const nestedType = String(assistant?.type ?? "").toLowerCase();
+  const type = outerType === "message_update" && /^toolcall_(?:start|delta|end)$/.test(nestedType) ? nestedType : outerType;
+  const kind: ActivityEvent["kind"] = type === "tool_execution_end" || type === "tool_result" || type === "tool_execution_result" ? "tool_result" : type === "tool_execution_start" || type === "tool_use" || type === "tool_call" || type.startsWith("toolcall_") ? "tool_use" : type.includes("error") ? "error" : type.includes("think") ? "thinking" : type.includes("tool") ? "tool_use" : "text";
+  const body = redact(extractText(type.startsWith("toolcall_") && assistant ? assistant : safe) || type, secrets);
+  const metadata = { ...allowMetadata(safe), ...toolCallMetadata(assistant) };
+  const tool = typeof metadata.tool === "string" ? metadata.tool : metadata.toolName;
+  if (typeof tool === "string") metadata.tool = tool;
+  return createActivityEvent({ deployId, kind, source: "pi", body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY - 3)}...` : body, partType: type, metadata, timestamp: typeof safe.timestamp === "string" ? parseTimestamp(safe.timestamp).toISOString() : undefined });
+}
+
+interface TrackedPiToolCall extends PiToolProtocolOutcome {
+  contentIndex: string;
+  deltas: string[];
+  ended: boolean;
+  malformed: boolean;
+  executionToolName?: string;
+  executionArguments?: unknown;
+  executionIdentityMismatch?: boolean;
+}
+
+class PiToolProtocolInspector {
+  private readonly calls: TrackedPiToolCall[] = [];
+
+  observe(raw: Record<string, unknown>): void {
+    const assistant = record(raw.assistantMessageEvent);
+    const nestedType = String(assistant?.type ?? "");
+    const contentIndex = String(assistant?.contentIndex ?? "");
+    if (nestedType === "toolcall_start") {
+      const partial = record(assistant?.partial);
+      const content = Array.isArray(partial?.content) ? partial.content : [];
+      const call = content.map((item) => record(item)).find((item) => item?.type === "toolCall");
+      if (call) this.calls.push({ contentIndex, callId: String(call.id ?? ""), toolName: String(call.name ?? "unknown"), deltas: [], ended: false, malformed: false, status: "incomplete", executionStarts: 0, executionEnds: 0 });
+      return;
+    }
+    const active = [...this.calls].reverse().find((call) => call.contentIndex === contentIndex && !call.ended);
+    if (nestedType === "toolcall_delta") {
+      if (active) active.deltas.push(String(assistant?.delta ?? ""));
+      return;
+    }
+    if (nestedType === "toolcall_end") {
+      const finalCall = record(assistant?.toolCall);
+      if (!active || !finalCall) return;
+      active.callId = String(finalCall.id ?? active.callId);
+      active.toolName = String(finalCall.name ?? active.toolName);
+      active.arguments = finalCall.arguments;
+      active.ended = true;
+      try { active.malformed = active.deltas.length > 0 && !isDeepStrictEqual(JSON.parse(active.deltas.join("")), finalCall.arguments); }
+      catch { active.malformed = true; }
+      return;
+    }
+    const type = String(raw.type ?? "");
+    if (type !== "tool_execution_start" && type !== "tool_execution_end") return;
+    const callId = String(raw.toolCallId ?? "");
+    const tracked = [...this.calls].reverse().find((call) => call.callId === callId);
+    if (!tracked) return;
+    if (typeof raw.toolName === "string") {
+      if (tracked.executionToolName !== undefined && tracked.executionToolName !== raw.toolName) tracked.executionIdentityMismatch = true;
+      tracked.executionToolName = raw.toolName;
+    }
+    if (raw.args !== undefined) tracked.executionArguments = raw.args;
+    if (type === "tool_execution_start") tracked.executionStarts++;
+    else tracked.executionEnds++;
+  }
+
+  outcomes(): PiToolProtocolOutcome[] {
+    return this.calls.map((call) => {
+      const executionMatches = !call.executionIdentityMismatch && (call.executionToolName === undefined || call.executionToolName === call.toolName);
+      const argumentsMatch = call.executionArguments === undefined || call.arguments === undefined || isDeepStrictEqual(call.executionArguments, call.arguments);
+      const executed = call.ended && call.executionStarts === 1 && call.executionEnds === 1 && executionMatches && argumentsMatch;
+      const executionObserved = call.executionStarts > 0 || call.executionEnds > 0;
+      const status = executed ? "executed" : executionObserved ? "execution-mismatch" : !call.ended ? "incomplete" : call.malformed ? "malformed" : "execution-mismatch";
+      return { callId: call.callId, toolName: call.toolName, ...(call.arguments !== undefined ? { arguments: call.arguments } : {}), status, executionStarts: call.executionStarts, executionEnds: call.executionEnds };
+    });
+  }
+
+  diagnostic(): string {
+    const failed = this.outcomes().find((call) => call.status !== "executed");
+    if (!failed) return "";
+    const identity = `${failed.toolName} (${failed.callId || "missing call id"})`;
+    if (failed.status === "incomplete") return `Incomplete Pi tool call ${identity}; execution was suppressed.`;
+    if (failed.status === "malformed") return `Malformed Pi tool call ${identity}; execution was suppressed.`;
+    return `Invalid Pi tool execution lifecycle for ${identity}: expected one start/end, observed ${failed.executionStarts}/${failed.executionEnds}.`;
+  }
+}
+
+export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): { outcomes: PiToolProtocolOutcome[]; diagnostic: string } {
+  const inspector = new PiToolProtocolInspector();
+  for (const event of events) inspector.observe(event);
+  return { outcomes: inspector.outcomes(), diagnostic: inspector.diagnostic() };
+}
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: redact(line, secrets).slice(0, MAX_BODY) }); } }
 function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, interactive = false): Promise<PiCommandResult> {
   if (interactive) return runPiForeground(args, cwd, env, opts, id, secrets, supervision);
@@ -148,6 +250,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
+    const protocol = new PiToolProtocolInspector();
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
     const settle = (status: number | null, error?: Error): void => {
       if (settled) return;
@@ -176,19 +279,20 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
         settle(cleanupStatus, cleanupError);
       })();
     };
-    const finish = (): void => {
+    const finish = (status: number, error?: Error): void => {
       if (settled || cleanupPending) return;
       try {
         if (!interactive) {
-          if (carry) persist(carry, outputPath, opts.deployId, secrets);
-          if (opts.logFile) writeLog(opts.logFile, redact(stdout + stderr, secrets), "utf8");
+          if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath, opts.deployId, secrets); carry = ""; }
+          if (opts.logFile) writeLog(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8");
         }
-        settle(0);
+        terminalError ||= protocol.diagnostic();
+        settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
-    child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) { if (code === 0) finish(); else settle(code, new Error(`Pi exited with code ${code ?? 1}`)); } });
+    child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
   });
   if (opts.mode === "background") return Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { pid: child.pid, sessionId: id, pending: true, monitor: { completion, pid: child.pid } satisfies PiSupervisionHandle } });
@@ -210,7 +314,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const processExists = supervision.processExists ?? piProcessExists;
   let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined;
   const previousRaw = input.isTTY ? input.isRaw : undefined;
-  const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8")) : undefined;
+  const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8"), (value) => redactPiLog(value, secrets), /thinking[_-]?signature|encrypted[_-]?content/i) : undefined;
 
   return new Promise((resolveResult) => {
     const restoreTerminal = (): Error | undefined => {
@@ -317,14 +421,23 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   });
 }
 function persistLine(line: string, path: string, deployId: string, secrets: string[]): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${safe}\n`); appendActivityEvent(parsePiLine(safe, deployId, secrets), getDeployPaths(deployId).activityLogPath); }
-function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); writeFileSync(outputPath, stdout.split("\n").filter(Boolean).map((line) => redactJsonLine(line, secrets)).join("\n") + (stdout ? "\n" : ""), "utf8"); if (opts.logFile) writeFileSync(opts.logFile, redact(stdout + stderr, secrets), "utf8"); const terminalError = stdout.split("\n").map((line) => terminalErrorFromLine(line, secrets)).find(Boolean); return terminalError ? { terminalError } : {}; }
+function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); writeFileSync(outputPath, lines.map((line) => redactJsonLine(line, secrets)).join("\n") + (stdout ? "\n" : ""), "utf8"); if (opts.logFile) writeFileSync(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: redact(tail(terminalError, MAX_STDERR), secrets) } : {}; }
 function failure(message: string): SpawnResult { return { exitCode: 1, errorMessage: message }; }
-function redactJsonLine(line: string, secrets: string[]): string { try { return JSON.stringify(deepRedact(JSON.parse(line), secrets)); } catch { return redact(line, secrets); } }
+function redactJsonLine(line: string, secrets: string[]): string { try { return JSON.stringify(deepRedact(JSON.parse(line), secrets)); } catch { const match = SENSITIVE_REASONING_KEY.exec(line); SENSITIVE_REASONING_KEY.lastIndex = 0; return match ? `${redact(line.slice(0, match.index), secrets)}[REDACTED reasoning metadata]` : redact(line, secrets); } }
+function redactPiLog(value: string, secrets: string[]): string { return value.split("\n").map((line) => redactJsonLine(line, secrets)).join("\n"); }
 const redact = redactDiagnostic;
 function terminalErrorFromLine(line: string, secrets: string[]): string { try { return terminalErrorFromValue(JSON.parse(line) as Record<string, unknown>, secrets); } catch { return ""; } }
-function terminalErrorFromValue(value: Record<string, unknown>, secrets: string[]): string { const stopReason = value.stopReason ?? value.stop_reason; const type = String(value.type ?? value.event ?? value.kind ?? "").toLowerCase(); const hasError = typeof value.error === "string" || typeof value.errorMessage === "string" || typeof value.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return redact(tail(extractText(value) || String(value.error ?? value.errorMessage ?? stopReason), MAX_STDERR), secrets); }
-function deepRedact(value: unknown, secrets: string[] = []): unknown { if (typeof value === "string") return redact(value, secrets); if (Array.isArray(value)) return value.map((item) => deepRedact(item, secrets)); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => SECRET_KEY.test(key) ? [key, "[REDACTED]"] : [key, deepRedact(item, secrets)])); return value; }
+function terminalErrorFromValue(value: Record<string, unknown>, secrets: string[]): string { const safe = deepRedact(value, secrets) as Record<string, unknown>; const stopReason = safe.stopReason ?? safe.stop_reason; const type = String(safe.type ?? safe.event ?? safe.kind ?? "").toLowerCase(); const hasError = typeof safe.error === "string" || typeof safe.errorMessage === "string" || typeof safe.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return redact(tail(extractText(safe) || String(safe.error ?? safe.errorMessage ?? stopReason), MAX_STDERR), secrets); }
+function observeProtocolLine(inspector: PiToolProtocolInspector, line: string): void { try { const value = JSON.parse(line) as unknown; if (value && typeof value === "object" && !Array.isArray(value)) inspector.observe(value as Record<string, unknown>); } catch { /* Non-JSON terminal output is not Pi protocol evidence. */ } }
+const SENSITIVE_REASONING_KEY = /thinking[_-]?signature|encrypted[_-]?content/gi;
+const SENSITIVE_REASONING_FIELD = /^(?:thinking[_-]?signature|encrypted[_-]?content)$/i;
+function deepRedact(value: unknown, secrets: string[] = []): unknown { return deepRedactValue(value, [...secrets, ...sensitiveReasoningValues(value)]); }
+function deepRedactValue(value: unknown, secrets: string[]): unknown { if (typeof value === "string") return redact(value, secrets); if (Array.isArray(value)) return value.map((item) => deepRedactValue(item, secrets)); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([key]) => !SENSITIVE_REASONING_FIELD.test(key)).map(([key, item]) => SECRET_KEY.test(key) ? [key, "[REDACTED]"] : [key, deepRedactValue(item, secrets)])); return value; }
+function sensitiveReasoningValues(value: unknown): string[] { if (Array.isArray(value)) return value.flatMap(sensitiveReasoningValues); if (!value || typeof value !== "object") return []; return Object.entries(value).flatMap(([key, item]) => SENSITIVE_REASONING_FIELD.test(key) ? stringValues(item) : sensitiveReasoningValues(item)); }
+function stringValues(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(stringValues); if (value && typeof value === "object") return Object.values(value).flatMap(stringValues); return []; }
 function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { const metadata: Record<string, unknown> = {}; for (const key of ["type", "event", "kind", "timestamp", "role", "tool", "toolName", "args", "partialResult", "assistantMessageEvent", "partType"]) if (raw[key] !== undefined) metadata[key] = raw[key]; return metadata; }
+function toolCallMetadata(assistant: Record<string, unknown> | undefined): Record<string, unknown> { if (!assistant) return {}; const type = String(assistant.type ?? ""); const partial = record(assistant.partial); const content = Array.isArray(partial?.content) ? partial.content : []; const call = type === "toolcall_end" ? record(assistant.toolCall) : type === "toolcall_start" ? content.map((item) => record(item)).find((item) => item?.type === "toolCall") : undefined; return { ...(assistant.contentIndex !== undefined ? { contentIndex: assistant.contentIndex } : {}), ...(call?.id !== undefined ? { toolCallId: call.id } : {}), ...(call?.name !== undefined ? { toolName: call.name } : {}), ...(call?.arguments !== undefined ? { args: call.arguments } : {}) }; }
+function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function extractText(raw: Record<string, unknown>): string { const values = [raw.text, raw.body, raw.content, raw.message, raw.result, raw.partialResult, raw.assistantMessageEvent, raw.toolName, raw.args]; for (const value of values) { if (typeof value === "string") return value; if (Array.isArray(value)) { const text = value.map((item) => typeof item === "string" ? item : item && typeof item === "object" ? extractText(item as Record<string, unknown>) : "").filter(Boolean).join(" "); if (text) return text; } if (value && typeof value === "object") { const nested = extractText(value as Record<string, unknown>); if (nested) return nested; } } return ""; }
 function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }
 function basename(path: string): string { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown"; }

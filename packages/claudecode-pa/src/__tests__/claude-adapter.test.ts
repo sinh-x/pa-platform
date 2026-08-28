@@ -214,7 +214,7 @@ test("cpa dry-run defaults builder to implement mode YAML model", async () => {
   });
 });
 
-test("cpa warns and falls back for an incompatible provider before dry-run completes", async () => {
+test("cpa provider-only override retains fallback compatibility before dry-run completes", async () => {
   await withCpaEnv(async (root) => {
     const adapter = new ClaudeCodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
     const stdout: string[] = [];

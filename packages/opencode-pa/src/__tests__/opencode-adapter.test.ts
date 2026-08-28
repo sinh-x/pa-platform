@@ -312,7 +312,7 @@ test("opa tool guidance keeps pa-core serve as server owner", () => {
   assert.doesNotMatch(guidance, /opa serve/);
 });
 
-test("opa dry-run generates primer and does not spawn opencode", async () => {
+test("opa provider-only override retains compatibility and does not spawn during dry-run", async () => {
   await withOpaEnv(async (root) => {
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
     const stdout: string[] = [];
