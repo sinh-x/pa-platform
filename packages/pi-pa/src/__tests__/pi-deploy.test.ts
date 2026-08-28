@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter } from "../adapter.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
@@ -253,6 +253,48 @@ test("deploy completion preserves an extension-owned terminal marker", async () 
     assert.equal(result.status, "success");
     assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.timestamp, timestamp);
     assert.equal(getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+  });
+});
+
+test("background supervisor honors an agent-owned successful terminal registry event", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-28T05:20:45.081Z", status: "success", summary: "attachment summary" });
+        return { sessionId, exitCode: 0, metadata: { sessionId, pending: true, monitor: { completion: Promise.resolve({ status: 0, stdout: "", stderr: "" }) } } };
+      },
+    }));
+    assert.equal(result.status, "pending");
+    await nextTick();
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.summary, "attachment summary");
+    const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+    assert.equal(marker?.stopReason, "stop");
+    assert.equal(marker?.timestamp, "2026-08-28T05:20:45.081Z");
+  });
+});
+
+test("supervisor fails closed when an agent-owned crash conflicts with adapter success", async () => {
+  await withPiEnv(async () => {
+    let deploymentId = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onSpawn: (opts) => { deploymentId = opts.deployId; },
+      result: (sessionId) => {
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "crashed", timestamp: "2026-08-28T05:20:45.081Z", error: "agent shutdown failed", exit_code: 1 });
+        return { sessionId, exitCode: 0, metadata: { sessionId } };
+      },
+    }));
+    assert.equal(result.status, "failed");
+    assert.equal(result.reason, "agent shutdown failed");
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.event, "crashed");
+    const marker = readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir);
+    assert.equal(marker?.stopReason, "error");
+    assert.equal(marker?.error, "agent shutdown failed");
   });
 });
 

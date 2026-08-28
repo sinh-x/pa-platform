@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeploymentEvents, getDeployPaths, loadTeamConfig, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -68,17 +68,24 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), paths.activityLogPath);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-  let terminalWritten = false;
-  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "failed", reason: string, exitCode: number, logFile?: string): string => {
+  let terminalOutcome: { status: "success" | "failed"; reason: string } | undefined;
+  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "failed", reason: string, exitCode: number, logFile?: string): { status: "success" | "failed"; reason: string } => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
-    if (terminalWritten) return safeReason;
-    terminalWritten = true;
+    if (terminalOutcome) return terminalOutcome;
+    // Adapter settlement follows child exit, so an agent shutdown marker is visible before this ownership handoff.
+    const existing = getDeploymentEvents(deploymentId).find((event) => event.event === "completed" || event.event === "crashed");
+    if (existing) {
+      terminalOutcome = registryTerminalOutcome(existing, env);
+      ensurePiTerminalStatus(deployDir, terminalStatus(terminalOutcome.status, terminalOutcome.reason, existing.timestamp));
+      return terminalOutcome;
+    }
     const consistentExitCode = status === "success" ? 0 : exitCode || 1;
     if (kind === "completed") emitCompletedEvent({ deploymentId, team: team.name, status, summary: safeReason, ...(logFile ? { logFile } : {}), exitCode: consistentExitCode });
     else emitCrashedEvent({ deploymentId, team: team.name, error: safeReason, exitCode: consistentExitCode });
     ensurePiTerminalStatus(deployDir, terminalStatus(status, safeReason));
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
-    return safeReason;
+    terminalOutcome = { status, reason: safeReason };
+    return terminalOutcome;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
@@ -126,8 +133,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
-    return { status: "success", team: request.team, mode: request.mode ?? null, deploymentId };
+    const outcome = writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
+    return outcome.status === "success"
+      ? { status: "success", team: request.team, mode: request.mode ?? null, deploymentId }
+      : { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.reason };
   } catch (error) { return crashFailure(error instanceof Error ? error.message : String(error)); }
 }
 
@@ -147,8 +156,16 @@ function boundedDiagnostic(value: string, env: NodeJS.ProcessEnv, max: number): 
   return safe.length > max ? `${safe.slice(0, Math.max(0, max - 3))}...` : safe;
 }
 
-function terminalStatus(status: "success" | "failed", reason: string) {
-  return { type: "agent_end" as const, stopReason: status === "success" ? "stop" : "error", ...(status === "failed" ? { error: reason } : {}), timestamp: new Date().toISOString() };
+function terminalStatus(status: "success" | "failed", reason: string, timestamp = new Date().toISOString()) {
+  return { type: "agent_end" as const, stopReason: status === "success" ? "stop" : "error", ...(status === "failed" ? { error: reason } : {}), timestamp };
+}
+
+function registryTerminalOutcome(event: RegistryEvent, env: NodeJS.ProcessEnv): { status: "success" | "failed"; reason: string } {
+  if (event.event === "completed" && event.status === "success") {
+    return { status: "success", reason: boundedDiagnostic(event.summary ?? "ppa agent completed", env, 2000) };
+  }
+  const reason = event.event === "crashed" ? event.error ?? "ppa agent crashed" : event.summary ?? `ppa agent completed with status ${event.status ?? "unknown"}`;
+  return { status: "failed", reason: boundedDiagnostic(reason, env, 2000) };
 }
 
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }
