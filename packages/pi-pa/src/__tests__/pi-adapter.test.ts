@@ -1,19 +1,20 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
   readonly pid = 42;
+  unref(): void {}
 }
 
 class FakePiPty extends EventEmitter {
@@ -234,6 +235,56 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
 
 test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
   const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
+});
+
+test("canonical activity collapses lifecycle and duplicate events without unidentified rows", () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const execution = fixture.events.filter((event) => String(event["type"] ?? "").startsWith("tool_execution_"));
+  const sentinel = "canonical-sensitive-sentinel";
+  const events = [...fixture.events, ...execution, { type: "tool_execution_start", toolName: "bash", args: { token: sentinel } }, { type: "tool_execution_end", toolName: "bash", result: "missing id" }];
+  const activity = projectPiActivity(events, "d-canonical", [sentinel]);
+  const uses = activity.filter((event) => event.kind === "tool_use");
+  const results = activity.filter((event) => event.kind === "tool_result");
+  assert.deepEqual(uses.map((event) => event.metadata?.["toolCallId"]), [fixture.expected["callId"]]);
+  assert.deepEqual(results.map((event) => event.metadata?.["toolCallId"]), [fixture.expected["callId"]]);
+  assert.equal(activity.some((event) => event.partType === "toolcall_delta"), false);
+  assert.equal(activity.filter((event) => event.kind === "error" && /missing a call id/.test(event.body)).length, 2);
+  assert.ok(activity.every((event) => event.body.length <= 500));
+  assert.doesNotMatch(JSON.stringify(activity), new RegExp(sentinel));
+});
+
+test("split malformed oversized raw protocol stays causal, bounded, retained, and redacted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-malformed-activity-"));
+  const deployId = "d-malformed-activity";
+  const dir = join(root, "deployments", deployId);
+  const primer = join(dir, "primer.md");
+  const sentinel = "malformed-activity-sensitive-sentinel";
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  mkdirSync(dir, { recursive: true }); writeFileSync(primer, "work");
+  try {
+    const child = new FakePiChild();
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [sentinel], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run" });
+    await nextTick();
+    const malformed = `{\"type\":\"tool_execution_start\",\"toolName\":\"read\",\"args\":\"${"x".repeat(2_000)}${sentinel}\"\n`;
+    child.stdout.emit("data", Buffer.from(malformed.slice(0, 900)));
+    child.stdout.emit("data", Buffer.from(malformed.slice(900)));
+    child.emit("close", 0);
+    assert.equal((await resultPromise).exitCode, 0);
+    const raw = readFileSync(join(dir, "pi-output.jsonl"), "utf8");
+    const persistedActivity = readFileSync(join(dir, "activity.jsonl"), "utf8");
+    const activity = adapter.extractActivity(dir);
+    assert.match(raw, /tool_execution_start/);
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0]?.kind, "error");
+    assert.match(activity[0]?.body ?? "", /^malformed-protocol:/);
+    assert.ok((activity[0]?.body.length ?? Infinity) <= 500);
+    for (const persisted of [raw, persistedActivity, JSON.stringify(activity)]) assert.doesNotMatch(persisted, new RegExp(sentinel));
+  } finally {
+    if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousHome;
+  }
 });
 
 test("characterizes PAP-151 archived tool streams deterministically", () => {
@@ -461,38 +512,115 @@ test("foreground trusts the extension status side channel instead of rendered te
   assert.match(readFileSync(join(dir, "pi-output.jsonl"), "utf8"), /\"stopReason\":\"error\"/);
 });
 
-test("foreground settles from process exit evidence when PTY onExit is absent", async () => {
+test("foreground accepts a newer success marker when PTY onExit is absent", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-no-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  let probes = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
-    spawnPty: () => pty as never, input: input as never, output: output as never,
-    processExists: () => probes++ === 0,
-    sleep: async () => {},
-  } });
-  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-no-onexit", mode: "foreground" });
-  assert.equal(result.exitCode, 0);
-  assert.ok(probes >= 1);
-  assert.equal(input.isRaw, false);
-});
-
-test("foreground ignores a delayed duplicate PTY exit after process evidence settled", async () => {
-  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let sleeps = 0;
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => false,
-    sleep: async () => {},
+    now: () => now,
+    sleep: async (milliseconds) => {
+      now += milliseconds;
+      if (sleeps++ === 0) writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-29T01:00:00.000Z" });
+    },
   } });
-  let outcomes = 0;
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-delayed-onexit", mode: "foreground" });
-  resultPromise.then(() => { outcomes++; });
-  const result = await resultPromise;
-  pty.emitExit(17); pty.emitExit(17);
-  await nextTick();
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-marker", mode: "foreground" });
   assert.equal(result.exitCode, 0);
-  assert.equal(outcomes, 1);
+  assert.ok(now < 5_000);
   assert.equal(input.isRaw, false);
+});
+
+test("foreground retains a delayed nonzero PTY exit after process disappearance", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let sleeps = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => false,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; if (++sleeps === 2) pty.emitExit(17); },
+  } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-delayed-onexit", mode: "foreground" });
+  assert.equal(result.exitCode, 17);
+  assert.match(result.errorMessage ?? "", /Pi exited with code 17/);
+  assert.ok(now < 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground fails causally when process exit has no authoritative status", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-unknown-exit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => false,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-unknown-exit", mode: "foreground" });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /^process-exit-status-unavailable:/);
+  assert.ok(now < 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("fresh foreground launch removes a stale marker and does not settle while the child is alive", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-stale-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T01:00:00.000Z" });
+  let running = true; let settled = false;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-stale-marker", mode: "foreground" });
+  resultPromise.then(() => { settled = true; });
+  await nextTick();
+  assert.equal(existsSync(join(dir, "pi-terminal-status.json")), false);
+  assert.equal(settled, false);
+  running = false;
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
+});
+
+test("foreground visible exit escalates a lingering child and verifies cleanup", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-lingering-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let running = true;
+  pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+    now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-lingering", mode: "foreground" });
+  await nextTick();
+  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.ok(now <= 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground terminal restoration failure remains causal and bounded", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const originalSetRawMode = input.setRawMode.bind(input);
+  input.setRawMode = ((raw: boolean) => {
+    if (!raw) throw new Error("raw mode restore failed");
+    return originalSetRawMode(raw);
+  }) as typeof input.setRawMode;
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-restore-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-restore", mode: "foreground" });
+  await nextTick(); pty.emitExit(0);
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /^terminal-restoration: raw mode restore failed$/);
+  assert.ok((result.errorMessage?.length ?? Infinity) <= 2_000);
+  assert.equal(input.listenerCount("data"), 0);
 });
 
 test("foreground cleanup settles from process evidence without an onExit callback", async () => {
@@ -706,14 +834,31 @@ test("cleans up after persistence failure and completes background supervision",
   assert.equal(result.exitCode, 1);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 
-  const backgroundChild = new FakePiChild();
-  let backgroundArgs: string[] = []; let backgroundStdio: unknown;
-  const background = controlledAdapter(backgroundChild, { onSpawn: (args, stdio) => { backgroundArgs = args; backgroundStdio = stdio; } });
+  const backgroundRunner = new FakePiChild();
+  let backgroundArgs: string[] = [];
+  const background = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+    launchBackgroundRunner: ((_runnerPath, configPath) => {
+      const config = readPiBackgroundConfig(configPath);
+      backgroundArgs = buildPiBackgroundArgs(config);
+      writePiSupervisorOwnership(join(dirname(configPath), "pi-supervisor.json"), {
+        schemaVersion: 1,
+        deploymentId: config.deploymentId,
+        ownershipToken: config.ownershipToken,
+        state: "active",
+        ready: true,
+        supervisorPid: backgroundRunner.pid,
+        childPid: 43,
+        updatedAt: new Date().toISOString(),
+        finalizationDeadlineMs: 5000,
+      });
+      return backgroundRunner as never;
+    }),
+  } });
   const started = await background.spawn({ primerPath: primer, deployId: "d-background", mode: "background" });
-  const monitor = started.metadata?.monitor as { completion: Promise<{ status: number | null }> };
-  backgroundChild.emit("close", 0);
-  assert.equal((await monitor.completion).status, 0);
-  assert.deepEqual(backgroundStdio, ["ignore", "pipe", "pipe"]);
+  assert.equal(started.metadata?.pending, true);
+  assert.equal(started.metadata?.monitor, undefined);
+  assert.equal(started.metadata?.supervisorPid, backgroundRunner.pid);
   assert.deepEqual(backgroundArgs.slice(0, 5), ["--print", "--mode", "json", "--session-id", started.sessionId]);
+  assert.equal(backgroundRunner.stdout.listenerCount("data"), 0);
   assert.equal(groupGone, true);
 });

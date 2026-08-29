@@ -4,7 +4,7 @@ import { parseTimestamp } from "../time.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
-export { closeDb, getDb } from "./db.js";
+export { closeDb, getDb, verifyRegistryNativeAddon, REGISTRY_NATIVE_BINDING_ENV, type RegistryNativeAddonEvidence } from "./db.js";
 
 export function validateRegistryEvent(event: RegistryEvent): void {
   for (const field of ["deployment_id", "team", "event", "timestamp"] as const) {
@@ -33,7 +33,7 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
   if (requested.event !== "completed" && requested.event !== "crashed") throw new Error("Terminal reconciliation requires a completed or crashed event");
   const db = getDb();
   return db.transaction(() => {
-    const existingRows = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed') ORDER BY id").all(requested.deployment_id) as Record<string, unknown>[];
+    const existingRows = terminalRows(db, requested.deployment_id);
     const existing = existingRows.map(fromRow).find(isFailedTerminal) ?? existingRows.map(fromRow)[0];
     if (existing && (isFailedTerminal(existing) || !isFailedTerminal(requested))) {
       if (existingRows.length > 1) {
@@ -49,6 +49,30 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
     upsertDeployment(db, requested);
     return { event: requested, retainedExisting: false };
   })();
+}
+
+/**
+ * Atomically inserts a synthetic terminal event only when no terminal result
+ * has committed. Unlike supervisor reconciliation, this never replaces an
+ * existing success or failure and is reserved for observer-owned recovery.
+ */
+export function reconcileTerminalRegistryEventIfAbsent(requested: RegistryEvent): ReconcileTerminalRegistryEventResult {
+  validateRegistryEvent(requested);
+  if (requested.event !== "completed" && requested.event !== "crashed") throw new Error("Terminal reconciliation requires a completed or crashed event");
+  const db = getDb();
+  const transaction = db.transaction(() => {
+    const existingRows = terminalRows(db, requested.deployment_id);
+    const existing = existingRows.map(fromRow)[0];
+    if (existing) return { event: existing, retainedExisting: true };
+    insertRegistryEvent(db, requested);
+    upsertDeployment(db, requested);
+    return { event: requested, retainedExisting: false };
+  });
+  return transaction.immediate();
+}
+
+function terminalRows(db: ReturnType<typeof getDb>, deploymentId: string): Record<string, unknown>[] {
+  return db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed') ORDER BY id").all(deploymentId) as Record<string, unknown>[];
 }
 
 function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent): void {

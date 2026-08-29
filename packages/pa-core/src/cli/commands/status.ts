@@ -4,7 +4,7 @@ import { maskSecrets, readActivityEvents } from "../../activity/index.js";
 import type { ActivityEvent } from "../../activity/index.js";
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS } from "../../deploy/index.js";
 import { getAiUsageDir, getDeploymentDir } from "../../paths.js";
-import { appendRegistryEvent, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../../registry/index.js";
+import { getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, reconcileTerminalRegistryEventIfAbsent } from "../../registry/index.js";
 import { formatLocal, formatLocalShort, nowUtc, parseTimestamp } from "../../time.js";
 import type { DeploymentStatus } from "../../types.js";
 import { formatRegistryList, formatRegistryShow } from "../formatters.js";
@@ -39,10 +39,30 @@ export function printStatusHelp(io: Required<CliIo>): void {
 
 const STATUS_WAIT_POLL_INTERVAL_SECONDS = 10;
 const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
+const PI_SUPERVISOR_FILE = "pi-supervisor.json";
+const PI_SUPERVISOR_POLL_MS = 250;
+const PROCESS_CLEANUP_TIMEOUT_MS = 4_900;
+const PROCESS_TERM_GRACE_MS = 250;
+const PROCESS_CLEANUP_POLL_MS = 25;
+const MAX_SUPERVISOR_EVIDENCE_BYTES = 16 * 1024;
+
+interface PiSupervisorEvidence {
+  schemaVersion: 1;
+  deploymentId: string;
+  state: "starting" | "active" | "finalizing" | "finalized" | "failed";
+  ready: boolean;
+  supervisorPid: number;
+  childPid?: number;
+  finalizationDeadlineMs: number;
+}
 
 interface StatusWaitRuntime {
   sleep: (ms: number) => Promise<void>;
   clock: () => number;
+  processAlive: (pid: number) => boolean;
+  processGroupAlive: (pid: number) => boolean;
+  sendProcessSignal: (pid: number, signal: NodeJS.Signals) => void;
+  beforePiSupervisorLivenessCheck?: (evidence: PiSupervisorEvidence) => void | Promise<void>;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -126,26 +146,70 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
 
   const startedAt = runtime.clock();
   let activityCursor: number | undefined;
+  let ownedStaleSince: number | undefined;
   while (true) {
     const deployment = queryDeploymentStatus(deployId);
     if (!deployment) return printError(`Deployment not found: ${deployId}`, io);
-    if (deployment.status === "running" && deployment.pid !== undefined && !isProcessAlive(deployment.pid)) {
-      const hasTerminalEvent = getDeploymentEvents(deployId).some((event) => event.event === "completed" || event.event === "crashed");
-      if (!hasTerminalEvent) {
-        appendRegistryEvent({
-          deployment_id: deployId,
-          team: deployment.team,
-          event: "crashed",
-          timestamp: nowUtc(),
-          error: `status wait detected stale pid ${deployment.pid}`,
-          exit_code: -1,
-          summary: `status wait detected stale pid ${deployment.pid}`,
-        });
+    const piSupervisor = deployment.status === "running" && deployment.runtime === "pi" ? readPiSupervisorEvidence(deployId) : undefined;
+    const supervisorOwned = piSupervisor?.ready === true && (piSupervisor.state === "active" || piSupervisor.state === "finalizing");
+    if (supervisorOwned) await runtime.beforePiSupervisorLivenessCheck?.(piSupervisor);
+    if (supervisorOwned && !runtime.processAlive(piSupervisor.supervisorPid)) {
+      const refreshedBeforeRecovery = queryDeploymentStatus(deployId);
+      if (!refreshedBeforeRecovery) return printError(`Deployment not found: ${deployId}`, io);
+      if (refreshedBeforeRecovery.status !== "running") {
+        io.stdout(`${refreshedBeforeRecovery.status} - ${refreshedBeforeRecovery.summary ?? refreshedBeforeRecovery.status}`);
+        return refreshedBeforeRecovery.status === "success" || refreshedBeforeRecovery.status === "partial" ? 0 : 1;
       }
+      const currentSupervisor = readPiSupervisorEvidence(deployId);
+      const stillOwnedByDeadSupervisor = currentSupervisor?.ready === true
+        && (currentSupervisor.state === "active" || currentSupervisor.state === "finalizing")
+        && currentSupervisor.supervisorPid === piSupervisor.supervisorPid
+        && !runtime.processAlive(currentSupervisor.supervisorPid);
+      if (!stillOwnedByDeadSupervisor) {
+        await runtime.sleep(PI_SUPERVISOR_POLL_MS);
+        continue;
+      }
+      const childPid = currentSupervisor.childPid ?? refreshedBeforeRecovery.pid;
+      const cleanup = childPid && runtime.processGroupAlive(childPid)
+        ? await terminateOrphanProcess(childPid, runtime)
+        : "orphan cleanup verified: process group already absent";
+      const reason = `Pi supervisor pid ${currentSupervisor.supervisorPid} exited before finalizing child pid ${childPid ?? "unknown"}; ${cleanup}`;
+      reconcileTerminalRegistryEventIfAbsent({ deployment_id: deployId, team: refreshedBeforeRecovery.team, event: "crashed", timestamp: nowUtc(), error: reason, exit_code: -1, summary: reason });
       const refreshed = queryDeploymentStatus(deployId);
       if (!refreshed) return printError(`Deployment not found: ${deployId}`, io);
       io.stdout(`${refreshed.status} - ${refreshed.summary ?? refreshed.status}`);
-      return 1;
+      return refreshed.status === "success" || refreshed.status === "partial" ? 0 : 1;
+    }
+    if (deployment.status === "running" && deployment.pid !== undefined && !runtime.processAlive(deployment.pid)) {
+      const supervisor = piSupervisor;
+      const supervisorOwnsFinalization = supervisor?.ready === true && (supervisor.state === "active" || supervisor.state === "finalizing");
+      if (supervisorOwnsFinalization && runtime.processAlive(supervisor.supervisorPid)) {
+        ownedStaleSince ??= runtime.clock();
+        const elapsed = runtime.clock() - ownedStaleSince;
+        const remaining = Math.max(0, supervisor.finalizationDeadlineMs - elapsed);
+        if (remaining > 0) {
+          if (options?.activity) activityCursor = showActivityTail(deployId, io, options.verbose ?? false, activityCursor);
+          await runtime.sleep(Math.min(PI_SUPERVISOR_POLL_MS, remaining));
+          continue;
+        }
+      }
+
+      const reason = supervisorOwnsFinalization
+        ? `Pi supervisor finalization exceeded ${supervisor!.finalizationDeadlineMs}ms after child pid ${deployment.pid} exited`
+        : `status wait detected stale pid ${deployment.pid}`;
+      reconcileTerminalRegistryEventIfAbsent({
+        deployment_id: deployId,
+        team: deployment.team,
+        event: "crashed",
+        timestamp: nowUtc(),
+        error: reason,
+        exit_code: -1,
+        summary: reason,
+      });
+      const refreshed = queryDeploymentStatus(deployId);
+      if (!refreshed) return printError(`Deployment not found: ${deployId}`, io);
+      io.stdout(`${refreshed.status} - ${refreshed.summary ?? refreshed.status}`);
+      return refreshed.status === "success" || refreshed.status === "partial" ? 0 : 1;
     }
     if (deployment.status !== "running") {
       if (options?.activity) {
@@ -163,6 +227,47 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
     }
     await runtime.sleep(STATUS_WAIT_POLL_INTERVAL_SECONDS * 1000);
   }
+}
+
+function readPiSupervisorEvidence(deployId: string): PiSupervisorEvidence | undefined {
+  const path = resolve(getDeploymentDir(deployId), PI_SUPERVISOR_FILE);
+  if (!existsSync(path)) return undefined;
+  try {
+    const body = readFileSync(path, "utf8");
+    if (Buffer.byteLength(body) > MAX_SUPERVISOR_EVIDENCE_BYTES) return undefined;
+    const value = JSON.parse(body) as Partial<PiSupervisorEvidence>;
+    if (value.schemaVersion !== 1 || value.deploymentId !== deployId || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || !Number.isInteger(value.finalizationDeadlineMs) || Number(value.finalizationDeadlineMs) <= 0 || Number(value.finalizationDeadlineMs) > 5_000) return undefined;
+    return value as PiSupervisorEvidence;
+  } catch {
+    return undefined;
+  }
+}
+
+async function terminateOrphanProcess(pid: number, runtime: StatusWaitRuntime): Promise<string> {
+  const startedAt = runtime.clock();
+  const deadline = startedAt + PROCESS_CLEANUP_TIMEOUT_MS;
+  let killSent = false;
+  try { runtime.sendProcessSignal(pid, "SIGTERM"); } catch { /* process may already be gone */ }
+  while (runtime.clock() < deadline) {
+    if (!runtime.processGroupAlive(pid)) return `orphan cleanup verified after ${killSent ? "SIGKILL" : "SIGTERM"}`;
+    if (!killSent && runtime.clock() - startedAt >= PROCESS_TERM_GRACE_MS) {
+      killSent = true;
+      try { runtime.sendProcessSignal(pid, "SIGKILL"); } catch { /* process may already be gone */ }
+    }
+    await runtime.sleep(Math.min(PROCESS_CLEANUP_POLL_MS, Math.max(1, deadline - runtime.clock())));
+  }
+  if (!runtime.processGroupAlive(pid)) return `orphan cleanup verified after ${killSent ? "SIGKILL" : "SIGTERM"}`;
+  return `orphan cleanup failed: process group ${pid} remained after ${PROCESS_CLEANUP_TIMEOUT_MS}ms`;
+}
+
+export function isProcessGroupAlive(pid: number): boolean {
+  try { process.kill(-pid, 0); return true; }
+  catch { return isProcessAlive(pid); }
+}
+
+export function sendProcessGroupSignal(pid: number, signal: NodeJS.Signals): void {
+  try { process.kill(-pid, signal); }
+  catch { process.kill(pid, signal); }
 }
 
 function showDeploymentReport(deployId: string, io: Required<CliIo>): number {

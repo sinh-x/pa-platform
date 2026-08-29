@@ -38,6 +38,7 @@
 
           nativeBuildInputs = with pkgs; [
             nodejs_22
+            nodejs_24
             pnpm
             pnpmConfigHook
             makeWrapper
@@ -138,32 +139,53 @@
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-core \
               --add-flags "$share/pa-core-cli.mjs" \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/opa \
               --add-flags "$share/packages/opencode-pa/dist/cli.js" \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/cpa \
               --add-flags "$share/packages/claudecode-pa/dist/cli.js" \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/dpa \
               --add-flags "$share/packages/droidcode-pa/dist/cli.js" \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/ppa \
               --add-flags "$share/packages/pi-pa/dist/cli.js" \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
+              --set PA_PI_SQLITE_NATIVE_BINDING "$share/native-addons/pi-node-24/better_sqlite3.node" \
+              --set PA_REQUIRE_PI_SQLITE_NATIVE_BINDING "1" \
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
+              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
             if [ -d "$share/node_modules/better-sqlite3" ]; then
+              mkdir -p "$share/native-addons/node-22" "$share/native-addons/pi-node-24"
+
               cd "$share/node_modules/better-sqlite3"
               patchShebangs .
               export npm_config_nodedir=${pkgs.nodejs_22}
               ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22} --openssl-fips=false
+              install -Dm755 build/Release/better_sqlite3.node "$share/native-addons/node-22/better_sqlite3.node"
+
+              piSqliteSource="$TMPDIR/better-sqlite3-pi-host"
+              cp -rL "$share/node_modules/better-sqlite3" "$piSqliteSource"
+              chmod -R u+w "$piSqliteSource"
+              rm -rf "$piSqliteSource/build"
+              cd "$piSqliteSource"
+              patchShebangs .
+              export npm_config_nodedir=${pkgs.nodejs_24}
+              ${pkgs.nodejs_24}/bin/node ${pkgs.nodejs_24}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_24} --openssl-fips=false
+              install -Dm755 build/Release/better_sqlite3.node "$share/native-addons/pi-node-24/better_sqlite3.node"
             fi
 
             for nodePty in "$share"/node_modules/.pnpm/node-pty@*/node_modules/node-pty; do

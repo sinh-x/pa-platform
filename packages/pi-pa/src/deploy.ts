@@ -112,7 +112,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   try {
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.resume || request.evaluateDeployment ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background || request.resume || request.evaluateDeployment ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
@@ -121,6 +121,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
     if (request.background && result.metadata?.["pending"] === true && monitor?.completion) {
+      // Backward-compatible injected-adapter seam. Production Pi background runs
+      // return supervisorPid and are finalized exclusively by background-runner.ts.
       void monitor.completion.then((final) => {
         const terminalError = typeof final.metadata?.["terminalError"] === "string" ? final.metadata["terminalError"] : undefined;
         const ok = final.status === 0 && !terminalError;
@@ -131,6 +133,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }).catch((error) => {
         crashFailure(error instanceof Error ? error.message : String(error));
       });
+      return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
+    }
+    if (request.background && result.metadata?.["pending"] === true) {
+      if (typeof result.metadata?.["supervisorPid"] !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
     const outcome = writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);

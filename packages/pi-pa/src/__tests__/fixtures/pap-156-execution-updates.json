@@ -1,0 +1,61 @@
+{
+  "id": "pap-156-live-shaped-execution-updates",
+  "syntheticSensitiveValue": "pap156-update-sensitive-sentinel",
+  "expected": {
+    "starts": 13,
+    "updates": 5,
+    "ends": 13,
+    "canonicalUses": 13,
+    "canonicalResults": 13,
+    "callIds": [
+      "pap156-live-call-01",
+      "pap156-live-call-02",
+      "pap156-live-call-03",
+      "pap156-live-call-04",
+      "pap156-live-call-05",
+      "pap156-live-call-06",
+      "pap156-live-call-07",
+      "pap156-live-call-08",
+      "pap156-live-call-09",
+      "pap156-live-call-10",
+      "pap156-live-call-11",
+      "pap156-live-call-12",
+      "pap156-live-call-13"
+    ]
+  },
+  "streamEvents": [
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-01", "toolName": "read", "args": { "path": "README.md" } },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-02", "toolName": "bash", "args": { "command": "printf parallel" } },
+    { "type": "tool_execution_update", "toolCallId": "pap156-live-call-02", "toolName": "bash", "args": { "command": "printf parallel" }, "partialResult": "parallel chunk 1 pap156-update-sensitive-sentinel" },
+    { "type": "tool_execution_update", "toolCallId": "pap156-live-call-02", "toolName": "bash", "args": { "command": "printf parallel" }, "partialResult": "parallel chunk 2" },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-02", "toolName": "bash", "isError": false, "result": "parallel complete" },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-01", "toolName": "read", "isError": false, "result": "fixture read" },
+
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-03", "toolName": "pa_bulletin", "args": { "action": "list" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-03", "toolName": "pa_bulletin", "isError": false, "result": [] },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-04", "toolName": "pa_ticket", "args": { "action": "show", "id": "PAP-156" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-04", "toolName": "pa_ticket", "isError": false, "result": "PAP-156" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-05", "toolName": "pa_registry", "args": { "action": "show", "id": "d-fixture" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-05", "toolName": "pa_registry", "isError": false, "result": "running" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-06", "toolName": "question", "args": { "question": "Continue?" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-06", "toolName": "question", "isError": false, "result": "yes" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-07", "toolName": "todo", "args": { "action": "add", "text": "fixture" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-07", "toolName": "todo", "isError": false, "result": "added" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-08", "toolName": "todo", "args": { "action": "start", "id": 1 } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-08", "toolName": "todo", "isError": false, "result": "started" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-09", "toolName": "todo", "args": { "action": "complete", "id": 1 } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-09", "toolName": "todo", "isError": false, "result": "completed" },
+
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-10", "toolName": "bash", "args": { "command": "ppa status d-fixture --wait" } },
+    { "type": "tool_execution_update", "toolCallId": "pap156-live-call-10", "toolName": "bash", "args": { "command": "ppa status d-fixture --wait" }, "partialResult": "waiting chunk 1" },
+    { "type": "tool_execution_update", "toolCallId": "pap156-live-call-10", "toolName": "bash", "args": { "command": "ppa status d-fixture --wait" }, "partialResult": "waiting chunk 2" },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-10", "toolName": "bash", "isError": false, "result": "success" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-11", "toolName": "pa_status", "args": { "id": "d-fixture" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-11", "toolName": "pa_status", "isError": false, "result": "success" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-12", "toolName": "read", "args": { "path": "README.md" } },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-12", "toolName": "read", "isError": false, "result": "fixture read again" },
+    { "type": "tool_execution_start", "toolCallId": "pap156-live-call-13", "toolName": "bash", "args": { "command": "git status --short" } },
+    { "type": "tool_execution_update", "toolCallId": "pap156-live-call-13", "toolName": "bash", "args": { "command": "git status --short" }, "partialResult": "final chunk" },
+    { "type": "tool_execution_end", "toolCallId": "pap156-live-call-13", "toolName": "bash", "isError": false, "result": "clean" }
+  ]
+}
