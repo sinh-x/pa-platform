@@ -209,7 +209,7 @@ async function waitForDeployment(deployId: string, io: Required<CliIo>, runtime:
       const refreshed = queryDeploymentStatus(deployId);
       if (!refreshed) return printError(`Deployment not found: ${deployId}`, io);
       io.stdout(`${refreshed.status} - ${refreshed.summary ?? refreshed.status}`);
-      return 1;
+      return refreshed.status === "success" || refreshed.status === "partial" ? 0 : 1;
     }
     if (deployment.status !== "running") {
       if (options?.activity) {

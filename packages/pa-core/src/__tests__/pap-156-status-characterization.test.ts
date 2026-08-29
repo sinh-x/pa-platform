@@ -102,6 +102,70 @@ test("status wait defers stale child PID authority while a ready Pi supervisor i
   }
 });
 
+for (const scenario of [
+  { status: "success", exitCode: 0, summary: "supervisor success committed at observer insertion barrier" },
+  { status: "failed", exitCode: 1, summary: "supervisor failure committed at observer insertion barrier" },
+] as const) {
+  test(`status wait finalization-deadline barrier retains concurrent ${scenario.status} with matching exit code`, async () => {
+    const root = mkdtempSync(join(tmpdir(), `pap-156-status-deadline-${scenario.status}-`));
+    const previousRegistry = process.env["PA_REGISTRY_DB"];
+    const previousHome = process.env["PA_AI_USAGE_HOME"];
+    process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+    process.env["PA_AI_USAGE_HOME"] = root;
+    const deploymentId = `d-pap156-deadline-${scenario.status}`;
+    const deployDir = join(root, "deployments", deploymentId);
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(join(deployDir, "pi-supervisor.json"), JSON.stringify({
+      schemaVersion: 1,
+      deploymentId,
+      state: "finalizing",
+      ready: true,
+      supervisorPid: process.pid,
+      childPid: 999997,
+      updatedAt: "2026-08-29T00:00:04.999Z",
+      finalizationDeadlineMs: 1,
+    }));
+
+    try {
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 999997, effective_timeout_seconds: 120 });
+      const captured = capture();
+      let clock = 0;
+      let barrierCalls = 0;
+      let sleeps = 0;
+      const code = await runCoreCommand(["status", deploymentId, "--wait"], {
+        io: captured.io,
+        clock: () => clock,
+        sleep: async (milliseconds) => { sleeps++; clock += milliseconds; },
+        beforePiSupervisorLivenessCheck: () => {
+          barrierCalls++;
+          if (clock < 1) return;
+          reconcileTerminalRegistryEvent({
+            deployment_id: deploymentId,
+            team: "builder",
+            event: "completed",
+            timestamp: "2026-08-29T00:00:05.000Z",
+            status: scenario.status,
+            summary: scenario.summary,
+            exit_code: scenario.exitCode,
+          });
+        },
+      });
+
+      const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(barrierCalls, 2);
+      assert.equal(sleeps, 1);
+      assert.equal(code, scenario.exitCode);
+      assert.deepEqual(terminal.map((event) => [event.event, event.status, event.summary]), [["completed", scenario.status, scenario.summary]]);
+      assert.match(captured.stdout.join("\n"), new RegExp(`${scenario.status} - ${scenario.summary}`));
+    } finally {
+      closeDb();
+      restoreEnv("PA_REGISTRY_DB", previousRegistry);
+      restoreEnv("PA_AI_USAGE_HOME", previousHome);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("concurrent status waiters retain the supervisor result as the single terminal authority", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-156-status-concurrent-"));
   const previousRegistry = process.env["PA_REGISTRY_DB"];
