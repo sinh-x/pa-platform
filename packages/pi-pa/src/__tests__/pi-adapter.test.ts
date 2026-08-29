@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
+import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
@@ -235,6 +235,56 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
 
 test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
   const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
+});
+
+test("canonical activity collapses lifecycle and duplicate events without unidentified rows", () => {
+  const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
+  const execution = fixture.events.filter((event) => String(event["type"] ?? "").startsWith("tool_execution_"));
+  const sentinel = "canonical-sensitive-sentinel";
+  const events = [...fixture.events, ...execution, { type: "tool_execution_start", toolName: "bash", args: { token: sentinel } }, { type: "tool_execution_end", toolName: "bash", result: "missing id" }];
+  const activity = projectPiActivity(events, "d-canonical", [sentinel]);
+  const uses = activity.filter((event) => event.kind === "tool_use");
+  const results = activity.filter((event) => event.kind === "tool_result");
+  assert.deepEqual(uses.map((event) => event.metadata?.["toolCallId"]), [fixture.expected["callId"]]);
+  assert.deepEqual(results.map((event) => event.metadata?.["toolCallId"]), [fixture.expected["callId"]]);
+  assert.equal(activity.some((event) => event.partType === "toolcall_delta"), false);
+  assert.equal(activity.filter((event) => event.kind === "error" && /missing a call id/.test(event.body)).length, 2);
+  assert.ok(activity.every((event) => event.body.length <= 500));
+  assert.doesNotMatch(JSON.stringify(activity), new RegExp(sentinel));
+});
+
+test("split malformed oversized raw protocol stays causal, bounded, retained, and redacted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-malformed-activity-"));
+  const deployId = "d-malformed-activity";
+  const dir = join(root, "deployments", deployId);
+  const primer = join(dir, "primer.md");
+  const sentinel = "malformed-activity-sensitive-sentinel";
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  mkdirSync(dir, { recursive: true }); writeFileSync(primer, "work");
+  try {
+    const child = new FakePiChild();
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [sentinel], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run" });
+    await nextTick();
+    const malformed = `{\"type\":\"tool_execution_start\",\"toolName\":\"read\",\"args\":\"${"x".repeat(2_000)}${sentinel}\"\n`;
+    child.stdout.emit("data", Buffer.from(malformed.slice(0, 900)));
+    child.stdout.emit("data", Buffer.from(malformed.slice(900)));
+    child.emit("close", 0);
+    assert.equal((await resultPromise).exitCode, 0);
+    const raw = readFileSync(join(dir, "pi-output.jsonl"), "utf8");
+    const persistedActivity = readFileSync(join(dir, "activity.jsonl"), "utf8");
+    const activity = adapter.extractActivity(dir);
+    assert.match(raw, /tool_execution_start/);
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0]?.kind, "error");
+    assert.match(activity[0]?.body ?? "", /^malformed-protocol:/);
+    assert.ok((activity[0]?.body.length ?? Infinity) <= 500);
+    for (const persisted of [raw, persistedActivity, JSON.stringify(activity)]) assert.doesNotMatch(persisted, new RegExp(sentinel));
+  } finally {
+    if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousHome;
+  }
 });
 
 test("characterizes PAP-151 archived tool streams deterministically", () => {
@@ -471,7 +521,9 @@ test("foreground settles from process exit evidence when PTY onExit is absent", 
     processExists: () => probes++ === 0,
     sleep: async () => {},
   } });
+  const startedAt = performance.now();
   const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-no-onexit", mode: "foreground" });
+  assert.ok(performance.now() - startedAt < 5_000);
   assert.equal(result.exitCode, 0);
   assert.ok(probes >= 1);
   assert.equal(input.isRaw, false);
@@ -494,6 +546,45 @@ test("foreground ignores a delayed duplicate PTY exit after process evidence set
   assert.equal(result.exitCode, 0);
   assert.equal(outcomes, 1);
   assert.equal(input.isRaw, false);
+});
+
+test("foreground visible exit escalates a lingering child and verifies cleanup", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-lingering-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let running = true;
+  pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+    now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-lingering", mode: "foreground" });
+  await nextTick();
+  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.ok(now <= 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground terminal restoration failure remains causal and bounded", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const originalSetRawMode = input.setRawMode.bind(input);
+  input.setRawMode = ((raw: boolean) => {
+    if (!raw) throw new Error("raw mode restore failed");
+    return originalSetRawMode(raw);
+  }) as typeof input.setRawMode;
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-restore-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-restore", mode: "foreground" });
+  await nextTick(); pty.emitExit(0);
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /^terminal-restoration: raw mode restore failed$/);
+  assert.ok((result.errorMessage?.length ?? Infinity) <= 2_000);
+  assert.equal(input.listenerCount("data"), 0);
 });
 
 test("foreground cleanup settles from process evidence without an onExit callback", async () => {

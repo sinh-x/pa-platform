@@ -83,7 +83,7 @@ export interface PiSupervisionOptions {
   processGroupGone?: (pid: number) => boolean;
   /** Return false only when the PTY child is known to have exited. */
   processExists?: (pid: number) => boolean;
-  persistLine?: typeof persistLine;
+  persistLine?: (line: string, path: string, deployId: string, secrets: string[]) => void;
   writeLog?: typeof writeFileSync;
   appendLog?: typeof appendFileSync;
   setTimeout?: (callback: () => void, milliseconds: number) => NodeJS.Timeout;
@@ -129,7 +129,8 @@ export class PiAdapter implements RuntimeAdapter {
   resume(opts: ResumeOpts): Promise<SpawnResult> { return this.run(opts, opts.sessionId); }
   extractActivity(deployDir: string): ActivityEvent[] {
     const path = resolve(deployDir, "pi-output.jsonl"); if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => parsePiLine(line, basename(deployDir), this.secretValues));
+    const projector = new PiActivityProjector(basename(deployDir), this.secretValues);
+    return readFileSync(path, "utf8").split("\n").filter(Boolean).flatMap((line) => projector.observeLine(line));
   }
   installHooks(_targetDir: string, _config: HookConfig): void {}
   describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.80.8 or later must be installed as `pi`." }; }
@@ -166,6 +167,7 @@ export class PiAdapter implements RuntimeAdapter {
     args.push(readFileSync(opts.primerPath, "utf8"));
     const env = { ...this.env, ...opts.env };
     const secrets = environmentSecrets(env, this.secretValues);
+    if (interactive && resumeId) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env })
       : interactive
@@ -199,6 +201,100 @@ export function normalizePiEvent(raw: Record<string, unknown>, deployId: string,
   const tool = typeof metadata.tool === "string" ? metadata.tool : metadata.toolName;
   if (typeof tool === "string") metadata.tool = tool;
   return createActivityEvent({ deployId, kind, source: "pi", body: body.length > MAX_BODY ? `${body.slice(0, MAX_BODY - 3)}...` : body, partType: type, metadata, timestamp: typeof safe.timestamp === "string" ? parseTimestamp(safe.timestamp).toISOString() : undefined });
+}
+
+interface ProjectedPiToolCall {
+  callId: string;
+  toolName: string;
+  arguments?: unknown;
+}
+
+class PiActivityProjector {
+  private readonly callsById = new Map<string, ProjectedPiToolCall>();
+  private readonly callsByContentIndex = new Map<string, ProjectedPiToolCall>();
+  private readonly projectedUses = new Set<string>();
+  private readonly projectedResults = new Set<string>();
+  private readonly diagnostics = new Set<string>();
+
+  constructor(private readonly deployId: string, private readonly secrets: string[]) {}
+
+  observeLine(line: string): ActivityEvent[] {
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [parsePiLine(line, this.deployId, this.secrets)];
+      return this.observe(value as Record<string, unknown>);
+    } catch {
+      if (/^\s*[\[{]/.test(line)) return this.diagnostic("malformed-protocol: invalid Pi JSON record");
+      return [parsePiLine(line, this.deployId, this.secrets)];
+    }
+  }
+
+  observe(raw: Record<string, unknown>): ActivityEvent[] {
+    const safe = deepRedact(raw, this.secrets) as Record<string, unknown>;
+    const assistant = record(safe.assistantMessageEvent);
+    const nestedType = String(assistant?.type ?? "").toLowerCase();
+    const contentIndex = String(assistant?.contentIndex ?? "");
+    if (nestedType === "toolcall_start") {
+      const partial = record(assistant?.partial);
+      const content = Array.isArray(partial?.content) ? partial.content : [];
+      const value = content.map((item) => record(item)).find((item) => item?.type === "toolCall");
+      const call = this.toolCall(value?.id, value?.name, value?.arguments);
+      if (call) { this.callsById.set(call.callId, call); this.callsByContentIndex.set(contentIndex, call); }
+      return [];
+    }
+    if (nestedType === "toolcall_delta") return [];
+    if (nestedType === "toolcall_end") {
+      const finalCall = record(assistant?.toolCall);
+      const prior = this.callsByContentIndex.get(contentIndex);
+      const call = this.toolCall(finalCall?.id ?? prior?.callId, finalCall?.name ?? prior?.toolName, finalCall?.arguments ?? prior?.arguments);
+      if (call) { this.callsById.set(call.callId, call); this.callsByContentIndex.set(contentIndex, call); }
+      return [];
+    }
+
+    const type = String(safe.type ?? safe.event ?? safe.kind ?? "").toLowerCase();
+    const isUse = type === "tool_execution_start" || type === "tool_running";
+    const isResult = type === "tool_execution_end" || type === "tool_completed" || type === "tool_execution_result" || type === "tool_result";
+    if (!isUse && !isResult) return [normalizePiEvent(safe, this.deployId, this.secrets)];
+
+    const callIdValue = safe.toolCallId ?? safe.callId;
+    const callId = typeof callIdValue === "string" ? callIdValue.trim() : "";
+    if (!callId) return this.diagnostic(`malformed-tool: ${isUse ? "use" : "result"} is missing a call id`);
+    const prior = this.callsById.get(callId);
+    const toolNameValue = safe.toolName ?? safe.tool ?? prior?.toolName;
+    const toolName = typeof toolNameValue === "string" ? toolNameValue.trim() : "";
+    if (!toolName) return this.diagnostic(`malformed-tool: ${isUse ? "use" : "result"} ${callId} is missing a tool name`);
+    const args = safe.args ?? prior?.arguments;
+    const call: ProjectedPiToolCall = { callId, toolName, ...(args !== undefined ? { arguments: args } : {}) };
+    this.callsById.set(callId, call);
+
+    if (isUse) {
+      if (this.projectedUses.has(callId)) return [];
+      this.projectedUses.add(callId);
+      return [normalizePiEvent({ ...safe, type: "tool_execution_start", toolCallId: callId, toolName, ...(args !== undefined ? { args } : {}) }, this.deployId, this.secrets)];
+    }
+    if (!this.projectedUses.has(callId)) return this.diagnostic(`malformed-tool: result ${callId} has no matching execution start`);
+    if (this.projectedResults.has(callId)) return [];
+    this.projectedResults.add(callId);
+    return [normalizePiEvent({ ...safe, type: "tool_execution_end", toolCallId: callId, toolName, ...(args !== undefined ? { args } : {}) }, this.deployId, this.secrets)];
+  }
+
+  private toolCall(id: unknown, name: unknown, args: unknown): ProjectedPiToolCall | undefined {
+    const callId = typeof id === "string" ? id.trim() : "";
+    const toolName = typeof name === "string" ? name.trim() : "";
+    return callId && toolName ? { callId, toolName, ...(args !== undefined ? { arguments: args } : {}) } : undefined;
+  }
+
+  private diagnostic(body: string): ActivityEvent[] {
+    const safeBody = redact(body, this.secrets).slice(0, MAX_BODY);
+    if (this.diagnostics.has(safeBody)) return [];
+    this.diagnostics.add(safeBody);
+    return [createActivityEvent({ deployId: this.deployId, kind: "error", source: "pi", body: safeBody, partType: "protocol_diagnostic" })];
+  }
+}
+
+export function projectPiActivity(events: Array<Record<string, unknown>>, deployId: string, secrets: string[] = []): ActivityEvent[] {
+  const projector = new PiActivityProjector(deployId, secrets);
+  return events.flatMap((event) => projector.observe(event));
 }
 
 interface TrackedPiToolCall extends PiToolProtocolOutcome {
@@ -288,7 +384,9 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const sendSignal = supervision.sendSignal ?? ((pid: number, signal: NodeJS.Signals) => process.kill(-pid, signal));
   const groupGone = supervision.processGroupGone ?? ((pid: number) => processGroupGone(pid));
-  const persist = supervision.persistLine ?? persistLine;
+  const injectedPersist = supervision.persistLine;
+  const projector = new PiActivityProjector(opts.deployId, secrets);
+  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector);
   const writeLog = supervision.writeLog ?? writeFileSync;
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
@@ -328,13 +426,13 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
     const finish = (status: number, error?: Error): void => {
       if (settled || cleanupPending) return;
       try {
-        if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath, opts.deployId, secrets); carry = ""; }
+        if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
         if (opts.logFile) writeLog(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8");
         terminalError ||= protocol.diagnostic();
         settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath, opts.deployId, secrets); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
@@ -505,29 +603,32 @@ function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { re
 
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
   const deployDir = dirname(opts.primerPath);
-  clearPiTerminalStatus(deployDir);
+  const terminalAtLaunch = readPiTerminalStatus(deployDir);
   const pty = (supervision.spawnPty ?? spawnPty)("pi", args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env });
   const input = supervision.input ?? process.stdin;
   const output = supervision.output ?? process.stdout;
   const outputPath = resolve(deployDir, "pi-output.jsonl");
-  const persist = supervision.persistLine ?? persistLine;
+  const injectedPersist = supervision.persistLine;
+  const projector = new PiActivityProjector(opts.deployId, secrets);
+  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector);
   const appendLog = supervision.appendLog ?? appendFileSync;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
   const processExists = supervision.processExists ?? piProcessExists;
-  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined;
+  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined;
   const previousRaw = input.isTTY ? input.isRaw : undefined;
   const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8"), (value) => redactPiLog(value, secrets), /thinking[_-]?signature|encrypted[_-]?content/i) : undefined;
 
   return new Promise((resolveResult) => {
     const restoreTerminal = (): Error | undefined => {
-      try {
-        input.off("data", onInput); process.stdout.off("resize", onResize); process.off("SIGINT", onSigint);
-        if (input.isTTY && previousRaw !== undefined) input.setRawMode(previousRaw);
-        return undefined;
-      } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+      const failures: string[] = [];
+      try { input.off("data", onInput); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      try { process.stdout.off("resize", onResize); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      try { process.off("SIGINT", onSigint); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      try { if (input.isTTY && previousRaw !== undefined) input.setRawMode(previousRaw); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      return failures.length > 0 ? new Error(`terminal-restoration: ${failures.join("; ")}`) : undefined;
     };
     const settle = (status: number | null, error?: Error): void => {
       if (settled) return;
@@ -539,13 +640,15 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: pty.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const finishEvidence = (): void => {
+      if (evidenceFinished) return;
+      evidenceFinished = true;
       logRedactor?.flush();
-      if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath, opts.deployId, secrets); carry = ""; }
+      if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
       const status = readPiTerminalStatus(deployDir);
       if (status) {
         const record = status as unknown as Record<string, unknown>;
         terminalError ||= terminalErrorFromValue(record, secrets);
-        persist(JSON.stringify(status), outputPath, opts.deployId, secrets);
+        persist(JSON.stringify(status), outputPath);
       }
     };
     const finishCleanup = (): void => {
@@ -571,6 +674,17 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     };
     const monitorProcessExit = async (): Promise<void> => {
       while (!settled && !exited) {
+        const terminal = readPiTerminalStatus(deployDir);
+        if (terminal) {
+          const terminalStatus = terminal.stopReason === "error" ? 1 : 0;
+          const predatesLaunch = terminalAtLaunch?.timestamp === terminal.timestamp && terminalAtLaunch.type === terminal.type;
+          if (predatesLaunch || confirmProcessExit()) { finishExit(terminalStatus); return; }
+          try {
+            finishEvidence();
+            requestCleanup(terminalStatus, terminalStatus === 0 ? undefined : new Error(terminalError || "Pi reported a terminal error"));
+          } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
+          return;
+        }
         await sleep(PROCESS_TREE_POLL);
         // Keep injected/fake clocks from starving input and PTY callbacks.
         await new Promise<void>((resolveValue) => setImmediate(resolveValue));
@@ -578,7 +692,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
         confirmProcessExit();
       }
     };
-    const requestCleanup = (status: number, error: Error): void => {
+    const requestCleanup = (status: number, error?: Error): void => {
       if (settled || cleanupPending) return;
       cleanupPending = true; cleanupStatus = status; cleanupError = error;
       if (timer) clearTimer(timer);
@@ -612,7 +726,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       try {
         stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk); logRedactor?.push(chunk);
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
-        for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath, opts.deployId, secrets); }
+        for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
 
@@ -620,13 +734,13 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (input.isTTY) input.setRawMode(true);
       input.on("data", onInput); process.stdout.on("resize", onResize); process.once("SIGINT", onSigint); pty.onData(onData);
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
-      void monitorProcessExit();
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
+      void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
 }
-function persistLine(line: string, path: string, deployId: string, secrets: string[]): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${safe}\n`); appendActivityEvent(parsePiLine(safe, deployId, secrets), getDeployPaths(deployId).activityLogPath); }
-function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); writeFileSync(outputPath, lines.map((line) => redactJsonLine(line, secrets)).join("\n") + (stdout ? "\n" : ""), "utf8"); if (opts.logFile) writeFileSync(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: redact(tail(terminalError, MAX_STDERR), secrets) } : {}; }
+function persistLine(line: string, path: string, deployId: string, secrets: string[], projector: PiActivityProjector): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${safe}\n`); for (const event of projector.observeLine(safe)) appendActivityEvent(event, getDeployPaths(deployId).activityLogPath); }
+function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); const safeLines = lines.map((line) => redactJsonLine(line, secrets)); writeFileSync(outputPath, safeLines.join("\n") + (stdout ? "\n" : ""), "utf8"); const projector = new PiActivityProjector(opts.deployId, secrets); for (const line of safeLines) for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(opts.deployId).activityLogPath); if (opts.logFile) writeFileSync(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: redact(tail(terminalError, MAX_STDERR), secrets) } : {}; }
 function failure(message: string): SpawnResult { return { exitCode: 1, errorMessage: message }; }
 function redactJsonLine(line: string, secrets: string[]): string { try { return JSON.stringify(deepRedact(JSON.parse(line), secrets)); } catch { const match = SENSITIVE_REASONING_KEY.exec(line); SENSITIVE_REASONING_KEY.lastIndex = 0; return match ? `${redact(line.slice(0, match.index), secrets)}[REDACTED reasoning metadata]` : redact(line, secrets); } }
 function redactPiLog(value: string, secrets: string[]): string { return value.split("\n").map((line) => redactJsonLine(line, secrets)).join("\n"); }
@@ -640,7 +754,7 @@ function deepRedact(value: unknown, secrets: string[] = []): unknown { return de
 function deepRedactValue(value: unknown, secrets: string[]): unknown { if (typeof value === "string") return redact(value, secrets); if (Array.isArray(value)) return value.map((item) => deepRedactValue(item, secrets)); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([key]) => !SENSITIVE_REASONING_FIELD.test(key)).map(([key, item]) => SECRET_KEY.test(key) ? [key, "[REDACTED]"] : [key, deepRedactValue(item, secrets)])); return value; }
 function sensitiveReasoningValues(value: unknown): string[] { if (Array.isArray(value)) return value.flatMap(sensitiveReasoningValues); if (!value || typeof value !== "object") return []; return Object.entries(value).flatMap(([key, item]) => SENSITIVE_REASONING_FIELD.test(key) ? stringValues(item) : sensitiveReasoningValues(item)); }
 function stringValues(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(stringValues); if (value && typeof value === "object") return Object.values(value).flatMap(stringValues); return []; }
-function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { const metadata: Record<string, unknown> = {}; for (const key of ["type", "event", "kind", "timestamp", "role", "tool", "toolName", "args", "partialResult", "assistantMessageEvent", "partType"]) if (raw[key] !== undefined) metadata[key] = raw[key]; return metadata; }
+function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { const metadata: Record<string, unknown> = {}; for (const key of ["type", "event", "kind", "timestamp", "role", "tool", "toolName", "toolCallId", "callId", "args", "isError", "partialResult", "assistantMessageEvent", "partType"]) if (raw[key] !== undefined) metadata[key] = raw[key]; return metadata; }
 function toolCallMetadata(assistant: Record<string, unknown> | undefined): Record<string, unknown> { if (!assistant) return {}; const type = String(assistant.type ?? ""); const partial = record(assistant.partial); const content = Array.isArray(partial?.content) ? partial.content : []; const call = type === "toolcall_end" ? record(assistant.toolCall) : type === "toolcall_start" ? content.map((item) => record(item)).find((item) => item?.type === "toolCall") : undefined; return { ...(assistant.contentIndex !== undefined ? { contentIndex: assistant.contentIndex } : {}), ...(call?.id !== undefined ? { toolCallId: call.id } : {}), ...(call?.name !== undefined ? { toolName: call.name } : {}), ...(call?.arguments !== undefined ? { args: call.arguments } : {}) }; }
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function extractText(raw: Record<string, unknown>): string { const values = [raw.text, raw.body, raw.content, raw.message, raw.result, raw.partialResult, raw.assistantMessageEvent, raw.toolName, raw.args]; for (const value of values) { if (typeof value === "string") return value; if (Array.isArray(value)) { const text = value.map((item) => typeof item === "string" ? item : item && typeof item === "object" ? extractText(item as Record<string, unknown>) : "").filter(Boolean).join(" "); if (text) return text; } if (value && typeof value === "object") { const nested = extractText(value as Record<string, unknown>); if (nested) return nested; } } return ""; }
