@@ -147,7 +147,77 @@ test("concurrent status waiters retain the supervisor result as the single termi
   }
 });
 
-test("status wait reports supervisor death and terminates its orphan child", async () => {
+test("status-generated crash cannot replace success committed after stale ownership is read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-156-status-stale-owner-"));
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["PA_AI_USAGE_HOME"] = root;
+  const deploymentId = "d-pap156-stale-owner";
+  const deployDir = join(root, "deployments", deploymentId);
+  mkdirSync(deployDir, { recursive: true });
+  writeFileSync(join(deployDir, "pi-supervisor.json"), JSON.stringify({ schemaVersion: 1, deploymentId, ownershipToken: "stale-owner", state: "active", ready: true, supervisorPid: 999999, childPid: 999998, updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5000 }));
+  try {
+    appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 999998, effective_timeout_seconds: 120 });
+    const captured = capture();
+    let barrierCalls = 0;
+    const code = await runCoreCommand(["status", deploymentId, "--wait"], {
+      io: captured.io,
+      clock: Date.now,
+      sleep: async () => {},
+      beforePiSupervisorLivenessCheck: () => {
+        barrierCalls++;
+        reconcileTerminalRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-29T00:00:01.000Z", status: "success", summary: "committed at stale-ownership barrier", exit_code: 0 });
+      },
+    });
+    const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(barrierCalls, 1);
+    assert.equal(code, 0);
+    assert.deepEqual(terminal.map((event) => [event.event, event.status, event.summary]), [["completed", "success", "committed at stale-ownership barrier"]]);
+  } finally {
+    closeDb();
+    restoreEnv("PA_REGISTRY_DB", previousRegistry);
+    restoreEnv("PA_AI_USAGE_HOME", previousHome);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("status dead-supervisor cleanup failure remains bounded and diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-156-supervisor-cleanup-failure-"));
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["PA_AI_USAGE_HOME"] = root;
+  const deploymentId = "d-pap156-cleanup-failure";
+  const deployDir = join(root, "deployments", deploymentId);
+  mkdirSync(deployDir, { recursive: true });
+  writeFileSync(join(deployDir, "pi-supervisor.json"), JSON.stringify({ schemaVersion: 1, deploymentId, ownershipToken: "dead-owner", state: "active", ready: true, supervisorPid: 999999, childPid: 999998, updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5000 }));
+  try {
+    appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 999998, effective_timeout_seconds: 120 });
+    const captured = capture();
+    const signals: NodeJS.Signals[] = [];
+    let clock = 0;
+    const code = await runCoreCommand(["status", deploymentId, "--wait"], {
+      io: captured.io,
+      clock: () => clock,
+      sleep: async (milliseconds) => { clock += milliseconds; },
+      processAlive: (pid) => pid === 999998,
+      sendProcessSignal: (_pid, signal) => { signals.push(signal); },
+    });
+    const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(code, 1);
+    assert.ok(clock < 5_000);
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.match(terminal[0]?.error ?? "", /orphan cleanup failed: process group 999998 remained after 4900ms/);
+  } finally {
+    closeDb();
+    restoreEnv("PA_REGISTRY_DB", previousRegistry);
+    restoreEnv("PA_AI_USAGE_HOME", previousHome);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("status wait escalates a TERM-resistant orphan and records verified cleanup", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-156-supervisor-death-"));
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousHome = process.env["PA_AI_USAGE_HOME"];
@@ -156,20 +226,24 @@ test("status wait reports supervisor death and terminates its orphan child", asy
   const deploymentId = "d-pap156-orphan";
   const deployDir = join(root, "deployments", deploymentId);
   mkdirSync(deployDir, { recursive: true });
-  const child = spawn(process.execPath, ["--eval", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+  const child = spawn(process.execPath, ["--eval", "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
   assert.ok(child.pid);
-  await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  await new Promise<void>((resolve, reject) => { child.stdout.once("data", () => resolve()); child.once("error", reject); });
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
   writeFileSync(join(deployDir, "pi-supervisor.json"), JSON.stringify({ schemaVersion: 1, deploymentId, ownershipToken: "dead-owner", state: "active", ready: true, supervisorPid: 999999, childPid: child.pid, updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5000 }));
   try {
     appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: child.pid, effective_timeout_seconds: 120 });
     const captured = capture();
-    const code = await runCoreCommand(["status", deploymentId, "--wait"], { io: captured.io, clock: Date.now, sleep: async () => {} });
+    const startedAt = performance.now();
+    const code = await runCoreCommand(["status", deploymentId, "--wait"], { io: captured.io, clock: Date.now, sleep: async (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) });
     assert.equal(code, 1);
+    assert.ok(performance.now() - startedAt < 5_000);
     const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminal.length, 1);
     assert.equal(terminal[0]?.event, "crashed");
     assert.match(terminal[0]?.error ?? "", /Pi supervisor pid 999999 exited before finalizing child pid/);
-    await Promise.race([new Promise<void>((resolve) => child.once("close", () => resolve())), new Promise<void>((_, reject) => setTimeout(() => reject(new Error("orphan child was not terminated")), 1000))]);
+    assert.match(terminal[0]?.error ?? "", /orphan cleanup verified after SIGKILL/);
+    await Promise.race([closed, new Promise<void>((_, reject) => setTimeout(() => reject(new Error("orphan child was not terminated")), 1000))]);
   } finally {
     try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already terminated */ }
     closeDb();

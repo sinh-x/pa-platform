@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, reconcileTerminalRegistryEvent } from "../index.js";
+import { appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent } from "../index.js";
 
 test("registry appends WAL-backed events and materializes deployment status", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-"));
@@ -51,6 +51,26 @@ test("terminal reconciliation atomically replaces success with failure and is id
     const terminal = getDeploymentEvents("d-reconcile").filter((event) => event.event === "completed" || event.event === "crashed");
     assert.deepEqual(terminal.map((event) => [event.status, event.summary, event.exit_code]), [["failed", "adapter exit 17", 17]]);
     assert.equal(queryDeploymentStatus("d-reconcile")?.status, "failed");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("status-only terminal reconciliation retains every previously committed terminal result", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-registry-status-only-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try {
+    appendRegistryEvent({ deployment_id: "d-status-only", team: "builder", event: "started", timestamp: "2026-08-28T00:00:00Z" });
+    appendRegistryEvent({ deployment_id: "d-status-only", team: "builder", event: "completed", timestamp: "2026-08-28T00:01:00Z", status: "success", summary: "supervisor success", exit_code: 0 });
+    const result = reconcileTerminalRegistryEventIfAbsent({ deployment_id: "d-status-only", team: "builder", event: "crashed", timestamp: "2026-08-28T00:02:00Z", error: "synthetic status crash", exit_code: -1 });
+    assert.equal(result.retainedExisting, true);
+    assert.equal(result.event.status, "success");
+    const terminal = getDeploymentEvents("d-status-only").filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.deepEqual(terminal.map((event) => [event.event, event.status, event.summary]), [["completed", "success", "supervisor success"]]);
   } finally {
     closeDb();
     if (previous === undefined) delete process.env["PA_REGISTRY_DB"];

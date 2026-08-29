@@ -31,6 +31,7 @@ const TERMINAL_DIAGNOSTIC_MAX = 2_000;
 export interface PiBackgroundRunnerOptions {
   supervision?: PiSupervisionOptions;
   now?: () => Date;
+  shutdownSignal?: AbortSignal;
 }
 
 export async function runPiBackgroundRunner(config: PiBackgroundConfig, options: PiBackgroundRunnerOptions = {}): Promise<void> {
@@ -59,9 +60,15 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     if (!childPid) return;
     try { process.kill(-childPid, "SIGTERM"); } catch { try { process.kill(childPid, "SIGTERM"); } catch { /* already gone */ } }
   };
-  const onSignal = (): void => { terminateChild(); };
-  process.once("SIGTERM", onSignal);
-  process.once("SIGINT", onSignal);
+  const shutdown = new AbortController();
+  const abortFor = (signal: string): void => { if (!shutdown.signal.aborted) shutdown.abort(signal); };
+  const onSigterm = (): void => abortFor("SIGTERM");
+  const onSigint = (): void => abortFor("SIGINT");
+  const onExternalShutdown = (): void => abortFor(typeof options.shutdownSignal?.reason === "string" ? options.shutdownSignal.reason : "signal");
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
+  options.shutdownSignal?.addEventListener("abort", onExternalShutdown, { once: true });
+  if (options.shutdownSignal?.aborted) onExternalShutdown();
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
@@ -83,6 +90,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       secrets,
       {
         ...(options.supervision ?? {}),
+        shutdownSignal: shutdown.signal,
         onSpawn: (pid) => {
           childPid = pid;
           ready = true;
@@ -108,8 +116,9 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       try { writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: combined })); } catch { /* launcher/status retains the causal readiness failure */ }
     }
   } finally {
-    process.removeListener("SIGTERM", onSignal);
-    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("SIGINT", onSigint);
+    options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
     ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
   }
 }
@@ -123,6 +132,8 @@ function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, res
       ? `runner-timeout: ${result.spawnError?.message ?? "Pi deployment timed out"}`
       : result.status === null
         ? `runner-spawn: ${result.spawnError?.message ?? (result.stderr || "Pi could not be spawned")}`
+        : result.spawnError && /^runner-(?:shutdown|timeout|process|persistence|terminal|spawn):/.test(result.spawnError.message)
+          ? result.spawnError.message
         : result.spawnError && /persist|write|rename|registry|database|sqlite/i.test(result.spawnError.message)
           ? `runner-persistence: ${result.spawnError.message}`
           : `runner-process: ${result.spawnError?.message ?? (result.stderr || `Pi exited with code ${result.status}`)}`;
@@ -183,7 +194,7 @@ function terminalTimestamp(deployDir: string, success: boolean, fallback: Date):
 
 function categoryForRunnerError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/^runner-(?:readiness|spawn|timeout|process|persistence|terminal|launcher):/.test(message)) return message;
+  if (/^runner-(?:readiness|spawn|timeout|shutdown|process|persistence|terminal|launcher):/.test(message)) return message;
   if (/persist|write|rename|registry|database|sqlite/i.test(message)) return `runner-persistence: ${message}`;
   return `runner-process: ${message}`;
 }

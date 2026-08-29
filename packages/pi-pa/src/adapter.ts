@@ -19,6 +19,7 @@ const TERM_GRACE = 250;
 const MAX_CARRY = 256 * 1024;
 const PROCESS_TREE_TIMEOUT = 4900;
 const PROCESS_TREE_POLL = 25;
+const FOREGROUND_EXIT_STATUS_GRACE_MS = 250;
 const BACKGROUND_READINESS_TIMEOUT_MS = 4_000;
 const BACKGROUND_READINESS_POLL_MS = 25;
 const MAX_BACKGROUND_CONFIG_BYTES = 64 * 1024;
@@ -101,6 +102,7 @@ export interface PiSupervisionOptions {
   readinessSleep?: (milliseconds: number) => Promise<void>;
   readinessTimeoutMs?: number;
   onSpawn?: (pid: number) => void;
+  shutdownSignal?: AbortSignal;
 }
 
 export class PiAdapter implements RuntimeAdapter {
@@ -184,7 +186,7 @@ export class PiAdapter implements RuntimeAdapter {
     const env = { ...this.env, ...opts.env };
     const piEnv = piRegistryEnvironment(env);
     const secrets = environmentSecrets(env, this.secretValues);
-    if (interactive && resumeId) clearPiTerminalStatus(dirname(opts.primerPath));
+    if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
       : interactive
@@ -411,12 +413,13 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
-    let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
+    let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
     const protocol = new PiToolProtocolInspector();
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
     const settle = (status: number | null, error?: Error): void => {
       if (settled) return;
       if (timer) clearTimer(timer);
+      if (onShutdown) supervision.shutdownSignal?.removeEventListener("abort", onShutdown);
       settled = true;
       resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
@@ -454,6 +457,14 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
+    if (supervision.shutdownSignal) {
+      onShutdown = () => {
+        const reason = typeof supervision.shutdownSignal?.reason === "string" ? supervision.shutdownSignal.reason : "signal";
+        requestCleanup(reason === "SIGINT" ? 130 : 143, new Error(`runner-shutdown: Pi supervisor received ${reason}`));
+      };
+      supervision.shutdownSignal.addEventListener("abort", onShutdown, { once: true });
+      if (supervision.shutdownSignal.aborted) onShutdown();
+    }
     try {
       if (!child.pid) throw new Error("Pi child did not expose a process id");
       supervision.onSpawn?.(child.pid);
@@ -520,7 +531,8 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   const now = input.supervision.readinessNow ?? (() => performance.now());
   const wait = input.supervision.readinessSleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const timeoutMs = Math.min(BACKGROUND_READINESS_TIMEOUT_MS, Math.max(1, input.supervision.readinessTimeoutMs ?? BACKGROUND_READINESS_TIMEOUT_MS));
-  const deadline = now() + timeoutMs;
+  const readinessStartedAt = now();
+  const deadline = readinessStartedAt + timeoutMs;
   let ownership: PiSupervisorOwnership | undefined;
   while (now() < deadline) {
     if (launchError) break;
@@ -544,8 +556,12 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     && ownership.ready
     && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized");
   if (!ready) {
-    terminateRunner(runner.pid);
-    const reason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
+    const cleanupError = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
+    let configCleanupError: string | undefined;
+    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); }
+    catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
+    const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
+    const reason = [baseReason, cleanupError, configCleanupError].filter(Boolean).join("; ");
     return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
   }
   const established = ownership!;
@@ -612,9 +628,33 @@ export function writePiSupervisorOwnership(path: string, ownership: PiSupervisor
   renameSync(temporary, path);
 }
 
-function terminateRunner(pid: number | undefined): void {
-  if (!pid) return;
-  try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+async function terminateRunner(pid: number | undefined, supervision: PiSupervisionOptions, now: () => number, wait: (milliseconds: number) => Promise<void>, deadline: number): Promise<string | undefined> {
+  if (!pid) return undefined;
+  const sendSignal = supervision.sendSignal ?? ((target: number, signal: NodeJS.Signals) => {
+    try { process.kill(-target, signal); } catch { process.kill(target, signal); }
+  });
+  const groupGone = supervision.processGroupGone ?? processGroupGone;
+  const startedAt = now();
+  let killSent = false;
+  try { sendSignal(pid, "SIGTERM"); } catch { /* process may already be gone */ }
+  while (now() < deadline) {
+    if (groupGone(pid)) return undefined;
+    if (!killSent && now() - startedAt >= TERM_GRACE) {
+      killSent = true;
+      try { sendSignal(pid, "SIGKILL"); } catch { /* process may already be gone */ }
+    }
+    await wait(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
+  }
+  return groupGone(pid) ? undefined : `runner cleanup failed: process group ${pid} remained before the ${PROCESS_TREE_TIMEOUT}ms launch deadline`;
+}
+function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): void {
+  if (!existsSync(path)) return;
+  const body = readFileSync(path, "utf8");
+  if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) return;
+  let value: unknown;
+  try { value = JSON.parse(body); } catch { return; }
+  if (!value || typeof value !== "object" || Array.isArray(value) || (value as Record<string, unknown>)["ownershipToken"] !== ownershipToken) return;
+  safeUnlink(path);
 }
 function safeUnlink(path: string): void { try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
 function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
@@ -635,7 +675,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
   const processExists = supervision.processExists ?? piProcessExists;
-  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined;
+  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined; let processExitObservedAt: number | undefined;
   const previousRaw = input.isTTY ? input.isRaw : undefined;
   const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8"), (value) => redactPiLog(value, secrets), /thinking[_-]?signature|encrypted[_-]?content/i) : undefined;
 
@@ -687,27 +727,33 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (pty.pid === undefined) return false;
       let running = true;
       try { running = processExists(pty.pid); } catch { /* an indeterminate probe is not exit evidence */ }
-      if (!running) finishExit(0, 0);
+      if (!running) processExitObservedAt ??= now();
+      else processExitObservedAt = undefined;
       return !running;
     };
     const monitorProcessExit = async (): Promise<void> => {
       while (!settled && !exited) {
         const terminal = readPiTerminalStatus(deployDir);
-        if (terminal) {
+        const predatesLaunch = terminal && terminalAtLaunch?.timestamp === terminal.timestamp && terminalAtLaunch.type === terminal.type;
+        if (terminal && !predatesLaunch) {
           const terminalStatus = terminal.stopReason === "error" ? 1 : 0;
-          const predatesLaunch = terminalAtLaunch?.timestamp === terminal.timestamp && terminalAtLaunch.type === terminal.type;
-          if (predatesLaunch || confirmProcessExit()) { finishExit(terminalStatus); return; }
+          if (confirmProcessExit()) { finishExit(terminalStatus); return; }
           try {
             finishEvidence();
             requestCleanup(terminalStatus, terminalStatus === 0 ? undefined : new Error(terminalError || "Pi reported a terminal error"));
           } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
           return;
         }
+        const processGone = confirmProcessExit();
+        if (processGone && processExitObservedAt !== undefined && now() - processExitObservedAt >= FOREGROUND_EXIT_STATUS_GRACE_MS) {
+          try { finishEvidence(); }
+          catch (error) { settle(1, error instanceof Error ? error : new Error(String(error))); return; }
+          settle(1, new Error(`process-exit-status-unavailable: Pi process ${pty.pid} exited without a terminal marker or PTY exit status`));
+          return;
+        }
         await sleep(PROCESS_TREE_POLL);
         // Keep injected/fake clocks from starving input and PTY callbacks.
         await new Promise<void>((resolveValue) => setImmediate(resolveValue));
-        if (settled || exited) return;
-        confirmProcessExit();
       }
     };
     const requestCleanup = (status: number, error?: Error): void => {
@@ -727,7 +773,10 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
           }
           if (!exited) {
             await sleep(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
-            if (!settled && !exited) confirmProcessExit();
+            if (!settled && !exited && confirmProcessExit()) {
+              exited = true;
+              finishCleanup();
+            }
           }
         }
         if (settled) return;

@@ -16,10 +16,10 @@ import { runTimersCommand } from "./commands/timers.js";
 import { runSignalCommand } from "./commands/signal.js";
 import { runScheduleCommand, runRemoveTimerCommand } from "./commands/schedule.js";
 import { runServeCommand } from "./commands/serve.js";
-import { runStatusCommand, compactActivityTail } from "./commands/status.js";
+import { runStatusCommand, compactActivityTail, isProcessGroupAlive, sendProcessGroupSignal } from "./commands/status.js";
 import { runSemanticCommand } from "./commands/semantic.js";
 import type { CliIo } from "./utils.js";
-import { normalizeIo } from "./utils.js";
+import { isProcessAlive, normalizeIo } from "./utils.js";
 
 export type { CliIo } from "./utils.js";
 
@@ -33,6 +33,10 @@ export interface RunCoreCommandOptions {
   now?: Date;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
+  processAlive?: (pid: number) => boolean;
+  processGroupAlive?: (pid: number) => boolean;
+  sendProcessSignal?: (pid: number, signal: NodeJS.Signals) => void;
+  beforePiSupervisorLivenessCheck?: (evidence: { supervisorPid: number }) => void | Promise<void>;
   binaryName?: string;
 }
 
@@ -49,7 +53,14 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
-    if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), { sleep: opts.sleep ?? defaultSleep, clock: opts.clock ?? Date.now });
+    if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), {
+      sleep: opts.sleep ?? defaultSleep,
+      clock: opts.clock ?? Date.now,
+      processAlive: opts.processAlive ?? isProcessAlive,
+      processGroupAlive: opts.processGroupAlive ?? opts.processAlive ?? isProcessGroupAlive,
+      sendProcessSignal: opts.sendProcessSignal ?? sendProcessGroupSignal,
+      ...(opts.beforePiSupervisorLivenessCheck ? { beforePiSupervisorLivenessCheck: opts.beforePiSupervisorLivenessCheck } : {}),
+    });
     if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {}, opts.binaryName ?? defaultBinaryName());
     if (command === "evaluate") return runEvaluateCommand(rest, io, opts.hooks ?? {});
     if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});

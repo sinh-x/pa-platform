@@ -361,18 +361,24 @@ test("foreground settlement is bounded when PTY exit is absent and process probe
   const root = mkdtempSync(join(tmpdir(), "pap-156-foreground-"));
   const primer = join(root, "primer.md");
   writeFileSync(primer, "sanitized foreground objective");
-  writePiTerminalStatus(root, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-29T00:00:00.000Z" });
   const pty = new CharacterizationPty();
   const input = new CharacterizationInput();
   const output = { write() { return true; } };
   let elapsedSinceRealExit = 0;
+  let markerWritten = false;
   const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never,
     input: input as never,
     output: output as never,
     now: () => elapsedSinceRealExit,
-    sleep: async (milliseconds) => { elapsedSinceRealExit += milliseconds; },
-    processExists: () => elapsedSinceRealExit < 5100,
+    sleep: async (milliseconds) => {
+      elapsedSinceRealExit += milliseconds;
+      if (!markerWritten && elapsedSinceRealExit >= 100) {
+        markerWritten = true;
+        writePiTerminalStatus(root, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-29T00:00:00.100Z" });
+      }
+    },
+    processExists: () => elapsedSinceRealExit < 100,
   } });
 
   try {

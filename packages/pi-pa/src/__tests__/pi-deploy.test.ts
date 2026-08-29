@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
-import { PiAdapter } from "../adapter.js";
+import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { runPiBackgroundRunner } from "../background-runner.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "../terminal-status.js";
@@ -86,14 +87,25 @@ class ForegroundDeploymentInput extends EventEmitter {
   setRawMode(raw: boolean): this { this.isRaw = raw; return this; }
 }
 
+class BackgroundDeploymentProcess extends EventEmitter {
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  constructor(readonly pid: number) { super(); }
+  unref(): void {}
+}
+
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
 test("foreground PPA /quit settles without PTY onExit and emits one terminal registry event", async () => {
-  await withPiEnv(async () => {
+  await withPiEnv(async (root) => {
     let running = true;
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
-    const pty = new ForegroundDeploymentPty(() => { running = false; });
+    const pty = new ForegroundDeploymentPty(() => {
+      const deployment = readdirSync(join(root, "deployments"))[0]!;
+      writePiTerminalStatus(join(root, "deployments", deployment), { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+      running = false;
+    });
     const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
@@ -124,16 +136,69 @@ test("new foreground Pi deployments omit the adapter deadline but retain timeout
   });
 });
 
-test("new background Pi deployments omit the adapter deadline while retaining supervision metadata", async () => {
+test("new background Pi deployments pass the resolved adapter deadline while retaining supervision metadata", async () => {
   await withPiEnv(async () => {
     let captured: SpawnOpts | undefined;
     const result = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 2400 }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
     assert.ok(captured);
     assert.equal(captured.mode, "background");
-    assert.equal(Object.hasOwn(captured, "timeoutMs"), false);
-    assert.equal(captured.timeoutMs, undefined);
+    assert.equal(captured.timeoutMs, 2_400_000);
     assertTimeoutMetadata(captured, 2400);
+  });
+});
+
+test("ordinary background deploy flows timeout through runner escalation to one causal terminal failure", async () => {
+  await withPiEnv(async () => {
+    const launcher = new BackgroundDeploymentProcess(88_001);
+    let config: PiBackgroundConfig | undefined;
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+      launchBackgroundRunner: ((_runnerPath, configPath) => {
+        config = readPiBackgroundConfig(configPath);
+        writePiSupervisorOwnership(join(configPath, "..", PI_SUPERVISOR_FILE), {
+          schemaVersion: 1,
+          deploymentId: config.deploymentId,
+          ownershipToken: config.ownershipToken,
+          state: "active",
+          ready: true,
+          supervisorPid: launcher.pid,
+          childPid: 88_002,
+          updatedAt: new Date().toISOString(),
+          finalizationDeadlineMs: 5_000,
+        });
+        return launcher as never;
+      }),
+    } });
+    const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true, timeout: 60 }, adapter);
+    assert.equal(deployed.status, "pending");
+    assert.equal(config?.timeoutMs, 60_000);
+
+    const child = new BackgroundDeploymentProcess(88_002);
+    let timeoutCallback: (() => void) | undefined;
+    let now = 0;
+    let gone = false;
+    const signals: NodeJS.Signals[] = [];
+    const running = runPiBackgroundRunner(config!, { supervision: {
+      spawnProcess: (() => child as never) as never,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds; },
+      setTimeout: (callback) => { timeoutCallback = callback; return {} as NodeJS.Timeout; },
+      clearTimeout: () => {},
+      processGroupGone: () => gone,
+      sendSignal: (_pid, signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") { gone = true; child.emit("close", 137); }
+      },
+    } });
+    await nextTick();
+    timeoutCallback?.();
+    await running;
+    const terminal = getDeploymentEvents(deployed.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(terminal.length, 1);
+    assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
+    assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "failed");
+    assert.ok(now < 5_000);
   });
 });
 

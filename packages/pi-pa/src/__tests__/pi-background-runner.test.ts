@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { appendRegistryEvent, closeDb, getDeploymentEvents, queryDeploymentStatus, readActivityEvents } from "@pa-platform/pa-core";
-import { PiAdapter, PI_SUPERVISOR_FILE, readPiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 
@@ -160,6 +160,16 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.ok((result.errorMessage ?? "").length <= 2000);
     assert.doesNotMatch(configBody, new RegExp(secret));
     assert.doesNotMatch(result.errorMessage ?? "", new RegExp(secret));
+    assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
+
+    const readFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
+      launchBackgroundRunner: (() => new LauncherProcess() as never),
+      readBackgroundOwnership: () => { throw new Error("ownership fixture unreadable"); },
+    } });
+    const unreadable = await readFailure.spawn({ primerPath: primer, deployId: "d-read-error", mode: "background", sessionId: "read-error-session" });
+    assert.equal(unreadable.exitCode, 1);
+    assert.match(unreadable.errorMessage ?? "", /^runner-readiness: ownership fixture unreadable$/);
+    assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
 
     const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", secretValues: [secret], supervision: {
       launchBackgroundRunner: (() => { throw new Error(`launcher fixture failed ${secret}`); }),
@@ -168,6 +178,33 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.equal(failed.exitCode, 1);
     assert.match(failed.errorMessage ?? "", /^runner-launcher: launcher fixture failed/);
     assert.doesNotMatch(failed.errorMessage ?? "", new RegExp(secret));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readiness timeout escalates a resistant runner and removes only its owned config", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-runner-readiness-resistant-"));
+  const primer = join(root, "primer.md");
+  writeFileSync(primer, "bounded objective");
+  const launcher = new LauncherProcess();
+  let clock = 0;
+  let gone = false;
+  const signals: NodeJS.Signals[] = [];
+  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
+    launchBackgroundRunner: (() => launcher as never),
+    readinessNow: () => clock,
+    readinessSleep: async (milliseconds) => { clock += milliseconds; },
+    readinessTimeoutMs: 100,
+    processGroupGone: () => gone,
+    sendSignal: (_pid, signal) => { signals.push(signal); if (signal === "SIGKILL") gone = true; },
+  } });
+  try {
+    const result = await adapter.spawn({ primerPath: primer, deployId: "d-readiness-resistant", mode: "background", sessionId: "readiness-resistant-session" });
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
+    assert.ok(clock < 5_000);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -294,5 +331,34 @@ test("runner timeout owns escalation and retains the timeout category", async ()
     assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
     assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, "failed");
+  });
+});
+
+test("runner shutdown escalates a TERM-resistant process group and finalizes exactly once", async () => {
+  await withRunnerEnv(async (_root, deployDir, config) => {
+    const child = new RunnerChild();
+    const shutdown = new AbortController();
+    let now = 0;
+    let gone = false;
+    const signals: NodeJS.Signals[] = [];
+    const running = runPiBackgroundRunner(config, { shutdownSignal: shutdown.signal, supervision: {
+      spawnProcess: (() => child as never) as never,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds; },
+      processGroupGone: () => gone,
+      sendSignal: (_pid, signal) => {
+        signals.push(signal);
+        if (signal === "SIGKILL") { gone = true; child.emit("close", 137); }
+      },
+    } });
+    await immediate();
+    shutdown.abort("SIGTERM");
+    await running;
+    const terminal = terminalEvents(config.deploymentId);
+    assert.equal(terminal.length, 1);
+    assert.match(terminal[0]?.summary ?? "", /runner-shutdown:.*SIGTERM/);
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, "failed");
+    assert.ok(now < 5_000);
   });
 });

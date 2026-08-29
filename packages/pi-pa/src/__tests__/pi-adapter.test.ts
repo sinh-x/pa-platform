@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -512,40 +512,76 @@ test("foreground trusts the extension status side channel instead of rendered te
   assert.match(readFileSync(join(dir, "pi-output.jsonl"), "utf8"), /\"stopReason\":\"error\"/);
 });
 
-test("foreground settles from process exit evidence when PTY onExit is absent", async () => {
+test("foreground accepts a newer success marker when PTY onExit is absent", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-no-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  let probes = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
-    spawnPty: () => pty as never, input: input as never, output: output as never,
-    processExists: () => probes++ === 0,
-    sleep: async () => {},
-  } });
-  const startedAt = performance.now();
-  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-no-onexit", mode: "foreground" });
-  assert.ok(performance.now() - startedAt < 5_000);
-  assert.equal(result.exitCode, 0);
-  assert.ok(probes >= 1);
-  assert.equal(input.isRaw, false);
-});
-
-test("foreground ignores a delayed duplicate PTY exit after process evidence settled", async () => {
-  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let sleeps = 0;
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => false,
-    sleep: async () => {},
+    now: () => now,
+    sleep: async (milliseconds) => {
+      now += milliseconds;
+      if (sleeps++ === 0) writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-29T01:00:00.000Z" });
+    },
   } });
-  let outcomes = 0;
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-delayed-onexit", mode: "foreground" });
-  resultPromise.then(() => { outcomes++; });
-  const result = await resultPromise;
-  pty.emitExit(17); pty.emitExit(17);
-  await nextTick();
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-marker", mode: "foreground" });
   assert.equal(result.exitCode, 0);
-  assert.equal(outcomes, 1);
+  assert.ok(now < 5_000);
   assert.equal(input.isRaw, false);
+});
+
+test("foreground retains a delayed nonzero PTY exit after process disappearance", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let sleeps = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => false,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; if (++sleeps === 2) pty.emitExit(17); },
+  } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-delayed-onexit", mode: "foreground" });
+  assert.equal(result.exitCode, 17);
+  assert.match(result.errorMessage ?? "", /Pi exited with code 17/);
+  assert.ok(now < 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground fails causally when process exit has no authoritative status", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-unknown-exit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => false,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-foreground-unknown-exit", mode: "foreground" });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /^process-exit-status-unavailable:/);
+  assert.ok(now < 5_000);
+  assert.equal(input.isRaw, false);
+});
+
+test("fresh foreground launch removes a stale marker and does not settle while the child is alive", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-stale-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T01:00:00.000Z" });
+  let running = true; let settled = false;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-stale-marker", mode: "foreground" });
+  resultPromise.then(() => { settled = true; });
+  await nextTick();
+  assert.equal(existsSync(join(dir, "pi-terminal-status.json")), false);
+  assert.equal(settled, false);
+  running = false;
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
 });
 
 test("foreground visible exit escalates a lingering child and verifies cleanup", async () => {
