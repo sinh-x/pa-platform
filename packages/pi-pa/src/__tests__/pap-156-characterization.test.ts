@@ -30,6 +30,13 @@ interface Pap156Fixture {
   failureCases: Array<{ category: string; diagnostic: string }>;
 }
 
+interface Pap156ExecutionUpdateFixture {
+  id: string;
+  syntheticSensitiveValue: string;
+  expected: { starts: number; updates: number; ends: number; canonicalUses: number; canonicalResults: number; callIds: string[] };
+  streamEvents: Array<Record<string, unknown>>;
+}
+
 class CharacterizationChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
@@ -59,6 +66,11 @@ class CharacterizationInput extends EventEmitter {
 function loadFixture(): Pap156Fixture {
   const path = fileURLToPath(new URL("fixtures/pap-156-lifecycle.json", import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as Pap156Fixture;
+}
+
+function loadExecutionUpdateFixture(): Pap156ExecutionUpdateFixture {
+  const path = fileURLToPath(new URL("fixtures/pap-156-execution-updates.json", import.meta.url));
+  return JSON.parse(readFileSync(path, "utf8")) as Pap156ExecutionUpdateFixture;
 }
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -250,6 +262,75 @@ test("eight fixture calls project to eight identified uses and matching results 
         resultIds: [...fixture.expected.callIds].sort(),
       },
     );
+  } finally {
+    closeDb();
+    restoreEnv("PA_AI_USAGE_HOME", previousHome);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("execution updates remain raw evidence without duplicating canonical tool uses", async () => {
+  const fixture = loadExecutionUpdateFixture();
+  const root = mkdtempSync(join(tmpdir(), "pap-156-execution-updates-"));
+  const deployDir = join(root, "deployments", fixture.id);
+  const primer = join(deployDir, "primer.md");
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_AI_USAGE_HOME"] = root;
+  mkdirSync(deployDir, { recursive: true });
+  writeFileSync(primer, "sanitized execution-update objective");
+  const child = new CharacterizationChild();
+  try {
+    const adapter = new PiAdapter({
+      cwd: deployDir,
+      versionProbe: () => "0.80.8",
+      secretValues: [fixture.syntheticSensitiveValue],
+      supervision: { spawnProcess: (() => child as never) as typeof spawn },
+    });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "dry-run" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    child.stdout.emit("data", Buffer.from(`${fixture.streamEvents.map((event) => JSON.stringify(event)).join("\n")}\n`));
+    child.emit("close", 0);
+    assert.equal((await resultPromise).exitCode, 0);
+
+    const rawText = readFileSync(join(deployDir, "pi-output.jsonl"), "utf8");
+    const rawEvents = rawText.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const rawCount = (type: string): number => rawEvents.filter((event) => event["type"] === type).length;
+    const rawUpdates = rawEvents.filter((event) => event["type"] === "tool_execution_update");
+    assert.deepEqual(
+      { starts: rawCount("tool_execution_start"), updates: rawUpdates.length, ends: rawCount("tool_execution_end") },
+      { starts: fixture.expected.starts, updates: fixture.expected.updates, ends: fixture.expected.ends },
+    );
+    assert.ok(rawUpdates.every((event) => JSON.stringify(event).length <= 500));
+    assert.match(rawText, /tool_execution_update/);
+    assert.match(rawText, /\[REDACTED\]/);
+    assert.doesNotMatch(rawText, new RegExp(fixture.syntheticSensitiveValue));
+
+    const activity = readActivityEvents(join(deployDir, "activity.jsonl"));
+    const uses = activity.filter((event) => event.kind === "tool_use");
+    const results = activity.filter((event) => event.kind === "tool_result");
+    const useIds = uses.map(toolCallId).filter((id): id is string => id !== undefined);
+    const resultIds = results.map(toolCallId).filter((id): id is string => id !== undefined);
+    const expectedIds = [...fixture.expected.callIds].sort();
+    assert.deepEqual(
+      {
+        totalUses: uses.length,
+        totalResults: results.length,
+        uniqueUseIds: [...new Set(useIds)].sort(),
+        uniqueResultIds: [...new Set(resultIds)].sort(),
+        unidentifiedArgumentDeltas: uses.filter((event) => event.partType === "toolcall_delta" || toolCallId(event) === undefined).length,
+        canonicalExecutionUpdates: activity.filter((event) => event.partType === "tool_execution_update").length,
+      },
+      {
+        totalUses: fixture.expected.canonicalUses,
+        totalResults: fixture.expected.canonicalResults,
+        uniqueUseIds: expectedIds,
+        uniqueResultIds: expectedIds,
+        unidentifiedArgumentDeltas: 0,
+        canonicalExecutionUpdates: 0,
+      },
+    );
+    assert.ok(activity.every((event) => event.body.length <= 500));
+    assert.doesNotMatch(JSON.stringify(activity), new RegExp(fixture.syntheticSensitiveValue));
   } finally {
     closeDb();
     restoreEnv("PA_AI_USAGE_HOME", previousHome);

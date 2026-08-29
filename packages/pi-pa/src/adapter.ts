@@ -258,6 +258,7 @@ class PiActivityProjector {
     }
 
     const type = String(safe.type ?? safe.event ?? safe.kind ?? "").toLowerCase();
+    if (type === "tool_execution_update") return [];
     const isUse = type === "tool_execution_start" || type === "tool_running";
     const isResult = type === "tool_execution_end" || type === "tool_completed" || type === "tool_execution_result" || type === "tool_result";
     if (!isUse && !isResult) return [normalizePiEvent(safe, this.deployId, this.secrets)];
