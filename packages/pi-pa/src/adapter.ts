@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,9 +142,20 @@ export class PiAdapter implements RuntimeAdapter {
   async preflight(): Promise<void> {
     if (!this.preflightPromise) {
       const probe = (async () => {
-        const version = await bounded(this.versionProbe(), this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`);
-        if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
-        await bounded(Promise.resolve().then(this.nativeRegistryProbe), this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`);
+        // The installed Pi version and native-host addon are independent process
+        // validations. Start both before awaiting either so their cold startup
+        // costs overlap, while retaining deterministic version-first failures.
+        let versionValue: string | Promise<string>;
+        try { versionValue = this.versionProbe(); } catch (error) { versionValue = Promise.reject(error); }
+        let nativeValue: PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
+        try { nativeValue = this.nativeRegistryProbe(); } catch (error) { nativeValue = Promise.reject(error); }
+        const [versionResult, nativeResult] = await Promise.allSettled([
+          bounded(versionValue, this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`),
+          bounded(nativeValue, this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`),
+        ]);
+        if (versionResult.status === "rejected") throw versionResult.reason;
+        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.80.8 or later; detected '${versionResult.value || "unknown"}'.`);
+        if (nativeResult.status === "rejected") throw nativeResult.reason;
       })();
       this.preflightPromise = probe;
       void probe.catch(() => { if (this.preflightPromise === probe) this.preflightPromise = undefined; });
@@ -767,14 +778,25 @@ function record(value: unknown): Record<string, unknown> | undefined { return va
 function extractText(raw: Record<string, unknown>): string { const values = [raw.text, raw.body, raw.content, raw.message, raw.result, raw.partialResult, raw.assistantMessageEvent, raw.toolName, raw.args]; for (const value of values) { if (typeof value === "string") return value; if (Array.isArray(value)) { const text = value.map((item) => typeof item === "string" ? item : item && typeof item === "object" ? extractText(item as Record<string, unknown>) : "").filter(Boolean).join(" "); if (text) return text; } if (value && typeof value === "object") { const nested = extractText(value as Record<string, unknown>); if (nested) return nested; } } return ""; }
 function tail(value: string, max: number): string { return value.length > max ? value.slice(-max) : value; }
 function basename(path: string): string { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? "unknown"; }
-function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): string {
-  const result = spawnSync("pi", ["--version"], { cwd, env, encoding: "utf8", timeout });
-  if (result.error) {
-    if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(`Pi version probe timed out after ${timeout}ms.`);
-    throw new Error(`Pi is unavailable: ${result.error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
-  }
-  if (result.status !== 0) throw new Error(`Pi version probe failed with exit code ${result.status ?? 1}.`);
-  return `${result.stdout ?? ""}`.trim();
+function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): Promise<string> {
+  return new Promise<string>((resolveValue, rejectValue) => {
+    const child = spawn("pi", ["--version"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) rejectValue(error); else resolveValue(stdout.trim());
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* process already exited */ }
+      finish(new Error(`Pi version probe timed out after ${timeout}ms.`));
+    }, timeout);
+    child.stdout?.on("data", (chunk: Buffer) => { stdout = tail(stdout + chunk.toString("utf8"), MAX_CAPTURE); });
+    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`)));
+    child.once("close", (code) => finish(code === 0 ? undefined : new Error(`Pi version probe failed with exit code ${code ?? 1}.`)));
+  });
 }
 async function bounded<T>(value: T | Promise<T>, timeout: number, timeoutMessage: string): Promise<T> {
   return new Promise<T>((resolveValue, rejectValue) => {

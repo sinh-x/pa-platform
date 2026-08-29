@@ -28,4 +28,6 @@ for tool in read bash question todo pa_ticket pa_bulletin pa_registry pa_status;
   grep -q "\"name\":\"$tool\",\"status\":\"passed\"" <<<"$tool_smoke"
 done
 
+"$store_output/bin/pa-platform-node" ./scripts/pap-156-caller-boundary-smoke.mjs "$store_output"
+
 printf '%s\n' "$store_output"

@@ -41,6 +41,81 @@ test("Pi preflight verifies version then native registry addon before objective 
   }
 });
 
+test("Pi preflight overlaps independent cold version and native validations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-156-preflight-overlap-"));
+  const primer = join(root, "primer.md");
+  writeFileSync(primer, "objective executes only after both probes");
+  let nativeStarted = false;
+  let executed = false;
+  const adapter = new PiAdapter({
+    cwd: root,
+    versionProbe: async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(nativeStarted, true, "native validation must start before version validation settles");
+      return "0.80.8";
+    },
+    nativeRegistryProbe: () => { nativeStarted = true; return undefined; },
+    runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
+  });
+  try {
+    const result = await adapter.spawn({ primerPath: primer, deployId: "d-overlap", mode: "foreground" });
+    assert.equal(result.exitCode, 0);
+    assert.equal(executed, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("parallel preflight retains deterministic version-first causal failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-156-preflight-causal-"));
+  const primer = join(root, "primer.md");
+  writeFileSync(primer, "objective must not execute");
+  let executed = false;
+  const adapter = new PiAdapter({
+    cwd: root,
+    versionProbe: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return "0.80.7"; },
+    nativeRegistryProbe: () => { throw new Error("native-load: concurrent fixture failure"); },
+    runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
+  });
+  try {
+    const result = await adapter.spawn({ primerPath: primer, deployId: "d-causal", mode: "foreground" });
+    assert.equal(result.exitCode, 1);
+    assert.equal(executed, false);
+    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.80\.8 or later/);
+    assert.doesNotMatch(result.errorMessage ?? "", /native-load/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("async Pi version process failures remain bounded and causal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-156-version-process-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  try {
+    await assert.rejects(
+      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
+      /Pi is unavailable:.*Install Pi 0\.80\.8 or later/,
+    );
+
+    const pi = join(bin, "pi");
+    writeFileSync(pi, "#!/bin/sh\nexit 7\n");
+    chmodSync(pi, 0o755);
+    await assert.rejects(
+      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
+      /Pi version probe failed with exit code 7/,
+    );
+
+    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.80.8");\n`);
+    await assert.rejects(
+      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 20 }).preflight(),
+      /Pi version probe timed out after 20ms/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("missing Pi addon fails causally before objective execution", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-156-missing-addon-"));
   const primer = join(root, "primer.md");
