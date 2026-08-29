@@ -1,0 +1,604 @@
+{
+  "id": "pap-156-sanitized-builder-lifecycle",
+  "shape": "large builder startup with multi-turn and parallel managed tool calls",
+  "repository": {
+    "kind": "temporary-fixture-only",
+    "directoryPrefix": "pap-156-fixture-",
+    "initialFiles": {
+      "README.md": "sanitized fixture repository\n"
+    }
+  },
+  "managedTools": [
+    "read",
+    "bash",
+    "question",
+    "todo",
+    "pa_ticket",
+    "pa_bulletin",
+    "pa_registry",
+    "pa_status"
+  ],
+  "expected": {
+    "callerReturnWithinMs": 5000,
+    "supervisorFinalizationWithinMs": 5000,
+    "foregroundSettlementWithinMs": 5000,
+    "identifiedUses": 8,
+    "matchingResults": 8,
+    "unidentifiedDeltaActions": 0,
+    "callIds": [
+      "pap156-call-read",
+      "pap156-call-bash",
+      "pap156-call-question",
+      "pap156-call-todo",
+      "pap156-call-ticket",
+      "pap156-call-bulletin",
+      "pap156-call-registry",
+      "pap156-call-status"
+    ]
+  },
+  "lifecycle": {
+    "ownershipFile": "pi-supervisor.json",
+    "events": [
+      {
+        "atMs": 0,
+        "type": "launcher_start"
+      },
+      {
+        "atMs": 120,
+        "type": "supervisor_ready",
+        "state": "active"
+      },
+      {
+        "atMs": 180,
+        "type": "launcher_return"
+      },
+      {
+        "atMs": 2699000,
+        "type": "caller_deadline",
+        "caller": "orchestrator"
+      },
+      {
+        "atMs": 2699100,
+        "type": "child_exit",
+        "exitCode": 0
+      },
+      {
+        "atMs": 2699125,
+        "type": "status_wait_poll",
+        "childPidState": "exited",
+        "supervisorState": "finalizing"
+      },
+      {
+        "atMs": 2699300,
+        "type": "terminal",
+        "status": "success"
+      }
+    ]
+  },
+  "streamEvents": [
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 0,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-read",
+              "name": "read",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 1,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-bash",
+              "name": "bash",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "{\"path\":\"README.md\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "{\"command\":\"git status --short\",\"timeout\":30}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 0,
+        "toolCall": {
+          "id": "pap156-call-read",
+          "name": "read",
+          "arguments": {
+            "path": "README.md"
+          }
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 1,
+        "toolCall": {
+          "id": "pap156-call-bash",
+          "name": "bash",
+          "arguments": {
+            "command": "git status --short",
+            "timeout": 30
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-read",
+      "toolName": "read",
+      "args": {
+        "path": "README.md"
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-bash",
+      "toolName": "bash",
+      "args": {
+        "command": "git status --short",
+        "timeout": 30
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-bash",
+      "toolName": "bash",
+      "args": {
+        "command": "git status --short",
+        "timeout": 30
+      },
+      "isError": false,
+      "result": "clean"
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-read",
+      "toolName": "read",
+      "args": {
+        "path": "README.md"
+      },
+      "isError": false,
+      "result": "sanitized fixture repository"
+    },
+    {
+      "type": "turn_end",
+      "stopReason": "toolUse"
+    },
+    {
+      "type": "turn_start"
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 0,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-question",
+              "name": "question",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "{\"question\":\"Use fixture path?\",\"options\":[{\"label\":\"Yes\"}]}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 0,
+        "toolCall": {
+          "id": "pap156-call-question",
+          "name": "question",
+          "arguments": {
+            "question": "Use fixture path?",
+            "options": [
+              {
+                "label": "Yes"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-question",
+      "toolName": "question",
+      "args": {
+        "question": "Use fixture path?",
+        "options": [
+          {
+            "label": "Yes"
+          }
+        ]
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-question",
+      "toolName": "question",
+      "args": {
+        "question": "Use fixture path?",
+        "options": [
+          {
+            "label": "Yes"
+          }
+        ]
+      },
+      "isError": false
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 1,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-todo",
+              "name": "todo",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "{\"action\":\"add\",\"text\":\"Verify fixture\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 1,
+        "toolCall": {
+          "id": "pap156-call-todo",
+          "name": "todo",
+          "arguments": {
+            "action": "add",
+            "text": "Verify fixture"
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-todo",
+      "toolName": "todo",
+      "args": {
+        "action": "add",
+        "text": "Verify fixture"
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-todo",
+      "toolName": "todo",
+      "args": {
+        "action": "add",
+        "text": "Verify fixture"
+      },
+      "isError": false
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 2,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-ticket",
+              "name": "pa_ticket",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 2,
+        "delta": "{\"action\":\"show\",\"id\":\"PAP-156\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 2,
+        "toolCall": {
+          "id": "pap156-call-ticket",
+          "name": "pa_ticket",
+          "arguments": {
+            "action": "show",
+            "id": "PAP-156"
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-ticket",
+      "toolName": "pa_ticket",
+      "args": {
+        "action": "show",
+        "id": "PAP-156"
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-ticket",
+      "toolName": "pa_ticket",
+      "args": {
+        "action": "show",
+        "id": "PAP-156"
+      },
+      "isError": false
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 3,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-bulletin",
+              "name": "pa_bulletin",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 3,
+        "delta": "{\"action\":\"list\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 3,
+        "toolCall": {
+          "id": "pap156-call-bulletin",
+          "name": "pa_bulletin",
+          "arguments": {
+            "action": "list"
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-bulletin",
+      "toolName": "pa_bulletin",
+      "args": {
+        "action": "list"
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-bulletin",
+      "toolName": "pa_bulletin",
+      "args": {
+        "action": "list"
+      },
+      "isError": false
+    },
+    {
+      "type": "turn_end",
+      "stopReason": "toolUse"
+    },
+    {
+      "type": "turn_start"
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 0,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-registry",
+              "name": "pa_registry",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 1,
+        "partial": {
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "pap156-call-status",
+              "name": "pa_status",
+              "arguments": {},
+              "partialJson": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "{\"action\":\"list\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "{\"id\":\"d-sanitized\"}"
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 0,
+        "toolCall": {
+          "id": "pap156-call-registry",
+          "name": "pa_registry",
+          "arguments": {
+            "action": "list"
+          }
+        }
+      }
+    },
+    {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 1,
+        "toolCall": {
+          "id": "pap156-call-status",
+          "name": "pa_status",
+          "arguments": {
+            "id": "d-sanitized"
+          }
+        }
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-registry",
+      "toolName": "pa_registry",
+      "args": {
+        "action": "list"
+      }
+    },
+    {
+      "type": "tool_execution_start",
+      "toolCallId": "pap156-call-status",
+      "toolName": "pa_status",
+      "args": {
+        "id": "d-sanitized"
+      }
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-registry",
+      "toolName": "pa_registry",
+      "args": {
+        "action": "list"
+      },
+      "isError": false
+    },
+    {
+      "type": "tool_execution_end",
+      "toolCallId": "pap156-call-status",
+      "toolName": "pa_status",
+      "args": {
+        "id": "d-sanitized"
+      },
+      "isError": false
+    },
+    {
+      "type": "agent_end",
+      "stopReason": "stop",
+      "message": "sanitized verification sentinel reached"
+    }
+  ],
+  "syntheticSensitiveValue": "pap156-configured-sensitive-value",
+  "failureCases": [
+    {
+      "category": "malformed-tool",
+      "diagnostic": "malformed-tool: invalid arguments pap156-configured-sensitive-value"
+    },
+    {
+      "category": "timeout",
+      "diagnostic": "timeout: supervisor deadline exceeded pap156-configured-sensitive-value"
+    },
+    {
+      "category": "process",
+      "diagnostic": "process: child exited with code 17 pap156-configured-sensitive-value"
+    },
+    {
+      "category": "native-load",
+      "diagnostic": "native-load: registry addon rejected by Pi host pap156-configured-sensitive-value"
+    },
+    {
+      "category": "launcher",
+      "diagnostic": "launcher: readiness handshake failed pap156-configured-sensitive-value"
+    }
+  ]
+}
