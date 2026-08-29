@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, readActivityEvents } from "@pa-platform/pa-core";
@@ -84,12 +84,12 @@ function wrappedNode(command: "pi" | "ppa"): string {
   throw new Error(`Could not resolve ${command} Node host from ${current}`);
 }
 
-function nativeLoad(node: string, registryDb: string): { status: number | null; diagnostic: string } {
+function nativeLoad(node: string, registryDb: string, addonPath: string): { status: number | null; diagnostic: string } {
   const core = pathToFileURL(fileURLToPath(new URL("../../../pa-core/dist/index.js", import.meta.url))).href;
-  const script = `const core = await import(${JSON.stringify(core)}); core.queryDeploymentStatuses();`;
+  const script = `const core = await import(${JSON.stringify(core)}); core.verifyRegistryNativeAddon(${JSON.stringify(addonPath)}); core.queryDeploymentStatuses();`;
   const result = spawnSync(node, ["--input-type=module", "--eval", script], {
     encoding: "utf8",
-    env: { ...process.env, PA_REGISTRY_DB: registryDb },
+    env: { ...process.env, PA_REGISTRY_DB: registryDb, PA_SQLITE_NATIVE_BINDING: addonPath },
     timeout: 10_000,
   });
   const raw = `${result.stderr || result.error?.message || result.stdout || "native load failed"}`;
@@ -313,8 +313,13 @@ test("native registry preflight loads under both the installed PPA Node 22 host 
   try {
     const ppaNode = wrappedNode("ppa");
     const piNode = wrappedNode("pi");
-    const ppaLoad = nativeLoad(ppaNode, join(root, "ppa-registry.db"));
-    const piLoad = nativeLoad(piNode, join(root, "pi-registry.db"));
+    const packageOutput = dirname(dirname(realpathSync(commandPath("ppa"))));
+    const ppaAddon = join(packageOutput, "share", "pa-platform", "native-addons", "node-22", "better_sqlite3.node");
+    const piAddon = join(packageOutput, "share", "pa-platform", "native-addons", "pi-node-24", "better_sqlite3.node");
+    assert.equal(existsSync(ppaAddon), true, `missing packaged Node 22 addon: ${ppaAddon}`);
+    assert.equal(existsSync(piAddon), true, `missing packaged Pi-host addon: ${piAddon}`);
+    const ppaLoad = nativeLoad(ppaNode, join(root, "ppa-registry.db"), ppaAddon);
+    const piLoad = nativeLoad(piNode, join(root, "pi-registry.db"), piAddon);
     for (const outcome of [ppaLoad, piLoad]) {
       assert.match(outcome.diagnostic, /^native-load:/);
       assert.ok(outcome.diagnostic.length <= 2000);

@@ -4,7 +4,7 @@ import { parseTimestamp } from "../time.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
-export { closeDb, getDb } from "./db.js";
+export { closeDb, getDb, verifyRegistryNativeAddon, REGISTRY_NATIVE_BINDING_ENV, type RegistryNativeAddonEvidence } from "./db.js";
 
 export function validateRegistryEvent(event: RegistryEvent): void {
   for (const field of ["deployment_id", "team", "event", "timestamp"] as const) {

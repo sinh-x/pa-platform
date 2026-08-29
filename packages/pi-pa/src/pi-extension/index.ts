@@ -2,6 +2,7 @@ import { Type, type TSchema } from "typebox";
 import { BulletinStore, TicketStore, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
 import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
+import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
@@ -107,6 +108,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi) => {
 export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModule, registerQuestionModule, registerTodoModule, registerContextUiModule];
 
 export default function registerPiPaExtension(pi: PiRuntime): void {
+  configurePiRegistryBinding();
   for (const registerModule of PI_PA_MODULES) registerModule(pi);
 }
 

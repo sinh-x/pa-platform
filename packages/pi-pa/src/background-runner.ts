@@ -21,6 +21,7 @@ import {
   type PiSupervisorOwnership,
 } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
+import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 
 const FINALIZATION_DEADLINE_MS = 5_000;
@@ -65,7 +66,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
     const args = buildPiBackgroundArgs(config);
-    const childEnv = { ...process.env };
+    const childEnv = piRegistryEnvironment({ ...process.env });
     const result = await runPiManagedProcess(
       args,
       config.cwd,

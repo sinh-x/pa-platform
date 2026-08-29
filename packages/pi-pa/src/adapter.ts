@@ -9,6 +9,7 @@ import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestam
 import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
+import { piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 
 const MAX_BODY = 500;
 const MAX_STDERR = 2000;
@@ -69,6 +70,7 @@ export interface PiAdapterOptions {
   env?: NodeJS.ProcessEnv;
   runCommand?: (args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => PiCommandResult | Promise<PiCommandResult>;
   versionProbe?: () => string | Promise<string>;
+  nativeRegistryProbe?: () => PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
   versionTimeoutMs?: number;
   sessionIdFactory?: () => string;
   secretValues?: string[];
@@ -109,6 +111,7 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly runCommand?: PiAdapterOptions["runCommand"];
   private readonly versionProbe: () => string | Promise<string>;
+  private readonly nativeRegistryProbe: () => PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
   private readonly versionTimeoutMs: number;
   private preflightPromise?: Promise<void>;
   private readonly sessionIdFactory: () => string;
@@ -120,6 +123,7 @@ export class PiAdapter implements RuntimeAdapter {
     this.runCommand = options.runCommand;
     this.versionTimeoutMs = options.versionTimeoutMs ?? PI_VERSION_TIMEOUT_MS;
     this.versionProbe = options.versionProbe ?? (() => probePiVersion(this.cwd, this.env, this.versionTimeoutMs));
+    this.nativeRegistryProbe = options.nativeRegistryProbe ?? (() => probePiNativeRegistryAddon(this.env, this.secretValues));
     this.sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.secretValues = [...(options.secretValues ?? [])];
     this.supervision = options.supervision ?? {};
@@ -140,6 +144,7 @@ export class PiAdapter implements RuntimeAdapter {
       const probe = (async () => {
         const version = await bounded(this.versionProbe(), this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`);
         if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
+        await bounded(Promise.resolve().then(this.nativeRegistryProbe), this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`);
       })();
       this.preflightPromise = probe;
       void probe.catch(() => { if (this.preflightPromise === probe) this.preflightPromise = undefined; });
@@ -166,15 +171,16 @@ export class PiAdapter implements RuntimeAdapter {
     }
     args.push(readFileSync(opts.primerPath, "utf8"));
     const env = { ...this.env, ...opts.env };
+    const piEnv = piRegistryEnvironment(env);
     const secrets = environmentSecrets(env, this.secretValues);
     if (interactive && resumeId) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
-      ? await this.runCommand(args, { cwd, env })
+      ? await this.runCommand(args, { cwd, env: piEnv })
       : interactive
-        ? await runPiForeground(args, cwd, env, opts, id, secrets, this.supervision)
+        ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision)
         : opts.mode === "background"
           ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision })
-          : await runPiManagedProcess(args, cwd, env, opts, id, secrets, this.supervision);
+          : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision);
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
     }

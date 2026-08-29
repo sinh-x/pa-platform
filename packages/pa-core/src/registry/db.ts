@@ -5,11 +5,19 @@ import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
 const SCHEMA_VERSION = 10;
+export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
+
+export interface RegistryNativeAddonEvidence {
+  node: string;
+  modules: string;
+  v8: string;
+  addonPath: string;
+}
 
 export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   if (singleton && dbPath === getRegistryDbPath()) return singleton;
   if (!existsSync(dirname(dbPath))) mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+  const db = openRegistryDatabase(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
@@ -21,6 +29,25 @@ export function getDb(dbPath = getRegistryDbPath()): Database.Database {
 export function closeDb(): void {
   singleton?.close();
   singleton = null;
+}
+
+export function verifyRegistryNativeAddon(addonPath: string): RegistryNativeAddonEvidence {
+  const db = openRegistryDatabase(":memory:", addonPath);
+  try {
+    db.pragma("user_version");
+  } finally {
+    db.close();
+  }
+  return {
+    node: process.version,
+    modules: process.versions.modules ?? "unknown",
+    v8: process.versions.v8,
+    addonPath,
+  };
+}
+
+function openRegistryDatabase(dbPath: string, nativeBinding = process.env[REGISTRY_NATIVE_BINDING_ENV]?.trim()): Database.Database {
+  return nativeBinding ? new Database(dbPath, { nativeBinding }) : new Database(dbPath);
 }
 
 function migrate(db: Database.Database): void {
