@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pi-pa",
-  "version": "0.1.95",
+  "version": "0.1.96",
   "type": "module",
   "description": "Pi runtime adapter for the PA platform",
   "engines": {
