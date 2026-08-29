@@ -173,7 +173,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
   }
 });
 
-test("launcher process exits after handoff while the persistent runner owns completion", async () => {
+test("launcher process exits after handoff while the persistent runner owns completion", { timeout: 30_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-runner-boundary-"));
   const bin = join(root, "bin");
   const deployDir = join(root, "deployments", "d-boundary");
@@ -203,16 +203,13 @@ test("launcher process exits after handoff while the persistent runner owns comp
   ].join("\n"));
   const env = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, PA_AI_USAGE_HOME: root, PA_REGISTRY_DB: join(root, "registry.db"), PA_TEAM: "builder" };
   try {
-    const started = performance.now();
     const launcher = spawn(process.execPath, ["--import", "tsx", launcherPath], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     launcher.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     launcher.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     const launcherCode = await new Promise<number | null>((resolve) => launcher.once("close", resolve));
-    const launcherElapsed = performance.now() - started;
     assert.equal(launcherCode, 0, stderr);
-    assert.ok(launcherElapsed < 5000, `launcher handoff took ${launcherElapsed}ms`);
     const result = JSON.parse(stdout) as { exitCode: number; metadata?: Record<string, unknown> };
     assert.equal(result.exitCode, 0, stdout);
     assert.equal(result.metadata?.["pending"], true);
@@ -221,14 +218,19 @@ test("launcher process exits after handoff while the persistent runner owns comp
 
     const ownershipPath = join(deployDir, PI_SUPERVISOR_FILE);
     let ownership = readPiSupervisorOwnership(ownershipPath);
-    const finalizationStarted = performance.now();
-    while (ownership?.state !== "finalized" && performance.now() - finalizationStarted < 5000) {
+    assert.equal(ownership?.ready, true);
+    assert.equal(ownership?.supervisorPid, result.metadata?.["supervisorPid"]);
+    assert.notEqual(ownership?.supervisorPid, launcher.pid);
+    assert.ok(["active", "finalizing", "finalized"].includes(ownership?.state ?? ""));
+
+    // This parallel tsx process test is functional only. The release-blocking
+    // <5 s public caller limit and <=4 s material-margin target are measured
+    // against installed output by pap-156-caller-boundary-smoke.mjs.
+    while (ownership?.state !== "finalized") {
       await new Promise((resolve) => setTimeout(resolve, 25));
       ownership = readPiSupervisorOwnership(ownershipPath);
     }
-    assert.equal(ownership?.state, "finalized");
-    assert.equal(ownership?.terminalStatus, "success");
-    assert.ok(performance.now() - finalizationStarted < 5000);
+    assert.equal(ownership.terminalStatus, "success");
     assert.equal(readPiTerminalStatus(deployDir)?.stopReason, "stop");
     const coreUrl = import.meta.resolve("@pa-platform/pa-core");
     const registry = spawnSync(process.execPath, ["--input-type=module", "--eval", `const core = await import(${JSON.stringify(coreUrl)}); const terminal = core.getDeploymentEvents("d-boundary").filter((event) => event.event === "completed" || event.event === "crashed"); process.stdout.write(JSON.stringify(terminal));`], { cwd: process.cwd(), env, encoding: "utf8" });

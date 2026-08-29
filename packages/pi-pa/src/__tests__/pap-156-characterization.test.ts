@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, readActivityEvents } from "@pa-platform/pa-core";
@@ -78,12 +78,30 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-function commandPath(command: string): string {
-  const candidates = execFileSync("which", ["-a", command], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  return candidates.find((candidate) => !candidate.includes("/node_modules/")) ?? candidates[0] ?? command;
+const INSTALLED_CANDIDATE_ENV = "PPA_STORE_OUTPUT";
+const INSTALLED_CANDIDATE_SKIP_REASON = `${INSTALLED_CANDIDATE_ENV} is not set; installed dual-host coverage runs in scripts/nix-store-output-smoke.sh`;
+
+type InstalledCandidateDisposition =
+  | { kind: "candidate"; packageOutput: string }
+  | { kind: "skip"; reason: string };
+
+function installedCandidateDisposition(env: NodeJS.ProcessEnv): InstalledCandidateDisposition {
+  const packageOutput = env[INSTALLED_CANDIDATE_ENV]?.trim();
+  return packageOutput
+    ? { kind: "candidate", packageOutput }
+    : { kind: "skip", reason: INSTALLED_CANDIDATE_SKIP_REASON };
 }
 
-function wrappedNode(command: "pi" | "ppa"): string {
+function commandPath(command: string): string {
+  if (isAbsolute(command)) return command;
+  const result = spawnSync("which", ["-a", command], { encoding: "utf8" });
+  const candidates = result.stdout.trim().split("\n").filter(Boolean);
+  const candidate = candidates.find((path) => !path.includes("/node_modules/")) ?? candidates[0];
+  if (result.status !== 0 || !candidate) throw new Error(`Could not resolve required installed host: ${command}`);
+  return candidate;
+}
+
+function wrappedNode(command: string): string {
   let current = realpathSync(commandPath(command));
   for (let depth = 0; depth < 4; depth += 1) {
     const text = readFileSync(current, "utf8");
@@ -388,15 +406,31 @@ test("managed Pi fixture covers built-ins and every registered PA tool", () => {
   assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools].sort());
 });
 
-test("native registry preflight loads under both the installed PPA Node 22 host and Pi host", () => {
+test("installed native characterization only skips without an explicit candidate output", () => {
+  assert.deepEqual(installedCandidateDisposition({}), { kind: "skip", reason: INSTALLED_CANDIDATE_SKIP_REASON });
+  assert.deepEqual(
+    installedCandidateDisposition({ [INSTALLED_CANDIDATE_ENV]: "/nix/store/pap156-candidate" }),
+    { kind: "candidate", packageOutput: "/nix/store/pap156-candidate" },
+  );
+  assert.equal(installedCandidateDisposition({ [INSTALLED_CANDIDATE_ENV]: "/definitely/missing-candidate" }).kind, "candidate");
+});
+
+const installedCandidate = installedCandidateDisposition(process.env);
+
+test("native registry preflight loads under both the installed PPA Node 22 host and Pi host", {
+  skip: installedCandidate.kind === "skip" ? installedCandidate.reason : false,
+}, () => {
+  assert.equal(installedCandidate.kind, "candidate");
   const fixture = loadFixture();
   const root = mkdtempSync(join(tmpdir(), "pap-156-native-load-"));
   try {
-    const ppaNode = wrappedNode("ppa");
-    const piNode = wrappedNode("pi");
-    const packageOutput = dirname(dirname(realpathSync(commandPath("ppa"))));
+    const packageOutput = installedCandidate.packageOutput;
+    assert.equal(isAbsolute(packageOutput), true, `${INSTALLED_CANDIDATE_ENV} must be an absolute package output path`);
+    const ppaNode = join(packageOutput, "bin", "pa-platform-node");
+    const piNode = wrappedNode(process.env["PAP156_REAL_PI"]?.trim() || "pi");
     const ppaAddon = join(packageOutput, "share", "pa-platform", "native-addons", "node-22", "better_sqlite3.node");
     const piAddon = join(packageOutput, "share", "pa-platform", "native-addons", "pi-node-24", "better_sqlite3.node");
+    assert.equal(existsSync(ppaNode), true, `missing candidate Node 22 host: ${ppaNode}`);
     assert.equal(existsSync(ppaAddon), true, `missing packaged Node 22 addon: ${ppaAddon}`);
     assert.equal(existsSync(piAddon), true, `missing packaged Pi-host addon: ${piAddon}`);
     const ppaLoad = nativeLoad(ppaNode, join(root, "ppa-registry.db"), ppaAddon);
