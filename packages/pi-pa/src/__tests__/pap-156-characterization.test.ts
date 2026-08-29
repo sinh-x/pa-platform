@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { closeDb, readActivityEvents } from "@pa-platform/pa-core";
-import { normalizePiEvent, PiAdapter, type PiSupervisionHandle } from "../adapter.js";
+import { normalizePiEvent, PiAdapter, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import registerPiPaExtension from "../pi-extension/index.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
@@ -34,6 +34,7 @@ class CharacterizationChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
   readonly pid = 78_001;
+  unref(): void {}
 }
 
 class CharacterizationPty {
@@ -153,20 +154,35 @@ test("background launch transfers ownership without retaining caller listeners o
   const adapter = new PiAdapter({
     cwd: root,
     versionProbe: () => "0.80.8",
-    supervision: { spawnProcess: (() => child as never) as typeof spawn },
+    supervision: {
+      launchBackgroundRunner: ((_runnerPath, configPath) => {
+        const config = readPiBackgroundConfig(configPath);
+        writePiSupervisorOwnership(join(root, fixture.lifecycle.ownershipFile), {
+          schemaVersion: 1,
+          deploymentId: config.deploymentId,
+          ownershipToken: config.ownershipToken,
+          state: "active",
+          ready: true,
+          supervisorPid: child.pid,
+          childPid: 78_002,
+          updatedAt: new Date().toISOString(),
+          finalizationDeadlineMs: 5000,
+        });
+        return child as never;
+      }),
+    },
   });
 
   const startedAt = performance.now();
   const result = await adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "background" });
   const elapsed = performance.now() - startedAt;
-  const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
   try {
     assert.deepEqual(
       {
         returnedWithinDeadline: elapsed <= fixture.expected.callerReturnWithinMs,
         pending: result.metadata?.["pending"],
         supervisorReady: typeof result.metadata?.["supervisorPid"] === "number",
-        launcherOwnsMonitor: monitor !== undefined,
+        launcherOwnsMonitor: result.metadata?.["monitor"] !== undefined,
         launcherStdoutListeners: child.stdout.listenerCount("data"),
         launcherStderrListeners: child.stderr.listenerCount("data"),
         launcherCloseListeners: child.listenerCount("close"),
@@ -182,8 +198,6 @@ test("background launch transfers ownership without retaining caller listeners o
       },
     );
   } finally {
-    child.emit("close", 0);
-    await monitor?.completion;
     rmSync(root, { recursive: true, force: true });
   }
 });

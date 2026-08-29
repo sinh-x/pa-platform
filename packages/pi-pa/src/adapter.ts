@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
@@ -17,8 +18,44 @@ const TERM_GRACE = 250;
 const MAX_CARRY = 256 * 1024;
 const PROCESS_TREE_TIMEOUT = 4900;
 const PROCESS_TREE_POLL = 25;
+const BACKGROUND_READINESS_TIMEOUT_MS = 4_000;
+const BACKGROUND_READINESS_POLL_MS = 25;
+const MAX_BACKGROUND_CONFIG_BYTES = 64 * 1024;
+export const PI_SUPERVISOR_FILE = "pi-supervisor.json";
+export const PI_BACKGROUND_CONFIG_FILE = "pi-background.json";
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
+/** @deprecated Background completion is owned by the persistent runner. */
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
+export interface PiBackgroundConfig {
+  schemaVersion: 1;
+  ownershipToken: string;
+  deploymentId: string;
+  team: string;
+  cwd: string;
+  primerPath: string;
+  logFile: string;
+  sessionId: string;
+  model?: string;
+  provider?: string;
+  managed: boolean;
+  skills: string[];
+  trustedExtension?: string;
+  timeoutMs?: number;
+}
+export interface PiSupervisorOwnership {
+  schemaVersion: 1;
+  deploymentId: string;
+  ownershipToken: string;
+  state: "starting" | "active" | "finalizing" | "finalized" | "failed";
+  ready: boolean;
+  supervisorPid: number;
+  childPid?: number;
+  updatedAt: string;
+  finalizationDeadlineMs: number;
+  terminalEvent?: "completed" | "crashed";
+  terminalStatus?: "success" | "failed";
+  error?: string;
+}
 export interface PiToolProtocolOutcome {
   callId: string;
   toolName: string;
@@ -56,6 +93,12 @@ export interface PiSupervisionOptions {
   output?: NodeJS.WriteStream;
   columns?: number;
   rows?: number;
+  launchBackgroundRunner?: (runnerPath: string, configPath: string, options: { cwd: string; env: NodeJS.ProcessEnv }) => ChildProcess;
+  readBackgroundOwnership?: (path: string) => PiSupervisorOwnership | undefined;
+  readinessNow?: () => number;
+  readinessSleep?: (milliseconds: number) => Promise<void>;
+  readinessTimeoutMs?: number;
+  onSpawn?: (pid: number) => void;
 }
 
 export class PiAdapter implements RuntimeAdapter {
@@ -125,7 +168,11 @@ export class PiAdapter implements RuntimeAdapter {
     const secrets = environmentSecrets(env, this.secretValues);
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env })
-      : await runPi(args, cwd, env, opts, id, secrets, this.supervision, interactive);
+      : interactive
+        ? await runPiForeground(args, cwd, env, opts, id, secrets, this.supervision)
+        : opts.mode === "background"
+          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision })
+          : await runPiManagedProcess(args, cwd, env, opts, id, secrets, this.supervision);
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
     }
@@ -235,8 +282,7 @@ export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): {
   return { outcomes: inspector.outcomes(), diagnostic: inspector.diagnostic() };
 }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: redact(line, secrets).slice(0, MAX_BODY) }); } }
-function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, interactive = false): Promise<PiCommandResult> {
-  if (interactive) return runPiForeground(args, cwd, env, opts, id, secrets, supervision);
+export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}): Promise<PiCommandResult> {
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -246,7 +292,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
   const writeLog = supervision.writeLog ?? writeFileSync;
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
-  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: interactive ? "inherit" : ["ignore", "pipe", "pipe"] });
+  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined;
@@ -282,10 +328,8 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
     const finish = (status: number, error?: Error): void => {
       if (settled || cleanupPending) return;
       try {
-        if (!interactive) {
-          if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath, opts.deployId, secrets); carry = ""; }
-          if (opts.logFile) writeLog(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8");
-        }
+        if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath, opts.deployId, secrets); carry = ""; }
+        if (opts.logFile) writeLog(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8");
         terminalError ||= protocol.diagnostic();
         settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
@@ -294,10 +338,171 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnO
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
+    try {
+      if (!child.pid) throw new Error("Pi child did not expose a process id");
+      supervision.onSpawn?.(child.pid);
+    } catch (error) {
+      requestCleanup(1, error instanceof Error ? error : new Error(String(error)));
+    }
   });
-  if (opts.mode === "background") return Promise.resolve({ status: 0, stdout: "", stderr: "", metadata: { pid: child.pid, sessionId: id, pending: true, monitor: { completion, pid: child.pid } satisfies PiSupervisionHandle } });
   return completion;
 }
+
+interface BackgroundLaunchInput {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  opts: SpawnOpts;
+  id: string;
+  model?: string;
+  provider?: string;
+  secrets: string[];
+  supervision: PiSupervisionOptions;
+}
+
+async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<PiCommandResult> {
+  const deployDir = dirname(input.opts.primerPath);
+  const configPath = resolve(deployDir, PI_BACKGROUND_CONFIG_FILE);
+  const ownershipPath = resolve(deployDir, PI_SUPERVISOR_FILE);
+  const ownershipToken = randomUUID();
+  const plan = input.opts.executionPlan;
+  const config: PiBackgroundConfig = {
+    schemaVersion: 1,
+    ownershipToken,
+    deploymentId: input.opts.deployId,
+    team: input.env["PA_TEAM"] || plan?.team || "unknown",
+    cwd: input.cwd,
+    primerPath: input.opts.primerPath,
+    logFile: input.opts.logFile ?? resolve(deployDir, "pi.log"),
+    sessionId: input.id,
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    managed: plan !== undefined,
+    skills: plan?.skills.map((skill) => skill.path) ?? [],
+    ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
+    ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
+  };
+  try {
+    writePiBackgroundConfig(configPath, config);
+  } catch (error) {
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
+  }
+
+  const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
+  const launch = input.supervision.launchBackgroundRunner ?? ((path, backgroundConfig, options) => spawn(process.execPath, [path, backgroundConfig], { ...options, detached: true, stdio: "ignore" }));
+  let runner: ChildProcess;
+  try {
+    runner = launch(runnerPath, configPath, { cwd: input.cwd, env: input.env });
+  } catch (error) {
+    safeUnlink(configPath);
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
+  }
+
+  let launchError: Error | undefined;
+  const onError = (error: Error): void => { launchError = error; };
+  runner.once("error", onError);
+  const readOwnership = input.supervision.readBackgroundOwnership ?? readPiSupervisorOwnership;
+  const now = input.supervision.readinessNow ?? (() => performance.now());
+  const wait = input.supervision.readinessSleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
+  const timeoutMs = Math.min(BACKGROUND_READINESS_TIMEOUT_MS, Math.max(1, input.supervision.readinessTimeoutMs ?? BACKGROUND_READINESS_TIMEOUT_MS));
+  const deadline = now() + timeoutMs;
+  let ownership: PiSupervisorOwnership | undefined;
+  while (now() < deadline) {
+    if (launchError) break;
+    try { ownership = readOwnership(ownershipPath); } catch (error) {
+      launchError = error instanceof Error ? error : new Error(String(error));
+      break;
+    }
+    if (ownership?.deploymentId === input.opts.deployId && ownership.ownershipToken === ownershipToken) {
+      if (ownership.ready && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized")) break;
+      if (ownership.state === "failed") {
+        launchError = new Error(ownership.error ?? "Pi background supervisor failed before readiness");
+        break;
+      }
+    }
+    await wait(Math.min(BACKGROUND_READINESS_POLL_MS, Math.max(1, deadline - now())));
+  }
+  runner.removeListener("error", onError);
+
+  const ready = ownership?.deploymentId === input.opts.deployId
+    && ownership.ownershipToken === ownershipToken
+    && ownership.ready
+    && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized");
+  if (!ready) {
+    terminateRunner(runner.pid);
+    const reason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
+  }
+  const established = ownership!;
+  runner.unref();
+  return {
+    status: 0,
+    stdout: "",
+    stderr: "",
+    metadata: {
+      sessionId: input.id,
+      pending: true,
+      supervisorPid: established.supervisorPid,
+      ...(established.childPid ? { pid: established.childPid } : {}),
+      ownershipFile: ownershipPath,
+    },
+  };
+}
+
+export function buildPiBackgroundArgs(config: PiBackgroundConfig): string[] {
+  const args = ["--print", "--mode", "json", "--session-id", config.sessionId];
+  if (config.model) args.push("--model", config.model);
+  if (config.provider) args.push("--provider", config.provider);
+  if (config.managed) {
+    args.push("--no-skills", "--no-extensions");
+    for (const skill of config.skills) args.push("--skill", skill);
+    if (config.trustedExtension) args.push("--extension", config.trustedExtension);
+  }
+  args.push(readFileSync(config.primerPath, "utf8"));
+  return args;
+}
+
+export function writePiBackgroundConfig(path: string, config: PiBackgroundConfig): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const body = `${JSON.stringify(config)}\n`;
+  if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, body, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
+  const body = readFileSync(path, "utf8");
+  if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`runner-readiness: Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
+  const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string")) {
+    throw new Error("runner-readiness: Pi background configuration is malformed");
+  }
+  return value as PiBackgroundConfig;
+}
+
+export function readPiSupervisorOwnership(path: string): PiSupervisorOwnership | undefined {
+  if (!existsSync(path)) return undefined;
+  const body = readFileSync(path, "utf8");
+  if (Buffer.byteLength(body) > 16 * 1024) throw new Error("Pi supervisor ownership evidence exceeds 16384 bytes");
+  const value = JSON.parse(body) as Partial<PiSupervisorOwnership>;
+  if (value.schemaVersion !== 1 || typeof value.deploymentId !== "string" || typeof value.ownershipToken !== "string" || typeof value.state !== "string" || typeof value.ready !== "boolean" || !Number.isInteger(value.supervisorPid) || Number(value.supervisorPid) <= 0 || typeof value.updatedAt !== "string" || !Number.isInteger(value.finalizationDeadlineMs)) throw new Error("Pi supervisor ownership evidence is malformed");
+  return value as PiSupervisorOwnership;
+}
+
+export function writePiSupervisorOwnership(path: string, ownership: PiSupervisorOwnership): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(ownership)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function terminateRunner(pid: number | undefined): void {
+  if (!pid) return;
+  try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+}
+function safeUnlink(path: string): void { try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
+function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
+
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
   const deployDir = dirname(opts.primerPath);
   clearPiTerminalStatus(deployDir);

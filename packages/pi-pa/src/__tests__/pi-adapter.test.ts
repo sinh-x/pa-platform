@@ -3,17 +3,18 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter } from "../adapter.js";
+import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   readonly stderr = new EventEmitter();
   readonly pid = 42;
+  unref(): void {}
 }
 
 class FakePiPty extends EventEmitter {
@@ -706,14 +707,31 @@ test("cleans up after persistence failure and completes background supervision",
   assert.equal(result.exitCode, 1);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 
-  const backgroundChild = new FakePiChild();
-  let backgroundArgs: string[] = []; let backgroundStdio: unknown;
-  const background = controlledAdapter(backgroundChild, { onSpawn: (args, stdio) => { backgroundArgs = args; backgroundStdio = stdio; } });
+  const backgroundRunner = new FakePiChild();
+  let backgroundArgs: string[] = [];
+  const background = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+    launchBackgroundRunner: ((_runnerPath, configPath) => {
+      const config = readPiBackgroundConfig(configPath);
+      backgroundArgs = buildPiBackgroundArgs(config);
+      writePiSupervisorOwnership(join(dirname(configPath), "pi-supervisor.json"), {
+        schemaVersion: 1,
+        deploymentId: config.deploymentId,
+        ownershipToken: config.ownershipToken,
+        state: "active",
+        ready: true,
+        supervisorPid: backgroundRunner.pid,
+        childPid: 43,
+        updatedAt: new Date().toISOString(),
+        finalizationDeadlineMs: 5000,
+      });
+      return backgroundRunner as never;
+    }),
+  } });
   const started = await background.spawn({ primerPath: primer, deployId: "d-background", mode: "background" });
-  const monitor = started.metadata?.monitor as { completion: Promise<{ status: number | null }> };
-  backgroundChild.emit("close", 0);
-  assert.equal((await monitor.completion).status, 0);
-  assert.deepEqual(backgroundStdio, ["ignore", "pipe", "pipe"]);
+  assert.equal(started.metadata?.pending, true);
+  assert.equal(started.metadata?.monitor, undefined);
+  assert.equal(started.metadata?.supervisorPid, backgroundRunner.pid);
   assert.deepEqual(backgroundArgs.slice(0, 5), ["--print", "--mode", "json", "--session-id", started.sessionId]);
+  assert.equal(backgroundRunner.stdout.listenerCount("data"), 0);
   assert.equal(groupGone, true);
 });
