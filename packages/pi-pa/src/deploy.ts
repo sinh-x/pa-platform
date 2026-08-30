@@ -6,7 +6,7 @@ import { PA_PI_EXECUTION_MODE_ENV, appendActivityEvent, createActivityEvent, emi
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
-import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, readPiTerminalStatus, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
+import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -68,22 +68,20 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), paths.activityLogPath);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-  let terminalOutcome: { status: "success" | "failed"; reason: string } | undefined;
   const writeTerminal = (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): { status: "success" | "failed"; reason: string } => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
-    if (terminalOutcome) return terminalOutcome;
     const consistentExitCode = status === "failed" ? exitCode || 1 : exitCode;
-    const marker = readPiTerminalStatus(deployDir);
-    const markerMatches = marker?.stopReason === (status === "failed" ? "error" : "stop");
-    const timestamp = markerMatches ? marker.timestamp : new Date().toISOString();
+    const timestamp = new Date().toISOString();
     const requested: RegistryEvent = kind === "completed"
       ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode }
       : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode };
-    // Agents own shutdown reporting, but supervisor failure evidence has precedence over premature success.
+    // Reconcile every terminal observation so a later causal failure can replace
+    // success/partial while an existing failure remains sticky and exactly once.
     const authoritative = reconcileTerminalRegistryEvent(requested).event;
-    terminalOutcome = registryTerminalOutcome(authoritative, env);
-    writePiTerminalStatus(deployDir, terminalStatus(terminalOutcome.status, terminalOutcome.reason, authoritative.timestamp));
-    return terminalOutcome;
+    const outcome = registryTerminalOutcome(authoritative, env);
+    writePiTerminalStatus(deployDir, terminalStatus(outcome.status, outcome.reason, authoritative.timestamp));
+    if (!request.background) clearPiForegroundCompletion(deployDir);
+    return outcome;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
@@ -113,7 +111,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background || request.resume || request.evaluateDeployment ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
@@ -141,9 +139,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
     const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);
-    const outcome = staged
-      ? writeTerminal("completed", staged.status, staged.summary ?? stagedCompletionSummary(staged.status), staged.status === "failed" ? 1 : 0, staged.logFile ?? result.logFile, { rating: staged.rating, fallback: staged.fallback })
-      : writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
+    const outcome = request.background
+      ? writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile)
+      : staged
+        ? writeTerminal("completed", staged.status, staged.summary ?? stagedCompletionSummary(staged.status), staged.status === "failed" ? 1 : 0, staged.logFile ?? result.logFile, { rating: staged.rating, fallback: staged.fallback })
+        : writeTerminal("completed", "partial", "ppa foreground session exited without a staged completion payload", 0, result.logFile);
     return outcome.status === "success"
       ? { status: "success", team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.reason };
@@ -189,8 +189,8 @@ function stagedCompletionSummary(status: PiForegroundCompletion["status"]): stri
 }
 
 function registryTerminalOutcome(event: RegistryEvent, env: NodeJS.ProcessEnv): { status: "success" | "failed"; reason: string } {
-  if (event.event === "completed" && event.status === "success") {
-    return { status: "success", reason: boundedDiagnostic(event.summary ?? "ppa agent completed", env, 2000) };
+  if (event.event === "completed" && (event.status === "success" || event.status === "partial")) {
+    return { status: "success", reason: boundedDiagnostic(event.summary ?? `ppa agent completed with status ${event.status}`, env, 2000) };
   }
   const reason = event.event === "crashed" ? event.error ?? "ppa agent crashed" : event.summary ?? `ppa agent completed with status ${event.status ?? "unknown"}`;
   return { status: "failed", reason: boundedDiagnostic(reason, env, 2000) };

@@ -120,6 +120,9 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
     const terminalEvents = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminalEvents.length, 1);
     assert.equal(terminalEvents[0]?.event, "completed");
+    assert.equal(terminalEvents[0]?.status, "partial");
+    assert.match(terminalEvents[0]?.summary ?? "", /without a staged completion payload/);
+    assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "partial");
   });
 });
 
@@ -193,7 +196,46 @@ test("unattended foreground registry completion stays staged and running until P
     assert.equal(terminal[0]?.log_file, "/tmp/foreground-session.md");
     assert.equal(terminal[0]?.rating?.overall, 4);
     assert.equal(terminal[0]?.rating?.quality, 5);
+    assert.equal(existsSync(join(deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
   });
+});
+
+test("foreground exit publishes staged partial and failed mappings with payload preservation", async () => {
+  for (const stagedStatus of ["partial", "failed"] as const) {
+    await withPiEnv(async () => {
+      let deploymentId = "";
+      let deployDir = "";
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+        onSpawn: (opts) => { deploymentId = opts.deployId; deployDir = getDeployPaths(opts.deployId).deployDir; },
+        result: (sessionId) => {
+          writePiForegroundCompletion(deployDir, {
+            type: "registry_complete",
+            deploymentId,
+            status: stagedStatus,
+            timestamp: "2026-08-30T00:00:00.000Z",
+            summary: `${stagedStatus} staged summary`,
+            logFile: `/tmp/${stagedStatus}.md`,
+            rating: { source: "agent", overall: 3, productivity: 4, quality: 3, efficiency: 2, insight: 3 },
+            fallback: true,
+          });
+          return { sessionId, exitCode: 0, metadata: { sessionId } };
+        },
+      }));
+
+      assert.equal(result.status, stagedStatus === "failed" ? "failed" : "success");
+      const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0]?.event, "completed");
+      assert.equal(terminal[0]?.status, stagedStatus);
+      assert.equal(terminal[0]?.summary, `${stagedStatus} staged summary`);
+      assert.equal(terminal[0]?.log_file, `/tmp/${stagedStatus}.md`);
+      assert.deepEqual(terminal[0]?.rating, { source: "agent", overall: 3, productivity: 4, quality: 3, efficiency: 2, insight: 3 });
+      assert.equal(terminal[0]?.fallback, true);
+      assert.equal(terminal[0]?.exit_code, stagedStatus === "failed" ? 1 : 0);
+      assert.equal(readPiTerminalStatus(deployDir)?.stopReason, stagedStatus === "failed" ? "error" : "stop");
+      assert.equal(existsSync(join(deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
+    });
+  }
 });
 
 test("malformed foreground completion sidecars fall back without publishing before Pi exits", async () => {
@@ -214,8 +256,9 @@ test("malformed foreground completion sidecars fall back without publishing befo
     assert.equal(result.status, "success");
     const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminal.length, 1);
-    assert.equal(terminal[0]?.status, "success");
-    assert.equal(terminal[0]?.summary, "ppa deploy completed");
+    assert.equal(terminal[0]?.status, "partial");
+    assert.match(terminal[0]?.summary ?? "", /without a staged completion payload/);
+    assert.equal(existsSync(join(deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
     const diagnostics = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath).filter((event) => event.kind === "error");
     assert.match(diagnostics.at(-1)?.body ?? "", /foreground completion sidecar is malformed/);
     assert.ok((diagnostics.at(-1)?.body.length ?? 501) <= 500);
@@ -329,25 +372,46 @@ test("ordinary background deploy flows timeout through runner escalation to one 
   });
 });
 
-test("resumed and evaluator Pi deployments retain their resolved adapter deadlines", async () => {
+test("ticketed, standalone, resume, and evaluator foreground routes share deferred reconciliation without adapter deadlines", async () => {
   await withPiEnv(async () => {
     const captured: Array<{ kind: "spawn" | "resume"; opts: SpawnOpts }> = [];
+    let activeOpts: SpawnOpts | undefined;
     const adapter = stubAdapter({
-      onSpawn: (opts) => { captured.push({ kind: "spawn", opts }); },
-      onResume: (opts) => { captured.push({ kind: "resume", opts }); },
+      onSpawn: (opts) => { activeOpts = opts; captured.push({ kind: "spawn", opts }); },
+      onResume: (opts) => { activeOpts = opts; captured.push({ kind: "resume", opts }); },
+      result: (sessionId) => {
+        assert.ok(activeOpts);
+        writePiForegroundCompletion(getDeployPaths(activeOpts.deployId).deployDir, {
+          type: "registry_complete",
+          deploymentId: activeOpts.deployId,
+          status: "success",
+          timestamp: "2026-08-30T00:00:00.000Z",
+          summary: `route complete ${captured.length}`,
+        });
+        return { sessionId, exitCode: 0, metadata: { sessionId } };
+      },
     });
-    const initial = await deployWithPi({ team: "builder", mode: "implement", timeout: 1200 }, adapter);
-    assert.equal(initial.status, "success");
-    const resumed = await deployWithPi({ team: "builder", mode: "implement", resume: initial.deploymentId, timeout: 1200 }, adapter);
-    assert.equal(resumed.status, "success");
+    const standalone = await deployWithPi({ team: "builder", mode: "implement", timeout: 1200 }, adapter);
+    const ticketed = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-159", timeout: 1200 }, adapter);
+    const resumed = await deployWithPi({ team: "builder", mode: "implement", resume: standalone.deploymentId, timeout: 1200 }, adapter);
     const evaluator = await deployWithPi({ team: "builder", mode: "implement", evaluateDeployment: "d-abcdef", timeout: 600 }, adapter);
-    assert.equal(evaluator.status, "success");
-    assert.equal(captured[1]?.kind, "resume");
-    assert.equal(captured[1]?.opts.timeoutMs, 1_200_000);
+
+    for (const result of [standalone, ticketed, resumed, evaluator]) {
+      assert.equal(result.status, "success", result.reason);
+      const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0]?.status, "success");
+      assert.equal(existsSync(join(getDeployPaths(result.deploymentId!).deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
+    }
+    assert.deepEqual(captured.map((item) => item.kind), ["spawn", "spawn", "resume", "spawn"]);
+    assert.ok(captured.every((item) => item.opts.mode === "foreground" && item.opts.timeoutMs === undefined));
+    assert.ok(captured.every((item) => item.opts.env?.["PA_PI_EXECUTION_MODE"] === "foreground"));
+    assertTimeoutMetadata(captured[0]!.opts, 1200);
     assertTimeoutMetadata(captured[1]!.opts, 1200);
-    assert.equal(captured[2]?.kind, "spawn");
-    assert.equal(captured[2]?.opts.timeoutMs, 600_000);
-    assertTimeoutMetadata(captured[2]!.opts, 600);
+    assertTimeoutMetadata(captured[2]!.opts, 1200);
+    assertTimeoutMetadata(captured[3]!.opts, 600);
+    assert.equal(getDeploymentEvents(ticketed.deploymentId!)[0]?.ticket_id, "PAP-159");
+    assert.equal(getDeploymentEvents(resumed.deploymentId!)[0]?.resumed_from_deployment_id, standalone.deploymentId);
   });
 });
 
@@ -394,8 +458,8 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
   const previous = process.env["PAP_151_API_KEY"];
   process.env["PAP_151_API_KEY"] = secret;
   try {
-    const cases: Array<{ name: string; adapter: ReturnType<typeof stubAdapter>; event: "completed" | "crashed"; status?: "success" | "failed"; reason: RegExp }> = [
-      { name: "success", adapter: stubAdapter({}), event: "completed", status: "success", reason: /ppa deploy completed/ },
+    const cases: Array<{ name: string; adapter: ReturnType<typeof stubAdapter>; event: "completed" | "crashed"; status?: "success" | "partial" | "failed"; reason: RegExp }> = [
+      { name: "success", adapter: stubAdapter({}), event: "completed", status: "partial", reason: /without a staged completion payload/ },
       { name: "validation", adapter: stubAdapter({ preflight: async () => { throw new Error(`validation failed ${secret}`); } }), event: "completed", status: "failed", reason: /validation failed/ },
       { name: "native-load", adapter: stubAdapter({ preflight: async () => { throw new Error(`native-load: undefined V8 symbol ${secret} ${"x".repeat(3000)}`); } }), event: "completed", status: "failed", reason: /native-load: undefined V8 symbol/ },
       { name: "malformed", adapter: stubAdapter({ result: () => ({ exitCode: 1, errorMessage: `Malformed Pi tool call todo ${secret}` }) }), event: "completed", status: "failed", reason: /Malformed Pi tool call/ },
@@ -432,20 +496,23 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
   }
 });
 
-test("deploy completion preserves an extension-owned terminal marker", async () => {
+test("deploy reconciliation replaces a turn marker with the authoritative exit outcome", async () => {
   await withPiEnv(async () => {
-    const timestamp = "2026-08-28T00:00:00.000Z";
+    const turnTimestamp = "2026-08-28T00:00:00.000Z";
     let deployDir = "";
     const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
       onSpawn: (opts) => { deployDir = getDeployPaths(opts.deployId).deployDir; },
       result: (sessionId) => {
-        writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "stop", timestamp });
+        writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "stop", timestamp: turnTimestamp });
         return { sessionId, exitCode: 0, metadata: { sessionId } };
       },
     }));
     assert.equal(result.status, "success");
-    assert.equal(readPiTerminalStatus(getDeployPaths(result.deploymentId!).deployDir)?.timestamp, timestamp);
-    assert.equal(getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.status, "partial");
+    assert.notEqual(terminal[0]?.timestamp, turnTimestamp);
+    assert.equal(readPiTerminalStatus(deployDir)?.timestamp, terminal[0]?.timestamp);
   });
 });
 
@@ -491,32 +558,39 @@ test("supervisor fails closed when an agent-owned crash conflicts with adapter s
   });
 });
 
-test("foreground fatal exit overrides a staged successful completion payload", async () => {
-  await withPiEnv(async () => {
-    let deploymentId = "";
-    let deployDir = "";
-    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
-      onSpawn: (opts) => { deploymentId = opts.deployId; deployDir = getDeployPaths(opts.deployId).deployDir; },
-      result: (sessionId) => {
-        writePiForegroundCompletion(deployDir, {
-          type: "registry_complete",
-          deploymentId,
-          status: "success",
-          timestamp: "2026-08-30T00:00:00.000Z",
-          summary: "staged success must not win",
-          rating: { source: "agent", overall: 5 },
-        });
-        return { sessionId, exitCode: 17, errorMessage: "Pi exited fatally with code 17", metadata: { sessionId } };
-      },
-    }));
-    assert.equal(result.status, "failed");
-    const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
-    assert.equal(terminal.length, 1);
-    assert.equal(terminal[0]?.status, "failed");
-    assert.match(terminal[0]?.summary ?? "", /fatally with code 17/);
-    assert.notEqual(terminal[0]?.summary, "staged success must not win");
-    assert.equal(terminal[0]?.rating, undefined);
-  });
+test("foreground fatal exit overrides staged successful and partial completion payloads", async () => {
+  for (const stagedStatus of ["success", "partial"] as const) {
+    await withPiEnv(async () => {
+      let deploymentId = "";
+      let deployDir = "";
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+        onSpawn: (opts) => { deploymentId = opts.deployId; deployDir = getDeployPaths(opts.deployId).deployDir; },
+        result: (sessionId) => {
+          writePiForegroundCompletion(deployDir, {
+            type: "registry_complete",
+            deploymentId,
+            status: stagedStatus,
+            timestamp: "2026-08-30T00:00:00.000Z",
+            summary: `staged ${stagedStatus} must not win`,
+            rating: { source: "agent", overall: 5 },
+          });
+          return { sessionId, exitCode: 17, errorMessage: "Pi exited fatally with code 17", metadata: { sessionId } };
+        },
+      }));
+      assert.equal(result.status, "failed");
+      const terminal = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0]?.status, "failed");
+      assert.match(terminal[0]?.summary ?? "", /fatally with code 17/);
+      assert.notEqual(terminal[0]?.summary, `staged ${stagedStatus} must not win`);
+      assert.equal(terminal[0]?.rating, undefined);
+      assert.ok((terminal[0]?.summary?.length ?? 2_001) <= 2_000);
+      assert.equal(existsSync(join(deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
+      const diagnostics = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath).filter((event) => event.kind === "error");
+      assert.ok(diagnostics.length > 0);
+      assert.ok(diagnostics.every((event) => event.body.length <= 500));
+    });
+  }
 });
 
 test("foreground supervisor replaces agent success when adapter settlement fails", async () => {
