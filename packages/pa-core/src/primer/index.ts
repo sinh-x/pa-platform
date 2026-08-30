@@ -305,6 +305,7 @@ function renderDeploymentInstructions(teamConfig: TeamConfig, mode: DeployMode |
       "Use `ppa` for PA platform workflow commands. Use `pa-core serve` for Agent API server lifecycle. Use only tools exposed in the current Pi session.",
       lifecycleInstruction,
       "Save session logs under `sessions/YYYY/MM/agent-team/` and finalize registry state with `ppa registry complete` or `ppa registry update` when the run finishes.",
+      "In a foreground Pi deployment, `ppa registry complete` safely stages the completion payload while the registry remains `running`; publication is deferred until the Pi session exits. Continue working or exit with Pi's existing `/quit`, Ctrl-C, EOF, or terminal-close controls — no additional PA shutdown command is required. Background Pi completion remains immediate.",
       "On verification failure or abort, stop, keep the ticket in its current work state, add failure tags/comments, and report the exact command or condition that failed.",
     ].join("\n");
   }

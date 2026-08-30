@@ -99,6 +99,16 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
+test("generatePrimer explains deferred foreground Pi completion without a new shutdown command", () => {
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: "plan" });
+  assert.match(primer, /`ppa registry complete` safely stages the completion payload/);
+  assert.match(primer, /registry remains `running`/);
+  assert.match(primer, /publication is deferred until the Pi session exits/);
+  assert.match(primer, /`\/quit`, Ctrl-C, EOF, or terminal-close controls/);
+  assert.match(primer, /no additional PA shutdown command is required/);
+  assert.match(primer, /Background Pi completion remains immediate/);
+});
+
 test("generatePrimer ticket banner shows the ticket id when templateVars.TICKET_ID is set", () => {
   const primer = generatePrimer({
     runtime: "opencode",

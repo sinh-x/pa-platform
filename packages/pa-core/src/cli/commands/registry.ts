@@ -1,4 +1,6 @@
-import { appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "../../registry/index.js";
+import { resolve } from "node:path";
+import { getDeployPaths } from "../../deploy/paths.js";
+import { PA_PI_EXECUTION_MODE_ENV, appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, writePiForegroundCompletion } from "../../registry/index.js";
 import { nowUtc, parseTimestamp } from "../../time.js";
 import type { DeploymentStatus } from "../../types.js";
 import { formatRegistryList, formatRegistryShow } from "../formatters.js";
@@ -205,9 +207,38 @@ function runRegistryComplete(argv: string[], io: Required<CliIo>): number {
     io.stdout("Skipping: deployment already has terminal event");
     return 0;
   }
+  const staging = piForegroundStagingTarget(deployId, deployment);
+  if (staging.kind === "error") return printError(staging.error, io);
+  if (staging.kind === "stage") {
+    try {
+      writePiForegroundCompletion(staging.deployDir, {
+        type: "registry_complete",
+        deploymentId: deployId,
+        status: parsed.status,
+        timestamp: nowUtc(),
+        ...(parsed.summary ? { summary: parsed.summary } : {}),
+        ...(parsed.logFile ? { logFile: parsed.logFile } : {}),
+        ...(parsed.rating ? { rating: parsed.rating } : {}),
+        ...(parsed.fallback ? { fallback: true } : {}),
+      });
+    } catch (error) {
+      return printError(`Could not stage foreground Pi completion: ${error instanceof Error ? error.message : String(error)}`, io);
+    }
+    io.stdout(`Staged ${deployId} with status ${parsed.status}; completion publishes when foreground Pi exits`);
+    return 0;
+  }
   appendRegistryEvent({ deployment_id: deployId, team: deployment.team, event: "completed", timestamp: nowUtc(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, fallback: parsed.fallback });
   io.stdout(`Completed ${deployId} with status ${parsed.status}`);
   return 0;
+}
+
+function piForegroundStagingTarget(deployId: string, deployment: DeploymentStatus): { kind: "immediate" } | { kind: "stage"; deployDir: string } | { kind: "error"; error: string } {
+  if (process.env[PA_PI_EXECUTION_MODE_ENV] !== "foreground" || process.env["PA_DEPLOYMENT_ID"] !== deployId || deployment.runtime !== "pi" || deployment.status !== "running") return { kind: "immediate" };
+  const configured = process.env["PA_DEPLOYMENT_DIR"]?.trim();
+  if (!configured) return { kind: "error", error: "Cannot stage foreground Pi completion: PA_DEPLOYMENT_DIR is missing" };
+  const expected = getDeployPaths(deployId).deployDir;
+  if (resolve(configured) !== resolve(expected)) return { kind: "error", error: "Cannot stage foreground Pi completion: deployment directory does not match the live deployment" };
+  return { kind: "stage", deployDir: expected };
 }
 
 function parseRegistryCompleteArgs(argv: string[]): { status: "success" | "partial" | "failed"; summary?: string; logFile?: string; rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number }; fallback?: boolean } | { error: string } {

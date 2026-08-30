@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
-import { ensurePiTerminalStatus, readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
+import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, readPiTerminalStatus, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -69,15 +69,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
   let terminalOutcome: { status: "success" | "failed"; reason: string } | undefined;
-  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "failed", reason: string, exitCode: number, logFile?: string): { status: "success" | "failed"; reason: string } => {
+  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): { status: "success" | "failed"; reason: string } => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
     if (terminalOutcome) return terminalOutcome;
-    const consistentExitCode = status === "success" ? 0 : exitCode || 1;
+    const consistentExitCode = status === "failed" ? exitCode || 1 : exitCode;
     const marker = readPiTerminalStatus(deployDir);
-    const markerMatches = marker?.stopReason === (status === "success" ? "stop" : "error");
+    const markerMatches = marker?.stopReason === (status === "failed" ? "error" : "stop");
     const timestamp = markerMatches ? marker.timestamp : new Date().toISOString();
     const requested: RegistryEvent = kind === "completed"
-      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), exit_code: consistentExitCode }
+      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode }
       : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode };
     // Agents own shutdown reporting, but supervisor failure evidence has precedence over premature success.
     const authoritative = reconcileTerminalRegistryEvent(requested).event;
@@ -111,6 +111,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return crashFailure(reason);
   }
   try {
+    if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background || request.resume || request.evaluateDeployment ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
@@ -139,7 +140,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (typeof result.metadata?.["supervisorPid"] !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const outcome = writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
+    const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);
+    const outcome = staged
+      ? writeTerminal("completed", staged.status, staged.summary ?? stagedCompletionSummary(staged.status), staged.status === "failed" ? 1 : 0, staged.logFile ?? result.logFile, { rating: staged.rating, fallback: staged.fallback })
+      : writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile);
     return outcome.status === "success"
       ? { status: "success", team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.reason };
@@ -166,6 +170,24 @@ function terminalStatus(status: "success" | "failed", reason: string, timestamp 
   return { type: "agent_end" as const, stopReason: status === "success" ? "stop" : "error", ...(status === "failed" ? { error: reason } : {}), timestamp };
 }
 
+function readStagedForegroundCompletion(deployDir: string, deploymentId: string, env: NodeJS.ProcessEnv, activityLogPath: string): PiForegroundCompletion | undefined {
+  try {
+    const completion = readPiForegroundCompletion(deployDir);
+    if (completion && completion.deploymentId !== deploymentId) throw new Error("Pi foreground completion sidecar deployment does not match");
+    return completion;
+  } catch (error) {
+    const diagnostic = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(diagnostic, env, 500) }), activityLogPath);
+    return undefined;
+  }
+}
+
+function stagedCompletionSummary(status: PiForegroundCompletion["status"]): string {
+  if (status === "success") return "ppa foreground work completed";
+  if (status === "partial") return "ppa foreground work completed partially";
+  return "ppa foreground work reported failure";
+}
+
 function registryTerminalOutcome(event: RegistryEvent, env: NodeJS.ProcessEnv): { status: "success" | "failed"; reason: string } {
   if (event.event === "completed" && event.status === "success") {
     return { status: "success", reason: boundedDiagnostic(event.summary ?? "ppa agent completed", env, 2000) };
@@ -175,5 +197,5 @@ function registryTerminalOutcome(event: RegistryEvent, env: NodeJS.ProcessEnv): 
 }
 
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }
-function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Record<PaEnvKey, string> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "" }; }
+function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }
 function readSession(id: string, expected: string): string { const dir = getDeployPaths(id).deployDir; const path = resolve(dir, expected); if (!existsSync(path)) { for (const [file, binary] of [["session-id-opencode.txt", "opa"], ["session-id-claude.txt", "cpa"], ["session-id-droid.txt", "dpa"], ["session-id-pi.txt", "ppa"]] as const) if (file !== expected && existsSync(resolve(dir, file))) throw new Error(`cannot resume: deploy ${id} was launched by another runtime; use '${binary} deploy --resume ${id}'`); throw new Error(`no Pi session id recorded for ${id} — cannot resume`); } const value = readFileSync(path, "utf8").trim(); if (!value) throw new Error(`empty Pi session id recorded for ${id} — cannot resume`); return value; }
