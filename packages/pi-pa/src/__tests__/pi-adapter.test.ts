@@ -634,6 +634,38 @@ test("foreground treats three agent_end markers as turn evidence and keeps the s
   assert.equal(input.isRaw, false);
 });
 
+test("foreground /quit remains graceful before bounded cleanup settles without onExit", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-quit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let running = true; let gracefulExitCallback: (() => void) | undefined;
+  const resizeListeners = process.stdout.listenerCount("resize");
+  const sigintListeners = process.listenerCount("SIGINT");
+  pty.onKill = (signal) => { if (signal === "SIGTERM") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running, sleep: async () => {},
+    setTimeout: (callback) => { gracefulExitCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-quit", mode: "foreground" });
+  await nextTick();
+  input.emit("data", Buffer.from("/quit"));
+  assert.deepEqual(pty.writes, ["/quit"]);
+  assert.deepEqual(pty.signals, []);
+  assert.equal(input.isRaw, true);
+  assert.ok(gracefulExitCallback);
+  gracefulExitCallback();
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.deepEqual(pty.signals, ["SIGTERM"]);
+  assert.equal(input.isRaw, false);
+  assert.equal(input.listenerCount("data"), 0);
+  assert.equal(input.listenerCount("end"), 0);
+  assert.equal(input.listenerCount("close"), 0);
+  assert.equal(process.stdout.listenerCount("resize"), resizeListeners);
+  assert.equal(process.listenerCount("SIGINT"), sigintListeners);
+});
+
 test("foreground double interrupt window exits at 4999ms but starts a new sequence at 5000ms", async () => {
   const runSequence = async (secondAt: number): Promise<{ writes: string[]; signals: string[]; settled: boolean }> => {
     const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
@@ -665,31 +697,36 @@ test("foreground double interrupt window exits at 4999ms but starts a new sequen
   assert.deepEqual(await runSequence(5_000), { writes: ["\u0003", "\u0003"], signals: [], settled: false });
 });
 
-test("foreground EOF requests bounded cleanup and restores terminal listeners", async () => {
-  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-eof-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  let now = 0; let running = true;
-  pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
-    spawnPty: () => pty as never, input: input as never, output: output as never,
-    processExists: () => running, now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
-  } });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-eof", mode: "foreground" });
-  await nextTick();
-  try {
-    input.emit("end");
+test("foreground EOF and terminal close request bounded cleanup with zero residual listeners", async () => {
+  const runClosure = async (event: "end" | "close"): Promise<void> => {
+    const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+    const dir = mkdtempSync(join(tmpdir(), `pi-foreground-${event}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    let now = 0; let running = true;
+    const resizeListeners = process.stdout.listenerCount("resize");
+    const sigintListeners = process.listenerCount("SIGINT");
+    pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => running, now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+    } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: `d-foreground-${event}`, mode: "foreground" });
     await nextTick();
-    await nextTick();
+    input.emit(event);
+    const result = await resultPromise;
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.metadata?.cleanupVerified, true);
     assert.deepEqual(pty.signals, ["SIGTERM"]);
-  } finally {
-    running = false;
-    pty.emitExit(0);
-  }
-  assert.equal((await resultPromise).exitCode, 0);
-  assert.ok(now <= 10_000);
-  assert.equal(input.isRaw, false);
-  assert.equal(input.listenerCount("data"), 0);
-  assert.equal(input.listenerCount("end"), 0);
+    assert.ok(now <= 10_000);
+    assert.equal(input.isRaw, false);
+    assert.equal(input.listenerCount("data"), 0);
+    assert.equal(input.listenerCount("end"), 0);
+    assert.equal(input.listenerCount("close"), 0);
+    assert.equal(process.stdout.listenerCount("resize"), resizeListeners);
+    assert.equal(process.listenerCount("SIGINT"), sigintListeners);
+  };
+
+  await runClosure("end");
+  await runClosure("close");
 });
 
 test("foreground terminal restoration failure remains causal and bounded", async () => {
