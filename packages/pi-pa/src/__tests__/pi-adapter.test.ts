@@ -497,19 +497,36 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   assert.deepEqual(output.chunks, ["visible\n"]);
 });
 
-test("foreground trusts the extension status side channel instead of rendered terminal output", async () => {
+test("foreground error agent_end remains turn evidence until a fatal PTY exit", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-status-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  let running = true; let settled = false;
+  pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never, processExists: () => running,
+    sleep: async () => { await nextTick(); },
+  } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-status", mode: "foreground" });
+  resultPromise.then(() => { settled = true; });
   await nextTick();
-  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "error", error: "rendered authentication failure", timestamp: new Date().toISOString() });
-  pty.emitData("Interactive error: authentication failed\r\n");
-  pty.emitExit(0);
+  try {
+    writePiTerminalStatus(dir, { type: "agent_end", stopReason: "error", error: "turn authentication failure", timestamp: new Date().toISOString() });
+    pty.emitData("Interactive error: authentication failed\r\n");
+    await nextTick();
+    await nextTick();
+    input.emit("data", Buffer.from("recover with another turn\n"));
+    assert.equal(settled, false);
+    assert.deepEqual(pty.signals, []);
+    assert.deepEqual(pty.writes, ["recover with another turn\n"]);
+  } finally {
+    running = false;
+    pty.emitExit(17);
+  }
   const result = await resultPromise;
-  assert.equal(result.exitCode, 1);
-  assert.equal(result.errorMessage, "rendered authentication failure");
-  assert.match(readFileSync(join(dir, "pi-output.jsonl"), "utf8"), /\"stopReason\":\"error\"/);
+  assert.equal(result.exitCode, 17);
+  assert.match(result.errorMessage ?? "", /Pi exited with code 17/);
+  assert.ok((result.errorMessage?.length ?? Infinity) <= 2_000);
+  assert.equal(input.isRaw, false);
 });
 
 test("foreground accepts a newer success marker when PTY onExit is absent", async () => {
@@ -584,25 +601,95 @@ test("fresh foreground launch removes a stale marker and does not settle while t
   assert.equal((await resultPromise).exitCode, 0);
 });
 
-test("foreground visible exit escalates a lingering child and verifies cleanup", async () => {
+test("foreground treats three agent_end markers as turn evidence and keeps the same PTY writable", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
-  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-lingering-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  let now = 0; let running = true;
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-turns-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let running = true; let settled = false;
   pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
   } });
-  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-lingering", mode: "foreground" });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-turns", mode: "foreground", sessionId: "one-live-session" });
+  resultPromise.then(() => { settled = true; });
   await nextTick();
-  writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+
+  for (let turn = 1; turn <= 3; turn += 1) {
+    writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: `2026-08-30T00:00:0${turn}.000Z` });
+    await nextTick();
+    await nextTick();
+    input.emit("data", Buffer.from(`next turn ${turn}\n`));
+    assert.equal(settled, false, `agent_end turn ${turn} settled the live foreground session`);
+    assert.deepEqual(pty.signals, [], `agent_end turn ${turn} requested PTY cleanup`);
+    assert.deepEqual(pty.writes, Array.from({ length: turn }, (_, index) => `next turn ${index + 1}\n`));
+    assert.equal(input.isRaw, true);
+  }
+
+  running = false;
+  pty.emitExit(0);
   const result = await resultPromise;
   assert.equal(result.exitCode, 0);
-  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
-  assert.equal(result.metadata?.cleanupVerified, true);
-  assert.ok(now <= 5_000);
+  assert.equal(result.sessionId, "one-live-session");
   assert.equal(input.isRaw, false);
+});
+
+test("foreground double interrupt window exits at 4999ms but starts a new sequence at 5000ms", async () => {
+  const runSequence = async (secondAt: number): Promise<{ writes: string[]; signals: string[]; settled: boolean }> => {
+    const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+    const dir = mkdtempSync(join(tmpdir(), `pi-foreground-interrupt-${secondAt}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    let now = 0; let running = true; let settled = false;
+    pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => running, now: () => now, sleep: async () => {},
+    } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: `d-interrupt-${secondAt}`, mode: "foreground" });
+    resultPromise.then(() => { settled = true; });
+    await nextTick();
+    try {
+      input.emit("data", Buffer.from("\u0003"));
+      now = secondAt;
+      input.emit("data", Buffer.from("\u0003"));
+      await nextTick();
+      await nextTick();
+      return { writes: [...pty.writes], signals: [...pty.signals], settled };
+    } finally {
+      running = false;
+      pty.emitExit(0);
+      await resultPromise;
+    }
+  };
+
+  assert.deepEqual(await runSequence(4_999), { writes: ["\u0003"], signals: ["SIGTERM"], settled: true });
+  assert.deepEqual(await runSequence(5_000), { writes: ["\u0003", "\u0003"], signals: [], settled: false });
+});
+
+test("foreground EOF requests bounded cleanup and restores terminal listeners", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-eof-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0; let running = true;
+  pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running, now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-eof", mode: "foreground" });
+  await nextTick();
+  try {
+    input.emit("end");
+    await nextTick();
+    await nextTick();
+    assert.deepEqual(pty.signals, ["SIGTERM"]);
+  } finally {
+    running = false;
+    pty.emitExit(0);
+  }
+  assert.equal((await resultPromise).exitCode, 0);
+  assert.ok(now <= 10_000);
+  assert.equal(input.isRaw, false);
+  assert.equal(input.listenerCount("data"), 0);
+  assert.equal(input.listenerCount("end"), 0);
 });
 
 test("foreground terminal restoration failure remains causal and bounded", async () => {

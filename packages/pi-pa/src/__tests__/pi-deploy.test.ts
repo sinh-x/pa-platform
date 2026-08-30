@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
@@ -44,7 +44,7 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   });
 }
 
-function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
   const result = (sessionId: string) => options.result?.(sessionId) ?? { sessionId, exitCode: 0, metadata: { sessionId } };
   return {
     name: "pi",
@@ -96,15 +96,15 @@ class BackgroundDeploymentProcess extends EventEmitter {
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
-test("foreground PPA /quit settles without PTY onExit and emits one terminal registry event", async () => {
+test("foreground PPA /quit forwards to the live PTY and emits one terminal event after PTY exit", async () => {
   await withPiEnv(async (root) => {
     let running = true;
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
-    const pty = new ForegroundDeploymentPty(() => {
-      const deployment = readdirSync(join(root, "deployments"))[0]!;
-      writePiTerminalStatus(join(root, "deployments", deployment), { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+    let pty: ForegroundDeploymentPty;
+    pty = new ForegroundDeploymentPty(() => {
       running = false;
+      queueMicrotask(() => pty.emitExit(0));
     });
     const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
@@ -120,6 +120,100 @@ test("foreground PPA /quit settles without PTY onExit and emits one terminal reg
     const terminalEvents = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminalEvents.length, 1);
     assert.equal(terminalEvents[0]?.event, "completed");
+  });
+});
+
+test("foreground and background Pi children receive distinct internal execution modes", async () => {
+  await withPiEnv(async () => {
+    const captured: SpawnOpts[] = [];
+    const adapter = stubAdapter({ onSpawn: (opts) => { captured.push(opts); } });
+    assert.equal((await deployWithPi({ team: "builder", mode: "implement" }, adapter)).status, "success");
+    assert.equal((await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter)).status, "success");
+    assert.equal(captured[0]?.env?.["PA_PI_EXECUTION_MODE"], "foreground");
+    assert.equal(captured[1]?.env?.["PA_PI_EXECUTION_MODE"], "background");
+  });
+});
+
+test("unattended foreground registry completion stays staged and running until PTY exit", async () => {
+  await withPiEnv(async () => {
+    let deployId = "";
+    let deployDir = "";
+    let resolveSpawn!: (result: SpawnResult) => void;
+    const adapter = stubAdapter({
+      onSpawn: (opts) => { deployId = opts.deployId; deployDir = getDeployPaths(opts.deployId).deployDir; },
+      result: (sessionId) => new Promise<SpawnResult>((resolve) => { resolveSpawn = resolve; }).then((result) => ({ ...result, sessionId, metadata: { ...(result.metadata ?? {}), sessionId } })),
+    });
+    const deploymentPromise = deployWithPi({ team: "builder", mode: "implement" }, adapter);
+    await nextTick();
+    assert.ok(deployId);
+
+    const previousExecutionMode = process.env["PA_PI_EXECUTION_MODE"];
+    const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
+    const previousDeploymentDir = process.env["PA_DEPLOYMENT_DIR"];
+    process.env["PA_PI_EXECUTION_MODE"] = "foreground";
+    process.env["PA_DEPLOYMENT_ID"] = deployId;
+    process.env["PA_DEPLOYMENT_DIR"] = deployDir;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let result: Awaited<typeof deploymentPromise>;
+    try {
+      const code = await runCoreCommand([
+        "registry", "complete", deployId,
+        "--status", "success",
+        "--summary", "unattended objective complete",
+        "--log-file", "/tmp/foreground-session.md",
+        "--rating-overall", "4",
+        "--rating-quality", "5",
+      ], { binaryName: "ppa", io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) } });
+      assert.equal(code, 0);
+      assert.deepEqual(stderr, []);
+      assert.doesNotMatch(stdout.join("\n"), new RegExp(`^Completed ${deployId}`, "m"));
+      assert.equal(queryDeploymentStatus(deployId)?.status, "running");
+      assert.equal(getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed").length, 0);
+    } finally {
+      restore("PA_PI_EXECUTION_MODE", previousExecutionMode);
+      restore("PA_DEPLOYMENT_ID", previousDeploymentId);
+      restore("PA_DEPLOYMENT_DIR", previousDeploymentDir);
+      resolveSpawn({ exitCode: 0 });
+      result = await deploymentPromise;
+    }
+
+    assert.equal(result.status, "success");
+    const terminal = getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.status, "success");
+    assert.equal(terminal[0]?.summary, "unattended objective complete");
+    assert.equal(terminal[0]?.log_file, "/tmp/foreground-session.md");
+    assert.equal(terminal[0]?.rating?.overall, 4);
+    assert.equal(terminal[0]?.rating?.quality, 5);
+  });
+});
+
+test("background registry completion remains immediate and exactly once", async () => {
+  await withPiEnv(async () => {
+    let deployId = "";
+    const adapter = stubAdapter({
+      onSpawn: (opts) => { deployId = opts.deployId; },
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, pid: process.pid } }),
+    });
+    const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter);
+    assert.equal(deployed.status, "pending");
+
+    const previousExecutionMode = process.env["PA_PI_EXECUTION_MODE"];
+    process.env["PA_PI_EXECUTION_MODE"] = "background";
+    const stdout: string[] = [];
+    try {
+      assert.equal(await runCoreCommand([
+        "registry", "complete", deployId, "--status", "success", "--summary", "background complete",
+      ], { binaryName: "ppa", io: { stdout: (line) => stdout.push(line), stderr: () => {} } }), 0);
+    } finally {
+      restore("PA_PI_EXECUTION_MODE", previousExecutionMode);
+    }
+    assert.match(stdout.join("\n"), new RegExp(`Completed ${deployId} with status success`));
+    assert.equal(queryDeploymentStatus(deployId)?.status, "success");
+    const terminal = getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0]?.summary, "background complete");
   });
 });
 
