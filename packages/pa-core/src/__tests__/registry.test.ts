@@ -1,10 +1,44 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+
+test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and strictly validated", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-pi-completion-"));
+  const path = join(root, PI_FOREGROUND_COMPLETION_FILE);
+  try {
+    writePiForegroundCompletion(root, {
+      type: "registry_complete",
+      deploymentId: "d-stage",
+      status: "success",
+      timestamp: "2026-08-30T00:00:00.000Z",
+      summary: "staged summary",
+      logFile: "/tmp/session.md",
+      rating: { source: "agent", overall: 4, productivity: 3, quality: 5, efficiency: 4, insight: 4 },
+    });
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.deepEqual(readPiForegroundCompletion(root), {
+      type: "registry_complete",
+      deploymentId: "d-stage",
+      status: "success",
+      timestamp: "2026-08-30T00:00:00.000Z",
+      summary: "staged summary",
+      logFile: "/tmp/session.md",
+      rating: { source: "agent", overall: 4, productivity: 3, quality: 5, efficiency: 4, insight: 4 },
+    });
+
+    writeFileSync(path, "{not-json\n", { mode: 0o600 });
+    assert.throws(() => readPiForegroundCompletion(root), /malformed or exceeds/);
+    writeFileSync(path, "x".repeat(MAX_PI_FOREGROUND_COMPLETION_BYTES + 1), { mode: 0o600 });
+    assert.throws(() => readPiForegroundCompletion(root), /malformed or exceeds/);
+    assert.ok(readFileSync(path).byteLength > MAX_PI_FOREGROUND_COMPLETION_BYTES);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("registry appends WAL-backed events and materializes deployment status", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-"));

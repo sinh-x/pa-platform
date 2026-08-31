@@ -1,5 +1,15 @@
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  PI_FOREGROUND_COMPLETION_FILE,
+  clearPiForegroundCompletion as clearForegroundCompletion,
+  piForegroundCompletionPath as foregroundCompletionPath,
+  readPiForegroundCompletion as readForegroundCompletion,
+  writePiForegroundCompletion as writeForegroundCompletion,
+  type PiForegroundCompletion,
+} from "@pa-platform/pa-core";
+
+export { PI_FOREGROUND_COMPLETION_FILE, type PiForegroundCompletion };
 
 export const PI_TERMINAL_STATUS_FILE = "pi-terminal-status.json";
 
@@ -12,6 +22,22 @@ export interface PiTerminalStatus {
 
 export function piTerminalStatusPath(deployDir: string): string {
   return resolve(deployDir, PI_TERMINAL_STATUS_FILE);
+}
+
+export function piForegroundCompletionPath(deployDir: string): string {
+  return foregroundCompletionPath(deployDir);
+}
+
+export function clearPiForegroundCompletion(deployDir: string): void {
+  clearForegroundCompletion(deployDir);
+}
+
+export function writePiForegroundCompletion(deployDir: string, completion: PiForegroundCompletion): void {
+  writeForegroundCompletion(deployDir, completion);
+}
+
+export function readPiForegroundCompletion(deployDir: string): PiForegroundCompletion | undefined {
+  return readForegroundCompletion(deployDir);
 }
 
 export function clearPiTerminalStatus(deployDir: string): void {

@@ -27,6 +27,8 @@ export interface SpawnOpts {
   logFile?: string;
   sessionName?: string;
   sessionId?: string;
+  /** Receives the direct runtime child PID as soon as launch establishes it. */
+  onPid?: (pid: number) => void;
   executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 

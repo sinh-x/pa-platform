@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getPlatformHomeDir, getServePidFilePath, queryEvaluatorResultsByTargetDeployment, runCoreCommand, TicketStore } from "../index.js";
+import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
 
@@ -30,6 +30,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const previousTeam = process.env["PA_TEAM"];
   const previousMode = process.env["PA_MODE"];
   const previousDeploymentId = process.env["PA_DEPLOYMENT_ID"];
+  const previousDeploymentDir = process.env["PA_DEPLOYMENT_DIR"];
+  const previousPiExecutionMode = process.env[PA_PI_EXECUTION_MODE_ENV];
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
@@ -40,6 +42,8 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   delete process.env["PA_TEAM"];
   delete process.env["PA_MODE"];
   delete process.env["PA_DEPLOYMENT_ID"];
+  delete process.env["PA_DEPLOYMENT_DIR"];
+  delete process.env[PA_PI_EXECUTION_MODE_ENV];
   return fn(root).finally(() => {
     closeDb();
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
@@ -62,6 +66,10 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
     else process.env["PA_MODE"] = previousMode;
     if (previousDeploymentId === undefined) delete process.env["PA_DEPLOYMENT_ID"];
     else process.env["PA_DEPLOYMENT_ID"] = previousDeploymentId;
+    if (previousDeploymentDir === undefined) delete process.env["PA_DEPLOYMENT_DIR"];
+    else process.env["PA_DEPLOYMENT_DIR"] = previousDeploymentDir;
+    if (previousPiExecutionMode === undefined) delete process.env[PA_PI_EXECUTION_MODE_ENV];
+    else process.env[PA_PI_EXECUTION_MODE_ENV] = previousPiExecutionMode;
     rmSync(root, { recursive: true, force: true });
   });
 }
@@ -791,6 +799,64 @@ test("runCoreCommand exposes registry list, show, and complete", async () => {
     const showJson = capture();
     assert.equal(await runCoreCommand(["registry", "show", "d-reg-1", "--json"], { io: showJson.io }), 0);
     assert.equal(JSON.parse(showJson.stdout.join("\n")).status, "success");
+  });
+});
+
+test("registry complete stages only live foreground Pi payloads and keeps other runtimes immediate", async () => {
+  await withCliEnv(async () => {
+    const foregroundId = "d-pi-foreground";
+    const foregroundDir = getDeployPaths(foregroundId).deployDir;
+    mkdirSync(foregroundDir, { recursive: true });
+    appendRegistryEvent({ deployment_id: foregroundId, team: "builder", event: "started", timestamp: "2026-08-30T00:00:00.000Z", runtime: "pi", binary: "ppa" });
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
+    process.env["PA_DEPLOYMENT_ID"] = foregroundId;
+    process.env["PA_DEPLOYMENT_DIR"] = foregroundDir;
+
+    const staged = capture();
+    assert.equal(await runCoreCommand([
+      "registry", "complete", foregroundId, "--status", "success", "--summary", "foreground done", "--log-file", "/tmp/pi.md", "--rating-overall", "4", "--rating-quality", "5",
+    ], { binaryName: "ppa", io: staged.io }), 0);
+    assert.match(staged.stdout.join("\n"), /Staged .*publishes when foreground Pi exits/);
+    assert.equal(queryDeploymentStatus(foregroundId)?.status, "running");
+    assert.equal(getDeploymentEvents(foregroundId).filter((event) => event.event === "completed" || event.event === "crashed").length, 0);
+    assert.equal(statSync(join(foregroundDir, PI_FOREGROUND_COMPLETION_FILE)).mode & 0o777, 0o600);
+    const payload = readPiForegroundCompletion(foregroundDir);
+    assert.ok(payload);
+    assert.deepEqual(payload, {
+      type: "registry_complete",
+      deploymentId: foregroundId,
+      status: "success",
+      timestamp: payload.timestamp,
+      summary: "foreground done",
+      logFile: "/tmp/pi.md",
+      rating: { source: "agent", overall: 4, quality: 5 },
+    });
+
+    const oversized = capture();
+    assert.equal(await runCoreCommand(["registry", "complete", foregroundId, "--status", "success", "--summary", "x".repeat(2_001)], { binaryName: "ppa", io: oversized.io }), 1);
+    assert.match(oversized.stderr.join("\n"), /Could not stage.*summary is invalid/);
+    assert.equal(queryDeploymentStatus(foregroundId)?.status, "running");
+
+    const backgroundId = "d-pi-background";
+    appendRegistryEvent({ deployment_id: backgroundId, team: "builder", event: "started", timestamp: "2026-08-30T00:01:00.000Z", runtime: "pi", binary: "ppa" });
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "background";
+    process.env["PA_DEPLOYMENT_ID"] = backgroundId;
+    const background = capture();
+    assert.equal(await runCoreCommand(["registry", "complete", backgroundId, "--status", "success", "--summary", "background done"], { binaryName: "ppa", io: background.io }), 0);
+    assert.match(background.stdout.join("\n"), /Completed .*status success/);
+    assert.equal(queryDeploymentStatus(backgroundId)?.status, "success");
+
+    for (const [runtime, binary] of [["opencode", "opa"], ["claude", "cpa"], ["droid", "dpa"]] as const) {
+      const id = `d-${runtime}-foreground`;
+      appendRegistryEvent({ deployment_id: id, team: "builder", event: "started", timestamp: "2026-08-30T00:02:00.000Z", runtime, binary });
+      process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
+      process.env["PA_DEPLOYMENT_ID"] = id;
+      process.env["PA_DEPLOYMENT_DIR"] = getDeployPaths(id).deployDir;
+      const immediate = capture();
+      assert.equal(await runCoreCommand(["registry", "complete", id, "--status", "success", "--summary", `${runtime} done`], { binaryName: binary, io: immediate.io }), 0);
+      assert.match(immediate.stdout.join("\n"), /Completed .*status success/);
+      assert.equal(queryDeploymentStatus(id)?.status, "success");
+    }
   });
 });
 

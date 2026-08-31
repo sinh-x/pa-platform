@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { closeDb, readActivityEvents } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
 import { normalizePiEvent, PiAdapter, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import registerPiPaExtension from "../pi-extension/index.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
@@ -46,11 +46,13 @@ class CharacterizationChild extends EventEmitter {
 
 class CharacterizationPty {
   readonly pid = 78_002;
+  readonly writes: string[] = [];
+  readonly signals: string[] = [];
   private onDataHandler?: (data: string) => void;
   private onExitHandler?: (event: { exitCode: number; signal: number }) => void;
-  write(): void {}
+  write(data: string): void { this.writes.push(data); }
   resize(): void {}
-  kill(): void {}
+  kill(signal?: string): void { this.signals.push(signal ?? ""); }
   onData(handler: (data: string) => void): void { this.onDataHandler = handler; }
   onExit(handler: (event: { exitCode: number; signal: number }) => void): void { this.onExitHandler = handler; }
   emitData(data: string): void { this.onDataHandler?.(data); }
@@ -356,37 +358,101 @@ test("execution updates remain raw evidence without duplicating canonical tool u
   }
 });
 
-test("foreground settlement is bounded when PTY exit is absent and process probes remain stale", async () => {
+test("foreground turn markers retain one live PTY across three turns and unattended completion", async () => {
   const fixture = loadFixture();
-  const root = mkdtempSync(join(tmpdir(), "pap-156-foreground-"));
+  const root = mkdtempSync(join(tmpdir(), "pap-156-foreground-turns-"));
   const primer = join(root, "primer.md");
   writeFileSync(primer, "sanitized foreground objective");
   const pty = new CharacterizationPty();
   const input = new CharacterizationInput();
   const output = { write() { return true; } };
-  let elapsedSinceRealExit = 0;
-  let markerWritten = false;
+  let clock = 0;
+  let settled = false;
   const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
     spawnPty: () => pty as never,
     input: input as never,
     output: output as never,
-    now: () => elapsedSinceRealExit,
-    sleep: async (milliseconds) => {
-      elapsedSinceRealExit += milliseconds;
-      if (!markerWritten && elapsedSinceRealExit >= 100) {
-        markerWritten = true;
-        writePiTerminalStatus(root, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-29T00:00:00.100Z" });
-      }
-    },
-    processExists: () => elapsedSinceRealExit < 100,
+    now: () => clock,
+    sleep: async (milliseconds) => { clock += milliseconds; },
+    processExists: () => true,
   } });
 
   try {
-    const result = await adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "foreground" });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "foreground", sessionId: "pap-159-one-session" });
+    resultPromise.then(() => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let turn = 1; turn <= 3; turn += 1) {
+      writePiTerminalStatus(root, { type: "agent_end", stopReason: "stop", timestamp: `2026-08-30T00:00:0${turn}.000Z` });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.emit("data", Buffer.from(`follow-up-${turn}\n`));
+      assert.equal(settled, false, `turn ${turn} terminalized the foreground deployment`);
+      assert.deepEqual(pty.signals, []);
+      assert.equal(pty.writes.at(-1), `follow-up-${turn}\n`);
+      assert.equal(input.isRaw, true);
+    }
+    assert.deepEqual(pty.writes, ["follow-up-1\n", "follow-up-2\n", "follow-up-3\n"]);
+    pty.emitExit(0);
+    const result = await resultPromise;
     assert.equal(result.exitCode, 0);
-    assert.ok(elapsedSinceRealExit <= fixture.expected.foregroundSettlementWithinMs, `settlement took ${elapsedSinceRealExit}ms after real exit`);
+    assert.equal(result.sessionId, "pap-159-one-session");
+    assert.ok(clock <= fixture.expected.foregroundSettlementWithinMs);
     assert.equal(input.isRaw, false);
   } finally {
+    pty.emitExit(0);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("live foreground Pi PID protects running status, wait, health, and sweep from turn markers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-159-live-pid-"));
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousHome = process.env["PA_AI_USAGE_HOME"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["PA_AI_USAGE_HOME"] = root;
+  const deploymentId = "d-pap159-live-pid";
+  const deployDir = join(root, "deployments", deploymentId);
+  mkdirSync(deployDir, { recursive: true });
+  try {
+    appendRegistryEvent({
+      deployment_id: deploymentId,
+      team: "builder",
+      event: "started",
+      timestamp: "2026-08-30T00:00:00.000Z",
+      runtime: "pi",
+      binary: "ppa",
+      pid: process.pid,
+      effective_timeout_seconds: 120,
+    });
+    writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-30T00:00:01.000Z" });
+
+    const statusOutput: string[] = [];
+    assert.equal(await runCoreCommand(["status", deploymentId], { io: { stdout: (line) => statusOutput.push(line), stderr: () => {} } }), 0);
+    assert.match(statusOutput.join("\n"), /running/);
+    assert.equal(await runCoreCommand(["health", "deployments", "--json"], { io: { stdout: () => {}, stderr: () => {} } }), 0);
+    assert.equal(await runCoreCommand(["registry", "sweep", "--fix"], { io: { stdout: () => {}, stderr: () => {} } }), 0);
+    assert.equal(queryDeploymentStatus(deploymentId)?.status, "running");
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed").length, 0);
+
+    let sleeps = 0;
+    const waitOutput: string[] = [];
+    const waitCode = await runCoreCommand(["status", deploymentId, "--wait"], {
+      io: { stdout: (line) => waitOutput.push(line), stderr: () => {} },
+      processAlive: (pid) => pid === process.pid,
+      clock: () => sleeps * 250,
+      sleep: async () => {
+        sleeps += 1;
+        appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "completed", timestamp: "2026-08-30T00:00:02.000Z", status: "success", summary: "authoritative foreground exit", exit_code: 0 });
+      },
+    });
+    assert.equal(waitCode, 0);
+    assert.equal(sleeps, 1);
+    assert.match(waitOutput.join("\n"), /success - authoritative foreground exit/);
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+  } finally {
+    closeDb();
+    restoreEnv("PA_REGISTRY_DB", previousRegistry);
+    restoreEnv("PA_AI_USAGE_HOME", previousHome);
     rmSync(root, { recursive: true, force: true });
   }
 });

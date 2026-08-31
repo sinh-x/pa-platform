@@ -1,10 +1,130 @@
+import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getDb } from "./db.js";
-import type { DeploymentStatus, EvaluatorResult, RegistryEvent } from "../types.js";
+import type { DeploymentStatus, EvaluatorResult, Rating, RegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
 export { closeDb, getDb, verifyRegistryNativeAddon, REGISTRY_NATIVE_BINDING_ENV, type RegistryNativeAddonEvidence } from "./db.js";
+
+export const PA_PI_EXECUTION_MODE_ENV = "PA_PI_EXECUTION_MODE";
+export const PI_FOREGROUND_COMPLETION_FILE = "pi-foreground-completion.json";
+export const MAX_PI_FOREGROUND_COMPLETION_BYTES = 16 * 1024;
+const MAX_PI_COMPLETION_SUMMARY_CHARS = 2_000;
+const MAX_PI_COMPLETION_LOG_FILE_CHARS = 4_096;
+
+export interface PiForegroundCompletion {
+  type: "registry_complete";
+  deploymentId: string;
+  status: "success" | "partial" | "failed";
+  timestamp: string;
+  summary?: string;
+  logFile?: string;
+  rating?: Rating;
+  fallback?: boolean;
+}
+
+export function piForegroundCompletionPath(deployDir: string): string {
+  return resolve(deployDir, PI_FOREGROUND_COMPLETION_FILE);
+}
+
+export function clearPiForegroundCompletion(deployDir: string): void {
+  try {
+    unlinkSync(piForegroundCompletionPath(deployDir));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export function writePiForegroundCompletion(deployDir: string, completion: PiForegroundCompletion): void {
+  const validated = validatePiForegroundCompletion(completion);
+  const body = `${JSON.stringify(validated)}\n`;
+  if (Buffer.byteLength(body, "utf8") > MAX_PI_FOREGROUND_COMPLETION_BYTES) {
+    throw new Error(`Pi foreground completion sidecar exceeds ${MAX_PI_FOREGROUND_COMPLETION_BYTES} bytes`);
+  }
+  mkdirSync(deployDir, { recursive: true });
+  const path = piForegroundCompletionPath(deployDir);
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(temporary, path);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+    }
+    throw error;
+  }
+}
+
+export function readPiForegroundCompletion(deployDir: string): PiForegroundCompletion | undefined {
+  const path = piForegroundCompletionPath(deployDir);
+  if (!existsSync(path)) return undefined;
+  try {
+    const descriptor = openSync(path, "r");
+    let body: string;
+    try {
+      const buffer = Buffer.alloc(MAX_PI_FOREGROUND_COMPLETION_BYTES + 1);
+      const bytes = readSync(descriptor, buffer, 0, buffer.length, 0);
+      if (bytes > MAX_PI_FOREGROUND_COMPLETION_BYTES) throw new Error("oversized");
+      body = buffer.subarray(0, bytes).toString("utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+    return validatePiForegroundCompletion(JSON.parse(body) as unknown);
+  } catch {
+    throw new Error("Pi foreground completion sidecar is malformed or exceeds its size limit");
+  }
+}
+
+function validatePiForegroundCompletion(value: unknown): PiForegroundCompletion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pi foreground completion must be an object");
+  const input = value as Record<string, unknown>;
+  if (input["type"] !== "registry_complete") throw new Error("Pi foreground completion type is invalid");
+  const deploymentId = requiredBoundedString(input["deploymentId"], 128, "deploymentId");
+  const status = input["status"];
+  if (status !== "success" && status !== "partial" && status !== "failed") throw new Error("Pi foreground completion status is invalid");
+  const timestamp = parseTimestamp(requiredBoundedString(input["timestamp"], 64, "timestamp")).toISOString();
+  const summary = optionalBoundedString(input["summary"], MAX_PI_COMPLETION_SUMMARY_CHARS, "summary");
+  const logFile = optionalBoundedString(input["logFile"], MAX_PI_COMPLETION_LOG_FILE_CHARS, "logFile");
+  const rating = validatePiCompletionRating(input["rating"]);
+  const fallback = input["fallback"];
+  if (fallback !== undefined && typeof fallback !== "boolean") throw new Error("Pi foreground completion fallback is invalid");
+  return { type: "registry_complete", deploymentId, status, timestamp, ...(summary ? { summary } : {}), ...(logFile ? { logFile } : {}), ...(rating ? { rating } : {}), ...(fallback === true ? { fallback: true } : {}) };
+}
+
+function requiredBoundedString(value: unknown, maxChars: number, field: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxChars) throw new Error(`Pi foreground completion ${field} is invalid`);
+  return value;
+}
+
+function optionalBoundedString(value: unknown, maxChars: number, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  return requiredBoundedString(value, maxChars, field);
+}
+
+function validatePiCompletionRating(value: unknown): Rating | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pi foreground completion rating is invalid");
+  const input = value as Record<string, unknown>;
+  const source = input["source"];
+  if (source !== "agent" && source !== "system" && source !== "user") throw new Error("Pi foreground completion rating source is invalid");
+  const overall = ratingNumber(input["overall"], "overall");
+  const productivity = optionalRatingNumber(input["productivity"], "productivity");
+  const quality = optionalRatingNumber(input["quality"], "quality");
+  const efficiency = optionalRatingNumber(input["efficiency"], "efficiency");
+  const insight = optionalRatingNumber(input["insight"], "insight");
+  return { source, overall, ...(productivity !== undefined ? { productivity } : {}), ...(quality !== undefined ? { quality } : {}), ...(efficiency !== undefined ? { efficiency } : {}), ...(insight !== undefined ? { insight } : {}) };
+}
+
+function ratingNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 5) throw new Error(`Pi foreground completion rating ${field} is invalid`);
+  return value;
+}
+
+function optionalRatingNumber(value: unknown, field: string): number | undefined {
+  return value === undefined ? undefined : ratingNumber(value, field);
+}
 
 export function validateRegistryEvent(event: RegistryEvent): void {
   for (const field of ["deployment_id", "team", "event", "timestamp"] as const) {
