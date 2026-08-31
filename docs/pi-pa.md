@@ -91,8 +91,15 @@ An ordinary session can load unrelated extensions that also register `question`,
 
 Foreground deployments run Pi through a Node pseudo-terminal. Keyboard input,
 terminal resize, and SIGINT are relayed to the child, while terminal output is
-shown live. Log redaction carries bounded overlap across arbitrary PTY chunks,
-so callback boundaries cannot expose a split configured value, bearer value, or
+shown live. On settlement, PPA removes its input, resize, and signal listeners,
+restores the prior terminal raw mode, and pauses stdin only when attaching PPA's
+input listener started the stream flowing. An already-flowing or already-paused
+caller-owned stdin state is preserved. This ownership-aware restoration lets the
+wrapper exit naturally after child-exit evidence and cleanup even when its parent
+keeps the stdin writer open; PPA does not force termination with `process.exit()`.
+
+Log redaction carries bounded overlap across arbitrary PTY chunks, so callback
+boundaries cannot expose a split configured value, bearer value, or
 assignment-shaped credential. Redacted output is persisted in the deployment's
 `pi.log`, `pi-output.jsonl`, and activity timeline; activity error bodies are
 bounded to 2,000 characters.
@@ -100,10 +107,16 @@ bounded to 2,000 characters.
 The trusted PA extension writes each terminal `agent_end` result to an atomic,
 permission-restricted `pi-terminal-status.json` side channel in the deployment
 directory. Foreground supervision consumes this structured status instead of
-trying to parse rendered TUI output. PPA reports failure for a non-zero Pi
-process exit or `stopReason: "error"`, even if Pi exits with status 0. The
-redacted terminal error is retained as activity evidence. A normal terminal
-stop with exit status 0 remains successful.
+trying to parse rendered TUI output. Wrapper settlement is controlled by PTY
+exit or process-disappearance evidence plus resource cleanup, independently of
+whether rendered Pi output is valid JSON, non-JSON terminal text, a differently
+shaped JSON value, or a recognized activity event. Activity normalization and
+persistence remain observability paths; recognized activity is not a prerequisite
+for wrapper termination.
+
+PPA reports failure for a non-zero Pi process exit or `stopReason: "error"`, even
+if Pi exits with status 0. The redacted terminal error is retained as activity
+evidence. A normal terminal stop with exit status 0 remains successful.
 
 Foreground failure paths use one exact-once cleanup state machine. Persistence
 and terminal relay errors, timeouts, and interrupts request termination, wait
