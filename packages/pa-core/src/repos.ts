@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import yaml from "js-yaml";
@@ -16,6 +16,13 @@ export interface RepoEntry {
   developBranch?: string;
   featureBranchPattern?: string;
   remote_url?: string;
+}
+
+export type RegisteredRepo = { name: string } & RepoEntry;
+
+export interface ResolvedRepoExecutionPath {
+  repo: RegisteredRepo;
+  repositoryCwd: string;
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
@@ -90,7 +97,7 @@ export function normalizeRemoteUrl(remoteUrl: string): string {
   return `${host}${parsed.port ? `:${parsed.port}` : ""}/${path}`;
 }
 
-function resolveRepoByRemote(remoteUrl: string, repos: Array<{ name: string } & RepoEntry>): ({ name: string } & RepoEntry) | null {
+function resolveRepoByRemote(remoteUrl: string, repos: RegisteredRepo[]): RegisteredRepo | null {
   const normalized = normalizeRemoteUrl(remoteUrl);
   const matches = repos.filter((repo) => repo.remote_url && normalizeRemoteUrl(repo.remote_url) === normalized);
   if (matches.length > 1) {
@@ -105,7 +112,7 @@ function isLocalGitOrigin(origin: string): boolean {
   return !/^[a-z][a-z\d+.-]*:\/\//i.test(origin) && !/^(?:[^@]+@)?[^:/]+:.+$/.test(origin);
 }
 
-export function resolveRepo(nameOrPath: string, remoteUrl?: string): { name: string } & RepoEntry {
+export function resolveRepo(nameOrPath: string, remoteUrl?: string): RegisteredRepo {
   const repos = listRepos();
   const remoteMatch = remoteUrl ? resolveRepoByRemote(remoteUrl, repos) : null;
   const repo = remoteMatch ?? repos.find((candidate) => candidate.name === nameOrPath || candidate.path === expandHome(nameOrPath));
@@ -114,8 +121,64 @@ export function resolveRepo(nameOrPath: string, remoteUrl?: string): { name: str
   return repo;
 }
 
-export function resolveRepoByRemoteIdentity(remoteUrl: string): ({ name: string } & RepoEntry) | null {
+export function resolveRepoByRemoteIdentity(remoteUrl: string): RegisteredRepo | null {
   return resolveRepoByRemote(remoteUrl, listRepos());
+}
+
+export function resolveRepoExecutionPath(nameOrPath: string): ResolvedRepoExecutionPath {
+  const repos = listRepos();
+  const expandedInput = expandHome(nameOrPath);
+  const canonical = repos.find((candidate) => candidate.name === nameOrPath || candidate.path === expandedInput);
+  if (canonical) {
+    if (!existsSync(canonical.path)) throw new Error(`Repo path does not exist: ${canonical.path} (repo: ${canonical.name})`);
+    return { repo: canonical, repositoryCwd: canonical.path };
+  }
+
+  const requestedPath = resolve(expandedInput);
+  if (!existsSync(requestedPath)) {
+    throw new Error(`Repository execution path does not exist: ${requestedPath} (input: ${nameOrPath})`);
+  }
+  if (!statSync(requestedPath).isDirectory()) {
+    throw new Error(`Invalid repository execution path "${requestedPath}": path is not a directory`);
+  }
+
+  let repositoryCwd: string;
+  let gitDir: string;
+  let commonDir: string;
+  try {
+    repositoryCwd = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], requestedPath));
+    gitDir = realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-dir"], repositoryCwd));
+    commonDir = realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], repositoryCwd));
+  } catch {
+    throw new Error(`Invalid repository execution path "${requestedPath}": path is not a Git working tree`);
+  }
+
+  if (gitDir === commonDir) {
+    throw new Error(`Ineligible repository execution path "${requestedPath}": independent Git checkout is not a linked worktree`);
+  }
+
+  let candidates = repos.filter((candidate) => gitCommonDir(candidate.path) === commonDir);
+  if (candidates.length === 0) {
+    throw new Error(`Unrelated linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): Git common directory does not match any registered repository`);
+  }
+
+  if (candidates.length > 1) {
+    const origin = gitOrigin(repositoryCwd);
+    if (origin && !isLocalGitOrigin(origin)) {
+      const normalizedOrigin = normalizeRemoteUrl(origin);
+      const remoteMatches = candidates.filter((candidate) => {
+        if (!candidate.remote_url || isLocalGitOrigin(candidate.remote_url)) return false;
+        return normalizeRemoteUrl(candidate.remote_url) === normalizedOrigin;
+      });
+      if (remoteMatches.length > 0) candidates = remoteMatches;
+    }
+  }
+
+  if (candidates.length !== 1) {
+    throw new Error(`Ambiguous linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}") matches registered repositories: ${candidates.map((candidate) => `${candidate.name} (${candidate.path})`).join(", ")}`);
+  }
+
+  return { repo: candidates[0]!, repositoryCwd };
 }
 
 export function resolveProject(input: string): { key: string; prefix: string } {
@@ -179,6 +242,14 @@ function gitOutput(args: string[], cwd: string): string {
 function gitCommonDir(cwd: string): string | undefined {
   try {
     return realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd));
+  } catch {
+    return undefined;
+  }
+}
+
+function gitOrigin(cwd: string): string | undefined {
+  try {
+    return gitOutput(["config", "--get", "remote.origin.url"], cwd);
   } catch {
     return undefined;
   }
