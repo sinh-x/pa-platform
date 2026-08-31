@@ -111,13 +111,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, executionPlan: plan } as const;
+    let publishedPid: number | undefined;
+    const publishPid = (pid: number): void => {
+      if (!Number.isInteger(pid) || pid <= 0 || publishedPid !== undefined) return;
+      emitPidEvent({ deploymentId, team: team.name, pid });
+      publishedPid = pid;
+    };
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
     if (terminalError) return completeFailure(terminalError);
     if (result.sessionId !== sessionId || result.metadata?.["sessionId"] !== sessionId) throw new Error("Pi adapter returned a session id different from the persisted session id");
-    const pid = result.metadata?.["pid"]; if (typeof pid === "number") emitPidEvent({ deploymentId, team: team.name, pid });
+    const pid = result.metadata?.["pid"]; if (typeof pid === "number") publishPid(pid);
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
     if (request.background && result.metadata?.["pending"] === true && monitor?.completion) {
       // Backward-compatible injected-adapter seam. Production Pi background runs

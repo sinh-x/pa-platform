@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
@@ -67,14 +67,14 @@ function assertTimeoutMetadata(opts: SpawnOpts, timeoutSeconds: number): void {
 }
 
 class ForegroundDeploymentPty extends EventEmitter {
-  readonly pid = 77_001;
   readonly writes: string[] = [];
+  readonly signals: string[] = [];
   private onDataHandler?: (data: string) => void;
   private onExitHandler?: (event: { exitCode: number; signal: number }) => void;
-  constructor(private readonly onQuit: () => void) { super(); }
-  write(data: string): void { this.writes.push(data); if (data === "/quit") this.onQuit(); }
+  constructor(private readonly onQuit: () => void, readonly pid = 77_001, private readonly onKill: (signal: string) => void = () => {}) { super(); }
+  write(data: string): void { this.writes.push(data); if (data === "/quit\n") this.onQuit(); }
   resize(): void {}
-  kill(): void {}
+  kill(signal?: string): void { const value = signal ?? ""; this.signals.push(value); this.onKill(value); }
   onData(handler: (data: string) => void): void { this.onDataHandler = handler; }
   onExit(handler: (event: { exitCode: number; signal: number }) => void): void { this.onExitHandler = handler; }
   emitData(data: string): void { this.onDataHandler?.(data); }
@@ -112,10 +112,10 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
     } });
     const deploymentPromise = deployWithPi({ team: "builder", mode: "implement" }, adapter);
     await nextTick();
-    input.emit("data", "/quit");
+    input.emit("data", "/quit\n");
     const result = await deploymentPromise;
     assert.equal(result.status, "success", result.reason);
-    assert.deepEqual(pty.writes, ["/quit"]);
+    assert.deepEqual(pty.writes, ["/quit\n"]);
     assert.equal(input.isRaw, false);
     const terminalEvents = getDeploymentEvents(result.deploymentId!).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminalEvents.length, 1);
@@ -123,6 +123,56 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
     assert.equal(terminalEvents[0]?.status, "partial");
     assert.match(terminalEvents[0]?.summary ?? "", /without a staged completion payload/);
     assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "partial");
+  });
+});
+
+test("live foreground PTY PID protects status, wait, health, and sweep before settlement", async () => {
+  await withPiEnv(async () => {
+    let running = true;
+    const input = new ForegroundDeploymentInput();
+    const output = { write() { return true; } };
+    const pty = new ForegroundDeploymentPty(() => {}, process.pid);
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => running,
+    } });
+    const deploymentPromise = deployWithPi({ team: "builder", mode: "implement" }, adapter);
+    await nextTick();
+
+    const live = queryDeploymentStatuses()[0];
+    assert.ok(live);
+    assert.equal(live.status, "running");
+    assert.equal(live.pid, pty.pid);
+    assert.deepEqual(getDeploymentEvents(live.deploy_id).map((event) => event.event), ["started", "pid"]);
+    writePiTerminalStatus(getDeployPaths(live.deploy_id).deployDir, { type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() });
+
+    const statusOutput: string[] = [];
+    assert.equal(await runCoreCommand(["status", live.deploy_id], { io: { stdout: (line) => statusOutput.push(line), stderr: () => {} } }), 0);
+    assert.match(statusOutput.join("\n"), /running/);
+    assert.equal(await runCoreCommand(["health", "deployments", "--json"], { io: { stdout: () => {}, stderr: () => {} } }), 0);
+    assert.equal(await runCoreCommand(["registry", "sweep", "--fix"], { io: { stdout: () => {}, stderr: () => {} } }), 0);
+    assert.equal(queryDeploymentStatus(live.deploy_id)?.status, "running");
+    assert.equal(getDeploymentEvents(live.deploy_id).filter((event) => event.event === "completed" || event.event === "crashed").length, 0);
+
+    let sleeps = 0;
+    const waitOutput: string[] = [];
+    const waitCode = await runCoreCommand(["status", live.deploy_id, "--wait"], {
+      io: { stdout: (line) => waitOutput.push(line), stderr: () => {} },
+      processAlive: (pid) => pid === pty.pid && running,
+      clock: () => sleeps * 250,
+      sleep: async () => {
+        sleeps += 1;
+        running = false;
+        pty.emitExit(0);
+        await deploymentPromise;
+      },
+    });
+    assert.equal(waitCode, 0);
+    assert.equal(sleeps, 1);
+    assert.match(waitOutput.join("\n"), /partial - ppa foreground session exited without a staged completion payload/);
+    assert.equal(getDeploymentEvents(live.deploy_id).filter((event) => event.event === "pid").length, 1);
+    assert.equal(getDeploymentEvents(live.deploy_id).filter((event) => event.event === "completed" || event.event === "crashed").length, 1);
+    assert.equal(input.isRaw, false);
   });
 });
 
@@ -589,6 +639,59 @@ test("foreground fatal exit overrides staged successful and partial completion p
       const diagnostics = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath).filter((event) => event.kind === "error");
       assert.ok(diagnostics.length > 0);
       assert.ok(diagnostics.every((event) => event.body.length <= 500));
+    });
+  }
+});
+
+test("real foreground cleanup failures override staged success exactly once", async () => {
+  for (const failure of ["exit-17", "cleanup-deadline"] as const) {
+    await withPiEnv(async () => {
+      let now = 0;
+      let running = true;
+      const input = new ForegroundDeploymentInput();
+      const output = { write() { return true; } };
+      let pty!: ForegroundDeploymentPty;
+      pty = new ForegroundDeploymentPty(() => {}, failure === "exit-17" ? 77_017 : 77_099, (signal) => {
+        if (failure === "exit-17" && signal === "SIGTERM") {
+          running = false;
+          queueMicrotask(() => pty.emitExit(17));
+        }
+      });
+      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+        spawnPty: () => pty as never, input: input as never, output: output as never,
+        processExists: () => running,
+        now: () => now,
+        sleep: async (milliseconds) => { now += milliseconds; },
+      } });
+      const deploymentPromise = deployWithPi({ team: "builder", mode: "implement" }, adapter);
+      await nextTick();
+      const live = queryDeploymentStatuses()[0];
+      assert.ok(live);
+      const deployDir = getDeployPaths(live.deploy_id).deployDir;
+      writePiForegroundCompletion(deployDir, {
+        type: "registry_complete",
+        deploymentId: live.deploy_id,
+        status: "success",
+        timestamp: "2026-08-30T00:00:00.000Z",
+        summary: `staged success must not survive ${failure}`,
+        rating: { source: "agent", overall: 5 },
+      });
+
+      const cleanupStartedAt = now;
+      input.emit("end");
+      const result = await deploymentPromise;
+      assert.equal(result.status, "failed", failure);
+      assert.match(result.reason ?? "", failure === "exit-17" ? /Pi exited with code 17/ : /PTY child exit was not confirmed before cleanup deadline/);
+      const terminal = getDeploymentEvents(live.deploy_id).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1, failure);
+      assert.equal(terminal[0]?.status, "failed", failure);
+      assert.notEqual(terminal[0]?.summary, `staged success must not survive ${failure}`);
+      assert.equal(terminal[0]?.rating, undefined);
+      assert.equal(queryDeploymentStatus(live.deploy_id)?.status, "failed");
+      assert.equal(existsSync(join(deployDir, PI_FOREGROUND_COMPLETION_FILE)), false);
+      assert.deepEqual(pty.signals, failure === "exit-17" ? ["SIGTERM"] : ["SIGTERM", "SIGKILL"]);
+      assert.ok(now - cleanupStartedAt <= 4_900);
+      assert.equal(input.isRaw, false);
     });
   }
 });

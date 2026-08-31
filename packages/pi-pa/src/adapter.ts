@@ -82,6 +82,8 @@ export interface PiAdapterOptions {
 export interface PiSupervisionOptions {
   spawnProcess?: typeof spawn;
   now?: () => number;
+  /** Monotonic interval clock used for foreground interrupt sequencing. */
+  interruptNow?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   sendSignal?: (pid: number, signal: NodeJS.Signals) => void;
   processGroupGone?: (pid: number) => boolean;
@@ -198,9 +200,11 @@ export class PiAdapter implements RuntimeAdapter {
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
     }
-    if (result.status !== 0) {
-      const message = redactPiLog(tail(result.stderr || result.spawnError?.message || `pi exited with code ${result.status ?? 1}`, MAX_STDERR), secrets);
-      return { sessionId: id, exitCode: result.status ?? 1, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+    const cleanupUnverified = result.metadata?.["cleanupVerified"] === false;
+    if (result.status !== 0 || result.spawnError || cleanupUnverified) {
+      const exitCode = result.status === 0 ? 1 : result.status ?? 1;
+      const message = redactPiLog(tail(result.stderr || result.spawnError?.message || (cleanupUnverified ? "Pi cleanup failed: PTY child exit was not verified" : `pi exited with code ${exitCode}`), MAX_STDERR), secrets);
+      return { sessionId: id, exitCode, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     }
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
     if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
@@ -672,6 +676,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector);
   const appendLog = supervision.appendLog ?? appendFileSync;
   const now = supervision.now ?? Date.now;
+  const interruptNow = supervision.interruptNow ?? (() => performance.now());
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
@@ -698,7 +703,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (gracefulExitTimer) clearTimer(gracefulExitTimer);
       const restoreError = restoreTerminal();
       const finalError = error ?? restoreError;
-      const finalStatus = restoreError && status === 0 ? 1 : status;
+      const finalStatus = finalError && status === 0 ? 1 : status;
       resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: pty.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const finishEvidence = (): void => {
@@ -726,7 +731,14 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const finishExit = (exitCode: number, signal?: number): void => {
       if (settled || exited) return;
       exited = true;
-      if (cleanupPending) { finishCleanup(); return; }
+      if (cleanupPending) {
+        if (exitCode !== 0 && cleanupStatus === 0) {
+          cleanupStatus = exitCode;
+          cleanupError = new Error(`Pi exited with code ${exitCode || signal || 1}`);
+        }
+        finishCleanup();
+        return;
+      }
       try {
         finishEvidence();
         settle(exitCode, exitCode === 0 ? undefined : new Error(`Pi exited with code ${exitCode || signal || 1}`));
@@ -798,18 +810,18 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       }, TERM_GRACE);
     };
     const observeQuitCommand = (text: string): boolean => {
-      let quit = text === "/quit";
+      let quit = false;
       for (const character of text) {
         if (character === "\u0003" || character === "\u0015") inputLine = "";
         else if (character === "\b" || character === "\u007f") inputLine = inputLine.slice(0, -1);
-        else if (character === "\r" || character === "\n") { quit ||= inputLine.trim() === "/quit"; inputLine = ""; }
+        else if (character === "\r" || character === "\n") { quit ||= inputLine === "/quit"; inputLine = ""; }
         else if (character >= " ") inputLine = tail(inputLine + character, 1_024);
       }
       return quit;
     };
     const interrupt = (forwardCancellation: () => void): void => {
       if (settled || cleanupPending) return;
-      const interruptedAt = now();
+      const interruptedAt = interruptNow();
       if (lastInterruptAt !== undefined && interruptedAt - lastInterruptAt < FOREGROUND_DOUBLE_INTERRUPT_MS) {
         lastInterruptAt = undefined;
         requestCleanup(0);
@@ -849,6 +861,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (input.isTTY) input.setRawMode(true);
       input.on("data", onInput); input.once("end", onInputClosed); input.once("close", onInputClosed); process.stdout.on("resize", onResize); process.on("SIGINT", onSigint); pty.onData(onData);
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
+      opts.onPid?.(pty.pid);
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
       void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }

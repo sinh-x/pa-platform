@@ -648,8 +648,11 @@ test("foreground /quit remains graceful before bounded cleanup settles without o
   } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-quit", mode: "foreground" });
   await nextTick();
-  input.emit("data", Buffer.from("/quit"));
-  assert.deepEqual(pty.writes, ["/quit"]);
+  input.emit("data", Buffer.from("/qu"));
+  input.emit("data", Buffer.from("it"));
+  assert.equal(gracefulExitCallback, undefined);
+  input.emit("data", Buffer.from("\n"));
+  assert.deepEqual(pty.writes, ["/qu", "it", "\n"]);
   assert.deepEqual(pty.signals, []);
   assert.equal(input.isRaw, true);
   assert.ok(gracefulExitCallback);
@@ -666,6 +669,32 @@ test("foreground /quit remains graceful before bounded cleanup settles without o
   assert.equal(process.listenerCount("SIGINT"), sigintListeners);
 });
 
+test("foreground /quit cleanup requires an exact submitted logical line", async () => {
+  for (const chunks of [
+    ["/quit"],
+    ["prefix ", "/quit", "\n"],
+    ["ordinary text containing /quit is not a command\n"],
+  ]) {
+    const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+    const dir = mkdtempSync(join(tmpdir(), "pi-foreground-non-command-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    let gracefulTimerArmed = false;
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => true,
+      setTimeout: () => { gracefulTimerArmed = true; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
+    } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-non-command", mode: "foreground" });
+    await nextTick();
+    for (const chunk of chunks) input.emit("data", Buffer.from(chunk));
+    await nextTick();
+    assert.equal(gracefulTimerArmed, false, JSON.stringify(chunks));
+    assert.deepEqual(pty.signals, [], JSON.stringify(chunks));
+    assert.deepEqual(pty.writes, chunks, JSON.stringify(chunks));
+    pty.emitExit(0);
+    assert.equal((await resultPromise).exitCode, 0);
+  }
+});
+
 test("foreground double interrupt window exits at 4999ms but starts a new sequence at 5000ms", async () => {
   const runSequence = async (secondAt: number): Promise<{ writes: string[]; signals: string[]; settled: boolean }> => {
     const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
@@ -674,7 +703,7 @@ test("foreground double interrupt window exits at 4999ms but starts a new sequen
     pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
     const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
-      processExists: () => running, now: () => now, sleep: async () => {},
+      processExists: () => running, now: () => now, interruptNow: () => now, sleep: async () => {},
     } });
     const resultPromise = adapter.spawn({ primerPath: primer, deployId: `d-interrupt-${secondAt}`, mode: "foreground" });
     resultPromise.then(() => { settled = true; });
@@ -695,6 +724,41 @@ test("foreground double interrupt window exits at 4999ms but starts a new sequen
 
   assert.deepEqual(await runSequence(4_999), { writes: ["\u0003"], signals: ["SIGTERM"], settled: true });
   assert.deepEqual(await runSequence(5_000), { writes: ["\u0003", "\u0003"], signals: [], settled: false });
+});
+
+test("foreground double interrupt timing is independent of wall-clock adjustments", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-monotonic-interrupt-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let running = true;
+  let wallTime = 10_000;
+  const originalDateNow = Date.now;
+  Date.now = () => wallTime;
+  pty.onKill = (signal) => {
+    if (signal === "SIGTERM") {
+      running = false;
+      pty.emitExit(0);
+    }
+  };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-monotonic-interrupt", mode: "foreground" });
+  try {
+    await nextTick();
+    input.emit("data", Buffer.from("\u0003"));
+    wallTime += 1_000_000_000;
+    input.emit("data", Buffer.from("\u0003"));
+    const result = await resultPromise;
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(pty.writes, ["\u0003"]);
+    assert.deepEqual(pty.signals, ["SIGTERM"]);
+    assert.equal(result.metadata?.cleanupVerified, true);
+  } finally {
+    Date.now = originalDateNow;
+    running = false;
+    pty.emitExit(0);
+  }
 });
 
 test("foreground EOF and terminal close request bounded cleanup with zero residual listeners", async () => {
@@ -727,6 +791,67 @@ test("foreground EOF and terminal close request bounded cleanup with zero residu
 
   await runClosure("end");
   await runClosure("close");
+});
+
+test("foreground graceful cleanup preserves a nonzero PTY exit", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-graceful-nonzero-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let running = true;
+  pty.onKill = (signal) => {
+    if (signal === "SIGTERM") {
+      running = false;
+      pty.emitExit(17);
+    }
+  };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => running,
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-graceful-nonzero", mode: "foreground" });
+  await nextTick();
+  input.emit("end");
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 17);
+  assert.equal(result.errorMessage, "Pi exited with code 17");
+  assert.equal(result.metadata?.cleanupVerified, true);
+  assert.deepEqual(pty.signals, ["SIGTERM"]);
+  assert.equal(input.isRaw, false);
+});
+
+test("foreground graceful cleanup fails when the PTY child remains live through its deadline", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-graceful-deadline-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  let now = 0;
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    spawnPty: () => pty as never, input: input as never, output: output as never,
+    processExists: () => true,
+    now: () => now,
+    sleep: async (milliseconds) => { now += milliseconds; },
+  } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-graceful-deadline", mode: "foreground" });
+  await nextTick();
+  const cleanupStartedAt = now;
+  input.emit("end");
+  const result = await resultPromise;
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.errorMessage, "Pi cleanup failed; PTY child exit was not confirmed before cleanup deadline");
+  assert.equal(result.metadata?.cleanupVerified, false);
+  assert.deepEqual(pty.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(now - cleanupStartedAt, 4_900);
+  assert.equal(input.isRaw, false);
+});
+
+test("PiAdapter.run rejects zero status with a cleanup error or unverified cleanup", async () => {
+  for (const item of [
+    { name: "error", raw: { status: 0, stdout: "", stderr: "", spawnError: new Error("cleanup remained unverified") }, message: "cleanup remained unverified" },
+    { name: "unverified", raw: { status: 0, stdout: "", stderr: "", metadata: { cleanupVerified: false } }, message: "Pi cleanup failed: PTY child exit was not verified" },
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), `pi-foreground-zero-${item.name}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => item.raw });
+    const result = await adapter.spawn({ primerPath: primer, deployId: `d-foreground-zero-${item.name}`, mode: "foreground" });
+    assert.equal(result.exitCode, 1, item.name);
+    assert.equal(result.errorMessage, item.message, item.name);
+  }
 });
 
 test("foreground terminal restoration failure remains causal and bounded", async () => {
