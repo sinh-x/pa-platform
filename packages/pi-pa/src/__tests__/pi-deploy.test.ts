@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -15,6 +15,20 @@ import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+function initializeGitRepo(path: string): void {
+  mkdirSync(path);
+  git(["init", "-b", "develop"], path);
+  git(["config", "user.email", "test@example.com"], path);
+  git(["config", "user.name", "Test"], path);
+  writeFileSync(join(path, "README.md"), "# Test\n");
+  git(["add", "README.md"], path);
+  git(["commit", "-m", "initial"], path);
+}
 
 function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ppa-deploy-"));
@@ -290,6 +304,53 @@ test("foreground and background Pi children receive distinct internal execution 
     assert.equal((await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter)).status, "success");
     assert.equal(captured[0]?.env?.["PA_PI_EXECUTION_MODE"], "foreground");
     assert.equal(captured[1]?.env?.["PA_PI_EXECUTION_MODE"], "background");
+  });
+});
+
+test("linked-worktree execution cwd remains normalized across PPA evidence and the Pi process", async () => {
+  await withPiEnv(async (root) => {
+    const canonical = join(root, "canonical-repo");
+    const worktree = join(root, "linked-worktree");
+    const nested = join(worktree, "nested", "directory");
+    initializeGitRepo(canonical);
+    git(["worktree", "add", "-b", "feature/linked-propagation", worktree], canonical);
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, "config", "config.yaml"), [
+      `config_dir: ${root}`,
+      "repos:",
+      "  registered:",
+      `    path: ${canonical}`,
+    ].join("\n") + "\n");
+    const normalizedWorktree = realpathSync(worktree);
+    let processCwd: string | undefined;
+    const adapter = new class extends PiAdapter {
+      captured?: SpawnOpts;
+      override spawn(opts: SpawnOpts): Promise<SpawnResult> {
+        this.captured = opts;
+        return super.spawn(opts);
+      }
+    }({
+      cwd: canonical,
+      versionProbe: () => "0.80.8",
+      nativeRegistryProbe: () => undefined,
+      runCommand: (_args, options) => {
+        processCwd = options.cwd;
+        return { status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop" })}\n`, stderr: "" };
+      },
+    });
+
+    const result = await deployWithPi({ team: "builder", mode: "implement", repo: nested, background: true }, adapter);
+    assert.equal(result.status, "success", result.reason);
+    assert.equal(adapter.captured?.executionPlan?.repositoryCwd, normalizedWorktree);
+
+    const primer = readFileSync(adapter.captured!.primerPath, "utf8");
+    const deploymentContext = primer.match(/<deployment-context>\n([\s\S]*?)\n<\/deployment-context>/)?.[1];
+    assert.ok(deploymentContext);
+    assert.equal(deploymentContext.match(/^repo: (.+)$/m)?.[1], normalizedWorktree);
+
+    const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+    assert.equal(started?.repo, normalizedWorktree);
+    assert.equal(processCwd, normalizedWorktree);
   });
 });
 
