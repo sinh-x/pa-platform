@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
@@ -81,9 +84,10 @@ class ForegroundDeploymentPty extends EventEmitter {
   emitExit(exitCode: number): void { this.onExitHandler?.({ exitCode, signal: 0 }); }
 }
 
-class ForegroundDeploymentInput extends EventEmitter {
+class ForegroundDeploymentInput extends Readable {
   readonly isTTY = true;
   isRaw = false;
+  _read(): void {}
   setRawMode(raw: boolean): this { this.isRaw = raw; return this; }
 }
 
@@ -95,6 +99,16 @@ class BackgroundDeploymentProcess extends EventEmitter {
 }
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
+
+function within<T>(promise: Promise<T>, milliseconds: number, message: string | (() => string)): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(typeof message === "string" ? message : message())), milliseconds);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 test("foreground PPA /quit forwards to the live PTY and emits one terminal event after PTY exit", async () => {
   await withPiEnv(async (root) => {
@@ -124,6 +138,98 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
     assert.match(terminalEvents[0]?.summary ?? "", /without a staged completion payload/);
     assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "partial");
   });
+});
+
+test("foreground open-stdin output shapes exit naturally within 1000ms after child-exit evidence", { timeout: 15_000 }, async (context) => {
+  type OutputShape = "valid-json" | "non-json" | "different-json";
+  interface FixtureEvent {
+    type: "child-exit-evidence" | "adapter-settled";
+    outputShape: OutputShape;
+    readableFlowing: boolean | null;
+    dataListeners: number;
+    readableFlowingBefore?: boolean | null;
+    exitCode?: number;
+  }
+  const fixture = fileURLToPath(new URL("fixtures/foreground-open-stdin-child.ts", import.meta.url));
+  const expectedOutput: Record<OutputShape, RegExp> = {
+    "valid-json": /valid Pi output/,
+    "non-json": /plain Pi terminal output/,
+    "different-json": /"unexpected":\{"nested":"Pi output"\}/,
+  };
+  const runShape = async (outputShape: OutputShape): Promise<void> => {
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fixture, outputShape], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let carry = "";
+    let evidenceAt = 0;
+    let writerOpenAtEvidence = false;
+    const events: FixtureEvent[] = [];
+    let resolveEvidence!: (event: FixtureEvent) => void;
+    const evidencePromise = new Promise<FixtureEvent>((resolve) => { resolveEvidence = resolve; });
+    const observeLine = (line: string): void => {
+      if (!line) return;
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { return; }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const event = parsed as Partial<FixtureEvent>;
+      if (event.type !== "child-exit-evidence" && event.type !== "adapter-settled") return;
+      events.push(event as FixtureEvent);
+      if (event.type === "child-exit-evidence" && evidenceAt === 0) {
+        evidenceAt = performance.now();
+        writerOpenAtEvidence = child.stdin !== null && !child.stdin.writableEnded && !child.stdin.destroyed;
+        resolveEvidence(event);
+      }
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stdout += text;
+      const lines = (carry + text).split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) observeLine(line);
+    });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null; at: number }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal, at: performance.now() }));
+    });
+    const closePromise = new Promise<void>((resolve) => { child.once("close", () => resolve()); });
+
+    try {
+      const evidence = await within(evidencePromise, 10_000, `fixture did not report child-exit evidence; stderr=${stderr}`);
+      assert.equal(evidence.outputShape, outputShape);
+      assert.equal(evidence.readableFlowingBefore, null);
+      assert.equal(evidence.readableFlowing, true);
+      assert.equal(evidence.dataListeners, 1);
+      assert.equal(writerOpenAtEvidence, true, "parent closed the subprocess stdin writer before exit measurement");
+
+      const exited = await within(exitPromise, 1_000, () => `subprocess remained alive with open stdin; stdout=${stdout}; stderr=${stderr}`);
+      await within(closePromise, 1_000, `subprocess stdio did not close; stdout=${stdout}; stderr=${stderr}`);
+      if (carry) { observeLine(carry); carry = ""; }
+      assert.equal(exited.code, 0, stderr);
+      assert.equal(exited.signal, null);
+      assert.match(stdout, expectedOutput[outputShape]);
+      const exitElapsedMs = exited.at - evidenceAt;
+      assert.ok(exitElapsedMs < 1_000, `subprocess exit took ${exitElapsedMs}ms after child-exit evidence`);
+      const settlements = events.filter((event) => event.type === "adapter-settled");
+      assert.equal(settlements.length, 1, stdout);
+      assert.equal(settlements[0]?.outputShape, outputShape);
+      assert.equal(settlements[0]?.exitCode, 0);
+      assert.equal(settlements[0]?.readableFlowing, false);
+      assert.equal(settlements[0]?.dataListeners, 0);
+      assert.equal(child.stdin?.writableEnded, false, "test must not end the child stdin writer to induce exit");
+      context.diagnostic(`open-stdin lifecycle (${outputShape}): before=${String(evidence.readableFlowingBefore)}, attached=${String(evidence.readableFlowing)}/${evidence.dataListeners} listener, settled=${String(settlements[0]?.readableFlowing)}/${settlements[0]?.dataListeners} listeners, writerOpen=${writerOpenAtEvidence}, naturalExitMs=${exitElapsedMs.toFixed(1)}`);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await within(closePromise, 1_000, "failed to clean up timed-out stdin fixture").catch(() => {});
+      }
+      child.stdin?.destroy();
+    }
+  };
+  for (const outputShape of ["valid-json", "non-json", "different-json"] as const) await runShape(outputShape);
 });
 
 test("live foreground PTY PID protects status, wait, health, and sweep before settlement", async () => {

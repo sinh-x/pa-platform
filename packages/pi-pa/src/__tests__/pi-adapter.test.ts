@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
@@ -34,9 +35,13 @@ class FakePiPty extends EventEmitter {
   emitExit(exitCode: number): void { this.onExitHandler?.({ exitCode, signal: 0 }); }
 }
 
-class FakePiInput extends EventEmitter {
+class FakePiInput extends Readable {
   readonly isTTY = true;
-  isRaw = false;
+  isRaw: boolean;
+  pauseCalls = 0;
+  constructor(isRaw = false) { super(); this.isRaw = isRaw; }
+  _read(): void {}
+  override pause(): this { this.pauseCalls += 1; return super.pause(); }
   setRawMode(raw: boolean): this { this.isRaw = raw; return this; }
 }
 
@@ -495,6 +500,82 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   assert.deepEqual(pty.writes, ["hello"]);
   assert.deepEqual(pty.signals, ["SIGINT"]);
   assert.deepEqual(output.chunks, ["visible\n"]);
+});
+
+test("foreground stdin flow owned by PPA is paused and raw state is restored on success, failure, and cleanup settlement", async () => {
+  for (const item of [
+    { name: "success", initialRaw: false, expectedExitCode: 0 },
+    { name: "failure", initialRaw: true, expectedExitCode: 17 },
+    { name: "cleanup", initialRaw: false, expectedExitCode: 0 },
+  ] as const) {
+    const pty = new FakePiPty(); const input = new FakePiInput(item.initialRaw); const output = new FakePiOutput();
+    const dir = mkdtempSync(join(tmpdir(), `pi-foreground-stdin-${item.name}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+    let running = true;
+    pty.onKill = (signal) => {
+      if (item.name === "cleanup" && signal === "SIGTERM") {
+        running = false;
+        queueMicrotask(() => pty.emitExit(0));
+      }
+    };
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+      spawnPty: () => pty as never, input: input as never, output: output as never,
+      processExists: () => running,
+    } });
+    const resultPromise = adapter.spawn({ primerPath: primer, deployId: `d-foreground-stdin-${item.name}`, mode: "foreground" });
+    await nextTick();
+    assert.equal(input.readableFlowing, true, `${item.name}: PPA data listener did not initiate stdin flow`);
+    assert.equal(input.listenerCount("data"), 1, `${item.name}: expected one PPA stdin listener`);
+    assert.equal(input.isRaw, true, `${item.name}: foreground raw mode was not enabled`);
+
+    if (item.name === "cleanup") input.emit("end");
+    else { running = false; pty.emitExit(item.expectedExitCode); }
+
+    const result = await resultPromise;
+    assert.equal(result.exitCode, item.expectedExitCode, item.name);
+    assert.equal(input.readableFlowing, false, `${item.name}: PPA-owned stdin flow remained active`);
+    assert.equal(input.pauseCalls, 1, `${item.name}: PPA-owned stdin flow was not paused exactly once`);
+    assert.equal(input.listenerCount("data"), 0, `${item.name}: PPA stdin listener remained attached`);
+    assert.equal(input.isRaw, item.initialRaw, `${item.name}: prior raw mode was not restored`);
+  }
+});
+
+test("foreground stdin cleanup preserves caller-owned flow and raw mode", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(true); const output = new FakePiOutput();
+  const callerListener = (): void => {};
+  input.on("data", callerListener);
+  assert.equal(input.readableFlowing, true);
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-caller-stdin-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-caller-stdin", mode: "foreground" });
+  await nextTick();
+  assert.equal(input.listenerCount("data"), 2);
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
+  assert.equal(input.listenerCount("data"), 1);
+  assert.equal(input.readableFlowing, true);
+  assert.equal(input.pauseCalls, 0);
+  assert.equal(input.isRaw, true);
+  input.off("data", callerListener);
+  input.pause();
+});
+
+test("foreground stdin cleanup preserves a caller-paused flow state", async () => {
+  const pty = new FakePiPty(); const input = new FakePiInput(true); const output = new FakePiOutput();
+  input.pause();
+  const pauseCallsBefore = input.pauseCalls;
+  assert.equal(input.readableFlowing, false);
+  const dir = mkdtempSync(join(tmpdir(), "pi-foreground-paused-stdin-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-paused-stdin", mode: "foreground" });
+  await nextTick();
+  assert.equal(input.readableFlowing, false);
+  assert.equal(input.listenerCount("data"), 1);
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
+  assert.equal(input.readableFlowing, false);
+  assert.equal(input.pauseCalls, pauseCallsBefore);
+  assert.equal(input.listenerCount("data"), 0);
+  assert.equal(input.isRaw, true);
 });
 
 test("foreground error agent_end remains turn evidence until a fatal PTY exit", async () => {
