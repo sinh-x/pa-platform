@@ -664,6 +664,8 @@ function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): 
 function safeUnlink(path: string): void { try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
 function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
 
+function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
+
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
@@ -683,6 +685,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const processExists = supervision.processExists ?? piProcessExists;
   let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let gracefulExitTimer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined; let processExitObservedAt: number | undefined; let lastInterruptAt: number | undefined; let inputLine = "";
   const previousRaw = input.isTTY ? input.isRaw : undefined;
+  const previousFlowing = input.readableFlowing;
+  let inputFlowOwned = false;
   const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8"), (value) => redactPiLog(value, secrets), /thinking[_-]?signature|encrypted[_-]?content/i) : undefined;
 
   return new Promise((resolveResult) => {
@@ -693,6 +697,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       try { input.off("close", onInputClosed); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
       try { process.stdout.off("resize", onResize); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
       try { process.off("SIGINT", onSigint); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      try { if (inputFlowOwned) input.pause(); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
       try { if (input.isTTY && previousRaw !== undefined) input.setRawMode(previousRaw); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
       return failures.length > 0 ? new Error(`terminal-restoration: ${failures.join("; ")}`) : undefined;
     };
@@ -859,7 +864,9 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
 
     try {
       if (input.isTTY) input.setRawMode(true);
-      input.on("data", onInput); input.once("end", onInputClosed); input.once("close", onInputClosed); process.stdout.on("resize", onResize); process.on("SIGINT", onSigint); pty.onData(onData);
+      input.on("data", onInput);
+      inputFlowOwned = previousFlowing !== true && readableIsFlowing(input);
+      input.once("end", onInputClosed); input.once("close", onInputClosed); process.stdout.on("resize", onResize); process.on("SIGINT", onSigint); pty.onData(onData);
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
       opts.onPid?.(pty.pid);
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
