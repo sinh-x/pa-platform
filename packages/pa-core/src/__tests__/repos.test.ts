@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -360,6 +360,23 @@ test("execution-path resolution rejects a non-Git directory without mutation", (
       fixture.root,
       () => resolveRepoExecutionPath(nonGit),
       /not a Git working tree/,
+    ));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("execution-path resolution rejects copied .git indirection without mutation", () => {
+  const fixture = createLinkedFixture("copied-gitdir");
+  const forgedWorktree = join(fixture.root, "forged-worktree");
+  mkdirSync(forgedWorktree);
+  copyFileSync(join(fixture.worktree, ".git"), join(forgedWorktree, ".git"));
+  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
+  try {
+    withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
+      fixture.root,
+      () => resolveRepoExecutionPath(forgedWorktree),
+      /worktree admin metadata belongs to a different working tree/,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

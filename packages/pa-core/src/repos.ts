@@ -157,6 +157,8 @@ export function resolveRepoExecutionPath(nameOrPath: string): ResolvedRepoExecut
     throw new Error(`Ineligible repository execution path "${requestedPath}": independent Git checkout is not a linked worktree`);
   }
 
+  assertWorktreeAdminOwnership(requestedPath, repositoryCwd, gitDir);
+
   let candidates = repos.filter((candidate) => gitCommonDir(candidate.path) === commonDir);
   if (candidates.length === 0) {
     throw new Error(`Unrelated linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): Git common directory does not match any registered repository`);
@@ -237,6 +239,22 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
 
 function gitOutput(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+
+function assertWorktreeAdminOwnership(requestedPath: string, repositoryCwd: string, gitDir: string): void {
+  let adminWorktreeGitFile: string;
+  let rootGitFile: string;
+  try {
+    const backlink = readFileSync(resolve(gitDir, "gitdir"), "utf-8").trim();
+    if (!backlink) throw new Error("empty worktree admin gitdir metadata");
+    adminWorktreeGitFile = realpathSync(resolve(gitDir, backlink));
+    rootGitFile = realpathSync(resolve(repositoryCwd, ".git"));
+  } catch {
+    throw new Error(`Invalid linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): missing or invalid worktree admin metadata`);
+  }
+  if (adminWorktreeGitFile !== rootGitFile) {
+    throw new Error(`Invalid linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): worktree admin metadata belongs to a different working tree`);
+  }
 }
 
 function gitCommonDir(cwd: string): string | undefined {
