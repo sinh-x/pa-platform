@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getRegistryDbPath, getSkillsDir } from "../paths.js";
-import { resolveRepo } from "../repos.js";
+import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
 import type { PaEnvKey } from "../primer/index.js";
@@ -63,7 +63,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
   });
-  const repositoryCwd = options.request.repo ? resolveRepo(options.request.repo).path : process.cwd();
+  const repositoryCwd = options.request.repo ? resolveRepoExecutionPath(options.request.repo).repositoryCwd : process.cwd();
   const ticketRequired = options.mode?.require_ticket === true;
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
