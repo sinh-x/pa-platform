@@ -5,6 +5,9 @@ import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
 import type { PaEnvKey } from "../primer/index.js";
+import type { RepositoryLeaseEvidence } from "./repository-lifecycle.js";
+
+export type RepositoryLifecycleEnvKey = "PA_REPOSITORY_LEASE_OWNER" | "PA_REPOSITORY_LEASE_PATH" | "PA_REPOSITORY_LEASE_TOKEN";
 
 export interface ExecutionPlanSkill {
   name: string;
@@ -34,7 +37,8 @@ export interface ExecutionPlan {
   readonly objective: string;
   readonly skills: readonly ExecutionPlanSkill[];
   readonly memoryDocuments: readonly string[];
-  readonly environment: Readonly<Partial<Record<PaEnvKey, string>>>;
+  readonly environment: Readonly<Partial<Record<PaEnvKey | RepositoryLifecycleEnvKey, string>>>;
+  readonly repositoryLease?: Readonly<RepositoryLeaseEvidence>;
   readonly timeoutSeconds: number;
   readonly provider?: string;
   readonly model?: string;

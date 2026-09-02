@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, getDeployPaths } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, finalizeRepositoryLifecycle, getDeployPaths, transferRepositoryLeaseByDeployment } from "@pa-platform/pa-core";
 import { createClaudeActivityWriter, createClaudeSessionIdParser } from "./adapter.js";
 import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
@@ -29,6 +29,7 @@ export function loadBackgroundConfig(configPath: string): BackgroundConfig {
 export async function runBackgroundEntry(configPath: string): Promise<void> {
   const config = loadBackgroundConfig(configPath);
   try {
+    transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
     const result = await runClaude(config);
 
     // Only persist a session file when the runner observed a real claude session token.
@@ -37,6 +38,11 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       writeFileSync(resolvePath(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
     }
     const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
+    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
+    if (!lifecycle.ok) {
+      result.exitCode = 1;
+      result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
+    }
     if (result.exitCode === 0) {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: "cpa background deploy completed" }), activityLogPath);
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "cpa background deploy completed", logFile: config.logFile, exitCode: 0 });
@@ -51,9 +57,16 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
-    emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
-    throw error;
+    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
+    const baseError = error instanceof Error ? error.message : String(error);
+    const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
+    throw new Error(finalError);
   }
+}
+
+function boundedLifecycleDiagnostic(value: string): string {
+  return value.length <= 2_000 ? value : `${value.slice(0, 1_997)}...`;
 }
 
 // Standard ESM main-module guard so test files can import `loadBackgroundConfig`

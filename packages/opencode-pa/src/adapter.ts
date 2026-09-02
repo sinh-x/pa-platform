@@ -51,7 +51,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
       const logFile = opts.logFile ?? resolve(opts.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "opencode-background.json");
-      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
+      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
       child.unref();
@@ -445,7 +445,7 @@ function basenameDeployId(deployDir: string): string {
 
 function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_REPOSITORY_LEASE_OWNER", "PA_REPOSITORY_LEASE_PATH", "PA_REPOSITORY_LEASE_TOKEN"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

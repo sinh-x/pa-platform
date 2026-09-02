@@ -461,7 +461,7 @@ function basenameDeployId(deployDir: string): string {
 
 export function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_CPA_DEFAULT_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_REPOSITORY_LEASE_OWNER", "PA_REPOSITORY_LEASE_PATH", "PA_REPOSITORY_LEASE_TOKEN", "PA_CPA_DEFAULT_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

@@ -244,6 +244,9 @@ test("PAP-162 Claude key/path execution-plan contract keeps all repository evide
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(plan.repositoryLease?.role, "reader");
+      assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
+      assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
       assert.equal(captured.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryLifecycle, getDeployPaths, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
@@ -568,6 +568,9 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(plan.repositoryLease?.role, "reader");
+      assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
+      assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
       assert.equal(opts.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);
@@ -603,6 +606,19 @@ test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before ad
     assert.match(rejected.reason ?? "", /ambiguous registered identity/);
     assert.ok((rejected.reason ?? "").length <= 2000);
     assert.equal(spawns, 0);
+
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n`);
+    writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
+    const owner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    assert.equal(owner.status, "pending", owner.reason);
+    assert.equal(spawns, 1);
+    const conflict = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    assert.equal(conflict.status, "failed");
+    assert.match(conflict.reason ?? "", /lease conflict.*deployment=/is);
+    assert.ok((conflict.reason ?? "").length <= 2000);
+    assert.equal(spawns, 1);
+    assert.ok(owner.deploymentId);
+    assert.equal(finalizeRepositoryLifecycle(getDeployPaths(owner.deploymentId).deployDir).ok, true);
   });
 });
 

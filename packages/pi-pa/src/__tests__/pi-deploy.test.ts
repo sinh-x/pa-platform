@@ -354,6 +354,11 @@ test("PPA key and exact-path requests consume one canonical execution plan acros
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
       assert.equal(observation.plan.repositoryAccess, "mutating");
+      assert.equal(observation.plan.repositoryLease?.role, "owner");
+      assert.equal(observation.plan.repositoryLease?.repositoryKey, observation.plan.repoKey);
+      assert.equal(observation.plan.repositoryLease?.repositoryRoot, observation.plan.repoRoot);
+      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_OWNER, observation.plan.repositoryLease?.ownerDeploymentId);
+      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_PATH, observation.plan.repositoryLease?.leasePath);
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);

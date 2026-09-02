@@ -69,7 +69,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
         deploymentId: opts.env["PA_DEPLOYMENT_ID"],
         team: opts.env["PA_TEAM"],
         sessionFileName: this.sessionFileName,
-      }, null, 2));
+      }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], {
         cwd: opts.cwd,
@@ -527,7 +527,7 @@ function toEnvRecord(env: NodeJS.ProcessEnv): Record<string, string> {
 
 export function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FACTORY_API_KEY", "FACTORY_API_BASE_URL", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_DPA_DEFAULT_MODEL", "PA_DPA_AUTONOMY"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FACTORY_API_KEY", "FACTORY_API_BASE_URL", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_REPOSITORY_LEASE_OWNER", "PA_REPOSITORY_LEASE_PATH", "PA_REPOSITORY_LEASE_TOKEN", "PA_DPA_DEFAULT_MODEL", "PA_DPA_AUTONOMY"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

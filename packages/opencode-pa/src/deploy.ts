@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, renderEnvVarsBlock, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, transferRepositoryLease, renderEnvVarsBlock, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -150,7 +150,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   let plan: ExecutionPlan;
   try {
-    plan = resolveExecutionPlan({
+    plan = activateRepositoryLifecycle(resolveExecutionPlan({
       request: { ...request, ...(ticketId ? { ticket: ticketId } : {}), ...(objective ? { objective } : {}), provider, model },
       teamConfig,
       mode: selectedMode,
@@ -160,15 +160,21 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
       activityLogPath: paths.activityLogPath,
       environment: requestedEnvironment,
       timeoutSeconds: effectiveTimeoutSeconds,
-    });
+    }), { dryRun: request.dryRun, resumeDeploymentId: request.resume });
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
   const env = { ...plan.environment } as Record<PaEnvKey, string>;
-  const extraInstructions = buildExtraInstructions(plan, teamConfig);
-  const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: plan.mode, objective: plan.objective, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
   const primerPath = resolve(deployDir, "primer.md");
-  writeFileSync(primerPath, primer, "utf-8");
+  try {
+    const extraInstructions = buildExtraInstructions(plan, teamConfig);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: plan.mode, objective: plan.objective, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
+    writeFileSync(primerPath, primer, "utf-8");
+  } catch (error) {
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const reason = error instanceof Error ? error.message : String(error);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
+  }
 
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   process.stdout.write(`Deployment: ${deploymentId}\n`);
@@ -184,16 +190,17 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   try {
     priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
   } catch (error) {
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const reason = error instanceof Error ? error.message : String(error);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
   }
-
-  emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
 
   if (request.sanitizedCharsRemoved && request.sanitizedCharsRemoved > 0) {
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `sanitized objective: removed ${request.sanitizedCharsRemoved} invalid character(s)` }), paths.activityLogPath);
   }
 
   try {
+    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, executionPlan: plan })
@@ -207,6 +214,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     const pid = typeof result.metadata?.["pid"] === "number" ? result.metadata["pid"] : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
+      if (pid !== undefined) transferRepositoryLease(plan, pid);
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `opencode background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
@@ -214,28 +222,34 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     // Finalization appends to activity.jsonl instead of overwriting — live events from
     // the opencode plugin (~/.config/opencode/plugins/pa-safety-activity.js) and any
     // streaming writer are preserved alongside our terminal event.
-    const errorMessage = result.errorMessage;
-    const terminalKind = result.exitCode === 0 ? "text" : "error";
-    const terminalBody = result.exitCode === 0
-      ? `opencode exited with code ${result.exitCode}`
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const lifecycleError = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
+    const effectiveExitCode = result.exitCode === 0 && lifecycleError ? 1 : result.exitCode;
+    const errorMessage = result.errorMessage ?? lifecycleError;
+    const terminalKind = effectiveExitCode === 0 ? "text" : "error";
+    const terminalBody = effectiveExitCode === 0
+      ? `opencode exited with code ${effectiveExitCode}`
       : errorMessage
-        ? `opencode exited with code ${result.exitCode}: ${errorMessage}`
-        : `opencode exited with code ${result.exitCode}`;
+        ? `opencode exited with code ${effectiveExitCode}: ${errorMessage}`
+        : `opencode exited with code ${effectiveExitCode}`;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: terminalKind, source: "opencode", body: terminalBody }), paths.activityLogPath);
-    const summary = result.exitCode === 0
+    const summary = effectiveExitCode === 0
       ? "opa deploy completed"
-      : `opa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
-    emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
+      : `opa deploy failed (exit ${effectiveExitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
+    emitCompletedEvent({ deploymentId, team: teamConfig.name, status: effectiveExitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: effectiveExitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    if (result.exitCode === 0) {
+    if (effectiveExitCode === 0) {
       await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
       return { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${result.exitCode}` };
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `opencode exited with code ${effectiveExitCode}` };
   } catch (error) {
-    emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const baseError = error instanceof Error ? error.message : String(error);
+    const finalError = boundedDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    emitCrashedEvent({ deploymentId, team: teamConfig.name, error: finalError, exitCode: 1 });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: finalError };
   }
 }
 
@@ -377,6 +391,8 @@ agents:
 ${teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${plan.mode}
 repository_access: ${plan.repositoryAccess}
+repository_lease_owner: ${plan.repositoryLease?.ownerDeploymentId ?? "none"}
+repository_lease_path: ${plan.repositoryLease?.leasePath ?? "none"}
 ${envVarLines}</deployment-context>`;
 }
 
