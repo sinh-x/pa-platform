@@ -406,17 +406,20 @@ test("opa default hooks route agent API deploy requests through opencode adapter
 });
 
 test("opa deploy selects OpenCode when both runtime hooks are registered", async () => {
-  let opencodeCalls = 0;
-  let piCalls = 0;
-  const hooks = composeRuntimeHooks(
-    { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
-    { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } }, "opencode",
-  );
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    let opencodeCalls = 0;
+    let piCalls = 0;
+    const hooks = composeRuntimeHooks(
+      { deploy: () => { opencodeCalls++; return { status: "pending", deploymentId: "d-open01" }; } },
+      { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } }, "opencode",
+    );
 
-  const code = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "opa" });
-  assert.equal(code, 0);
-  assert.equal(opencodeCalls, 1);
-  assert.equal(piCalls, 0);
+    const code = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "opa" });
+    assert.equal(code, 0);
+    assert.equal(opencodeCalls, 1);
+    assert.equal(piCalls, 0);
+  });
 });
 
 test("opa exposes an explicit default hook boundary for core-owned serve", () => {
