@@ -114,14 +114,14 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const baseEvidence: RepositoryLeaseEvidence = {
     schemaVersion: LEASE_SCHEMA_VERSION,
     role: options.dryRun ? "dry-run" : plan.repositoryAccess === "read-only" ? "reader" : "owner",
-    state: options.dryRun ? "not-required" : "active",
+    state: options.dryRun || plan.repositoryAccess === "read-only" ? "not-required" : "active",
     repositoryKey: plan.repoKey,
     repositoryRoot: plan.repoRoot,
     deploymentId: plan.lifecycle.deploymentId,
     ...branchCleanupFromEnvironment({ ...process.env, ...plan.environment }),
   };
 
-  if (options.dryRun) {
+  if (options.dryRun || plan.repositoryAccess === "read-only") {
     persistLifecycle(plan.lifecycle.deploymentDir, baseEvidence);
     return withLifecycle(plan, baseEvidence);
   }
@@ -131,10 +131,6 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const inheritedOwner = inherited["PA_REPOSITORY_LEASE_OWNER"];
   const inheritedToken = inherited["PA_REPOSITORY_LEASE_TOKEN"];
   const existing = readLeaseIfPresent(leasePath);
-
-  if (existing && plan.repositoryAccess === "read-only") {
-    throw lifecycleError(`Read-only deployment rejected because repository access cannot be sandboxed from active owner ${ownerSummary(existing)}. Retry after the owner completes.`, existing);
-  }
 
   if (existing && inheritedOwner === existing.deploymentId && inheritedToken === existing.token && sameRepository(existing, plan)) {
     if (!processAlive(existing.pid)) {
@@ -156,7 +152,7 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const acquired = readLeaseRequired(leasePath);
   const evidence: RepositoryLeaseEvidence = {
     ...baseEvidence,
-    role: plan.repositoryAccess === "read-only" ? "reader" : "owner",
+    role: "owner",
     ownerDeploymentId: acquired.deploymentId,
     leasePath,
     acquiredAt: acquired.acquiredAt,
@@ -185,7 +181,7 @@ function transferRepositoryLeaseByDeploymentUnlocked(deploymentDir: string, pid:
   const lifecyclePath = resolve(deploymentDir, LIFECYCLE_FILE_NAME);
   if (!existsSync(lifecyclePath)) return;
   const evidence = readLifecycle(lifecyclePath);
-  if ((evidence.role !== "owner" && evidence.role !== "reader") || evidence.state !== "active" || !evidence.leasePath) return;
+  if (evidence.role !== "owner" || evidence.state !== "active" || !evidence.leasePath) return;
   const lease = readLeaseIfPresent(evidence.leasePath);
   if (!lease) {
     const persisted = readLifecycle(lifecyclePath);
@@ -322,7 +318,7 @@ function acquireDurableLease(plan: ExecutionPlan, leasePath: string, pid: number
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const existing = readLeaseIfPresent(leasePath);
     if (existing) {
-      if (processAlive(existing.pid)) throw lifecycleError(`Repository access lease conflict: ${ownerSummary(existing)}. This runtime cannot sandbox readers, so retry after the owner completes.`, existing);
+      if (processAlive(existing.pid)) throw lifecycleError(`Repository mutation lease conflict: ${ownerSummary(existing)}. Retry after the owner completes.`, existing);
       recoverStaleLease(existing, leasePath);
       continue;
     }

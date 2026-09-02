@@ -18,7 +18,12 @@ compatibility default is `mutating`). Mutating deployments require a clean
 checkout and one durable repository lease. Terminal handling restores the exact
 captured branch/HEAD state, preserves dirty recovery evidence instead of
 discarding files, and releases ownership idempotently. Read-only deployments do
-not acquire the mutation lease and remain admissible while a mutator runs.
+not acquire the mutation lease and remain admissible while a mutator runs. Their
+runtime process (or detached background supervisor) runs inside packaged
+Bubblewrap with a read-only root filesystem, narrowly writable PA/runtime state,
+and explicit read-only mounts for the registered checkout and external Git
+metadata. Sandbox setup or launch failure is fail-closed and never falls back to
+an unprotected runtime process.
 
 Legacy worktree orchestration reports cannot be resumed automatically. Preserve
 their commits and dirty files, recover the registered checkout manually, archive

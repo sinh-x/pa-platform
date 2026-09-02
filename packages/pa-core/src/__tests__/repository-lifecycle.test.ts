@@ -59,7 +59,7 @@ function deadPid(): number {
   return 2_000_000_000;
 }
 
-test("serializes all repository access when a read-only filesystem sandbox is unavailable", () => {
+test("admits a read-only deployment while retaining mutator-only lease serialization", () => {
   const f = fixture("serialization");
   try {
     const before = captureRepositoryCheckout(f.repo);
@@ -71,17 +71,20 @@ test("serializes all repository access when a read-only filesystem sandbox is un
       runtimeSpawns += 1;
     }, (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /lease conflict.*deployment=d-owner/is);
+      assert.match(error.message, /mutation lease conflict.*deployment=d-owner/is);
       assert.ok(error.message.length <= 2_000);
       return true;
     });
     assert.equal(runtimeSpawns, 0);
-    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only")), /Read-only deployment rejected.*cannot be sandboxed.*d-owner/is);
-    assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
     const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
     assert.equal(reader.repositoryLease?.role, "reader");
+    assert.equal(reader.repositoryLease?.state, "not-required");
+    assert.equal(reader.repositoryLease?.leasePath, undefined);
+    assert.ok(owner.repositoryLease?.leasePath && existsSync(owner.repositoryLease.leasePath));
     assert.deepEqual(captureRepositoryCheckout(f.repo), before);
     assert.equal(finalizeRepositoryLifecycle(reader).ok, true);
+    assert.ok(owner.repositoryLease?.leasePath && existsSync(owner.repositoryLease.leasePath));
+    assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
@@ -99,28 +102,16 @@ test("a delayed ownership transfer after finalization cannot recreate the releas
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
-test("background readers transfer their exclusive lease to the authenticated runner", () => {
+test("background reader transfer is a no-op and cannot affect the mutator lease", () => {
   const f = fixture("reader-transfer");
   try {
+    const owner = activateRepositoryLifecycle(plan(f.root, f.repo, "d-owner"));
     const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
-    assert.ok(reader.repositoryLease?.leasePath);
+    assert.equal(reader.repositoryLease?.leasePath, undefined);
     transferRepositoryLeaseByDeployment(reader.lifecycle.deploymentDir, 4242);
-    const lease = JSON.parse(readFileSync(reader.repositoryLease.leasePath, "utf8")) as Record<string, unknown>;
-    assert.equal(lease["pid"], 4242);
-    transferRepositoryLeaseByDeployment(reader.lifecycle.deploymentDir, process.pid);
     assert.equal(finalizeRepositoryLifecycle(reader).ok, true);
-  } finally { rmSync(f.root, { recursive: true, force: true }); }
-});
-
-test("read-only runtime writes fail terminal verification and retain recovery ownership", () => {
-  const f = fixture("reader-write");
-  try {
-    const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
-    writeFileSync(join(f.repo, "forbidden.txt"), "write attempted\n");
-    const result = finalizeRepositoryLifecycle(reader);
-    assert.equal(result.ok, false);
-    assert.match(result.diagnostic ?? "", /recovery required.*untracked=1/is);
-    assert.ok(reader.repositoryLease?.leasePath && readFileSync(reader.repositoryLease.leasePath, "utf8").includes("d-reader"));
+    assert.ok(owner.repositoryLease?.leasePath && existsSync(owner.repositoryLease.leasePath));
+    assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

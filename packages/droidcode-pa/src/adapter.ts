@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
 import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
@@ -37,7 +37,7 @@ export interface DroidCodeAdapterOptions {
   env?: NodeJS.ProcessEnv;
   sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 }
 
 export class DroidCodeAdapter implements RuntimeAdapter {
@@ -49,7 +49,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   private readonly resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 
   constructor(options: DroidCodeAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -75,16 +75,21 @@ export class DroidCodeAdapter implements RuntimeAdapter {
         ...ownership,
       }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
-      const child = spawn(process.execPath, [runnerPath, configPath], {
-        cwd: opts.cwd,
+      const launch = constrainRuntimeProcess(opts.executionPlan, process.execPath, [runnerPath, configPath], opts.cwd);
+      const child = spawn(launch.command, [...launch.args], {
+        cwd: launch.cwd,
         env: opts.env,
         detached: true,
         stdio: "ignore",
       });
+      const launchError = new Promise<Error>((resolveError) => child.once("error", resolveError));
       child.unref();
-      if (!child.pid) throw new Error("runner-readiness: Droid background supervisor did not expose a PID");
+      if (!child.pid) {
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw await Promise.race([launchError, delayedLaunchError("Droid")]);
+      }
       try {
-        await waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid });
+        await Promise.race([waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid }), launchError.then((error) => { throw error; })]);
       } catch (error) {
         await terminateBackgroundSupervisor(child.pid);
         removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
@@ -171,8 +176,9 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       const args = ["-m", model, "-f", opts.primerPath];
       if (opts.autonomy) args.push("--auto", opts.autonomy);
       if (sessionId) args.push("-r", sessionId);
-      const result = spawnSync("droid", args, {
-        cwd,
+      const launch = constrainRuntimeProcess(opts.executionPlan, "droid", args, cwd);
+      const result = spawnSync(launch.command, [...launch.args], {
+        cwd: launch.cwd,
         env: mergedEnv,
         stdio: ["inherit", "inherit", "pipe"],
         encoding: "utf-8",
@@ -198,12 +204,17 @@ export class DroidCodeAdapter implements RuntimeAdapter {
         cwd,
         env: toEnvRecord(mergedEnv),
         logFile: opts.logFile,
+        executionPlan: opts.executionPlan,
       });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
-    // Streaming mode (tests / explicit SDK path): use SDK session.stream()
+    // Streaming mode is injectable for tests only; production SDK work runs in the
+    // sandboxed background supervisor rather than this adapter process.
+    if (opts.executionPlan?.repositoryAccess === "read-only") {
+      return { exitCode: 1, logFile: opts.logFile, errorMessage: "Read-only Droid SDK injection cannot run outside the runtime process sandbox." };
+    }
     const deployDir = resolve(dirname(opts.primerPath));
     const outputJsonlPath = resolve(deployDir, "droid-output.jsonl");
     mkdirSync(dirname(outputJsonlPath), { recursive: true });
@@ -245,6 +256,10 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       jsonl.end();
     }
   }
+}
+
+function delayedLaunchError(runtime: string): Promise<Error> {
+  return new Promise((resolveError) => setImmediate(() => resolveError(new Error(`runner-readiness: ${runtime} background supervisor did not expose a PID`))));
 }
 
 /** Map the shared provider/model result to Droid's flat model identifier. */

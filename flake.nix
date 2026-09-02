@@ -18,6 +18,7 @@
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
           runtimePath = pkgs.lib.makeBinPath (with pkgs; [
             bash
+            bubblewrap
             coreutils
             util-linux
             systemd
@@ -306,6 +307,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               bash
+              bubblewrap
               coreutils
               util-linux
               systemd
