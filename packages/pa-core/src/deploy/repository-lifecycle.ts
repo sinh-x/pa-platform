@@ -19,6 +19,7 @@ const MAX_EVIDENCE_BYTES = 64 * 1024;
 const DIAGNOSTIC_MAX = 2_000;
 const LEASE_FILE_NAME = "pa-repository-mutation.lease.json";
 const LIFECYCLE_FILE_NAME = "repository-lifecycle.json";
+const TRANSITION_LOCK_FILE_NAME = "repository-lifecycle.transition.lock";
 
 export type CheckoutKind = "branch" | "detached";
 
@@ -46,6 +47,15 @@ export interface RepositoryLeaseEvidence {
   before?: RepositoryCheckoutState;
   after?: RepositoryCheckoutState;
   diagnostic?: string;
+  branchCleanup?: RepositoryBranchCleanupEvidence;
+}
+
+export interface RepositoryBranchCleanupEvidence {
+  featureBranch: string;
+  mergeEvidence: string;
+  policy: BranchCleanupPolicy;
+  attemptedAt?: string;
+  result?: BranchCleanupResult;
 }
 
 interface RepositoryLifecycleRecord extends RepositoryLeaseEvidence {
@@ -104,13 +114,14 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const baseEvidence: RepositoryLeaseEvidence = {
     schemaVersion: LEASE_SCHEMA_VERSION,
     role: options.dryRun ? "dry-run" : plan.repositoryAccess === "read-only" ? "reader" : "owner",
-    state: options.dryRun || plan.repositoryAccess === "read-only" ? "not-required" : "active",
+    state: options.dryRun ? "not-required" : "active",
     repositoryKey: plan.repoKey,
     repositoryRoot: plan.repoRoot,
     deploymentId: plan.lifecycle.deploymentId,
+    ...branchCleanupFromEnvironment({ ...process.env, ...plan.environment }),
   };
 
-  if (options.dryRun || plan.repositoryAccess === "read-only") {
+  if (options.dryRun) {
     persistLifecycle(plan.lifecycle.deploymentDir, baseEvidence);
     return withLifecycle(plan, baseEvidence);
   }
@@ -120,6 +131,10 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const inheritedOwner = inherited["PA_REPOSITORY_LEASE_OWNER"];
   const inheritedToken = inherited["PA_REPOSITORY_LEASE_TOKEN"];
   const existing = readLeaseIfPresent(leasePath);
+
+  if (existing && plan.repositoryAccess === "read-only") {
+    throw lifecycleError(`Read-only deployment rejected because repository access cannot be sandboxed from active owner ${ownerSummary(existing)}. Retry after the owner completes.`, existing);
+  }
 
   if (existing && inheritedOwner === existing.deploymentId && inheritedToken === existing.token && sameRepository(existing, plan)) {
     if (!processAlive(existing.pid)) {
@@ -141,7 +156,7 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   const acquired = readLeaseRequired(leasePath);
   const evidence: RepositoryLeaseEvidence = {
     ...baseEvidence,
-    role: "owner",
+    role: plan.repositoryAccess === "read-only" ? "reader" : "owner",
     ownerDeploymentId: acquired.deploymentId,
     leasePath,
     acquiredAt: acquired.acquiredAt,
@@ -160,20 +175,17 @@ export function activateRepositoryLifecycle(plan: ExecutionPlan, options: Reposi
   return withLifecycle(plan, evidence, acquired.token);
 }
 
-/** Transfer stale detection from a short-lived launcher to its background supervisor. */
-export function transferRepositoryLease(plan: ExecutionPlan, pid: number): void {
-  const evidence = plan.repositoryLease;
-  if (!evidence || evidence.role !== "owner" || evidence.state !== "active") return;
-  transferRepositoryLeaseByDeployment(plan.lifecycle.deploymentDir, pid);
-}
-
 /** Background-runner entrypoint transfer; it must run before the runtime child starts. */
 export function transferRepositoryLeaseByDeployment(deploymentDir: string, pid: number): void {
+  withTransitionLock(deploymentDir, () => transferRepositoryLeaseByDeploymentUnlocked(deploymentDir, pid));
+}
+
+function transferRepositoryLeaseByDeploymentUnlocked(deploymentDir: string, pid: number): void {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("Repository mutation lease requires a positive background owner PID.");
   const lifecyclePath = resolve(deploymentDir, LIFECYCLE_FILE_NAME);
   if (!existsSync(lifecyclePath)) return;
   const evidence = readLifecycle(lifecyclePath);
-  if (evidence.role !== "owner" || evidence.state !== "active" || !evidence.leasePath) return;
+  if ((evidence.role !== "owner" && evidence.role !== "reader") || evidence.state !== "active" || !evidence.leasePath) return;
   const lease = readLeaseIfPresent(evidence.leasePath);
   if (!lease) {
     const persisted = readLifecycle(lifecyclePath);
@@ -190,11 +202,15 @@ export function transferRepositoryLeaseByDeployment(deploymentDir: string, pid: 
  */
 export function finalizeRepositoryLifecycle(planOrDeploymentDir: ExecutionPlan | string): RepositoryLifecycleResult {
   const deploymentDir = typeof planOrDeploymentDir === "string" ? planOrDeploymentDir : planOrDeploymentDir.lifecycle.deploymentDir;
+  return withTransitionLock(deploymentDir, () => finalizeRepositoryLifecycleUnlocked(deploymentDir));
+}
+
+function finalizeRepositoryLifecycleUnlocked(deploymentDir: string): RepositoryLifecycleResult {
   const lifecyclePath = resolve(deploymentDir, LIFECYCLE_FILE_NAME);
   if (!existsSync(lifecyclePath)) return { ok: true };
   const evidence = readLifecycle(lifecyclePath);
   if (evidence.state === "released" || evidence.state === "not-required") return { ok: true, evidence };
-  if (evidence.role === "delegate" || evidence.role === "reader" || evidence.role === "dry-run") {
+  if (evidence.role === "delegate" || evidence.role === "dry-run") {
     const released = { ...evidence, state: "released" as const, releasedAt: new Date().toISOString() };
     persistLifecycle(deploymentDir, released);
     return { ok: true, evidence: released };
@@ -206,7 +222,7 @@ export function finalizeRepositoryLifecycle(planOrDeploymentDir: ExecutionPlan |
     try {
       const after = captureCheckout(evidence.repositoryRoot);
       assertCheckoutEqual(evidence.before, after);
-      const released: RepositoryLeaseEvidence = { ...evidence, state: "released", releasedAt: new Date().toISOString(), after };
+      const released = applyBranchCleanup({ ...evidence, state: "released" as const, releasedAt: new Date().toISOString(), after });
       persistLifecycle(deploymentDir, released);
       return { ok: true, evidence: released };
     } catch (error) {
@@ -225,9 +241,9 @@ export function finalizeRepositoryLifecycle(planOrDeploymentDir: ExecutionPlan |
     if (current.token !== lease.token || current.deploymentId !== lease.deploymentId) {
       return recoveryRequired(deploymentDir, evidence, `Repository mutation lease ownership changed during restoration; current owner is ${ownerSummary(current)}.`);
     }
+    const released = applyBranchCleanup({ ...evidence, state: "released" as const, releasedAt: new Date().toISOString(), after });
     unlinkSync(evidence.leasePath);
     syncDirectory(dirname(evidence.leasePath));
-    const released: RepositoryLeaseEvidence = { ...evidence, state: "released", releasedAt: new Date().toISOString(), after };
     persistLifecycle(deploymentDir, released);
     return { ok: true, evidence: released };
   } catch (error) {
@@ -306,7 +322,7 @@ function acquireDurableLease(plan: ExecutionPlan, leasePath: string, pid: number
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const existing = readLeaseIfPresent(leasePath);
     if (existing) {
-      if (processAlive(existing.pid)) throw lifecycleError(`Repository mutation lease conflict: ${ownerSummary(existing)}. Read-only deployments remain admissible; retry this mutating deployment after the owner completes.`, existing);
+      if (processAlive(existing.pid)) throw lifecycleError(`Repository access lease conflict: ${ownerSummary(existing)}. This runtime cannot sandbox readers, so retry after the owner completes.`, existing);
       recoverStaleLease(existing, leasePath);
       continue;
     }
@@ -342,7 +358,9 @@ function recoverStaleLease(lease: DurableLease, leasePath: string): void {
     restoreCheckout(lease.repositoryRoot, lease.before);
     assertCheckoutEqual(lease.before, captureCheckout(lease.repositoryRoot));
   } catch (error) {
-    throw lifecycleError(`Stale repository mutation lease recovery is required before another mutator may run. ${recoveryDiagnostic(error, lease)}`, lease);
+    const diagnostic = bounded(`Stale repository mutation lease recovery is required before another deployment may run. ${recoveryDiagnostic(error, lease)}`);
+    const persistence = persistStaleRecoveryRequired(lease, leasePath, diagnostic);
+    throw lifecycleError(`${diagnostic}${persistence ? ` Recovery evidence persistence also failed: ${persistence}` : ""}`, lease);
   }
   const quarantine = `${leasePath}.recovered-${Date.now()}-${process.pid}`;
   try {
@@ -477,6 +495,94 @@ function recoveryRequired(deploymentDir: string, evidence: RepositoryLeaseEviden
   const failed = { ...evidence, state: "recovery-required" as const, diagnostic: safe };
   persistLifecycle(deploymentDir, failed);
   return { ok: false, evidence: failed, diagnostic: safe };
+}
+
+function persistStaleRecoveryRequired(lease: DurableLease, leasePath: string, diagnostic: string): string | undefined {
+  const evidence: RepositoryLeaseEvidence = {
+    schemaVersion: LEASE_SCHEMA_VERSION,
+    role: "owner",
+    state: "recovery-required",
+    repositoryKey: lease.repositoryKey,
+    repositoryRoot: lease.repositoryRoot,
+    deploymentId: lease.deploymentId,
+    ownerDeploymentId: lease.deploymentId,
+    leasePath,
+    acquiredAt: lease.acquiredAt,
+    before: lease.before,
+    diagnostic: bounded(diagnostic),
+  };
+  try {
+    persistLifecycle(lease.deploymentDir, evidence);
+    return undefined;
+  } catch (error) {
+    const persistenceError = bounded(error instanceof Error ? error.message : String(error));
+    try {
+      atomicWriteJson(`${leasePath}.recovery-required.json`, { ...evidence, diagnostic: bounded(`${diagnostic} Lifecycle persistence failed: ${persistenceError}`) });
+      return persistenceError;
+    } catch (fallbackError) {
+      return bounded(`${persistenceError}; fallback persistence failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+    }
+  }
+}
+
+function branchCleanupFromEnvironment(environment: Readonly<Record<string, string | undefined>>): Pick<RepositoryLeaseEvidence, "branchCleanup"> | Record<string, never> {
+  const featureBranch = environment["PA_FEATURE_BRANCH"];
+  const mergeEvidence = environment["PA_MERGE_EVIDENCE"];
+  if (!featureBranch || !mergeEvidence) return {};
+  return {
+    branchCleanup: {
+      featureBranch,
+      mergeEvidence,
+      policy: {
+        deleteLocal: environment["PA_BRANCH_CLEANUP_LOCAL"] === "true",
+        deleteRemote: environment["PA_BRANCH_CLEANUP_REMOTE"] === "true",
+      },
+    },
+  };
+}
+
+function applyBranchCleanup(evidence: RepositoryLeaseEvidence): RepositoryLeaseEvidence {
+  const request = evidence.branchCleanup;
+  if (!request || request.attemptedAt) return evidence;
+  const attemptedAt = new Date().toISOString();
+  try {
+    const result = cleanupMergedFeatureBranch(evidence.repositoryRoot, request.featureBranch, request.mergeEvidence, request.policy);
+    return { ...evidence, branchCleanup: { ...request, attemptedAt, result } };
+  } catch (error) {
+    const diagnostic = bounded(`Branch cleanup failed after checkout restoration; repository lease release continued: ${error instanceof Error ? error.message : String(error)}`);
+    return { ...evidence, branchCleanup: { ...request, attemptedAt, result: { deletedLocal: false, deletedRemote: false, diagnostic } } };
+  }
+}
+
+function withTransitionLock<T>(deploymentDir: string, operation: () => T): T {
+  mkdirSync(deploymentDir, { recursive: true });
+  const lockPath = resolve(deploymentDir, TRANSITION_LOCK_FILE_NAME);
+  const deadline = Date.now() + 5_000;
+  let fd: number | undefined;
+  while (fd === undefined) {
+    try {
+      fd = openSync(lockPath, "wx", 0o600);
+      writeFileSync(fd, `${process.pid}\n`, "utf8");
+      fsyncSync(fd);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const ownerPid = Number(readFileSync(lockPath, "utf8").trim());
+        if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch { /* preserve unknown transition evidence and fail boundedly */ }
+      if (Date.now() >= deadline) throw new Error(bounded(`Repository lifecycle transition lock unavailable: ${lockPath}.`));
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try {
+    return operation();
+  } finally {
+    closeSync(fd);
+    try { unlinkSync(lockPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
 }
 
 function recoveryDiagnostic(error: unknown, lease: DurableLease): string {

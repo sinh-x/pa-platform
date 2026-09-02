@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, transferRepositoryLease, renderEnvVarsBlock, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, readServePidFile, TicketStore, renderEnvVarsBlock, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -216,7 +216,6 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
       if (plan.repositoryLease?.role === "owner" && plan.repositoryLease.state === "active" && pid === undefined) throw new Error("runner-readiness: OpenCode background supervisor returned without repository lease ownership evidence");
-      if (pid !== undefined) transferRepositoryLease(plan, pid);
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `opencode background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
 import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
@@ -20,7 +20,7 @@ const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -39,7 +39,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   readonly sessionFileName = "session-id-opencode.txt";
 
   private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
 
@@ -47,14 +47,25 @@ export class OpencodeAdapter implements RuntimeAdapter {
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env ?? process.env;
     this.runCommand = options.runCommand;
-    this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
+    this.runBackgroundCommand = options.runBackgroundCommand ?? (async (args, opts) => {
       const logFile = opts.logFile ?? resolve(opts.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "opencode-background.json");
-      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2), { mode: 0o600 });
+      const deploymentId = opts.env["PA_DEPLOYMENT_ID"];
+      if (!deploymentId) throw new Error("runner-readiness: OpenCode background deployment identity is missing");
+      const ownership = createBackgroundOwnershipConfig(dirname(logFile));
+      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId, team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName, ...ownership }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
       child.unref();
+      if (!child.pid) throw new Error("runner-readiness: OpenCode background supervisor did not expose a PID");
+      try {
+        await waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid });
+      } catch (error) {
+        await terminateBackgroundSupervisor(child.pid);
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw error;
+      }
       return { pid: child.pid };
     });
   }
@@ -138,7 +149,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
+      const result = await this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }

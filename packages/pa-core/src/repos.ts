@@ -139,9 +139,12 @@ export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd(
   if (nameOrPath !== undefined) {
     const expandedInput = expandHome(nameOrPath);
     const keyMatch = repos.find((candidate) => candidate.name === nameOrPath);
+    const pathMatches = repos.filter((candidate) => candidate.path === expandedInput);
+    if (keyMatch && pathMatches.some((candidate) => candidate.name !== keyMatch.name)) {
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" is ambiguous because it identifies "${keyMatch.name}" by key and a different repository by exact configured path.`, [keyMatch, ...pathMatches]);
+    }
     if (keyMatch) return resolvedRegisteredRepo(keyMatch, "explicit");
 
-    const pathMatches = repos.filter((candidate) => candidate.path === expandedInput);
     if (pathMatches.length === 1) return resolvedRegisteredRepo(pathMatches[0]!, "explicit");
     if (pathMatches.length > 1) {
       throw repositoryResolutionError(`The exact configured path "${expandedInput}" is ambiguous.`, pathMatches);

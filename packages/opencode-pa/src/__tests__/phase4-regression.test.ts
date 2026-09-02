@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
+import { closeDb, finalizeRepositoryLifecycle, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, OpencodeAdapter } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
 
@@ -208,6 +208,7 @@ test("phase 4 regression: opa deploy wrapper prompt remains the short pointer, n
     for (const arg of bgArgs) {
       assert.ok(!arg.includes(bgFullPrimer), "background args must not contain the full primer body");
     }
+    assert.equal(finalizeRepositoryLifecycle(join(root, "deployments", bgDeployId)).ok, true);
 
     const bin = join(root, "bin");
     const fgArgsPath = join(root, "opencode-args-fg.json");

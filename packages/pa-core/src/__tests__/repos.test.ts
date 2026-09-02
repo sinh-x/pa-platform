@@ -300,6 +300,19 @@ test("execution-path resolution preserves exact canonical path behavior", () => 
   }
 });
 
+test("execution-path resolution rejects a key that is another repository's exact path", () => {
+  const fixture = createLinkedFixture("key-path-collision");
+  const other = join(fixture.root, "other");
+  mkdirSync(other);
+  execFileSync("git", ["init"], { cwd: other, stdio: "ignore" });
+  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  ${JSON.stringify(other)}:\n    path: ${fixture.repo}\n  other:\n    path: ${other}\n`);
+  try {
+    assert.throws(() => withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(other)), /ambiguous.*by key.*exact configured path/is);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("omitted execution input infers registered root, nested path, and linked worktree but relocates to the configured path", () => {
   const fixture = createLinkedFixture("cwd-inference");
   const registeredNested = join(fixture.repo, "nested", "registered");

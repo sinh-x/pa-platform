@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, finalizeRepositoryLifecycle, getDeployPaths, transferRepositoryLeaseByDeployment } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, finalizeRepositoryLifecycle, getDeployPaths, nowUtc, publishBackgroundOwnership, reconcileTerminalRegistryEvent, transferRepositoryLeaseByDeployment } from "@pa-platform/pa-core";
 import { createClaudeActivityWriter, createClaudeSessionIdParser } from "./adapter.js";
 import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
@@ -14,6 +14,8 @@ interface BackgroundConfig {
   deploymentId: string;
   team: string;
   sessionFileName: string;
+  ownershipToken: string;
+  ownershipPath: string;
 }
 
 // Reads the background config and removes the on-disk file. The runner only
@@ -28,9 +30,15 @@ export function loadBackgroundConfig(configPath: string): BackgroundConfig {
 
 export async function runBackgroundEntry(configPath: string): Promise<void> {
   const config = loadBackgroundConfig(configPath);
+  let ready = false;
+  const acknowledge = (childPid?: number): void => {
+    ready = true;
+    publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "active", ready: true, updatedAt: nowUtc(), ...(childPid ? { childPid } : {}) });
+  };
   try {
     transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
-    const result = await runClaude(config);
+    const result = await runClaude(config, acknowledge);
+    if (!ready) throw new Error("runner-readiness: Claude runtime did not start");
 
     // Only persist a session file when the runner observed a real claude session token.
     // Falling back to deployment id silently broke `cpa deploy --resume`.
@@ -39,9 +47,11 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
     }
     const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
     const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
+    const lifecycleFailed = !lifecycle.ok;
     if (!lifecycle.ok) {
       result.exitCode = 1;
       result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
+      reconcileTerminalRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: nowUtc(), status: "failed", summary: `cpa background deploy failed: ${firstLine(result.stderrTail)}`, log_file: config.logFile, exit_code: 1 });
     }
     if (result.exitCode === 0) {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: "cpa background deploy completed" }), activityLogPath);
@@ -54,9 +64,10 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       const summary = summaryError
         ? `cpa background deploy failed (exit ${result.exitCode}): ${summaryError}`
         : `cpa background deploy failed (exit ${result.exitCode})`;
-      emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
+      if (!lifecycleFailed) emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: boundedLifecycleDiagnostic(error instanceof Error ? error.message : String(error)) }); } catch { /* launcher reports timeout/bootstrap failure */ }
     const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
     const baseError = error instanceof Error ? error.message : String(error);
     const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
@@ -85,7 +96,7 @@ interface BackgroundRunResult {
   spawnError?: Error;
 }
 
-function runClaude(config: BackgroundConfig): Promise<BackgroundRunResult> {
+function runClaude(config: BackgroundConfig, onReady: (childPid?: number) => void): Promise<BackgroundRunResult> {
   mkdirSync(dirname(config.logFile), { recursive: true });
   const log = createWriteStream(config.logFile, { flags: "a" });
   const jsonl = createWriteStream(resolvePath(dirname(config.logFile), "claude-output.jsonl"), { flags: "a" });
@@ -95,6 +106,7 @@ function runClaude(config: BackgroundConfig): Promise<BackgroundRunResult> {
   const activity = createClaudeActivityWriter(config.deploymentId, getDeployPaths(config.deploymentId).activityLogPath);
   const sessionParser = createClaudeSessionIdParser();
   const child = spawn("claude", config.args, { cwd: config.cwd, env: { ...process.env, ...config.env }, stdio: ["ignore", "pipe", "pipe"] });
+  child.once("spawn", () => onReady(child.pid));
   let stderrTail = "";
 
   const collectStdout = (chunk: Buffer): void => {

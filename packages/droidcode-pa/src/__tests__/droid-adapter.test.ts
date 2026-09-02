@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { closeDb, createActivityEvent, appendActivityEvent, getDeployPaths, getDeploymentEvents, type ActivityEvent, type SpawnOpts, type SpawnResult, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
+import { closeDb, createActivityEvent, appendActivityEvent, finalizeRepositoryLifecycle, getDeployPaths, getDeploymentEvents, type ActivityEvent, type SpawnOpts, type SpawnResult, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDroidRuntimeConfig, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
@@ -1053,6 +1053,8 @@ describe("PAP-162 Droid execution-plan contract", () => {
     await withDpaEnv(async (root) => {
       const repo = join(root, "repo");
       writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
+      spawnSync("git", ["add", "CLAUDE.md"], { cwd: repo });
+      spawnSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
       for (const requestedRepo of ["pa-platform", repo]) {
         let captured: SpawnOpts | undefined;
         let runtimeCwd = "";
@@ -1092,6 +1094,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.equal(runtimeCwd, repo);
         assert.equal(runtimePaRepo, repo);
         assert.equal(started?.repo, repo);
+        assert.equal(finalizeRepositoryLifecycle(plan).ok, true);
         assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
         assert.match(primer, /No user objective override was provided/);
         assert.match(primer, /^repo_key: pa-platform$/m);

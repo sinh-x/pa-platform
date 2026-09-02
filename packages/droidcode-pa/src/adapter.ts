@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
 import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
 import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
@@ -37,7 +37,7 @@ export interface DroidCodeAdapterOptions {
   env?: NodeJS.ProcessEnv;
   sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 }
 
 export class DroidCodeAdapter implements RuntimeAdapter {
@@ -49,7 +49,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   private readonly resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 
   constructor(options: DroidCodeAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -57,18 +57,22 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     this.sessionFactory = options.sessionFactory;
     this.resumeFactory = options.resumeFactory;
     this.defaultModel = resolveDefaultDroidModel(this.env);
-    this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
+    this.runBackgroundCommand = options.runBackgroundCommand ?? (async (args, opts) => {
       const logFile = opts.logFile ?? resolve(opts.cwd, "droid-background.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "droid-background.json");
+      const deploymentId = opts.env["PA_DEPLOYMENT_ID"];
+      if (!deploymentId) throw new Error("runner-readiness: Droid background deployment identity is missing");
+      const ownership = createBackgroundOwnershipConfig(dirname(logFile));
       writeFileSync(configPath, JSON.stringify({
         args,
         cwd: opts.cwd,
         env: pickBackgroundEnv(opts.env),
         logFile,
-        deploymentId: opts.env["PA_DEPLOYMENT_ID"],
+        deploymentId,
         team: opts.env["PA_TEAM"],
         sessionFileName: this.sessionFileName,
+        ...ownership,
       }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], {
@@ -78,6 +82,14 @@ export class DroidCodeAdapter implements RuntimeAdapter {
         stdio: "ignore",
       });
       child.unref();
+      if (!child.pid) throw new Error("runner-readiness: Droid background supervisor did not expose a PID");
+      try {
+        await waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid });
+      } catch (error) {
+        await terminateBackgroundSupervisor(child.pid);
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw error;
+      }
       return { pid: child.pid };
     });
   }
@@ -182,7 +194,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     }
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand([model, opts.primerPath], {
+      const result = await this.runBackgroundCommand([model, opts.primerPath], {
         cwd,
         env: toEnvRecord(mergedEnv),
         logFile: opts.logFile,

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, transferRepositoryLease, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -139,7 +139,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
     if (request.background && result.metadata?.["pending"] === true && monitor?.completion) {
       const supervisorPid = result.metadata?.["supervisorPid"];
-      if (typeof supervisorPid === "number") transferRepositoryLease(plan, supervisorPid);
       // Backward-compatible injected-adapter seam. Production Pi background runs
       // return supervisorPid and are finalized exclusively by background-runner.ts.
       void monitor.completion.then((final) => {
@@ -160,7 +159,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (request.background && result.metadata?.["pending"] === true) {
       const supervisorPid = result.metadata?.["supervisorPid"];
       if (typeof supervisorPid !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
-      transferRepositoryLease(plan, supervisorPid);
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
     const lifecycle = finalizeRepositoryLifecycle(plan);

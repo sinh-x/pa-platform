@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { closeDb, finalizeRepositoryLifecycle, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { execFileSync, spawnSync } from "node:child_process";
 import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, resolveClaudeRuntimeConfig, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
@@ -213,6 +213,8 @@ test("PAP-162 Claude key/path execution-plan contract keeps all repository evide
   await withCpaEnv(async (root) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
+    execFileSync("git", ["add", "CLAUDE.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
       let runtimeCwd = "";
@@ -257,6 +259,7 @@ test("PAP-162 Claude key/path execution-plan contract keeps all repository evide
       assert.match(primer, /^repo_key: pa-platform$/m);
       assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(repo)}$`, "m"));
+      assert.equal(finalizeRepositoryLifecycle(plan).ok, true);
       assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
     }

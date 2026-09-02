@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, getDeployPaths, transferRepositoryLeaseByDeployment, queryDeploymentStatus } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, getDeployPaths, nowUtc, publishBackgroundOwnership, transferRepositoryLeaseByDeployment, queryDeploymentStatus, reconcileTerminalRegistryEvent } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
@@ -13,6 +13,8 @@ interface BackgroundConfig {
   deploymentId: string;
   team: string;
   sessionFileName: string;
+  ownershipToken: string;
+  ownershipPath: string;
 }
 
 const STDERR_TAIL_BYTES = 2000;
@@ -32,10 +34,16 @@ if (isEntrypoint()) {
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
   try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
   let fatalError: unknown;
+  let ready = false;
+  const acknowledge = (childPid?: number): void => {
+    ready = true;
+    publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "active", ready: true, updatedAt: nowUtc(), ...(childPid ? { childPid } : {}) });
+  };
 
   try {
     transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
-    const result = await runOpencode(config);
+    const result = await runOpencode(config, acknowledge);
+    if (!ready) throw new Error("runner-readiness: OpenCode runtime did not start");
 
     // Only persist a session file when the runner observed a real session token.
     // Falling back to deployment id silently broke `opa deploy --resume`.
@@ -47,6 +55,7 @@ if (isEntrypoint()) {
     if (!lifecycle.ok) {
       result.exitCode = 1;
       result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
+      reconcileTerminalRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: nowUtc(), status: "failed", summary: `opa background deploy failed: ${firstLine(result.stderrTail)}`, log_file: config.logFile, exit_code: 1 });
     }
     const currentStatus = queryDeploymentStatus(config.deploymentId);
     if (currentStatus?.status !== "running") {
@@ -65,6 +74,7 @@ if (isEntrypoint()) {
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: boundedLifecycleDiagnostic(error instanceof Error ? error.message : String(error)) }); } catch { /* launcher reports timeout/bootstrap failure */ }
     const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
     const baseError = error instanceof Error ? error.message : String(error);
     const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
@@ -84,7 +94,7 @@ interface BackgroundRunResult {
   spawnError?: Error;
 }
 
-function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
+function runOpencode(config: BackgroundConfig, onReady: (childPid?: number) => void): Promise<BackgroundRunResult> {
   mkdirSync(dirname(config.logFile), { recursive: true });
   const log = createWriteStream(config.logFile, { flags: "a" });
   const jsonl = createWriteStream(resolve(dirname(config.logFile), "opencode-output.jsonl"), { flags: "a" });
@@ -95,6 +105,7 @@ function runOpencode(config: BackgroundConfig): Promise<BackgroundRunResult> {
   const activity = createOpencodeActivityWriter(config.deploymentId, getDeployPaths(config.deploymentId).activityLogPath);
   const sessionParser = createOpencodeSessionIdParser();
   const child = spawn("opencode", config.args, { cwd: config.cwd, env: { ...process.env, ...config.env }, stdio: ["ignore", "pipe", "pipe"] });
+  child.once("spawn", () => onReady(child.pid));
   let stderrTail = "";
   const permissionWaitThresholdMs = resolvePermissionWaitThresholdMs(config.env);
   const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;

@@ -536,6 +536,8 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
   await withOpaEnv(async (root) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
+    execFileSync("git", ["add", "CLAUDE.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
     const observations: Array<{ opts: SpawnOpts; runtimeCwd: string; runtimePaRepo?: string; registryRepo?: string; primer: string }> = [];
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
@@ -560,6 +562,7 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.ok(captured?.executionPlan);
       const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
       observations.push({ opts: captured, runtimeCwd, runtimePaRepo, registryRepo: started?.repo, primer: readFileSync(captured.primerPath, "utf8") });
+      assert.equal(finalizeRepositoryLifecycle(captured.executionPlan).ok, true);
     }
 
     for (const { opts, runtimeCwd, runtimePaRepo, registryRepo, primer } of observations) {

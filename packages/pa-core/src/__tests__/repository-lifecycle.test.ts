@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   captureRepositoryCheckout,
   cleanupMergedFeatureBranch,
   finalizeRepositoryLifecycle,
+  transferRepositoryLeaseByDeployment,
   type ExecutionPlan,
 } from "../index.js";
 
@@ -58,7 +59,7 @@ function deadPid(): number {
   return 2_000_000_000;
 }
 
-test("serializes two mutators while admitting a concurrent reader with zero repository changes", () => {
+test("serializes all repository access when a read-only filesystem sandbox is unavailable", () => {
   const f = fixture("serialization");
   try {
     const before = captureRepositoryCheckout(f.repo);
@@ -70,16 +71,56 @@ test("serializes two mutators while admitting a concurrent reader with zero repo
       runtimeSpawns += 1;
     }, (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /lease conflict.*deployment=d-owner.*Read-only deployments remain admissible/is);
+      assert.match(error.message, /lease conflict.*deployment=d-owner/is);
       assert.ok(error.message.length <= 2_000);
       return true;
     });
     assert.equal(runtimeSpawns, 0);
+    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only")), /Read-only deployment rejected.*cannot be sandboxed.*d-owner/is);
+    assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
     const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
     assert.equal(reader.repositoryLease?.role, "reader");
     assert.deepEqual(captureRepositoryCheckout(f.repo), before);
     assert.equal(finalizeRepositoryLifecycle(reader).ok, true);
-    assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("a delayed ownership transfer after finalization cannot recreate the released lease", () => {
+  const f = fixture("delayed-transfer");
+  try {
+    const active = activateRepositoryLifecycle(plan(f.root, f.repo, "d-owner"));
+    const leasePath = active.repositoryLease?.leasePath;
+    assert.ok(leasePath);
+    assert.equal(finalizeRepositoryLifecycle(active).ok, true);
+    transferRepositoryLeaseByDeployment(active.lifecycle.deploymentDir, process.pid);
+    assert.equal(existsSync(leasePath), false);
+    const evidence = JSON.parse(readFileSync(join(active.lifecycle.deploymentDir, "repository-lifecycle.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(evidence["state"], "released");
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("background readers transfer their exclusive lease to the authenticated runner", () => {
+  const f = fixture("reader-transfer");
+  try {
+    const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
+    assert.ok(reader.repositoryLease?.leasePath);
+    transferRepositoryLeaseByDeployment(reader.lifecycle.deploymentDir, 4242);
+    const lease = JSON.parse(readFileSync(reader.repositoryLease.leasePath, "utf8")) as Record<string, unknown>;
+    assert.equal(lease["pid"], 4242);
+    transferRepositoryLeaseByDeployment(reader.lifecycle.deploymentDir, process.pid);
+    assert.equal(finalizeRepositoryLifecycle(reader).ok, true);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("read-only runtime writes fail terminal verification and retain recovery ownership", () => {
+  const f = fixture("reader-write");
+  try {
+    const reader = activateRepositoryLifecycle(plan(f.root, f.repo, "d-reader", "read-only"));
+    writeFileSync(join(f.repo, "forbidden.txt"), "write attempted\n");
+    const result = finalizeRepositoryLifecycle(reader);
+    assert.equal(result.ok, false);
+    assert.match(result.diagnostic ?? "", /recovery required.*untracked=1/is);
+    assert.ok(reader.repositoryLease?.leasePath && readFileSync(reader.repositoryLease.leasePath, "utf8").includes("d-reader"));
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
@@ -169,6 +210,65 @@ test("dirty terminal failure preserves staged, unstaged, and untracked files and
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+test("failed stale recovery persists bounded evidence across repeated dirty attempts", () => {
+  const f = fixture("stale-dirty");
+  try {
+    const stale = activateRepositoryLifecycle(plan(f.root, f.repo, "d-stale"));
+    const leasePath = stale.repositoryLease?.leasePath;
+    assert.ok(leasePath);
+    const lease = JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>;
+    lease["pid"] = deadPid();
+    writeFileSync(leasePath, `${JSON.stringify(lease, null, 2)}\n`);
+    writeFileSync(join(f.repo, "preserve.txt"), "dirty\n");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, `d-next-${attempt}`)), /Stale repository mutation lease recovery is required/is);
+      const evidence = JSON.parse(readFileSync(join(f.root, "deployments", "d-stale", "repository-lifecycle.json"), "utf8")) as Record<string, unknown>;
+      assert.equal(evidence["state"], "recovery-required");
+      assert.ok(String(evidence["diagnostic"]).length <= 2_000);
+    }
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("failed stale recovery persists evidence when the original branch moved", () => {
+  const f = fixture("stale-moved-branch");
+  try {
+    const stale = activateRepositoryLifecycle(plan(f.root, f.repo, "d-stale"));
+    const leasePath = stale.repositoryLease?.leasePath;
+    assert.ok(leasePath);
+    git(f.repo, ["checkout", "-b", "feature/PAP-162-moved"]);
+    writeFileSync(join(f.repo, "feature.txt"), "feature\n");
+    git(f.repo, ["add", "."]);
+    git(f.repo, ["commit", "-m", "feature"]);
+    git(f.repo, ["branch", "-f", "develop", "HEAD"]);
+    const lease = JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>;
+    lease["pid"] = deadPid();
+    writeFileSync(leasePath, `${JSON.stringify(lease, null, 2)}\n`);
+    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-next")), /Original branch develop moved/is);
+    const evidence = JSON.parse(readFileSync(join(f.root, "deployments", "d-stale", "repository-lifecycle.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(evidence["state"], "recovery-required");
+    assert.match(String(evidence["diagnostic"]), /Original branch develop moved/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("stale recovery persistence failure leaves durable fallback evidence beside the lease", () => {
+  const f = fixture("stale-persistence");
+  try {
+    const stale = activateRepositoryLifecycle(plan(f.root, f.repo, "d-stale"));
+    const leasePath = stale.repositoryLease?.leasePath;
+    assert.ok(leasePath);
+    const lease = JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>;
+    lease["pid"] = deadPid();
+    writeFileSync(leasePath, `${JSON.stringify(lease, null, 2)}\n`);
+    writeFileSync(join(f.repo, "preserve.txt"), "dirty\n");
+    rmSync(join(f.root, "deployments", "d-stale"), { recursive: true });
+    writeFileSync(join(f.root, "deployments", "d-stale"), "blocks lifecycle directory\n");
+    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-next")), /evidence persistence also failed/is);
+    const fallback = JSON.parse(readFileSync(`${leasePath}.recovery-required.json`, "utf8")) as Record<string, unknown>;
+    assert.equal(fallback["state"], "recovery-required");
+    assert.match(String(fallback["diagnostic"]), /Lifecycle persistence failed/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
 test("dirty preflight rejects without checkout mutation and bounds diagnostics", () => {
   const f = fixture("dirty-preflight");
   try {
@@ -250,6 +350,33 @@ test("local and GitHub merge evidence permit policy-based cleanup only after anc
       assert.throws(() => git(f.repo, ["rev-parse", `refs/heads/feature/PAP-162-${kind}`]));
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }
+});
+
+test("terminal finalization applies persisted cleanup policy after restoration and still releases on cleanup failure", () => {
+  const f = fixture("terminal-cleanup");
+  try {
+    git(f.repo, ["checkout", "-b", "feature/PAP-162-terminal"]);
+    writeFileSync(join(f.repo, "feature.txt"), "feature\n");
+    git(f.repo, ["add", "."]);
+    git(f.repo, ["commit", "-m", "feature"]);
+    git(f.repo, ["checkout", "develop"]);
+    git(f.repo, ["merge", "--no-ff", "-m", "merge feature", "feature/PAP-162-terminal"]);
+    const merge = git(f.repo, ["rev-parse", "HEAD"]);
+    const terminalPlan = plan(f.root, f.repo, "d-terminal");
+    const active = activateRepositoryLifecycle(Object.freeze({ ...terminalPlan, environment: Object.freeze({ ...terminalPlan.environment, PA_FEATURE_BRANCH: "feature/PAP-162-terminal", PA_MERGE_EVIDENCE: `local:target=develop;merge_commit=${merge};ancestor=true;remote=${merge};verified=true`, PA_BRANCH_CLEANUP_LOCAL: "true" }) }));
+    const result = finalizeRepositoryLifecycle(active);
+    assert.equal(result.ok, true);
+    assert.equal(result.evidence?.branchCleanup?.result?.deletedLocal, true);
+    assert.equal(existsSync(active.repositoryLease?.leasePath ?? ""), false);
+    assert.throws(() => git(f.repo, ["rev-parse", "refs/heads/feature/PAP-162-terminal"]));
+
+    const failedCleanupPlan = plan(f.root, f.repo, "d-terminal-failed-cleanup");
+    const failedCleanup = activateRepositoryLifecycle(Object.freeze({ ...failedCleanupPlan, environment: Object.freeze({ ...failedCleanupPlan.environment, PA_FEATURE_BRANCH: "feature/missing", PA_MERGE_EVIDENCE: `local:target=develop;merge_commit=${merge};ancestor=true;remote=${merge};verified=true`, PA_BRANCH_CLEANUP_LOCAL: "true" }) }));
+    const failedResult = finalizeRepositoryLifecycle(failedCleanup);
+    assert.equal(failedResult.ok, true);
+    assert.match(failedResult.evidence?.branchCleanup?.result?.diagnostic ?? "", /cleanup failed.*lease release continued/is);
+    assert.equal(existsSync(failedCleanup.repositoryLease?.leasePath ?? ""), false);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
 test("cleanup never deletes a current or unmerged feature branch", () => {
