@@ -24,6 +24,8 @@ export interface ExecutionPlan {
   readonly runtime: RuntimeName;
   readonly team: string;
   readonly mode: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
   readonly repositoryCwd: string;
   readonly ticket?: string;
   readonly ticketRequired: boolean;
@@ -51,10 +53,12 @@ export interface ResolveExecutionPlanOptions {
   skillsDir?: string;
   registryDbPath?: string;
   trustedExtensionPath?: string;
+  cwd?: string;
 }
 
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
   const modeName = options.mode?.id ?? options.teamConfig.default_mode ?? "default";
+  const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd());
   const skillsDir = options.skillsDir ?? getSkillsDir();
   const skills = (options.mode?.skills ?? []).map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
@@ -63,7 +67,6 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
   });
-  const repositoryCwd = options.request.repo ? resolveRepoExecutionPath(options.request.repo).repositoryCwd : process.cwd();
   const ticketRequired = options.mode?.require_ticket === true;
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
@@ -79,13 +82,15 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     runtime: options.runtime,
     team: options.teamConfig.name,
     mode: modeName,
-    repositoryCwd,
+    repoKey: repository.repoKey,
+    repoRoot: repository.repoRoot,
+    repositoryCwd: repository.repoRoot,
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,
     skills: Object.freeze(skills),
     memoryDocuments: Object.freeze([...(options.teamConfig.global_docs ?? []), ...(options.mode?.global_docs ?? [])]),
-    environment: Object.freeze({ ...options.environment }),
+    environment: Object.freeze({ ...options.environment, PA_REPO: repository.repoRoot }),
     timeoutSeconds: options.timeoutSeconds,
     ...(options.request.provider ? { provider: options.request.provider } : {}),
     ...(options.request.model ? { model: options.request.model } : {}),

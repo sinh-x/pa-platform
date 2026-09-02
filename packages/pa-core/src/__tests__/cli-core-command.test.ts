@@ -17,6 +17,7 @@ function withCliEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "ignore" });
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "builder.yaml"), `name: builder\ndescription: Builder\nobjective: Build\nmodel: sonnet\nagents: []\n`);
 
@@ -906,7 +907,7 @@ test("runCoreCommand exposes registry update, search, analytics, clean, and swee
 });
 
 test("runCoreCommand routes deploy through adapter hook", async () => {
-  await withCliEnv(async () => {
+  await withCliEnv(async (root) => {
     const help = capture();
     assert.equal(await runCoreCommand(["deploy", "--help"], { io: help.io }), 0);
     assert.match(help.stdout.join("\n"), /--background/);
@@ -923,7 +924,7 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
       io: captured.io,
       hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-hook" }; } },
     }), 0);
-    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }]);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: join(root, "repo"), ticket: "PAP-001", timeout: 120 }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
   });
 });
@@ -1032,11 +1033,11 @@ test("deploy objective-file uses guarded local text-file reader", async () => {
 
     const seen: unknown[] = [];
     const allowed = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run"], {
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective-file", objectiveFile, "--dry-run", "--repo", "pa-platform"], {
       io: allowed.io,
       hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-objective-file" }; } },
     }), 0);
-    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: markdownObjective, dryRun: true, timeout: 1800 }]);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: markdownObjective, dryRun: true, repo: join(root, "repo"), timeout: 1800 }]);
 
     writeFileSync(join(process.env["PA_PLATFORM_CONFIG"]!, "sensitive-patterns.yaml"), ["contents:", "  - 'FAKE_PRIVATE_OBJECTIVE_[0-9]+'", ""].join("\n"));
     writeFileSync(objectiveFile, "contains FAKE_PRIVATE_OBJECTIVE_123 only");
@@ -1139,18 +1140,18 @@ test("deploy objective-file built-in defaults block common sensitive filenames w
 });
 
 test("deploy inline objective uses sensitive content guard after objective validation", async () => {
-  await withCliEnv(async () => {
+  await withCliEnv(async (root) => {
     const seen: unknown[] = [];
     const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-inline-objective" }; } };
 
     const markdownInlineObjective = "| phase | status | `ok` | 2 < 3 | 5 > 4 |";
     const allowedMarkdown = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", markdownInlineObjective, "--dry-run"], { io: allowedMarkdown.io, hooks }), 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: markdownInlineObjective, dryRun: true, timeout: 1800 });
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", markdownInlineObjective, "--dry-run", "--repo", "pa-platform"], { io: allowedMarkdown.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: markdownInlineObjective, dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const allowed = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship a normal inline objective.", "--dry-run"], { io: allowed.io, hooks }), 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship a normal inline objective.", dryRun: true, timeout: 1800 });
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship a normal inline objective.", "--dry-run", "--repo", "pa-platform"], { io: allowed.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship a normal inline objective.", dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const blockedBuiltIn = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop", "--dry-run"], { io: blockedBuiltIn.io, hooks }), 1);
@@ -1167,9 +1168,9 @@ test("deploy inline objective uses sensitive content guard after objective valid
     assert.equal(seen.length, 0);
 
     const sanitized = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship it; with $special & chars\\today", "--dry-run"], { io: sanitized.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship it; with $special & chars\\today", "--dry-run", "--repo", "pa-platform"], { io: sanitized.io, hooks }), 0);
     assert.match(sanitized.stderr.join("\n"), /sanitized objective: removed \d+ invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship it with special  charstoday", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 4 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Ship it with special  charstoday", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 4 });
 
     const tooLong = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--objective", `${"a".repeat(10001)}api_key=abcdefghijklmnop`], { io: tooLong.io, hooks }), 1);
@@ -1179,49 +1180,49 @@ test("deploy inline objective uses sensitive content guard after objective valid
 });
 
 test("deploy sanitizes invalid characters from objective and shows stderr warning", async () => {
-  await withCliEnv(async () => {
+  await withCliEnv(async (root) => {
     const seen: unknown[] = [];
     const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-sanitize" }; } };
 
     const withSemicolon = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build feature; deploy now", "--dry-run"], { io: withSemicolon.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build feature; deploy now", "--dry-run", "--repo", "pa-platform"], { io: withSemicolon.io, hooks }), 0);
     assert.match(withSemicolon.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build feature deploy now", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build feature deploy now", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 1 });
 
     const withDollar = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Cost: $100 budget", "--dry-run"], { io: withDollar.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Cost: $100 budget", "--dry-run", "--repo", "pa-platform"], { io: withDollar.io, hooks }), 0);
     assert.match(withDollar.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Cost: 100 budget", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Cost: 100 budget", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 1 });
 
     const withBackslash = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Path: \\usr\\local", "--dry-run"], { io: withBackslash.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Path: \\usr\\local", "--dry-run", "--repo", "pa-platform"], { io: withBackslash.io, hooks }), 0);
     assert.match(withBackslash.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Path: usrlocal", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Path: usrlocal", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 2 });
 
     const withAmpersand = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build & test & deploy", "--dry-run"], { io: withAmpersand.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Build & test & deploy", "--dry-run", "--repo", "pa-platform"], { io: withAmpersand.io, hooks }), 0);
     assert.match(withAmpersand.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build  test  deploy", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Build  test  deploy", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 2 });
 
     const withControlChar = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Hello\x00World\x1f!", "--dry-run"], { io: withControlChar.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Hello\x00World\x1f!", "--dry-run", "--repo", "pa-platform"], { io: withControlChar.io, hooks }), 0);
     assert.match(withControlChar.stderr.join("\n"), /sanitized objective: removed 2 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "HelloWorld!", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 2 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "HelloWorld!", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 2 });
 
     const withDel = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Delete\x7fme", "--dry-run"], { io: withDel.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Delete\x7fme", "--dry-run", "--repo", "pa-platform"], { io: withDel.io, hooks }), 0);
     assert.match(withDel.stderr.join("\n"), /sanitized objective: removed 1 invalid character\(s\)/);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Deleteme", dryRun: true, timeout: 1800, sanitizedCharsRemoved: 1 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Deleteme", dryRun: true, repo: join(root, "repo"), timeout: 1800, sanitizedCharsRemoved: 1 });
 
     const cleanInput = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Clean input no special chars", "--dry-run"], { io: cleanInput.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Clean input no special chars", "--dry-run", "--repo", "pa-platform"], { io: cleanInput.io, hooks }), 0);
     assert.equal(cleanInput.stderr.length, 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Clean input no special chars", dryRun: true, timeout: 1800 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Clean input no special chars", dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const preservesTabNewlineCr = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Line1\tindented\nLine2\r\nLine3", "--dry-run"], { io: preservesTabNewlineCr.io, hooks }), 0);
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Line1\tindented\nLine2\r\nLine3", "--dry-run", "--repo", "pa-platform"], { io: preservesTabNewlineCr.io, hooks }), 0);
     assert.equal(preservesTabNewlineCr.stderr.length, 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Line1\tindented\nLine2\r\nLine3", dryRun: true, timeout: 1800 });
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", objective: "Line1\tindented\nLine2\r\nLine3", dryRun: true, repo: join(root, "repo"), timeout: 1800 });
 
     const mixedInvalidAndSensitive = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "api_key=abcdefghijklmnop;", "--dry-run"], { io: mixedInvalidAndSensitive.io, hooks }), 1);
@@ -1233,22 +1234,22 @@ test("deploy sanitizes invalid characters from objective and shows stderr warnin
 });
 
 test("runCoreCommand resolves deploy timeout from flag, PA_MAX_RUNTIME, then default", async () => {
-  await withCliEnv(async () => {
+  await withCliEnv(async (root) => {
     const seen: unknown[] = [];
     const hooks = { deploy: (request: unknown) => { seen.push(request); return { status: "pending" as const, deploymentId: "d-timeout" }; } };
 
     const defaultTimeout = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan"], { io: defaultTimeout.io, hooks }), 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 1800 });
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--repo", "pa-platform"], { io: defaultTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", repo: join(root, "repo"), timeout: 1800 });
 
     process.env["PA_MAX_RUNTIME"] = "2400";
     const envTimeout = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan"], { io: envTimeout.io, hooks }), 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 2400 });
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--repo", "pa-platform"], { io: envTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", repo: join(root, "repo"), timeout: 2400 });
 
     const flagTimeout = capture();
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--timeout", "120"], { io: flagTimeout.io, hooks }), 0);
-    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", timeout: 120 });
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--timeout", "120", "--repo", "pa-platform"], { io: flagTimeout.io, hooks }), 0);
+    assert.deepEqual(seen.pop(), { team: "builder", mode: "plan", repo: join(root, "repo"), timeout: 120 });
   });
 });
 

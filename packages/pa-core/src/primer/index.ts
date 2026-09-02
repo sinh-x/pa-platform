@@ -1,8 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
+import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { ToolReference } from "../runtime-api/types.js";
+
+export interface PrimerRepositoryContext {
+  repoKey: string;
+  repoRoot: string;
+}
 
 export interface GeneratePrimerOptions {
   runtime: RuntimeName;
@@ -13,6 +19,7 @@ export interface GeneratePrimerOptions {
   templateVars?: Record<string, string>;
   skillsDir?: string;
   extraInstructions?: string;
+  repository?: PrimerRepositoryContext;
   toolReference?: ToolReference;
 }
 
@@ -24,7 +31,9 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const objective = adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime);
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
   const toolReference = adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime);
-  const extraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
+  const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
+  const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
+  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository);
 
   const body = [
     `# PA Deployment Primer`,
@@ -35,7 +44,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     `> **Ticket:** ${options.templateVars?.TICKET_ID || "none"}`,
     ``,
-    userObjective ? `## User Objective\n${userObjective}` : "",
+    additionalInstructions,
     `## Objective`,
     objective,
     ``,
@@ -58,9 +67,61 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     ``,
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
-    extraInstructions ? `\n## Extra Instructions\n${extraInstructions}` : "",
   ].filter((part) => part !== "").join("\n");
   return `${body}\n${renderSizeSignal(body, mode?.id)}`;
+}
+
+function resolvePrimerRepositoryContext(extraInstructions: string | undefined): PrimerRepositoryContext | undefined {
+  if (!extraInstructions || !/^pa_env_vars:$/m.test(extraInstructions)) return undefined;
+  const paRepo = extraInstructions.match(/^  PA_REPO:\s*(.*)$/m)?.[1]?.trim();
+  if (paRepo === undefined) return undefined;
+  const cwd = extraInstructions.match(/^cwd:\s*(.+)$/m)?.[1]?.trim();
+  const resolved = paRepo
+    ? resolveRepoExecutionPath(paRepo, cwd ?? process.cwd())
+    : resolveRepoExecutionPath(undefined, cwd ?? process.cwd());
+  return { repoKey: resolved.repoKey, repoRoot: resolved.repoRoot };
+}
+
+function renderAdditionalInstructions(userObjective: string | undefined, extraInstructions: string | undefined, repository: PrimerRepositoryContext | undefined): string {
+  const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
+  const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
+  const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  return ["## Additional Instructions", objective, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext): string {
+  const evidence = `repo_key: ${repository.repoKey}\nrepo_root: ${repository.repoRoot}`;
+  if (!extraInstructions) return `<deployment-context>\n${evidence}\n</deployment-context>`;
+
+  const contextMatch = extraInstructions.match(/<deployment-context>\n?([\s\S]*?)\n?<\/deployment-context>/);
+  if (!contextMatch) return `${extraInstructions}\n\n<deployment-context>\n${evidence}\n</deployment-context>`;
+  const normalizedContext = contextMatch[1]!
+    .replace(/^repo_key:.*(?:\n|$)/gm, "")
+    .replace(/^repo_root:.*(?:\n|$)/gm, "")
+    .replace(/^cwd:.*$/gm, `cwd: ${repository.repoRoot}`)
+    .replace(/^repo:.*$/gm, `repo: ${repository.repoRoot}`)
+    .replace(/^  PA_REPO:.*$/gm, `  PA_REPO: ${repository.repoRoot}`)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const canonicalContext = `<deployment-context>\n${evidence}${normalizedContext ? `\n${normalizedContext}` : ""}\n</deployment-context>`;
+  return extraInstructions.replace(contextMatch[0], canonicalContext);
+}
+
+function demoteAuthoritativeAdditionalInstructionsHeading(content: string): string {
+  const lines = content.split("\n");
+  let fence: "`" | "~" | undefined;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]![0] as "`" | "~";
+      if (!fence) fence = marker;
+      else if (fence === marker) fence = undefined;
+      continue;
+    }
+    if (!fence && line.trim() === "## Additional Instructions") lines[index] = "### Additional Instructions";
+  }
+  return lines.join("\n");
 }
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
@@ -424,6 +485,7 @@ const TILDE_FENCE_CLOSE_RE = /^\s*(~{3,})\s*$/;
 // Known primer top-level section headers (h2). An injected heading whose demoted
 // form exactly matches one of these is demoted one extra level to avoid collision (MIN-1).
 const PRIMER_SECTION_HEADERS: ReadonlySet<string> = new Set([
+  "## Additional Instructions",
   "## User Objective",
   "## Objective",
   "## Runtime Tools",

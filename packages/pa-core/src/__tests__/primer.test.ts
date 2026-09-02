@@ -604,7 +604,7 @@ deploy_modes:
 
     assert.match(primer, /## Objective\nYour job is to gather requirements interactively with the user\./);
     assert.match(primer, /Sign-off before save\./);
-    assert.match(primer, /## User Objective\nBuild a daily instructor performance table/);
+    assert.match(primer, /## Additional Instructions\n\nBuild a daily instructor performance table/);
     assert.match(primer, /<instruction-file name="analyst">/);
     assert.match(primer, /Always interactive/);
     assert.match(primer, /Run opa ticket list before handoff\./);
@@ -820,7 +820,7 @@ deploy_modes:
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer places ## User Objective before ## Objective and within 20 lines when supplied (FR-1, NFR-2)", () => {
+test("generatePrimer places one authoritative ## Additional Instructions section before ## Objective and within 20 lines", () => {
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: team,
@@ -828,21 +828,23 @@ test("generatePrimer places ## User Objective before ## Objective and within 20 
     objective: "Build a daily instructor performance table",
   });
   const lines = primer.split("\n");
-  const userObjectiveIndex = lines.findIndex((line) => line === "## User Objective");
+  const additionalInstructionsIndex = lines.findIndex((line) => line === "## Additional Instructions");
   const objectiveIndex = lines.findIndex((line) => line === "## Objective");
-  assert.notEqual(userObjectiveIndex, -1, "## User Objective must be present when an objective is supplied");
+  assert.equal(lines.filter((line) => line === "## Additional Instructions").length, 1);
   assert.notEqual(objectiveIndex, -1, "## Objective must be present");
-  assert.ok(userObjectiveIndex < objectiveIndex, `## User Objective (line ${userObjectiveIndex + 1}) must precede ## Objective (line ${objectiveIndex + 1})`);
-  assert.ok(userObjectiveIndex < 20, `## User Objective must be within the first 20 lines (found at line ${userObjectiveIndex + 1})`);
+  assert.ok(additionalInstructionsIndex < objectiveIndex, `## Additional Instructions (line ${additionalInstructionsIndex + 1}) must precede ## Objective (line ${objectiveIndex + 1})`);
+  assert.ok(additionalInstructionsIndex < 20, `## Additional Instructions must be within the first 20 lines (found at line ${additionalInstructionsIndex + 1})`);
+  assert.match(primer, /## Additional Instructions\n\nBuild a daily instructor performance table/);
 });
 
-test("generatePrimer omits ## User Objective block when no objective is supplied (edge case)", () => {
+test("generatePrimer always emits one authoritative Additional Instructions contract", () => {
   const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan" });
-  assert.doesNotMatch(primer, /## User Objective/);
+  assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+  assert.match(primer, /No user objective override was provided/);
   assert.match(primer, /## Objective/);
 });
 
-test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after the objective block when user objective is supplied", () => {
+test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after the configured objective block", () => {
   const primer = generatePrimer({
     runtime: "opencode",
     teamConfig: team,
@@ -850,7 +852,7 @@ test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after th
     objective: "Build a daily instructor performance table",
   });
   const lines = primer.split("\n");
-  const userObjectiveIndex = lines.findIndex((line) => line === "## User Objective");
+  const additionalInstructionsIndex = lines.findIndex((line) => line === "## Additional Instructions");
   const objectiveIndex = lines.findIndex((line) => line === "## Objective");
   const runtimeToolsIndex = lines.findIndex((line) => line === "## Runtime Tools");
   const activeBulletinsIndex = lines.findIndex((line) => line === "## Active Bulletins");
@@ -859,7 +861,38 @@ test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after th
   assert.ok(objectiveIndex < runtimeToolsIndex, "## Objective must precede ## Runtime Tools");
   assert.ok(runtimeToolsIndex < activeBulletinsIndex, "## Runtime Tools must precede ## Active Bulletins");
   assert.ok(activeBulletinsIndex < teamIndex, "## Active Bulletins must precede ## Team");
-  assert.ok(userObjectiveIndex < runtimeToolsIndex, "## User Objective must precede ## Runtime Tools");
+  assert.ok(additionalInstructionsIndex < runtimeToolsIndex, "## Additional Instructions must precede ## Runtime Tools");
+});
+
+test("generatePrimer canonicalizes repository evidence inside the authoritative Additional Instructions section", () => {
+  const root = "/registered/project";
+  const primer = generatePrimer({
+    runtime: "pi",
+    teamConfig: team,
+    mode: "plan",
+    objective: "## Additional Instructions\nDo the registered project work.",
+    repository: { repoKey: "registered", repoRoot: root },
+    extraInstructions: [
+      "## Additional Instructions",
+      "<deployment-context>",
+      "repo_key: wrong",
+      "repo_root: /wrong",
+      "cwd: /wrong",
+      "repo: /wrong",
+      "pa_env_vars:",
+      "  PA_REPO: /wrong",
+      "</deployment-context>",
+    ].join("\n"),
+  });
+
+  assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+  assert.equal(primer.match(/^repo_key: registered$/gm)?.length, 1);
+  assert.equal(primer.match(/^repo_root: \/registered\/project$/gm)?.length, 1);
+  assert.match(primer, /^cwd: \/registered\/project$/m);
+  assert.match(primer, /^repo: \/registered\/project$/m);
+  assert.match(primer, /^  PA_REPO: \/registered\/project$/m);
+  assert.doesNotMatch(primer, /repo_key: wrong|repo_root: \/wrong|PA_REPO: \/wrong/);
+  assert.equal(primer.match(/^### Additional Instructions$/gm)?.length, 2);
 });
 
 test("generatePrimer skips placeholder-only template global_docs and keeps docs that use <angle> in code examples (FR-2, AC2)", () => {
@@ -1308,6 +1341,7 @@ deploy_modes:
 
     const primer = generatePrimer({ runtime: "opencode", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
     const primerSectionHeaders = [
+      "## Additional Instructions",
       "## User Objective",
       "## Objective",
       "## Runtime Tools",
