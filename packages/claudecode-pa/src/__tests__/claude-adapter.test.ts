@@ -3,11 +3,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
-import { spawnSync } from "node:child_process";
+import { closeDb, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { execFileSync, spawnSync } from "node:child_process";
 import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, createClaudeActivityWriter, createClaudeSessionIdParser, resolveClaudeModel, resolveClaudeRuntimeConfig, normalizeProvider, pickBackgroundEnv } from "../adapter.js";
 import { loadBackgroundConfig } from "../background-runner.js";
-import { createClaudeHooks, createDefaultClaudeHooks } from "../deploy.js";
+import { createClaudeHooks, createDefaultClaudeHooks, deployWithClaude } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
 
 interface StubAdapterOpts {
@@ -36,6 +36,19 @@ function createStubAdapter(opts: StubAdapterOpts): RuntimeAdapter {
   };
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function initializeGitRepo(path: string): void {
+  execFileSync("git", ["init", "-b", "develop"], { cwd: path, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: path });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: path });
+  writeFileSync(join(path, "README.md"), "# Test\n");
+  execFileSync("git", ["add", "README.md"], { cwd: path });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: path, stdio: "ignore" });
+}
+
 function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "cpa-adapter-"));
   const config = join(root, "config");
@@ -44,9 +57,11 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  initializeGitRepo(repo);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
+  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: read-only\n`);
   const previous = {
+    cwd: process.cwd(),
     config: process.env["PA_PLATFORM_CONFIG"],
     teams: process.env["PA_PLATFORM_TEAMS"],
     registry: process.env["PA_REGISTRY_DB"],
@@ -64,7 +79,9 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   process.env["HOME"] = root;
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_CPA_DEFAULT_MODEL"];
+  process.chdir(repo);
   return fn(root).finally(() => {
+    process.chdir(previous.cwd);
     closeDb();
     restore("PA_PLATFORM_CONFIG", previous.config);
     restore("PA_PLATFORM_TEAMS", previous.teams);
@@ -140,8 +157,11 @@ test("normalizeProvider accepts anthropic/undefined and rejects others", () => {
   assert.throws(() => normalizeProvider("minimax"), /Supported providers: anthropic/);
 });
 
-test("cpa background environment preserves team and mode context", () => {
-  assert.deepEqual(pickBackgroundEnv({ PA_TEAM: "builder", PA_MODE: "implement" }), { PA_TEAM: "builder", PA_MODE: "implement" });
+test("cpa background environment preserves canonical PA context", () => {
+  assert.deepEqual(
+    pickBackgroundEnv({ PA_TEAM: "builder", PA_MODE: "implement", PA_REPO: "/registered/repo", PA_TICKET_ID: "PAP-162", PA_PROVIDER: "anthropic", PA_MODEL: "claude-opus-4-7" }),
+    { PA_TEAM: "builder", PA_MODE: "implement", PA_TICKET_ID: "PAP-162", PA_REPO: "/registered/repo", PA_PROVIDER: "anthropic", PA_MODEL: "claude-opus-4-7" },
+  );
 });
 
 test("cpa tool guidance describes anthropic-only provider", () => {
@@ -186,6 +206,79 @@ test("cpa deploy includes repo memory docs as path pointers (claude native load,
     assert.match(primer, /loaded natively by Claude Code/);
     assert.doesNotMatch(primer, /Always follow repo-specific memory/);
     assert.doesNotMatch(primer, /Use nested Claude memory too/);
+  });
+});
+
+test("PAP-162 Claude key/path execution-plan contract keeps all repository evidence canonical", async () => {
+  await withCpaEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
+    for (const requestedRepo of ["pa-platform", repo]) {
+      let captured: SpawnOpts | undefined;
+      let runtimeCwd = "";
+      let runtimePaRepo: string | undefined;
+      const adapter = new class extends ClaudeCodeAdapter {
+        override spawn(opts: SpawnOpts): Promise<SpawnResult> {
+          captured = opts;
+          return super.spawn(opts);
+        }
+      }({
+        cwd: join(root, "adapter-local-cwd-must-not-win"),
+        env: { HOME: root },
+        runBackgroundCommand: (_args, options) => {
+          runtimeCwd = options.cwd;
+          runtimePaRepo = options.env["PA_REPO"];
+          return { pid: 4242 };
+        },
+      });
+      const result = await deployWithClaude({ team: "daily", mode: "plan", repo: requestedRepo, background: true }, adapter);
+      assert.equal(result.status, "pending");
+      assert.ok(captured?.executionPlan);
+      const plan = captured.executionPlan;
+      const primer = readFileSync(captured.primerPath, "utf8");
+      const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+      assert.equal(Object.isFrozen(plan), true);
+      assert.equal(plan.repoKey, "pa-platform");
+      assert.equal(plan.repoRoot, repo);
+      assert.equal(plan.repositoryCwd, repo);
+      assert.equal(plan.memoryDocumentRoot, repo);
+      assert.equal(plan.environment.PA_REPO, repo);
+      assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(captured.env?.["PA_REPO"], repo);
+      assert.equal(runtimeCwd, repo);
+      assert.equal(runtimePaRepo, repo);
+      assert.equal(started?.repo, repo);
+      assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(primer, /^repo_key: pa-platform$/m);
+      assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
+    }
+  });
+});
+
+test("PAP-162 Claude rejects invalid and ambiguous repository inputs before adapter spawn", async () => {
+  await withCpaEnv(async (root) => {
+    let spawns = 0;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = { ...base, spawn(opts) { spawns += 1; return base.spawn(opts); } };
+    const invalid = await deployWithClaude({ team: "daily", mode: "plan", repo: join(root, "missing") }, adapter);
+    assert.equal(invalid.status, "failed");
+    assert.match(invalid.reason ?? "", /registered project paths only/);
+    assert.ok((invalid.reason ?? "").length <= 2000);
+
+    const repo = join(root, "repo");
+    const second = join(root, "registered-worktree");
+    const ambiguous = join(root, "ambiguous-worktree");
+    execFileSync("git", ["worktree", "add", "-b", "feature/registered-worktree", second], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", "-b", "feature/ambiguous-worktree", ambiguous], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
+    const rejected = await deployWithClaude({ team: "daily", mode: "plan", repo: ambiguous }, adapter);
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+    assert.ok((rejected.reason ?? "").length <= 2000);
+    assert.equal(spawns, 0);
   });
 });
 

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
-import { createDefaultOpencodeHooks, createOpencodeHooks, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
+import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
 
 interface StubAdapterOpts {
@@ -50,6 +51,15 @@ function createStubAdapter(opts: StubAdapterOpts): RuntimeAdapter {
 }
 
 
+function initializeGitRepo(path: string): void {
+  execFileSync("git", ["init", "-b", "develop"], { cwd: path, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: path });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: path });
+  writeFileSync(join(path, "README.md"), "# Test\n");
+  execFileSync("git", ["add", "README.md"], { cwd: path });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: path, stdio: "ignore" });
+}
+
 function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "opa-adapter-"));
   const config = join(root, "config");
@@ -58,17 +68,20 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  initializeGitRepo(repo);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
-  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
+  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: read-only\n`);
+  const previous = { cwd: process.cwd(), config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PA_TICKET_ID"] = "PAP-TEST";
   delete process.env["PA_MAX_RUNTIME"];
+  process.chdir(repo);
   return fn(root).finally(() => {
+    process.chdir(previous.cwd);
     closeDb();
     restore("PA_PLATFORM_CONFIG", previous.config);
     restore("PA_PLATFORM_TEAMS", previous.teams);
@@ -161,11 +174,11 @@ test("opa dry-run --ticket propagates to deployment-context block", async () => 
   });
 });
 
-test("opa dry-run deployment-context block includes pa_env_vars subsection", async () => {
+test("opa dry-run deployment-context block includes canonical pa_env_vars subsection", async () => {
   await withOpaEnv(async (root) => {
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
     const stdout: string[] = [];
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211", "--repo", "~/demo-repo", "--provider", "openai", "--model", "gpt-5", "--team-model", "o3"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
+    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--ticket", "DG-211", "--repo", "pa-platform", "--provider", "openai", "--model", "gpt-5", "--team-model", "o3"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
     assert.equal(code, 0);
     const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
     assert.ok(deployId);
@@ -177,7 +190,7 @@ test("opa dry-run deployment-context block includes pa_env_vars subsection", asy
     assert.match(primer, /PA_TEAM: daily/);
     assert.match(primer, /PA_MODE: plan/);
     assert.match(primer, /PA_TICKET_ID: DG-211/);
-    assert.match(primer, /PA_REPO: ~\/demo-repo|demo-repo/);
+    assert.match(primer, new RegExp(`PA_REPO: ${escapeRegExp(join(root, "repo"))}`));
     assert.match(primer, /PA_PROVIDER: openai/);
     assert.match(primer, /PA_MODEL: openai\/gpt-5/);
     assert.match(primer, /PA_TEAM_MODEL: o3/);
@@ -516,20 +529,80 @@ test("opa deploy preserves absolute repo path in deployment context", async () =
   });
 });
 
-test("opa deploy expands tilde repo path in deployment context", async () => {
+test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evidence canonical", async () => {
   await withOpaEnv(async (root) => {
-    const repo = "~/opa-tilde-repo";
-    const expandedRepo = join(homedir(), "opa-tilde-repo");
-    const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
-    const stdout: string[] = [];
-    const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--dry-run", "--repo", repo], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
-    assert.equal(code, 0);
-    const deployId = stdout.join("\n").match(/d-[a-f0-9]{6}/)?.[0];
-    assert.ok(deployId);
-    const primer = readFileSync(join(root, "deployments", deployId, "primer.md"), "utf-8");
-    assert.match(primer, /<deployment-context>/);
-    assert.match(primer, new RegExp(`repo_root: ${escapeRegExp(expandedRepo)}`));
-    assert.doesNotMatch(primer, new RegExp(`${escapeRegExp(process.cwd())}.+${escapeRegExp(repo)}`));
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
+    const observations: Array<{ opts: SpawnOpts; runtimeCwd: string; runtimePaRepo?: string; registryRepo?: string; primer: string }> = [];
+    for (const requestedRepo of ["pa-platform", repo]) {
+      let captured: SpawnOpts | undefined;
+      let runtimeCwd = "";
+      let runtimePaRepo: string | undefined;
+      const adapter = new class extends OpencodeAdapter {
+        override spawn(opts: SpawnOpts): Promise<SpawnResult> {
+          captured = opts;
+          return super.spawn(opts);
+        }
+      }({
+        cwd: join(root, "adapter-local-cwd-must-not-win"),
+        env: {},
+        runBackgroundCommand: (_args, options) => {
+          runtimeCwd = options.cwd;
+          runtimePaRepo = options.env["PA_REPO"];
+          return { pid: 4242 };
+        },
+      });
+      const result = await deployWithOpencode({ team: "daily", mode: "plan", repo: requestedRepo, background: true }, adapter);
+      assert.equal(result.status, "pending");
+      assert.ok(captured?.executionPlan);
+      const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+      observations.push({ opts: captured, runtimeCwd, runtimePaRepo, registryRepo: started?.repo, primer: readFileSync(captured.primerPath, "utf8") });
+    }
+
+    for (const { opts, runtimeCwd, runtimePaRepo, registryRepo, primer } of observations) {
+      const plan = opts.executionPlan!;
+      assert.equal(Object.isFrozen(plan), true);
+      assert.equal(plan.repoKey, "pa-platform");
+      assert.equal(plan.repoRoot, repo);
+      assert.equal(plan.repositoryCwd, repo);
+      assert.equal(plan.memoryDocumentRoot, repo);
+      assert.equal(plan.environment.PA_REPO, repo);
+      assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(opts.env?.["PA_REPO"], repo);
+      assert.equal(runtimeCwd, repo);
+      assert.equal(runtimePaRepo, repo);
+      assert.equal(registryRepo, repo);
+      assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(primer, /^repo_key: pa-platform$/m);
+      assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
+    }
+  });
+});
+
+test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before adapter spawn", async () => {
+  await withOpaEnv(async (root) => {
+    let spawns = 0;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = { ...base, spawn(opts) { spawns += 1; return base.spawn(opts); } };
+    const invalid = await deployWithOpencode({ team: "daily", mode: "plan", repo: join(root, "missing") }, adapter);
+    assert.equal(invalid.status, "failed");
+    assert.match(invalid.reason ?? "", /registered project paths only/);
+    assert.ok((invalid.reason ?? "").length <= 2000);
+
+    const repo = join(root, "repo");
+    const second = join(root, "registered-worktree");
+    const ambiguous = join(root, "ambiguous-worktree");
+    execFileSync("git", ["worktree", "add", "-b", "feature/registered-worktree", second], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["worktree", "add", "-b", "feature/ambiguous-worktree", ambiguous], { cwd: repo, stdio: "ignore" });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
+    const rejected = await deployWithOpencode({ team: "daily", mode: "plan", repo: ambiguous }, adapter);
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+    assert.ok((rejected.reason ?? "").length <= 2000);
+    assert.equal(spawns, 0);
   });
 });
 

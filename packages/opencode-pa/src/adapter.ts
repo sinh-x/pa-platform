@@ -48,7 +48,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
     this.env = options.env ?? process.env;
     this.runCommand = options.runCommand;
     this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
-      const logFile = opts.logFile ?? resolve(this.cwd, "opencode.log");
+      const logFile = opts.logFile ?? resolve(opts.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "opencode-background.json");
       writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
@@ -108,6 +108,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     const wrapperPrompt = buildPrimerLoadPrompt(opts.primerPath);
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     if (opts.mode === "foreground") {
@@ -116,7 +117,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         args.push("--session", sessionId);
       }
       args.push("--prompt", wrapperPrompt);
-      const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
+      const result = runInheritedCommand(args, { cwd, env: { ...this.env, ...opts.env } });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
       if (errorMessage) {
@@ -137,15 +138,15 @@ export class OpencodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
+      const result = this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
     const env = { ...this.env, ...opts.env };
     const result = this.runCommand
-      ? this.runCommand(args, { cwd: this.cwd, env })
-      : await runStreamingCommand(args, { cwd: this.cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl") });
+      ? this.runCommand(args, { cwd, env })
+      : await runStreamingCommand(args, { cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl") });
     if (this.runCommand) {
       if (opts.logFile) writeLog(opts.logFile, result.stdout, result.stderr);
       const outputPath = resolve(dirname(opts.primerPath), "opencode-output.jsonl");

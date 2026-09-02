@@ -108,6 +108,9 @@ test("execution plans are immutable and resolve selected skill paths", () => {
     assert.equal(plan.skills[0]?.path, skillPath);
     assert.equal(plan.repoKey, "registered");
     assert.equal(plan.repoRoot, repo);
+    assert.equal(plan.repositoryCwd, repo);
+    assert.equal(plan.memoryDocumentRoot, repo);
+    assert.equal(plan.repositoryAccess, "mutating");
     assert.equal(plan.environment.PA_REPO, repo);
     assert.equal(Object.isFrozen(plan), true);
     assert.equal(Object.isFrozen(plan.skills), true);
@@ -155,8 +158,12 @@ test("execution plans preserve canonical cwd for a registered key and exact cano
       assert.equal(byKey.repoKey, "registered");
       assert.equal(byKey.repoRoot, fixture.repo);
       assert.equal(byKey.repositoryCwd, fixture.repo);
+      assert.equal(byKey.memoryDocumentRoot, fixture.repo);
       assert.equal(byKey.environment.PA_REPO, fixture.repo);
-      assert.deepEqual({ key: byKey.repoKey, root: byKey.repoRoot }, { key: byPath.repoKey, root: byPath.repoRoot });
+      assert.deepEqual(
+        { key: byKey.repoKey, root: byKey.repoRoot, cwd: byKey.repositoryCwd, memoryRoot: byKey.memoryDocumentRoot, paRepo: byKey.environment.PA_REPO },
+        { key: byPath.repoKey, root: byPath.repoRoot, cwd: byPath.repositoryCwd, memoryRoot: byPath.memoryDocumentRoot, paRepo: byPath.environment.PA_REPO },
+      );
     });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -173,6 +180,7 @@ test("execution plans infer a linked-worktree CWD but relocate every repository 
     assert.equal(plan.repoKey, "registered");
     assert.equal(plan.repoRoot, fixture.repo);
     assert.equal(plan.repositoryCwd, fixture.repo);
+    assert.equal(plan.memoryDocumentRoot, fixture.repo);
     assert.equal(plan.environment.PA_REPO, fixture.repo);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

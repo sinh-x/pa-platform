@@ -33,6 +33,7 @@ export interface DeployMode {
   timeout?: number;
   global_docs?: string[];
   require_ticket?: boolean;
+  repository_access?: "read-only" | "mutating";
 }
 
 export interface HierarchyMember {

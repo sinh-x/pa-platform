@@ -38,7 +38,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   }
   const provider = runtimeConfig.provider;
   const model = runtimeConfig.model;
-  const env = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
+  const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let plan;
   try {
     plan = resolveExecutionPlan({
@@ -49,20 +49,21 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       deploymentId,
       deploymentDir: deployDir,
       activityLogPath: paths.activityLogPath,
-      environment: env,
+      environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
     });
   } catch (error) {
-    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
-    const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, env, 2000);
+    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), requestedEnvironment, 2000);
+    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), paths.activityLogPath);
+    const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
     ensurePiTerminalStatus(deployDir, terminalStatus("failed", summary));
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
-  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(env)}\n</deployment-context>` });
+  const env = { ...plan.environment, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string>;
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.objective, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nrepository_access: ${plan.repositoryAccess}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(plan.environment)}\n</deployment-context>` });
   const primerPath = resolve(deployDir, "primer.md"); writeFileSync(primerPath, primer, "utf8"); process.stdout.write(`Deployment: ${deploymentId}\n`);
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), paths.activityLogPath);
@@ -117,7 +118,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       emitPidEvent({ deploymentId, team: team.name, pid });
       publishedPid = pid;
     };
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: timeout.timeout * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;

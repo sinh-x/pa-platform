@@ -27,6 +27,8 @@ export interface ExecutionPlan {
   readonly repoKey: string;
   readonly repoRoot: string;
   readonly repositoryCwd: string;
+  readonly memoryDocumentRoot: string;
+  readonly repositoryAccess: "read-only" | "mutating";
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
@@ -85,6 +87,8 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repoKey: repository.repoKey,
     repoRoot: repository.repoRoot,
     repositoryCwd: repository.repoRoot,
+    memoryDocumentRoot: repository.repoRoot,
+    repositoryAccess: options.mode?.repository_access ?? "mutating",
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,

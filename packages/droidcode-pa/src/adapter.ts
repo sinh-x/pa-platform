@@ -58,7 +58,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     this.resumeFactory = options.resumeFactory;
     this.defaultModel = resolveDefaultDroidModel(this.env);
     this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
-      const logFile = opts.logFile ?? resolve(this.cwd, "droid-background.log");
+      const logFile = opts.logFile ?? resolve(opts.cwd, "droid-background.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "droid-background.json");
       writeFileSync(configPath, JSON.stringify({
@@ -140,6 +140,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   }
 
   private async runDroid(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     const primer = readFileSync(opts.primerPath, "utf-8");
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     const model = opts.model ?? this.defaultModel;
@@ -159,7 +160,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       if (opts.autonomy) args.push("--auto", opts.autonomy);
       if (sessionId) args.push("-r", sessionId);
       const result = spawnSync("droid", args, {
-        cwd: this.cwd,
+        cwd,
         env: mergedEnv,
         stdio: ["inherit", "inherit", "pipe"],
         encoding: "utf-8",
@@ -182,7 +183,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
 
     if (opts.mode === "background") {
       const result = this.runBackgroundCommand([model, opts.primerPath], {
-        cwd: this.cwd,
+        cwd,
         env: toEnvRecord(mergedEnv),
         logFile: opts.logFile,
       });
@@ -203,7 +204,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     try {
       const session = sessionId
         ? await (this.resumeFactory ?? defaultResumeSession)(sessionId, { apiKey, env: toEnvRecord(mergedEnv) })
-        : await (this.sessionFactory ?? defaultCreateSession)({ modelId: model, cwd: this.cwd, env: toEnvRecord(mergedEnv), apiKey });
+        : await (this.sessionFactory ?? defaultCreateSession)({ modelId: model, cwd, env: toEnvRecord(mergedEnv), apiKey });
 
       let exitCode = 0;
       let errorMessage: string | undefined;

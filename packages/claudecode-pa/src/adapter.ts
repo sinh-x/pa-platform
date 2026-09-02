@@ -43,7 +43,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.env = options.env ?? process.env;
     this.runCommand = options.runCommand;
     this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
-      const logFile = opts.logFile ?? resolve(this.cwd, "claude.log");
+      const logFile = opts.logFile ?? resolve(opts.cwd, "claude.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "claude-background.json");
       writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
@@ -109,6 +109,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   private async runClaude(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     // Pass a short instruction telling claude to load the primer via the Read tool
     // rather than dumping the full primer body onto argv. Mirrors legacy `pd`
     // (personal-assistant/src/commands/deploy.ts:1005); see PAP-052.
@@ -122,7 +123,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       args.push("--model", model);
       args.push("--permission-mode", "auto");
       args.push(wrapperPrompt);
-      const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
+      const result = runInheritedCommand(args, { cwd, env: { ...this.env, ...opts.env } });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
       if (errorMessage) {
@@ -141,15 +142,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
+      const result = this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
     const env = { ...this.env, ...opts.env };
     const result = this.runCommand
-      ? this.runCommand(args, { cwd: this.cwd, env })
-      : await runStreamingCommand(args, { cwd: this.cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "claude-output.jsonl") });
+      ? this.runCommand(args, { cwd, env })
+      : await runStreamingCommand(args, { cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "claude-output.jsonl") });
     if (this.runCommand) {
       if (opts.logFile) writeLog(opts.logFile, result.stdout, result.stderr);
       const outputPath = resolve(dirname(opts.primerPath), "claude-output.jsonl");
@@ -460,7 +461,7 @@ function basenameDeployId(deployDir: string): string {
 
 export function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_CPA_DEFAULT_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_CPA_DEFAULT_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

@@ -49,6 +49,16 @@ test("valid explicit provider/model values are trimmed", () => {
   assert.equal(config.deploy_modes?.[0]?.model, "openai/gpt-5");
 });
 
+test("repository access classification is parsed and rejects unknown values", () => {
+  const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: inspect\n    label: Inspect\n    repository_access: read-only\n  - id: implement\n    label: Implement\n    repository_access: mutating\n`);
+  assert.equal(config.deploy_modes?.[0]?.repository_access, "read-only");
+  assert.equal(config.deploy_modes?.[1]?.repository_access, "mutating");
+  assert.throws(
+    () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    repository_access: shared\n`),
+    /deploy_modes\[0\]\.repository_access must be 'read-only' or 'mutating'/,
+  );
+});
+
 test("qualified models must match the selected provider namespace", () => {
   assert.equal(modelMatchesProvider("gpt-5", ["openai"]), true);
   assert.equal(modelMatchesProvider("openai/gpt-5", ["openai"]), true);

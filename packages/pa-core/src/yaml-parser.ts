@@ -45,6 +45,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       timeout: modeRecord["timeout"] as number | undefined,
       global_docs: modeRecord["global_docs"] as string[] | undefined,
       require_ticket: modeRecord["require_ticket"] as boolean | undefined,
+      repository_access: parseRepositoryAccess(modeRecord["repository_access"], index),
     };
   });
 
@@ -89,6 +90,12 @@ function validateFlatModePair(mode: Record<string, unknown>, index: number): voi
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function parseRepositoryAccess(value: unknown, index: number): DeployMode["repository_access"] {
+  if (value === undefined) return undefined;
+  if (value === "read-only" || value === "mutating") return value;
+  throw new Error(`deploy_modes[${index}].repository_access must be 'read-only' or 'mutating'`);
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {
