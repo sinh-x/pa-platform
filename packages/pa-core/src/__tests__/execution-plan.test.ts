@@ -111,10 +111,44 @@ test("execution plans are immutable and resolve selected skill paths", () => {
     assert.equal(plan.repositoryCwd, repo);
     assert.equal(plan.memoryDocumentRoot, repo);
     assert.equal(plan.repositoryAccess, "mutating");
+    assert.equal(plan.objective, "objective");
+    assert.equal(plan.userObjectiveOverride, undefined);
     assert.equal(plan.environment.PA_REPO, repo);
     assert.equal(Object.isFrozen(plan), true);
     assert.equal(Object.isFrozen(plan.skills), true);
     assert.equal(Object.isFrozen(plan.environment), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("execution plans preserve user objective authority and select project guides by resolved key", () => {
+  const root = mkdtempSync(join(tmpdir(), "execution-plan-guides-"));
+  const config = join(root, "config");
+  const repo = join(root, "repo");
+  mkdirSync(config);
+  initializeRepo(repo);
+  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n`);
+  const teamConfig = team();
+  const mode = teamConfig.deploy_modes![0]!;
+  mode.objective = "configured objective";
+  mode.project_guides = { registered: ["docs/registered.md"], unrelated: ["docs/unrelated.md"] };
+  try {
+    const plan = withPlatformConfig(config, () => resolveExecutionPlan({
+      request: { team: "builder", mode: "implement", objective: "operator override" },
+      teamConfig,
+      mode,
+      runtime: "opencode",
+      deploymentId: "d-guides",
+      deploymentDir: root,
+      activityLogPath: join(root, "activity.jsonl"),
+      environment: {},
+      timeoutSeconds: 60,
+      cwd: repo,
+    }));
+    assert.equal(plan.objective, "operator override");
+    assert.equal(plan.userObjectiveOverride, "operator override");
+    assert.deepEqual(plan.memoryDocuments, ["docs/registered.md"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -844,6 +844,56 @@ test("generatePrimer always emits one authoritative Additional Instructions cont
   assert.match(primer, /## Objective/);
 });
 
+test("generatePrimer selects project guides by repository key and demotes reserved headings", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-keyed-guides-"));
+  try {
+    const selected = join(root, "selected.md");
+    const unrelated = join(root, "unrelated.md");
+    writeFileSync(selected, "# Selected guide\n## Additional Instructions ##\nSelected repository rules.\n");
+    writeFileSync(unrelated, "# Unrelated guide\nDo not inject this.\n");
+    const keyedTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Configured objective
+agents: []
+deploy_modes:
+  - id: implement
+    label: Implement
+    project_guides:
+      pa-platform:
+        - selected.md
+      unrelated:
+        - unrelated.md
+`);
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: keyedTeam,
+      mode: "implement",
+      repository: { repoKey: "pa-platform", repoRoot: "/registered/pa-platform" },
+      resolveFile: (path) => path === "selected.md" ? selected : path === "unrelated.md" ? unrelated : undefined,
+      toolReference: { runtime: "opencode", markdown: "## Additional Instructions\nTool rules." },
+    });
+    assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+    assert.match(primer, /### Additional Instructions\nTool rules/);
+    assert.match(primer, /### Additional Instructions\nSelected repository rules/);
+    assert.match(primer, /Selected guide/);
+    assert.doesNotMatch(primer, /Unrelated guide/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generatePrimer preserves reserved headings inside shorter nested fences", () => {
+  const primer = generatePrimer({
+    runtime: "opencode",
+    teamConfig: team,
+    mode: "plan",
+    objective: "````markdown\n```\n## Additional Instructions\n```\n````",
+  });
+  assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 2);
+  assert.match(primer, /````markdown\n```\n## Additional Instructions\n```\n````/);
+});
+
 test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after the configured objective block", () => {
   const primer = generatePrimer({
     runtime: "opencode",

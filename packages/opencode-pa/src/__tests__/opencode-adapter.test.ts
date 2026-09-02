@@ -568,6 +568,7 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(plan.userObjectiveOverride, undefined);
       assert.equal(plan.repositoryLease?.role, "reader");
       assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
       assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
@@ -576,6 +577,7 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.equal(runtimePaRepo, repo);
       assert.equal(registryRepo, repo);
       assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(primer, /No user objective override was provided/);
       assert.match(primer, /^repo_key: pa-platform$/m);
       assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(repo)}$`, "m"));
@@ -609,14 +611,26 @@ test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before ad
 
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n`);
     writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
-    const owner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    const missingOwner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    assert.equal(missingOwner.status, "failed");
+    assert.match(missingOwner.reason ?? "", /background supervisor returned without repository lease ownership evidence/);
+
+    const ownedAdapter: RuntimeAdapter = {
+      ...base,
+      async spawn(opts) {
+        spawns += 1;
+        const result = await base.spawn(opts);
+        return { ...result, metadata: { ...result.metadata, pid: process.pid } };
+      },
+    };
+    const owner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, ownedAdapter);
     assert.equal(owner.status, "pending", owner.reason);
-    assert.equal(spawns, 1);
-    const conflict = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    assert.equal(spawns, 2);
+    const conflict = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, ownedAdapter);
     assert.equal(conflict.status, "failed");
     assert.match(conflict.reason ?? "", /lease conflict.*deployment=/is);
     assert.ok((conflict.reason ?? "").length <= 2000);
-    assert.equal(spawns, 1);
+    assert.equal(spawns, 2);
     assert.ok(owner.deploymentId);
     assert.equal(finalizeRepositoryLifecycle(getDeployPaths(owner.deploymentId).deployDir).ok, true);
   });

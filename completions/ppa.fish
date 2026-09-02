@@ -168,7 +168,7 @@ end
 
 function __ppa_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume
+        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume --autonomy
             return 0
     end
 
@@ -391,21 +391,23 @@ complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_f
 complete -c ppa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c ppa -n __ppa_deploy_needs_team -a '(__ppa_deploy_team_candidates)' -d 'Team name'
-complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
+complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy' -d 'Deploy option'
 complete -c ppa -f -n __ppa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__ppa_modes)'
 complete -c ppa -n __ppa_deploy_completing -l objective -d 'Deployment objective' -r
-complete -c ppa -n __ppa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
+complete -c ppa -n __ppa_deploy_completing -l objective-file -d 'Objective from file' -r
 complete -c ppa -n __ppa_deploy_completing -l list-modes -d 'List available deploy modes'
-complete -c ppa -n __ppa_deploy_completing -l validate -d 'Validate config and provider/model pairs'
+complete -c ppa -n __ppa_deploy_completing -l validate -d 'Validate team config'
 complete -c ppa -f -n __ppa_deploy_completing -l provider -d 'Pi provider override (openai/openai-codex)' -r -a 'openai openai-codex'
-complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Pi model override (default gpt-5.6-sol)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Model' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
 complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Deprecated model alias (PAP-147)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n __ppa_deploy_completing -l agent-model -d 'Unsupported per-agent model override (PAP-148)' -r
 complete -c ppa -n __ppa_deploy_completing -l background -d 'Run detached/headless'
 complete -c ppa -n __ppa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
-complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Repository name' -r -a '(__ppa_projects)'
+complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Registered repository key or exact configured path' -r -a '(__ppa_projects)'
 complete -c ppa -f -n __ppa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__ppa_ticket_ids)'
 complete -c ppa -n __ppa_deploy_completing -l timeout -d 'Timeout seconds' -r
 complete -c ppa -f -n __ppa_deploy_completing -l resume -d 'Resume from deployment ID' -r -a '(__ppa_deployments)'
+complete -c ppa -f -n __ppa_deploy_completing -l autonomy -d 'Autonomy level' -r -a 'low medium high'
 complete -c ppa -f -n '__fish_seen_subcommand_from deploy evaluate' -l evaluate-deployment -d 'Deployment to evaluate' -r -a '(__ppa_deployments)'
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate; and string match -q "d-*" -- (commandline -ct)' -a '(__ppa_deployments)' -d 'Deployment to evaluate'
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l background -d 'Run detached/headless'
@@ -416,7 +418,7 @@ complete -c ppa -r -n '__fish_seen_subcommand_from evaluate' -l report-path -d '
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l overall -d 'Overall evaluator score' -r
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l human-agency -d 'Human Agency score' -r
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticket ID' -r -a '(__ppa_ticket_ids)'
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Repository name' -r -a '(__ppa_projects)'
+complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Registered repository key or exact configured path' -r -a '(__ppa_projects)'
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Pi provider (openai/openai-codex)' -r -a 'openai openai-codex'
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Pi model (default gpt-5.6-sol)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'

@@ -287,13 +287,22 @@ deploy_modes:               # optional, list of deploy modes
     provider: string         # optional; must pair with model when either is set
     timeout: number          # optional
     global_docs: [string]   # optional
+    project_guides:         # optional, selected only for the resolved repository key
+      pa-platform: [string]
     require_ticket: boolean  # optional, require a ticket for deploys in this mode
+    repository_access: "read-only" | "mutating"  # optional; defaults to mutating
 ```
 
 `deploy_modes[].provider` and `deploy_modes[].model` are the only runtime
 selection fields. They must both be present or both be absent; absent values
 select the chosen adapter's documented default. Team-level or mode-level
 `runtimes` blocks are removed and cause validation to fail with their YAML path.
+
+`deploy_modes[].project_guides` maps canonical repository keys from `repos.yaml`
+to guide paths. Only the list matching the execution plan's resolved key is
+injected. `repository_access: mutating` acquires the repository's durable
+single-owner lease and requires a clean checkout; `read-only` remains admissible
+while a mutator holds that lease.
 
 See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `Agent` field reference.
 
@@ -343,11 +352,16 @@ These keys are rendered into the `<deployment-context>` primer block by all four
 | `PA_TEAM` | Team name for the deployment |
 | `PA_MODE` | Deploy mode id |
 | `PA_TICKET_ID` | Associated ticket id (if any) |
-| `PA_REPO` | Repository path (if any) |
+| `PA_REPO` | Exact configured repository path selected by the shared execution plan |
 | `PA_PROVIDER` | Model provider (if any) |
 | `PA_MODEL` | Agent model (if any) |
 | `PA_TEAM_MODEL` | Team-level model (if any) |
 | `PA_AGENT_MODEL` | Agent-level model (if any) |
+
+Mutation lifecycle evidence is rendered separately as lowercase
+`repository_lease_owner` and `repository_lease_path` deployment-context fields.
+The internal `PA_REPOSITORY_LEASE_TOKEN` is passed in the runtime environment for
+owners and delegated mutators but is intentionally omitted from primer output.
 
 `PA_DEPLOYMENT_ID` is also read by `evaluate --record` as the default evaluator deployment id.
 

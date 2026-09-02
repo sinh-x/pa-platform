@@ -244,6 +244,7 @@ test("PAP-162 Claude key/path execution-plan contract keeps all repository evide
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.repositoryAccess, "read-only");
+      assert.equal(plan.userObjectiveOverride, undefined);
       assert.equal(plan.repositoryLease?.role, "reader");
       assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
       assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
@@ -252,6 +253,7 @@ test("PAP-162 Claude key/path execution-plan contract keeps all repository evide
       assert.equal(runtimePaRepo, repo);
       assert.equal(started?.repo, repo);
       assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(primer, /No user objective override was provided/);
       assert.match(primer, /^repo_key: pa-platform$/m);
       assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(repo)}$`, "m"));
@@ -282,6 +284,13 @@ test("PAP-162 Claude rejects invalid and ambiguous repository inputs before adap
     assert.match(rejected.reason ?? "", /ambiguous registered identity/);
     assert.ok((rejected.reason ?? "").length <= 2000);
     assert.equal(spawns, 0);
+
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n`);
+    writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
+    const missingOwner = await deployWithClaude({ team: "daily", mode: "plan", repo, background: true }, adapter);
+    assert.equal(missingOwner.status, "failed");
+    assert.match(missingOwner.reason ?? "", /background supervisor returned without repository lease ownership evidence/);
+    assert.equal(spawns, 1);
   });
 });
 

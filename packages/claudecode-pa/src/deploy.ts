@@ -77,7 +77,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   const primerPath = resolve(deployDir, "primer.md");
   try {
     const extraInstructions = buildExtraInstructions(plan, teamConfig);
-    const primer = generatePrimer({ runtime: "claude", teamConfig, mode: plan.mode, objective: plan.objective, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
+    const primer = generatePrimer({ runtime: "claude", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
     writeFileSync(primerPath, primer, "utf-8");
   } catch (error) {
     const lifecycle = finalizeRepositoryLifecycle(plan);
@@ -115,9 +115,11 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     if (result.sessionId) {
       writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");
     }
-    const pid = typeof result.metadata?.["pid"] === "number" ? result.metadata["pid"] : undefined;
+    const rawPid = result.metadata?.["pid"];
+    const pid = typeof rawPid === "number" && Number.isInteger(rawPid) && rawPid > 0 ? rawPid : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
+      if (plan.repositoryLease?.role === "owner" && plan.repositoryLease.state === "active" && pid === undefined) throw new Error("runner-readiness: Claude background supervisor returned without repository lease ownership evidence");
       if (pid !== undefined) transferRepositoryLease(plan, pid);
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "claude", body: `claude background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };

@@ -44,6 +44,7 @@ export function parseTeamYamlContent(content: string): TeamConfig {
       provider,
       timeout: modeRecord["timeout"] as number | undefined,
       global_docs: modeRecord["global_docs"] as string[] | undefined,
+      project_guides: parseProjectGuides(modeRecord["project_guides"], index),
       require_ticket: modeRecord["require_ticket"] as boolean | undefined,
       repository_access: parseRepositoryAccess(modeRecord["repository_access"], index),
     };
@@ -96,6 +97,19 @@ function parseRepositoryAccess(value: unknown, index: number): DeployMode["repos
   if (value === undefined) return undefined;
   if (value === "read-only" || value === "mutating") return value;
   throw new Error(`deploy_modes[${index}].repository_access must be 'read-only' or 'mutating'`);
+}
+
+function parseProjectGuides(value: unknown, index: number): DeployMode["project_guides"] {
+  if (value === undefined) return undefined;
+  const guides = asRecord(value, `deploy_modes[${index}].project_guides`);
+  const parsed: Record<string, string[]> = {};
+  for (const [repoKey, paths] of Object.entries(guides)) {
+    if (!repoKey.trim() || !Array.isArray(paths) || paths.some((path) => typeof path !== "string" || path.trim() === "")) {
+      throw new Error(`deploy_modes[${index}].project_guides.${repoKey || "<empty>"} must be an array of non-empty paths`);
+    }
+    parsed[repoKey] = paths.map((path) => (path as string).trim());
+  }
+  return parsed;
 }
 
 function parseHierarchy(raw: Record<string, unknown> | undefined): Hierarchy | undefined {

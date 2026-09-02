@@ -199,6 +199,11 @@ function collectTeamFileReferences(teamConfig: TeamConfig): Array<{ context: str
     for (const [index, doc] of (mode.global_docs ?? []).entries()) {
       if (isManagedFileReference(doc)) refs.push({ context: `mode ${mode.id} global_docs[${index}]`, reference: doc, kind: "global_doc" });
     }
+    for (const [repoKey, guides] of Object.entries(mode.project_guides ?? {})) {
+      for (const [index, guide] of guides.entries()) {
+        refs.push({ context: `mode ${mode.id} project_guides.${repoKey}[${index}]`, reference: guide, kind: "global_doc" });
+      }
+    }
   }
 
   return refs;

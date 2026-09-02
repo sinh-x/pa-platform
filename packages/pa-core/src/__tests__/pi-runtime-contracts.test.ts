@@ -59,6 +59,18 @@ test("repository access classification is parsed and rejects unknown values", ()
   );
 });
 
+test("project guides are parsed as repository-keyed path lists", () => {
+  const config = parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: implement\n    label: Implement\n    project_guides:\n      pa-platform:\n        - docs/pa-platform.md\n      avodah:\n        - docs/avodah.md\n`);
+  assert.deepEqual(config.deploy_modes?.[0]?.project_guides, {
+    "pa-platform": ["docs/pa-platform.md"],
+    avodah: ["docs/avodah.md"],
+  });
+  assert.throws(
+    () => parseTeamYamlContent(`${baseConfig}deploy_modes:\n  - id: invalid\n    label: Invalid\n    project_guides:\n      pa-platform: docs/pa-platform.md\n`),
+    /deploy_modes\[0\]\.project_guides\.pa-platform must be an array of non-empty paths/,
+  );
+});
+
 test("qualified models must match the selected provider namespace", () => {
   assert.equal(modelMatchesProvider("gpt-5", ["openai"]), true);
   assert.equal(modelMatchesProvider("openai/gpt-5", ["openai"]), true);

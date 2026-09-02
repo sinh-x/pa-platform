@@ -198,6 +198,36 @@ test("legacy worktree resume reports are rejected without mutation and with reco
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+test("legacy resume reports remain rejected when a matching lifecycle sidecar exists", () => {
+  const f = fixture("legacy-sidecar");
+  try {
+    const prior = join(f.root, "deployments", "d-legacy");
+    mkdirSync(prior, { recursive: true });
+    writeFileSync(join(prior, "repository-lifecycle.json"), JSON.stringify({
+      schemaVersion: 1,
+      role: "owner",
+      state: "released",
+      repositoryKey: "registered",
+      repositoryRoot: f.repo,
+      deploymentId: "d-legacy",
+    }));
+    writeFileSync(join(prior, "orchestration-report.md"), "| **Execution strategy:** | worktree |\n| **Worktree:** | /tmp/legacy |\n");
+    const before = captureRepositoryCheckout(f.repo);
+    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-new"), { resumeDeploymentId: "d-legacy" }), /Legacy worktree orchestration report rejected without mutation/);
+    assert.deepEqual(captureRepositoryCheckout(f.repo), before);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("legacy heading-style worktree reports are rejected", () => {
+  const f = fixture("legacy-headings");
+  try {
+    const prior = join(f.root, "deployments", "d-legacy");
+    mkdirSync(prior, { recursive: true });
+    writeFileSync(join(prior, "orchestration-report.md"), "## Execution strategy\nworktree\n## Worktree path\n/tmp/legacy\n");
+    assert.throws(() => activateRepositoryLifecycle(plan(f.root, f.repo, "d-new"), { resumeDeploymentId: "d-legacy" }), /Legacy worktree orchestration report rejected without mutation/);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
 test("local and GitHub merge evidence permit policy-based cleanup only after ancestry proof", () => {
   for (const kind of ["local", "github"] as const) {
     const f = fixture(`cleanup-${kind}`);

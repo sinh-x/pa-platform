@@ -237,8 +237,9 @@ export function finalizeRepositoryLifecycle(planOrDeploymentDir: ExecutionPlan |
 
 /** Reject old worktree orchestration evidence without writing to the report or repository. */
 export function assertRegisteredProjectOrchestrationReport(content: string, reportPath = "orchestration report"): void {
-  const legacy = /(?:^|\n)\s*(?:Execution strategy|Worktree|Worktree path|Canonical Repository|Canonical checkout)\s*:/i.test(content)
-    || /PA-managed worktree|strategy=(?:canonical|worktree)|git\s+(?:-C\s+\S+\s+)?worktree\s+(?:add|remove|prune)/i.test(content);
+  const normalized = content.replace(/[*_`>#|]/g, "");
+  const legacy = /(?:^|\n)\s*(?:Execution strategy|Worktree|Worktree path|Canonical Repository|Canonical checkout)\s*(?::|$)/im.test(normalized)
+    || /PA-managed worktree|strategy\s*=\s*(?:canonical|worktree)|git\s+(?:-C\s+\S+\s+)?worktree\s+(?:add|remove|prune)/i.test(normalized);
   if (!legacy) return;
   throw new Error(bounded(`Legacy worktree orchestration report rejected without mutation: ${reportPath}. Inspect the named report and checkout, preserve every unmerged commit and dirty file, restore the registered checkout manually if necessary, then resolve or archive the legacy run and start a fresh registered-project-path orchestration. Automatic migration is prohibited.`));
 }
@@ -417,7 +418,6 @@ function assertResumeUsesRegisteredLifecycle(deploymentId: string, plan: Executi
   if (existsSync(lifecycle)) {
     const prior = readLifecycle(lifecycle);
     if (prior.repositoryKey !== plan.repoKey || prior.repositoryRoot !== plan.repoRoot) throw new Error(bounded(`Resume repository identity mismatch: deployment ${deploymentId} recorded ${prior.repositoryKey} at ${prior.repositoryRoot}, but this plan resolved ${plan.repoKey} at ${plan.repoRoot}.`));
-    return;
   }
   for (const candidate of [resolve(priorDir, "primer.md"), resolve(priorDir, "orchestration-report.md")]) {
     if (existsSync(candidate)) assertRegisteredProjectOrchestrationReport(readBounded(candidate), candidate);

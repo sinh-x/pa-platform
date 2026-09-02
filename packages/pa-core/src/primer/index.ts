@@ -27,12 +27,12 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const mode = selectMode(options.teamConfig, options.mode);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
-  const globalDocs = collectGlobalDocs(options.teamConfig, mode);
-  const objective = adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime);
+  const objective = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(resolveConfiguredObjective(options, mode), options.runtime));
   const userObjective = options.objective ? adaptContentForRuntime(applyTemplateVars(options.objective, options.templateVars ?? {}), options.runtime) : undefined;
-  const toolReference = adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime);
+  const toolReference = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime));
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
+  const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
   const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository);
 
   const body = [
@@ -54,7 +54,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     renderActiveBulletins(options.runtime),
     ``,
     `## Team`,
-    options.teamConfig.description,
+    demoteAuthoritativeAdditionalInstructionsHeading(options.teamConfig.description),
     ``,
     `## Agents`,
     renderAgents(agents, options, options.runtime),
@@ -68,6 +68,9 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     `## Skills`,
     renderSkills(skills, options.skillsDir ?? getSkillsDir(), options.runtime),
   ].filter((part) => part !== "").join("\n");
+  if (countAuthoritativeAdditionalInstructionsHeadings(body) !== 1) {
+    throw new Error("Primer generation requires exactly one authoritative Additional Instructions heading.");
+  }
   return `${body}\n${renderSizeSignal(body, mode?.id)}`;
 }
 
@@ -109,19 +112,41 @@ function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined,
 
 function demoteAuthoritativeAdditionalInstructionsHeading(content: string): string {
   const lines = content.split("\n");
-  let fence: "`" | "~" | undefined;
+  let fence: { char: "`" | "~"; count: number } | undefined;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]![0] as "`" | "~";
-      if (!fence) fence = marker;
-      else if (fence === marker) fence = undefined;
+    if (fenceMatch && !fence) {
+      fence = { char: fenceMatch[1]![0] as "`" | "~", count: fenceMatch[1]!.length };
       continue;
     }
-    if (!fence && line.trim() === "## Additional Instructions") lines[index] = "### Additional Instructions";
+    if (fence) {
+      const closeMatch = line.match(fence.char === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
+      if (closeMatch && closeMatch[1]!.length >= fence.count) fence = undefined;
+      continue;
+    }
+    if (/^##\s+Additional Instructions(?:\s+#+)?\s*$/i.test(line.trim())) lines[index] = "### Additional Instructions";
   }
   return lines.join("\n");
+}
+
+function countAuthoritativeAdditionalInstructionsHeadings(content: string): number {
+  let count = 0;
+  let fence: { char: "`" | "~"; count: number } | undefined;
+  for (const line of content.split("\n")) {
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fenceMatch && !fence) {
+      fence = { char: fenceMatch[1]![0] as "`" | "~", count: fenceMatch[1]!.length };
+      continue;
+    }
+    if (fence) {
+      const closeMatch = line.match(fence.char === "`" ? BACKTICK_FENCE_CLOSE_RE : TILDE_FENCE_CLOSE_RE);
+      if (closeMatch && closeMatch[1]!.length >= fence.count) fence = undefined;
+      continue;
+    }
+    if (/^##\s+Additional Instructions(?:\s+#+)?\s*$/i.test(line.trim())) count += 1;
+  }
+  return count;
 }
 
 function resolveConfiguredObjective(options: GeneratePrimerOptions, mode: DeployMode | undefined): string {
@@ -160,8 +185,12 @@ function collectSkills(teamConfig: TeamConfig, mode: DeployMode | undefined): Sk
   return skills;
 }
 
-function collectGlobalDocs(teamConfig: TeamConfig, mode: DeployMode | undefined): string[] {
-  return [...(teamConfig.global_docs ?? []), ...(mode?.global_docs ?? [])];
+function collectGlobalDocs(teamConfig: TeamConfig, mode: DeployMode | undefined, repoKey: string | undefined): string[] {
+  return [
+    ...(teamConfig.global_docs ?? []),
+    ...(mode?.global_docs ?? []),
+    ...(repoKey ? mode?.project_guides?.[repoKey] ?? [] : []),
+  ];
 }
 
 function renderAgents(agents: TeamConfig["agents"], options: GeneratePrimerOptions, runtime: RuntimeName): string {
@@ -284,7 +313,7 @@ function renderProjectAgentGuides(globalDocs: string[], resolveFile: ((relativeP
       lines.push(`- ${doc} (skipped: placeholder-only template)`);
       continue;
     }
-    const body = adaptContentForRuntime(raw, runtime);
+    const body = demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(raw, runtime));
     lines.push(body);
   }
   return lines.join("\n");

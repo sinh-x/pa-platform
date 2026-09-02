@@ -93,7 +93,7 @@ type SubTicketStatus = "open" | "in-progress" | "done";
 The agent runtime that executes a deployment.
 
 ```typescript
-type RuntimeName = "claude" | "opencode" | "droid";
+type RuntimeName = "claude" | "opencode" | "droid" | "pi";
 ```
 
 ### `AutonomyLevel`
@@ -1319,7 +1319,9 @@ interface DeployMode {
   provider?: ProviderName;
   timeout?: number;
   global_docs?: string[];
+  project_guides?: Record<string, string[]>;
   require_ticket?: boolean;
+  repository_access?: "read-only" | "mutating";
 }
 ```
 
@@ -1337,7 +1339,9 @@ interface DeployMode {
 | `provider` | `string` | no | Flat mode provider; required together with `model` when either is set. |
 | `timeout` | `number` | no | Timeout (seconds). |
 | `global_docs` | `string[]` | no | Global doc paths. |
+| `project_guides` | `Record<string, string[]>` | no | Guide paths keyed by canonical repository key; only the resolved key is selected. |
 | `require_ticket` | `boolean` | no | Whether a ticket id is required to deploy. |
+| `repository_access` | `"read-only" \| "mutating"` | no | Repository lease classification; omitted values use the compatibility default `mutating`. |
 
 ### `SkillEntry`
 

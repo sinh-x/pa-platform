@@ -35,6 +35,7 @@ export interface ExecutionPlan {
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
+  readonly userObjectiveOverride?: string;
   readonly skills: readonly ExecutionPlanSkill[];
   readonly memoryDocuments: readonly string[];
   readonly environment: Readonly<Partial<Record<PaEnvKey | RepositoryLifecycleEnvKey, string>>>;
@@ -96,8 +97,13 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,
+    ...(options.request.objective ? { userObjectiveOverride: options.request.objective } : {}),
     skills: Object.freeze(skills),
-    memoryDocuments: Object.freeze([...(options.teamConfig.global_docs ?? []), ...(options.mode?.global_docs ?? [])]),
+    memoryDocuments: Object.freeze([
+      ...(options.teamConfig.global_docs ?? []),
+      ...(options.mode?.global_docs ?? []),
+      ...(options.mode?.project_guides?.[repository.repoKey] ?? []),
+    ]),
     environment: Object.freeze({ ...options.environment, PA_REPO: repository.repoRoot }),
     timeoutSeconds: options.timeoutSeconds,
     ...(options.request.provider ? { provider: options.request.provider } : {}),

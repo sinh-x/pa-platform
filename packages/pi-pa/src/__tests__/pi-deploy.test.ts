@@ -354,6 +354,7 @@ test("PPA key and exact-path requests consume one canonical execution plan acros
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
       assert.equal(observation.plan.repositoryAccess, "mutating");
+      assert.equal(observation.plan.userObjectiveOverride, undefined);
       assert.equal(observation.plan.repositoryLease?.role, "owner");
       assert.equal(observation.plan.repositoryLease?.repositoryKey, observation.plan.repoKey);
       assert.equal(observation.plan.repositoryLease?.repositoryRoot, observation.plan.repoRoot);
@@ -362,6 +363,7 @@ test("PPA key and exact-path requests consume one canonical execution plan acros
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(observation.primer, /No user objective override was provided/);
       assert.match(observation.primer, /^repo_key: pa-platform$/m);
       assert.match(observation.primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
       assert.match(observation.primer, new RegExp(`^repo: ${escapeRegExp(repo)}$`, "m"));
