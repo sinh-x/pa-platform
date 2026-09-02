@@ -9,6 +9,7 @@ import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, f
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
+import { installFakeBubblewrap } from "../../../../test/helpers/fake-bubblewrap.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -72,12 +73,13 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: read-only\n`);
-  const previous = { cwd: process.cwd(), config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
+  const previous = { cwd: process.cwd(), config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"], path: process.env["PATH"] };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PA_TICKET_ID"] = "PAP-TEST";
+  process.env["PATH"] = `${installFakeBubblewrap(root)}:${previous.path ?? ""}`;
   delete process.env["PA_MAX_RUNTIME"];
   process.chdir(repo);
   return fn(root).finally(() => {
@@ -89,6 +91,7 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     restore("PA_AI_USAGE_HOME", previous.aiUsage);
     restore("PA_MAX_RUNTIME", previous.maxRuntime);
     restore("PA_TICKET_ID", previous.ticketId);
+    restore("PATH", previous.path);
     rmSync(root, { recursive: true, force: true });
   });
 }

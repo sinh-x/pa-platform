@@ -9,6 +9,7 @@ import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, cr
 import { loadBackgroundConfig } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks, deployWithClaude } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
+import { installFakeBubblewrap } from "../../../../test/helpers/fake-bubblewrap.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -69,6 +70,7 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     maxRuntime: process.env["PA_MAX_RUNTIME"],
     cpaModel: process.env["PA_CPA_DEFAULT_MODEL"],
     home: process.env["HOME"],
+    path: process.env["PATH"],
   };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
@@ -77,6 +79,7 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   // Pin HOME to the tmpdir so adapter.installHooks writes its hook artifacts under
   // <root>/.claude rather than the operator's real ~/.claude/settings.json.
   process.env["HOME"] = root;
+  process.env["PATH"] = `${installFakeBubblewrap(root)}:${previous.path ?? ""}`;
   delete process.env["PA_MAX_RUNTIME"];
   delete process.env["PA_CPA_DEFAULT_MODEL"];
   process.chdir(repo);
@@ -90,6 +93,7 @@ function withCpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     restore("PA_MAX_RUNTIME", previous.maxRuntime);
     restore("PA_CPA_DEFAULT_MODEL", previous.cpaModel);
     restore("HOME", previous.home);
+    restore("PATH", previous.path);
     rmSync(root, { recursive: true, force: true });
   });
 }
