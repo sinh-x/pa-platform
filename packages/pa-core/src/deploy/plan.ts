@@ -5,9 +5,6 @@ import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
 import type { PaEnvKey } from "../primer/index.js";
-import type { RepositoryLeaseEvidence } from "./repository-lifecycle.js";
-
-export type RepositoryLifecycleEnvKey = "PA_REPOSITORY_LEASE_OWNER" | "PA_REPOSITORY_LEASE_PATH" | "PA_REPOSITORY_LEASE_TOKEN";
 
 export interface ExecutionPlanSkill {
   name: string;
@@ -31,15 +28,13 @@ export interface ExecutionPlan {
   readonly repoRoot: string;
   readonly repositoryCwd: string;
   readonly memoryDocumentRoot: string;
-  readonly repositoryAccess: "read-only" | "mutating";
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
   readonly userObjectiveOverride?: string;
   readonly skills: readonly ExecutionPlanSkill[];
   readonly memoryDocuments: readonly string[];
-  readonly environment: Readonly<Partial<Record<PaEnvKey | RepositoryLifecycleEnvKey, string>>>;
-  readonly repositoryLease?: Readonly<RepositoryLeaseEvidence>;
+  readonly environment: Readonly<Partial<Record<PaEnvKey, string>>>;
   readonly timeoutSeconds: number;
   readonly provider?: string;
   readonly model?: string;
@@ -93,7 +88,6 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repoRoot: repository.repoRoot,
     repositoryCwd: repository.repoRoot,
     memoryDocumentRoot: repository.repoRoot,
-    repositoryAccess: options.mode?.repository_access ?? "mutating",
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,

@@ -130,7 +130,7 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --objective-file <path>  Read objective from file");
   io.stdout("  --evaluate-deployment <id>  Generate evaluator primer objective for a completed deployment");
   io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
-  io.stdout("                      Omit to infer CWD identity and relocate to the configured path");
+  io.stdout("                      Omit to infer the exact configured root from CWD");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
   io.stdout("  --timeout <seconds>    Override deployment timeout");
   io.stdout("  --resume <id>          Resume a prior deployment");
