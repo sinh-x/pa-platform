@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, finalizeRepositoryLifecycle, getDeployPaths, nowUtc, publishBackgroundOwnership, reconcileTerminalRegistryEvent, transferRepositoryLeaseByDeployment } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, getDeployPaths, nowUtc, publishBackgroundOwnership } from "@pa-platform/pa-core";
 import { createClaudeActivityWriter, createClaudeSessionIdParser } from "./adapter.js";
 import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
@@ -36,7 +36,6 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
     publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "active", ready: true, updatedAt: nowUtc(), ...(childPid ? { childPid } : {}) });
   };
   try {
-    transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
     const result = await runClaude(config, acknowledge);
     if (!ready) throw new Error("runner-readiness: Claude runtime did not start");
 
@@ -46,13 +45,6 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       writeFileSync(resolvePath(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
     }
     const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    const lifecycleFailed = !lifecycle.ok;
-    if (!lifecycle.ok) {
-      result.exitCode = 1;
-      result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
-      reconcileTerminalRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: nowUtc(), status: "failed", summary: `cpa background deploy failed: ${firstLine(result.stderrTail)}`, log_file: config.logFile, exit_code: 1 });
-    }
     if (result.exitCode === 0) {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "claude", body: "cpa background deploy completed" }), activityLogPath);
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "success", summary: "cpa background deploy completed", logFile: config.logFile, exitCode: 0 });
@@ -64,24 +56,22 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
       const summary = summaryError
         ? `cpa background deploy failed (exit ${result.exitCode}): ${summaryError}`
         : `cpa background deploy failed (exit ${result.exitCode})`;
-      if (!lifecycleFailed) emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
+      emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
-    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: boundedLifecycleDiagnostic(error instanceof Error ? error.message : String(error)) }); } catch { /* launcher reports timeout/bootstrap failure */ }
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    const baseError = error instanceof Error ? error.message : String(error);
-    const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    const finalError = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: finalError }); } catch { /* launcher reports timeout/bootstrap failure */ }
     emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
     throw new Error(finalError);
   }
 }
 
-function boundedLifecycleDiagnostic(value: string): string {
+function boundedDiagnostic(value: string): string {
   return value.length <= 2_000 ? value : `${value.slice(0, 1_997)}...`;
 }
 
 // Standard ESM main-module guard so test files can import `loadBackgroundConfig`
-// without triggering the deploy lifecycle.
+// without starting a background deployment.
 const isMainModule = !!process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1]);
 if (isMainModule) {
   const configPath = process.argv[2];

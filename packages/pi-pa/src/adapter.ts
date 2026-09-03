@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
-import { appendActivityEvent, constrainRuntimeProcess, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
@@ -415,8 +415,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const writeLog = supervision.writeLog ?? writeFileSync;
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
-  const launch = constrainRuntimeProcess(opts.executionPlan, "pi", args, cwd);
-  const child = spawnProcess(launch.command, [...launch.args], { cwd: launch.cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
@@ -521,10 +520,9 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   }
 
   const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
-  const launch = input.supervision.launchBackgroundRunner ?? ((path, backgroundConfig, options) => {
-    const processLaunch = constrainRuntimeProcess(input.opts.executionPlan, process.execPath, [path, backgroundConfig], options.cwd);
-    return spawn(processLaunch.command, [...processLaunch.args], { ...options, cwd: processLaunch.cwd, detached: true, stdio: "ignore" });
-  });
+  const launch = input.supervision.launchBackgroundRunner ?? ((path, backgroundConfig, options) =>
+    spawn(process.execPath, [path, backgroundConfig], { ...options, detached: true, stdio: "ignore" })
+  );
   let runner: ChildProcess;
   try {
     runner = launch(runnerPath, configPath, { cwd: input.cwd, env: input.env });
@@ -673,8 +671,7 @@ function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.rea
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
-  const launch = constrainRuntimeProcess(opts.executionPlan, "pi", args, cwd);
-  const pty = (supervision.spawnPty ?? spawnPty)(launch.command, [...launch.args], { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd: launch.cwd, env });
+  const pty = (supervision.spawnPty ?? spawnPty)("pi", args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env });
   const input = supervision.input ?? process.stdin;
   const output = supervision.output ?? process.stdout;
   const outputPath = resolve(deployDir, "pi-output.jsonl");
