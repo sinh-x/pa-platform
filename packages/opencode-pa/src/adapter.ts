@@ -2,8 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
-import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
+import { appendActivityEvent, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { installPaSafetyActivityPlugin, resolvePaSafetyActivityPluginPath } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
 
@@ -107,7 +107,9 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   installHooks(_targetDir: string, config: HookConfig): void {
-    installPaSafetyActivityPlugin({ ...this.env, ...config.env });
+    const env = { ...this.env, ...config.env };
+    if (config.executionPlan) assertReadOnlySetupPathsOutsideRepository(config.executionPlan, [resolvePaSafetyActivityPluginPath(env)]);
+    installPaSafetyActivityPlugin(env);
   }
 
   describeTools() {

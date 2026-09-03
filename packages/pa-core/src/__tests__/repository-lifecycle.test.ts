@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,10 @@ import {
   activateRepositoryLifecycle,
   captureRepositoryCheckout,
   cleanupMergedFeatureBranch,
+  combineRuntimeAndLifecycleError,
   finalizeRepositoryLifecycle,
+  recordRepositoryBranchCleanupByDeployment,
+  runCoreCommand,
   transferRepositoryLeaseByDeployment,
   type ExecutionPlan,
 } from "../index.js";
@@ -86,6 +89,12 @@ test("admits a read-only deployment while retaining mutator-only lease serializa
     assert.ok(owner.repositoryLease?.leasePath && existsSync(owner.repositoryLease.leasePath));
     assert.equal(finalizeRepositoryLifecycle(owner).ok, true);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("foreground failures retain both runtime and repository recovery diagnostics", () => {
+  assert.equal(combineRuntimeAndLifecycleError("runtime failed", "repository recovery required"), "runtime failed; repository recovery required");
+  assert.equal(combineRuntimeAndLifecycleError(undefined, "repository recovery required"), "repository recovery required");
+  assert.equal(combineRuntimeAndLifecycleError("runtime failed", undefined), "runtime failed");
 });
 
 test("a delayed ownership transfer after finalization cannot recreate the released lease", () => {
@@ -367,6 +376,77 @@ test("terminal finalization applies persisted cleanup policy after restoration a
     assert.equal(failedResult.ok, true);
     assert.match(failedResult.evidence?.branchCleanup?.result?.diagnostic ?? "", /cleanup failed.*lease release continued/is);
     assert.equal(existsSync(failedCleanup.repositoryLease?.leasePath ?? ""), false);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("authenticated post-activation merge evidence reaches terminal branch cleanup", async () => {
+  const f = fixture("record-cleanup");
+  try {
+    const active = activateRepositoryLifecycle(plan(f.root, f.repo, "d-record-cleanup"));
+    git(f.repo, ["checkout", "-b", "feature/PAP-162-recorded"]);
+    writeFileSync(join(f.repo, "feature.txt"), "feature\n");
+    git(f.repo, ["add", "."]);
+    git(f.repo, ["commit", "-m", "feature"]);
+    const feature = git(f.repo, ["rev-parse", "HEAD"]);
+    const develop = git(f.repo, ["rev-parse", "develop"]);
+    const tree = git(f.repo, ["rev-parse", `${feature}^{tree}`]);
+    const merge = execFileSync("git", ["commit-tree", tree, "-p", develop, "-p", feature, "-m", "remote merge"], { cwd: f.repo, encoding: "utf8" }).trim();
+    git(f.repo, ["update-ref", "refs/remotes/origin/develop", merge]);
+    const evidence = `github:pr=162;merge_commit=${merge};target=develop;ci=passed;verified=true`;
+    assert.throws(() => recordRepositoryBranchCleanupByDeployment(active.lifecycle.deploymentDir, "feature/PAP-162-recorded", evidence, { deleteLocal: true }, "wrong-token"), /authentication failed/);
+    const previousDir = process.env["PA_DEPLOYMENT_DIR"];
+    const previousToken = process.env["PA_REPOSITORY_LEASE_TOKEN"];
+    process.env["PA_DEPLOYMENT_DIR"] = active.lifecycle.deploymentDir;
+    process.env["PA_REPOSITORY_LEASE_TOKEN"] = active.environment.PA_REPOSITORY_LEASE_TOKEN;
+    try {
+      const stderr: string[] = [];
+      assert.equal(await runCoreCommand(["branch", "record-cleanup", "--feature", "feature/PAP-162-recorded", "--merge-evidence", evidence, "--delete-local"], { io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 0, stderr.join("\n"));
+    } finally {
+      if (previousDir === undefined) delete process.env["PA_DEPLOYMENT_DIR"]; else process.env["PA_DEPLOYMENT_DIR"] = previousDir;
+      if (previousToken === undefined) delete process.env["PA_REPOSITORY_LEASE_TOKEN"]; else process.env["PA_REPOSITORY_LEASE_TOKEN"] = previousToken;
+    }
+    const result = finalizeRepositoryLifecycle(active);
+    assert.equal(result.ok, true, result.diagnostic);
+    assert.equal(result.evidence?.branchCleanup?.result?.deletedLocal, true);
+    assert.throws(() => git(f.repo, ["rev-parse", "refs/heads/feature/PAP-162-recorded"]));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("transition queue removes only stale unique claims and preserves serialization", () => {
+  const f = fixture("stale-transition-claim");
+  try {
+    const active = activateRepositoryLifecycle(plan(f.root, f.repo, "d-owner"));
+    const lockDir = join(active.lifecycle.deploymentDir, "repository-lifecycle.transition.lock");
+    mkdirSync(lockDir, { recursive: true });
+    const staleClaim = join(lockDir, `00000000000000000000-stale.json`);
+    writeFileSync(staleClaim, `${JSON.stringify({ token: "stale", pid: deadPid() })}\n`);
+    assert.equal(finalizeRepositoryLifecycle(active).ok, true);
+    assert.equal(existsSync(staleClaim), false);
+    assert.deepEqual(readdirSync(lockDir), []);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("repository lifecycle evidence is deeply immutable on the execution plan", () => {
+  const f = fixture("immutable-evidence");
+  try {
+    const base = plan(f.root, f.repo, "d-immutable", "read-only");
+    const active = activateRepositoryLifecycle(Object.freeze({
+      ...base,
+      environment: Object.freeze({
+        ...base.environment,
+        PA_FEATURE_BRANCH: "feature/PAP-162-immutable",
+        PA_MERGE_EVIDENCE: `local:target=develop;merge_commit=${"a".repeat(40)};ancestor=true;remote=${"b".repeat(40)};verified=true`,
+        PA_BRANCH_CLEANUP_LOCAL: "true",
+      }),
+    }));
+    const evidence = active.repositoryLease!;
+    assert.equal(Object.isFrozen(evidence), true);
+    assert.equal(Object.isFrozen(evidence.before), true);
+    assert.equal(Object.isFrozen(evidence.before?.staged), true);
+    assert.equal(Object.isFrozen(evidence.before?.unstaged), true);
+    assert.equal(Object.isFrozen(evidence.before?.untracked), true);
+    assert.equal(Object.isFrozen(evidence.branchCleanup), true);
+    assert.equal(Object.isFrozen(evidence.branchCleanup?.policy), true);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 

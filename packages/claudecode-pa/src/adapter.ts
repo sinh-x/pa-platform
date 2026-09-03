@@ -2,8 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
-import { installPaClaudeHooks } from "./plugins/pa-claude-hooks.js";
+import { appendActivityEvent, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { installPaClaudeHooks, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "./plugins/pa-claude-hooks.js";
 import { STDERR_TAIL_BYTES, tailString } from "./util.js";
 
 export type ClaudeProvider = "anthropic";
@@ -100,6 +100,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // Idempotent merge into <HOME>/.claude/settings.json — running cpa repeatedly does
     // not duplicate entries. The deployment-scoped env (PA_DEPLOYMENT_ID, PA_ACTIVITY_LOG)
     // reaches the hook handler at runtime via the spawned claude process inheriting opts.env.
+    if (_config.executionPlan) assertReadOnlySetupPathsOutsideRepository(_config.executionPlan, [resolvePaClaudeHooksHandlerPath(this.env), resolvePaClaudeSettingsPath(this.env)]);
     installPaClaudeHooks(this.env);
   }
 

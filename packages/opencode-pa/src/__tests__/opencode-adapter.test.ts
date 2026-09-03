@@ -1273,6 +1273,17 @@ test("opa deploy emits error event on non-zero exit", async () => {
   });
 });
 
+test("opa read-only deploy rejects hook installation overlapping the registered checkout", async () => {
+  await withOpaEnv(async (root) => {
+    const repo = join(root, "repo");
+    const adapter = new OpencodeAdapter({ env: { HOME: repo }, runCommand: () => { throw new Error("runtime must not start"); } });
+    const stderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
+    assert.equal(existsSync(join(repo, ".config", "opencode", "plugins")), false);
+    assert.match(stderr.join("\n"), /adapter setup path.*overlaps registered repository/is);
+  });
+});
+
 test("opa deploy registry summary includes exit code on failure", async () => {
   await withOpaEnv(async () => {
     const adapter = createStubAdapter({ exitCode: 1, errorMessage: "boom: model auth failed" });
@@ -1282,6 +1293,20 @@ test("opa deploy registry summary includes exit code on failure", async () => {
     assert.equal(deployment.status, "failed");
     assert.match(deployment.summary ?? "", /exit 1/);
     assert.match(deployment.summary ?? "", /boom: model auth failed/);
+  });
+});
+
+test("opa foreground failure retains simultaneous repository recovery diagnostics", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = createStubAdapter({ exitCode: 1, errorMessage: "runtime failed" });
+    adapter.spawn = (opts) => {
+      writeFileSync(join(opts.executionPlan!.repoRoot, "preserve.txt"), "dirty\n");
+      return { exitCode: 1, errorMessage: "runtime failed" };
+    };
+    const stderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--ticket", "PAP-200"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
+    assert.match(stderr.join("\n"), /runtime failed.*Repository recovery required/is);
   });
 });
 

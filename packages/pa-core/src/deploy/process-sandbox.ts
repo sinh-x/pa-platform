@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { getAiUsageDir } from "../paths.js";
 import type { ExecutionPlan } from "./plan.js";
 
@@ -29,6 +29,18 @@ export function constrainRuntimeProcess(
   for (const path of protectedPaths) sandboxArgs.push("--ro-bind", path, path);
   sandboxArgs.push("--chdir", plan.repositoryCwd, "--", command, ...args);
   return { command: "bwrap", args: Object.freeze(sandboxArgs), cwd: plan.repositoryCwd };
+}
+
+/** Reject parent-process setup writes that would bypass a reader's sandbox. */
+export function assertReadOnlySetupPathsOutsideRepository(plan: ExecutionPlan, paths: readonly string[]): void {
+  if (plan.repositoryAccess !== "read-only") return;
+  const root = realpathSync(plan.repoRoot);
+  for (const path of paths) {
+    const target = physicalPath(path);
+    if (inside(root, target)) {
+      throw new Error(`Read-only deployment rejected because adapter setup path ${target} overlaps registered repository ${root}. Move the repository or adapter configuration before retrying.`);
+    }
+  }
 }
 
 function writableRuntimePaths(plan: ExecutionPlan): string[] {
@@ -79,4 +91,16 @@ function repositoryStatePaths(repoRoot: string): string[] {
 function inside(parent: string, child: string): boolean {
   const value = relative(parent, child);
   return value === "" || (!value.startsWith("..") && !isAbsolute(value));
+}
+
+function physicalPath(path: string): string {
+  let existing = resolve(path);
+  const suffix: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return resolve(path);
+    suffix.unshift(basename(existing));
+    existing = parent;
+  }
+  return resolve(realpathSync(existing), ...suffix);
 }

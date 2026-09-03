@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
-import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
+import { installPaDroidHooks, resolveDroidHooksPath, resolveSafetyPatternsPath, resolveSafetyScriptPath } from "./plugins/pa-droid-safety.js";
 import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
 import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
 
@@ -131,6 +131,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   }
 
   installHooks(_targetDir: string, _config: HookConfig): void {
+    if (_config.executionPlan) assertReadOnlySetupPathsOutsideRepository(_config.executionPlan, [resolveDroidHooksPath(this.env), resolveSafetyScriptPath(this.env), resolveSafetyPatternsPath(this.env)]);
     installPaDroidHooks(this.env);
   }
 

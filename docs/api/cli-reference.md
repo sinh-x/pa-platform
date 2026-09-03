@@ -387,7 +387,7 @@ opa board --include-archived
 
 ## branch
 
-Manage feature branches. Subcommands: `create`, `validate`.
+Manage feature branches. Subcommands: `create`, `validate`, `record-cleanup`.
 
 ### branch create
 
@@ -407,11 +407,18 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 
 Validates the current branch against the configured branch pattern. Returns exit 0 if it matches; otherwise prints a warning (distinguishing base branches `main`/`develop` from non-conforming feature branches) and still returns 0.
 
+### branch record-cleanup
+
+**Usage:** `branch record-cleanup --feature <branch> --merge-evidence <evidence> [--delete-local] [--delete-remote]`
+
+Persists merge evidence and cleanup policy into the active mutating deployment lifecycle. The command authenticates with `PA_DEPLOYMENT_DIR` and `PA_REPOSITORY_LEASE_TOKEN`, validates the branch and evidence before writing, and makes the request available to terminal checkout restoration and cleanup.
+
 **Examples:**
 ```bash
 opa branch create PAP-132 --topic api-documentation
 opa branch create PAP-132 PAP-133 --topic refactor
 opa branch validate
+opa branch record-cleanup --feature feature/PAP-132-api-documentation --merge-evidence 'github:pr=132;merge_commit=<40-char-sha>;target=develop;ci=passed;verified=true' --delete-local
 ```
 
 ---

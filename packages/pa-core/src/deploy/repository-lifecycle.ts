@@ -6,6 +6,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -98,6 +99,10 @@ export interface BranchCleanupResult {
   deletedLocal: boolean;
   deletedRemote: boolean;
   diagnostic?: string;
+}
+
+export function combineRuntimeAndLifecycleError(runtimeError?: string, lifecycleError?: string): string | undefined {
+  return lifecycleError ? [runtimeError, lifecycleError].filter(Boolean).join("; ") : runtimeError;
 }
 
 export type MergeEvidence =
@@ -201,6 +206,33 @@ export function finalizeRepositoryLifecycle(planOrDeploymentDir: ExecutionPlan |
   return withTransitionLock(deploymentDir, () => finalizeRepositoryLifecycleUnlocked(deploymentDir));
 }
 
+/** Persist authenticated merge evidence produced after deployment activation. */
+export function recordRepositoryBranchCleanupByDeployment(
+  deploymentDir: string,
+  featureBranch: string,
+  mergeEvidence: string,
+  policy: BranchCleanupPolicy,
+  leaseToken: string,
+): void {
+  withTransitionLock(deploymentDir, () => {
+    const lifecyclePath = resolve(deploymentDir, LIFECYCLE_FILE_NAME);
+    const evidence = readLifecycle(lifecyclePath);
+    if (evidence.role !== "owner" || evidence.state !== "active" || !evidence.leasePath || !evidence.leaseToken || !leaseToken || evidence.leaseToken !== leaseToken) {
+      throw new Error("Repository branch cleanup evidence rejected: active lifecycle owner authentication failed.");
+    }
+    const lease = readLeaseRequired(evidence.leasePath);
+    if (lease.token !== leaseToken || lease.deploymentId !== evidence.deploymentId || lease.repositoryKey !== evidence.repositoryKey || lease.repositoryRoot !== evidence.repositoryRoot) {
+      throw new Error(`Repository branch cleanup evidence rejected for non-owner ${evidence.deploymentId}.`);
+    }
+    validateBranch(featureBranch);
+    parseMergeEvidence(mergeEvidence);
+    persistLifecycle(deploymentDir, {
+      ...evidence,
+      branchCleanup: { featureBranch, mergeEvidence, policy: { ...policy } },
+    });
+  });
+}
+
 function finalizeRepositoryLifecycleUnlocked(deploymentDir: string): RepositoryLifecycleResult {
   const lifecyclePath = resolve(deploymentDir, LIFECYCLE_FILE_NAME);
   if (!existsSync(lifecyclePath)) return { ok: true };
@@ -302,7 +334,7 @@ export function cleanupMergedFeatureBranch(repoRoot: string, featureBranch: stri
   let deletedLocal = false;
   let deletedRemote = false;
   if (policy.deleteLocal) {
-    git(repoRoot, ["branch", "-d", "--", featureBranch]);
+    git(repoRoot, ["update-ref", "-d", `refs/heads/${featureBranch}`, featureHead]);
     deletedLocal = true;
   }
   if (policy.deleteRemote) {
@@ -451,7 +483,27 @@ function withLifecycle(plan: ExecutionPlan, repositoryLease: RepositoryLeaseEvid
     ...(repositoryLease.leasePath ? { PA_REPOSITORY_LEASE_PATH: repositoryLease.leasePath } : {}),
     ...(token ? { PA_REPOSITORY_LEASE_TOKEN: token } : {}),
   });
-  return Object.freeze({ ...plan, environment, repositoryLease: Object.freeze(repositoryLease) });
+  return Object.freeze({ ...plan, environment, repositoryLease: freezeRepositoryLeaseEvidence(repositoryLease) });
+}
+
+function freezeRepositoryLeaseEvidence(evidence: RepositoryLeaseEvidence): Readonly<RepositoryLeaseEvidence> {
+  const freezeCheckout = (state: RepositoryCheckoutState | undefined): RepositoryCheckoutState | undefined => state && Object.freeze({
+    ...state,
+    staged: Object.freeze([...state.staged]),
+    unstaged: Object.freeze([...state.unstaged]),
+    untracked: Object.freeze([...state.untracked]),
+  });
+  const branchCleanup = evidence.branchCleanup && Object.freeze({
+    ...evidence.branchCleanup,
+    policy: Object.freeze({ ...evidence.branchCleanup.policy }),
+    ...(evidence.branchCleanup.result ? { result: Object.freeze({ ...evidence.branchCleanup.result }) } : {}),
+  });
+  return Object.freeze({
+    ...evidence,
+    ...(evidence.before ? { before: freezeCheckout(evidence.before) } : {}),
+    ...(evidence.after ? { after: freezeCheckout(evidence.after) } : {}),
+    ...(branchCleanup ? { branchCleanup } : {}),
+  });
 }
 
 function readLeaseIfPresent(path: string): DurableLease | undefined {
@@ -553,31 +605,31 @@ function applyBranchCleanup(evidence: RepositoryLeaseEvidence): RepositoryLeaseE
 function withTransitionLock<T>(deploymentDir: string, operation: () => T): T {
   mkdirSync(deploymentDir, { recursive: true });
   const lockPath = resolve(deploymentDir, TRANSITION_LOCK_FILE_NAME);
+  mkdirSync(lockPath, { recursive: true });
+  const token = randomUUID();
+  const claimName = `${process.hrtime.bigint().toString().padStart(20, "0")}-${token}.json`;
+  const claimPath = resolve(lockPath, claimName);
+  createExclusiveJson(claimPath, { token, pid: process.pid });
   const deadline = Date.now() + 5_000;
-  let fd: number | undefined;
-  while (fd === undefined) {
-    try {
-      fd = openSync(lockPath, "wx", 0o600);
-      writeFileSync(fd, `${process.pid}\n`, "utf8");
-      fsyncSync(fd);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  while (true) {
+    for (const candidate of readdirSync(lockPath).filter((name) => name.endsWith(".json")).sort()) {
       try {
-        const ownerPid = Number(readFileSync(lockPath, "utf8").trim());
-        if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) {
-          unlinkSync(lockPath);
-          continue;
-        }
+        const value = readJson(resolve(lockPath, candidate)) as { token?: unknown; pid?: unknown };
+        if (typeof value.token === "string" && Number.isInteger(value.pid) && Number(value.pid) > 0 && !processAlive(Number(value.pid))) unlinkSync(resolve(lockPath, candidate));
       } catch { /* preserve unknown transition evidence and fail boundedly */ }
-      if (Date.now() >= deadline) throw new Error(bounded(`Repository lifecycle transition lock unavailable: ${lockPath}.`));
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
+    const owner = readdirSync(lockPath).filter((name) => name.endsWith(".json")).sort()[0];
+    if (owner === claimName) break;
+    if (Date.now() >= deadline) {
+      try { unlinkSync(claimPath); } catch { /* claim may already be absent */ }
+      throw new Error(bounded(`Repository lifecycle transition lock unavailable: ${lockPath}.`));
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
   }
   try {
     return operation();
   } finally {
-    closeSync(fd);
-    try { unlinkSync(lockPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    try { unlinkSync(claimPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
 }
 

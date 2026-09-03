@@ -1049,6 +1049,31 @@ describe("dpa fallback diagnostics", () => {
 });
 
 describe("PAP-162 Droid execution-plan contract", () => {
+  it("retains simultaneous foreground runtime and repository recovery diagnostics", async () => {
+    await withDpaEnv(async (root) => {
+      writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
+      const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY } });
+      adapter.spawn = (opts) => {
+        writeFileSync(join(opts.executionPlan!.repoRoot, "preserve.txt"), "dirty\n");
+        return Promise.resolve({ exitCode: 1, errorMessage: "runtime failed" });
+      };
+      const result = await deployWithDroid({ team: "daily", mode: "plan", repo: "pa-platform" }, adapter);
+      assert.equal(result.status, "failed");
+      assert.match(result.reason ?? "", /runtime failed.*Repository recovery required/is);
+    });
+  });
+
+  it("rejects hook installation overlapping a read-only registered checkout", async () => {
+    await withDpaEnv(async (root) => {
+      const repo = join(root, "repo");
+      const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY, HOME: repo } });
+      const result = await deployWithDroid({ team: "daily", mode: "plan", repo: "pa-platform" }, adapter);
+      assert.equal(result.status, "failed");
+      assert.equal(existsSync(join(repo, ".factory")), false);
+      assert.match(result.reason ?? "", /adapter setup path.*overlaps registered repository/is);
+    });
+  });
+
   it("keeps key/path requests and all repository evidence canonical", async () => {
     await withDpaEnv(async (root) => {
       const repo = join(root, "repo");

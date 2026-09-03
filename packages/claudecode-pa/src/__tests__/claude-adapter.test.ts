@@ -635,6 +635,31 @@ test("cpa stub deploy emits error event and registry summary on failure", async 
   });
 });
 
+test("cpa foreground failure retains simultaneous repository recovery diagnostics", async () => {
+  await withCpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const adapter = createStubAdapter({ exitCode: 1, errorMessage: "runtime failed" });
+    adapter.spawn = (opts) => {
+      writeFileSync(join(opts.executionPlan!.repoRoot, "preserve.txt"), "dirty\n");
+      return { exitCode: 1, errorMessage: "runtime failed" };
+    };
+    const stderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement"], { hooks: createClaudeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
+    assert.match(stderr.join("\n"), /runtime failed.*Repository recovery required/is);
+  });
+});
+
+test("cpa read-only deploy rejects hook installation overlapping the registered checkout", async () => {
+  await withCpaEnv(async (root) => {
+    const repo = join(root, "repo");
+    const adapter = new ClaudeCodeAdapter({ env: { HOME: repo }, runCommand: () => { throw new Error("runtime must not start"); } });
+    const stderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan"], { hooks: createClaudeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
+    assert.equal(existsSync(join(repo, ".claude")), false);
+    assert.match(stderr.join("\n"), /adapter setup path.*overlaps registered repository/is);
+  });
+});
+
 test("claude JSONL maps assistant text to text activity", () => {
   const event = claudeJsonToActivityEvent({
     type: "assistant",

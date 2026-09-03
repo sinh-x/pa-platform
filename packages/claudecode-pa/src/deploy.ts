@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { activateRepositoryLifecycle, appendActivityEvent, combineRuntimeAndLifecycleError, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { ClaudeCodeAdapter, resolveClaudeRuntimeConfig } from "./adapter.js";
 
 export function createClaudeHooks(adapter: RuntimeAdapter = new ClaudeCodeAdapter()): CoreExecutionHooks {
@@ -105,7 +105,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
 
   try {
     emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "claude", binary: "cpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
+    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "claude.log"), env, sessionId: priorSession, executionPlan: plan })
       : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "claude.log"), env, executionPlan: plan });
@@ -128,7 +128,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     const lifecycle = finalizeRepositoryLifecycle(plan);
     const lifecycleError = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
     const effectiveExitCode = result.exitCode === 0 && lifecycleError ? 1 : result.exitCode;
-    const errorMessage = result.errorMessage ?? lifecycleError;
+    const errorMessage = combineRuntimeAndLifecycleError(result.errorMessage, lifecycleError);
     const terminalKind = effectiveExitCode === 0 ? "text" : "error";
     const terminalBody = effectiveExitCode === 0
       ? `claude exited with code ${effectiveExitCode}`

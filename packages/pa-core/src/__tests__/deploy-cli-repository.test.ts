@@ -175,3 +175,37 @@ test("deploy and branch help document the registered-path-only contract", async 
   assert.match(deploy.stdout.join("\n"), /infer CWD identity and relocate to the configured path/i);
   assert.match(branch.stdout.join("\n"), /operate only at its exact configured registered path/i);
 });
+
+test("deploy and evaluate accept dotted registry keys and exact paths containing spaces", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-repo-specifiers-"));
+  const config = join(root, "config");
+  const repo = join(root, "repo with spaces");
+  mkdirSync(config);
+  initializeRepo(repo);
+  writeFileSync(join(config, "config.yaml"), `repos:\n  registered.repo:\n    path: ${repo}\n`);
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  process.env["PA_PLATFORM_CONFIG"] = config;
+  try {
+    for (const repoInput of ["registered.repo", repo]) {
+      const deployRequests: DeployRequest[] = [];
+      const deployIo = capture();
+      assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--repo", repoInput], {
+        io: deployIo.io,
+        hooks: { deploy: (request) => { deployRequests.push(request); return { status: "pending", deploymentId: "d-spec" }; } },
+      }), 0, deployIo.stderr.join("\n"));
+      assert.equal(deployRequests[0]?.repo, repo);
+
+      const evaluateRequests: DeployRequest[] = [];
+      const evaluateIo = capture();
+      assert.equal(await runCoreCommand(["evaluate", "d-target", "--repo", repoInput], {
+        io: evaluateIo.io,
+        hooks: { deploy: (request) => { evaluateRequests.push(request); return { status: "pending", deploymentId: "d-eval" }; } },
+      }), 0, evaluateIo.stderr.join("\n"));
+      assert.equal(evaluateRequests[0]?.repo, repoInput);
+    }
+  } finally {
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

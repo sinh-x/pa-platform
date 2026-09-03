@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { activateRepositoryLifecycle, appendActivityEvent, combineRuntimeAndLifecycleError, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidRuntimeConfig } from "./adapter.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
@@ -121,7 +121,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
 
   try {
     emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "droid", binary: "dpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
+    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession, executionPlan: plan })
       : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, executionPlan: plan });
@@ -140,7 +140,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     const lifecycle = finalizeRepositoryLifecycle(plan);
     const lifecycleError = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
     const effectiveExitCode = result.exitCode === 0 && lifecycleError ? 1 : result.exitCode;
-    const errorMessage = result.errorMessage ?? lifecycleError;
+    const errorMessage = combineRuntimeAndLifecycleError(result.errorMessage, lifecycleError);
     const terminalKind = effectiveExitCode === 0 ? "text" : "error";
     const terminalBody = effectiveExitCode === 0
       ? `droid exited with code ${effectiveExitCode}`

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { activateRepositoryLifecycle, constrainRuntimeProcess, finalizeRepositoryLifecycle, type ExecutionPlan } from "../index.js";
+import { activateRepositoryLifecycle, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, finalizeRepositoryLifecycle, type ExecutionPlan } from "../index.js";
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -62,6 +62,19 @@ test("missing Bubblewrap fails closed without running the unprotected command", 
     assert.equal(result.status, null);
     assert.equal(result.error?.code, "ENOENT");
     assert.equal(existsSync(marker), false);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
+test("read-only setup rejects adapter-managed writes inside the registered root", () => {
+  const f = fixture();
+  try {
+    const reader = plan(f.root, f.repo, "d-reader", "read-only");
+    assert.doesNotThrow(() => assertReadOnlySetupPathsOutsideRepository(reader, [join(f.root, "runtime-config", "hooks.json")]));
+    assert.throws(
+      () => assertReadOnlySetupPathsOutsideRepository(reader, [join(f.repo, ".claude", "settings.json")]),
+      /adapter setup path.*overlaps registered repository/is,
+    );
+    assert.doesNotThrow(() => assertReadOnlySetupPathsOutsideRepository(plan(f.root, f.repo, "d-owner", "mutating"), [join(f.repo, ".factory", "hooks.json")]));
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
