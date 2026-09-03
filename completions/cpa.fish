@@ -168,7 +168,7 @@ end
 
 function __cpa_deploy_option_expects_value
     switch $argv[1]
-        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume
+        case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --agent-model --repo --ticket --timeout --resume --autonomy
             return 0
     end
 
@@ -388,21 +388,23 @@ complete -c cpa -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Se
 complete -c cpa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c cpa -n __cpa_deploy_needs_team -a '(__cpa_deploy_team_candidates)' -d 'Team name'
-complete -c cpa -f -n __cpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume' -d 'Deploy option'
+complete -c cpa -f -n __cpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy' -d 'Deploy option'
 complete -c cpa -f -n __cpa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__cpa_modes)'
 complete -c cpa -n __cpa_deploy_completing -l objective -d 'Deployment objective' -r
-complete -c cpa -n __cpa_deploy_completing -l objective-file -d 'Objective from file' -r -a '(complete -C "echo " | string match -r "^[^ ]+")'
+complete -c cpa -n __cpa_deploy_completing -l objective-file -d 'Objective from file' -r
 complete -c cpa -n __cpa_deploy_completing -l list-modes -d 'List available deploy modes'
-complete -c cpa -n __cpa_deploy_completing -l validate -d 'Validate without deploying'
+complete -c cpa -n __cpa_deploy_completing -l validate -d 'Validate team config'
 complete -c cpa -f -n __cpa_deploy_completing -l provider -d 'Provider' -r -a 'anthropic'
 complete -c cpa -f -n __cpa_deploy_completing -l model -d 'Model' -r -a 'claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'
-complete -c cpa -f -n __cpa_deploy_completing -l team-model -d 'Team model' -r -a 'claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'
+complete -c cpa -f -n __cpa_deploy_completing -l team-model -d 'Deprecated model alias (PAP-147)' -r -a 'claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'
+complete -c cpa -f -n __cpa_deploy_completing -l agent-model -d 'Unsupported per-agent model override (PAP-148)' -r
 complete -c cpa -n __cpa_deploy_completing -l background -d 'Run detached/headless'
 complete -c cpa -n __cpa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
-complete -c cpa -f -n __cpa_deploy_completing -l repo -d 'Repository name' -r -a '(__cpa_projects)'
+complete -c cpa -f -n __cpa_deploy_completing -l repo -d 'Registered repository key or exact configured path' -r -a '(__cpa_projects)'
 complete -c cpa -f -n __cpa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__cpa_ticket_ids)'
 complete -c cpa -n __cpa_deploy_completing -l timeout -d 'Timeout seconds' -r
 complete -c cpa -f -n __cpa_deploy_completing -l resume -d 'Resume from deployment ID' -r -a '(__cpa_deployments)'
+complete -c cpa -f -n __cpa_deploy_completing -l autonomy -d 'Autonomy level' -r -a 'low medium high'
 complete -c cpa -f -n '__fish_seen_subcommand_from deploy evaluate' -l evaluate-deployment -d 'Deployment to evaluate' -r -a '(__cpa_deployments)'
 complete -c cpa -f -n '__fish_seen_subcommand_from evaluate; and string match -q "d-*" -- (commandline -ct)' -a '(__cpa_deployments)' -d 'Deployment to evaluate'
 complete -c cpa -n '__fish_seen_subcommand_from evaluate' -l background -d 'Run detached/headless'
@@ -413,7 +415,7 @@ complete -c cpa -r -n '__fish_seen_subcommand_from evaluate' -l report-path -d '
 complete -c cpa -n '__fish_seen_subcommand_from evaluate' -l overall -d 'Overall evaluator score' -r
 complete -c cpa -n '__fish_seen_subcommand_from evaluate' -l human-agency -d 'Human Agency score' -r
 complete -c cpa -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticket ID' -r -a '(__cpa_ticket_ids)'
-complete -c cpa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Repository name' -r -a '(__cpa_projects)'
+complete -c cpa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Registered repository key or exact configured path' -r -a '(__cpa_projects)'
 complete -c cpa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
 complete -c cpa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Provider' -r -a 'anthropic'
 complete -c cpa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Model' -r

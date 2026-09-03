@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getDeploymentDir, getRegistryDbPath, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveRepo, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { activateRepositoryLifecycle, appendActivityEvent, combineRuntimeAndLifecycleError, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidRuntimeConfig } from "./adapter.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
@@ -58,21 +58,42 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   const today = nowUtc().slice(0, 10);
   const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
   const paths = getDeployPaths(deploymentId);
-  const paEnv = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request, provider, model });
-  const extraInstructions = buildExtraInstructions({ deploymentId, teamConfig, ticketId, repo: request.repo, cwd: process.cwd(), mode: request.mode ?? teamConfig.default_mode, envVars: paEnv });
+  const requestedEnvironment = buildPaEnvVars({ deploymentId, deployDir, activityLogPath: paths.activityLogPath, teamConfig, request, provider, model });
   const evaluatorObjective = buildEvaluatorObjective(request.evaluateDeployment, deploymentId, request.team);
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
-  const primer = generatePrimer({ runtime: "droid", teamConfig, mode: selectedMode?.id, objective: objective || undefined, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(ticketId ? { TICKET_ID: ticketId } : {}) }, extraInstructions });
+  let plan: ExecutionPlan;
+  try {
+    plan = activateRepositoryLifecycle(resolveExecutionPlan({
+      request: { ...request, ...(ticketId ? { ticket: ticketId } : {}), ...(objective ? { objective } : {}), provider, model },
+      teamConfig,
+      mode: selectedMode,
+      runtime: "droid",
+      deploymentId,
+      deploymentDir: deployDir,
+      activityLogPath: paths.activityLogPath,
+      environment: requestedEnvironment,
+      timeoutSeconds: effectiveTimeoutSeconds,
+    }), { dryRun: request.dryRun, resumeDeploymentId: request.resume });
+  } catch (error) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
+  }
   const primerPath = resolve(deployDir, "primer.md");
-  writeFileSync(primerPath, primer, "utf-8");
-
+  try {
+    const extraInstructions = buildExtraInstructions(plan, teamConfig);
+    const primer = generatePrimer({ runtime: "droid", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
+    writeFileSync(primerPath, primer, "utf-8");
+  } catch (error) {
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const reason = error instanceof Error ? error.message : String(error);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
+  }
 
   const autonomy = resolveDroidAutonomy({
     cliFlag: request.autonomy,
     platformDefaults: platformConfig.defaults?.droidcode,
   });
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
-  const env = { ...paEnv };
+  const env = { ...plan.environment } as Record<string, string>;
   // Resolve FACTORY_API_KEY: env var takes precedence, platform config as fallback.
   const factoryApiKey = process.env["FACTORY_API_KEY"]
     ?? platformConfig.provider_defaults?.providers?.factory?.api_key;
@@ -93,46 +114,55 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   try {
     priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
   } catch (error) {
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const reason = error instanceof Error ? error.message : String(error);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
   }
 
-  emitStartedEvent({ deploymentId, team: teamConfig.name, mode: request.mode ?? teamConfig.default_mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: request.ticket, objective: request.objective, provider, repo: request.repo, runtime: "droid", binary: "dpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds });
-
   try {
-    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
+    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "droid", binary: "dpa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
+    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     const result = priorSession
-      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession })
-      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: effectiveTimeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env });
+      ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, sessionId: priorSession, executionPlan: plan })
+      : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, autonomy, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "droid.log"), env, executionPlan: plan });
     // dpa captures session ids from all modes (foreground included) via the SDK.
     if (result.sessionId) {
       writeFileSync(resolve(deployDir, adapter.sessionFileName), result.sessionId, "utf-8");
     }
-    const pid = typeof result.metadata?.["pid"] === "number" ? result.metadata["pid"] : undefined;
+    const rawPid = result.metadata?.["pid"];
+    const pid = typeof rawPid === "number" && Number.isInteger(rawPid) && rawPid > 0 ? rawPid : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
+      if (plan.repositoryLease?.role === "owner" && plan.repositoryLease.state === "active" && pid === undefined) throw new Error("runner-readiness: Droid background supervisor returned without repository lease ownership evidence");
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "droid", body: `dpa background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const errorMessage = result.errorMessage;
-    const terminalKind = result.exitCode === 0 ? "text" : "error";
-    const terminalBody = result.exitCode === 0
-      ? `droid exited with code ${result.exitCode}`
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const lifecycleError = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
+    const effectiveExitCode = result.exitCode === 0 && lifecycleError ? 1 : result.exitCode;
+    const errorMessage = combineRuntimeAndLifecycleError(result.errorMessage, lifecycleError);
+    const terminalKind = effectiveExitCode === 0 ? "text" : "error";
+    const terminalBody = effectiveExitCode === 0
+      ? `droid exited with code ${effectiveExitCode}`
       : errorMessage
-        ? `droid exited with code ${result.exitCode}: ${errorMessage}`
-        : `droid exited with code ${result.exitCode}`;
+        ? `droid exited with code ${effectiveExitCode}: ${errorMessage}`
+        : `droid exited with code ${effectiveExitCode}`;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: terminalKind, source: "droid", body: terminalBody }), paths.activityLogPath);
-    const summary = result.exitCode === 0
+    const summary = effectiveExitCode === 0
       ? "dpa deploy completed"
-      : `dpa deploy failed (exit ${result.exitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
-    emitCompletedEvent({ deploymentId, team: teamConfig.name, status: result.exitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: result.exitCode });
+      : `dpa deploy failed (exit ${effectiveExitCode})${errorMessage ? `: ${firstLine(errorMessage)}` : ""}`;
+    emitCompletedEvent({ deploymentId, team: teamConfig.name, status: effectiveExitCode === 0 ? "success" : "failed", summary, logFile: result.logFile, exitCode: effectiveExitCode });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    return result.exitCode === 0
+    return effectiveExitCode === 0
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
-      : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `droid exited with code ${result.exitCode}` };
+      : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `droid exited with code ${effectiveExitCode}` };
   } catch (error) {
-    emitCrashedEvent({ deploymentId, team: teamConfig.name, error: error instanceof Error ? error.message : String(error), exitCode: 1 });
+    const lifecycle = finalizeRepositoryLifecycle(plan);
+    const baseError = error instanceof Error ? error.message : String(error);
+    const finalError = boundedDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    emitCrashedEvent({ deploymentId, team: teamConfig.name, error: finalError, exitCode: 1 });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: error instanceof Error ? error.message : String(error) };
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: finalError };
   }
 }
 
@@ -224,15 +254,7 @@ function computePlannerVars(team: string, mode: string | undefined, today: strin
   };
 }
 
-interface DeploymentContextOpts {
-  deploymentId: string;
-  teamConfig: { name: string; agents: Array<{ name: string }> };
-  ticketId?: string;
-  repo?: string;
-  cwd: string;
-  mode?: string;
-  envVars?: Partial<Record<PaEnvKey, string>>;
-}
+type DeploymentContextTeam = { name: string; agents: Array<{ name: string }> };
 
 const MEMORY_DOC_CANDIDATES = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "OPENCODE.md", ".opencode/OPENCODE.md"];
 const MAX_MEMORY_DOC_CHARS = 20000;
@@ -242,18 +264,18 @@ const MAX_MEMORY_DOC_CHARS = 20000;
 // native loading is confirmed.
 const MEMORY_DOC_POINTER_MODE = false;
 
-function buildExtraInstructions(opts: DeploymentContextOpts): string | undefined {
-  const sections = [buildMemoryDocsBlock(opts), buildDeploymentContextBlock(opts)].filter(Boolean);
+function buildExtraInstructions(plan: ExecutionPlan, teamConfig: DeploymentContextTeam): string | undefined {
+  const sections = [buildMemoryDocsBlock(plan), buildDeploymentContextBlock(plan, teamConfig)].filter(Boolean);
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
-function buildMemoryDocsBlock(opts: DeploymentContextOpts): string | undefined {
-  const docs = collectMemoryDocs(opts);
+function buildMemoryDocsBlock(plan: ExecutionPlan): string | undefined {
+  const docs = collectMemoryDocs(plan);
   return renderMemoryDocsBlock(docs, { runtimeLabel: "droid", pointerMode: MEMORY_DOC_POINTER_MODE });
 }
 
-function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; content: string }> {
-  const roots = [resolve(homedir(), ".claude/CLAUDE.md"), ...MEMORY_DOC_CANDIDATES.map((candidate) => resolve(resolveRepoRoot(opts.repo, opts.cwd), candidate))];
+function collectMemoryDocs(plan: ExecutionPlan): Array<{ path: string; content: string }> {
+  const roots = [resolve(homedir(), ".claude/CLAUDE.md"), ...MEMORY_DOC_CANDIDATES.map((candidate) => resolve(plan.memoryDocumentRoot, candidate))];
   const seen = new Set<string>();
   const docs: Array<{ path: string; content: string }> = [];
   for (const path of roots) {
@@ -265,36 +287,30 @@ function collectMemoryDocs(opts: DeploymentContextOpts): Array<{ path: string; c
   return docs;
 }
 
-function resolveRepoRoot(repo: string | undefined, cwd: string): string {
-  if (!repo) return cwd;
-  const repoPath = repo.startsWith("~/") ? resolve(homedir(), repo.slice(2)) : repo;
-  if (isAbsolute(repoPath)) return repoPath;
-  try {
-    return resolveRepo(repoPath).path;
-  } catch {
-    return resolve(cwd, repoPath);
-  }
+function buildDeploymentContextBlock(plan: ExecutionPlan, teamConfig: DeploymentContextTeam): string {
+  const teamWorkspace = resolve(getAgentTeamsDir(), teamConfig.name);
+  const envVarLines = renderEnvVarsBlock(plan.environment);
+  return `<deployment-context>
+deployment_id: ${plan.lifecycle.deploymentId}
+team_name: ${teamConfig.name}
+team_display_name: ${teamConfig.name}
+deployed_at: ${nowUtc()}
+registry_db: ${plan.lifecycle.registryDbPath}
+workspace_base: ${plan.lifecycle.deploymentDir}
+team_workspace: ${teamWorkspace}
+cwd: ${plan.repositoryCwd}
+repo_root: ${plan.repoRoot}
+ticket_id: ${plan.ticket ?? "none"}
+agents:
+${teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
+mode: ${plan.mode}
+repository_access: ${plan.repositoryAccess}
+repository_lease_owner: ${plan.repositoryLease?.ownerDeploymentId ?? "none"}
+repository_lease_path: ${plan.repositoryLease?.leasePath ?? "none"}
+${envVarLines}</deployment-context>`;
 }
 
-function buildDeploymentContextBlock(opts: DeploymentContextOpts): string {
-  const registryDb = getRegistryDbPath();
-  const workspaceBase = getDeploymentDir(opts.deploymentId);
-  const teamWorkspace = resolve(getAgentTeamsDir(), opts.teamConfig.name);
-  const now = nowUtc();
-  const envVarLines = renderEnvVarsBlock(opts.envVars);
-  return `<deployment-context>
-deployment_id: ${opts.deploymentId}
-team_name: ${opts.teamConfig.name}
-team_display_name: ${opts.teamConfig.name}
-deployed_at: ${now}
-registry_db: ${registryDb}
-workspace_base: ${workspaceBase}
-team_workspace: ${teamWorkspace}
-cwd: ${opts.cwd}
-repo_root: ${resolveRepoRoot(opts.repo, opts.cwd)}
-ticket_id: ${opts.ticketId ?? "none"}
-agents:
-${opts.teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
-mode: ${opts.mode ?? "default"}
-${envVarLines}</deployment-context>`;
+function boundedDiagnostic(error: unknown): string {
+  const diagnostic = redactDiagnostic(error instanceof Error ? error.message : String(error));
+  return diagnostic.length > 2000 ? `${diagnostic.slice(0, 1997)}...` : diagnostic;
 }

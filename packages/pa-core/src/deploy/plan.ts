@@ -5,6 +5,9 @@ import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
 import type { PaEnvKey } from "../primer/index.js";
+import type { RepositoryLeaseEvidence } from "./repository-lifecycle.js";
+
+export type RepositoryLifecycleEnvKey = "PA_REPOSITORY_LEASE_OWNER" | "PA_REPOSITORY_LEASE_PATH" | "PA_REPOSITORY_LEASE_TOKEN";
 
 export interface ExecutionPlanSkill {
   name: string;
@@ -24,13 +27,19 @@ export interface ExecutionPlan {
   readonly runtime: RuntimeName;
   readonly team: string;
   readonly mode: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
   readonly repositoryCwd: string;
+  readonly memoryDocumentRoot: string;
+  readonly repositoryAccess: "read-only" | "mutating";
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
+  readonly userObjectiveOverride?: string;
   readonly skills: readonly ExecutionPlanSkill[];
   readonly memoryDocuments: readonly string[];
-  readonly environment: Readonly<Partial<Record<PaEnvKey, string>>>;
+  readonly environment: Readonly<Partial<Record<PaEnvKey | RepositoryLifecycleEnvKey, string>>>;
+  readonly repositoryLease?: Readonly<RepositoryLeaseEvidence>;
   readonly timeoutSeconds: number;
   readonly provider?: string;
   readonly model?: string;
@@ -51,10 +60,12 @@ export interface ResolveExecutionPlanOptions {
   skillsDir?: string;
   registryDbPath?: string;
   trustedExtensionPath?: string;
+  cwd?: string;
 }
 
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
   const modeName = options.mode?.id ?? options.teamConfig.default_mode ?? "default";
+  const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd());
   const skillsDir = options.skillsDir ?? getSkillsDir();
   const skills = (options.mode?.skills ?? []).map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
@@ -63,7 +74,6 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
   });
-  const repositoryCwd = options.request.repo ? resolveRepoExecutionPath(options.request.repo).repositoryCwd : process.cwd();
   const ticketRequired = options.mode?.require_ticket === true;
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
@@ -79,13 +89,22 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     runtime: options.runtime,
     team: options.teamConfig.name,
     mode: modeName,
-    repositoryCwd,
+    repoKey: repository.repoKey,
+    repoRoot: repository.repoRoot,
+    repositoryCwd: repository.repoRoot,
+    memoryDocumentRoot: repository.repoRoot,
+    repositoryAccess: options.mode?.repository_access ?? "mutating",
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,
+    ...(options.request.objective ? { userObjectiveOverride: options.request.objective } : {}),
     skills: Object.freeze(skills),
-    memoryDocuments: Object.freeze([...(options.teamConfig.global_docs ?? []), ...(options.mode?.global_docs ?? [])]),
-    environment: Object.freeze({ ...options.environment }),
+    memoryDocuments: Object.freeze([
+      ...(options.teamConfig.global_docs ?? []),
+      ...(options.mode?.global_docs ?? []),
+      ...(options.mode?.project_guides?.[repository.repoKey] ?? []),
+    ]),
+    environment: Object.freeze({ ...options.environment, PA_REPO: repository.repoRoot }),
     timeoutSeconds: options.timeoutSeconds,
     ...(options.request.provider ? { provider: options.request.provider } : {}),
     ...(options.request.model ? { model: options.request.model } : {}),

@@ -217,7 +217,5 @@ function isSafeIdentifier(value: string): boolean {
 }
 
 function isSafeRepoSpecifier(value: string): boolean {
-  if (isSafeIdentifier(value)) return true;
-  if (value.includes("..")) return false;
-  return /^(?:~\/|\/)[a-zA-Z0-9_./-]+$/.test(value);
+  return value.length > 0 && !/[\x00-\x1f\x7f]/.test(value);
 }

@@ -9,6 +9,7 @@ export interface HookConfig {
   activityLogPath: string;
   sensitivePatternsPath?: string;
   env?: Record<string, string>;
+  executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 
 export interface ToolReference {

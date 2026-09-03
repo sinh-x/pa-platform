@@ -147,7 +147,7 @@ test("branch validate on conforming branch returns success", async () => {
   });
 });
 
-test("branch validate reads the invoking linked worktree branch", async () => {
+test("branch validate infers linked-worktree identity but validates the registered checkout branch", async () => {
   await withBranchCliEnv(async (root, repo) => {
     const worktree = join(root, "linked-worktree");
     git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
@@ -159,12 +159,13 @@ test("branch validate reads the invoking linked worktree branch", async () => {
     } finally {
       process.chdir(cwd);
     }
-    assert.deepEqual(captured.stdout, []);
+    assert.match(captured.stdout.join("\n"), /"develop" is a base branch, not a feature branch/);
     assert.deepEqual(captured.stderr, []);
+    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-linked");
   });
 });
 
-test("branch create operates on the invoking linked worktree", async () => {
+test("branch create infers linked-worktree identity but operates on the registered checkout", async () => {
   await withBranchCliEnv(async (root, repo) => {
     const worktree = join(root, "linked-worktree");
     git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
@@ -178,9 +179,9 @@ test("branch create operates on the invoking linked worktree", async () => {
       process.chdir(cwd);
     }
 
-    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-isolated");
-    assert.equal(git(["branch", "--show-current"], repo), "develop");
-    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
+    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-linked");
+    assert.equal(git(["branch", "--show-current"], repo), "feature/PAP-135-isolated");
+    assert.notDeepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
   });
 });
 
@@ -241,7 +242,7 @@ test("branch validate not in registered repo returns error", async () => {
     } finally {
       process.chdir(cwd);
     }
-    assert.match(captured.stderr.join("\n"), /Not in a registered repository/);
+    assert.match(captured.stderr.join("\n"), /registered project paths only.*does not identify a unique registered project/is);
   });
 });
 
@@ -258,6 +259,12 @@ test("branch create warns on unknown ticket id but still creates branch", async 
     assert.match(captured.stderr.join("\n"), /Warning: ticket "PAP-999" not found/);
     assert.match(captured.stdout.join("\n"), /Created and checked out feature\/PAP-999-new-feature/);
   });
+});
+
+test("branch help documents registered-checkout relocation", async () => {
+  const captured = capture();
+  assert.equal(await runCoreCommand(["branch", "--help"], { io: captured.io }), 0);
+  assert.match(captured.stdout.join("\n"), /operate only at its exact configured registered path/i);
 });
 
 test("unknown branch subcommand returns error", async () => {

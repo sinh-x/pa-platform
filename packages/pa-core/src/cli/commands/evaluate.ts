@@ -139,9 +139,7 @@ function validateScore(score: number, flag: string): string | undefined {
 }
 
 function isSafeRepoSpecifier(value: string): boolean {
-  if (/^[a-zA-Z0-9_-]+$/.test(value)) return true;
-  if (value.includes("..")) return false;
-  return /^(?:~\/|\/)[a-zA-Z0-9_./-]+$/.test(value);
+  return value.length > 0 && !/[\x00-\x1f\x7f]/.test(value);
 }
 
 export function printEvaluateHelp(io: Required<CliIo>): void {

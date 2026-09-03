@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { loadReposYaml, normalizeRemoteUrl, resolveProjectFromCwd, resolveRepoByRemoteIdentity, resolveRepoExecutionPath } from "../repos.js";
+import { MAX_REPOSITORY_DIAGNOSTIC_CHARS, loadReposYaml, normalizeRemoteUrl, resolveProjectFromCwd, resolveRepoByRemoteIdentity, resolveRepoExecutionPath } from "../repos.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -279,7 +279,10 @@ test("execution-path resolution preserves registered key behavior", () => {
   try {
     const resolved = withPlatformConfig(fixture.config, () => resolveRepoExecutionPath("registered"));
     assert.equal(resolved.repo.name, "registered");
+    assert.equal(resolved.repoKey, "registered");
+    assert.equal(resolved.repoRoot, fixture.repo);
     assert.equal(resolved.repositoryCwd, fixture.repo);
+    assert.equal(resolved.inferredFrom, "explicit");
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -297,40 +300,54 @@ test("execution-path resolution preserves exact canonical path behavior", () => 
   }
 });
 
-test("execution-path resolution maps a linked worktree by Git common directory", () => {
-  const fixture = createLinkedFixture("linked-success");
-  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
+test("execution-path resolution rejects a key that is another repository's exact path", () => {
+  const fixture = createLinkedFixture("key-path-collision");
+  const other = join(fixture.root, "other");
+  mkdirSync(other);
+  execFileSync("git", ["init"], { cwd: other, stdio: "ignore" });
+  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  ${JSON.stringify(other)}:\n    path: ${fixture.repo}\n  other:\n    path: ${other}\n`);
   try {
-    const resolved = withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(fixture.worktree));
-    assert.equal(resolved.repo.name, "registered");
-    assert.equal(resolved.repositoryCwd, realpathSync(fixture.worktree));
+    assert.throws(() => withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(other)), /ambiguous.*by key.*exact configured path/is);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution-path resolution normalizes a relative nested worktree path to its top level", () => {
-  const fixture = createLinkedFixture("relative-normalization");
-  const nested = join(fixture.worktree, "nested", "directory");
-  mkdirSync(nested, { recursive: true });
+test("omitted execution input infers registered root, nested path, and linked worktree but relocates to the configured path", () => {
+  const fixture = createLinkedFixture("cwd-inference");
+  const registeredNested = join(fixture.repo, "nested", "registered");
+  const worktreeNested = join(fixture.worktree, "nested", "worktree");
+  mkdirSync(registeredNested, { recursive: true });
+  mkdirSync(worktreeNested, { recursive: true });
   writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
   try {
-    const input = relative(process.cwd(), nested);
-    const resolved = withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(input));
-    assert.equal(resolved.repositoryCwd, realpathSync(fixture.worktree));
+    withPlatformConfig(fixture.config, () => {
+      for (const cwd of [fixture.repo, registeredNested, fixture.worktree, worktreeNested]) {
+        const resolved = resolveRepoExecutionPath(undefined, cwd);
+        assert.equal(resolved.repoKey, "registered");
+        assert.equal(resolved.repoRoot, fixture.repo);
+        assert.equal(resolved.repositoryCwd, fixture.repo);
+        assert.equal(resolved.inferredFrom, "cwd");
+      }
+    });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution-path resolution normalizes a symlinked worktree path", () => {
-  const fixture = createLinkedFixture("symlink-normalization");
-  const alias = join(fixture.root, "worktree-alias");
-  symlinkSync(fixture.worktree, alias, "dir");
+test("explicit nested, linked-worktree, and symlink-alias paths fail with the registered correction", () => {
+  const fixture = createLinkedFixture("explicit-rejections");
+  const registeredNested = join(fixture.repo, "nested");
+  const alias = join(fixture.root, "repo-alias");
+  mkdirSync(registeredNested);
+  symlinkSync(fixture.repo, alias, "dir");
   writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
   try {
-    const resolved = withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(alias));
-    assert.equal(resolved.repositoryCwd, realpathSync(fixture.worktree));
+    withPlatformConfig(fixture.config, () => {
+      for (const path of [registeredNested, fixture.worktree, alias]) {
+        assertRejectedWithoutMutation(fixture.root, () => resolveRepoExecutionPath(path), /registered project paths only.*not the exact configured path.*--repo "registered"/is);
+      }
+    });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -343,7 +360,7 @@ test("execution-path resolution rejects a nonexistent path without mutation", ()
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(join(fixture.root, "missing")),
-      /execution path does not exist.*missing/,
+      /registered project paths only.*does not exist.*missing/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -359,7 +376,7 @@ test("execution-path resolution rejects a non-Git directory without mutation", (
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(nonGit),
-      /not a Git working tree/,
+      /registered project paths only.*not a Git working tree/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -376,7 +393,7 @@ test("execution-path resolution rejects copied .git indirection without mutation
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(forgedWorktree),
-      /worktree admin metadata belongs to a different working tree/,
+      /registered project paths only.*belongs to a different working tree/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -402,7 +419,7 @@ test("execution-path resolution rejects an unrelated linked worktree even when i
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(otherWorktree),
-      /Unrelated linked worktree.*does not match any registered repository/,
+      /registered project paths only.*independent or otherwise unregistered checkout.*--repo "registered"/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -420,23 +437,23 @@ test("execution-path resolution rejects an independent clone with the registered
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(clone),
-      /independent Git checkout is not a linked worktree/,
+      /registered project paths only.*independent or otherwise unregistered checkout.*--repo "registered"/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution-path resolution uses a non-local remote only to narrow common-directory candidates", () => {
+test("explicit worktree identity remains ambiguous when multiple registered roots share its Git common directory", () => {
   const remote = "git@github.com:owner/project.git";
   const fixture = createLinkedFixture("remote-narrowing", remote);
   const secondRegisteredPath = join(fixture.root, "second-registered-worktree");
   git(["worktree", "add", "-b", "feature/remote-second", secondRegisteredPath], fixture.repo);
   writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  matching:\n    path: ${fixture.repo}\n    remote_url: https://github.com/OWNER/project\n  other:\n    path: ${secondRegisteredPath}\n    remote_url: git@github.com:owner/other.git\n`);
   try {
-    const resolved = withPlatformConfig(fixture.config, () => resolveRepoExecutionPath(fixture.worktree));
-    assert.equal(resolved.repo.name, "matching");
-    assert.equal(resolved.repositoryCwd, realpathSync(fixture.worktree));
+    withPlatformConfig(fixture.config, () => {
+      assert.throws(() => resolveRepoExecutionPath(fixture.worktree), /ambiguous registered identity.*matching.*other/is);
+    });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -451,7 +468,7 @@ test("execution-path resolution does not trust local origins to narrow candidate
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(fixture.worktree),
-      /Ambiguous linked worktree.*first.*second/,
+      /ambiguous registered identity.*first.*second/is,
     ));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -464,12 +481,52 @@ test("execution-path ambiguity names every competing key and canonical path with
   git(["worktree", "add", "-b", "feature/ambiguous-second", secondRegisteredPath], fixture.repo);
   writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  first:\n    path: ${fixture.repo}\n  second:\n    path: ${secondRegisteredPath}\n`);
   try {
-    const expected = new RegExp(`Ambiguous linked worktree.*first \\(${fixture.repo}\\).*second \\(${secondRegisteredPath}\\)`);
+    const expected = new RegExp(`ambiguous registered identity.*first \\(${fixture.repo}\\).*second \\(${secondRegisteredPath}\\)`, "is");
     withPlatformConfig(fixture.config, () => assertRejectedWithoutMutation(
       fixture.root,
       () => resolveRepoExecutionPath(fixture.worktree),
       expected,
     ));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("omitted execution input rejects unregistered Git and non-Git working directories", () => {
+  const fixture = createLinkedFixture("cwd-rejections");
+  const unregistered = join(fixture.root, "unregistered");
+  const nonGit = join(fixture.root, "non-git-cwd");
+  mkdirSync(unregistered);
+  mkdirSync(nonGit);
+  git(["init", "-b", "develop"], unregistered);
+  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
+  try {
+    withPlatformConfig(fixture.config, () => {
+      assert.throws(() => resolveRepoExecutionPath(undefined, unregistered), /registered project paths only.*does not identify a unique registered project/is);
+      assert.throws(() => resolveRepoExecutionPath(undefined, nonGit), /registered project paths only.*not a Git working tree/is);
+    });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("repository validation diagnostics are bounded", () => {
+  const fixture = createLinkedFixture("bounded-diagnostic");
+  const entries = Array.from({ length: 120 }, (_, index) => `  repository-${String(index).padStart(3, "0")}-${"x".repeat(24)}:\n    path: ${fixture.root}/missing-${index}-${"y".repeat(24)}`).join("\n");
+  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n${entries}\n`);
+  try {
+    withPlatformConfig(fixture.config, () => {
+      let message = "";
+      try {
+        resolveRepoExecutionPath(join(fixture.root, "not-registered"));
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      assert.ok(message.length > 0);
+      assert.ok(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS, `diagnostic length ${message.length} exceeds ${MAX_REPOSITORY_DIAGNOSTIC_CHARS}`);
+      assert.match(message, /registered project paths only/i);
+      assert.match(message, /Corrective action/i);
+    });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

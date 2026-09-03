@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { SAFETY_PATTERNS } from "../safety-rules.js";
 
 export const PA_DROID_SAFETY_SCRIPT = "pa-safety.js";
-const PA_DROID_SAFETY_PATTERNS = "pa-safety-patterns.json";
+export const PA_DROID_SAFETY_PATTERNS = "pa-safety-patterns.json";
 
 interface HooksConfig {
   hooks?: {
@@ -33,6 +33,11 @@ export function resolveSafetyScriptPath(env: NodeJS.ProcessEnv = process.env): s
   return join(factoryDir, "hooks", PA_DROID_SAFETY_SCRIPT);
 }
 
+export function resolveSafetyPatternsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const factoryDir = env["FACTORY_DIR"] ?? join(env["HOME"] ?? homedir(), ".factory");
+  return join(factoryDir, "hooks", PA_DROID_SAFETY_PATTERNS);
+}
+
 export function installDroidSafetyScript(env: NodeJS.ProcessEnv = process.env): string {
   const scriptPath = resolveSafetyScriptPath(env);
   mkdirSync(dirname(scriptPath), { recursive: true });
@@ -41,8 +46,7 @@ export function installDroidSafetyScript(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function installDroidSafetyPatterns(env: NodeJS.ProcessEnv = process.env): string {
-  const factoryDir = env["FACTORY_DIR"] ?? join(env["HOME"] ?? homedir(), ".factory");
-  const patternsPath = join(factoryDir, "hooks", PA_DROID_SAFETY_PATTERNS);
+  const patternsPath = resolveSafetyPatternsPath(env);
   mkdirSync(dirname(patternsPath), { recursive: true });
   writeFileSync(patternsPath, JSON.stringify(SAFETY_PATTERNS, null, 2) + "\n", "utf-8");
   return patternsPath;

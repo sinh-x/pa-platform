@@ -2,8 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
-import { installPaSafetyActivityPlugin } from "./plugins/pa-safety-activity.js";
+import { appendActivityEvent, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig } from "@pa-platform/pa-core";
+import { installPaSafetyActivityPlugin, resolvePaSafetyActivityPluginPath } from "./plugins/pa-safety-activity.js";
 
 export type OpencodeProvider = "minimax" | "openai" | "deepseek" | "ollama-cloud" | "opencode-go";
 
@@ -20,7 +20,7 @@ const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -39,7 +39,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   readonly sessionFileName = "session-id-opencode.txt";
 
   private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
 
@@ -47,14 +47,30 @@ export class OpencodeAdapter implements RuntimeAdapter {
     this.cwd = options.cwd ?? process.cwd();
     this.env = options.env ?? process.env;
     this.runCommand = options.runCommand;
-    this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
-      const logFile = opts.logFile ?? resolve(this.cwd, "opencode.log");
+    this.runBackgroundCommand = options.runBackgroundCommand ?? (async (args, opts) => {
+      const logFile = opts.logFile ?? resolve(opts.cwd, "opencode.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "opencode-background.json");
-      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId: opts.env["PA_DEPLOYMENT_ID"], team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName }, null, 2));
+      const deploymentId = opts.env["PA_DEPLOYMENT_ID"];
+      if (!deploymentId) throw new Error("runner-readiness: OpenCode background deployment identity is missing");
+      const ownership = createBackgroundOwnershipConfig(dirname(logFile));
+      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId, team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName, ...ownership }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
-      const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
+      const launch = constrainRuntimeProcess(opts.executionPlan, process.execPath, [runnerPath, configPath], opts.cwd);
+      const child = spawn(launch.command, [...launch.args], { cwd: launch.cwd, env: opts.env, detached: true, stdio: "ignore" });
+      const launchError = new Promise<Error>((resolveError) => child.once("error", resolveError));
       child.unref();
+      if (!child.pid) {
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw await Promise.race([launchError, delayedLaunchError("OpenCode")]);
+      }
+      try {
+        await Promise.race([waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid }), launchError.then((error) => { throw error; })]);
+      } catch (error) {
+        await terminateBackgroundSupervisor(child.pid);
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw error;
+      }
       return { pid: child.pid };
     });
   }
@@ -91,7 +107,9 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   installHooks(_targetDir: string, config: HookConfig): void {
-    installPaSafetyActivityPlugin({ ...this.env, ...config.env });
+    const env = { ...this.env, ...config.env };
+    if (config.executionPlan) assertReadOnlySetupPathsOutsideRepository(config.executionPlan, [resolvePaSafetyActivityPluginPath(env)]);
+    installPaSafetyActivityPlugin(env);
   }
 
   describeTools() {
@@ -108,6 +126,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     const wrapperPrompt = buildPrimerLoadPrompt(opts.primerPath);
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     if (opts.mode === "foreground") {
@@ -116,7 +135,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         args.push("--session", sessionId);
       }
       args.push("--prompt", wrapperPrompt);
-      const result = runInheritedCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env } });
+      const result = runInheritedCommand(args, { cwd, env: { ...this.env, ...opts.env }, executionPlan: opts.executionPlan });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
       if (errorMessage) {
@@ -137,15 +156,15 @@ export class OpencodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand(args, { cwd: this.cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
+      const result = await this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile, executionPlan: opts.executionPlan });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
     const env = { ...this.env, ...opts.env };
     const result = this.runCommand
-      ? this.runCommand(args, { cwd: this.cwd, env })
-      : await runStreamingCommand(args, { cwd: this.cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl") });
+      ? this.runCommand(args, { cwd, env })
+      : await runStreamingCommand(args, { cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl"), executionPlan: opts.executionPlan });
     if (this.runCommand) {
       if (opts.logFile) writeLog(opts.logFile, result.stdout, result.stderr);
       const outputPath = resolve(dirname(opts.primerPath), "opencode-output.jsonl");
@@ -161,14 +180,19 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 }
 
-function runInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): OpencodeCommandResult {
+function delayedLaunchError(runtime: string): Promise<Error> {
+  return new Promise((resolveError) => setImmediate(() => resolveError(new Error(`runner-readiness: ${runtime} background supervisor did not expose a PID`))));
+}
+
+function runInheritedCommand(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv; executionPlan?: SpawnOpts["executionPlan"] }): OpencodeCommandResult {
   // stdin/stdout stay attached to the parent TTY so the opencode TUI renders normally.
   // stderr is piped so non-spawn failures (auth, model errors, mid-run crashes) leave
   // a captured tail in result.stderr; we replay it to the parent's stderr after the
   // child exits so users still see the message inline. spawnSync default 1 MiB buffer
   // is plenty since adapterErrorMessage truncates to STDERR_TAIL_BYTES.
-  const result = spawnSync("opencode", args, {
-    cwd: opts.cwd,
+  const launch = constrainRuntimeProcess(opts.executionPlan, "opencode", args, opts.cwd);
+  const result = spawnSync(launch.command, [...launch.args], {
+    cwd: launch.cwd,
     env: opts.env,
     stdio: ["inherit", "inherit", "pipe"],
     encoding: "utf-8",
@@ -200,6 +224,7 @@ interface StreamingCommandOpts {
   deployId: string;
   logFile?: string;
   outputPath: string;
+  executionPlan?: SpawnOpts["executionPlan"];
 }
 
 function runStreamingCommand(args: string[], opts: StreamingCommandOpts): Promise<OpencodeCommandResult> {
@@ -211,7 +236,8 @@ function runStreamingCommand(args: string[], opts: StreamingCommandOpts): Promis
   // line-flushed writes are atomic for sub-PIPE_BUF (4096-byte) lines; STDERR_TAIL_BYTES = 2000 guarantees that.
   // Out-of-order timestamps are acceptable per §9 R2 — consumers sort by timestamp.
   const activity = createOpencodeActivityWriter(opts.deployId, getDeployPaths(opts.deployId).activityLogPath);
-  const child = spawn("opencode", args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+  const launch = constrainRuntimeProcess(opts.executionPlan, "opencode", args, opts.cwd);
+  const child = spawn(launch.command, [...launch.args], { cwd: launch.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
 
@@ -444,7 +470,7 @@ function basenameDeployId(deployDir: string): string {
 
 function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_REPOSITORY_LEASE_OWNER", "PA_REPOSITORY_LEASE_PATH", "PA_REPOSITORY_LEASE_TOKEN"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

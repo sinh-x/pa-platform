@@ -22,10 +22,15 @@ export type RegisteredRepo = { name: string } & RepoEntry;
 
 export interface ResolvedRepoExecutionPath {
   repo: RegisteredRepo;
+  repoKey: string;
+  repoRoot: string;
   repositoryCwd: string;
+  inferredFrom: "explicit" | "cwd";
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
+export const MAX_REPOSITORY_DIAGNOSTIC_CHARS = 2000;
+const REGISTERED_PATH_RULE = "PA deployments use registered project paths only.";
 const CASE_INSENSITIVE_REMOTE_HOSTS = new Set(["github.com"]);
 
 export function getBranchPattern(repo: RepoEntry): string {
@@ -125,62 +130,154 @@ export function resolveRepoByRemoteIdentity(remoteUrl: string): RegisteredRepo |
   return resolveRepoByRemote(remoteUrl, listRepos());
 }
 
-export function resolveRepoExecutionPath(nameOrPath: string): ResolvedRepoExecutionPath {
+export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd()): ResolvedRepoExecutionPath {
   const repos = listRepos();
-  const expandedInput = expandHome(nameOrPath);
-  const canonical = repos.find((candidate) => candidate.name === nameOrPath || candidate.path === expandedInput);
-  if (canonical) {
-    if (!existsSync(canonical.path)) throw new Error(`Repo path does not exist: ${canonical.path} (repo: ${canonical.name})`);
-    return { repo: canonical, repositoryCwd: canonical.path };
+  if (repos.length === 0) {
+    throw repositoryResolutionError("No repositories are configured in the PA registry.", []);
   }
 
-  const requestedPath = resolve(expandedInput);
+  if (nameOrPath !== undefined) {
+    const expandedInput = expandHome(nameOrPath);
+    const keyMatch = repos.find((candidate) => candidate.name === nameOrPath);
+    const pathMatches = repos.filter((candidate) => candidate.path === expandedInput);
+    if (keyMatch && pathMatches.some((candidate) => candidate.name !== keyMatch.name)) {
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" is ambiguous because it identifies "${keyMatch.name}" by key and a different repository by exact configured path.`, [keyMatch, ...pathMatches]);
+    }
+    if (keyMatch) return resolvedRegisteredRepo(keyMatch, "explicit");
+
+    if (pathMatches.length === 1) return resolvedRegisteredRepo(pathMatches[0]!, "explicit");
+    if (pathMatches.length > 1) {
+      throw repositoryResolutionError(`The exact configured path "${expandedInput}" is ambiguous.`, pathMatches);
+    }
+
+    const identity = inspectRepositoryIdentity(expandedInput, cwd, nameOrPath, repos);
+    if (identity.gitDir !== identity.commonDir) assertWorktreeAdminOwnership(expandedInput, identity.repoRoot, identity.gitDir, repos);
+    const identityMatches = registeredIdentityMatches(identity, repos);
+    if (identityMatches.length > 1) {
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" has ambiguous registered identity.`, identityMatches);
+    }
+    if (identityMatches.length === 1) {
+      const match = identityMatches[0]!;
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" is not the exact configured path for "${match.name}". Linked worktrees, nested paths, symlink aliases, and independent checkouts are identity evidence only and cannot be execution paths.`, [match]);
+    }
+
+    const remoteMatches = registeredRemoteMatches(identity.repoRoot, repos);
+    if (remoteMatches.length > 1) {
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" has ambiguous remote identity.`, remoteMatches);
+    }
+    if (remoteMatches.length === 1) {
+      const match = remoteMatches[0]!;
+      throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" is an independent or otherwise unregistered checkout for "${match.name}".`, [match]);
+    }
+    throw repositoryResolutionError(`Explicit repository input "${nameOrPath}" is not a registered repository key or exact configured path.`, repos);
+  }
+
+  const identity = inspectRepositoryIdentity(cwd, cwd, "current working directory", repos);
+  const directMatches = repos.filter((candidate) => configuredRepoRoot(candidate.path) === identity.repoRoot);
+  if (directMatches.length === 1) return resolvedRegisteredRepo(directMatches[0]!, "cwd");
+  if (directMatches.length > 1) {
+    throw repositoryResolutionError(`Current working directory identity is ambiguous across registered project roots.`, directMatches);
+  }
+
+  if (identity.gitDir !== identity.commonDir) assertWorktreeAdminOwnership(cwd, identity.repoRoot, identity.gitDir, repos);
+  const commonDirMatches = repos.filter((candidate) => gitCommonDir(candidate.path) === identity.commonDir);
+  if (commonDirMatches.length === 1) return resolvedRegisteredRepo(commonDirMatches[0]!, "cwd");
+  if (commonDirMatches.length > 1) {
+    throw repositoryResolutionError(`Current working directory has ambiguous registered Git identity.`, commonDirMatches);
+  }
+
+  throw repositoryResolutionError(`Current working directory "${cwd}" does not identify a unique registered project. Independent clones and remote-only matches are not eligible.`, repos);
+}
+
+interface RepositoryIdentity {
+  repoRoot: string;
+  gitDir: string;
+  commonDir: string;
+}
+
+function resolvedRegisteredRepo(repo: RegisteredRepo, inferredFrom: "explicit" | "cwd"): ResolvedRepoExecutionPath {
+  if (!existsSync(repo.path)) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" does not exist: ${repo.path}.`, [repo]);
+  }
+  if (!statSync(repo.path).isDirectory()) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" is not a directory: ${repo.path}.`, []);
+  }
+  const physicalPath = realpathSync(repo.path);
+  if (repo.path !== physicalPath) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" must be its physical Git root, not a relative path or symlink: ${repo.path}.`, []);
+  }
+  if (configuredRepoRoot(repo.path) !== repo.path) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, []);
+  }
+  return { repo, repoKey: repo.name, repoRoot: repo.path, repositoryCwd: repo.path, inferredFrom };
+}
+
+function inspectRepositoryIdentity(input: string, cwd: string, label: string, repos: RegisteredRepo[]): RepositoryIdentity {
+  const requestedPath = resolve(cwd, expandHome(input));
   if (!existsSync(requestedPath)) {
-    throw new Error(`Repository execution path does not exist: ${requestedPath} (input: ${nameOrPath})`);
+    throw repositoryResolutionError(`Repository ${label} does not exist: ${requestedPath}.`, repos);
   }
   if (!statSync(requestedPath).isDirectory()) {
-    throw new Error(`Invalid repository execution path "${requestedPath}": path is not a directory`);
+    throw repositoryResolutionError(`Repository ${label} is not a directory: ${requestedPath}.`, repos);
   }
-
-  let repositoryCwd: string;
-  let gitDir: string;
-  let commonDir: string;
   try {
-    repositoryCwd = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], requestedPath));
-    gitDir = realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-dir"], repositoryCwd));
-    commonDir = realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], repositoryCwd));
+    const repoRoot = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], requestedPath));
+    return {
+      repoRoot,
+      gitDir: realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-dir"], repoRoot)),
+      commonDir: realpathSync(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], repoRoot)),
+    };
   } catch {
-    throw new Error(`Invalid repository execution path "${requestedPath}": path is not a Git working tree`);
+    throw repositoryResolutionError(`Repository ${label} is not a Git working tree: ${requestedPath}.`, repos);
   }
+}
 
-  if (gitDir === commonDir) {
-    throw new Error(`Ineligible repository execution path "${requestedPath}": independent Git checkout is not a linked worktree`);
+function registeredIdentityMatches(identity: RepositoryIdentity, repos: RegisteredRepo[]): RegisteredRepo[] {
+  const directMatches = repos.filter((candidate) => configuredRepoRoot(candidate.path) === identity.repoRoot);
+  if (directMatches.length > 0) return directMatches;
+  return repos.filter((candidate) => gitCommonDir(candidate.path) === identity.commonDir);
+}
+
+function registeredRemoteMatches(repoRoot: string, repos: RegisteredRepo[]): RegisteredRepo[] {
+  const origin = gitOrigin(repoRoot);
+  if (!origin || isLocalGitOrigin(origin)) return [];
+  let normalizedOrigin: string;
+  try {
+    normalizedOrigin = normalizeRemoteUrl(origin);
+  } catch {
+    return [];
   }
-
-  assertWorktreeAdminOwnership(requestedPath, repositoryCwd, gitDir);
-
-  let candidates = repos.filter((candidate) => gitCommonDir(candidate.path) === commonDir);
-  if (candidates.length === 0) {
-    throw new Error(`Unrelated linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): Git common directory does not match any registered repository`);
-  }
-
-  if (candidates.length > 1) {
-    const origin = gitOrigin(repositoryCwd);
-    if (origin && !isLocalGitOrigin(origin)) {
-      const normalizedOrigin = normalizeRemoteUrl(origin);
-      const remoteMatches = candidates.filter((candidate) => {
-        if (!candidate.remote_url || isLocalGitOrigin(candidate.remote_url)) return false;
-        return normalizeRemoteUrl(candidate.remote_url) === normalizedOrigin;
-      });
-      if (remoteMatches.length > 0) candidates = remoteMatches;
+  return repos.filter((candidate) => {
+    if (!candidate.remote_url || isLocalGitOrigin(candidate.remote_url)) return false;
+    try {
+      return normalizeRemoteUrl(candidate.remote_url) === normalizedOrigin;
+    } catch {
+      return false;
     }
-  }
+  });
+}
 
-  if (candidates.length !== 1) {
-    throw new Error(`Ambiguous linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}") matches registered repositories: ${candidates.map((candidate) => `${candidate.name} (${candidate.path})`).join(", ")}`);
+function configuredRepoRoot(path: string): string | undefined {
+  try {
+    const root = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], path));
+    return root === realpathSync(path) ? root : undefined;
+  } catch {
+    return undefined;
   }
+}
 
-  return { repo: candidates[0]!, repositoryCwd };
+function repositoryResolutionError(detail: string, candidates: RegisteredRepo[]): Error {
+  const correctiveAction = candidates.length === 1
+    ? `Corrective action: pass --repo "${candidates[0]!.name}" or --repo "${candidates[0]!.path}".`
+    : candidates.length > 1
+      ? `Corrective action: pass one registered key or exact configured path: ${candidates.map((repo) => `${repo.name} (${repo.path})`).join(", ")}.`
+      : "Corrective action: configure the project in the PA repository registry, then pass its key or exact configured path.";
+  const suffix = ` ${correctiveAction}`;
+  const prefix = `${REGISTERED_PATH_RULE} `;
+  const available = Math.max(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS - prefix.length - suffix.length - 3);
+  const boundedDetail = detail.length > available ? `${detail.slice(0, available)}...` : detail;
+  const message = `${prefix}${boundedDetail}${suffix}`;
+  return new Error(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS ? message : `${prefix}${correctiveAction}`.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS));
 }
 
 export function resolveProject(input: string): { key: string; prefix: string } {
@@ -241,7 +338,7 @@ function gitOutput(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
-function assertWorktreeAdminOwnership(requestedPath: string, repositoryCwd: string, gitDir: string): void {
+function assertWorktreeAdminOwnership(requestedPath: string, repositoryCwd: string, gitDir: string, repos: RegisteredRepo[]): void {
   let adminWorktreeGitFile: string;
   let rootGitFile: string;
   try {
@@ -250,10 +347,10 @@ function assertWorktreeAdminOwnership(requestedPath: string, repositoryCwd: stri
     adminWorktreeGitFile = realpathSync(resolve(gitDir, backlink));
     rootGitFile = realpathSync(resolve(repositoryCwd, ".git"));
   } catch {
-    throw new Error(`Invalid linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): missing or invalid worktree admin metadata`);
+    throw repositoryResolutionError(`Linked-worktree identity for "${requestedPath}" has missing or invalid Git administration metadata.`, repos);
   }
   if (adminWorktreeGitFile !== rootGitFile) {
-    throw new Error(`Invalid linked worktree execution path "${requestedPath}" (normalized to "${repositoryCwd}"): worktree admin metadata belongs to a different working tree`);
+    throw repositoryResolutionError(`Linked-worktree identity for "${requestedPath}" belongs to a different working tree.`, repos);
   }
 }
 

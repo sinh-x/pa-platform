@@ -573,6 +573,27 @@ test("agent API deploy validates requests and routes through deploy hook without
   });
 });
 
+test("agent API deploy accepts dotted repository keys and exact paths containing spaces", async () => {
+  await withApiEnv(async () => {
+    const received: string[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request.repo ?? "");
+        return { status: "pending", deploymentId: "d-repo-spec" };
+      },
+    } });
+    for (const repo of ["registered.repo", "/tmp/registered repo"]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", repo }),
+      });
+      assert.equal(response.status, 202);
+    }
+    assert.deepEqual(received, ["registered.repo", "/tmp/registered repo"]);
+  });
+});
+
 test("agent API deploy routes deepseek provider and model through deploy hook", async () => {
   await withApiEnv(async () => {
     const received: unknown[] = [];

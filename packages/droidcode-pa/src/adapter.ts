@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendActivityEvent, createActivityEvent, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, assertReadOnlySetupPathsOutsideRepository, constrainRuntimeProcess, createActivityEvent, createBackgroundOwnershipConfig, formatRuntimePair, getDeployPaths, modelMatchesProvider, nowUtc, parseTimestamp, redactDiagnostic, removeOwnedBackgroundConfig, terminateBackgroundSupervisor, waitForBackgroundOwnership, type ActivityEvent, type EffectiveRuntimeConfig, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ResumeOpts, type HookConfig, type ToolReference } from "@pa-platform/pa-core";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
-import { installPaDroidHooks } from "./plugins/pa-droid-safety.js";
+import { installPaDroidHooks, resolveDroidHooksPath, resolveSafetyPatternsPath, resolveSafetyScriptPath } from "./plugins/pa-droid-safety.js";
 import { isDestructiveCommand, isBlockedFilePath } from "./safety-rules.js";
 import { STDERR_TAIL_BYTES, tailString, firstLine } from "./util.js";
 
@@ -37,7 +37,7 @@ export interface DroidCodeAdapterOptions {
   env?: NodeJS.ProcessEnv;
   sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 }
 
 export class DroidCodeAdapter implements RuntimeAdapter {
@@ -49,7 +49,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly sessionFactory?: (opts: { modelId: string; cwd: string; env: NodeJS.ProcessEnv; apiKey: string; timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<DroidSession>;
   private readonly resumeFactory?: (sessionId: string, opts: { apiKey: string; env: NodeJS.ProcessEnv; abortSignal?: AbortSignal }) => Promise<DroidSession>;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string };
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; executionPlan?: SpawnOpts["executionPlan"] }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
 
   constructor(options: DroidCodeAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -57,27 +57,44 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     this.sessionFactory = options.sessionFactory;
     this.resumeFactory = options.resumeFactory;
     this.defaultModel = resolveDefaultDroidModel(this.env);
-    this.runBackgroundCommand = options.runBackgroundCommand ?? ((args, opts) => {
-      const logFile = opts.logFile ?? resolve(this.cwd, "droid-background.log");
+    this.runBackgroundCommand = options.runBackgroundCommand ?? (async (args, opts) => {
+      const logFile = opts.logFile ?? resolve(opts.cwd, "droid-background.log");
       mkdirSync(dirname(logFile), { recursive: true });
       const configPath = resolve(dirname(logFile), "droid-background.json");
+      const deploymentId = opts.env["PA_DEPLOYMENT_ID"];
+      if (!deploymentId) throw new Error("runner-readiness: Droid background deployment identity is missing");
+      const ownership = createBackgroundOwnershipConfig(dirname(logFile));
       writeFileSync(configPath, JSON.stringify({
         args,
         cwd: opts.cwd,
         env: pickBackgroundEnv(opts.env),
         logFile,
-        deploymentId: opts.env["PA_DEPLOYMENT_ID"],
+        deploymentId,
         team: opts.env["PA_TEAM"],
         sessionFileName: this.sessionFileName,
-      }, null, 2));
+        ...ownership,
+      }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
-      const child = spawn(process.execPath, [runnerPath, configPath], {
-        cwd: opts.cwd,
+      const launch = constrainRuntimeProcess(opts.executionPlan, process.execPath, [runnerPath, configPath], opts.cwd);
+      const child = spawn(launch.command, [...launch.args], {
+        cwd: launch.cwd,
         env: opts.env,
         detached: true,
         stdio: "ignore",
       });
+      const launchError = new Promise<Error>((resolveError) => child.once("error", resolveError));
       child.unref();
+      if (!child.pid) {
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw await Promise.race([launchError, delayedLaunchError("Droid")]);
+      }
+      try {
+        await Promise.race([waitForBackgroundOwnership({ ...ownership, deploymentId, supervisorPid: child.pid }), launchError.then((error) => { throw error; })]);
+      } catch (error) {
+        await terminateBackgroundSupervisor(child.pid);
+        removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
+        throw error;
+      }
       return { pid: child.pid };
     });
   }
@@ -114,6 +131,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   }
 
   installHooks(_targetDir: string, _config: HookConfig): void {
+    if (_config.executionPlan) assertReadOnlySetupPathsOutsideRepository(_config.executionPlan, [resolveDroidHooksPath(this.env), resolveSafetyScriptPath(this.env), resolveSafetyPatternsPath(this.env)]);
     installPaDroidHooks(this.env);
   }
 
@@ -140,6 +158,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
   }
 
   private async runDroid(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     const primer = readFileSync(opts.primerPath, "utf-8");
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
     const model = opts.model ?? this.defaultModel;
@@ -158,8 +177,9 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       const args = ["-m", model, "-f", opts.primerPath];
       if (opts.autonomy) args.push("--auto", opts.autonomy);
       if (sessionId) args.push("-r", sessionId);
-      const result = spawnSync("droid", args, {
-        cwd: this.cwd,
+      const launch = constrainRuntimeProcess(opts.executionPlan, "droid", args, cwd);
+      const result = spawnSync(launch.command, [...launch.args], {
+        cwd: launch.cwd,
         env: mergedEnv,
         stdio: ["inherit", "inherit", "pipe"],
         encoding: "utf-8",
@@ -181,16 +201,21 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     }
 
     if (opts.mode === "background") {
-      const result = this.runBackgroundCommand([model, opts.primerPath], {
-        cwd: this.cwd,
+      const result = await this.runBackgroundCommand([model, opts.primerPath], {
+        cwd,
         env: toEnvRecord(mergedEnv),
         logFile: opts.logFile,
+        executionPlan: opts.executionPlan,
       });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
     }
 
-    // Streaming mode (tests / explicit SDK path): use SDK session.stream()
+    // Streaming mode is injectable for tests only; production SDK work runs in the
+    // sandboxed background supervisor rather than this adapter process.
+    if (opts.executionPlan?.repositoryAccess === "read-only") {
+      return { exitCode: 1, logFile: opts.logFile, errorMessage: "Read-only Droid SDK injection cannot run outside the runtime process sandbox." };
+    }
     const deployDir = resolve(dirname(opts.primerPath));
     const outputJsonlPath = resolve(deployDir, "droid-output.jsonl");
     mkdirSync(dirname(outputJsonlPath), { recursive: true });
@@ -203,7 +228,7 @@ export class DroidCodeAdapter implements RuntimeAdapter {
     try {
       const session = sessionId
         ? await (this.resumeFactory ?? defaultResumeSession)(sessionId, { apiKey, env: toEnvRecord(mergedEnv) })
-        : await (this.sessionFactory ?? defaultCreateSession)({ modelId: model, cwd: this.cwd, env: toEnvRecord(mergedEnv), apiKey });
+        : await (this.sessionFactory ?? defaultCreateSession)({ modelId: model, cwd, env: toEnvRecord(mergedEnv), apiKey });
 
       let exitCode = 0;
       let errorMessage: string | undefined;
@@ -232,6 +257,10 @@ export class DroidCodeAdapter implements RuntimeAdapter {
       jsonl.end();
     }
   }
+}
+
+function delayedLaunchError(runtime: string): Promise<Error> {
+  return new Promise((resolveError) => setImmediate(() => resolveError(new Error(`runner-readiness: ${runtime} background supervisor did not expose a PID`))));
 }
 
 /** Map the shared provider/model result to Droid's flat model identifier. */
@@ -526,7 +555,7 @@ function toEnvRecord(env: NodeJS.ProcessEnv): Record<string, string> {
 
 export function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FACTORY_API_KEY", "FACTORY_API_BASE_URL", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_DPA_DEFAULT_MODEL", "PA_DPA_AUTONOMY"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "FACTORY_API_KEY", "FACTORY_API_BASE_URL", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL", "PA_REPOSITORY_LEASE_OWNER", "PA_REPOSITORY_LEASE_PATH", "PA_REPOSITORY_LEASE_TOKEN", "PA_DPA_DEFAULT_MODEL", "PA_DPA_AUTONOMY"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

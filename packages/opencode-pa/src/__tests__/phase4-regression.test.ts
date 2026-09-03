@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
+import { closeDb, finalizeRepositoryLifecycle, queryDeploymentStatuses, readActivityEvents, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, OpencodeAdapter } from "../adapter.js";
 import { createOpencodeHooks } from "../deploy.js";
 
@@ -13,6 +14,15 @@ import { createOpencodeHooks } from "../deploy.js";
 // semantics, registry metadata, or session file behavior. They are a guard
 // against accidental drift when the session API code path is present.
 
+function initializeGitRepo(path: string): void {
+  execFileSync("git", ["init", "-b", "develop"], { cwd: path, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: path });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: path });
+  writeFileSync(join(path, "README.md"), "# Test\n");
+  execFileSync("git", ["add", "README.md"], { cwd: path });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: path, stdio: "ignore" });
+}
+
 function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "opa-phase4-"));
   const config = join(root, "config");
@@ -21,17 +31,20 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(repo, { recursive: true });
+  initializeGitRepo(repo);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
-  const previous = { config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
+  const previous = { cwd: process.cwd(), config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"] };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PA_TICKET_ID"] = "PAP-TEST";
   delete process.env["PA_MAX_RUNTIME"];
+  process.chdir(repo);
   return fn(root).finally(() => {
+    process.chdir(previous.cwd);
     closeDb();
     restore("PA_PLATFORM_CONFIG", previous.config);
     restore("PA_PLATFORM_TEAMS", previous.teams);
@@ -195,6 +208,7 @@ test("phase 4 regression: opa deploy wrapper prompt remains the short pointer, n
     for (const arg of bgArgs) {
       assert.ok(!arg.includes(bgFullPrimer), "background args must not contain the full primer body");
     }
+    assert.equal(finalizeRepositoryLifecycle(join(root, "deployments", bgDeployId)).ok, true);
 
     const bin = join(root, "bin");
     const fgArgsPath = join(root, "opencode-args-fg.json");

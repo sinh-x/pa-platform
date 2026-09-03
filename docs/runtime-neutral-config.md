@@ -4,6 +4,45 @@
 
 Team YAML files are active shared configuration and should remain structurally compatible with the frozen PA team YAMLs. Existing mode IDs and fields such as `provider` are preserved in the team files for compatibility and migration traceability.
 
+## Registered Project Execution
+
+Every deployment resolves a repository key or exact configured path to one
+immutable execution plan. When `--repo` is omitted, PA may infer identity from a
+registered checkout, a nested directory, or an associated linked-worktree CWD,
+but runtime CWD, `PA_REPO`, primer evidence, memory roots, and registry evidence
+always relocate to the configured registered path. Explicit non-registered paths
+fail before primer generation or runtime spawn.
+
+Each deploy mode declares `repository_access: read-only` or `mutating` (the
+compatibility default is `mutating`). Mutating deployments require a clean
+checkout and one durable repository lease. Terminal handling restores the exact
+captured branch/HEAD state, preserves dirty recovery evidence instead of
+discarding files, and releases ownership idempotently. Read-only deployments do
+not acquire the mutation lease and remain admissible while a mutator runs. Their
+runtime process (or detached background supervisor) runs inside packaged
+Bubblewrap with a read-only root filesystem, narrowly writable PA/runtime state,
+and explicit read-only mounts for the registered checkout and external Git
+metadata. Sandbox setup or launch failure is fail-closed and never falls back to
+an unprotected runtime process.
+
+Legacy worktree orchestration reports cannot be resumed automatically. Preserve
+their commits and dirty files, recover the registered checkout manually, archive
+or resolve the old run, and launch a fresh registered-project-path deployment.
+
+The primer contains exactly one authoritative `## Additional Instructions`
+section. CLI/evaluator overrides appear there; the configured team or mode
+objective remains under `## Objective`. Mode-level project guides use a
+`project_guides` map keyed by canonical repository key:
+
+```yaml
+deploy_modes:
+  - id: implement
+    repository_access: mutating
+    project_guides:
+      pa-platform:
+        - docs/pa-platform-agent-guide.md
+```
+
 ## Flat Runtime Configuration
 
 Active team YAML has one runtime-neutral schema: each `deploy_modes[]` entry may
@@ -144,7 +183,7 @@ Notes:
 
 ### Placeholder-Template Skip
 
-`global_docs` (project agent guides) that are placeholder-only templates are skipped instead of injected, so a primer never carries an unfilled `<project-name>`/`<Convention Title>` guide. When a guide is skipped, the primer lists it as `- <path> (skipped: placeholder-only template)` rather than injecting its body.
+`global_docs` and selected `project_guides` that are placeholder-only templates are skipped instead of injected, so a primer never carries an unfilled `<project-name>`/`<Convention Title>` guide. When a guide is skipped, the primer lists it as `- <path> (skipped: placeholder-only template)` rather than injecting its body.
 
 A `global_docs` file is treated as a placeholder-only template when **all** of the following hold:
 

@@ -148,7 +148,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--objective <text>` | string | Inline objective override |
 | `--objective-file <path>` | file path | Read objective from a (guarded) local file |
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
-| `--repo <path>` | path | Override repository path |
+| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, PA infers a unique project from CWD and relocates execution to its configured path. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
@@ -173,7 +173,7 @@ opa deploy builder --mode implement --background
 opa deploy builder --dry-run --mode implement
 opa deploy builder --list-modes
 opa deploy builder --validate
-opa deploy builder --mode implement --ticket PAP-132 --repo ./pa-platform
+opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform
 opa deploy builder --mode implement --provider deepseek --model deepseek/deepseek-v4-pro
 ```
 
@@ -201,7 +201,7 @@ A positional `<deploy-id>` matching `d-[a-z0-9]{6}` is shorthand for `--evaluate
 | `--background` | — | Run detached/headless |
 | `--dry-run` | — | Generate evaluator primer without invoking opencode |
 | `--ticket <id>` | ticket id | Associate evaluator run with a ticket |
-| `--repo <path>` | path | Repository context for memory docs |
+| `--repo <key\|path>` | repository key or exact configured path | Registered repository context for execution, evidence, and memory docs |
 | `--timeout <seconds>` | int (60–7200) | Override evaluator deployment timeout |
 | `--provider <name>` | provider | Adapter provider override |
 | `--model <name>` | model | Override model |
@@ -221,7 +221,7 @@ A positional `<deploy-id>` matching `d-[a-z0-9]{6}` is shorthand for `--evaluate
 - `--evaluator-deployment`, `--report-path`, and score flags require `--record`.
 - `--background` and `--dry-run` are mutually exclusive.
 
-**Validation:** Repo specifier must be a safe name/path (no `..`); ticket ID must match `^[A-Z][A-Z0-9]+-[0-9]+$`; provider/model names are validated against safe character sets.
+**Validation:** Repository selection follows the same registered-project-path-only contract as `deploy`; ticket ID must match `^[A-Z][A-Z0-9]+-[0-9]+$`; provider/model names are validated against safe character sets.
 
 **Examples:**
 ```bash
@@ -387,7 +387,7 @@ opa board --include-archived
 
 ## branch
 
-Manage feature branches. Subcommands: `create`, `validate`.
+Manage feature branches. Subcommands: `create`, `validate`, `record-cleanup`.
 
 ### branch create
 
@@ -407,11 +407,18 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 
 Validates the current branch against the configured branch pattern. Returns exit 0 if it matches; otherwise prints a warning (distinguishing base branches `main`/`develop` from non-conforming feature branches) and still returns 0.
 
+### branch record-cleanup
+
+**Usage:** `branch record-cleanup --feature <branch> --merge-evidence <evidence> [--delete-local] [--delete-remote]`
+
+Persists merge evidence and cleanup policy into the active mutating deployment lifecycle. The command authenticates with `PA_DEPLOYMENT_DIR` and `PA_REPOSITORY_LEASE_TOKEN`, validates the branch and evidence before writing, and makes the request available to terminal checkout restoration and cleanup.
+
 **Examples:**
 ```bash
 opa branch create PAP-132 --topic api-documentation
 opa branch create PAP-132 PAP-133 --topic refactor
 opa branch validate
+opa branch record-cleanup --feature feature/PAP-132-api-documentation --merge-evidence 'github:pr=132;merge_commit=<40-char-sha>;target=develop;ci=passed;verified=true' --delete-local
 ```
 
 ---

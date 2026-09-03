@@ -1,5 +1,6 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
+import { resolveRepoExecutionPath } from "../../repos.js";
 import { assertNoSensitiveMatch, readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
@@ -128,7 +129,8 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --objective <text>  Inline objective override");
   io.stdout("  --objective-file <path>  Read objective from file");
   io.stdout("  --evaluate-deployment <id>  Generate evaluator primer objective for a completed deployment");
-  io.stdout("  --repo <path>       Override repository path");
+  io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
+  io.stdout("                      Omit to infer CWD identity and relocate to the configured path");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
   io.stdout("  --timeout <seconds>    Override deployment timeout");
   io.stdout("  --resume <id>          Resume a prior deployment");
@@ -181,7 +183,22 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     return 1;
   }
 
-  const result = await hooks.deploy(resolved.request, { stderr: io.stderr });
+  let repository: ReturnType<typeof resolveRepoExecutionPath>;
+  try {
+    repository = resolveRepoExecutionPath(resolved.request.repo);
+  } catch (error) {
+    io.stderr(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
+  const originalCwd = process.cwd();
+  let result: Awaited<ReturnType<NonNullable<CoreExecutionHooks["deploy"]>>>;
+  try {
+    process.chdir(repository.repoRoot);
+    result = await hooks.deploy({ ...resolved.request, repo: repository.repoRoot }, { stderr: io.stderr });
+  } finally {
+    process.chdir(originalCwd);
+  }
   if (result.status === "failed") {
     io.stderr(result.reason ?? "Deployment failed");
     return 1;

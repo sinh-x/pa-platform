@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -15,6 +15,7 @@ import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -34,9 +35,12 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ppa-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
+  const repo = join(root, "repo");
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
+  initializeGitRepo(repo);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
+  writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
   writeFileSync(join(teams, "builder.yaml"), [
     "name: builder",
     "description: Builder",
@@ -47,14 +51,18 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
     "deploy_modes:",
     "  - id: implement",
     "    label: Implement",
+    "    repository_access: mutating",
   ].join("\n") + "\n");
   const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  const previousCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   delete process.env["PA_MAX_RUNTIME"];
+  process.chdir(repo);
   return fn(root).finally(() => {
+    process.chdir(previousCwd);
     closeDb();
     for (const [key, value] of Object.entries(previous)) restore(key, value);
     rmSync(root, { recursive: true, force: true });
@@ -307,50 +315,94 @@ test("foreground and background Pi children receive distinct internal execution 
   });
 });
 
-test("linked-worktree execution cwd remains normalized across PPA evidence and the Pi process", async () => {
+test("PPA key and exact-path requests consume one canonical execution plan across all repository evidence", async () => {
   await withPiEnv(async (root) => {
-    const canonical = join(root, "canonical-repo");
+    const repo = join(root, "repo");
+    const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; registryRepo?: string; runtimeCwd?: string }> = [];
+    for (const requestedRepo of ["pa-platform", repo]) {
+      let captured: SpawnOpts | undefined;
+      let runtimeCwd: string | undefined;
+      const adapter = new class extends PiAdapter {
+        override spawn(opts: SpawnOpts): Promise<SpawnResult> {
+          captured = opts;
+          return super.spawn(opts);
+        }
+      }({
+        cwd: join(root, "adapter-local-cwd-must-not-win"),
+        versionProbe: () => "0.80.8",
+        nativeRegistryProbe: () => undefined,
+        runCommand: (_args, options) => {
+          runtimeCwd = options.cwd;
+          return { status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop" })}\n`, stderr: "" };
+        },
+      });
+
+      const result = await deployWithPi({ team: "builder", mode: "implement", repo: requestedRepo, background: true }, adapter);
+      assert.equal(result.status, "success", result.reason);
+      assert.ok(captured?.executionPlan);
+      const plan = captured.executionPlan;
+      const primer = readFileSync(captured.primerPath, "utf8");
+      const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+      observations.push({ plan, primer, registryRepo: started?.repo, runtimeCwd });
+    }
+
+    for (const observation of observations) {
+      assert.equal(Object.isFrozen(observation.plan), true);
+      assert.equal(observation.plan.repoKey, "pa-platform");
+      assert.equal(observation.plan.repoRoot, repo);
+      assert.equal(observation.plan.repositoryCwd, repo);
+      assert.equal(observation.plan.memoryDocumentRoot, repo);
+      assert.equal(observation.plan.environment.PA_REPO, repo);
+      assert.equal(observation.plan.repositoryAccess, "mutating");
+      assert.equal(observation.plan.userObjectiveOverride, undefined);
+      assert.equal(observation.plan.repositoryLease?.role, "owner");
+      assert.equal(observation.plan.repositoryLease?.repositoryKey, observation.plan.repoKey);
+      assert.equal(observation.plan.repositoryLease?.repositoryRoot, observation.plan.repoRoot);
+      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_OWNER, observation.plan.repositoryLease?.ownerDeploymentId);
+      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_PATH, observation.plan.repositoryLease?.leasePath);
+      assert.equal(observation.runtimeCwd, repo);
+      assert.equal(observation.registryRepo, repo);
+      assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);
+      assert.match(observation.primer, /No user objective override was provided/);
+      assert.match(observation.primer, /^repo_key: pa-platform$/m);
+      assert.match(observation.primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(observation.primer, new RegExp(`^repo: ${escapeRegExp(repo)}$`, "m"));
+      assert.match(observation.primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
+    }
+    assert.deepEqual(
+      observations.map(({ plan, registryRepo, runtimeCwd }) => ({ key: plan.repoKey, root: plan.repoRoot, paRepo: plan.environment.PA_REPO, memoryRoot: plan.memoryDocumentRoot, registryRepo, runtimeCwd })),
+      [0, 1].map(() => ({ key: "pa-platform", root: repo, paRepo: repo, memoryRoot: repo, registryRepo: repo, runtimeCwd: repo })),
+    );
+  });
+});
+
+test("PPA rejects invalid and ambiguous repository inputs before preflight or runtime spawn", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
     const worktree = join(root, "linked-worktree");
-    const nested = join(worktree, "nested", "directory");
-    initializeGitRepo(canonical);
-    git(["worktree", "add", "-b", "feature/linked-propagation", worktree], canonical);
-    mkdirSync(nested, { recursive: true });
-    writeFileSync(join(root, "config", "config.yaml"), [
-      `config_dir: ${root}`,
-      "repos:",
-      "  registered:",
-      `    path: ${canonical}`,
-    ].join("\n") + "\n");
-    const normalizedWorktree = realpathSync(worktree);
-    let processCwd: string | undefined;
-    const adapter = new class extends PiAdapter {
-      captured?: SpawnOpts;
-      override spawn(opts: SpawnOpts): Promise<SpawnResult> {
-        this.captured = opts;
-        return super.spawn(opts);
-      }
-    }({
-      cwd: canonical,
-      versionProbe: () => "0.80.8",
-      nativeRegistryProbe: () => undefined,
-      runCommand: (_args, options) => {
-        processCwd = options.cwd;
-        return { status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop" })}\n`, stderr: "" };
-      },
+    git(["worktree", "add", "-b", "feature/rejected-explicit-worktree", worktree], repo);
+    let preflights = 0;
+    let spawns = 0;
+    const adapter = stubAdapter({
+      preflight: async () => { preflights += 1; },
+      onSpawn: () => { spawns += 1; },
     });
+    const invalid = await deployWithPi({ team: "builder", mode: "implement", repo: worktree }, adapter);
+    assert.equal(invalid.status, "failed");
+    assert.match(invalid.reason ?? "", /registered project paths only/);
+    assert.ok((invalid.reason ?? "").length <= 2000);
 
-    const result = await deployWithPi({ team: "builder", mode: "implement", repo: nested, background: true }, adapter);
-    assert.equal(result.status, "success", result.reason);
-    assert.equal(adapter.captured?.executionPlan?.repositoryCwd, normalizedWorktree);
-
-    const primer = readFileSync(adapter.captured!.primerPath, "utf8");
-    const deploymentContext = primer.match(/<deployment-context>\n([\s\S]*?)\n<\/deployment-context>/)?.[1];
-    assert.ok(deploymentContext);
-    assert.equal(deploymentContext.match(/^repo: (.+)$/m)?.[1], normalizedWorktree);
-
-    const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
-    assert.equal(started?.repo, normalizedWorktree);
-    assert.equal(processCwd, normalizedWorktree);
+    const second = join(root, "registered-worktree");
+    const ambiguous = join(root, "ambiguous-worktree");
+    git(["worktree", "add", "-b", "feature/registered-worktree", second], repo);
+    git(["worktree", "add", "-b", "feature/ambiguous-worktree", ambiguous], repo);
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
+    const rejected = await deployWithPi({ team: "builder", mode: "implement", repo: ambiguous }, adapter);
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+    assert.ok((rejected.reason ?? "").length <= 2000);
+    assert.equal(preflights, 0);
+    assert.equal(spawns, 0);
   });
 });
 

@@ -5,8 +5,10 @@ import {
   appendActivityEvent,
   createActivityEvent,
   ensureTerminalRegistryMarker,
+  finalizeRepositoryLifecycle,
   getDeployPaths,
   reconcileTerminalRegistryEvent,
+  transferRepositoryLeaseByDeployment,
   type RegistryEvent,
 } from "@pa-platform/pa-core";
 import {
@@ -71,6 +73,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   if (options.shutdownSignal?.aborted) onExternalShutdown();
 
   try {
+    transferRepositoryLeaseByDeployment(deployDir, process.pid);
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
     const args = buildPiBackgroundArgs(config);
     const childEnv = piRegistryEnvironment({ ...process.env });
@@ -102,12 +105,20 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
     if (!ready) throw new Error("runner-spawn: Pi child did not expose a process id");
     writePiSupervisorOwnership(ownershipPath, ownership("finalizing"));
+    const lifecycle = finalizeRepositoryLifecycle(deployDir);
+    if (!lifecycle.ok) {
+      result.status = 1;
+      result.spawnError = new Error(lifecycle.diagnostic ?? "repository lifecycle finalization failed");
+    }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
     finalState = "finalized";
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
   } catch (error) {
     terminateChild();
-    const reason = bounded(categoryForRunnerError(error), secrets, TERMINAL_DIAGNOSTIC_MAX);
+    const lifecycle = finalizeRepositoryLifecycle(deployDir);
+    const baseError = error instanceof Error ? error.message : String(error);
+    const finalError = lifecycle.ok ? error : new Error(`${baseError}; ${lifecycle.diagnostic}`);
+    const reason = bounded(categoryForRunnerError(finalError), secrets, TERMINAL_DIAGNOSTIC_MAX);
     try {
       const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
       writePiSupervisorOwnership(ownershipPath, ownership(finalState, { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
