@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { writeFile as writeFileAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -11,6 +12,7 @@ import {
   GIT_CONTEXT_COMMIT_LIMIT,
   GIT_CONTEXT_FILE_LIMIT,
   GIT_CONTEXT_REFRESH_INTERVAL_MS,
+  GIT_CONTEXT_STATE_FILE_NAME,
   GitContextRefreshScheduler,
   collectGitContext,
   gitContextStatePath,
@@ -320,6 +322,64 @@ test("state load and persistence reject symlink escapes without reading or modif
   assert.equal(await persistGitContextReference(aliasedRoot, "develop", BRANCHES), false);
   assert.deepEqual(readdirSync(canonicalTarget), []);
   assert.equal(readFileSync(outsideState, "utf8"), originalExternalState);
+});
+
+test("parent replacement at the temp-create boundary cannot redirect persistence outside the validated directory", async (t) => {
+  const sandbox = mkdtempSync(join(tmpdir(), "pi-git-parent-swap-"));
+  t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+  const root = join(sandbox, "repo");
+  const outside = join(sandbox, "outside");
+  const displacedConfig = join(sandbox, "validated-config");
+  mkdirSync(root);
+  mkdirSync(outside);
+  mkdirSync(join(root, CONFIG_DIR_NAME));
+
+  const priorState = `${JSON.stringify({ version: 1, reference: "main" }, null, 2)}\n`;
+  writeFileSync(gitContextStatePath(root), priorState, { mode: 0o600 });
+  writeFileSync(join(outside, "pa-git-context.json"), "external state must not be read or replaced\n");
+  writeFileSync(join(outside, "sentinel.bin"), Buffer.from([0, 255, 1, 254]));
+  const outsideBefore = readdirSync(outside).map((name) => ({
+    name,
+    bytes: readFileSync(join(outside, name)),
+    mode: statSync(join(outside, name)).mode,
+  }));
+
+  let createBoundaryReached = false;
+  const saved = await persistGitContextReference(root, "develop", BRANCHES, {
+    uniqueId: () => "parent-swap",
+    writeFile: async (path, data, options) => {
+      createBoundaryReached = true;
+      renameSync(join(root, CONFIG_DIR_NAME), displacedConfig);
+      symlinkSync(outside, join(root, CONFIG_DIR_NAME), "dir");
+      await writeFileAsync(path, data, options);
+    },
+  });
+
+  assert.equal(createBoundaryReached, true);
+  assert.equal(saved, false);
+  const outsideAfter = readdirSync(outside).map((name) => ({
+    name,
+    bytes: readFileSync(join(outside, name)),
+    mode: statSync(join(outside, name)).mode,
+  }));
+  assert.deepEqual(outsideAfter, outsideBefore);
+  assert.equal(readFileSync(join(displacedConfig, GIT_CONTEXT_STATE_FILE_NAME), "utf8"), priorState);
+  assert.deepEqual(readdirSync(displacedConfig), [GIT_CONTEXT_STATE_FILE_NAME]);
+});
+
+test("persistence fails closed before temp creation when descriptor-relative operations are unavailable", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-git-no-dirfd-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let writes = 0;
+  assert.equal(await persistGitContextReference(root, "develop", BRANCHES, {
+    directoryHandlePath: () => undefined,
+    writeFile: async (...args) => {
+      writes++;
+      await writeFileAsync(...args);
+    },
+  }), false);
+  assert.equal(writes, 0);
+  assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), []);
 });
 
 test("real repositories expose non-Git, unborn, detached, missing-ref, and missing-merge-base states", async (t) => {
@@ -847,6 +907,101 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   assert.equal(overlayHides, 1);
   assert.equal(selectorCompletions, 3);
   assert.deepEqual(notifications, []);
+});
+
+test("registered selection flow retains the ready snapshot as stale after deferred timeout and Git error", async (t) => {
+  for (const cause of ["timeout", "git-error"] as const) {
+    await t.test(cause, async () => {
+      const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+      const commands = new Map<string, (args: string, context: unknown) => unknown>();
+      let deferredRefresh: ((reason: "reference-change") => void | Promise<void>) | undefined;
+      let referenceRequests = 0;
+      let collectionStarts = 0;
+      let panel: GitContextPanelComponent | undefined;
+      let selector: GitReferenceSelectorComponent | undefined;
+      const tui = { terminal: { columns: 160 }, requestRender() {} };
+
+      registerGitContextUiModuleWithOptions({
+        on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+        registerCommand: (name, definition) => commands.set(name, definition.handler),
+      }, {
+        schedulerFactory: () => ({
+          firstOpen: (refresh) => { void refresh("first-open"); },
+          referenceChange: (refresh) => {
+            referenceRequests++;
+            deferredRefresh = refresh;
+          },
+          event() {},
+          dispose() {},
+        }),
+        collect: async (previous, input) => {
+          collectionStarts++;
+          if (collectionStarts === 1) return uiReadyState();
+          assert.equal(previous?.status, "pending");
+          assert.equal(input.explicitReference, "origin/develop");
+          return collectGitContext(previous, input, {
+            runGit: cause === "timeout"
+              ? scriptedRunner({ root: "pending" })
+              : scriptedRunner({ root: new Error("selected reference Git failure") }),
+            canonicalize: async () => "/repo",
+            deadlineMs: 5,
+            now: () => 500,
+          });
+        },
+        persist: async () => true,
+        now: () => 250,
+      });
+
+      const overlayHandle = {
+        setHidden() {},
+        focus() {},
+        unfocus() {},
+        hide() {},
+      };
+      const context = {
+        mode: "tui",
+        hasUI: true,
+        cwd: "/repo",
+        ui: {
+          notify() {},
+          custom: (factory: (tuiValue: unknown, theme: unknown, keybindings: unknown, done: (result: string | null) => void) => unknown, options?: {
+            overlay?: boolean;
+            onHandle?: (handle: typeof overlayHandle) => void;
+          }) => new Promise<string | null>((resolve) => {
+            const component = factory(tui, TEST_THEME, {}, resolve);
+            if (options?.overlay) {
+              panel = component as GitContextPanelComponent;
+              options.onHandle?.(overlayHandle);
+            } else {
+              selector = component as GitReferenceSelectorComponent;
+            }
+          }),
+        },
+      };
+
+      events.get("session_start")?.({}, context);
+      commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(collectionStarts, 1);
+
+      panel?.handleInput("r");
+      selector?.handleInput("\x1b[B");
+      selector?.handleInput("\r");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(referenceRequests, 1);
+      assert.equal(collectionStarts, 1, "selection must not bypass the deferred cadence slot");
+      const pendingLines = panel?.render(80) ?? [];
+      assert.ok(pendingLines.some((line) => line.includes("State: loading (pending collection)")));
+      assert.ok(pendingLines.some((line) => line.includes("Reference: origin/develop (selected)")));
+
+      await deferredRefresh?.("reference-change");
+      assert.equal(collectionStarts, 2);
+      const staleLines = panel?.render(80) ?? [];
+      assert.ok(staleLines.some((line) => line.includes(`State: stale (${cause})`)));
+      assert.ok(staleLines.some((line) => line.includes("Reference: main (saved)")));
+      events.get("session_shutdown")?.({}, context);
+    });
+  }
 });
 
 test("shutdown and reload reject late overlay creation and refresh only the replacement session", async () => {

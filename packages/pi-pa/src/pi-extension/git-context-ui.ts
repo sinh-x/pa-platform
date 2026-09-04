@@ -159,6 +159,7 @@ export function registerGitContextUiModuleWithOptions(
       reference: selectedBranch,
       branches: snapshot.branches,
       requestedAt: now(),
+      recoverySnapshot: snapshot,
     };
     publish();
 
