@@ -161,21 +161,27 @@ export function registerGitContextUiModuleWithOptions(
 
   const ensureOverlay = (context: ExtensionContext) => {
     if (overlayHandle || overlayCreationPending || context.mode !== "tui") return;
+    const generation = sessionGeneration;
     overlayCreationPending = true;
     overlayHidden = false;
     let terminalWidth = GIT_CONTEXT_MIN_WIDE_WIDTH;
     void context.ui.custom<void>(
       (tui, theme, _keybindings, _done) => {
         terminalWidth = tui.terminal.columns;
-        panel = new GitContextPanelComponent(tui, theme, () => state, () => setOverlayVisible(false), () => {
+        const createdPanel = new GitContextPanelComponent(tui, theme, () => state, () => setOverlayVisible(false), () => {
           void selectReference();
         });
-        return panel;
+        if (!disposed && generation === sessionGeneration) panel = createdPanel;
+        return createdPanel;
       },
       {
         overlay: true,
         overlayOptions: () => gitContextOverlayOptions(terminalWidth),
         onHandle: (handle) => {
+          if (disposed || generation !== sessionGeneration) {
+            handle.hide();
+            return;
+          }
           overlayHandle = handle;
           overlayCreationPending = false;
           if (overlayHidden) handle.setHidden(true);
@@ -184,6 +190,7 @@ export function registerGitContextUiModuleWithOptions(
         },
       },
     ).catch((error: unknown) => {
+      if (generation !== sessionGeneration) return;
       overlayCreationPending = false;
       panel = undefined;
       overlayHandle = undefined;

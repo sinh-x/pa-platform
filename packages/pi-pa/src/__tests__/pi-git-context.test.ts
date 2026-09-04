@@ -25,6 +25,7 @@ import {
   type GitContextCollectionInput,
   type GitContextState,
 } from "../pi-extension/git-context-state.js";
+import { registerContextUiModuleWithOptions } from "../pi-extension/context-ui.js";
 import {
   GIT_CONTEXT_COMMAND,
   GIT_CONTEXT_MIN_WIDE_WIDTH,
@@ -80,6 +81,36 @@ function makeRepository(t: test.TestContext): string {
   mkdirSync(join(root, "nested"));
   writeFileSync(join(root, "worktree-only.txt"), "not committed\n");
   return root;
+}
+
+function makeEdgeRepository(t: test.TestContext): { root: string; renamedPath: string; unusualPath: string } {
+  const root = mkdtempSync(join(tmpdir(), "pi-git-edge-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Pi Edge Test");
+  git(root, "config", "user.email", "pi-edge@example.test");
+  writeFileSync(join(root, "README.md"), "base\n");
+  writeFileSync(join(root, "delete me.txt"), "remove me\n");
+  writeFileSync(join(root, "old name.txt"), "rename me without changing content\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "base");
+  const base = git(root, "rev-parse", "HEAD");
+  git(root, "branch", "develop");
+  git(root, "update-ref", "refs/remotes/origin/main", base);
+  git(root, "update-ref", "refs/remotes/origin/develop", base);
+  git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git(root, "checkout", "-q", "-b", "feature/edge");
+
+  const renamedPath = "renamed \t界\nfile.txt";
+  const unusualPath = "space \tUnicode-界\nnew.txt";
+  git(root, "mv", "old name.txt", renamedPath);
+  rmSync(join(root, "delete me.txt"));
+  writeFileSync(join(root, "binary file.bin"), Buffer.from([0, 1, 2, 3, 255]));
+  writeFileSync(join(root, unusualPath), "unusual path\n");
+  git(root, "add", "-A");
+  git(root, "commit", "-q", "-m", "rename delete binary and unusual paths");
+  writeFileSync(join(root, "worktree only.txt"), "not committed\n");
+  return { root, renamedPath, unusualPath };
 }
 
 function scriptedRunner(overrides: Partial<Record<string, string | Error | "pending">> = {}, calls?: string[][]): GitCommandRunner {
@@ -165,6 +196,28 @@ test("NUL parsers preserve metadata, unusual paths, renames, and binary markers"
   ]);
 });
 
+test("real Git numstat preserves rename, deletion, binary, spaces, tabs, Unicode, and newlines", async (t) => {
+  const { root, renamedPath, unusualPath } = makeEdgeRepository(t);
+  const state = await collectGitContext(undefined, { cwd: root });
+  assert.equal(state.status, "ready");
+  if (state.status !== "ready") return;
+
+  assert.equal(state.snapshot.reference.name, "origin/main");
+  assert.equal(state.snapshot.fileTotal, 4);
+  assert.equal(state.snapshot.fileTruncated, 0);
+  const sortKeys = state.snapshot.files.map((file) => `${file.oldPath ?? ""}\0${file.path}`);
+  assert.deepEqual(sortKeys, [...sortKeys].sort((left, right) => left < right ? -1 : left > right ? 1 : 0));
+  assert.ok(state.snapshot.files.some((file) => file.oldPath === "old name.txt"
+    && file.path === renamedPath
+    && file.displayPath === `old name.txt → ${renamedPath}`));
+  assert.ok(state.snapshot.files.some((file) => file.path === "delete me.txt" && file.additions === 0 && file.deletions === 1));
+  assert.ok(state.snapshot.files.some((file) => file.path === "binary file.bin" && file.binary
+    && file.additions === null && file.deletions === null));
+  assert.ok(state.snapshot.files.some((file) => file.path === unusualPath));
+  assert.ok(!state.snapshot.files.some((file) => file.path === "worktree only.txt"));
+  assert.match(formatGitContextLines(state).join("\n"), /renamed  界↵file\.txt/);
+});
+
 test("collector canonicalizes a nested worktree and returns exact committed 10/20 limits", async (t) => {
   const root = makeRepository(t);
   const state = await collectGitContext(undefined, { cwd: join(root, "nested") });
@@ -221,6 +274,72 @@ test("project-local state ignores missing/malformed values and atomically restor
   assert.ok(["main", "origin/main"].includes((await loadGitContextReference(root)) ?? ""));
   assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), ["pa-git-context.json"]);
   assert.equal(JSON.parse(readFileSync(statePath, "utf8")).version, 1);
+
+  const beforeFailedReplacement = readFileSync(statePath, "utf8");
+  assert.equal(await persistGitContextReference(root, "develop", BRANCHES, {
+    uniqueId: () => "replaced",
+    rename: async (source) => {
+      rmSync(source, { force: true });
+      throw new Error("concurrent replacement removed temporary file");
+    },
+  }), false);
+  assert.equal(readFileSync(statePath, "utf8"), beforeFailedReplacement);
+  assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), ["pa-git-context.json"]);
+});
+
+test("real repositories expose non-Git, unborn, detached, missing-ref, and missing-merge-base states", async (t) => {
+  const nonGit = mkdtempSync(join(tmpdir(), "pi-git-non-repo-"));
+  const unborn = mkdtempSync(join(tmpdir(), "pi-git-unborn-"));
+  const disconnected = mkdtempSync(join(tmpdir(), "pi-git-disconnected-"));
+  t.after(() => {
+    rmSync(nonGit, { recursive: true, force: true });
+    rmSync(unborn, { recursive: true, force: true });
+    rmSync(disconnected, { recursive: true, force: true });
+  });
+
+  assert.equal((await collectGitContext(undefined, { cwd: nonGit })).status, "non-git");
+  git(unborn, "init", "-q", "-b", "main");
+  assert.equal((await collectGitContext(undefined, { cwd: unborn })).status, "unborn-head");
+
+  git(disconnected, "init", "-q", "-b", "main");
+  git(disconnected, "config", "user.name", "Pi State Test");
+  git(disconnected, "config", "user.email", "pi-state@example.test");
+  writeFileSync(join(disconnected, "base.txt"), "base\n");
+  git(disconnected, "add", ".");
+  git(disconnected, "commit", "-q", "-m", "base");
+  git(disconnected, "branch", "develop");
+  git(disconnected, "checkout", "-q", "-b", "feature/state");
+  writeFileSync(join(disconnected, "feature.txt"), "feature\n");
+  git(disconnected, "add", ".");
+  git(disconnected, "commit", "-q", "-m", "feature");
+
+  assert.equal((await collectGitContext(undefined, { cwd: disconnected, explicitReference: "missing" })).status, "missing-ref");
+  git(disconnected, "checkout", "-q", "--detach", "HEAD");
+  assert.equal((await collectGitContext(undefined, { cwd: disconnected })).status, "detached-head");
+  git(disconnected, "checkout", "-q", "feature/state");
+  git(disconnected, "checkout", "-q", "--orphan", "unrelated");
+  git(disconnected, "rm", "-q", "-rf", ".");
+  writeFileSync(join(disconnected, "unrelated.txt"), "unrelated\n");
+  git(disconnected, "add", ".");
+  git(disconnected, "commit", "-q", "-m", "unrelated");
+  git(disconnected, "checkout", "-q", "feature/state");
+  assert.equal((await collectGitContext(undefined, { cwd: disconnected, explicitReference: "unrelated" })).status, "missing-merge-base");
+});
+
+test("a missing saved ref follows fallback order without rewriting project-local state", async (t) => {
+  const { root } = makeEdgeRepository(t);
+  const statePath = gitContextStatePath(root);
+  mkdirSync(join(root, CONFIG_DIR_NAME));
+  const persisted = `${JSON.stringify({ version: 1, reference: "missing/saved" }, null, 2)}\n`;
+  writeFileSync(statePath, persisted);
+
+  const state = await collectGitContext(undefined, { cwd: root });
+  assert.equal(state.status, "ready");
+  if (state.status === "ready") {
+    assert.equal(state.snapshot.reference.name, "origin/main");
+    assert.equal(state.snapshot.referenceSource, "default");
+  }
+  assert.equal(readFileSync(statePath, "utf8"), persisted);
 });
 
 test("collector models every initial edge state and retains only prior error/timeout snapshots as stale", async () => {
@@ -230,6 +349,7 @@ test("collector models every initial edge state and retains only prior error/tim
   assert.equal((await scriptedCollection({}, { explicitReference: "missing" })).status, "missing-ref");
   assert.equal((await scriptedCollection({ "for-each-ref": "" })).status, "unavailable");
   assert.equal((await scriptedCollection({ "merge-base": new Error("no merge base") })).status, "missing-merge-base");
+  assert.equal((await scriptedCollection({ "merge-base": new Error("permission denied") })).status, "git-error");
   assert.equal((await scriptedCollection({ "for-each-ref": new Error("Git exploded") })).status, "git-error");
 
   const timeout = await collectGitContext(undefined, { cwd: "/repo" }, {
@@ -262,6 +382,38 @@ test("collector models every initial edge state and retains only prior error/tim
     assert.equal(staleTimeout.cause, "timeout");
     assert.equal(staleTimeout.snapshot, ready.snapshot);
   }
+});
+
+test("the complete collection attempt uses one fake 2,000 ms deadline and aborts late Git", async () => {
+  let deadline: (() => void) | undefined;
+  let delay: number | undefined;
+  let timerCount = 0;
+  let clearCount = 0;
+  let aborted = false;
+  const setTimer = ((handler: () => void, timeout?: number) => {
+    timerCount++;
+    deadline = handler;
+    delay = timeout;
+    return 1 as unknown as NodeJS.Timeout;
+  }) as typeof setTimeout;
+  const clearTimer = (() => { clearCount++; }) as typeof clearTimeout;
+  const collection = collectGitContext(undefined, { cwd: "/repo" }, {
+    runGit: async (_cwd, _args, signal) => new Promise<string>(() => {
+      signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+    }),
+    canonicalize: async () => "/repo",
+    setTimer,
+    clearTimer,
+  });
+
+  await Promise.resolve();
+  assert.equal(timerCount, 1);
+  assert.equal(delay, GIT_CONTEXT_COLLECTION_DEADLINE_MS);
+  deadline?.();
+  const state = await collection;
+  assert.equal(state.status, "timeout");
+  assert.equal(aborted, true);
+  assert.equal(clearCount, 1);
 });
 
 test("collector subprocess surface is fixed, validated, and read-only", async () => {
@@ -544,6 +696,113 @@ test("Alt+G and command share one overlay; selector cancel restores focus and se
   assert.equal(overlayHides, 1);
   assert.equal(selectorCompletions, 3);
   assert.deepEqual(notifications, []);
+});
+
+test("shutdown and reload reject late overlay creation and refresh only the replacement session", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  const commands = new Map<string, (args: string, context: unknown) => unknown>();
+  type Handle = {
+    setHidden(hidden: boolean): void;
+    focus(): void;
+    unfocus(options?: unknown): void;
+    hide(): void;
+  };
+  type PendingOverlay = {
+    factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown;
+    onHandle?: (handle: Handle) => void;
+  };
+  const pending: PendingOverlay[] = [];
+  let collectionStarts = 0;
+  let schedulerDisposals = 0;
+  let staleHandleHides = 0;
+  let replacementHandleFocuses = 0;
+
+  registerGitContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (name, definition) => commands.set(name, definition.handler),
+  }, {
+    schedulerFactory: () => ({
+      firstOpen: (refresh) => { void refresh("first-open"); },
+      referenceChange: (refresh) => { void refresh("reference-change"); },
+      event: (refresh) => { void refresh("event"); },
+      dispose: () => { schedulerDisposals++; },
+    }),
+    collect: async () => {
+      collectionStarts++;
+      return uiReadyState();
+    },
+  });
+
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    ui: {
+      notify() {},
+      custom: (factory: PendingOverlay["factory"], customOptions?: { overlay?: boolean; onHandle?: (handle: Handle) => void }) => {
+        assert.equal(customOptions?.overlay, true);
+        pending.push({ factory, onHandle: customOptions.onHandle });
+        return new Promise<void>(() => {});
+      },
+    },
+  };
+  const tui = { terminal: { columns: 160 }, requestRender() {} };
+  const staleHandle: Handle = {
+    setHidden() {},
+    focus() {},
+    unfocus() {},
+    hide: () => { staleHandleHides++; },
+  };
+  const replacementHandle: Handle = {
+    setHidden() {},
+    focus: () => { replacementHandleFocuses++; },
+    unfocus() {},
+    hide() {},
+  };
+
+  events.get("session_start")?.({}, context);
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  const staleOverlay = pending.shift();
+  assert.ok(staleOverlay);
+  events.get("session_shutdown")?.({}, context);
+  staleOverlay.factory(tui, TEST_THEME, {}, () => {});
+  staleOverlay.onHandle?.(staleHandle);
+  assert.equal(staleHandleHides, 1);
+  assert.equal(collectionStarts, 0);
+
+  events.get("session_start")?.({ reason: "reload" }, context);
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  const replacementOverlay = pending.shift();
+  assert.ok(replacementOverlay);
+  replacementOverlay.factory(tui, TEST_THEME, {}, () => {});
+  replacementOverlay.onHandle?.(replacementHandle);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(collectionStarts, 1);
+  assert.equal(replacementHandleFocuses, 1);
+  events.get("session_shutdown")?.({}, context);
+  assert.equal(schedulerDisposals, 2);
+});
+
+test("Git registrations remain isolated from Alt+I and /pa-context", () => {
+  const commands = new Map<string, (args: string, context: unknown) => unknown>();
+  const shortcuts = new Map<string, (context: unknown) => unknown>();
+  const runtime = {
+    registerCommand: (name: string, definition: { handler: (args: string, context: unknown) => unknown }) => commands.set(name, definition.handler),
+    registerShortcut: (key: string, definition: { handler: (context: unknown) => unknown }) => shortcuts.set(key, definition.handler),
+  };
+  registerContextUiModuleWithOptions(runtime as never);
+  registerGitContextUiModuleWithOptions(runtime as never);
+  assert.deepEqual([...commands.keys()], ["pa-context", GIT_CONTEXT_COMMAND]);
+  assert.deepEqual([...shortcuts.keys()], ["alt+i", GIT_CONTEXT_SHORTCUT]);
+
+  const notifications: string[] = [];
+  const context = { mode: "rpc", hasUI: true, cwd: "/repo", ui: { notify: (message: string) => notifications.push(message) } };
+  shortcuts.get("alt+i")?.(context);
+  shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
+  assert.deepEqual(notifications, [
+    "PA context sidebar requires TUI mode.",
+    "PA Git context requires TUI mode.",
+  ]);
 });
 
 test("Git context toggles warn safely and create no custom component outside TUI mode", () => {

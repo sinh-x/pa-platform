@@ -226,7 +226,8 @@ async function collectGitContextAttempt(
       await runGit(repositoryRoot, ["merge-base", resolved.branch.fullName, "HEAD"], signal),
     );
   } catch (error: unknown) {
-    return failure("missing-merge-base", now(), error);
+    if (isMissingMergeBase(error)) return failure("missing-merge-base", now(), error);
+    throw error;
   }
   const range = `${mergeBase}..HEAD`;
 
@@ -534,7 +535,14 @@ function isNotGitRepository(error: unknown): boolean {
   return /not a git repository|not a git work tree/i.test(detail);
 }
 
+function isMissingMergeBase(error: unknown): boolean {
+  if (error instanceof GitCommandError) return error.exitCode === 1;
+  return error instanceof Error && /no merge base/i.test(error.message);
+}
+
 class GitCommandError extends Error {
+  readonly exitCode: number | undefined;
+
   constructor(
     readonly args: readonly string[],
     readonly stderr: string,
@@ -542,6 +550,10 @@ class GitCommandError extends Error {
   ) {
     super(`Read-only Git command failed: git ${args.join(" ")}`);
     this.name = "GitCommandError";
+    const code = causeValue && typeof causeValue === "object" && "code" in causeValue
+      ? causeValue.code
+      : undefined;
+    this.exitCode = typeof code === "number" ? code : undefined;
   }
 }
 
