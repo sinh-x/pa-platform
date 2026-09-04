@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
@@ -101,7 +101,10 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   }
   if (teamFiles.length !== 9) throw new Error(`Expected 9 active teams, found ${teamFiles.length}`);
   if (modeCount !== 58) throw new Error(`Expected 58 active modes, found ${modeCount}`);
-  const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"));
+  // Absolute project guides are operator-owned inputs and cannot be present on a
+  // generic CI runner. Runtime deploy validation remains responsible for them.
+  const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"))
+    .filter((reference) => !isAbsolute(reference.reference));
   if (missing.length > 0) {
     const details = missing
       .map((reference) => `${reference.team} ${reference.context}: ${reference.reference} -> ${reference.resolvedPath}`)

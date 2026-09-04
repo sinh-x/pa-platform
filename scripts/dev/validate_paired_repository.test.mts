@@ -65,6 +65,22 @@ test("paired repository gate accepts the exact clean 9-team/58-mode checkout", (
   }
 });
 
+test("paired repository gate leaves absolute operator project guides to runtime validation", () => {
+  const fixture = createFixture();
+  try {
+    const teamPath = join(fixture.root, "teams", "team-0.yaml");
+    writeFileSync(teamPath, `${readFileSync(teamPath, "utf8")}    project_guides:\n      sample:\n        - /missing/operator/project-guide.md\n`);
+    git(fixture.root, "add", teamPath);
+    git(fixture.root, "commit", "-qm", "add operator guide");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+
+    const evidence = validatePairedRepository({ configRoot: fixture.root, expectedSha: sha });
+    assert.ok(evidence.includes("REFERENCES_MISSING=0"));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("paired repository gate rejects dirty and wrong-SHA checkouts", () => {
   const fixture = createFixture();
   try {
