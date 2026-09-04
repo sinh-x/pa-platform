@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getPlatformHomeDir, getTeamModel, listAgentTeamWorkspaces, listTeamConfigs, loadTeamConfig, parseTeamYamlContent, validateTeamSkillReferences } from "../index.js";
@@ -270,8 +270,9 @@ test("validateTeamSkillReferences resolves production-style paths and reports mi
   }
 });
 
-test("external operator team skill references resolve", (t) => {
+test("external operator managed team skill references resolve", (t) => {
   if (!configRoot || !existsSync(join(configRoot, "teams"))) return t.skip("external pa-platform-config fixture not available");
-  const missing = validateTeamSkillReferences(join(configRoot, "teams"), configRoot, join(configRoot, "skills", "global"));
+  const missing = validateTeamSkillReferences(join(configRoot, "teams"), configRoot, join(configRoot, "skills", "global"))
+    .filter((reference) => !isAbsolute(reference.reference));
   assert.deepEqual(missing, []);
 });

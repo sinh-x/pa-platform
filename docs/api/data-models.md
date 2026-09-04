@@ -1321,7 +1321,6 @@ interface DeployMode {
   global_docs?: string[];
   project_guides?: Record<string, string[]>;
   require_ticket?: boolean;
-  repository_access?: "read-only" | "mutating";
 }
 ```
 
@@ -1341,7 +1340,6 @@ interface DeployMode {
 | `global_docs` | `string[]` | no | Global doc paths. |
 | `project_guides` | `Record<string, string[]>` | no | Guide paths keyed by canonical repository key; only the resolved key is selected. |
 | `require_ticket` | `boolean` | no | Whether a ticket id is required to deploy. |
-| `repository_access` | `"read-only" \| "mutating"` | no | Repository lease classification; omitted values use the compatibility default `mutating`. |
 
 ### `SkillEntry`
 

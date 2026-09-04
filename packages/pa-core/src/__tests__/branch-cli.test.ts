@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeDb, runCoreCommand } from "../index.js";
+import { closeDb, MAX_REPOSITORY_DIAGNOSTIC_CHARS, runCoreCommand } from "../index.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
@@ -147,41 +147,28 @@ test("branch validate on conforming branch returns success", async () => {
   });
 });
 
-test("branch validate infers linked-worktree identity but validates the registered checkout branch", async () => {
+test("branch commands reject linked working-tree CWDs without changing either checkout", async () => {
   await withBranchCliEnv(async (root, repo) => {
-    const worktree = join(root, "linked-worktree");
-    git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
-    const captured = capture();
-    const cwd = process.cwd();
-    process.chdir(worktree);
-    try {
-      assert.equal(await runCoreCommand(["branch", "validate"], { io: captured.io }), 0);
-    } finally {
-      process.chdir(cwd);
-    }
-    assert.match(captured.stdout.join("\n"), /"develop" is a base branch, not a feature branch/);
-    assert.deepEqual(captured.stderr, []);
-    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-linked");
-  });
-});
-
-test("branch create infers linked-worktree identity but operates on the registered checkout", async () => {
-  await withBranchCliEnv(async (root, repo) => {
-    const worktree = join(root, "linked-worktree");
-    git(["worktree", "add", "-b", "feature/PAP-135-linked", worktree], repo);
+    const linked = join(root, "linked");
+    git(["worktree", "add", "-b", "feature/PAP-135-linked", linked], repo);
     const canonicalBefore = execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo });
-    const captured = capture();
+    const linkedBefore = execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: linked });
     const cwd = process.cwd();
-    process.chdir(worktree);
+    process.chdir(linked);
     try {
-      assert.equal(await runCoreCommand(["branch", "create", "PAP-135", "--topic", "isolated"], { io: captured.io }), 0);
+      for (const argv of [["branch", "validate"], ["branch", "create", "PAP-135", "--topic", "rejected"]]) {
+        const captured = capture();
+        assert.equal(await runCoreCommand(argv, { io: captured.io }), 1);
+        const diagnostic = captured.stderr.join("\n");
+        assert.match(diagnostic, /linked Git working tree/i);
+        assert.match(diagnostic, /Corrective action/i);
+        assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+      }
     } finally {
       process.chdir(cwd);
     }
-
-    assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-135-linked");
-    assert.equal(git(["branch", "--show-current"], repo), "feature/PAP-135-isolated");
-    assert.notDeepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
+    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: repo }), canonicalBefore);
+    assert.deepEqual(execFileSync("git", ["status", "--porcelain=v2", "--branch"], { cwd: linked }), linkedBefore);
   });
 });
 
@@ -242,7 +229,7 @@ test("branch validate not in registered repo returns error", async () => {
     } finally {
       process.chdir(cwd);
     }
-    assert.match(captured.stderr.join("\n"), /registered project paths only.*does not identify a unique registered project/is);
+    assert.match(captured.stderr.join("\n"), /registered project paths only.*does not resolve to an exact configured repository root/is);
   });
 });
 
@@ -261,10 +248,20 @@ test("branch create warns on unknown ticket id but still creates branch", async 
   });
 });
 
-test("branch help documents registered-checkout relocation", async () => {
+test("branch help documents exact-root inference", async () => {
   const captured = capture();
   assert.equal(await runCoreCommand(["branch", "--help"], { io: captured.io }), 0);
-  assert.match(captured.stdout.join("\n"), /operate only at its exact configured registered path/i);
+  assert.match(captured.stdout.join("\n"), /infer an exact configured root from CWD/i);
+  const retiredHelpTerms = new RegExp([["merge", "evidence"].join(" "), ["delete", "local"].join(" "), ["delete", "remote"].join(" ")].join("|"), "i");
+  assert.doesNotMatch(captured.stdout.join("\n"), retiredHelpTerms);
+});
+
+test("removed branch cleanup command is unavailable", async () => {
+  const captured = capture();
+  const removed = ["record", "cleanup"].join("-");
+  assert.equal(await runCoreCommand(["branch", removed], { io: captured.io }), 1);
+  assert.match(captured.stderr.join("\n"), /Unknown branch subcommand/);
+  assert.match(captured.stderr.join("\n"), /Available subcommands: create, validate/);
 });
 
 test("unknown branch subcommand returns error", async () => {

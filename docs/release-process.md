@@ -16,7 +16,7 @@ Manual releases are the boundary for publishing from `main` and creating tags.
 
 1. Merge coordinated config changes into pa-platform-config `develop` before the consuming platform change.
 2. Check out the commit pinned by `.pa-platform-config.sha`, keep it clean, fetch `origin/develop`, and set `PA_PHASE5_CONFIG_ROOT` to that checkout.
-3. Run `corepack pnpm verify:paired-config -- --require-origin-develop` and `corepack pnpm test:paired`. The gate requires the exact SHA, a clean checkout, 9/9 active teams, 58/58 valid modes, no legacy or invalid pairs, and config-first ancestry.
+3. Run `corepack pnpm verify:paired-config -- --require-origin-develop` and `corepack pnpm test:paired`. The gate requires the exact SHA, a clean checkout, 9/9 active teams, 58/58 valid modes, no legacy or invalid pairs, the direct registered-checkout branch contract, and config-first ancestry.
 4. Merge approved feature branches into `develop` and complete any expected auto patch bump commits there.
 5. Run `corepack pnpm typecheck`, `corepack pnpm build`, and `corepack pnpm test`.
 6. Pick version bump level from committed changes.
@@ -34,7 +34,7 @@ Use `corepack pnpm bump:refresh-hash` when only the Nix dependency hash needs to
 
 ## CI Expectations
 
-CI verifies typecheck, build, tests, generated completions, fish syntax, and the exact paired config contract on pushes and pull requests targeting `develop` or `main`. Repository administrators must configure `PA_PLATFORM_CONFIG_TOKEN` with read access to the private companion repository. The paired check intentionally remains red until the pinned config commit is present on config `develop`, enforcing config PR #15 before platform PR #101 for PAP-146.
+CI verifies typecheck, build, tests, generated completions, fish syntax, and the exact paired config contract on pushes and pull requests targeting `develop` or `main`. Repository administrators must configure `PA_PLATFORM_CONFIG_TOKEN` with read access to the private companion repository. The paired check intentionally remains red until the pinned config commit is present on config `develop`, enforcing config-first integration before the consuming platform change.
 
 Version tagging remains an explicit manual release step so package version, changelog, Nix hash refresh, release commit, annotated tag, and tag push happen together through `scripts/dev/version_bump.sh`.
 

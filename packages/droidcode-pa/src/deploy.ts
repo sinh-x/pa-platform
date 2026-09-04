@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { activateRepositoryLifecycle, appendActivityEvent, combineRuntimeAndLifecycleError, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadConfig, loadTeamConfig, nowUtc, queryDeploymentStatus, redactDiagnostic, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidRuntimeConfig } from "./adapter.js";
 
 export function createDroidHooks(adapter: RuntimeAdapter = new DroidCodeAdapter()): CoreExecutionHooks {
@@ -63,7 +63,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   const objective = [request.objective, evaluatorObjective].filter(Boolean).join("\n\n");
   let plan: ExecutionPlan;
   try {
-    plan = activateRepositoryLifecycle(resolveExecutionPlan({
+    plan = resolveExecutionPlan({
       request: { ...request, ...(ticketId ? { ticket: ticketId } : {}), ...(objective ? { objective } : {}), provider, model },
       teamConfig,
       mode: selectedMode,
@@ -73,7 +73,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
       activityLogPath: paths.activityLogPath,
       environment: requestedEnvironment,
       timeoutSeconds: effectiveTimeoutSeconds,
-    }), { dryRun: request.dryRun, resumeDeploymentId: request.resume });
+    });
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
@@ -83,9 +83,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     const primer = generatePrimer({ runtime: "droid", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
     writeFileSync(primerPath, primer, "utf-8");
   } catch (error) {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const reason = error instanceof Error ? error.message : String(error);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
 
   const autonomy = resolveDroidAutonomy({
@@ -114,9 +112,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   try {
     priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
   } catch (error) {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const reason = error instanceof Error ? error.message : String(error);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`) };
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
 
   try {
@@ -133,14 +129,11 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     const pid = typeof rawPid === "number" && Number.isInteger(rawPid) && rawPid > 0 ? rawPid : undefined;
     if (pid !== undefined) emitPidEvent({ deploymentId, team: teamConfig.name, pid });
     if (mode === "background") {
-      if (plan.repositoryLease?.role === "owner" && plan.repositoryLease.state === "active" && pid === undefined) throw new Error("runner-readiness: Droid background supervisor returned without repository lease ownership evidence");
       appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "droid", body: `dpa background deploy started${pid ? ` with pid ${pid}` : ""}` }), paths.activityLogPath);
       return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const lifecycleError = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
-    const effectiveExitCode = result.exitCode === 0 && lifecycleError ? 1 : result.exitCode;
-    const errorMessage = combineRuntimeAndLifecycleError(result.errorMessage, lifecycleError);
+    const effectiveExitCode = result.exitCode;
+    const errorMessage = result.errorMessage;
     const terminalKind = effectiveExitCode === 0 ? "text" : "error";
     const terminalBody = effectiveExitCode === 0
       ? `droid exited with code ${effectiveExitCode}`
@@ -157,9 +150,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
       ? { status: "success" as const, team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: errorMessage ?? `droid exited with code ${effectiveExitCode}` };
   } catch (error) {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const baseError = error instanceof Error ? error.message : String(error);
-    const finalError = boundedDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    const finalError = boundedDiagnostic(error);
     emitCrashedEvent({ deploymentId, team: teamConfig.name, error: finalError, exitCode: 1 });
     ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: finalError };
@@ -304,9 +295,6 @@ ticket_id: ${plan.ticket ?? "none"}
 agents:
 ${teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
 mode: ${plan.mode}
-repository_access: ${plan.repositoryAccess}
-repository_lease_owner: ${plan.repositoryLease?.ownerDeploymentId ?? "none"}
-repository_lease_path: ${plan.repositoryLease?.leasePath ?? "none"}
 ${envVarLines}</deployment-context>`;
 }
 

@@ -70,14 +70,12 @@ async function withFixture(name: string, callback: (fixture: Fixture) => Promise
   }
 }
 
-test("deploy CLI resolves omitted repository identity and relocates the adapter hook to the configured root", async () => {
+test("deploy CLI resolves omitted repository identity from the exact configured root", async () => {
   await withFixture("cwd", async (fixture) => {
     const registeredNested = join(fixture.repo, "nested");
-    const worktreeNested = join(fixture.worktree, "nested");
     mkdirSync(registeredNested);
-    mkdirSync(worktreeNested);
 
-    for (const invokingCwd of [fixture.repo, registeredNested, fixture.worktree, worktreeNested]) {
+    for (const invokingCwd of [fixture.repo, registeredNested]) {
       const seen: Array<{ request: DeployRequest; cwd: string; primer: string }> = [];
       const captured = capture();
       process.chdir(invokingCwd);
@@ -143,14 +141,9 @@ test("deploy CLI rejects non-registered explicit path forms before the adapter h
   });
 });
 
-test("deploy CLI rejects ambiguous omitted CWD identity before the adapter hook", async () => {
-  await withFixture("ambiguous", async (fixture) => {
-    const second = join(fixture.root, "second-registered");
-    const invokingWorktree = join(fixture.root, "invoking-worktree");
-    git(["worktree", "add", "-b", "feature/second", second], fixture.repo);
-    git(["worktree", "add", "-b", "feature/invoking", invokingWorktree], fixture.repo);
-    writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  first:\n    path: ${fixture.repo}\n  second:\n    path: ${second}\n`);
-    process.chdir(invokingWorktree);
+test("deploy CLI rejects linked working-tree CWD inference before the adapter hook", async () => {
+  await withFixture("linked-cwd", async (fixture) => {
+    process.chdir(fixture.worktree);
     let hookCalls = 0;
     const captured = capture();
     const code = await runCoreCommand(["deploy", "builder", "--mode", "implement"], {
@@ -160,9 +153,12 @@ test("deploy CLI rejects ambiguous omitted CWD identity before the adapter hook"
         return { status: "pending", deploymentId: "d-forbidden" };
       } },
     });
+    const diagnostic = captured.stderr.join("\n");
     assert.equal(code, 1);
     assert.equal(hookCalls, 0);
-    assert.match(captured.stderr.join("\n"), /registered project paths only.*ambiguous.*first.*second/is);
+    assert.match(diagnostic, /registered project paths only.*linked Git working tree/is);
+    assert.match(diagnostic, /Corrective action/i);
+    assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
   });
 });
 
@@ -172,8 +168,8 @@ test("deploy and branch help document the registered-path-only contract", async 
   assert.equal(await runCoreCommand(["deploy", "--help"], { io: deploy.io }), 0);
   assert.equal(await runCoreCommand(["branch", "--help"], { io: branch.io }), 0);
   assert.match(deploy.stdout.join("\n"), /registered repository key or exact configured path/i);
-  assert.match(deploy.stdout.join("\n"), /infer CWD identity and relocate to the configured path/i);
-  assert.match(branch.stdout.join("\n"), /operate only at its exact configured registered path/i);
+  assert.match(deploy.stdout.join("\n"), /infer the exact configured root from CWD/i);
+  assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
 });
 
 test("deploy and evaluate accept dotted registry keys and exact paths containing spaces", async () => {

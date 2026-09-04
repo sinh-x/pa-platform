@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, getDeployPaths, nowUtc, publishBackgroundOwnership, transferRepositoryLeaseByDeployment, queryDeploymentStatus, reconcileTerminalRegistryEvent } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
@@ -28,9 +28,7 @@ interface PermissionWaitEvidence {
   permission: string;
 }
 
-if (isEntrypoint()) {
-  const configPath = process.argv[2];
-  if (!configPath) throw new Error("Missing background config path");
+export async function runBackgroundEntry(configPath: string): Promise<void> {
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
   try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
   let fatalError: unknown;
@@ -41,7 +39,6 @@ if (isEntrypoint()) {
   };
 
   try {
-    transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
     const result = await runOpencode(config, acknowledge);
     if (!ready) throw new Error("runner-readiness: OpenCode runtime did not start");
 
@@ -51,12 +48,6 @@ if (isEntrypoint()) {
       writeFileSync(resolve(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
     }
     const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    if (!lifecycle.ok) {
-      result.exitCode = 1;
-      result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
-      reconcileTerminalRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: nowUtc(), status: "failed", summary: `opa background deploy failed: ${firstLine(result.stderrTail)}`, log_file: config.logFile, exit_code: 1 });
-    }
     const currentStatus = queryDeploymentStatus(config.deploymentId);
     if (currentStatus?.status !== "running") {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "opencode", body: `opa background deploy exited after terminal status (${currentStatus?.status ?? "unknown"})` }), activityLogPath);
@@ -74,10 +65,8 @@ if (isEntrypoint()) {
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
-    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: boundedLifecycleDiagnostic(error instanceof Error ? error.message : String(error)) }); } catch { /* launcher reports timeout/bootstrap failure */ }
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    const baseError = error instanceof Error ? error.message : String(error);
-    const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    const finalError = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: finalError }); } catch { /* launcher reports timeout/bootstrap failure */ }
     emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
     fatalError = new Error(finalError);
   } finally {
@@ -85,6 +74,12 @@ if (isEntrypoint()) {
   }
 
   if (fatalError) throw fatalError;
+}
+
+if (isEntrypoint()) {
+  const configPath = process.argv[2];
+  if (!configPath) throw new Error("Missing background config path");
+  await runBackgroundEntry(configPath);
 }
 
 interface BackgroundRunResult {
@@ -243,7 +238,7 @@ function tailString(text: string, max: number): string {
   return text.length <= max ? text : text.slice(text.length - max);
 }
 
-function boundedLifecycleDiagnostic(value: string): string {
+function boundedDiagnostic(value: string): string {
   return value.length <= 2_000 ? value : `${value.slice(0, 1_997)}...`;
 }
 

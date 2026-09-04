@@ -1,10 +1,11 @@
-import { strict as assert } from "node:assert";
+import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
-import { resolveExecutionPlan } from "../deploy/plan.js";
+import { join } from "node:path";
+import test from "node:test";
+import { resolveExecutionPlan, type ExecutionPlan } from "../deploy/plan.js";
+import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import type { TeamConfig } from "../types.js";
 
 function team(skill?: string): TeamConfig {
@@ -30,7 +31,7 @@ interface ExecutionRepoFixture {
   root: string;
   config: string;
   repo: string;
-  worktree: string;
+  linked: string;
 }
 
 function initializeRepo(path: string): void {
@@ -43,15 +44,16 @@ function initializeRepo(path: string): void {
   git(["commit", "-m", "initial"], path);
 }
 
-function createExecutionRepoFixture(name: string): ExecutionRepoFixture {
-  const root = mkdtempSync(join(tmpdir(), `execution-plan-repo-${name}-`));
+function createFixture(name: string): ExecutionRepoFixture {
+  const root = mkdtempSync(join(tmpdir(), `execution-plan-${name}-`));
   const config = join(root, "config");
   const repo = join(root, "repo");
-  const worktree = join(root, "linked-worktree");
+  const linked = join(root, "linked");
   mkdirSync(config);
   initializeRepo(repo);
-  git(["worktree", "add", "-b", `feature/${name}`, worktree], repo);
-  return { root, config, repo, worktree };
+  git(["worktree", "add", "-b", `feature/${name}`, linked], repo);
+  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n`);
+  return { root, config, repo, linked };
 }
 
 function withPlatformConfig<T>(config: string, callback: () => T): T {
@@ -65,16 +67,16 @@ function withPlatformConfig<T>(config: string, callback: () => T): T {
   }
 }
 
-function resolveRepoPlan(repo: string | undefined, root: string, cwd?: string) {
+function resolveRepoPlan(repo: string | undefined, fixture: ExecutionRepoFixture, deploymentId = "d-plan", cwd?: string): ExecutionPlan {
   const teamConfig = team();
   return resolveExecutionPlan({
     request: { team: "builder", mode: "implement", ...(repo ? { repo } : {}) },
     teamConfig,
     mode: teamConfig.deploy_modes?.[0],
     runtime: "pi",
-    deploymentId: "d-repo-plan",
-    deploymentDir: root,
-    activityLogPath: join(root, "activity.jsonl"),
+    deploymentId,
+    deploymentDir: join(fixture.root, deploymentId),
+    activityLogPath: join(fixture.root, deploymentId, "activity.jsonl"),
     environment: { PA_REPO: "/stale/request/path" },
     timeoutSeconds: 60,
     ...(cwd ? { cwd } : {}),
@@ -82,118 +84,96 @@ function resolveRepoPlan(repo: string | undefined, root: string, cwd?: string) {
 }
 
 test("execution plans are immutable and resolve selected skill paths", () => {
-  const root = mkdtempSync(join(tmpdir(), "execution-plan-"));
-  const config = join(root, "config");
-  const repo = join(root, "repo");
-  const skillPath = join(root, "pa-cli", "SKILL.md");
-  mkdirSync(config);
-  mkdirSync(join(root, "pa-cli"));
-  initializeRepo(repo);
-  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n`);
+  const fixture = createFixture("immutable");
+  const skillPath = join(fixture.root, "pa-cli", "SKILL.md");
+  mkdirSync(join(fixture.root, "pa-cli"));
   writeFileSync(skillPath, "# pa-cli\n");
   try {
-    const plan = withPlatformConfig(config, () => resolveExecutionPlan({
+    const plan = withPlatformConfig(fixture.config, () => resolveExecutionPlan({
       request: { team: "builder", mode: "implement" },
       teamConfig: team("pa-cli"),
       mode: team("pa-cli").deploy_modes?.[0],
       runtime: "pi",
       deploymentId: "d-plan01",
-      deploymentDir: root,
-      activityLogPath: join(root, "activity.jsonl"),
+      deploymentDir: fixture.root,
+      activityLogPath: join(fixture.root, "activity.jsonl"),
       environment: { PA_TEAM: "builder" },
       timeoutSeconds: 60,
-      skillsDir: root,
-      cwd: repo,
+      skillsDir: fixture.root,
+      cwd: fixture.repo,
     }));
     assert.equal(plan.skills[0]?.path, skillPath);
     assert.equal(plan.repoKey, "registered");
-    assert.equal(plan.repoRoot, repo);
-    assert.equal(plan.repositoryCwd, repo);
-    assert.equal(plan.memoryDocumentRoot, repo);
-    assert.equal(plan.repositoryAccess, "mutating");
+    assert.equal(plan.repoRoot, fixture.repo);
+    assert.equal(plan.repositoryCwd, fixture.repo);
+    assert.equal(plan.memoryDocumentRoot, fixture.repo);
     assert.equal(plan.objective, "objective");
     assert.equal(plan.userObjectiveOverride, undefined);
-    assert.equal(plan.environment.PA_REPO, repo);
+    assert.equal(plan.environment.PA_REPO, fixture.repo);
     assert.equal(Object.isFrozen(plan), true);
     assert.equal(Object.isFrozen(plan.skills), true);
     assert.equal(Object.isFrozen(plan.environment), true);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution plans preserve user objective authority and select project guides by resolved key", () => {
-  const root = mkdtempSync(join(tmpdir(), "execution-plan-guides-"));
-  const config = join(root, "config");
-  const repo = join(root, "repo");
-  mkdirSync(config);
-  initializeRepo(repo);
-  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n`);
+test("execution plans preserve user objective authority and repository-keyed guides", () => {
+  const fixture = createFixture("guides");
   const teamConfig = team();
   const mode = teamConfig.deploy_modes![0]!;
   mode.objective = "configured objective";
   mode.project_guides = { registered: ["docs/registered.md"], unrelated: ["docs/unrelated.md"] };
   try {
-    const plan = withPlatformConfig(config, () => resolveExecutionPlan({
+    const plan = withPlatformConfig(fixture.config, () => resolveExecutionPlan({
       request: { team: "builder", mode: "implement", objective: "operator override" },
       teamConfig,
       mode,
       runtime: "opencode",
       deploymentId: "d-guides",
-      deploymentDir: root,
-      activityLogPath: join(root, "activity.jsonl"),
+      deploymentDir: fixture.root,
+      activityLogPath: join(fixture.root, "activity.jsonl"),
       environment: {},
       timeoutSeconds: 60,
-      cwd: repo,
+      cwd: fixture.repo,
     }));
     assert.equal(plan.objective, "operator override");
     assert.equal(plan.userObjectiveOverride, "operator override");
     assert.deepEqual(plan.memoryDocuments, ["docs/registered.md"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
 test("missing selected skills fail with team, mode, name, and attempted path", () => {
-  const root = mkdtempSync(join(tmpdir(), "execution-plan-missing-"));
-  const config = join(root, "config");
-  const repo = join(root, "repo");
-  mkdirSync(config);
-  initializeRepo(repo);
-  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n`);
+  const fixture = createFixture("missing-skill");
   try {
-    withPlatformConfig(config, () => {
+    withPlatformConfig(fixture.config, () => {
       assert.throws(() => resolveExecutionPlan({
         request: { team: "builder", mode: "implement" },
         teamConfig: team("missing"),
         mode: team("missing").deploy_modes?.[0],
         runtime: "pi",
         deploymentId: "d-plan02",
-        deploymentDir: root,
-        activityLogPath: join(root, "activity.jsonl"),
+        deploymentDir: fixture.root,
+        activityLogPath: join(fixture.root, "activity.jsonl"),
         environment: {},
         timeoutSeconds: 60,
-        skillsDir: root,
-        cwd: repo,
+        skillsDir: fixture.root,
+        cwd: fixture.repo,
       }), /team 'builder'.*mode 'implement'.*skill 'missing'.*attempted path/);
     });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution plans preserve canonical cwd for a registered key and exact canonical path", () => {
-  const fixture = createExecutionRepoFixture("canonical");
-  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
+test("registered key and exact root produce identical repository plan fields", () => {
+  const fixture = createFixture("exact");
   try {
     withPlatformConfig(fixture.config, () => {
-      const byKey = resolveRepoPlan("registered", fixture.root);
-      const byPath = resolveRepoPlan(fixture.repo, fixture.root);
-      assert.equal(byKey.repoKey, "registered");
-      assert.equal(byKey.repoRoot, fixture.repo);
-      assert.equal(byKey.repositoryCwd, fixture.repo);
-      assert.equal(byKey.memoryDocumentRoot, fixture.repo);
-      assert.equal(byKey.environment.PA_REPO, fixture.repo);
+      const byKey = resolveRepoPlan("registered", fixture, "d-key");
+      const byPath = resolveRepoPlan(fixture.repo, fixture, "d-path");
       assert.deepEqual(
         { key: byKey.repoKey, root: byKey.repoRoot, cwd: byKey.repositoryCwd, memoryRoot: byKey.memoryDocumentRoot, paRepo: byKey.environment.PA_REPO },
         { key: byPath.repoKey, root: byPath.repoRoot, cwd: byPath.repositoryCwd, memoryRoot: byPath.memoryDocumentRoot, paRepo: byPath.environment.PA_REPO },
@@ -204,58 +184,50 @@ test("execution plans preserve canonical cwd for a registered key and exact cano
   }
 });
 
-test("execution plans infer a linked-worktree CWD but relocate every repository field to the configured root", () => {
-  const fixture = createExecutionRepoFixture("linked");
-  const nested = join(fixture.worktree, "nested", "directory");
-  mkdirSync(nested, { recursive: true });
-  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n`);
-  try {
-    const plan = withPlatformConfig(fixture.config, () => resolveRepoPlan(undefined, fixture.root, nested));
-    assert.equal(plan.repoKey, "registered");
-    assert.equal(plan.repoRoot, fixture.repo);
-    assert.equal(plan.repositoryCwd, fixture.repo);
-    assert.equal(plan.memoryDocumentRoot, fixture.repo);
-    assert.equal(plan.environment.PA_REPO, fixture.repo);
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("execution planning rejects invalid, unrelated, and independent-clone paths", () => {
-  const fixture = createExecutionRepoFixture("rejections");
-  const nonGit = join(fixture.root, "non-git");
-  const unrelatedRepo = join(fixture.root, "unrelated-repo");
-  const unrelatedWorktree = join(fixture.root, "unrelated-worktree");
-  const clone = join(fixture.root, "independent-clone");
-  const remote = "git@github.com:owner/project.git";
-  mkdirSync(nonGit);
-  initializeRepo(unrelatedRepo);
-  git(["worktree", "add", "-b", "feature/unrelated", unrelatedWorktree], unrelatedRepo);
-  git(["clone", fixture.repo, clone], fixture.root);
-  git(["remote", "set-url", "origin", remote], clone);
-  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  registered:\n    path: ${fixture.repo}\n    remote_url: ${remote}\n`);
+test("linked working-tree inputs and CWDs fail planning with bounded diagnostics", () => {
+  const fixture = createFixture("linked-rejection");
+  const nested = join(fixture.linked, "nested");
+  mkdirSync(nested);
   try {
     withPlatformConfig(fixture.config, () => {
-      assert.throws(() => resolveRepoPlan(join(fixture.root, "missing"), fixture.root), /registered project paths only.*does not exist.*missing/is);
-      assert.throws(() => resolveRepoPlan(nonGit, fixture.root), /registered project paths only.*not a Git working tree/is);
-      assert.throws(() => resolveRepoPlan(unrelatedWorktree, fixture.root), /registered project paths only.*not a registered repository key or exact configured path/is);
-      assert.throws(() => resolveRepoPlan(clone, fixture.root), /registered project paths only.*independent or otherwise unregistered checkout/is);
+      for (const resolvePlan of [
+        () => resolveRepoPlan(fixture.linked, fixture, "d-explicit"),
+        () => resolveRepoPlan(undefined, fixture, "d-cwd", nested),
+      ]) {
+        assert.throws(resolvePlan, (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          assert.ok(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+          assert.match(message, /linked Git working tree/i);
+          assert.match(message, /Corrective action/i);
+          return true;
+        });
+      }
     });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("execution-plan ambiguity names every competing repository key and path", () => {
-  const fixture = createExecutionRepoFixture("ambiguity");
-  const second = join(fixture.root, "second-registered-worktree");
-  git(["worktree", "add", "-b", "feature/second", second], fixture.repo);
-  writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  first:\n    path: ${fixture.repo}\n  second:\n    path: ${second}\n`);
+test("two same-root plans independently reach the injected spawn seam without admission state", async () => {
+  const fixture = createFixture("same-root");
   try {
-    const expected = new RegExp(`ambiguous registered identity.*first \\(${fixture.repo}\\).*second \\(${second}\\)`, "is");
-    withPlatformConfig(fixture.config, () => {
-      assert.throws(() => resolveRepoPlan(fixture.worktree, fixture.root), expected);
-    });
+    const gitMetadataBefore = readdirSync(join(fixture.repo, ".git")).sort();
+    const plans = withPlatformConfig(fixture.config, () => [
+      resolveRepoPlan("registered", fixture, "d-first"),
+      resolveRepoPlan(fixture.repo, fixture, "d-second"),
+    ]);
+    const spawned: string[] = [];
+    const injectedSpawn = async (plan: ExecutionPlan): Promise<void> => {
+      assert.equal(plan.repoRoot, fixture.repo);
+      assert.deepEqual(Object.keys(plan.environment).sort(), ["PA_REPO"]);
+      spawned.push(plan.lifecycle.deploymentId);
+    };
+
+    await Promise.all(plans.map(injectedSpawn));
+
+    assert.deepEqual(spawned.sort(), ["d-first", "d-second"]);
+    assert.deepEqual(readdirSync(join(fixture.repo, ".git")).sort(), gitMetadataBefore);
+    assert.equal(plans[0]!.environment.PA_REPO, plans[1]!.environment.PA_REPO);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

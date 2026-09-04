@@ -4,11 +4,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { closeDb, createActivityEvent, appendActivityEvent, finalizeRepositoryLifecycle, getDeployPaths, getDeploymentEvents, type ActivityEvent, type SpawnOpts, type SpawnResult, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, createActivityEvent, appendActivityEvent, getDeployPaths, getDeploymentEvents, type ActivityEvent, type SpawnOpts, type SpawnResult, type ResumeOpts, type ToolReference } from "@pa-platform/pa-core";
 import { DroidCodeAdapter, resolveDroidAutonomy, resolveDroidModel, resolveDroidRuntimeConfig, resolveDefaultDroidModel } from "../adapter.js";
 import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../deploy.js";
+import { runBackgroundEntry } from "../background-runner.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
+import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 const TEST_API_KEY = "changeme";
 
@@ -934,7 +936,7 @@ function initializeGitRepo(path: string): void {
   spawnSync("git", ["commit", "-m", "initial"], { cwd: path, stdio: "ignore" });
 }
 
-function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
+function withDpaEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "dpa-deploy-env-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -944,7 +946,8 @@ function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   mkdirSync(repo, { recursive: true });
   initializeGitRepo(repo);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: read-only\n`);
+  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
+  const gitState = installGitStateRecorder(root);
   const previous = {
     cwd: process.cwd(),
     config: process.env["PA_PLATFORM_CONFIG"],
@@ -953,6 +956,7 @@ function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     aiUsage: process.env["PA_AI_USAGE_HOME"],
     home: process.env["HOME"],
     factoryApiKey: process.env["FACTORY_API_KEY"],
+    path: process.env["PATH"],
   };
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
@@ -960,8 +964,9 @@ function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["HOME"] = root;
   process.env["FACTORY_API_KEY"] = TEST_API_KEY;
+  process.env["PATH"] = `${gitState.binDir}:${previous.path ?? ""}`;
   process.chdir(repo);
-  return fn(root).finally(() => {
+  return fn(root, gitState).finally(() => {
     process.chdir(previous.cwd);
     closeDb();
     restoreEnv("PA_PLATFORM_CONFIG", previous.config);
@@ -970,6 +975,7 @@ function withDpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
     restoreEnv("PA_AI_USAGE_HOME", previous.aiUsage);
     restoreEnv("HOME", previous.home);
     restoreEnv("FACTORY_API_KEY", previous.factoryApiKey);
+    restoreEnv("PATH", previous.path);
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 }
@@ -1049,9 +1055,39 @@ describe("dpa fallback diagnostics", () => {
 });
 
 describe("PAP-162 Droid execution-plan contract", () => {
-  it("retains simultaneous foreground runtime and repository recovery diagnostics", async () => {
-    await withDpaEnv(async (root) => {
-      writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
+  it("preserves foreground success and performs no Git state operation", async () => {
+    await withDpaEnv(async (_root, gitState) => {
+      const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY } });
+      adapter.spawn = () => Promise.resolve({ exitCode: 0 });
+      const result = await deployWithDroid({ team: "daily", mode: "plan", repo: "pa-platform" }, adapter);
+      assert.equal(result.status, "success", result.reason);
+      assert.deepEqual(gitState.readOperations(), []);
+    });
+  });
+
+  it("preserves background termination and performs no Git state operation", async () => {
+    await withDpaEnv(async (root, gitState) => {
+      const deploymentId = "d-bgterm";
+      const deployDir = join(root, "deployments", deploymentId);
+      appendRegistryEvent({ deployment_id: deploymentId, team: "daily", event: "started", timestamp: new Date().toISOString(), runtime: "droid" });
+      const configPath = join(deployDir, "background.json");
+      mkdirSync(deployDir, { recursive: true });
+      writeFileSync(configPath, JSON.stringify({
+        args: [], cwd: join(root, "repo"), env: {}, logFile: join(deployDir, "droid.log"),
+        deploymentId, team: "daily", sessionFileName: "session-id-droid.txt",
+        ownershipToken: "test-token", ownershipPath: join(deployDir, "background-ownership.json"),
+      }));
+      await assert.rejects(runBackgroundEntry(configPath), /runtime did not start/);
+      const terminal = getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0]?.event, "crashed");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.deepEqual(gitState.readOperations(), []);
+    });
+  });
+
+  it("preserves foreground runtime diagnostics and performs no Git state operation", async () => {
+    await withDpaEnv(async (root, gitState) => {
       const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY } });
       adapter.spawn = (opts) => {
         writeFileSync(join(opts.executionPlan!.repoRoot, "preserve.txt"), "dirty\n");
@@ -1059,23 +1095,24 @@ describe("PAP-162 Droid execution-plan contract", () => {
       };
       const result = await deployWithDroid({ team: "daily", mode: "plan", repo: "pa-platform" }, adapter);
       assert.equal(result.status, "failed");
-      assert.match(result.reason ?? "", /runtime failed.*Repository recovery required/is);
+      assert.equal(result.reason, "runtime failed");
+      assert.equal(existsSync(join(root, "repo", "preserve.txt")), true);
+      assert.deepEqual(gitState.readOperations(), []);
     });
   });
 
-  it("rejects hook installation overlapping a read-only registered checkout", async () => {
+  it("installs runtime hooks inside the registered checkout without process isolation", async () => {
     await withDpaEnv(async (root) => {
       const repo = join(root, "repo");
       const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY, HOME: repo } });
-      const result = await deployWithDroid({ team: "daily", mode: "plan", repo: "pa-platform" }, adapter);
-      assert.equal(result.status, "failed");
-      assert.equal(existsSync(join(repo, ".factory")), false);
-      assert.match(result.reason ?? "", /adapter setup path.*overlaps registered repository/is);
+      const deploymentDir = join(root, "deployments", "d-hooks");
+      adapter.installHooks(deploymentDir, { deploymentId: "d-hooks", deploymentDir, activityLogPath: join(deploymentDir, "activity.jsonl") });
+      assert.equal(existsSync(join(repo, ".factory")), true);
     });
   });
 
-  it("keeps key/path requests and all repository evidence canonical", async () => {
-    await withDpaEnv(async (root) => {
+  it("keeps key/path plans canonical and two same-root runs have no admission state", async () => {
+    await withDpaEnv(async (root, gitState) => {
       const repo = join(root, "repo");
       writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
       spawnSync("git", ["add", "CLAUDE.md"], { cwd: repo });
@@ -1110,16 +1147,12 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.equal(plan.repositoryCwd, repo);
         assert.equal(plan.memoryDocumentRoot, repo);
         assert.equal(plan.environment.PA_REPO, repo);
-        assert.equal(plan.repositoryAccess, "read-only");
         assert.equal(plan.userObjectiveOverride, undefined);
-        assert.equal(plan.repositoryLease?.role, "reader");
-        assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
-        assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
+        assertNoRepositoryAdmissionState(plan, primer);
         assert.equal(captured.env?.["PA_REPO"], repo);
         assert.equal(runtimeCwd, repo);
         assert.equal(runtimePaRepo, repo);
         assert.equal(started?.repo, repo);
-        assert.equal(finalizeRepositoryLifecycle(plan).ok, true);
         assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
         assert.match(primer, /No user objective override was provided/);
         assert.match(primer, /^repo_key: pa-platform$/m);
@@ -1128,6 +1161,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
         assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
       }
+      assert.deepEqual(gitState.readOperations(), []);
     });
   });
 
@@ -1151,22 +1185,9 @@ describe("PAP-162 Droid execution-plan contract", () => {
       writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
       const rejected = await deployWithDroid({ team: "daily", mode: "plan", repo: ambiguous, background: true }, adapter);
       assert.equal(rejected.status, "failed");
-      assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+      assert.match(rejected.reason ?? "", /linked Git working tree/);
       assert.ok((rejected.reason ?? "").length <= 2000);
       assert.equal(spawns, 0);
-
-      writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n`);
-      writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents: []\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
-      const missingPidAdapter = new class extends DroidCodeAdapter {
-        override spawn(): Promise<SpawnResult> {
-          spawns += 1;
-          return Promise.resolve({ exitCode: 0, metadata: {} });
-        }
-      }({ env: { FACTORY_API_KEY: TEST_API_KEY } });
-      const missingOwner = await deployWithDroid({ team: "daily", mode: "plan", repo, background: true }, missingPidAdapter);
-      assert.equal(missingOwner.status, "failed");
-      assert.match(missingOwner.reason ?? "", /background supervisor returned without repository lease ownership evidence/);
-      assert.equal(spawns, 1);
     });
   });
 });

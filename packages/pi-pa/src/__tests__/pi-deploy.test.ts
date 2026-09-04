@@ -13,6 +13,7 @@ import { runPiBackgroundRunner } from "../background-runner.js";
 import { deployWithPi, piSessionCommand } from "../deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
+import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -31,7 +32,7 @@ function initializeGitRepo(path: string): void {
   git(["commit", "-m", "initial"], path);
 }
 
-function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
+function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ppa-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -51,17 +52,18 @@ function withPiEnv(fn: (root: string) => Promise<void>): Promise<void> {
     "deploy_modes:",
     "  - id: implement",
     "    label: Implement",
-    "    repository_access: mutating",
   ].join("\n") + "\n");
-  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  const gitState = installGitStateRecorder(root);
   const previousCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
+  process.env["PATH"] = `${gitState.binDir}:${previous["PATH"] ?? ""}`;
   delete process.env["PA_MAX_RUNTIME"];
   process.chdir(repo);
-  return fn(root).finally(() => {
+  return fn(root, gitState).finally(() => {
     process.chdir(previousCwd);
     closeDb();
     for (const [key, value] of Object.entries(previous)) restore(key, value);
@@ -132,8 +134,8 @@ function within<T>(promise: Promise<T>, milliseconds: number, message: string | 
   });
 }
 
-test("foreground PPA /quit forwards to the live PTY and emits one terminal event after PTY exit", async () => {
-  await withPiEnv(async (root) => {
+test("foreground PPA /quit emits one terminal event with no Git state operation", async () => {
+  await withPiEnv(async (_root, gitState) => {
     let running = true;
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
@@ -142,7 +144,7 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
       running = false;
       queueMicrotask(() => pty.emitExit(0));
     });
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -159,6 +161,7 @@ test("foreground PPA /quit forwards to the live PTY and emits one terminal event
     assert.equal(terminalEvents[0]?.status, "partial");
     assert.match(terminalEvents[0]?.summary ?? "", /without a staged completion payload/);
     assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "partial");
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -260,7 +263,7 @@ test("live foreground PTY PID protects status, wait, health, and sweep before se
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
     const pty = new ForegroundDeploymentPty(() => {}, process.pid);
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -315,8 +318,8 @@ test("foreground and background Pi children receive distinct internal execution 
   });
 });
 
-test("PPA key and exact-path requests consume one canonical execution plan across all repository evidence", async () => {
-  await withPiEnv(async (root) => {
+test("PPA key and exact-path requests consume one canonical execution plan with no admission state", async () => {
+  await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; registryRepo?: string; runtimeCwd?: string }> = [];
     for (const requestedRepo of ["pa-platform", repo]) {
@@ -353,13 +356,8 @@ test("PPA key and exact-path requests consume one canonical execution plan acros
       assert.equal(observation.plan.repositoryCwd, repo);
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
-      assert.equal(observation.plan.repositoryAccess, "mutating");
       assert.equal(observation.plan.userObjectiveOverride, undefined);
-      assert.equal(observation.plan.repositoryLease?.role, "owner");
-      assert.equal(observation.plan.repositoryLease?.repositoryKey, observation.plan.repoKey);
-      assert.equal(observation.plan.repositoryLease?.repositoryRoot, observation.plan.repoRoot);
-      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_OWNER, observation.plan.repositoryLease?.ownerDeploymentId);
-      assert.equal(observation.plan.environment.PA_REPOSITORY_LEASE_PATH, observation.plan.repositoryLease?.leasePath);
+      assertNoRepositoryAdmissionState(observation.plan, observation.primer);
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);
@@ -373,6 +371,7 @@ test("PPA key and exact-path requests consume one canonical execution plan acros
       observations.map(({ plan, registryRepo, runtimeCwd }) => ({ key: plan.repoKey, root: plan.repoRoot, paRepo: plan.environment.PA_REPO, memoryRoot: plan.memoryDocumentRoot, registryRepo, runtimeCwd })),
       [0, 1].map(() => ({ key: "pa-platform", root: repo, paRepo: repo, memoryRoot: repo, registryRepo: repo, runtimeCwd: repo })),
     );
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -399,7 +398,7 @@ test("PPA rejects invalid and ambiguous repository inputs before preflight or ru
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
     const rejected = await deployWithPi({ team: "builder", mode: "implement", repo: ambiguous }, adapter);
     assert.equal(rejected.status, "failed");
-    assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+    assert.match(rejected.reason ?? "", /linked Git working tree/);
     assert.ok((rejected.reason ?? "").length <= 2000);
     assert.equal(preflights, 0);
     assert.equal(spawns, 0);
@@ -587,8 +586,8 @@ test("new background Pi deployments pass the resolved adapter deadline while ret
   });
 });
 
-test("ordinary background deploy flows timeout through runner escalation to one causal terminal failure", async () => {
-  await withPiEnv(async () => {
+test("ordinary background termination retains one causal failure with no Git state operation", async () => {
+  await withPiEnv(async (_root, gitState) => {
     const launcher = new BackgroundDeploymentProcess(88_001);
     let config: PiBackgroundConfig | undefined;
     const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
@@ -638,6 +637,7 @@ test("ordinary background deploy flows timeout through runner escalation to one 
     assert.match(terminal[0]?.summary ?? "", /runner-timeout:/);
     assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "failed");
     assert.ok(now < 5_000);
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -706,8 +706,8 @@ test("Pi preflight failure is controlled, actionable, and leaves no session file
   });
 });
 
-test("Pi adapter failure without session metadata keeps its original reason", async () => {
-  await withPiEnv(async () => {
+test("Pi foreground failure keeps its original reason with no Git state operation", async () => {
+  await withPiEnv(async (_root, gitState) => {
     const adapter = stubAdapter({ result: () => ({ exitCode: 1, errorMessage: "model auth failed" }) });
     const result = await deployWithPi({ team: "builder", mode: "implement" }, adapter);
     assert.equal(result.status, "failed");
@@ -719,6 +719,7 @@ test("Pi adapter failure without session metadata keeps its original reason", as
     assert.equal(events[1]?.summary, "ppa deploy failed: model auth failed");
     const error = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath).find((event) => event.kind === "error");
     assert.match(error?.body ?? "", /model auth failed/);
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -876,7 +877,7 @@ test("real foreground cleanup failures override staged success exactly once", as
           queueMicrotask(() => pty.emitExit(17));
         }
       });
-      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
         spawnPty: () => pty as never, input: input as never, output: output as never,
         processExists: () => running,
         now: () => now,
@@ -1074,6 +1075,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
       versionProbe: () => "0.80.8",
+      nativeRegistryProbe: () => undefined,
       runCommand: (args, opts) => {
         invocations.push({ args, env: opts.env });
         return { status: 0, stdout: "", stderr: "" };

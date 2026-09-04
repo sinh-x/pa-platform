@@ -2,7 +2,7 @@ import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync }
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSession, resumeSession, AutonomyLevel, ToolConfirmationOutcome } from "@factory/droid-sdk";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, getDeployPaths, nowUtc, publishBackgroundOwnership, reconcileTerminalRegistryEvent, transferRepositoryLeaseByDeployment, queryDeploymentStatus, type ActivityEvent } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus, type ActivityEvent } from "@pa-platform/pa-core";
 import { resolveDefaultDroidModel } from "./adapter.js";
 import { STDERR_TAIL_BYTES, firstLine, tailString } from "./util.js";
 
@@ -29,9 +29,7 @@ interface BackgroundConfig {
 const STREAM_BODY_MAX_CHARS = 500;
 const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_)/i, /(?:\b|_)(?:api[_-]?key|access[_-]?key)(?:\b|_)/i, /bearer\s+\S+/i, /sk-ant-\S+/i];
 
-if (isEntrypoint()) {
-  const configPath = process.argv[2];
-  if (!configPath) throw new Error("Missing background config path");
+export async function runBackgroundEntry(configPath: string): Promise<void> {
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as BackgroundConfig;
   try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
   let fatalError: unknown;
@@ -42,7 +40,6 @@ if (isEntrypoint()) {
   };
 
   try {
-    transferRepositoryLeaseByDeployment(dirname(config.logFile), process.pid);
     const result = await runDroidBackground(config, acknowledge);
     if (!ready) throw new Error("runner-readiness: Droid runtime did not start");
 
@@ -50,12 +47,6 @@ if (isEntrypoint()) {
       writeFileSync(resolve(dirname(config.logFile), config.sessionFileName), result.sessionId, "utf-8");
     }
     const activityLogPath = getDeployPaths(config.deploymentId).activityLogPath;
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    if (!lifecycle.ok) {
-      result.exitCode = 1;
-      result.stderrTail = lifecycle.diagnostic ?? "repository lifecycle finalization failed";
-      reconcileTerminalRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: nowUtc(), status: "failed", summary: `dpa background deploy failed: ${firstLine(result.stderrTail)}`, log_file: config.logFile, exit_code: 1 });
-    }
     const currentStatus = queryDeploymentStatus(config.deploymentId);
     if (currentStatus?.status !== "running") {
       appendActivityEvent(createActivityEvent({ deployId: config.deploymentId, kind: "text", source: "droid", body: `dpa background deploy exited after terminal status (${currentStatus?.status ?? "unknown"})` }), activityLogPath);
@@ -73,10 +64,8 @@ if (isEntrypoint()) {
       emitCompletedEvent({ deploymentId: config.deploymentId, team: config.team, status: "failed", summary, logFile: config.logFile, exitCode: result.exitCode });
     }
   } catch (error) {
-    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: boundedLifecycleDiagnostic(error instanceof Error ? error.message : String(error)) }); } catch { /* launcher reports timeout/bootstrap failure */ }
-    const lifecycle = finalizeRepositoryLifecycle(dirname(config.logFile));
-    const baseError = error instanceof Error ? error.message : String(error);
-    const finalError = boundedLifecycleDiagnostic(lifecycle.ok ? baseError : `${baseError}; ${lifecycle.diagnostic}`);
+    const finalError = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+    try { publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "failed", ready: false, updatedAt: nowUtc(), error: finalError }); } catch { /* launcher reports timeout/bootstrap failure */ }
     emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
     fatalError = new Error(finalError);
   } finally {
@@ -86,7 +75,13 @@ if (isEntrypoint()) {
   if (fatalError) throw fatalError;
 }
 
-function boundedLifecycleDiagnostic(value: string): string {
+if (isEntrypoint()) {
+  const configPath = process.argv[2];
+  if (!configPath) throw new Error("Missing background config path");
+  await runBackgroundEntry(configPath);
+}
+
+function boundedDiagnostic(value: string): string {
   return value.length <= 2_000 ? value : `${value.slice(0, 1_997)}...`;
 }
 

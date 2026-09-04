@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryLifecycle, getDeployPaths, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
+import { runBackgroundEntry } from "../background-runner.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
-import { installFakeBubblewrap } from "../../../../test/helpers/fake-bubblewrap.js";
+import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -61,7 +62,7 @@ function initializeGitRepo(path: string): void {
   execFileSync("git", ["commit", "-m", "initial"], { cwd: path, stdio: "ignore" });
 }
 
-function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
+function withOpaEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "opa-adapter-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -72,17 +73,18 @@ function withOpaEnv(fn: (root: string) => Promise<void>): Promise<void> {
   initializeGitRepo(repo);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
-  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: read-only\n`);
+  writeFileSync(join(teams, "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Plan\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n`);
   const previous = { cwd: process.cwd(), config: process.env["PA_PLATFORM_CONFIG"], teams: process.env["PA_PLATFORM_TEAMS"], registry: process.env["PA_REGISTRY_DB"], aiUsage: process.env["PA_AI_USAGE_HOME"], maxRuntime: process.env["PA_MAX_RUNTIME"], ticketId: process.env["PA_TICKET_ID"], path: process.env["PATH"] };
+  const gitState = installGitStateRecorder(root);
   process.env["PA_PLATFORM_CONFIG"] = config;
   process.env["PA_PLATFORM_TEAMS"] = teams;
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PA_TICKET_ID"] = "PAP-TEST";
-  process.env["PATH"] = `${installFakeBubblewrap(root)}:${previous.path ?? ""}`;
+  process.env["PATH"] = `${gitState.binDir}:${previous.path ?? ""}`;
   delete process.env["PA_MAX_RUNTIME"];
   process.chdir(repo);
-  return fn(root).finally(() => {
+  return fn(root, gitState).finally(() => {
     process.chdir(previous.cwd);
     closeDb();
     restore("PA_PLATFORM_CONFIG", previous.config);
@@ -535,8 +537,8 @@ test("opa deploy preserves absolute repo path in deployment context", async () =
   });
 });
 
-test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evidence canonical", async () => {
-  await withOpaEnv(async (root) => {
+test("OpenCode key/path plans stay canonical and two same-root runs have no admission state", async () => {
+  await withOpaEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
     execFileSync("git", ["add", "CLAUDE.md"], { cwd: repo });
@@ -565,7 +567,6 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.ok(captured?.executionPlan);
       const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
       observations.push({ opts: captured, runtimeCwd, runtimePaRepo, registryRepo: started?.repo, primer: readFileSync(captured.primerPath, "utf8") });
-      assert.equal(finalizeRepositoryLifecycle(captured.executionPlan).ok, true);
     }
 
     for (const { opts, runtimeCwd, runtimePaRepo, registryRepo, primer } of observations) {
@@ -576,11 +577,8 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.equal(plan.repositoryCwd, repo);
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
-      assert.equal(plan.repositoryAccess, "read-only");
       assert.equal(plan.userObjectiveOverride, undefined);
-      assert.equal(plan.repositoryLease?.role, "reader");
-      assert.equal(plan.repositoryLease?.repositoryKey, plan.repoKey);
-      assert.equal(plan.repositoryLease?.repositoryRoot, plan.repoRoot);
+      assertNoRepositoryAdmissionState(plan, primer);
       assert.equal(opts.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);
@@ -593,6 +591,7 @@ test("PAP-162 OpenCode key/path execution-plan contract keeps all repository evi
       assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
     }
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -614,34 +613,27 @@ test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before ad
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${repo}\n  second:\n    path: ${second}\n`);
     const rejected = await deployWithOpencode({ team: "daily", mode: "plan", repo: ambiguous }, adapter);
     assert.equal(rejected.status, "failed");
-    assert.match(rejected.reason ?? "", /ambiguous registered identity/);
+    assert.match(rejected.reason ?? "", /linked Git working tree/);
     assert.ok((rejected.reason ?? "").length <= 2000);
     assert.equal(spawns, 0);
 
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n`);
-    writeFileSync(join(root, "teams", "daily.yaml"), `name: daily\ndescription: Daily\nobjective: Mutate\nagents:\n  - name: team-manager\n    role: manage\ndeploy_modes:\n  - id: plan\n    label: Plan\n    repository_access: mutating\n`);
-    const missingOwner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, adapter);
-    assert.equal(missingOwner.status, "failed");
-    assert.match(missingOwner.reason ?? "", /background supervisor returned without repository lease ownership evidence/);
-
-    const ownedAdapter: RuntimeAdapter = {
+    const plans: SpawnOpts[] = [];
+    const sameRootAdapter: RuntimeAdapter = {
       ...base,
-      async spawn(opts) {
+      spawn(opts) {
         spawns += 1;
-        const result = await base.spawn(opts);
-        return { ...result, metadata: { ...result.metadata, pid: process.pid } };
+        plans.push(opts);
+        return { exitCode: 0, metadata: { pid: process.pid } };
       },
     };
-    const owner = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, ownedAdapter);
-    assert.equal(owner.status, "pending", owner.reason);
+    const first = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, sameRootAdapter);
+    const secondRun = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, sameRootAdapter);
+    assert.equal(first.status, "pending", first.reason);
+    assert.equal(secondRun.status, "pending", secondRun.reason);
     assert.equal(spawns, 2);
-    const conflict = await deployWithOpencode({ team: "daily", mode: "plan", repo, background: true }, ownedAdapter);
-    assert.equal(conflict.status, "failed");
-    assert.match(conflict.reason ?? "", /lease conflict.*deployment=/is);
-    assert.ok((conflict.reason ?? "").length <= 2000);
-    assert.equal(spawns, 2);
-    assert.ok(owner.deploymentId);
-    assert.equal(finalizeRepositoryLifecycle(getDeployPaths(owner.deploymentId).deployDir).ok, true);
+    assert.equal(plans.length, 2);
+    for (const opts of plans) assertNoRepositoryAdmissionState(opts.executionPlan!);
   });
 });
 
@@ -1224,8 +1216,8 @@ test("opencode activity writer appends split JSONL chunks", () => {
   }
 });
 
-test("opa deploy preserves pre-existing live activity events", async () => {
-  await withOpaEnv(async (root) => {
+test("opa foreground success preserves live activity and performs no Git state operation", async () => {
+  await withOpaEnv(async (root, gitState) => {
     const adapter = createStubAdapter({ exitCode: 0, preSeedPluginLines: 5 });
     const stdout: string[] = [];
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--provider", "minimax"], { hooks: createOpencodeHooks(adapter), io: { stdout: (line) => stdout.push(line), stderr: () => {} } });
@@ -1254,6 +1246,7 @@ test("opa deploy preserves pre-existing live activity events", async () => {
     const terminal = JSON.parse(terminalLine!) as Record<string, unknown>;
     assert.equal(terminal["kind"], "text");
     assert.match(String(terminal["body"]), /opencode exited with code 0/);
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 
@@ -1273,14 +1266,13 @@ test("opa deploy emits error event on non-zero exit", async () => {
   });
 });
 
-test("opa read-only deploy rejects hook installation overlapping the registered checkout", async () => {
+test("opa installs runtime hooks inside the registered checkout without process isolation", async () => {
   await withOpaEnv(async (root) => {
     const repo = join(root, "repo");
-    const adapter = new OpencodeAdapter({ env: { HOME: repo }, runCommand: () => { throw new Error("runtime must not start"); } });
-    const stderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "daily", "--mode", "plan"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
-    assert.equal(existsSync(join(repo, ".config", "opencode", "plugins")), false);
-    assert.match(stderr.join("\n"), /adapter setup path.*overlaps registered repository/is);
+    const adapter = new OpencodeAdapter({ env: { HOME: repo } });
+    const deploymentDir = join(root, "deployments", "d-hooks");
+    adapter.installHooks(deploymentDir, { deploymentId: "d-hooks", deploymentDir, activityLogPath: join(deploymentDir, "activity.jsonl") });
+    assert.equal(existsSync(join(repo, ".config", "opencode", "plugins", "pa-safety-activity.js")), true);
   });
 });
 
@@ -1296,8 +1288,31 @@ test("opa deploy registry summary includes exit code on failure", async () => {
   });
 });
 
-test("opa foreground failure retains simultaneous repository recovery diagnostics", async () => {
-  await withOpaEnv(async (root) => {
+test("opa background termination preserves registry behavior and performs no Git state operation", async () => {
+  await withOpaEnv(async (root, gitState) => {
+    const deploymentId = "d-bgterm";
+    const deployDir = join(root, "deployments", deploymentId);
+    const bin = join(root, "runtime-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "opencode"), "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(join(bin, "opencode"), 0o755);
+    appendRegistryEvent({ deployment_id: deploymentId, team: "daily", event: "started", timestamp: new Date().toISOString(), runtime: "opencode" });
+    const configPath = join(deployDir, "background.json");
+    mkdirSync(deployDir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({
+      args: [], cwd: join(root, "repo"), env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      logFile: join(deployDir, "opencode.log"), deploymentId, team: "daily",
+      sessionFileName: "session-id-opencode.txt", ownershipToken: "test-token",
+      ownershipPath: join(deployDir, "background-ownership.json"),
+    }));
+    await runBackgroundEntry(configPath);
+    assert.equal(queryDeploymentStatuses()[0]?.status, "success");
+    assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("opa foreground failure preserves runtime diagnostics and performs no Git state operation", async () => {
+  await withOpaEnv(async (root, gitState) => {
     writeBuilderTeamConfig(root);
     const adapter = createStubAdapter({ exitCode: 1, errorMessage: "runtime failed" });
     adapter.spawn = (opts) => {
@@ -1306,7 +1321,9 @@ test("opa foreground failure retains simultaneous repository recovery diagnostic
     };
     const stderr: string[] = [];
     assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--ticket", "PAP-200"], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
-    assert.match(stderr.join("\n"), /runtime failed.*Repository recovery required/is);
+    assert.match(stderr.join("\n"), /runtime failed/i);
+    assert.equal(existsSync(join(root, "repo", "preserve.txt")), true);
+    assert.deepEqual(gitState.readOperations(), []);
   });
 });
 

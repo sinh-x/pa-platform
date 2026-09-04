@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
@@ -17,6 +17,54 @@ function git(root: string, args: string[]): string {
   }
 }
 
+function filesUnder(path: string): string[] {
+  if (!statSync(path).isDirectory()) return [path];
+  return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+    const child = join(path, entry.name);
+    return entry.isDirectory() ? filesUnder(child) : [child];
+  });
+}
+
+function validateRepositoryContracts(configRoot: string): void {
+  const orchestratorPath = resolve(configRoot, "teams", "builder", "modes", "orchestrator.md");
+  const orchestrator = readFileSync(orchestratorPath, "utf8");
+  const branchOutcomes = [
+    "| Already on the exact ticket branch | Proceed. |",
+    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
+    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
+    "| Dirty `develop` | Stop unchanged. |",
+    "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
+    "| On the release branch or any unrelated branch | Stop unchanged. |",
+    "| Detached HEAD | Stop unchanged. |",
+  ];
+  for (const outcome of branchOutcomes) {
+    if (!orchestrator.includes(outcome)) throw new Error(`Paired orchestrator is missing branch-gate outcome: ${outcome}`);
+  }
+  if (!orchestrator.includes("Use `opa branch create`")) throw new Error("Paired orchestrator must use the retained branch creation command");
+  if (!orchestrator.includes("a direct checkout only for the existing exact branch outcome")) throw new Error("Paired orchestrator must limit checkout to the existing exact ticket branch");
+  if (!orchestrator.includes("Every stop occurs before project-file mutation or child launch")) throw new Error("Paired orchestrator must stop unchanged before mutation or child launch");
+
+  const activePaths = [
+    resolve(configRoot, "config.yaml"),
+    resolve(configRoot, "teams"),
+    resolve(configRoot, "skills"),
+    resolve(configRoot, "docs", "runtime-neutral-config.md"),
+  ];
+  const retiredTokens = [
+    ["repository", "access"].join("_"),
+    ["record", "cleanup"].join("-"),
+    ["PA", "REPOSITORY", "LEASE", "TOKEN"].join("_"),
+    ["repository", "lease", "owner"].join("_"),
+    ["repository", "lease", "path"].join("_"),
+    ["pa", "repository", "mutation"].join("-"),
+  ];
+  for (const path of activePaths.flatMap(filesUnder)) {
+    const content = readFileSync(path, "utf8");
+    const token = retiredTokens.find((candidate) => content.includes(candidate));
+    if (token) throw new Error(`Paired active configuration retains a retired repository contract in ${path.slice(configRoot.length + 1)}`);
+  }
+}
+
 export function validatePairedRepository(options: PairedValidationOptions): string[] {
   const configRoot = resolve(options.configRoot);
   const expectedSha = options.expectedSha.trim();
@@ -29,6 +77,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     const result = spawnSync("git", ["-C", configRoot, "merge-base", "--is-ancestor", expectedSha, "origin/develop"], { stdio: "ignore" });
     if (result.status !== 0) throw new Error(`pa-platform-config ${expectedSha} is not contained in origin/develop; merge the config prerequisite first`);
   }
+  validateRepositoryContracts(configRoot);
 
   const teamFiles = readdirSync(resolve(configRoot, "teams"))
     .filter((name) => name.endsWith(".yaml") && name !== "example.yaml")
@@ -52,8 +101,16 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   }
   if (teamFiles.length !== 9) throw new Error(`Expected 9 active teams, found ${teamFiles.length}`);
   if (modeCount !== 58) throw new Error(`Expected 58 active modes, found ${modeCount}`);
-  const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"));
-  if (missing.length > 0) throw new Error(`Found ${missing.length} missing team references`);
+  // Absolute project guides are operator-owned inputs and cannot be present on a
+  // generic CI runner. Runtime deploy validation remains responsible for them.
+  const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"))
+    .filter((reference) => !isAbsolute(reference.reference));
+  if (missing.length > 0) {
+    const details = missing
+      .map((reference) => `${reference.team} ${reference.context}: ${reference.reference} -> ${reference.resolvedPath}`)
+      .join("\n");
+    throw new Error(`Found ${missing.length} missing team references:\n${details}`);
+  }
 
   return [
     `CONFIG_SHA=${actualSha}`,
@@ -62,6 +119,8 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     `MODES_VALID=${modeCount}/58`,
     "LEGACY_RUNTIMES=0",
     "INVALID_PAIRS=0",
+    "RETIRED_REPOSITORY_CONTRACTS=0",
+    "BRANCH_GATE=7/7",
     "REFERENCES_MISSING=0",
   ];
 }

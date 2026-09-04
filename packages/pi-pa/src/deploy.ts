@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, activateRepositoryLifecycle, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryLifecycle, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -41,7 +41,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
   let plan;
   try {
-    plan = activateRepositoryLifecycle(resolveExecutionPlan({
+    plan = resolveExecutionPlan({
       request: { ...request, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
       teamConfig: team,
       mode,
@@ -52,7 +52,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
-    }), { dryRun: request.dryRun, resumeDeploymentId: request.resume });
+    });
   } catch (error) {
     const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), requestedEnvironment, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), paths.activityLogPath);
@@ -65,12 +65,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const env = { ...plan.environment, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<string, string>;
   const primerPath = resolve(deployDir, "primer.md");
   try {
-    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nrepository_access: ${plan.repositoryAccess}\nrepository_lease_owner: ${plan.repositoryLease?.ownerDeploymentId ?? "none"}\nrepository_lease_path: ${plan.repositoryLease?.leasePath ?? "none"}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(plan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${plan.mode}\nticket_id: ${plan.ticket ?? "none"}\nrepo: ${plan.repositoryCwd}\nobjective: ${plan.objective}\ntimeout_seconds: ${plan.timeoutSeconds}\n${renderEnvVarsBlock(plan.environment)}\n</deployment-context>` });
     writeFileSync(primerPath, primer, "utf8");
   } catch (error) {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const baseReason = error instanceof Error ? error.message : String(error);
-    const reason = boundedDiagnostic(lifecycle.ok ? baseReason : `${baseReason}; ${lifecycle.diagnostic}`, env, 2000);
+    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   process.stdout.write(`Deployment: ${deploymentId}\n`);
@@ -94,15 +92,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return outcome;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const safeReason = boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`, env, 2000);
+    const safeReason = boundedDiagnostic(reason, env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
     writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
   const crashFailure = (reason: string) => {
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    const safeReason = boundedDiagnostic(lifecycle.ok ? reason : `${reason}; ${lifecycle.diagnostic}`, env, 2000);
+    const safeReason = boundedDiagnostic(reason, env, 2000);
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
     writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
@@ -145,12 +141,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         const terminalError = typeof final.metadata?.["terminalError"] === "string" ? final.metadata["terminalError"] : undefined;
         const ok = final.status === 0 && !terminalError;
         const failure = final.status !== 0 ? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`) : terminalError;
-        const lifecycle = finalizeRepositoryLifecycle(plan);
-        const lifecycleFailure = lifecycle.ok ? undefined : lifecycle.diagnostic ?? "repository lifecycle finalization failed";
-        const effectiveOk = ok && !lifecycleFailure;
-        const reason = effectiveOk ? "ppa deploy completed" : `ppa deploy failed: ${failure ?? lifecycleFailure}`;
-        if (!effectiveOk) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
-        writeTerminal("completed", effectiveOk ? "success" : "failed", reason, effectiveOk ? 0 : final.status || 1, resolve(deployDir, "pi.log"));
+        const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`;
+        if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
+        writeTerminal("completed", ok ? "success" : "failed", reason, ok ? 0 : final.status || 1, resolve(deployDir, "pi.log"));
       }).catch((error) => {
         crashFailure(error instanceof Error ? error.message : String(error));
       });
@@ -161,8 +154,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (typeof supervisorPid !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const lifecycle = finalizeRepositoryLifecycle(plan);
-    if (!lifecycle.ok) return completeFailure(lifecycle.diagnostic ?? "repository lifecycle finalization failed");
     const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);
     const outcome = request.background
       ? writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile)

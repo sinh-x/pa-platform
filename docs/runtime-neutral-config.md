@@ -4,30 +4,39 @@
 
 Team YAML files are active shared configuration and should remain structurally compatible with the frozen PA team YAMLs. Existing mode IDs and fields such as `provider` are preserved in the team files for compatibility and migration traceability.
 
-## Registered Project Execution
+## Registered Repository and Branch Contract
 
 Every deployment resolves a repository key or exact configured path to one
-immutable execution plan. When `--repo` is omitted, PA may infer identity from a
-registered checkout, a nested directory, or an associated linked-worktree CWD,
-but runtime CWD, `PA_REPO`, primer evidence, memory roots, and registry evidence
-always relocate to the configured registered path. Explicit non-registered paths
-fail before primer generation or runtime spawn.
+immutable execution plan before primer generation or runtime spawn. When
+`--repo` is omitted, PA may infer identity from the registered checkout or a
+nested directory within it. Runtime CWD, `PA_REPO`, primer evidence, memory
+roots, and registry evidence all use the exact configured root. Explicit
+non-registered paths, aliases, independent clones, and linked Git working trees
+fail before runtime spawn with a bounded corrective diagnostic.
 
-Each deploy mode declares `repository_access: read-only` or `mutating` (the
-compatibility default is `mutating`). Mutating deployments require a clean
-checkout and one durable repository lease. Terminal handling restores the exact
-captured branch/HEAD state, preserves dirty recovery evidence instead of
-discarding files, and releases ownership idempotently. Read-only deployments do
-not acquire the mutation lease and remain admissible while a mutator runs. Their
-runtime process (or detached background supervisor) runs inside packaged
-Bubblewrap with a read-only root filesystem, narrowly writable PA/runtime state,
-and explicit read-only mounts for the registered checkout and external Git
-metadata. Sandbox setup or launch failure is fail-closed and never falls back to
-an unprotected runtime process.
+Repository admission has no per-mode access class, PA lock, repository sandbox,
+checkout ownership, or runtime write-protection wrapper. Multiple deployments
+may be admitted for the same registered root, and PA does not serialize them or restore Git state at
+terminal handling. Agents and operators remain responsible for respecting mode
+mutation boundaries and coordinating concurrent edits.
 
-Legacy worktree orchestration reports cannot be resumed automatically. Preserve
-their commits and dirty files, recover the registered checkout manually, archive
-or resolve the old run, and launch a fresh registered-project-path deployment.
+Before implementation edits, determine the exact ticket branch and apply this
+branch gate:
+
+| Registered checkout state | Outcome |
+|---|---|
+| Already on the exact ticket branch | Proceed. |
+| Clean `develop`, equal to `origin/develop`, exact ticket branch absent | Create the exact ticket branch from `develop`, then proceed. |
+| Clean `develop`, equal to `origin/develop`, exact ticket branch present | Check out the exact ticket branch, then proceed. |
+| Dirty `develop` | Stop unchanged. |
+| `develop` ahead, behind, or diverged from `origin/develop` | Stop unchanged. |
+| Release branch or unrelated branch | Stop unchanged. |
+| Detached HEAD | Stop unchanged. |
+
+The create and check-out outcomes are the only branch mutations authorized by
+this gate. Every stop occurs before project-file mutation or runtime spawn; do
+not stash, reset, repair, relocate, or select another checkout. The gate does
+not remove the race between independently admitted deployments.
 
 The primer contains exactly one authoritative `## Additional Instructions`
 section. CLI/evaluator overrides appear there; the configured team or mode
@@ -37,7 +46,6 @@ objective remains under `## Objective`. Mode-level project guides use a
 ```yaml
 deploy_modes:
   - id: implement
-    repository_access: mutating
     project_guides:
       pa-platform:
         - docs/pa-platform-agent-guide.md

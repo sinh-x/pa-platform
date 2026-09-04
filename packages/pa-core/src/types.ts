@@ -34,7 +34,6 @@ export interface DeployMode {
   global_docs?: string[];
   project_guides?: Record<string, string[]>;
   require_ticket?: boolean;
-  repository_access?: "read-only" | "mutating";
 }
 
 export interface HierarchyMember {
