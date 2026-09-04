@@ -5,6 +5,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   GIT_CONTEXT_COLLECTION_DEADLINE_MS,
   GIT_CONTEXT_COMMIT_LIMIT,
@@ -21,8 +22,20 @@ import {
   resolveGitReference,
   type GitBranch,
   type GitCommandRunner,
+  type GitContextCollectionInput,
   type GitContextState,
 } from "../pi-extension/git-context-state.js";
+import {
+  GIT_CONTEXT_COMMAND,
+  GIT_CONTEXT_MIN_WIDE_WIDTH,
+  GIT_CONTEXT_SHORTCUT,
+  GitContextPanelComponent,
+  GitReferenceSelectorComponent,
+  formatGitContextLines,
+  gitContextOverlayOptions,
+  registerGitContextUiModuleWithOptions,
+  type GitContextRefreshSchedulerLike,
+} from "../pi-extension/git-context-ui.js";
 
 const OID = "a".repeat(40);
 const BRANCHES: GitBranch[] = [
@@ -301,4 +314,255 @@ test("first-open, reference-change, and event hooks coalesce to one start per 10
   now = 20_000;
   callback?.();
   assert.equal(starts.length, 2);
+});
+
+function uiReadyState(reference = "main"): GitContextState {
+  const branches = BRANCHES.map((branch) => ({ ...branch }));
+  const selected = branches.find((branch) => branch.name === reference) ?? branches[1]!;
+  return {
+    status: "ready",
+    stale: false,
+    snapshot: {
+      repositoryRoot: "/repo",
+      activeBranch: "feature/PAP-149-wide-界面",
+      reference: selected,
+      referenceSource: reference === "main" ? "saved" : "explicit",
+      branches,
+      mergeBase: OID,
+      commits: Array.from({ length: 12 }, (_, index) => ({
+        hash: `c${String(index).padStart(6, "0")}`,
+        message: `commit ${index} with a long message and unicode 界面`,
+        author: `Author ${index}`,
+        date: "2026-08-28T10:00:00+07:00",
+      })),
+      commitTotal: 12,
+      commitTruncated: 2,
+      files: Array.from({ length: 25 }, (_, index) => ({
+        path: `src/long/path/file-${index}-界面.ts`,
+        displayPath: `src/long/path/file-${index}-界面.ts`,
+        additions: index + 1,
+        deletions: index,
+        binary: false,
+      })),
+      fileTotal: 25,
+      fileTruncated: 5,
+      additions: 325,
+      deletions: 300,
+      collectedAt: 123,
+    },
+  };
+}
+
+const TEST_THEME = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+
+const REQUIRED_WIDTHS = [40, 80, 119, 120, 160] as const;
+
+test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 160 columns", () => {
+  const state = uiReadyState();
+  const panel = new GitContextPanelComponent(
+    { requestRender() {} } as never,
+    TEST_THEME as never,
+    () => state,
+    () => {},
+    () => {},
+  );
+  const selector = new GitReferenceSelectorComponent(
+    { requestRender() {} } as never,
+    TEST_THEME as never,
+    BRANCHES,
+    "main",
+    () => {},
+  );
+
+  for (const width of REQUIRED_WIDTHS) {
+    assert.ok(panel.render(width).every((line) => visibleWidth(line) <= width), `panel overflow at ${width}`);
+    assert.ok(selector.render(width).every((line) => visibleWidth(line) <= width), `selector overflow at ${width}`);
+    panel.invalidate();
+    selector.invalidate();
+  }
+
+  const content = formatGitContextLines(state);
+  assert.match(content.join("\n"), /Active: feature\/PAP-149-wide-界面/);
+  assert.match(content.join("\n"), /Reference: main \(saved\)/);
+  assert.match(content.join("\n"), /Commits: 10\/12 shown • 2 truncated/);
+  assert.equal(content.filter((line) => /^  c\d{6} /.test(line)).length, GIT_CONTEXT_COMMIT_LIMIT);
+  assert.match(content.join("\n"), /Diff: \+325 -300/);
+  assert.match(content.join("\n"), /Files: 20\/25 shown • 5 truncated/);
+  assert.equal(content.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+
+  assert.equal(GIT_CONTEXT_MIN_WIDE_WIDTH, 120);
+  for (const width of [40, 80, 119]) {
+    const layout = gitContextOverlayOptions(width);
+    assert.equal(layout.anchor, "center");
+    assert.equal(layout.width, width - 4);
+  }
+  for (const width of [120, 160]) assert.equal(gitContextOverlayOptions(width).anchor, "right-center");
+});
+
+test("Git panel renders all named unavailable states and stale prior data without fabrication", () => {
+  for (const status of ["non-git", "detached-head", "unborn-head", "missing-ref", "missing-merge-base", "git-error", "timeout", "unavailable"] as const) {
+    const lines = formatGitContextLines({ status, stale: false, checkedAt: 1, detail: "detail\nline" });
+    assert.equal(lines[0], `State: ${status}`);
+    assert.match(lines[1] ?? "", /detail↵line/);
+    assert.ok(!lines.some((line) => /^(Active|Reference|Commits|Files|Diff):/.test(line)));
+  }
+  const ready = uiReadyState();
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "timeout",
+    checkedAt: 2,
+  };
+  const lines = formatGitContextLines(stale);
+  assert.equal(lines[0], "State: stale (timeout)");
+  assert.match(lines.join("\n"), /Reference: main/);
+});
+
+test("Alt+G and command share one overlay; selector cancel restores focus and selection persists then refreshes", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  const commands = new Map<string, (args: string, context: unknown) => unknown>();
+  const shortcuts = new Map<string, (context: unknown) => unknown>();
+  const refreshReasons: string[] = [];
+  let schedulerDisposals = 0;
+  const scheduler: GitContextRefreshSchedulerLike = {
+    firstOpen: (refresh) => { refreshReasons.push("first-open"); void refresh("first-open"); },
+    referenceChange: (refresh) => { refreshReasons.push("reference-change"); void refresh("reference-change"); },
+    event: (refresh) => { refreshReasons.push("event"); void refresh("event"); },
+    dispose: () => { schedulerDisposals++; },
+  };
+  const collectionInputs: GitContextCollectionInput[] = [];
+  const persisted: string[] = [];
+  let overlayCount = 0;
+  let panel: GitContextPanelComponent | undefined;
+  let selector: GitReferenceSelectorComponent | undefined;
+  let overlayHidden = false;
+  let focusCount = 0;
+  let unfocusCount = 0;
+  let overlayHides = 0;
+  let selectorCompletions = 0;
+  const notifications: string[] = [];
+  const overlayHandle = {
+    setHidden: (hidden: boolean) => { overlayHidden = hidden; },
+    isHidden: () => overlayHidden,
+    focus: () => { focusCount++; overlayHidden = false; },
+    unfocus: () => { unfocusCount++; },
+    isFocused: () => !overlayHidden,
+    hide: () => { overlayHides++; overlayHidden = true; },
+  };
+  const tui = { terminal: { columns: 160 }, requestRender() {} };
+
+  registerGitContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (name, definition) => commands.set(name, definition.handler),
+    registerShortcut: (key, definition) => shortcuts.set(key, definition.handler),
+  }, {
+    schedulerFactory: () => scheduler,
+    collect: async (_previous, input) => {
+      collectionInputs.push({ ...input });
+      return uiReadyState(input.explicitReference ?? "main");
+    },
+    persist: async (_root, reference, branches) => {
+      assert.ok(branches.some((branch) => branch.name === reference));
+      persisted.push(reference);
+      return true;
+    },
+    now: () => 1,
+  });
+
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    ui: {
+      notify: (message: string) => notifications.push(message),
+      custom: (factory: (tuiValue: unknown, theme: unknown, keybindings: unknown, done: (result: string | null) => void) => unknown, customOptions?: {
+        overlay?: boolean;
+        overlayOptions?: (() => { anchor?: string; width?: number | string });
+        onHandle?: (handle: typeof overlayHandle) => void;
+      }) => new Promise<string | null>((resolve) => {
+        const component = factory(tui, TEST_THEME, {}, (result) => {
+          if (!customOptions?.overlay) selectorCompletions++;
+          resolve(result);
+        });
+        if (customOptions?.overlay) {
+          overlayCount++;
+          panel = component as GitContextPanelComponent;
+          assert.deepEqual(customOptions.overlayOptions?.().anchor, "right-center");
+          customOptions.onHandle?.(overlayHandle);
+        } else {
+          selector = component as GitReferenceSelectorComponent;
+        }
+      }),
+    },
+  };
+
+  events.get("session_start")?.({}, context);
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(overlayCount, 1);
+  assert.deepEqual(refreshReasons, ["first-open"]);
+  assert.equal(collectionInputs.length, 1);
+
+  panel?.handleInput("r");
+  assert.ok(selector);
+  selector?.handleInput("\x1b");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(selectorCompletions, 1);
+  assert.ok(focusCount >= 2);
+  assert.deepEqual(persisted, []);
+
+  selector = undefined;
+  panel?.handleInput("r");
+  selector?.handleInput("\x1b[B");
+  selector?.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(persisted, ["origin/develop"]);
+  assert.equal(collectionInputs.at(-1)?.explicitReference, "origin/develop");
+  assert.ok(refreshReasons.includes("reference-change"));
+
+  shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
+  assert.equal(overlayHidden, true);
+  assert.equal(unfocusCount, 1);
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  assert.equal(overlayCount, 1);
+  assert.equal(overlayHidden, false);
+
+  events.get("turn_end")?.({}, context);
+  events.get("session_tree")?.({}, context);
+  assert.equal(refreshReasons.filter((reason) => reason === "event").length, 2);
+
+  panel?.handleInput("r");
+  events.get("session_shutdown")?.({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(schedulerDisposals >= 1);
+  assert.equal(overlayHides, 1);
+  assert.equal(selectorCompletions, 3);
+  assert.deepEqual(notifications, []);
+});
+
+test("Git context toggles warn safely and create no custom component outside TUI mode", () => {
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let shortcut: ((context: unknown) => unknown) | undefined;
+  let customCalls = 0;
+  const notifications: string[] = [];
+  registerGitContextUiModuleWithOptions({
+    registerCommand: (_name, definition) => { command = definition.handler; },
+    registerShortcut: (_key, definition) => { shortcut = definition.handler; },
+  });
+  const ui = {
+    notify: (message: string) => notifications.push(message),
+    custom: () => { customCalls++; throw new Error("must not open"); },
+  };
+
+  command?.("", { mode: "rpc", hasUI: true, cwd: "/repo", ui });
+  shortcut?.({ mode: "json", hasUI: false, cwd: "/repo", ui });
+  command?.("", { mode: "print", hasUI: false, cwd: "/repo", ui });
+  assert.equal(customCalls, 0);
+  assert.deepEqual(notifications, ["PA Git context requires TUI mode."]);
 });

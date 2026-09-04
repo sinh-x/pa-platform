@@ -46,7 +46,13 @@ test("Pi extension writes a redacted structured terminal status side channel", (
 
 test("Pi extension composes attributed modules through the trusted entrypoint", () => {
   const registered: string[] = [];
-  registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) });
+  const commands: string[] = [];
+  const shortcuts: string[] = [];
+  registerPiPaExtension({
+    registerTool: (tool) => registered.push(tool.name),
+    registerCommand: (name) => { commands.push(name); },
+    registerShortcut: (shortcut) => { shortcuts.push(shortcut); },
+  });
   assert.equal(PI_EXAMPLE_VERSION, "0.80.8");
   assert.deepEqual(PI_EXAMPLE_SOURCES, [
     "examples/extensions/question.ts",
@@ -54,8 +60,10 @@ test("Pi extension composes attributed modules through the trusted entrypoint", 
     "examples/extensions/status-line.ts",
     "examples/extensions/overlay-qa-tests.ts",
   ]);
-  assert.equal(PI_PA_MODULES.length, 4);
+  assert.equal(PI_PA_MODULES.length, 5);
   assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
+  assert.deepEqual(commands, ["pa-context", "pa-git-context"]);
+  assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });
 
 test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {
