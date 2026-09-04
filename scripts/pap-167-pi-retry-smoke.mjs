@@ -9,22 +9,42 @@ import { dirname, join, resolve } from "node:path";
 // Runs the pi-node-24 registry teardown case in an isolated Pi Node 24 child so
 // a native abort cannot kill the coordinator, and records child status/signal,
 // bounded stderr, host ABI, addon path, registry operation, and teardown order.
-// Usage: node scripts/pap-167-pi-retry-smoke.mjs [<ppa-store-output>] [--regression --runs N]
+// Usage: node scripts/pap-167-pi-retry-smoke.mjs [<ppa-store-output>] [--process-evidence|--regression] [--runs N] [--evidence <path>]
 
 const MAX_STDERR = 2_000;
 const DEFAULT_RUNS = 1;
+const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
+
+function configuredSecrets(env) {
+  return [...new Set(Object.entries(env)
+    .filter(([key, value]) => SECRET_KEY.test(key) && typeof value === "string" && value.length >= 8)
+    .map(([, value]) => value))];
+}
+
+function redactDiagnostic(value, secrets) {
+  let result = value;
+  for (const secret of secrets) result = result.split(secret).join("[REDACTED]");
+  return result
+    .replace(/(?:token|secret|password|api[_-]?key|authorization)\s*(?::|=|\s)\s*\S+/gi, "[REDACTED]")
+    .replace(/bearer\s+\S+/gi, "[REDACTED]")
+    .replace(/sk-[\w-]+/gi, "[REDACTED]");
+}
 
 function parseArgs(argv) {
   const positional = [];
+  let processEvidence = false;
   let regression = false;
   let runs = DEFAULT_RUNS;
+  let evidencePath;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--regression") regression = true;
+    if (arg === "--process-evidence") processEvidence = true;
+    else if (arg === "--regression") regression = true;
     else if (arg === "--runs") { runs = Number(argv[++index]); }
+    else if (arg === "--evidence") { evidencePath = argv[++index]; }
     else positional.push(arg);
   }
-  return { storeArg: positional[0], regression, runs };
+  return { storeArg: positional[0], processEvidence, regression, runs, evidencePath };
 }
 
 function resolveStoreOutput(storeArg) {
@@ -51,10 +71,12 @@ function resolvePiNodeHost(piPath) {
   throw new Error(`could not resolve Pi Node host from ${piPath}`);
 }
 
-function childSource() {
+function childSource(processEvidence) {
   return [
+    `import { writeFileSync } from "node:fs";`,
     `const addon = process.env.PAP167_ADDON;`,
     `const closeOnTeardown = process.env.PAP167_CLOSE_ON_TEARDOWN === "1";`,
+    `const processEvidence = ${JSON.stringify(processEvidence)};`,
     `process.env.PA_SQLITE_NATIVE_BINDING = addon;`,
     `process.env.PA_REGISTRY_DB = process.env.PAP167_REGISTRY_DB;`,
     `process.env.PA_AI_USAGE_HOME = process.env.PAP167_AI_USAGE;`,
@@ -69,17 +91,25 @@ function childSource() {
     `const statuses = registry.queryDeploymentStatuses();`,
     `evidence.registryOp = { kind: "queryDeploymentStatuses", deployments: statuses.length };`,
     `evidence.teardown = closeOnTeardown ? "session_shutdown -> closeDb()" : "session_shutdown WITHOUT closeDb (baseline)";`,
+    `if (processEvidence) {`,
+    `  writeFileSync(process.env.PAP167_TERMINAL_PATH, JSON.stringify({ type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() }) + "\\n", { mode: 0o600 });`,
+    `}`,
     `if (closeOnTeardown) registry.closeDb();`,
     `if (globalThis.gc) globalThis.gc();`,
     `process.stdout.write(JSON.stringify(evidence) + "\\n");`,
+    `if (processEvidence) {`,
+    `  process.stderr.write("  #  pi[fixture]: void node::RemoveEnvironmentCleanupHook(v8::Isolate*, CleanupHook, void*) at ../../src/api/hooks.cc:142\\n  #  Assertion failed: (env) != nullptr\\n\\n 3: fixture Statement::~Statement() [" + addon + "]\\n");`,
+    `  process.abort();`,
+    `}`,
   ].join("\n");
 }
 
-function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, run }) {
+function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvidence, run, secrets }) {
   const registryDb = join(root, `registry-${run}.db`);
   const aiUsage = join(root, `ai-usage-${run}`);
   const childPath = join(root, `pap-167-child-${run}.mjs`);
-  writeFileSync(childPath, childSource());
+  const terminalPath = join(root, `pi-terminal-status-${run}.json`);
+  writeFileSync(childPath, childSource(processEvidence));
   const env = {
     ...process.env,
     PAP167_ADDON: addon,
@@ -87,11 +117,12 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, run }) {
     PAP167_REGISTRY_DB: registryDb,
     PAP167_AI_USAGE: aiUsage,
     PAP167_CORE_MODULE: join(storeOutput, "share", "pa-platform", "packages", "pa-core", "dist"),
+    PAP167_TERMINAL_PATH: terminalPath,
   };
   const result = spawnSync(piNode, ["--expose-gc", childPath], {
     cwd: root, env, encoding: "utf8", timeout: 30_000,
   });
-  const stderr = (result.stderr ?? "").trim();
+  const stderr = redactDiagnostic((result.stderr ?? "").trim(), secrets);
   const boundedStderr = stderr.length > MAX_STDERR ? `${stderr.slice(0, MAX_STDERR - 3)}...` : stderr;
   const signatures = {
     removeEnvironmentCleanupHook: /RemoveEnvironmentCleanupHook/.test(stderr),
@@ -100,22 +131,43 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, run }) {
   };
   let stdout = "";
   try { stdout = JSON.parse((result.stdout ?? "").trim().split("\n").at(-1) ?? "{}"); } catch { stdout = {}; }
+  let messageTerminal = null;
+  try { messageTerminal = JSON.parse(readFileSync(terminalPath, "utf8")); } catch { /* absent outside process-evidence mode */ }
+  const processExit = result.signal
+    ? { kind: "signal", signal: result.signal, code: result.signal === "SIGABRT" ? 134 : 128 }
+    : { kind: "status", signal: null, code: result.status ?? 1 };
+  const error = redactDiagnostic(result.error?.message ?? "", secrets).slice(0, MAX_STDERR) || null;
+  const diagnosticText = `${error ?? ""}\n${boundedStderr}`;
+  const configuredSecretLeaks = secrets.filter((secret) => diagnosticText.includes(secret)).length;
+  const evidenceClassification = messageTerminal?.stopReason === "stop"
+    && processExit.code !== 0
+    && signatures.removeEnvironmentCleanupHook
+    && signatures.statementDestructor
+    && signatures.assertion
+    ? "process_abort_after_message_stop"
+    : processExit.code === 0 ? "graceful_process_exit" : "nonzero_process_exit";
   return {
     run,
     command: `${piNode} --expose-gc ${childPath}`,
     closeOnTeardown,
     status: result.status,
     signal: result.signal ?? null,
-    error: result.error?.message ?? null,
+    processExit,
+    error,
+    messageTerminal,
+    evidenceClassification,
     stdoutEvidence: stdout,
     boundedStderr,
+    diagnostics: { maxErrorCharacters: MAX_STDERR, configuredSecretLeaks },
     signatures,
   };
 }
 
 function main() {
-  const { storeArg, regression, runs } = parseArgs(process.argv.slice(2));
+  const { storeArg, processEvidence, regression, runs, evidencePath } = parseArgs(process.argv.slice(2));
   assert.ok(Number.isInteger(runs) && runs >= 1, "--runs must be a positive integer");
+  assert.equal(processEvidence && regression, false, "--process-evidence and --regression are mutually exclusive");
+  assert.ok(evidencePath === undefined || evidencePath.length > 0, "--evidence requires a path");
   const storeOutput = resolveStoreOutput(storeArg);
   const ppa = join(storeOutput, "bin", "ppa");
   const addon = join(storeOutput, "share", "pa-platform", "native-addons", "pi-node-24", "better_sqlite3.node");
@@ -126,23 +178,45 @@ function main() {
 
   const root = mkdtempSync(join(tmpdir(), "pap-167-pi-retry-"));
   const cases = [];
+  const secrets = configuredSecrets(process.env);
   try {
     for (let run = 1; run <= runs; run += 1) {
-      cases.push(runCase({ piNode, storeOutput, addon, root, closeOnTeardown: regression, run }));
+      cases.push(runCase({ piNode, storeOutput, addon, root, closeOnTeardown: regression, processEvidence, run, secrets }));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 
   const evidence = {
-    mode: regression ? "regression" : "baseline",
+    mode: regression ? "regression" : processEvidence ? "process-evidence" : "baseline",
+    ...(processEvidence ? {
+      fixture: {
+        kind: "approved-signature-replay",
+        purpose: "verify message-level stop does not mask a later process-level abort",
+        productionSources: ["d-779f18", "d-5cbc2b"],
+      },
+    } : {}),
     storeOutput,
     addon,
     piNode,
     runs,
     cases,
   };
-  process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+  const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
+  process.stdout.write(serialized);
+  if (evidencePath) writeFileSync(resolve(evidencePath), serialized, { mode: 0o600 });
+
+  if (processEvidence) {
+    for (const item of cases) {
+      assert.equal(item.messageTerminal?.stopReason, "stop", `child ${item.run} did not persist message-level stop`);
+      assert.notEqual(item.processExit.code, 0, `child ${item.run} did not abort after message-level stop`);
+      assert.equal(item.evidenceClassification, "process_abort_after_message_stop");
+      assert.deepEqual(item.signatures, { removeEnvironmentCleanupHook: true, statementDestructor: true, assertion: true });
+      assert.equal(item.diagnostics.configuredSecretLeaks, 0);
+      assert.ok(item.boundedStderr.length <= MAX_STDERR);
+      assert.ok((item.error?.length ?? 0) <= MAX_STDERR);
+    }
+  }
 
   if (regression) {
     for (const item of cases) {
