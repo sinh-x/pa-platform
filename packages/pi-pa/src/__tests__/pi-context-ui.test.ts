@@ -112,7 +112,7 @@ test("withDeadline distinguishes timeout and successful completion", async () =>
   assert.deepEqual(completed, { ok: true, value: "ok", timedOut: false });
 });
 
-test("refresh limiter coalesces bursts to at most one refresh per 2,000 ms and disposes timers", () => {
+test("refresh limiter coalesces bursts to at most one refresh per 2,000 ms and disposes timers", async () => {
   assert.equal(CONTEXT_REFRESH_INTERVAL_MS, 2_000);
   let now = 0;
   let scheduled: (() => void) | undefined;
@@ -138,11 +138,30 @@ test("refresh limiter coalesces bursts to at most one refresh per 2,000 ms and d
 
   limiter.request(() => { runs.push(now); });
   assert.equal(scheduledDelay, 2_000);
-  limiter.dispose();
+  await limiter.dispose();
   assert.ok(cleared >= 1);
   now = 4_000;
   scheduled?.();
   assert.deepEqual(runs, [0, 2_000]);
+});
+
+test("refresh limiter stops new scheduling and awaits an active context refresh", async () => {
+  const order: string[] = [];
+  let release: (() => void) | undefined;
+  const limiter = new ContextRefreshLimiter();
+  limiter.request(async () => {
+    order.push("refresh-start");
+    await new Promise<void>((resolve) => { release = resolve; });
+    order.push("refresh-settled");
+  });
+
+  const disposal = limiter.dispose().then(() => { order.push("disposed"); });
+  limiter.request(() => { order.push("late-refresh"); });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["refresh-start"]);
+  release?.();
+  await disposal;
+  assert.deepEqual(order, ["refresh-start", "refresh-settled", "disposed"]);
 });
 
 test("compact and expanded rendering expose required context within supplied width", () => {
