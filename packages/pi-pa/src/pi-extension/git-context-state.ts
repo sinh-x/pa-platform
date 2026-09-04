@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { ContextRefreshLimiter, withDeadline } from "./context-state.js";
 
@@ -93,7 +94,17 @@ export interface GitContextStaleState {
   detail?: string;
 }
 
-export type GitContextState = GitContextReadyState | GitContextFailureState | GitContextStaleState;
+export interface GitContextPendingState {
+  status: "pending";
+  stale: false;
+  repositoryRoot: string;
+  activeBranch: string;
+  reference: GitBranch;
+  branches: GitBranch[];
+  requestedAt: number;
+}
+
+export type GitContextState = GitContextReadyState | GitContextFailureState | GitContextStaleState | GitContextPendingState;
 
 export interface GitContextCollectionInput {
   cwd: string;
@@ -135,6 +146,12 @@ interface EnumeratedRefs {
 interface PersistedGitContext {
   version: typeof PERSISTED_STATE_VERSION;
   reference: string;
+}
+
+interface GitContextStateLocation {
+  repositoryRoot: string;
+  configDirectory: string;
+  statePath: string;
 }
 
 /**
@@ -376,20 +393,33 @@ export function gitContextStatePath(canonicalRepositoryRoot: string): string {
   return join(canonicalRepositoryRoot, CONFIG_DIR_NAME, GIT_CONTEXT_STATE_FILE_NAME);
 }
 
-/** Missing or malformed state is intentionally ignored. */
+/** Missing, malformed, or containment-invalid state is intentionally ignored. */
 export async function loadGitContextReference(canonicalRepositoryRoot: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    const parsed = JSON.parse(await readFile(gitContextStatePath(canonicalRepositoryRoot), "utf8")) as unknown;
+    const location = await resolveGitContextStateLocation(canonicalRepositoryRoot, false);
+    if (!location || !(await validateContainedStateFile(location))) return undefined;
+    handle = await open(location.statePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) return undefined;
+    // Recheck the parent after opening and before reading so a replaced config
+    // path cannot redirect the read to a different filesystem location.
+    const revalidated = await resolveGitContextStateLocation(canonicalRepositoryRoot, false);
+    if (!revalidated || revalidated.configDirectory !== location.configDirectory
+      || !(await validateContainedStateFile(revalidated))) return undefined;
+    const parsed = JSON.parse(await handle.readFile({ encoding: "utf8" })) as unknown;
     if (!isPersistedGitContext(parsed)) return undefined;
     return parsed.reference;
   } catch {
     return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
 /**
  * Persist only an exact enumerated branch choice. The temp file is in the same
- * project-local config directory so successful rename is an atomic replacement.
+ * containment-validated project config directory so successful rename is an
+ * atomic replacement. Symlinked parents and state-file escapes are rejected.
  */
 export async function persistGitContextReference(
   canonicalRepositoryRoot: string,
@@ -398,28 +428,127 @@ export async function persistGitContextReference(
   dependencies: PersistGitReferenceDependencies = {},
 ): Promise<boolean> {
   if (!branches.some((branch) => branch.name === reference)) return false;
-  const statePath = gitContextStatePath(canonicalRepositoryRoot);
-  const configDirectory = join(canonicalRepositoryRoot, CONFIG_DIR_NAME);
   const uniqueId = dependencies.uniqueId?.() ?? `${process.pid}-${randomUUID()}`;
-  const tempPath = join(configDirectory, `.${GIT_CONTEXT_STATE_FILE_NAME}.${uniqueId}.tmp`);
   const value: PersistedGitContext = { version: PERSISTED_STATE_VERSION, reference };
   const mkdirImpl = dependencies.mkdir ?? mkdir;
   const writeFileImpl = dependencies.writeFile ?? writeFile;
   const renameImpl = dependencies.rename ?? rename;
   const rmImpl = dependencies.rm ?? rm;
+  let tempPath: string | undefined;
   try {
-    await mkdirImpl(configDirectory, { recursive: true });
+    const repositoryRoot = await resolveCanonicalRepositoryRoot(canonicalRepositoryRoot);
+    if (!repositoryRoot) return false;
+    const lexicalConfigDirectory = join(repositoryRoot, CONFIG_DIR_NAME);
+    if (!isContainedPath(repositoryRoot, lexicalConfigDirectory)) return false;
+    try {
+      await mkdirImpl(lexicalConfigDirectory, { mode: 0o700 });
+    } catch (error: unknown) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    const location = await resolveGitContextStateLocation(canonicalRepositoryRoot, true);
+    if (!location || !(await validateContainedStateFile(location, true))) return false;
+
+    tempPath = join(location.configDirectory, `.${GIT_CONTEXT_STATE_FILE_NAME}.${uniqueId}.tmp`);
     await writeFileImpl(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    await renameImpl(tempPath, statePath);
+
+    const revalidated = await resolveGitContextStateLocation(canonicalRepositoryRoot, false);
+    if (!revalidated || revalidated.configDirectory !== location.configDirectory) throw new Error("Git context state location changed.");
+    if (!(await validateContainedTemporaryFile(revalidated, tempPath))) throw new Error("Git context temporary file escaped containment.");
+    if (!(await validateContainedStateFile(revalidated, true))) throw new Error("Git context state file escaped containment.");
+
+    await renameImpl(tempPath, location.statePath);
+    tempPath = undefined;
     return true;
   } catch {
-    try {
-      await rmImpl(tempPath, { force: true });
-    } catch {
-      // Cleanup failure does not make extension startup or selection fail noisily.
+    if (tempPath) {
+      try {
+        const cleanupLocation = await resolveGitContextStateLocation(canonicalRepositoryRoot, false);
+        if (cleanupLocation && await validateContainedTemporaryFile(cleanupLocation, tempPath)) {
+          await rmImpl(tempPath, { force: true });
+        }
+      } catch {
+        // Cleanup never follows a location that failed containment validation.
+      }
     }
     return false;
   }
+}
+
+async function resolveGitContextStateLocation(
+  canonicalRepositoryRoot: string,
+  configDirectoryMustExist: boolean,
+): Promise<GitContextStateLocation | undefined> {
+  const repositoryRoot = await resolveCanonicalRepositoryRoot(canonicalRepositoryRoot);
+  if (!repositoryRoot) return undefined;
+
+  const configDirectory = join(repositoryRoot, CONFIG_DIR_NAME);
+  if (!isContainedPath(repositoryRoot, configDirectory)) return undefined;
+  try {
+    const metadata = await lstat(configDirectory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) return undefined;
+    const canonicalConfigDirectory = await realpath(configDirectory);
+    if (canonicalConfigDirectory !== configDirectory || !isContainedPath(repositoryRoot, canonicalConfigDirectory)) return undefined;
+  } catch (error: unknown) {
+    if (!configDirectoryMustExist && isMissingPath(error)) return undefined;
+    throw error;
+  }
+
+  const statePath = join(configDirectory, GIT_CONTEXT_STATE_FILE_NAME);
+  if (!isContainedPath(repositoryRoot, statePath) || !isContainedPath(configDirectory, statePath)) return undefined;
+  return { repositoryRoot, configDirectory, statePath };
+}
+
+async function resolveCanonicalRepositoryRoot(canonicalRepositoryRoot: string): Promise<string | undefined> {
+  const repositoryRoot = resolve(canonicalRepositoryRoot);
+  if (repositoryRoot !== canonicalRepositoryRoot) return undefined;
+  return await realpath(repositoryRoot) === repositoryRoot ? repositoryRoot : undefined;
+}
+
+async function validateContainedStateFile(
+  location: GitContextStateLocation,
+  allowMissing = false,
+): Promise<boolean> {
+  try {
+    const metadata = await lstat(location.statePath);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) return false;
+    const canonicalStatePath = await realpath(location.statePath);
+    return canonicalStatePath === location.statePath
+      && isContainedPath(location.repositoryRoot, canonicalStatePath)
+      && isContainedPath(location.configDirectory, canonicalStatePath);
+  } catch (error: unknown) {
+    return allowMissing && isMissingPath(error);
+  }
+}
+
+async function validateContainedTemporaryFile(location: GitContextStateLocation, tempPath: string): Promise<boolean> {
+  try {
+    const metadata = await lstat(tempPath);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) return false;
+    const canonicalTempPath = await realpath(tempPath);
+    return canonicalTempPath === tempPath
+      && isContainedPath(location.repositoryRoot, canonicalTempPath)
+      && isContainedPath(location.configDirectory, canonicalTempPath);
+  } catch {
+    return false;
+  }
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child.length > 0 && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
+function isMissingPath(error: unknown): boolean {
+  return errorCode(error) === "ENOENT";
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return errorCode(error) === "EEXIST";
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
 }
 
 /** Phase 2 wires these hooks to overlay/session events. */

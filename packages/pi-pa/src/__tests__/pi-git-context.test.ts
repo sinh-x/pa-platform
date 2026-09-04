@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -274,17 +274,52 @@ test("project-local state ignores missing/malformed values and atomically restor
   assert.ok(["main", "origin/main"].includes((await loadGitContextReference(root)) ?? ""));
   assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), ["pa-git-context.json"]);
   assert.equal(JSON.parse(readFileSync(statePath, "utf8")).version, 1);
+  assert.equal(statSync(statePath).mode & 0o777, 0o600);
 
   const beforeFailedReplacement = readFileSync(statePath, "utf8");
   assert.equal(await persistGitContextReference(root, "develop", BRANCHES, {
     uniqueId: () => "replaced",
-    rename: async (source) => {
-      rmSync(source, { force: true });
-      throw new Error("concurrent replacement removed temporary file");
+    rename: async () => {
+      throw new Error("concurrent replacement rejected temporary file");
     },
   }), false);
   assert.equal(readFileSync(statePath, "utf8"), beforeFailedReplacement);
   assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), ["pa-git-context.json"]);
+});
+
+test("state load and persistence reject symlink escapes without reading or modifying external targets", async (t) => {
+  const sandbox = mkdtempSync(join(tmpdir(), "pi-git-containment-"));
+  t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+  const root = join(sandbox, "repo");
+  const outside = join(sandbox, "outside");
+  mkdirSync(root);
+  mkdirSync(outside);
+  const outsideState = join(outside, "pa-git-context.json");
+  const originalExternalState = `${JSON.stringify({ version: 1, reference: "main" }, null, 2)}\n`;
+  writeFileSync(outsideState, originalExternalState);
+
+  symlinkSync(outside, join(root, CONFIG_DIR_NAME), "dir");
+  assert.equal(await loadGitContextReference(root), undefined);
+  assert.equal(await persistGitContextReference(root, "develop", BRANCHES), false);
+  assert.equal(readFileSync(outsideState, "utf8"), originalExternalState);
+  assert.deepEqual(readdirSync(outside), ["pa-git-context.json"]);
+
+  rmSync(join(root, CONFIG_DIR_NAME));
+  mkdirSync(join(root, CONFIG_DIR_NAME));
+  symlinkSync(outsideState, gitContextStatePath(root), "file");
+  assert.equal(await loadGitContextReference(root), undefined);
+  assert.equal(await persistGitContextReference(root, "origin/develop", BRANCHES), false);
+  assert.equal(readFileSync(outsideState, "utf8"), originalExternalState);
+  assert.deepEqual(readdirSync(join(root, CONFIG_DIR_NAME)), ["pa-git-context.json"]);
+
+  const canonicalTarget = join(sandbox, "canonical-target");
+  const aliasedRoot = join(sandbox, "repo-link");
+  mkdirSync(canonicalTarget);
+  symlinkSync(canonicalTarget, aliasedRoot, "dir");
+  assert.equal(await loadGitContextReference(aliasedRoot), undefined);
+  assert.equal(await persistGitContextReference(aliasedRoot, "develop", BRANCHES), false);
+  assert.deepEqual(readdirSync(canonicalTarget), []);
+  assert.equal(readFileSync(outsideState, "utf8"), originalExternalState);
 });
 
 test("real repositories expose non-Git, unborn, detached, missing-ref, and missing-merge-base states", async (t) => {
@@ -554,6 +589,111 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
   for (const width of [120, 160]) assert.equal(gitContextOverlayOptions(width).anchor, "right-center");
 });
 
+test("one registered panel recreates with current layout and bounded focused lines across 160→80→160 reopen", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  const commands = new Map<string, (args: string, context: unknown) => unknown>();
+  const shortcuts = new Map<string, (context: unknown) => unknown>();
+  const tui = { terminal: { columns: 160 }, requestRender() {} };
+  type RecordedOverlay = {
+    panel: GitContextPanelComponent;
+    layout: { anchor?: string; width?: number | string };
+    hidden: boolean;
+    focused: boolean;
+    removed: boolean;
+  };
+  const overlays: RecordedOverlay[] = [];
+  let collectionStarts = 0;
+
+  registerGitContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (name, definition) => commands.set(name, definition.handler),
+    registerShortcut: (key, definition) => shortcuts.set(key, definition.handler),
+  }, {
+    schedulerFactory: () => ({
+      firstOpen: (refresh) => {
+        if (collectionStarts === 0) void refresh("first-open");
+      },
+      referenceChange() {},
+      event() {},
+      dispose() {},
+    }),
+    collect: async () => {
+      collectionStarts++;
+      return uiReadyState();
+    },
+  });
+
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    ui: {
+      notify() {},
+      custom: (factory: (tuiValue: typeof tui, theme: typeof TEST_THEME, keybindings: unknown, done: (result: void) => void) => unknown, options?: {
+        overlay?: boolean;
+        overlayOptions?: () => { anchor?: string; width?: number | string };
+        onHandle?: (handle: unknown) => void;
+      }) => {
+        assert.equal(options?.overlay, true);
+        const panel = factory(tui, TEST_THEME, {}, () => {}) as GitContextPanelComponent;
+        const record: RecordedOverlay = {
+          panel,
+          layout: options?.overlayOptions?.() ?? {},
+          hidden: false,
+          focused: false,
+          removed: false,
+        };
+        const handle = {
+          setHidden(hidden: boolean) {
+            record.hidden = hidden;
+            if (hidden) record.focused = false;
+          },
+          focus() {
+            for (const overlay of overlays) overlay.focused = false;
+            record.hidden = false;
+            record.focused = true;
+          },
+          unfocus() { record.focused = false; },
+          hide() {
+            record.hidden = true;
+            record.focused = false;
+            record.removed = true;
+          },
+        };
+        overlays.push(record);
+        options?.onHandle?.(handle);
+        return new Promise<void>(() => {});
+      },
+    },
+  };
+  const assertCurrentOverlay = (anchor: string, width: number) => {
+    const visible = overlays.filter((overlay) => !overlay.removed && !overlay.hidden);
+    assert.equal(visible.length, 1);
+    const current = visible[0]!;
+    assert.equal(current.layout.anchor, anchor);
+    assert.equal(current.layout.width, width);
+    assert.equal(current.focused, true);
+    assert.ok(current.panel.render(width).every((line) => visibleWidth(line) <= width));
+  };
+
+  events.get("session_start")?.({}, context);
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assertCurrentOverlay("right-center", 64);
+
+  shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
+  tui.terminal.columns = 80;
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  assertCurrentOverlay("center", 76);
+
+  commands.get(GIT_CONTEXT_COMMAND)?.("", context);
+  tui.terminal.columns = 160;
+  shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
+  assertCurrentOverlay("right-center", 64);
+  assert.equal(overlays.length, 3);
+  assert.equal(collectionStarts, 1);
+});
+
 test("Git panel renders all named unavailable states and stale prior data without fabrication", () => {
   for (const status of ["non-git", "detached-head", "unborn-head", "missing-ref", "missing-merge-base", "git-error", "timeout", "unavailable"] as const) {
     const lines = formatGitContextLines({ status, stale: false, checkedAt: 1, detail: "detail\nline" });
@@ -576,15 +716,19 @@ test("Git panel renders all named unavailable states and stale prior data withou
   assert.match(lines.join("\n"), /Reference: main/);
 });
 
-test("Alt+G and command share one overlay; selector cancel restores focus and selection persists then refreshes", async () => {
+test("Alt+G and command share one overlay; selection renders pending immediately while collection stays deferred", async () => {
   const events = new Map<string, (event: unknown, context: unknown) => unknown>();
   const commands = new Map<string, (args: string, context: unknown) => unknown>();
   const shortcuts = new Map<string, (context: unknown) => unknown>();
   const refreshReasons: string[] = [];
+  let deferredReferenceRefresh: ((reason: "reference-change") => void | Promise<void>) | undefined;
   let schedulerDisposals = 0;
   const scheduler: GitContextRefreshSchedulerLike = {
     firstOpen: (refresh) => { refreshReasons.push("first-open"); void refresh("first-open"); },
-    referenceChange: (refresh) => { refreshReasons.push("reference-change"); void refresh("reference-change"); },
+    referenceChange: (refresh) => {
+      refreshReasons.push("reference-change");
+      deferredReferenceRefresh = refresh;
+    },
     event: (refresh) => { refreshReasons.push("event"); void refresh("event"); },
     dispose: () => { schedulerDisposals++; },
   };
@@ -675,8 +819,15 @@ test("Alt+G and command share one overlay; selector cancel restores focus and se
   selector?.handleInput("\r");
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(persisted, ["origin/develop"]);
-  assert.equal(collectionInputs.at(-1)?.explicitReference, "origin/develop");
+  assert.equal(collectionInputs.length, 1);
   assert.ok(refreshReasons.includes("reference-change"));
+  const pendingLines = panel?.render(80) ?? [];
+  assert.ok(pendingLines.some((line) => line.includes("State: loading (pending collection)")));
+  assert.ok(pendingLines.some((line) => line.includes("Reference: origin/develop (selected)")));
+  assert.ok(pendingLines.every((line) => visibleWidth(line) <= 80));
+
+  await deferredReferenceRefresh?.("reference-change");
+  assert.equal(collectionInputs.at(-1)?.explicitReference, "origin/develop");
 
   shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
   assert.equal(overlayHidden, true);

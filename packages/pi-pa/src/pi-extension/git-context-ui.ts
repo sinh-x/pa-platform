@@ -78,10 +78,12 @@ export function registerGitContextUiModuleWithOptions(
   let overlayHandle: OverlayHandle | undefined;
   let overlayHidden = true;
   let overlayCreationPending = false;
+  let overlayTerminalWidth: number | undefined;
   let selectorDone: ((result: string | null) => void) | undefined;
   let selectorRun = 0;
   let disposed = false;
   let sessionGeneration = 0;
+  let collectionRevision = 0;
 
   const ensureScheduler = () => {
     scheduler ??= makeScheduler();
@@ -95,8 +97,10 @@ export function registerGitContextUiModuleWithOptions(
 
   const refresh = async (_reason: GitRefreshReason) => {
     const generation = sessionGeneration;
-    const next = await collect(state, collectionInput, options.collector);
-    if (disposed || generation !== sessionGeneration) return;
+    const revision = collectionRevision;
+    const input = { ...collectionInput };
+    const next = await collect(state, input, options.collector);
+    if (disposed || generation !== sessionGeneration || revision !== collectionRevision) return;
     state = next;
     publish();
   };
@@ -140,14 +144,34 @@ export function registerGitContextUiModuleWithOptions(
     restorePanelFocus();
     if (selected === null || disposed) return;
 
+    const selectedBranch = snapshot.branches.find((branch) => branch.name === selected);
+    if (!selectedBranch) return;
     const generation = sessionGeneration;
+    const previousState = state;
+    const previousInput = collectionInput;
+    collectionInput = { cwd: collectionInput.cwd, explicitReference: selected };
+    collectionRevision++;
+    state = {
+      status: "pending",
+      stale: false,
+      repositoryRoot: snapshot.repositoryRoot,
+      activeBranch: snapshot.activeBranch,
+      reference: selectedBranch,
+      branches: snapshot.branches,
+      requestedAt: now(),
+    };
+    publish();
+
     const saved = await persist(snapshot.repositoryRoot, selected, snapshot.branches);
     if (disposed || generation !== sessionGeneration) return;
     if (!saved) {
+      collectionRevision++;
+      collectionInput = previousInput;
+      state = previousState;
+      publish();
       if (context.hasUI) context.ui.notify(`Could not persist Git reference ${selected}.`, "warning");
       return;
     }
-    collectionInput = { cwd: collectionInput.cwd, explicitReference: selected };
     requestRefresh("reference-change");
   };
 
@@ -157,6 +181,14 @@ export function registerGitContextUiModuleWithOptions(
     overlayHandle?.setHidden(!visible);
     if (visible) overlayHandle?.focus();
     else overlayHandle?.unfocus({ target: null });
+  };
+
+  const closeOverlay = () => {
+    overlayHandle?.hide();
+    overlayHandle = undefined;
+    panel = undefined;
+    overlayCreationPending = false;
+    overlayTerminalWidth = undefined;
   };
 
   const ensureOverlay = (context: ExtensionContext) => {
@@ -171,7 +203,10 @@ export function registerGitContextUiModuleWithOptions(
         const createdPanel = new GitContextPanelComponent(tui, theme, () => state, () => setOverlayVisible(false), () => {
           void selectReference();
         });
-        if (!disposed && generation === sessionGeneration) panel = createdPanel;
+        if (!disposed && generation === sessionGeneration) {
+          panel = createdPanel;
+          overlayTerminalWidth = terminalWidth;
+        }
         return createdPanel;
       },
       {
@@ -214,6 +249,13 @@ export function registerGitContextUiModuleWithOptions(
       ensureOverlay(context);
       return;
     }
+    if (overlayHidden && panel && overlayTerminalWidth !== panel.terminalWidth()) {
+      cancelSelector();
+      overlayHidden = false;
+      closeOverlay();
+      ensureOverlay(context);
+      return;
+    }
     setOverlayVisible(overlayHidden);
   };
 
@@ -223,10 +265,7 @@ export function registerGitContextUiModuleWithOptions(
     cancelSelector();
     scheduler?.dispose();
     scheduler = undefined;
-    overlayHandle?.hide();
-    overlayHandle = undefined;
-    panel = undefined;
-    overlayCreationPending = false;
+    closeOverlay();
     overlayHidden = true;
     currentContext = undefined;
   };
@@ -263,6 +302,13 @@ export function registerGitContextUiModuleWithOptions(
 export const registerGitContextUiModule: PiExtensionModule = (pi) => registerGitContextUiModuleWithOptions(pi);
 
 export function formatGitContextLines(state: GitContextState): string[] {
+  if (state.status === "pending") {
+    return [
+      "State: loading (pending collection)",
+      `Active: ${singleLine(state.activeBranch)}`,
+      `Reference: ${singleLine(state.reference.name)} (selected)`,
+    ];
+  }
   if (state.status !== "ready" && state.status !== "stale") {
     const lines = [`State: ${state.status}`];
     if (state.detail) lines.push(`Detail: ${singleLine(state.detail)}`);
@@ -329,6 +375,10 @@ export class GitContextPanelComponent {
   requestRender(): void {
     this.invalidate();
     this.tui.requestRender();
+  }
+
+  terminalWidth(): number {
+    return this.tui.terminal.columns;
   }
 }
 
