@@ -102,7 +102,12 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   if (teamFiles.length !== 9) throw new Error(`Expected 9 active teams, found ${teamFiles.length}`);
   if (modeCount !== 58) throw new Error(`Expected 58 active modes, found ${modeCount}`);
   const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"));
-  if (missing.length > 0) throw new Error(`Found ${missing.length} missing team references`);
+  if (missing.length > 0) {
+    const details = missing
+      .map((reference) => `${reference.team} ${reference.context}: ${reference.reference} -> ${reference.resolvedPath}`)
+      .join("\n");
+    throw new Error(`Found ${missing.length} missing team references:\n${details}`);
+  }
 
   return [
     `CONFIG_SHA=${actualSha}`,
