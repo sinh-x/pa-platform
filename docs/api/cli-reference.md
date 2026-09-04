@@ -387,7 +387,7 @@ opa board --include-archived
 
 ## branch
 
-Manage feature branches. Subcommands: `create`, `validate`, `record-cleanup`.
+Manage feature branches in the exact registered checkout. Subcommands: `create`, `validate`.
 
 ### branch create
 
@@ -399,7 +399,7 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 - `<ticket-id>...` — one or more ticket IDs (warns if a ticket is not found; required)
 - `--topic <slug>` — kebab-case topic (required)
 
-**Behavior:** Resolves the current repo from CWD; builds the branch name from the repo's pattern; refuses if the branch already exists; checks out `develop` (fetching `origin/develop` if absent) and creates the new branch.
+**Behavior:** Resolves the exact configured repository root from CWD; builds the branch name from the repository's pattern; refuses if the branch already exists; then creates and checks out the branch from the configured development branch (fetching its origin ref when the local branch is absent). Orchestration invokes this command only for the branch gate's clean, origin-equal development-branch outcome.
 
 ### branch validate
 
@@ -407,19 +407,17 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 
 Validates the current branch against the configured branch pattern. Returns exit 0 if it matches; otherwise prints a warning (distinguishing base branches `main`/`develop` from non-conforming feature branches) and still returns 0.
 
-### branch record-cleanup
-
-**Usage:** `branch record-cleanup --feature <branch> --merge-evidence <evidence> [--delete-local] [--delete-remote]`
-
-Persists merge evidence and cleanup policy into the active mutating deployment lifecycle. The command authenticates with `PA_DEPLOYMENT_DIR` and `PA_REPOSITORY_LEASE_TOKEN`, validates the branch and evidence before writing, and makes the request available to terminal checkout restoration and cleanup.
-
 **Examples:**
 ```bash
 opa branch create PAP-132 --topic api-documentation
 opa branch create PAP-132 PAP-133 --topic refactor
 opa branch validate
-opa branch record-cleanup --feature feature/PAP-132-api-documentation --merge-evidence 'github:pr=132;merge_commit=<40-char-sha>;target=develop;ci=passed;verified=true' --delete-local
 ```
+
+PA does not lock the repository, sandbox repository writes, restore the prior
+checkout, or delete branches during terminal handling. The orchestration branch
+gate proceeds on the exact ticket branch; creates or checks out only that branch
+from clean, origin-equal `develop`; and stops unchanged from every other state.
 
 ---
 

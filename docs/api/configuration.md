@@ -290,7 +290,6 @@ deploy_modes:               # optional, list of deploy modes
     project_guides:         # optional, selected only for the resolved repository key
       pa-platform: [string]
     require_ticket: boolean  # optional, require a ticket for deploys in this mode
-    repository_access: "read-only" | "mutating"  # optional; defaults to mutating
 ```
 
 `deploy_modes[].provider` and `deploy_modes[].model` are the only runtime
@@ -300,9 +299,16 @@ select the chosen adapter's documented default. Team-level or mode-level
 
 `deploy_modes[].project_guides` maps canonical repository keys from `repos.yaml`
 to guide paths. Only the list matching the execution plan's resolved key is
-injected. `repository_access: mutating` acquires the repository's durable
-single-owner lease and requires a clean checkout; `read-only` remains admissible
-while a mutator holds that lease.
+injected.
+
+Repository execution always uses the exact root selected from `repos.yaml`.
+There is no per-mode repository access class, PA lock, repository sandbox, or
+terminal Git-state restoration. Multiple deployments may be admitted for the
+same root; agents and operators must coordinate concurrent edits. Implementation
+may proceed on the exact ticket branch, or create/check out that branch only
+from clean `develop` when `develop` equals `origin/develop`. Dirty or drifted
+`develop`, detached HEAD, release branches, and unrelated branches stop
+unchanged before project mutation or runtime spawn.
 
 See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `Agent` field reference.
 
@@ -357,11 +363,6 @@ These keys are rendered into the `<deployment-context>` primer block by all four
 | `PA_MODEL` | Agent model (if any) |
 | `PA_TEAM_MODEL` | Team-level model (if any) |
 | `PA_AGENT_MODEL` | Agent-level model (if any) |
-
-Mutation lifecycle evidence is rendered separately as lowercase
-`repository_lease_owner` and `repository_lease_path` deployment-context fields.
-The internal `PA_REPOSITORY_LEASE_TOKEN` is passed in the runtime environment for
-owners and delegated mutators but is intentionally omitted from primer output.
 
 `PA_DEPLOYMENT_ID` is also read by `evaluate --record` as the default evaluator deployment id.
 

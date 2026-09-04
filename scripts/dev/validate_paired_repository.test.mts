@@ -10,11 +10,30 @@ function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
 
+const directBranchContract = [
+  "# Orchestrator",
+  "| Repository state | Outcome |",
+  "|---|---|",
+  "| Already on the exact ticket branch | Proceed. |",
+  "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
+  "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
+  "| Dirty `develop` | Stop unchanged. |",
+  "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
+  "| On the release branch or any unrelated branch | Stop unchanged. |",
+  "| Detached HEAD | Stop unchanged. |",
+  "Use `opa branch create` for creation, a direct checkout only for the existing exact branch outcome, then validate.",
+  "Every stop occurs before project-file mutation or child launch.",
+  "",
+].join("\n");
+
 function createFixture(): { root: string; sha: string } {
   const root = mkdtempSync(join(tmpdir(), "paired-config-"));
-  mkdirSync(join(root, "teams"));
+  mkdirSync(join(root, "teams", "builder", "modes"), { recursive: true });
   mkdirSync(join(root, "skills", "global"), { recursive: true });
+  mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "config.yaml"), "config_dir: .\n");
+  writeFileSync(join(root, "teams", "builder", "modes", "orchestrator.md"), directBranchContract);
+  writeFileSync(join(root, "docs", "runtime-neutral-config.md"), "# Runtime-Neutral Configuration\nDirect registered checkout.\n");
   for (let teamIndex = 0; teamIndex < 9; teamIndex += 1) {
     const count = teamIndex === 0 ? 10 : 6;
     const modes = Array.from({ length: count }, (_, modeIndex) => [
@@ -39,6 +58,8 @@ test("paired repository gate accepts the exact clean 9-team/58-mode checkout", (
     const evidence = validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha });
     assert.ok(evidence.includes("TEAMS_VALID=9/9"));
     assert.ok(evidence.includes("MODES_VALID=58/58"));
+    assert.ok(evidence.includes("RETIRED_REPOSITORY_CONTRACTS=0"));
+    assert.ok(evidence.includes("BRANCH_GATE=7/7"));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -50,6 +71,35 @@ test("paired repository gate rejects dirty and wrong-SHA checkouts", () => {
     assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: "0".repeat(40) }), /HEAD mismatch/);
     writeFileSync(join(fixture.root, "untracked.txt"), "dirty\n");
     assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha }), /must be clean/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects incomplete direct branch contracts", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "teams", "builder", "modes", "orchestrator.md");
+    writeFileSync(path, directBranchContract.replace("| Detached HEAD | Stop unchanged. |\n", ""));
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "incomplete branch gate");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing branch-gate outcome/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects retired repository contract fields", () => {
+  const fixture = createFixture();
+  try {
+    const file = join(fixture.root, "teams", "team-0.yaml");
+    const retiredField = ["repository", "access"].join("_");
+    writeFileSync(file, `${readFileSync(file, "utf8")}\n${retiredField}: mutating\n`);
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "retired field");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /retired repository contract/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

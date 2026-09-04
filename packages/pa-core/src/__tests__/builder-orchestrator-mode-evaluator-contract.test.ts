@@ -1,108 +1,92 @@
 import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { join } from "node:path";
 import { buildDecisionPayload } from "../decision-payload.js";
 
 const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
 const modePath = configRoot ? join(configRoot, "teams", "builder", "modes", "orchestrator.md") : "";
 
+function readMode(t: TestContext): string | undefined {
+  if (!existsSync(modePath)) {
+    t.skip("external pa-platform-config fixture not available");
+    return undefined;
+  }
+  return readFileSync(modePath, "utf-8");
+}
+
 test("builder orchestrator mode excludes evaluator child coverage contract", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
 
   assert.doesNotMatch(modeDoc, /Child coverage contract/);
-  assert.doesNotMatch(modeDoc, /Child coverage write timing/);
   assert.doesNotMatch(modeDoc, /Evaluator Launch=in-flight/);
-  assert.doesNotMatch(modeDoc, /Phase 6\.5: Post-Deploy Evaluator/);
+  assert.doesNotMatch(modeDoc, /Post-Deploy Evaluator/);
 });
 
-test("builder orchestrator mode keeps no-ticket hard fail before Phase 0", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
+test("builder orchestrator mode hard-fails without a ticket before startup", (t) => {
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
 
-  assert.match(modeDoc, /No `ticket_id` → hard fail\./);
+  assert.match(modeDoc, /\*\*Ticket required\.\*\*/);
   assert.match(modeDoc, /orchestrator requires ticket_id; none provided/);
-  assert.match(modeDoc, /Do not run Phase 0 or any later phase\./);
-  assert.match(modeDoc, /before any orchestration side effect: no sub-deploy,\s+no branch creation\/switching, no ticket creation, and no orchestration report\s+mutation\./);
-  assert.match(modeDoc, /The one-line stderr error above is the only allowed output\./);
+  assert.match(modeDoc, /exit before any report, ticket, Git, or child-deployment mutation/);
 
-  const noTicketRuleIndex = modeDoc.indexOf("- **No `ticket_id` → hard fail.");
-  const phaseZeroIndex = modeDoc.indexOf("## Phase 0: Repo Resolution (mandatory pre-flight)");
-
-  assert.notEqual(noTicketRuleIndex, -1);
-  assert.notEqual(phaseZeroIndex, -1);
-  assert.ok(
-    noTicketRuleIndex < phaseZeroIndex,
-    "no-ticket hard fail rule must appear before Phase 0 instructions",
-  );
+  const noTicketRuleIndex = modeDoc.indexOf("- **Ticket required.**");
+  const startupIndex = modeDoc.indexOf("## Startup and Resume");
+  assert.ok(noTicketRuleIndex >= 0 && startupIndex > noTicketRuleIndex);
 });
 
-test("builder orchestrator mode enforces Phase 5.x user confirmation loop gate", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
+test("builder orchestrator mode requires one exact registered repository identity", (t) => {
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
 
-  assert.match(modeDoc, /Phase 5\.x confirmation gate rule: this gate applies only when Sinh\/user feedback\s+is involved\./);
-  assert.match(modeDoc, /the orchestrator MUST record the result and ask Sinh for\s+explicit confirmation before any Phase 6 action, routine merge work, or ticket\s+handoff\./);
-  assert.match(modeDoc, /Continue this loop until Sinh approves or explicitly stops the loop\./);
-  assert.match(modeDoc, /normal Phase 6\s+is\s+allowed only when state is `approved`/);
-  assert.match(modeDoc, /stopped.*partial terminal return/s);
-  assert.match(modeDoc, /Phase 6 entry gate: if any Phase 5\.x user-feedback-derived fix result is still/);
+  assert.match(modeDoc, /`repo_key`: the resolved repository-registry key/);
+  assert.match(modeDoc, /`repo_root`: the exact configured project path/);
+  assert.match(modeDoc, /Every available identity source[\s\S]*must agree with the canonical pair and exact root/);
+  assert.match(modeDoc, /fails closed before project reads, mutations, or child\/runtime spawn/);
+  assert.match(modeDoc, /diagnostic no longer than 2,000 characters/);
 });
 
-test("builder orchestrator mode requires durable Phase 5.x feedback-loop evidence fields", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
+test("builder orchestrator mode encodes all seven direct branch-gate outcomes", (t) => {
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
+  const outcomes = [
+    "| Already on the exact ticket branch | Proceed. |",
+    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
+    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
+    "| Dirty `develop` | Stop unchanged. |",
+    "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
+    "| On the release branch or any unrelated branch | Stop unchanged. |",
+    "| Detached HEAD | Stop unchanged. |",
+  ];
+  for (const outcome of outcomes) assert.ok(modeDoc.includes(outcome), `missing branch outcome: ${outcome}`);
 
-  assert.match(modeDoc, /Durable evidence contract for each Phase 5\.x feedback\/fix\/confirmation iteration:/);
-  assert.match(modeDoc, /Record `feedback_source`/);
-  assert.match(modeDoc, /Record `objective_artifact_path`/);
-  assert.match(modeDoc, /Record `child_deploy_id` and `child_status`/);
-  assert.match(modeDoc, /Record `verification_summary`/);
-  assert.match(modeDoc, /Record confirmation as either `confirmation_text`/);
-  assert.match(modeDoc, /or `confirmation_state=pending-confirmation`/);
+  assert.match(modeDoc, /Use `opa branch create`/);
+  assert.match(modeDoc, /a direct checkout only for the existing exact branch outcome/);
+  assert.match(modeDoc, /Every stop occurs before project-file mutation or child launch/);
+  assert.match(modeDoc, /Never stash, reset, repair, relocate, or select a substitute checkout/);
 });
 
-test("builder orchestrator mode requires one-bundle objective shape and branch reuse for Phase 5.x", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
+test("builder orchestrator mode passes stable direct-checkout context to report-only children", (t) => {
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
 
-  assert.match(modeDoc, /Map exactly one Sinh feedback bundle to exactly one builder\/implement objective\./);
-  assert.match(modeDoc, /The objective MUST use this section structure and section names:/);
-  assert.match(modeDoc, /- `Goal`/);
-  assert.match(modeDoc, /- `Requirements`/);
-  assert.match(modeDoc, /- `Verification`/);
-  assert.match(modeDoc, /- `Context`/);
-  assert.match(modeDoc, /- `Guardrails`/);
-  assert.match(modeDoc, /Reuse the target ticket's active feature branch for every Phase 5\.x/);
-  assert.match(modeDoc, /Do not create a separate branch per feedback item\./);
+  assert.match(modeDoc, /Every child receives the same `repo_key`, `repo_root`, ticket, exact feature branch/);
+  assert.match(modeDoc, /Launch against the registry key or exact root; never derive a child path from CWD/);
+  assert.match(modeDoc, /--repo "<repo_key>"[\s\S]*--ticket <ticket_id>/);
+  assert.match(modeDoc, /Implement children are report-only\. They must not edit requirements checkboxes or change ticket status\./);
 });
 
-test("builder orchestrator Phase 5.6 gates preserve independent decision payload contracts", (t) => {
-  if (!existsSync(modePath)) return t.skip("external pa-platform-config fixture not available");
-  const modeDoc = readFileSync(modePath, "utf-8");
-  const gates = [
-    ["Step 3.5", "Step 4", /Proposal:/, /Evidence\/Findings/, /Options: Proceed.*Reject.*Stop/s],
-    ["Step 6.5", "Step 7", /Proposal:/, /Evidence\/Findings/, /Options:\s+Approve.*Reject\/request\s+changes.*Stop/s],
-  ] as const;
+test("builder orchestrator mode keeps review fixes on the same branch and records evidence", (t) => {
+  const modeDoc = readMode(t);
+  if (!modeDoc) return;
 
-  for (const [step, nextStep, proposal, evidence, implications] of gates) {
-    const gateStart = modeDoc.indexOf(`**${step}`);
-    const gateEnd = modeDoc.indexOf(`**${nextStep}`, gateStart);
-    assert.ok(gateStart >= 0 && gateEnd > gateStart, `${step} gate must be present before ${nextStep}`);
-    const gate = modeDoc.slice(gateStart, gateEnd);
-    assert.match(gate, proposal);
-    assert.match(gate, evidence);
-    assert.match(gate, implications);
-    assert.match(gate, /Exact decision requested:/);
-    assert.match(gate, /current `ticket_id`/);
-    assert.match(gate, /exact objective/);
-    assert.match(gate, /current findings\/file evidence/);
-    assert.match(gate, /verification summary/);
-    assert.match(gate, /shared decision-payload builder\/template/);
-  }
-
-  assert.doesNotMatch(modeDoc, /### Phase 5\.6: Fix Loop/);
+  assert.match(modeDoc, /Compose one fix objective per feedback bundle with `Goal`, `Requirements`, `Verification`, `Context`, and `Guardrails`/);
+  assert.match(modeDoc, /Launch builder\/implement with the same repository key\/root, branch, and ticket/);
+  assert.match(modeDoc, /Record the feedback source, objective artifact, child IDs\/statuses, verification, confirmation, and cycle count/);
+  assert.match(modeDoc, /Do not create another branch for review feedback/);
+  assert.match(modeDoc, /Never launch while confirmation is pending, rejected, or stopped/);
 });
 
 test("decision payload builder renders unrelated tickets exactly and stays bounded", () => {
