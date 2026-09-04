@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -104,11 +104,50 @@ function childSource(processEvidence) {
   ].join("\n");
 }
 
+function reconcileProcessEvidence({ storeOutput, registryDb, aiUsage, deployDir, processExit, boundedStderr, secrets }) {
+  const diagnostic = redactDiagnostic(`runner-process: Pi exited with code ${processExit.code}; ${boundedStderr}`, secrets).slice(0, MAX_STDERR);
+  const source = [
+    `const core = await import(process.env.PAP167_CORE_MODULE + "/registry/index.js");`,
+    `const terminal = await import(process.env.PAP167_TERMINAL_MODULE);`,
+    `const deployDir = process.env.PAP167_DEPLOY_DIR;`,
+    `const before = terminal.readPiTerminalStatus(deployDir);`,
+    `const requested = { deployment_id: "d-pap167", team: "builder", event: "crashed", timestamp: new Date().toISOString(), error: process.env.PAP167_PROCESS_DIAGNOSTIC, exit_code: Number(process.env.PAP167_PROCESS_EXIT) };`,
+    `const authoritative = core.reconcileTerminalRegistryEvent(requested).event;`,
+    `const error = (authoritative.event === "crashed" ? authoritative.error : authoritative.summary) ?? process.env.PAP167_PROCESS_DIAGNOSTIC;`,
+    `terminal.writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "error", error, timestamp: authoritative.timestamp });`,
+    `const registryStatus = core.queryDeploymentStatus("d-pap167");`,
+    `const registryTerminal = core.getDeploymentEvents("d-pap167").filter((event) => event.event === "completed" || event.event === "crashed");`,
+    `const persistedTerminal = terminal.readPiTerminalStatus(deployDir);`,
+    `core.closeDb();`,
+    `process.stdout.write(JSON.stringify({ before, persistedTerminal, registryStatus, registryTerminal }));`,
+  ].join("\n");
+  const result = spawnSync(join(storeOutput, "bin", "pa-platform-node"), ["--input-type=module", "--eval", source], {
+    cwd: deployDir,
+    env: {
+      ...process.env,
+      PA_REGISTRY_DB: registryDb,
+      PA_AI_USAGE_HOME: aiUsage,
+      PAP167_CORE_MODULE: join(storeOutput, "share", "pa-platform", "packages", "pa-core", "dist"),
+      PAP167_TERMINAL_MODULE: join(storeOutput, "share", "pa-platform", "packages", "pi-pa", "dist", "terminal-status.js"),
+      PAP167_DEPLOY_DIR: deployDir,
+      PAP167_PROCESS_DIAGNOSTIC: diagnostic,
+      PAP167_PROCESS_EXIT: String(processExit.code),
+    },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  const error = redactDiagnostic(result.stderr || result.error?.message || "", secrets).slice(0, MAX_STDERR);
+  assert.equal(result.status, 0, `process evidence reconciliation failed: ${error}`);
+  return JSON.parse(result.stdout || "{}");
+}
+
 function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvidence, run, secrets }) {
-  const registryDb = join(root, `registry-${run}.db`);
-  const aiUsage = join(root, `ai-usage-${run}`);
-  const childPath = join(root, `pap-167-child-${run}.mjs`);
-  const terminalPath = join(root, `pi-terminal-status-${run}.json`);
+  const deployDir = join(root, `run-${run}`);
+  mkdirSync(deployDir, { recursive: true });
+  const registryDb = join(deployDir, "registry.db");
+  const aiUsage = join(deployDir, "ai-usage");
+  const childPath = join(deployDir, "pap-167-child.mjs");
+  const terminalPath = join(deployDir, "pi-terminal-status.json");
   writeFileSync(childPath, childSource(processEvidence));
   const env = {
     ...process.env,
@@ -137,14 +176,19 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     ? { kind: "signal", signal: result.signal, code: result.signal === "SIGABRT" ? 134 : 128 }
     : { kind: "status", signal: null, code: result.status ?? 1 };
   const error = redactDiagnostic(result.error?.message ?? "", secrets).slice(0, MAX_STDERR) || null;
-  const diagnosticText = `${error ?? ""}\n${boundedStderr}`;
+  const persistedEvidence = processEvidence
+    ? reconcileProcessEvidence({ storeOutput, registryDb, aiUsage, deployDir, processExit, boundedStderr, secrets })
+    : null;
+  const diagnosticText = `${error ?? ""}\n${boundedStderr}\n${JSON.stringify(persistedEvidence ?? {})}`;
   const configuredSecretLeaks = secrets.filter((secret) => diagnosticText.includes(secret)).length;
   const evidenceClassification = messageTerminal?.stopReason === "stop"
     && processExit.code !== 0
     && signatures.removeEnvironmentCleanupHook
     && signatures.statementDestructor
     && signatures.assertion
-    ? "process_abort_after_message_stop"
+    && persistedEvidence?.persistedTerminal?.stopReason === "error"
+    && ["crashed", "failed"].includes(persistedEvidence?.registryStatus?.status)
+    ? "process_abort_supersedes_message_stop"
     : processExit.code === 0 ? "graceful_process_exit" : "nonzero_process_exit";
   return {
     run,
@@ -155,6 +199,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     processExit,
     error,
     messageTerminal,
+    persistedEvidence,
     evidenceClassification,
     stdoutEvidence: stdout,
     boundedStderr,
@@ -210,11 +255,20 @@ function main() {
     for (const item of cases) {
       assert.equal(item.messageTerminal?.stopReason, "stop", `child ${item.run} did not persist message-level stop`);
       assert.notEqual(item.processExit.code, 0, `child ${item.run} did not abort after message-level stop`);
-      assert.equal(item.evidenceClassification, "process_abort_after_message_stop");
+      assert.equal(item.evidenceClassification, "process_abort_supersedes_message_stop");
       assert.deepEqual(item.signatures, { removeEnvironmentCleanupHook: true, statementDestructor: true, assertion: true });
+      assert.equal(item.persistedEvidence.before?.stopReason, "stop");
+      assert.equal(item.persistedEvidence.persistedTerminal?.stopReason, "error");
+      assert.equal(item.persistedEvidence.registryStatus?.status, "crashed");
+      assert.equal(item.persistedEvidence.registryTerminal?.length, 1);
+      assert.equal(item.persistedEvidence.registryTerminal?.[0]?.event, "crashed");
+      assert.equal(item.persistedEvidence.registryTerminal?.[0]?.exit_code, item.processExit.code);
+      assert.match(item.persistedEvidence.persistedTerminal?.error ?? "", /RemoveEnvironmentCleanupHook/);
       assert.equal(item.diagnostics.configuredSecretLeaks, 0);
       assert.ok(item.boundedStderr.length <= MAX_STDERR);
       assert.ok((item.error?.length ?? 0) <= MAX_STDERR);
+      assert.ok((item.persistedEvidence.persistedTerminal?.error?.length ?? Infinity) <= MAX_STDERR);
+      assert.ok((item.persistedEvidence.registryTerminal?.[0]?.error?.length ?? Infinity) <= MAX_STDERR);
     }
   }
 

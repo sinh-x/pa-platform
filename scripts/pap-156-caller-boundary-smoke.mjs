@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -23,11 +23,23 @@ const root = mkdtempSync(join(tmpdir(), "pap-156-caller-boundary-"));
 let supervisorPid;
 try {
   const bin = join(root, "bin");
+  const config = join(root, "config");
   const teams = join(root, "teams");
   const skills = join(root, "skills");
+  const repo = join(root, "repo");
   mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
   mkdirSync(skills, { recursive: true });
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-b", "develop"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "pap156@example.invalid"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "PAP-156 Fixture"], { cwd: repo });
+  writeFileSync(join(repo, "README.md"), "PAP-156 caller-boundary fixture\n");
+  execFileSync("git", ["add", "README.md"], { cwd: repo });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+  writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
+  writeFileSync(join(config, "repos.yaml"), `repos:\n  pap156-fixture:\n    path: ${repo}\n    description: Synthetic PAP-156 repository\n    prefix: PAP\n`);
   const realPi = process.env.PAP156_REAL_PI ?? "/home/sinh/.nix-profile/bin/pi";
   const piNode = resolvePiNodeHost(realPi);
   const probeLog = join(root, "pi-probes.jsonl");
@@ -74,15 +86,15 @@ try {
     PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
     PA_AI_USAGE_HOME: aiUsage,
     PA_REGISTRY_DB: registry,
-    PA_PLATFORM_CONFIG: join(root, "config"),
+    PA_PLATFORM_CONFIG: config,
     PA_PLATFORM_HOME: root,
     PA_PLATFORM_TEAMS: teams,
     PA_PLATFORM_SKILLS: skills,
   };
   const invocationWallMs = Date.now();
   const invocationMonotonicMs = performance.now();
-  const launcher = spawn(ppa, ["deploy", "pap156", "--mode", "smoke", "--background", "--objective-file", objective, "--timeout", "60"], {
-    cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"],
+  const launcher = spawn(ppa, ["deploy", "pap156", "--mode", "smoke", "--background", "--repo", "pap156-fixture", "--objective-file", objective, "--timeout", "60"], {
+    cwd: repo, env, stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
@@ -121,7 +133,7 @@ try {
   const registryProbe = spawnSync(platformNode, ["--input-type=module", "--eval", [
     `const core = await import(${JSON.stringify(coreModule)});`,
     `process.stdout.write(JSON.stringify(core.getDeploymentEvents(${JSON.stringify(deploymentId)})));`,
-  ].join("\n")], { cwd: process.cwd(), env, encoding: "utf8", timeout: 10_000 });
+  ].join("\n")], { cwd: repo, env, encoding: "utf8", timeout: 10_000 });
   assert.equal(registryProbe.status, 0, registryProbe.stderr);
   const events = JSON.parse(registryProbe.stdout);
   const started = events.find((event) => event.event === "started");
