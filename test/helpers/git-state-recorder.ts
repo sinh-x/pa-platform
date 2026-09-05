@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 export interface GitStateRecorder {
   binDir: string;
-  readOperations(): string[];
+  readCommands(): string[][];
+  readOperations(): string[][];
 }
 
 interface PlanWithEnvironment {
@@ -32,6 +33,7 @@ export function assertNoRepositoryAdmissionState(plan: PlanWithEnvironment, prim
 export function installGitStateRecorder(root: string): GitStateRecorder {
   const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
   const binDir = join(root, "git-state-recorder-bin");
+  const commandLogPath = join(root, "git-state-commands.jsonl");
   const logPath = join(root, "git-state-operations.jsonl");
   const wrapperPath = join(binDir, "git");
   mkdirSync(binDir, { recursive: true });
@@ -40,6 +42,7 @@ const { appendFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const command = args[0];
+appendFileSync(${JSON.stringify(commandLogPath)}, JSON.stringify(args) + "\\n");
 const branchDelete = command === "branch" && args.slice(1).some((arg) => arg === "-d" || arg === "-D" || arg === "--delete");
 if (["checkout", "reset", "clean", "restore", "worktree"].includes(command) || branchDelete) {
   appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
@@ -53,8 +56,12 @@ if (result.signal) process.kill(process.pid, result.signal);
 process.exit(result.status ?? 1);
 `, "utf8");
   chmodSync(wrapperPath, 0o755);
+  const readLog = (path: string): string[][] => existsSync(path)
+    ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[])
+    : [];
   return {
     binDir,
+    readCommands: () => readLog(commandLogPath),
     readOperations: () => existsSync(logPath)
       ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[])
       : [],

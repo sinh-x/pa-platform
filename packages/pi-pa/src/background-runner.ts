@@ -6,7 +6,10 @@ import {
   createActivityEvent,
   ensureTerminalRegistryMarker,
   getDeployPaths,
+  readProcessFingerprint,
   reconcileTerminalRegistryEvent,
+  releaseRepositoryMutationLease,
+  transferRepositoryMutationLease,
   type RegistryEvent,
 } from "@pa-platform/pa-core";
 import {
@@ -41,6 +44,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   const secrets = environmentSecrets(process.env);
   let childPid: number | undefined;
   let ready = false;
+  let repositoryLeaseTransferred = false;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -72,6 +76,17 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
+    if (config.repositoryLease) {
+      const fingerprint = readProcessFingerprint(process.pid);
+      if (!fingerprint) throw new Error(`runner-readiness: cannot verify repository supervisor PID ${process.pid}`);
+      const transfer = transferRepositoryMutationLease({
+        canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
+        ownershipToken: config.repositoryLease.ownershipToken,
+        nextProcessFingerprint: fingerprint,
+      });
+      if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
+      repositoryLeaseTransferred = true;
+    }
     const args = buildPiBackgroundArgs(config);
     const childEnv = piRegistryEnvironment({ ...process.env });
     const result = await runPiManagedProcess(
@@ -119,7 +134,16 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     process.removeListener("SIGTERM", onSigterm);
     process.removeListener("SIGINT", onSigint);
     options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
-    ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+    try {
+      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+    } finally {
+      if (repositoryLeaseTransferred && config.repositoryLease) {
+        releaseRepositoryMutationLease({
+          canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
+          ownershipToken: config.repositoryLease.ownershipToken,
+        });
+      }
+    }
   }
 }
 
