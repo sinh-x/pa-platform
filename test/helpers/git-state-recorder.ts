@@ -8,25 +8,37 @@ export interface GitStateRecorder {
   readOperations(): string[][];
 }
 
-interface PlanWithEnvironment {
+interface PlanWithRepositoryAdmission {
   environment: Readonly<Record<string, string | undefined>>;
+  repositoryAdmission: {
+    readonly access: "read-only" | "exclusive-builder" | "non-locking";
+    readonly launchMode: "foreground" | "background" | "dry-run";
+    readonly ownershipIntent: "none" | "preview" | "acquire-before-spawn";
+    readonly force: boolean;
+    readonly gitSnapshot?: unknown;
+  };
 }
 
-export function assertNoRepositoryAdmissionState(plan: PlanWithEnvironment, primer?: string): void {
-  const retiredPlanKeys = [["repository", "Access"].join(""), ["repository", "Lease"].join("")];
-  for (const key of retiredPlanKeys) {
-    if (key in plan) throw new Error(`Unexpected retired plan key: ${key}`);
+function assertNoInternalLeaseFields(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  const internalLeasePrefix = ["PA", "REPOSITORY", "LEASE"].join("_");
+  if (Object.keys(plan.environment).some((key) => key.startsWith(internalLeasePrefix))) {
+    throw new Error("Unexpected internal repository lease environment");
   }
-  const retiredEnvPrefix = ["PA", "REPOSITORY", "LEASE"].join("_");
-  if (Object.keys(plan.environment).some((key) => key.startsWith(retiredEnvPrefix))) {
-    throw new Error("Unexpected retired repository admission environment");
+  if (primer?.includes(internalLeasePrefix)) throw new Error("Unexpected internal repository lease primer field");
+}
+
+export function assertNonLockingRepositoryAdmission(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  if (plan.repositoryAdmission.access !== "non-locking" || plan.repositoryAdmission.ownershipIntent !== "none" || plan.repositoryAdmission.gitSnapshot !== undefined) {
+    throw new Error("Expected explicit non-locking repository admission without ownership or Git status evidence");
   }
-  if (primer) {
-    const retiredPrimerFields = [["repository", "access"].join("_"), ["repository", "lease"].join("_"), retiredEnvPrefix];
-    if (retiredPrimerFields.some((field) => primer.includes(field))) {
-      throw new Error("Unexpected retired repository admission primer field");
-    }
+  assertNoInternalLeaseFields(plan, primer);
+}
+
+export function assertBuilderExclusiveRepositoryAdmission(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  if (plan.repositoryAdmission.access !== "exclusive-builder" || plan.repositoryAdmission.ownershipIntent !== "acquire-before-spawn" || plan.repositoryAdmission.gitSnapshot === undefined) {
+    throw new Error("Expected builder-exclusive repository admission with pre-spawn Git evidence");
   }
+  assertNoInternalLeaseFields(plan, primer);
 }
 
 /** Records Git commands that can mutate checkout, branch, or worktree state. */

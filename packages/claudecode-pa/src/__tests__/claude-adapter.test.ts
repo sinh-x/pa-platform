@@ -9,7 +9,7 @@ import { ClaudeCodeAdapter, buildPrimerLoadPrompt, claudeJsonToActivityEvent, cr
 import { loadBackgroundConfig, runBackgroundEntry } from "../background-runner.js";
 import { createClaudeHooks, createDefaultClaudeHooks, deployWithClaude } from "../deploy.js";
 import { installPaClaudeHooks, PA_CLAUDE_HOOK_EVENTS, PA_CLAUDE_HOOKS_HANDLER_FILENAME, PA_CLAUDE_HOOKS_HANDLER_SOURCE, resolvePaClaudeHooksHandlerPath, resolvePaClaudeSettingsPath } from "../plugins/pa-claude-hooks.js";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertNonLockingRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -214,7 +214,7 @@ test("cpa deploy includes repo memory docs as path pointers (claude native load,
   });
 });
 
-test("Claude key/path plans stay canonical and two same-root runs have no admission state", async () => {
+test("Claude key/path plans stay canonical and daily modes remain explicitly non-locking", async () => {
   await withCpaEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
@@ -251,7 +251,7 @@ test("Claude key/path plans stay canonical and two same-root runs have no admiss
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.userObjectiveOverride, undefined);
-      assertNoRepositoryAdmissionState(plan, primer);
+      assertNonLockingRepositoryAdmission(plan, primer);
       assert.equal(captured.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);

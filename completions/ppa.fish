@@ -391,7 +391,7 @@ complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_f
 complete -c ppa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c ppa -n __ppa_deploy_needs_team -a '(__ppa_deploy_team_candidates)' -d 'Team name'
-complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy' -d 'Deploy option'
+complete -c ppa -f -n __ppa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy --force' -d 'Deploy option'
 complete -c ppa -f -n __ppa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__ppa_modes)'
 complete -c ppa -n __ppa_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c ppa -n __ppa_deploy_completing -l objective-file -d 'Objective from file' -r
@@ -403,6 +403,7 @@ complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Deprecated model
 complete -c ppa -f -n __ppa_deploy_completing -l agent-model -d 'Unsupported per-agent model override (PAP-148)' -r
 complete -c ppa -n __ppa_deploy_completing -l background -d 'Run detached/headless'
 complete -c ppa -n __ppa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
+complete -c ppa -n __ppa_deploy_completing -l force -d 'Recover stale or malformed builder ownership evidence'
 complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Registered repository key or exact configured path' -r -a '(__ppa_projects)'
 complete -c ppa -f -n __ppa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__ppa_ticket_ids)'
 complete -c ppa -n __ppa_deploy_completing -l timeout -d 'Timeout seconds' -r

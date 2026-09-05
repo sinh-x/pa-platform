@@ -14,11 +14,21 @@ roots, and registry evidence all use the exact configured root. Explicit
 non-registered paths, aliases, independent clones, and linked Git working trees
 fail before runtime spawn with a bounded corrective diagnostic.
 
-Repository admission has no per-mode access class, PA lock, repository sandbox,
-checkout ownership, or runtime write-protection wrapper. Multiple deployments
-may be admitted for the same registered root, and PA does not serialize them or restore Git state at
-terminal handling. Agents and operators remain responsible for respecting mode
-mutation boundaries and coordinating concurrent edits.
+Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
+it bypasses Git status and repository-lease access even when the checkout is dirty
+or a builder owns the same canonical root. Every `builder/*` mode is
+`exclusive-builder`: one process-verified live builder may own a canonical root
+across ppa and opa. Other teams remain `non-locking`.
+
+Builder admission captures branch, HEAD, staged/unstaged/untracked counts, and a
+bounded porcelain summary without mutating Git. A dirty foreground builder may
+launch with that evidence and receives a mandatory intent/re-read contract before
+agent-initiated Git or project-file mutation. A dirty background builder, including
+REST's background default, rejects before runtime spawn and leaves no owned lease.
+Builder ownership uses `.git/pa-repository-mutation.lease.json`; `deploy --force`
+may quarantine stale or malformed evidence, but never overrides a process-verified
+live owner or bypasses identity, sensitive-input, ticket, or runtime guards.
+Dry-run, list-modes, and validate do not mutate lease state.
 
 Before implementation edits, determine the exact ticket branch and apply this
 branch gate:
@@ -34,9 +44,10 @@ branch gate:
 | Detached HEAD | Stop unchanged. |
 
 The create and check-out outcomes are the only branch mutations authorized by
-this gate. Every stop occurs before project-file mutation or runtime spawn; do
-not stash, reset, repair, relocate, or select another checkout. The gate does
-not remove the race between independently admitted deployments.
+this gate. Every stop occurs before project-file mutation or child launch; do
+not stash, reset, repair, relocate, or select another checkout. Platform-level
+builder ownership prevents a second live builder from reaching runtime spawn on
+the same canonical root.
 
 The primer contains exactly one authoritative `## Additional Instructions`
 section. CLI/evaluator overrides appear there; the configured team or mode

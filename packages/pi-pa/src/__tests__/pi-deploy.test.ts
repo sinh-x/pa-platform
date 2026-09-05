@@ -14,7 +14,7 @@ import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertBuilderExclusiveRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -507,10 +507,10 @@ test("PPA and OPA builders hold different canonical repositories independently",
   });
 });
 
-test("PPA key and exact-path requests consume one canonical execution plan with no admission state", async () => {
+test("PPA key and exact-path builder requests consume one canonical builder-exclusive admission plan", async () => {
   await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
-    const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; registryRepo?: string; runtimeCwd?: string }> = [];
+    const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; repositoryLease?: SpawnOpts["repositoryLease"]; registryRepo?: string; runtimeCwd?: string }> = [];
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
       let runtimeCwd: string | undefined;
@@ -535,7 +535,7 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
       const plan = captured.executionPlan;
       const primer = readFileSync(captured.primerPath, "utf8");
       const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
-      observations.push({ plan, primer, registryRepo: started?.repo, runtimeCwd });
+      observations.push({ plan, primer, repositoryLease: captured.repositoryLease, registryRepo: started?.repo, runtimeCwd });
     }
 
     for (const observation of observations) {
@@ -546,7 +546,12 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
       assert.equal(observation.plan.userObjectiveOverride, undefined);
-      assertNoRepositoryAdmissionState(observation.plan, observation.primer);
+      assertBuilderExclusiveRepositoryAdmission(observation.plan, observation.primer);
+      assert.equal(observation.plan.repositoryAdmission.launchMode, "background");
+      assert.equal(observation.plan.repositoryAdmission.force, false);
+      assert.equal(observation.plan.repositoryAdmission.gitSnapshot?.dirty, false);
+      assert.ok(observation.repositoryLease?.ownershipToken);
+      assert.equal(observation.repositoryLease?.canonicalRepoRoot, repo);
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);

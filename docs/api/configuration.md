@@ -302,13 +302,16 @@ to guide paths. Only the list matching the execution plan's resolved key is
 injected.
 
 Repository execution always uses the exact root selected from `repos.yaml`.
-There is no per-mode repository access class, PA lock, repository sandbox, or
-terminal Git-state restoration. Multiple deployments may be admitted for the
-same root; agents and operators must coordinate concurrent edits. Implementation
-may proceed on the exact ticket branch, or create/check out that branch only
-from clean `develop` when `develop` equals `origin/develop`. Dirty or drifted
-`develop`, detached HEAD, release branches, and unrelated branches stop
-unchanged before project mutation or runtime spawn.
+Admission class is derived from the team for every configured mode:
+`requirements/*` is read-only and bypasses Git status/lease access,
+`builder/*` is exclusive per canonical root, and other teams are non-locking.
+Dirty foreground builders receive an intent/re-read contract; dirty background
+builders reject before spawn. Deploy force recovers only stale or malformed
+builder ownership and does not bypass other guards. Implementation may proceed
+on the exact ticket branch, or create/check out that branch only from clean
+`develop` when `develop` equals `origin/develop`. Dirty or drifted `develop`,
+detached HEAD, release branches, and unrelated branches stop unchanged before
+project mutation or child launch.
 
 See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `Agent` field reference.
 

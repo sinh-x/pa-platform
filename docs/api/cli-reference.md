@@ -153,6 +153,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
 | `--autonomy <low\|medium\|high>` | level | Override autonomy level (default: medium) |
+| `--force` | — | Recover stale or malformed builder ownership evidence. Never overrides a live builder or bypasses repository identity, sensitive-input, ticket, or runtime guards. |
 
 **Provider options:**
 
@@ -162,6 +163,8 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--model <name>` | model | Override the selected flat mode model or adapter default |
 | `--team-model <name>` | model | Deprecated warning alias for `--model`; final removal is PAP-147 |
 | `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
+
+**Repository admission:** every `requirements/*` mode bypasses Git status and ownership-lease access. Every `builder/*` mode is exclusive per canonical repository. Dirty foreground builders launch with an intent/re-read instruction contract; dirty background builders (including REST defaults) reject before spawn. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
 
 **Removed flags:** `--interactive` and `--direct` were removed; foreground TUI is the default. Passing either returns an error directing the user to `--background` or `--dry-run`.
 
@@ -174,6 +177,7 @@ opa deploy builder --dry-run --mode implement
 opa deploy builder --list-modes
 opa deploy builder --validate
 opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform
+opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform --force
 opa deploy builder --mode implement --provider deepseek --model deepseek/deepseek-v4-pro
 ```
 

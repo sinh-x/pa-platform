@@ -10,7 +10,7 @@ import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSess
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { runBackgroundEntry } from "../background-runner.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertNonLockingRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -656,7 +656,7 @@ test("OPA background launcher requires authenticated supervisor handoff and rele
   });
 });
 
-test("OpenCode key/path plans stay canonical and two same-root runs have no admission state", async () => {
+test("OpenCode key/path plans stay canonical and daily modes remain explicitly non-locking", async () => {
   await withOpaEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
@@ -697,7 +697,7 @@ test("OpenCode key/path plans stay canonical and two same-root runs have no admi
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.userObjectiveOverride, undefined);
-      assertNoRepositoryAdmissionState(plan, primer);
+      assertNonLockingRepositoryAdmission(plan, primer);
       assert.equal(opts.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);
@@ -752,7 +752,7 @@ test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before ad
     assert.equal(secondRun.status, "pending", secondRun.reason);
     assert.equal(spawns, 2);
     assert.equal(plans.length, 2);
-    for (const opts of plans) assertNoRepositoryAdmissionState(opts.executionPlan!);
+    for (const opts of plans) assertNonLockingRepositoryAdmission(opts.executionPlan!);
   });
 });
 
