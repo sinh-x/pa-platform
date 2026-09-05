@@ -14,7 +14,13 @@ import {
   runCoreCommand,
 } from "@pa-platform/pa-core";
 import { PiAdapter } from "../adapter.js";
-import registerPiPaExtension, { createPiSessionLifecycle, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
+import registerPiPaExtension, {
+  createPiSessionLifecycle,
+  registerPiSessionModules,
+  type PiExtensionModule,
+  type PiRuntime,
+  type PiToolDefinition,
+} from "../pi-extension/index.js";
 import {
   PI_REGISTRY_ADDON_ENV,
   REGISTRY_NATIVE_BINDING_ENV,
@@ -238,6 +244,52 @@ test("session shutdown uses one awaited boundary for all reasons and duplicate c
       await assert.doesNotReject(async () => shutdown({ type: "session_shutdown", reason }, {}));
     }
   });
+});
+
+test("direct module shutdown handlers compose into the central awaited boundary", async () => {
+  const events = new Map<string, EventHandler>();
+  const registrations = new Map<string, number>();
+  const order: string[] = [];
+  let releaseLegacyCleanup: (() => void) | undefined;
+  let receivedEvent: unknown;
+  let receivedContext: unknown;
+  let legacyCalls = 0;
+  const pi: PiRuntime = {
+    on: ((event: string, handler: EventHandler): void => {
+      events.set(event, handler);
+      registrations.set(event, (registrations.get(event) ?? 0) + 1);
+    }) as NonNullable<PiRuntime["on"]>,
+  };
+  const legacyModule: PiExtensionModule = (moduleRuntime) => {
+    moduleRuntime.on?.("session_shutdown", async (event, context) => {
+      legacyCalls++;
+      receivedEvent = event;
+      receivedContext = context;
+      order.push("legacy-start");
+      await new Promise<void>((resolve) => { releaseLegacyCleanup = resolve; });
+      order.push("legacy-settled");
+    });
+  };
+  const lifecycle = createPiSessionLifecycle(() => { order.push("close"); });
+  registerPiSessionModules(pi, lifecycle, [legacyModule]);
+
+  assert.equal(registrations.get("session_shutdown"), 1, "only the central boundary reaches the real runtime");
+  const shutdown = events.get("session_shutdown");
+  assert.ok(shutdown);
+  const event = { type: "session_shutdown", reason: "reload" };
+  const context = { session: "outgoing" };
+  const first = Promise.resolve(shutdown(event, context));
+  const duplicate = Promise.resolve(shutdown({ type: "session_shutdown", reason: "quit" }, { session: "duplicate" }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(legacyCalls, 1);
+  assert.equal(receivedEvent, event);
+  assert.equal(receivedContext, context);
+  assert.deepEqual(order, ["legacy-start"]);
+  releaseLegacyCleanup?.();
+  await Promise.all([first, duplicate]);
+  assert.deepEqual(order, ["legacy-start", "legacy-settled", "close"]);
+  assert.equal(legacyCalls, 1, "duplicate shutdown must not repeat composed cleanup");
 });
 
 test("shutdown settles context disposal and in-flight registry access before close", async () => {

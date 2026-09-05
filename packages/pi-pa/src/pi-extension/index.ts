@@ -53,15 +53,16 @@ export interface PiRuntime {
   registerCommand?: (name: string, options: { description: string; handler: (args: string, context: unknown) => unknown }) => void;
   registerShortcut?: (shortcut: string, options: { description: string; handler: (context: unknown) => unknown }) => void;
 }
+export type PiSessionShutdownHandler = (event: unknown, context: unknown) => unknown;
 export interface PiSessionLifecycle {
-  addShutdownStep(step: () => void | Promise<void>): void;
+  addShutdownStep(step: PiSessionShutdownHandler): void;
   trackRegistryAccess<T>(access: () => T | Promise<T>): Promise<T>;
-  shutdown(): Promise<void>;
+  shutdown(event?: unknown, context?: unknown): Promise<void>;
 }
 export type PiExtensionModule = (pi: PiRuntime, lifecycle?: PiSessionLifecycle) => void;
 
 export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): PiSessionLifecycle {
-  const shutdownSteps: Array<() => void | Promise<void>> = [];
+  const shutdownSteps: PiSessionShutdownHandler[] = [];
   const registryAccess = new Set<Promise<unknown>>();
   let closing = false;
   let shutdownPromise: Promise<void> | undefined;
@@ -86,12 +87,12 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
       );
       return tracked;
     },
-    shutdown(): Promise<void> {
+    shutdown(event?: unknown, context?: unknown): Promise<void> {
       if (shutdownPromise) return shutdownPromise;
       closing = true;
       shutdownPromise = (async () => {
         const disposal = shutdownSteps.map((step) => {
-          try { return Promise.resolve(step()); }
+          try { return Promise.resolve(step(event, context)); }
           catch (error) { return Promise.reject(error); }
         });
         await Promise.allSettled(disposal);
@@ -101,6 +102,32 @@ export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): P
       return shutdownPromise;
     },
   };
+}
+
+export function registerPiSessionModules(
+  pi: PiRuntime,
+  lifecycle: PiSessionLifecycle,
+  modules: readonly PiExtensionModule[] = PI_PA_MODULES,
+): void {
+  const moduleRuntime = captureModuleShutdownHandlers(pi, lifecycle);
+  for (const registerModule of modules) registerModule(moduleRuntime, lifecycle);
+  pi.on?.("session_shutdown", (event, context) => lifecycle.shutdown(event, context));
+}
+
+function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecycle): PiRuntime {
+  if (!pi.on) return pi;
+  const forward = pi.on.bind(pi) as (event: string, handler: PiSessionShutdownHandler) => void;
+  const on = ((event: string, handler: PiSessionShutdownHandler): void => {
+    if (event === "session_shutdown") lifecycle.addShutdownStep(handler);
+    else forward(event, handler);
+  }) as NonNullable<PiRuntime["on"]>;
+  return new Proxy(pi, {
+    get(target, property) {
+      if (property === "on") return on;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
@@ -157,9 +184,7 @@ export const PI_PA_MODULES: readonly PiExtensionModule[] = [registerPaToolsModul
 
 export default function registerPiPaExtension(pi: PiRuntime): void {
   configurePiRegistryBinding();
-  const lifecycle = createPiSessionLifecycle();
-  for (const registerModule of PI_PA_MODULES) registerModule(pi, lifecycle);
-  pi.on?.("session_shutdown", async () => lifecycle.shutdown());
+  registerPiSessionModules(pi, createPiSessionLifecycle());
 }
 
 export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
