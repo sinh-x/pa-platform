@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // PAP-167 isolated retry/session-restart teardown harness.
 // Runs the pi-node-24 registry teardown case in an isolated Pi Node 24 child so
@@ -47,13 +48,22 @@ function parseArgs(argv) {
   return { storeArg: positional[0], processEvidence, regression, runs, evidencePath };
 }
 
-function resolveStoreOutput(storeArg) {
+export function resolveStoreOutput(storeArg, env = process.env) {
   if (storeArg && existsSync(join(storeArg, "bin", "ppa"))) return resolve(storeArg);
-  const addon = process.env.PA_PI_SQLITE_NATIVE_BINDING;
+  const addon = env.PA_PI_SQLITE_NATIVE_BINDING;
   if (addon) {
-    const share = dirname(dirname(dirname(resolve(addon))));
-    const store = dirname(share);
-    if (existsSync(join(store, "bin", "ppa"))) return store;
+    const resolvedAddon = resolve(addon);
+    if (!existsSync(resolvedAddon)) {
+      throw new Error(`PA_PI_SQLITE_NATIVE_BINDING does not exist: ${resolvedAddon}`);
+    }
+    let candidate = dirname(resolvedAddon);
+    while (true) {
+      if (existsSync(join(candidate, "bin", "ppa"))) return candidate;
+      const parent = dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+    throw new Error(`could not resolve an installed pa-platform store output from PA_PI_SQLITE_NATIVE_BINDING: no ancestor of ${resolvedAddon} contains bin/ppa`);
   }
   throw new Error("could not resolve an installed pa-platform store output; pass <ppa-store-output> or set PA_PI_SQLITE_NATIVE_BINDING");
 }
@@ -282,4 +292,4 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) main();
