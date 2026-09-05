@@ -162,6 +162,7 @@ export class ContextRefreshLimiter {
   private lastRunAt: number | undefined;
   private pending: (() => void | Promise<void>) | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private readonly inFlight = new Set<Promise<void>>();
   private disposed = false;
 
   constructor(
@@ -187,11 +188,12 @@ export class ContextRefreshLimiter {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.pending = undefined;
     if (this.timer !== undefined) this.clearTimer(this.timer);
     this.timer = undefined;
+    await Promise.allSettled([...this.inFlight]);
   }
 
   private runPending(): void {
@@ -199,7 +201,15 @@ export class ContextRefreshLimiter {
     const refresh = this.pending;
     this.pending = undefined;
     this.lastRunAt = this.now();
-    void refresh();
+    let result: void | Promise<void>;
+    try {
+      result = refresh();
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    const tracked = Promise.resolve(result).then(() => undefined, () => undefined);
+    this.inFlight.add(tracked);
+    void tracked.finally(() => this.inFlight.delete(tracked));
   }
 }
 

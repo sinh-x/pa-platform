@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "typebox";
-import { BulletinStore, TicketStore, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
+import { BulletinStore, TicketStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
 import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import { configurePiRegistryBinding } from "../native-host.js";
@@ -54,7 +54,82 @@ export interface PiRuntime {
   registerCommand?: (name: string, options: { description: string; handler: (args: string, context: unknown) => unknown }) => void;
   registerShortcut?: (shortcut: string, options: { description: string; handler: (context: unknown) => unknown }) => void;
 }
-export type PiExtensionModule = (pi: PiRuntime) => void;
+export type PiSessionShutdownHandler = (event: unknown, context: unknown) => unknown;
+export interface PiSessionLifecycle {
+  addShutdownStep(step: PiSessionShutdownHandler): void;
+  trackRegistryAccess<T>(access: () => T | Promise<T>): Promise<T>;
+  shutdown(event?: unknown, context?: unknown): Promise<void>;
+}
+export type PiExtensionModule = (pi: PiRuntime, lifecycle?: PiSessionLifecycle) => void;
+
+export function createPiSessionLifecycle(closeRegistry: () => void = closeDb): PiSessionLifecycle {
+  const shutdownSteps: PiSessionShutdownHandler[] = [];
+  const registryAccess = new Set<Promise<unknown>>();
+  let closing = false;
+  let shutdownPromise: Promise<void> | undefined;
+
+  return {
+    addShutdownStep(step) {
+      if (closing) throw new Error("Pi session shutdown has already started.");
+      shutdownSteps.push(step);
+    },
+    trackRegistryAccess<T>(access: () => T | Promise<T>): Promise<T> {
+      if (closing) return Promise.reject(new Error("Pi session is shutting down."));
+      let tracked: Promise<T>;
+      try {
+        tracked = Promise.resolve(access());
+      } catch (error) {
+        tracked = Promise.reject(error);
+      }
+      registryAccess.add(tracked);
+      void tracked.then(
+        () => registryAccess.delete(tracked),
+        () => registryAccess.delete(tracked),
+      );
+      return tracked;
+    },
+    shutdown(event?: unknown, context?: unknown): Promise<void> {
+      if (shutdownPromise) return shutdownPromise;
+      closing = true;
+      shutdownPromise = (async () => {
+        const disposal = shutdownSteps.map((step) => {
+          try { return Promise.resolve(step(event, context)); }
+          catch (error) { return Promise.reject(error); }
+        });
+        await Promise.allSettled(disposal);
+        await Promise.allSettled([...registryAccess]);
+        closeRegistry();
+      })();
+      return shutdownPromise;
+    },
+  };
+}
+
+export function registerPiSessionModules(
+  pi: PiRuntime,
+  lifecycle: PiSessionLifecycle,
+  modules: readonly PiExtensionModule[] = PI_PA_MODULES,
+): void {
+  const moduleRuntime = captureModuleShutdownHandlers(pi, lifecycle);
+  for (const registerModule of modules) registerModule(moduleRuntime, lifecycle);
+  pi.on?.("session_shutdown", (event, context) => lifecycle.shutdown(event, context));
+}
+
+function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecycle): PiRuntime {
+  if (!pi.on) return pi;
+  const forward = pi.on.bind(pi) as (event: string, handler: PiSessionShutdownHandler) => void;
+  const on = ((event: string, handler: PiSessionShutdownHandler): void => {
+    if (event === "session_shutdown") lifecycle.addShutdownStep(handler);
+    else forward(event, handler);
+  }) as NonNullable<PiRuntime["on"]>;
+  return new Proxy(pi, {
+    get(target, property) {
+      if (property === "on") return on;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
   const values = flattenStrings(call.input);
@@ -65,7 +140,7 @@ export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
   return { allowed: true };
 }
 
-export function createPaTools(): PiToolDefinition[] {
+export function createPaTools(lifecycle?: PiSessionLifecycle): PiToolDefinition[] {
   return [
     {
       name: "pa_ticket", label: "PA Ticket", description: "Read or comment on a PA ticket.",
@@ -80,12 +155,12 @@ export function createPaTools(): PiToolDefinition[] {
     {
       name: "pa_registry", label: "PA Registry", description: "Read bounded PA deployment registry data.",
       parameters: Type.Object({ action: Type.String(), id: Type.Optional(Type.String()) }),
-      execute: async (_toolCallId, input, _signal, _onUpdate, _context) => toolResult(() => registryTool(input))
+      execute: async (_toolCallId, input, _signal, _onUpdate, _context) => trackedRegistryResult(lifecycle, () => registryTool(input))
     },
     {
       name: "pa_status", label: "PA Status", description: "Read the status of one PA deployment.",
       parameters: Type.Object({ id: Type.String() }),
-      execute: async (_toolCallId, input, _signal, _onUpdate, _context) => toolResult(() => { const id = stringInput(input, "id"); return queryDeploymentStatus(id) ?? { error: `Deployment not found: ${id}` }; })
+      execute: async (_toolCallId, input, _signal, _onUpdate, _context) => trackedRegistryResult(lifecycle, () => { const id = stringInput(input, "id"); return queryDeploymentStatus(id) ?? { error: `Deployment not found: ${id}` }; })
     },
   ];
 }
@@ -94,8 +169,8 @@ export function createPaExtension(): { name: string; tools: PiToolDefinition[]; 
   return { name: "pi-pa", tools: createPaTools(), tool_call: interceptToolCall };
 }
 
-export const registerPaToolsModule: PiExtensionModule = (pi) => {
-  for (const tool of createPaTools()) pi.registerTool?.(tool);
+export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
+  for (const tool of createPaTools(lifecycle)) pi.registerTool?.(tool);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);
     return decision.allowed ? undefined : { block: true, reason: decision.reason };
@@ -116,7 +191,7 @@ export const PI_PA_MODULES: readonly PiExtensionModule[] = [
 
 export default function registerPiPaExtension(pi: PiRuntime): void {
   configurePiRegistryBinding();
-  for (const registerModule of PI_PA_MODULES) registerModule(pi);
+  registerPiSessionModules(pi, createPiSessionLifecycle());
 }
 
 export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
@@ -151,6 +226,10 @@ function registryTool(input: Record<string, unknown>): unknown {
 
 function toolResult(read: () => unknown): PiToolResult {
   return { content: [{ type: "text", text: boundJson(read()) }], details: {} };
+}
+
+function trackedRegistryResult(lifecycle: PiSessionLifecycle | undefined, read: () => unknown): Promise<PiToolResult> {
+  return lifecycle ? lifecycle.trackRegistryAccess(() => toolResult(read)) : Promise.resolve(toolResult(read));
 }
 
 export function boundJson(value: unknown): string {

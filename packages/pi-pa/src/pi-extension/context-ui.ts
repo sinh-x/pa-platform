@@ -8,7 +8,7 @@
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
-import type { PiExtensionModule } from "./index.js";
+import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
 import type { TodoDetails } from "./todo.js";
 import {
   ContextRefreshLimiter,
@@ -26,6 +26,7 @@ export const CONTEXT_MIN_WIDTH = 120;
 export interface ContextUiModuleOptions {
   collector?: ContextCollectorDependencies;
   limiter?: ContextRefreshLimiter;
+  lifecycle?: PiSessionLifecycle;
 }
 
 export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionModule>[0], options: ContextUiModuleOptions = {}): void {
@@ -149,21 +150,26 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     requestRefresh();
   });
 
-  pi.on?.("session_shutdown", () => {
+  const cleanup = async () => {
+    if (disposed) return;
     disposed = true;
-    limiter.dispose();
-    currentContext?.ui.setStatus(CONTEXT_STATUS_ID, undefined);
-    overlayHandle?.hide();
-    overlayHandle = undefined;
-    sidebar = undefined;
-    currentContext = undefined;
-  });
+    const settlement = limiter.dispose();
+    try {
+      currentContext?.ui.setStatus(CONTEXT_STATUS_ID, undefined);
+      overlayHandle?.hide();
+    } finally {
+      overlayHandle = undefined;
+      sidebar = undefined;
+      currentContext = undefined;
+      await settlement;
+    }
+  };
 
-  // Retained for deterministic disposal assertions without exposing internals in production.
-  void disposed;
+  if (options.lifecycle) options.lifecycle.addShutdownStep(cleanup);
+  else pi.on?.("session_shutdown", cleanup);
 }
 
-export const registerContextUiModule: PiExtensionModule = (pi) => registerContextUiModuleWithOptions(pi);
+export const registerContextUiModule: PiExtensionModule = (pi, lifecycle) => registerContextUiModuleWithOptions(pi, { lifecycle });
 
 export function formatCompactContext(snapshot: PaContextSnapshot): string {
   const parts: string[] = [];
