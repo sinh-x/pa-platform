@@ -5,11 +5,17 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   DEPLOYMENT_TASK_SNAPSHOT_VERSION,
+  MAX_DEPLOYMENT_TASK_SECTION_BYTES,
+  MAX_DEPLOYMENT_TASK_SECTION_LINES,
   MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES,
   createDeploymentTaskSnapshot,
   deploymentTaskSnapshotPath,
+  deploymentTaskStatusMarker,
+  formatDeploymentTaskSection,
+  formatDeploymentTasksUnavailable,
   parseDeploymentTaskSnapshot,
   readDeploymentTaskSnapshot,
+  sanitizeDeploymentTaskText,
   validateDeploymentTaskSnapshot,
   writeDeploymentTaskSnapshot,
   type DeploymentTaskSnapshot,
@@ -95,4 +101,98 @@ test("deployment task snapshot writer atomically installs mode 0600 and preserve
   }), /injected replacement failure/);
   assert.equal(readFileSync(path, "utf8"), `${JSON.stringify(prior)}\n`);
   assert.deepEqual(readdirSync(root), ["deployment-tasks.json"]);
+});
+
+test("task section renders shared lifecycle markers, active state, dependencies, freshness, and stable order", () => {
+  const value = createDeploymentTaskSnapshot({
+    deploymentId: "d-render",
+    updatedAt: UPDATED_AT,
+    nextId: 9,
+    tasks: [
+      { id: 8, text: "Complete", status: "completed", order: 1, dependencies: [] },
+      { id: 2, text: "Active", status: "in_progress", order: 2, dependencies: [8] },
+      { id: 7, text: "Pending", status: "pending", order: 3, dependencies: [8, 2] },
+      { id: 5, text: "Cancelled", status: "cancelled", order: 4, dependencies: [8] },
+    ],
+  });
+  assert.deepEqual(
+    ["pending", "in_progress", "completed", "cancelled"].map((status) => deploymentTaskStatusMarker(status as "pending" | "in_progress" | "completed" | "cancelled")),
+    ["○", "▶", "✓", "−"],
+  );
+  assert.equal(formatDeploymentTaskSection(value), [
+    "Session tasks: 1/4 completed",
+    `  Freshness: ${UPDATED_AT}`,
+    "  ✓ #8 Complete",
+    "  ▶ #2 Active ← #8",
+    "  ○ #7 Pending ← #8,#2",
+    "  − #5 Cancelled ← #8",
+  ].join("\n"));
+});
+
+test("task section renders zero tasks and sanitizes multiline, control, ANSI, and bidi text to one safe row", () => {
+  const empty = createDeploymentTaskSnapshot({ deploymentId: "d-empty", updatedAt: UPDATED_AT, tasks: [], nextId: 1 });
+  assert.equal(formatDeploymentTaskSection(empty), `Session tasks: 0/0 completed\n  Freshness: ${UPDATED_AT}\n  No session tasks`);
+
+  const hostile = "alpha\n\u001b[31mred\u001b[0m\tzero\u0000\u202Eend\u001b]0;title\u0007";
+  assert.equal(sanitizeDeploymentTaskText(hostile), "alpha red zero end");
+  const section = formatDeploymentTaskSection(createDeploymentTaskSnapshot({
+    deploymentId: "d-hostile",
+    updatedAt: UPDATED_AT,
+    nextId: 2,
+    tasks: [{ id: 1, text: hostile, status: "pending", order: 1, dependencies: [] }],
+  }));
+  assert.equal(section.split("\n").length, 3);
+  assert.match(section, /○ #1 alpha red zero end$/);
+  assert.doesNotMatch(section, /\u001b|\u009b/);
+  assert.doesNotMatch(section.split("\n").at(-1) ?? "", /\p{Cc}|\p{Cf}/u);
+
+  const unavailable = formatDeploymentTasksUnavailable(`bad\n\u001b[31m${"x".repeat(500)}`);
+  assert.equal(unavailable.split("\n").length, 2);
+  assert.ok(Buffer.byteLength(unavailable) < 1_000);
+  assert.doesNotMatch(unavailable, /\u001b/);
+});
+
+test("task section enforces exact 2,000-line boundary with an omission notice", () => {
+  const makeTasks = (count: number) => Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    text: "x",
+    status: "pending" as const,
+    order: index + 1,
+    dependencies: [],
+  }));
+  const exact = formatDeploymentTaskSection(createDeploymentTaskSnapshot({
+    deploymentId: "d-lines-exact",
+    updatedAt: UPDATED_AT,
+    tasks: makeTasks(MAX_DEPLOYMENT_TASK_SECTION_LINES - 2),
+    nextId: MAX_DEPLOYMENT_TASK_SECTION_LINES - 1,
+  }));
+  assert.equal(exact.split("\n").length, MAX_DEPLOYMENT_TASK_SECTION_LINES);
+  assert.doesNotMatch(exact, /omitted/);
+
+  const oversized = formatDeploymentTaskSection(createDeploymentTaskSnapshot({
+    deploymentId: "d-lines-over",
+    updatedAt: UPDATED_AT,
+    tasks: makeTasks(MAX_DEPLOYMENT_TASK_SECTION_LINES - 1),
+    nextId: MAX_DEPLOYMENT_TASK_SECTION_LINES,
+  }));
+  assert.equal(oversized.split("\n").length, MAX_DEPLOYMENT_TASK_SECTION_LINES);
+  assert.match(oversized, /2 tasks omitted: task section limit/);
+});
+
+test("task section enforces exact 50 KiB boundary with an omission notice", () => {
+  const renderWithText = (text: string) => formatDeploymentTaskSection(createDeploymentTaskSnapshot({
+    deploymentId: "d-bytes",
+    updatedAt: UPDATED_AT,
+    nextId: 2,
+    tasks: [{ id: 1, text, status: "pending", order: 1, dependencies: [] }],
+  }));
+  const oneByte = renderWithText("x");
+  const exactText = "x".repeat(1 + MAX_DEPLOYMENT_TASK_SECTION_BYTES - Buffer.byteLength(oneByte));
+  const exact = renderWithText(exactText);
+  assert.equal(Buffer.byteLength(exact), MAX_DEPLOYMENT_TASK_SECTION_BYTES);
+  assert.doesNotMatch(exact, /omitted/);
+
+  const oversized = renderWithText(`${exactText}x`);
+  assert.ok(Buffer.byteLength(oversized) <= MAX_DEPLOYMENT_TASK_SECTION_BYTES);
+  assert.match(oversized, /1 task omitted: task section limit/);
 });

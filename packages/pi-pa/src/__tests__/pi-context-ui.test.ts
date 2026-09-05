@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { deploymentTaskStatusMarker } from "@pa-platform/pa-core";
 import {
   CONTEXT_LOOKUP_DEADLINE_MS,
   CONTEXT_REFRESH_INTERVAL_MS,
@@ -189,6 +190,25 @@ test("compact and expanded rendering expose required context within supplied wid
   }
   assert.match(formatContextLines(snapshot).join("\n"), /Deployment status: running/);
   assert.match(formatContextLines(snapshot).join("\n"), /▶ #2 Context/);
+});
+
+test("Alt+I task rows retain all four lifecycle markers from the shared core mapping", () => {
+  const snapshot = managedSnapshot();
+  const statuses = ["pending", "in_progress", "completed", "cancelled"] as const;
+  snapshot.todo = {
+    tasks: statuses.map((status, index) => ({ id: index + 1, text: status, status, order: index + 1, dependencies: [] })),
+    total: statuses.length,
+    completed: 1,
+    active: undefined,
+  };
+  const taskLines = formatContextLines(snapshot).filter((line) => /^.[ ]#\d+/.test(line));
+  assert.deepEqual(taskLines, statuses.map((status, index) => `${deploymentTaskStatusMarker(status)} #${index + 1} ${status}`));
+  assert.deepEqual(taskLines, [
+    "○ #1 pending",
+    "▶ #2 in_progress",
+    "✓ #3 completed",
+    "− #4 cancelled",
+  ]);
 });
 
 test("command and Alt+I toggle the same initially hidden responsive right overlay", async () => {

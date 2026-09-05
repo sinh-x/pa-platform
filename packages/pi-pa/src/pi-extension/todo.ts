@@ -18,6 +18,7 @@ import {
   createActivityEvent,
   createDeploymentTaskSnapshot,
   deploymentTaskSnapshotPath,
+  deploymentTaskStatusMarker,
   writeDeploymentTaskSnapshot,
   type ActivityEvent,
   type DeploymentTask,
@@ -315,10 +316,11 @@ function formatTasks(tasks: TodoTask[]): string {
 }
 
 function renderTask(task: TodoTask, theme: { fg: (color: string, text: string) => string }): string {
-  const marker = task.status === "completed" ? theme.fg("success", "✓")
-    : task.status === "in_progress" ? theme.fg("accent", "▶")
-      : task.status === "cancelled" ? theme.fg("warning", "−")
-        : theme.fg("dim", "○");
+  const markerColor = task.status === "completed" ? "success"
+    : task.status === "in_progress" ? "accent"
+      : task.status === "cancelled" ? "warning"
+        : "dim";
+  const marker = theme.fg(markerColor, deploymentTaskStatusMarker(task.status));
   const dependencies = task.dependencies.length ? theme.fg("dim", ` ← ${task.dependencies.map((id) => `#${id}`).join(",")}`) : "";
   return `${marker} ${theme.fg("accent", `#${task.id}`)} ${theme.fg(task.status === "pending" || task.status === "in_progress" ? "muted" : "dim", task.text)}${dependencies}`;
 }

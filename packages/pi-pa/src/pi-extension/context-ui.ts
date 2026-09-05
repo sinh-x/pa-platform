@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { deploymentTaskStatusMarker } from "@pa-platform/pa-core";
 import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
 import type { TodoDetails } from "./todo.js";
@@ -201,7 +202,7 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
       ]
     : ["Deployment: unavailable"];
   const taskLines = snapshot.todo.tasks.length > 0
-    ? snapshot.todo.tasks.map((task) => `${task.status === "in_progress" ? "▶" : task.status === "completed" ? "✓" : task.status === "cancelled" ? "−" : "○"} #${task.id} ${task.text}`)
+    ? snapshot.todo.tasks.map((task) => `${deploymentTaskStatusMarker(task.status)} #${task.id} ${task.text}`)
     : ["No session tasks"];
   return [
     ...deployment,

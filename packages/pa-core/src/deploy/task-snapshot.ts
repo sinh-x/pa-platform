@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 export const DEPLOYMENT_TASK_SNAPSHOT_FILE = "deployment-tasks.json";
 export const DEPLOYMENT_TASK_SNAPSHOT_VERSION = 1;
 export const MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES = 5 * 1024 * 1024;
+export const MAX_DEPLOYMENT_TASK_SECTION_BYTES = 50 * 1024;
+export const MAX_DEPLOYMENT_TASK_SECTION_LINES = 2_000;
 
 export const DEPLOYMENT_TASK_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
 export type DeploymentTaskStatus = (typeof DEPLOYMENT_TASK_STATUSES)[number];
@@ -36,6 +38,18 @@ export interface DeploymentTaskSnapshotWriteOptions {
   rename?: (source: string, destination: string) => void;
 }
 
+export type DeploymentTaskSnapshotErrorKind = "malformed" | "unsupported_version" | "deployment_mismatch" | "oversized";
+
+export class DeploymentTaskSnapshotError extends Error {
+  constructor(
+    readonly kind: DeploymentTaskSnapshotErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DeploymentTaskSnapshotError";
+  }
+}
+
 export function deploymentTaskSnapshotPath(deploymentDir: string): string {
   return resolve(deploymentDir, DEPLOYMENT_TASK_SNAPSHOT_FILE);
 }
@@ -54,13 +68,13 @@ export function createDeploymentTaskSnapshot(input: CreateDeploymentTaskSnapshot
 export function validateDeploymentTaskSnapshot(value: unknown, expectedDeploymentId: string): DeploymentTaskSnapshot {
   if (!isRecord(value)) throw malformed("snapshot must be an object");
   if (value["schemaVersion"] !== DEPLOYMENT_TASK_SNAPSHOT_VERSION) {
-    throw new Error(`Unsupported deployment task snapshot schema version: ${String(value["schemaVersion"])}`);
+    throw new DeploymentTaskSnapshotError("unsupported_version", "Unsupported deployment task snapshot schema version");
   }
   if (typeof value["deploymentId"] !== "string" || value["deploymentId"].length === 0) {
     throw malformed("deploymentId must be a non-empty string");
   }
   if (value["deploymentId"] !== expectedDeploymentId) {
-    throw new Error(`Deployment task snapshot ID does not match ${expectedDeploymentId}`);
+    throw new DeploymentTaskSnapshotError("deployment_mismatch", `Deployment task snapshot ID does not match ${expectedDeploymentId}`);
   }
   if (typeof value["updatedAt"] !== "string" || !isIsoTimestamp(value["updatedAt"])) {
     throw malformed("updatedAt must be an ISO timestamp");
@@ -140,6 +154,80 @@ export function writeDeploymentTaskSnapshot(
   }
 }
 
+export function deploymentTaskStatusMarker(status: DeploymentTaskStatus): "○" | "▶" | "✓" | "−" {
+  switch (status) {
+    case "pending": return "○";
+    case "in_progress": return "▶";
+    case "completed": return "✓";
+    case "cancelled": return "−";
+  }
+}
+
+export function sanitizeDeploymentTaskText(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    .replace(/\u001b[P^_][\s\S]*?\u001b\\/gu, "")
+    .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\u001b[@-_]/gu, "")
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+export function formatDeploymentTaskSection(snapshot: DeploymentTaskSnapshot): string {
+  const completed = snapshot.tasks.filter((task) => task.status === "completed").length;
+  const header = [`Session tasks: ${completed}/${snapshot.tasks.length} completed`, `  Freshness: ${snapshot.updatedAt}`];
+  if (snapshot.tasks.length === 0) return [...header, "  No session tasks"].join("\n");
+
+  const rows = [...snapshot.tasks]
+    .sort((left, right) => left.order - right.order || left.id - right.id)
+    .map((task) => {
+      const dependencies = task.dependencies.length > 0
+        ? ` ← ${task.dependencies.map((id) => `#${id}`).join(",")}`
+        : "";
+      return `  ${deploymentTaskStatusMarker(task.status)} #${task.id} ${sanitizeDeploymentTaskText(task.text)}${dependencies}`;
+    });
+  const complete = [...header, ...rows];
+  if (fitsTaskSection(complete)) return complete.join("\n");
+
+  const selected: string[] = [];
+  for (const row of rows) {
+    const omitted = rows.length - selected.length - 1;
+    const candidate = [...header, ...selected, row, taskOmissionNotice(omitted)];
+    if (!fitsTaskSection(candidate)) break;
+    selected.push(row);
+  }
+  const omitted = rows.length - selected.length;
+  return [...header, ...selected, taskOmissionNotice(omitted)].join("\n");
+}
+
+export function formatDeploymentTasksUnavailable(reason: string): string {
+  const normalized = sanitizeDeploymentTaskText(reason) || "snapshot could not be read";
+  const safeReason = [...normalized].length > 200 ? `${[...normalized].slice(0, 197).join("")}...` : normalized;
+  return `Session tasks: unavailable\n  Tasks unavailable: ${safeReason}`;
+}
+
+export function deploymentTaskSnapshotUnavailableReason(error: unknown): string {
+  if (error instanceof DeploymentTaskSnapshotError) {
+    switch (error.kind) {
+      case "malformed": return "snapshot is malformed";
+      case "unsupported_version": return "snapshot schema version is unsupported";
+      case "deployment_mismatch": return "snapshot deployment ID does not match";
+      case "oversized": return `snapshot exceeds ${MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES} byte read limit`;
+    }
+  }
+  return "snapshot could not be read";
+}
+
+function fitsTaskSection(lines: string[]): boolean {
+  return lines.length <= MAX_DEPLOYMENT_TASK_SECTION_LINES
+    && Buffer.byteLength(lines.join("\n"), "utf8") <= MAX_DEPLOYMENT_TASK_SECTION_BYTES;
+}
+
+function taskOmissionNotice(omitted: number): string {
+  return `  ... [${omitted} ${omitted === 1 ? "task" : "tasks"} omitted: task section limit of ${MAX_DEPLOYMENT_TASK_SECTION_BYTES} bytes/${MAX_DEPLOYMENT_TASK_SECTION_LINES} lines]`;
+}
+
 function validateTask(value: unknown, index: number): DeploymentTask {
   if (!isRecord(value)) throw malformed(`task at index ${index} must be an object`);
   if (!isPositiveInteger(value["id"])) throw malformed(`task at index ${index} has an invalid id`);
@@ -198,9 +286,9 @@ function isIsoTimestamp(value: string): boolean {
 }
 
 function malformed(reason: string): Error {
-  return new Error(`Deployment task snapshot is malformed: ${reason}`);
+  return new DeploymentTaskSnapshotError("malformed", `Deployment task snapshot is malformed: ${reason}`);
 }
 
 function oversized(size: number): Error {
-  return new Error(`Deployment task snapshot exceeds ${MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES} bytes (${size} bytes)`);
+  return new DeploymentTaskSnapshotError("oversized", `Deployment task snapshot exceeds ${MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES} bytes (${size} bytes)`);
 }
