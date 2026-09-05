@@ -13,20 +13,27 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import {
+  appendActivityEvent,
+  createActivityEvent,
+  createDeploymentTaskSnapshot,
+  deploymentTaskSnapshotPath,
+  writeDeploymentTaskSnapshot,
+  type ActivityEvent,
+  type DeploymentTask,
+  type DeploymentTaskSnapshot,
+  type DeploymentTaskStatus,
+} from "@pa-platform/pa-core";
+import { resolve } from "node:path";
 import { Type } from "typebox";
+import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import type { PiExtensionModule, PiToolDefinition } from "./index.js";
 
 export const TODO_ACTIONS = ["list", "add", "update", "start", "complete", "cancel", "reorder"] as const;
 export type TodoAction = (typeof TODO_ACTIONS)[number];
-export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+export type TodoStatus = DeploymentTaskStatus;
 
-export interface TodoTask {
-  id: number;
-  text: string;
-  status: TodoStatus;
-  order: number;
-  dependencies: number[];
-}
+export interface TodoTask extends DeploymentTask {}
 
 export interface TodoInput extends Record<string, unknown> {
   action: TodoAction;
@@ -41,6 +48,13 @@ export interface TodoDetails extends Record<string, unknown> {
   tasks: TodoTask[];
   nextId: number;
   error?: string;
+}
+
+export interface TodoModuleOptions {
+  env?: NodeJS.ProcessEnv;
+  now?: () => string;
+  writeSnapshot?: (path: string, snapshot: DeploymentTaskSnapshot) => void;
+  appendActivity?: (event: ActivityEvent, path: string) => void;
 }
 
 export const TodoParams = Type.Object({
@@ -169,14 +183,16 @@ export function reconstructTodoState(store: TodoStore, entries: unknown[]): void
   store.restore(latest);
 }
 
-export function createTodoTool(store: TodoStore): PiToolDefinition<TodoInput, TodoDetails> {
+export function createTodoTool(store: TodoStore, onResult?: (details: TodoDetails) => void): PiToolDefinition<TodoInput, TodoDetails> {
   return {
     name: "todo",
     label: "Todo",
     description: "Manage session-local tasks with lifecycle, stable ordering, and dependencies. Text output is bounded to 50 KiB and 2,000 lines.",
     promptSnippet: "Plan and track session-local work with ordered, dependency-aware tasks",
     promptGuidelines: [
-      "Use todo to keep multi-step work current; start one task at a time and complete it when verified.",
+      "For work with two or more steps, initialize tasks after discovery and before the first target-repository mutation.",
+      "At each phase transition, complete or cancel the prior active task before starting the next task.",
+      "Before shutdown, complete or cancel any active task.",
       "Use todo list before mutating tasks when task IDs or current state are uncertain.",
     ],
     parameters: TodoParams,
@@ -184,6 +200,7 @@ export function createTodoTool(store: TodoStore): PiToolDefinition<TodoInput, To
 
     async execute(_toolCallId, input) {
       const details = store.apply(input);
+      onResult?.(details);
       const text = details.error ? `Todo error: ${details.error}` : describeMutation(details);
       return { content: [{ type: "text", text: boundTodoText(text) }], details };
     },
@@ -210,18 +227,55 @@ export function createTodoTool(store: TodoStore): PiToolDefinition<TodoInput, To
   };
 }
 
-export const registerTodoModule: PiExtensionModule = (pi) => {
-  const store = new TodoStore();
-  pi.on?.("session_start", (_event, rawContext) => {
-    const context = rawContext as { sessionManager: { getBranch(): unknown[] } };
-    reconstructTodoState(store, context.sessionManager.getBranch());
-  });
-  pi.on?.("session_tree", (_event, rawContext) => {
-    const context = rawContext as { sessionManager: { getBranch(): unknown[] } };
-    reconstructTodoState(store, context.sessionManager.getBranch());
-  });
-  pi.registerTool?.(createTodoTool(store));
-};
+export function createTodoModule(options: TodoModuleOptions = {}): PiExtensionModule {
+  return (pi) => {
+    const store = new TodoStore();
+    const publish = createTodoSnapshotPublisher(store, options);
+    const restoreAndPublish = (rawContext: unknown): void => {
+      const context = rawContext as { sessionManager: { getBranch(): unknown[] } };
+      reconstructTodoState(store, context.sessionManager.getBranch());
+      publish();
+    };
+    pi.on?.("session_start", (_event, rawContext) => restoreAndPublish(rawContext));
+    pi.on?.("session_tree", (_event, rawContext) => restoreAndPublish(rawContext));
+    pi.registerTool?.(createTodoTool(store, publish));
+  };
+}
+
+export const registerTodoModule: PiExtensionModule = createTodoModule();
+
+export function createTodoSnapshotPublisher(store: TodoStore, options: TodoModuleOptions = {}): () => void {
+  return () => {
+    const env = options.env ?? process.env;
+    const deploymentDir = env["PA_DEPLOYMENT_DIR"]?.trim();
+    const deploymentId = env["PA_DEPLOYMENT_ID"]?.trim();
+    if (!deploymentDir || !deploymentId) return;
+    try {
+      const details = store.snapshot();
+      const snapshot = createDeploymentTaskSnapshot({
+        deploymentId,
+        updatedAt: options.now?.() ?? new Date().toISOString(),
+        tasks: details.tasks,
+        nextId: details.nextId,
+      });
+      (options.writeSnapshot ?? writeDeploymentTaskSnapshot)(deploymentTaskSnapshotPath(deploymentDir), snapshot);
+    } catch (error) {
+      const diagnostic = boundedSnapshotDiagnostic(error, env);
+      try {
+        const activityPath = env["PA_ACTIVITY_LOG"]?.trim() || resolve(deploymentDir, "activity.jsonl");
+        (options.appendActivity ?? appendActivityEvent)(createActivityEvent({
+          deployId: deploymentId,
+          kind: "error",
+          source: "pi",
+          body: diagnostic,
+          partType: "task_snapshot_persistence",
+        }), activityPath);
+      } catch {
+        // Snapshot evidence is best-effort and must never terminate the session.
+      }
+    }
+  };
+}
 
 export function boundTodoText(text: string): string {
   const truncated = truncateHead(text, {
@@ -230,6 +284,12 @@ export function boundTodoText(text: string): string {
   });
   if (!truncated.truncated) return text;
   return `${truncated.content}\n...[truncated todo result: ${truncated.outputLines} of ${truncated.totalLines} lines, ${truncated.outputBytes} of ${truncated.totalBytes} bytes]`;
+}
+
+function boundedSnapshotDiagnostic(error: unknown, env: NodeJS.ProcessEnv): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const safe = redactDiagnostic(`Could not persist deployment task snapshot: ${message}`, environmentSecrets({ ...process.env, ...env }));
+  return safe.length > 500 ? `${safe.slice(0, 497)}...` : safe;
 }
 
 function describeMutation(details: TodoDetails): string {

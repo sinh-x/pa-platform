@@ -1,15 +1,29 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import {
+  createDeploymentTaskSnapshot,
+  deploymentTaskSnapshotPath,
+  readActivityEvents,
+  readDeploymentTaskSnapshot,
+  writeDeploymentTaskSnapshot,
+  type DeploymentTaskSnapshot,
+} from "@pa-platform/pa-core";
 import { Check } from "typebox/value";
 import {
   TodoParams,
   TodoStore,
   boundTodoText,
+  createTodoModule,
   createTodoTool,
   reconstructTodoState,
   type TodoDetails,
+  type TodoInput,
   type TodoTask,
 } from "../pi-extension/todo.js";
+import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 
 function tasks(store: TodoStore): TodoTask[] {
   return store.snapshot().tasks;
@@ -35,6 +49,12 @@ test("todo schema exposes the approved lifecycle and strict typed fields", () =>
   assert.equal(Check(TodoParams, { action: "start", id: 0 }), false);
   assert.equal(tool.name, "todo");
   assert.equal(tool.executionMode, "sequential");
+  assert.deepEqual(tool.promptGuidelines, [
+    "For work with two or more steps, initialize tasks after discovery and before the first target-repository mutation.",
+    "At each phase transition, complete or cancel the prior active task before starting the next task.",
+    "Before shutdown, complete or cancel any active task.",
+    "Use todo list before mutating tasks when task IDs or current state are uncertain.",
+  ]);
 });
 
 test("todo lifecycle keeps monotonic IDs, complete snapshots, and stable order", () => {
@@ -156,6 +176,96 @@ test("active-branch reconstruction selects the latest todo snapshot and isolates
   reconstructTodoState(restored, []); // new or separate session
   assert.deepEqual(tasks(restored), []);
   assert.equal(restored.snapshot().nextId, 1);
+});
+
+test("managed lifecycle and every todo result synchronously persist the complete active-branch snapshot", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-todo-snapshot-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const deploymentId = "d-pi-todo";
+  const env = {
+    PA_DEPLOYMENT_ID: deploymentId,
+    PA_DEPLOYMENT_DIR: root,
+    PA_ACTIVITY_LOG: join(root, "activity.jsonl"),
+  };
+  const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+  let tool: PiToolDefinition<TodoInput, TodoDetails> | undefined;
+  let writes = 0;
+  const runtime = {
+    on(event: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(event, handler); },
+    registerTool(candidate: PiToolDefinition) { tool = candidate as unknown as typeof tool; },
+  } as unknown as PiRuntime;
+  createTodoModule({
+    env,
+    now: () => "2026-08-29T12:34:56.000Z",
+    writeSnapshot(path: string, value: DeploymentTaskSnapshot) {
+      writes++;
+      writeDeploymentTaskSnapshot(path, value);
+    },
+  })(runtime);
+
+  const source = new TodoStore();
+  const first = add(source, "Discover");
+  handlers.get("session_start")?.({}, { sessionManager: { getBranch: () => [resultEntry(first)] } });
+  assert.equal(writes, 1);
+  assert.deepEqual(readDeploymentTaskSnapshot(deploymentTaskSnapshotPath(root), deploymentId).tasks.map((task) => task.text), ["Discover"]);
+
+  const second = add(source, "Implement", [1]);
+  handlers.get("session_tree")?.({}, { sessionManager: { getBranch: () => [resultEntry(first), resultEntry(second)] } });
+  assert.equal(writes, 2);
+  assert.deepEqual(readDeploymentTaskSnapshot(deploymentTaskSnapshotPath(root), deploymentId).tasks.map((task) => task.text), ["Discover", "Implement"]);
+
+  assert.ok(tool);
+  const added = await tool.execute("todo-result", { action: "add", text: "Verify" }, undefined, undefined, undefined);
+  assert.equal(writes, 3);
+  assert.equal(added.details.tasks.length, 3);
+  const persisted = readDeploymentTaskSnapshot(deploymentTaskSnapshotPath(root), deploymentId);
+  assert.equal(persisted.nextId, 4);
+  assert.deepEqual(persisted.tasks, added.details.tasks);
+  assert.equal(statSync(deploymentTaskSnapshotPath(root)).mode & 0o777, 0o600);
+
+  const rejected = await tool.execute("todo-rejected", { action: "start", id: 2 }, undefined, undefined, undefined);
+  assert.ok(rejected.details.error);
+  assert.equal(writes, 4);
+  assert.deepEqual(readDeploymentTaskSnapshot(deploymentTaskSnapshotPath(root), deploymentId).tasks, rejected.details.tasks);
+});
+
+test("snapshot write failure is non-fatal, preserves prior evidence, and records bounded diagnostics", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-todo-failure-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const deploymentId = "d-pi-failure";
+  const activityPath = join(root, "activity.jsonl");
+  const path = deploymentTaskSnapshotPath(root);
+  const prior = createDeploymentTaskSnapshot({
+    deploymentId,
+    updatedAt: "2026-08-29T12:34:00.000Z",
+    nextId: 2,
+    tasks: [{ id: 1, text: "Prior evidence", status: "completed", order: 1, dependencies: [] }],
+  });
+  writeDeploymentTaskSnapshot(path, prior);
+
+  const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+  let tool: PiToolDefinition | undefined;
+  const runtime = {
+    on(event: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(event, handler); },
+    registerTool(candidate: PiToolDefinition) { tool = candidate; },
+  } as unknown as PiRuntime;
+  createTodoModule({
+    env: { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: root, PA_ACTIVITY_LOG: activityPath },
+    writeSnapshot: () => { throw new Error(`injected failure ${"x".repeat(2_000)}`); },
+  })(runtime);
+
+  assert.doesNotThrow(() => handlers.get("session_start")?.({}, { sessionManager: { getBranch: () => [] } }));
+  assert.ok(tool);
+  await assert.doesNotReject(() => tool.execute("todo-list", { action: "list" }, undefined, undefined, undefined));
+  assert.deepEqual(readDeploymentTaskSnapshot(path, deploymentId), prior);
+  const diagnostics = readActivityEvents(activityPath);
+  assert.equal(diagnostics.length, 2);
+  for (const diagnostic of diagnostics) {
+    assert.equal(diagnostic.kind, "error");
+    assert.equal(diagnostic.partType, "task_snapshot_persistence");
+    assert.match(diagnostic.body, /^Could not persist deployment task snapshot: injected failure/);
+    assert.ok(diagnostic.body.length <= 500);
+  }
 });
 
 test("rejected tool mutations still return complete details and bounded text", async () => {
