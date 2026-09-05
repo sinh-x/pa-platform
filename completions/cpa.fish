@@ -388,7 +388,7 @@ complete -c cpa -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Se
 complete -c cpa -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
 
 complete -c cpa -n __cpa_deploy_needs_team -a '(__cpa_deploy_team_candidates)' -d 'Team name'
-complete -c cpa -f -n __cpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy' -d 'Deploy option'
+complete -c cpa -f -n __cpa_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy --force' -d 'Deploy option'
 complete -c cpa -f -n __cpa_deploy_completing -l mode -d 'Deploy mode' -r -a '(__cpa_modes)'
 complete -c cpa -n __cpa_deploy_completing -l objective -d 'Deployment objective' -r
 complete -c cpa -n __cpa_deploy_completing -l objective-file -d 'Objective from file' -r
@@ -400,6 +400,7 @@ complete -c cpa -f -n __cpa_deploy_completing -l team-model -d 'Deprecated model
 complete -c cpa -f -n __cpa_deploy_completing -l agent-model -d 'Unsupported per-agent model override (PAP-148)' -r
 complete -c cpa -n __cpa_deploy_completing -l background -d 'Run detached/headless'
 complete -c cpa -n __cpa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
+complete -c cpa -n __cpa_deploy_completing -l force -d 'Recover stale or malformed builder ownership evidence'
 complete -c cpa -f -n __cpa_deploy_completing -l repo -d 'Registered repository key or exact configured path' -r -a '(__cpa_projects)'
 complete -c cpa -f -n __cpa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__cpa_ticket_ids)'
 complete -c cpa -n __cpa_deploy_completing -l timeout -d 'Timeout seconds' -r

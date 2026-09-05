@@ -10,7 +10,7 @@ import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../d
 import { runBackgroundEntry } from "../background-runner.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertNonLockingRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 const TEST_API_KEY = "changeme";
 
@@ -1111,7 +1111,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
     });
   });
 
-  it("keeps key/path plans canonical and two same-root runs have no admission state", async () => {
+  it("keeps key/path plans canonical and daily modes explicitly non-locking", async () => {
     await withDpaEnv(async (root, gitState) => {
       const repo = join(root, "repo");
       writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
@@ -1148,7 +1148,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.equal(plan.memoryDocumentRoot, repo);
         assert.equal(plan.environment.PA_REPO, repo);
         assert.equal(plan.userObjectiveOverride, undefined);
-        assertNoRepositoryAdmissionState(plan, primer);
+        assertNonLockingRepositoryAdmission(plan, primer);
         assert.equal(captured.env?.["PA_REPO"], repo);
         assert.equal(runtimeCwd, repo);
         assert.equal(runtimePaRepo, repo);

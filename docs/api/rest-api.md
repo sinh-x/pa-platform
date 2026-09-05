@@ -1210,6 +1210,7 @@ Trigger a deployment. Returns `202` on accepted/failed per the phone contract (n
 | `timeout` | number | no | Seconds; resolved via `withResolvedDeployTimeout` |
 | `dryRun` | boolean | no | Mutually exclusive with `background` |
 | `background` | boolean | no | Defaults to `true`; mutually exclusive with `dryRun` |
+| `force` | boolean | no | Recover stale or malformed builder ownership evidence; never overrides a live owner or other validation guards |
 | `listModes` | boolean | no | List available modes for the team instead of deploying |
 | `validate` | boolean | no | Validate the request without deploying |
 
@@ -1227,6 +1228,8 @@ Trigger a deployment. Returns `202` on accepted/failed per the phone contract (n
 
 On success/pending with a `deploymentId`, the deploy session is registered with the `SessionManager` (best-effort).
 
+Repository admission is mode-aware: requirements requests bypass Git status and lease access; builder requests are exclusive per canonical repository; other teams remain non-locking. Because REST defaults to background, a dirty builder request returns a structured failed result before runtime spawn. `force: true` only recovers stale or malformed builder evidence.
+
 **Error codes:**
 
 | HTTP | Code | Condition |
@@ -1241,7 +1244,7 @@ An unsupported `runtime` value returns `400 BAD_REQUEST` before any runtime proc
 ```bash
 curl -X POST http://127.0.0.1:9848/api/deploy \
   -H 'content-type: application/json' \
-  -d '{"team":"builder","mode":"implement","runtime":"pi","background":true}'
+  -d '{"team":"builder","mode":"implement","runtime":"pi","background":true,"force":false}'
 ```
 
 Omit `runtime` to retain the existing OpenCode behavior:
