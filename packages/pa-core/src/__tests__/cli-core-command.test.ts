@@ -912,6 +912,7 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     assert.equal(await runCoreCommand(["deploy", "--help"], { io: help.io }), 0);
     assert.match(help.stdout.join("\n"), /--background/);
     assert.match(help.stdout.join("\n"), /--dry-run/);
+    assert.match(help.stdout.join("\n"), /--force/);
     assert.doesNotMatch(help.stdout.join("\n"), /--interactive|--direct/);
 
     const missing = capture();
@@ -920,12 +921,47 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
 
     const captured = capture();
     const seen: unknown[] = [];
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship", "--evaluate-deployment", "d-abc123", "--repo", "pa-platform", "--ticket", "PAP-001", "--timeout", "120"], {
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "plan", "--objective", "Ship", "--evaluate-deployment", "d-abc123", "--repo", "pa-platform", "--ticket", "PAP-001", "--timeout", "120", "--force"], {
       io: captured.io,
       hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-hook" }; } },
     }), 0);
-    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: join(root, "repo"), ticket: "PAP-001", timeout: 120 }]);
+    assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: join(root, "repo"), ticket: "PAP-001", timeout: 120, force: true }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
+  });
+});
+
+test("deploy list-modes, validate, and dry-run remain non-owning when force is present", async () => {
+  await withCliEnv(async (root) => {
+    const gitDir = join(root, "repo", ".git");
+    const before = readdirSync(gitDir).sort();
+    let hookCalls = 0;
+
+    const listModes = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--list-modes", "--force"], {
+      io: listModes.io,
+      hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-list" }; } },
+    }), 0);
+
+    const validate = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--validate", "--force"], {
+      io: validate.io,
+      hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-validate" }; } },
+    }), 0);
+
+    const dryRun = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--dry-run", "--force", "--repo", "pa-platform"], {
+      io: dryRun.io,
+      hooks: { deploy: (request) => {
+        hookCalls += 1;
+        assert.equal(request.dryRun, true);
+        assert.equal(request.force, true);
+        return { status: "pending", deploymentId: "d-dry" };
+      } },
+    }), 0);
+
+    assert.equal(hookCalls, 1, "list-modes and validate must not reach the deploy hook");
+    assert.deepEqual(readdirSync(gitDir).sort(), before);
+    assert.equal(readdirSync(gitDir).some((name) => name.includes("pa-repository-mutation")), false);
   });
 });
 
@@ -1865,11 +1901,13 @@ test("ticket comment content-file blocks local filename, path, and content match
   });
 });
 
-test("sensitive guards do not expose bypass flags or override behavior", async () => {
+test("deploy force is ownership-scoped and cannot override sensitive guards", async () => {
   await withCliEnv(async (root) => {
     const deployHelp = capture();
     assert.equal(await runCoreCommand(["deploy", "--help"], { io: deployHelp.io }), 0);
-    assert.doesNotMatch(deployHelp.stdout.join("\n"), /--force|--bypass|--allow|--override|confirm/i);
+    assert.match(deployHelp.stdout.join("\n"), /--force.*stale or malformed builder ownership evidence/i);
+    assert.match(deployHelp.stdout.join("\n"), /never overrides a live owner or other guards/i);
+    assert.doesNotMatch(deployHelp.stdout.join("\n"), /--bypass|--allow|confirm/i);
 
     const sensitiveFile = join(root, ".env");
     writeFileSync(sensitiveFile, "SAFE_FAKE_FIXTURE_CONTENT");

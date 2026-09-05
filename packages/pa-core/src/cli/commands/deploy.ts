@@ -12,7 +12,7 @@ export function parseDeployArgs(argv: string[]): { fields: Record<string, unknow
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
   const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--evaluate-deployment": "evaluateDeployment", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume", "--autonomy": "autonomy" };
-  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--list-modes": "listModes", "--validate": "validate" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--force": "force", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     const booleanKey = booleanMap[arg];
@@ -132,6 +132,7 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
   io.stdout("                      Omit to infer the exact configured root from CWD");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
+  io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
   io.stdout("  --timeout <seconds>    Override deployment timeout");
   io.stdout("  --resume <id>          Resume a prior deployment");
   io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");

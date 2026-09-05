@@ -45,6 +45,33 @@ export interface RepositoryGitSnapshot {
   readonly statusSummary: string;
 }
 
+export type RepositoryAdmissionLaunchMode = "foreground" | "background" | "dry-run";
+export type RepositoryOwnershipIntent = "none" | "preview" | "acquire-before-spawn";
+export type RepositoryAdmissionOperation = "git-status" | "lease-read" | "lease-write" | "lease-remove" | "lease-quarantine";
+
+/** Immutable repository evidence carried by the shared execution plan. */
+export interface RepositoryAdmissionEvidence {
+  readonly access: RepositoryAccess;
+  readonly launchMode: RepositoryAdmissionLaunchMode;
+  readonly ownershipIntent: RepositoryOwnershipIntent;
+  readonly force: boolean;
+  readonly gitSnapshot?: RepositoryGitSnapshot;
+}
+
+export interface ResolveRepositoryAdmissionEvidenceOptions {
+  readonly team: string;
+  readonly mode: string;
+  readonly canonicalRepoKey: string;
+  readonly canonicalRepoRoot: string;
+  readonly runtime: RuntimeName;
+  readonly background?: boolean;
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly ticket?: string;
+  readonly captureGitSnapshot?: (canonicalRepoRoot: string) => RepositoryGitSnapshot;
+  readonly observeOperation?: (operation: RepositoryAdmissionOperation) => void;
+}
+
 export interface RepositoryMutationLease {
   readonly schemaVersion: 1;
   readonly ownershipToken: string;
@@ -123,6 +150,41 @@ export function classifyRepositoryAccess(team: string, _mode?: string): Reposito
 
 export function repositoryMutationLeasePath(canonicalRepoRoot: string): string {
   return join(assertCanonicalRoot(canonicalRepoRoot), ".git", REPOSITORY_MUTATION_LEASE_FILE);
+}
+
+/**
+ * Plans mode-aware admission without touching repository ownership evidence.
+ * Requirements and other non-exclusive teams return before Git status capture.
+ */
+export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdmissionEvidenceOptions): RepositoryAdmissionEvidence {
+  const canonicalRepoRoot = assertCanonicalRoot(options.canonicalRepoRoot);
+  const access = classifyRepositoryAccess(options.team, options.mode);
+  const launchMode: RepositoryAdmissionLaunchMode = options.dryRun ? "dry-run" : options.background ? "background" : "foreground";
+  if (access !== "exclusive-builder") {
+    return Object.freeze({ access, launchMode, ownershipIntent: "none", force: Boolean(options.force) });
+  }
+
+  options.observeOperation?.("git-status");
+  const snapshot = Object.freeze({ ...(options.captureGitSnapshot ?? captureRepositoryGitSnapshot)(canonicalRepoRoot) });
+  if (snapshot.dirty && launchMode === "background") {
+    throw new Error(formatDirtyBackgroundBuilderDiagnostic({
+      canonicalRepoKey: options.canonicalRepoKey,
+      canonicalRepoRoot,
+      team: options.team,
+      mode: options.mode,
+      runtime: options.runtime,
+      snapshot,
+      ...(options.ticket ? { ticket: options.ticket } : {}),
+    }));
+  }
+
+  return Object.freeze({
+    access,
+    launchMode,
+    ownershipIntent: launchMode === "dry-run" ? "preview" : "acquire-before-spawn",
+    force: Boolean(options.force),
+    gitSnapshot: snapshot,
+  });
 }
 
 export function captureRepositoryGitSnapshot(canonicalRepoRoot: string, runGit: GitCommandRunner = defaultGitRunner): RepositoryGitSnapshot {
@@ -281,6 +343,23 @@ export function releaseRepositoryMutationLease(options: {
     unlinkSync(leasePath);
     return { status: "released" };
   });
+}
+
+export function formatDirtyBackgroundBuilderDiagnostic(input: {
+  canonicalRepoKey: string;
+  canonicalRepoRoot: string;
+  team: string;
+  mode: string;
+  runtime: RuntimeName;
+  snapshot: RepositoryGitSnapshot;
+  ticket?: string;
+}): string {
+  const retry = [runtimeBinary(input.runtime), "deploy", input.team, "--mode", input.mode, "--repo", input.canonicalRepoKey];
+  if (input.ticket) retry.push("--ticket", input.ticket);
+  const snapshot = input.snapshot;
+  return boundDiagnostic(
+    `Repository admission: repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}; state=dirty-background; reason=dirty builder repositories require foreground interaction and no ownership was acquired. Git: branch=${boundedField(snapshot.branch, 160)}, head=${boundedField(snapshot.head, 160)}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}. Recovery: retry in the foreground with ${shellCommand(retry)}. Deploy force does not bypass dirty-background interaction.`,
+  );
 }
 
 export function formatRepositoryAdmissionDiagnostic(input: {
@@ -509,4 +588,11 @@ function temporaryPath(path: string, token: string): string {
 
 function shellCommand(parts: readonly string[]): string {
   return parts.map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(" ");
+}
+
+function runtimeBinary(runtime: RuntimeName): string {
+  if (runtime === "pi") return "ppa";
+  if (runtime === "claude") return "cpa";
+  if (runtime === "droid") return "dpa";
+  return "opa";
 }
