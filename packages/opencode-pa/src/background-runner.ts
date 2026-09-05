@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, ensureTerminalRegistryMarker, getDeployPaths, nowUtc, publishBackgroundOwnership, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, transferRepositoryMutationLease } from "@pa-platform/pa-core";
 import { createOpencodeActivityWriter, createOpencodeSessionIdParser } from "./adapter.js";
 
 interface BackgroundConfig {
@@ -15,6 +15,10 @@ interface BackgroundConfig {
   sessionFileName: string;
   ownershipToken: string;
   ownershipPath: string;
+  repositoryLease?: {
+    canonicalRepoRoot: string;
+    ownershipToken: string;
+  };
 }
 
 const STDERR_TAIL_BYTES = 2000;
@@ -33,13 +37,31 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
   try { unlinkSync(configPath); } catch { /* preserve launch behavior if already consumed */ }
   let fatalError: unknown;
   let ready = false;
+  let repositoryLeaseTransferred = false;
+  const shutdown = new AbortController();
+  const abortFor = (signal: string): void => { if (!shutdown.signal.aborted) shutdown.abort(signal); };
+  const onSigterm = (): void => abortFor("SIGTERM");
+  const onSigint = (): void => abortFor("SIGINT");
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
   const acknowledge = (childPid?: number): void => {
     ready = true;
     publishBackgroundOwnership(config.ownershipPath, { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, supervisorPid: process.pid, state: "active", ready: true, updatedAt: nowUtc(), ...(childPid ? { childPid } : {}) });
   };
 
   try {
-    const result = await runOpencode(config, acknowledge);
+    if (config.repositoryLease) {
+      const fingerprint = readProcessFingerprint(process.pid);
+      if (!fingerprint) throw new Error(`runner-readiness: cannot verify repository supervisor PID ${process.pid}`);
+      const transfer = transferRepositoryMutationLease({
+        canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
+        ownershipToken: config.repositoryLease.ownershipToken,
+        nextProcessFingerprint: fingerprint,
+      });
+      if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
+      repositoryLeaseTransferred = true;
+    }
+    const result = await runOpencode(config, acknowledge, shutdown.signal);
     if (!ready) throw new Error("runner-readiness: OpenCode runtime did not start");
 
     // Only persist a session file when the runner observed a real session token.
@@ -70,7 +92,18 @@ export async function runBackgroundEntry(configPath: string): Promise<void> {
     emitCrashedEvent({ deploymentId: config.deploymentId, team: config.team, error: finalError, exitCode: 1 });
     fatalError = new Error(finalError);
   } finally {
-    ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("SIGINT", onSigint);
+    try {
+      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
+    } finally {
+      if (repositoryLeaseTransferred && config.repositoryLease) {
+        releaseRepositoryMutationLease({
+          canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
+          ownershipToken: config.repositoryLease.ownershipToken,
+        });
+      }
+    }
   }
 
   if (fatalError) throw fatalError;
@@ -89,7 +122,7 @@ interface BackgroundRunResult {
   spawnError?: Error;
 }
 
-function runOpencode(config: BackgroundConfig, onReady: (childPid?: number) => void): Promise<BackgroundRunResult> {
+function runOpencode(config: BackgroundConfig, onReady: (childPid?: number) => void, shutdownSignal?: AbortSignal): Promise<BackgroundRunResult> {
   mkdirSync(dirname(config.logFile), { recursive: true });
   const log = createWriteStream(config.logFile, { flags: "a" });
   const jsonl = createWriteStream(resolve(dirname(config.logFile), "opencode-output.jsonl"), { flags: "a" });
@@ -125,6 +158,9 @@ function runOpencode(config: BackgroundConfig, onReady: (childPid?: number) => v
 
   child.stdout.on("data", collectStdout);
   child.stderr.on("data", collectStderr);
+  const onShutdown = (): void => terminateProcessTree(child.pid);
+  shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
+  if (shutdownSignal?.aborted) onShutdown();
 
   const watchdog = setInterval(() => {
     if (remediationTriggered) return;
@@ -150,6 +186,7 @@ function runOpencode(config: BackgroundConfig, onReady: (childPid?: number) => v
       stderrTail = tailString(stderrTail + error.message, STDERR_TAIL_BYTES);
     });
     child.on("close", (code) => {
+      shutdownSignal?.removeEventListener("abort", onShutdown);
       clearInterval(watchdog);
       activity.flush();
       const sessionId = sessionParser.flush();

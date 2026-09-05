@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, getDeploymentEvents, queryDeploymentStatus, readActivityEvents } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents } from "@pa-platform/pa-core";
 import { PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
@@ -90,6 +90,37 @@ test("persistent runner publishes active ownership before finalizing one natural
     assert.deepEqual(terminalEvents(config.deploymentId).map((event) => [event.event, event.status]), [["completed", "success"]]);
     assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "success");
     assert.equal(readPiTerminalStatus(deployDir)?.stopReason, "stop");
+  });
+});
+
+test("Pi background supervisor authenticates transfer before readiness and releases after terminal finalization", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const repo = join(root, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const snapshot = { branch: "develop", head: "a".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform",
+      canonicalRepoRoot: repo,
+      deploymentId: config.deploymentId,
+      deploymentDirectory: deployDir,
+      runtime: "pi",
+      mode: "implement",
+      gitSnapshot: snapshot,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    config.repositoryLease = { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken };
+    const child = new RunnerChild();
+    const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
+    await immediate();
+    const live = inspectRepositoryMutationLease(repo);
+    assert.equal(live.state, "live");
+    assert.equal(live.lease?.ownershipToken, acquired.lease.ownershipToken);
+    assert.equal(live.lease?.processFingerprint.pid, process.pid);
+    child.emit("close", 0);
+    await running;
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.state, "finalized");
   });
 });
 

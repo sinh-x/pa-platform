@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationLeasePath, runCoreCommand, type ActivityEvent, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { buildPrimerLoadPrompt, createOpencodeActivityWriter, createOpencodeSessionIdParser, normalizeProvider, OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeModel, resolveOpencodeRuntimeConfig } from "../adapter.js";
 import { createDefaultOpencodeHooks, createOpencodeHooks, deployWithOpencode, deriveSessionName, sanitizeSessionTitle } from "../deploy.js";
 import { runBackgroundEntry } from "../background-runner.js";
 import { PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, resolvePaSafetyActivityPluginPath } from "../plugins/pa-safety-activity.js";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertNonLockingRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 interface StubAdapterOpts {
   exitCode: number;
@@ -410,6 +410,29 @@ test("opa default hooks route agent API deploy requests through opencode adapter
   });
 });
 
+test("REST-selected OpenCode defaults dirty builders to rejection before spawn without ownership", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    writeFileSync(join(root, "repo", "dirty-rest.txt"), "dirty\n");
+    let spawns = 0;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = { ...base, spawn(opts) { spawns += 1; return base.spawn(opts); } };
+    const { app } = createAgentApiApp({ hooks: createOpencodeHooks(adapter) });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "implement", ticket: "PAP-174", runtime: "opencode", provider: "openai" }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json() as { status: string; reason?: string };
+    assert.equal(body.status, "failed");
+    assert.match(body.reason ?? "", /state=dirty-background/);
+    assert.ok((body.reason ?? "").length <= 2_000);
+    assert.equal(spawns, 0);
+    assert.equal(inspectRepositoryMutationLease(join(root, "repo")).state, "absent");
+  });
+});
+
 test("opa deploy selects OpenCode when both runtime hooks are registered", async () => {
   await withOpaEnv(async (root) => {
     writeBuilderTeamConfig(root);
@@ -537,7 +560,103 @@ test("opa deploy preserves absolute repo path in deployment context", async () =
   });
 });
 
-test("OpenCode key/path plans stay canonical and two same-root runs have no admission state", async () => {
+test("OPA foreground builders hold exact-root ownership through success, nonzero, timeout, signal, and launch failure", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    for (const exitCode of [0, 17, 124, 143]) {
+      let spawns = 0;
+      const base = createStubAdapter({ exitCode, ...(exitCode === 0 ? {} : { errorMessage: `terminal ${exitCode}` }) });
+      const adapter: RuntimeAdapter = { ...base, spawn(opts) {
+        spawns += 1;
+        const inspection = inspectRepositoryMutationLease(repo);
+        assert.equal(inspection.state, "live");
+        assert.equal(inspection.lease?.deploymentId, opts.deployId);
+        assert.equal(inspection.lease?.runtime, "opencode");
+        assert.equal(opts.repositoryLease?.ownershipToken, inspection.lease?.ownershipToken);
+        assert.equal(statSync(leasePath).mode & 0o777, 0o600);
+        assert.ok(statSync(leasePath).size <= 64 * 1024);
+        assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: "not-the-owner" }).status, "token-mismatch");
+        return base.spawn(opts);
+      } };
+      const result = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174" }, adapter);
+      assert.equal(spawns, 1);
+      assert.equal(result.status, exitCode === 0 ? "success" : "failed");
+      assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+    }
+
+    const base = createStubAdapter({ exitCode: 0 });
+    const launchAdapter: RuntimeAdapter = { ...base, spawn() { throw new Error("launch failed"); } };
+    const launchFailure = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174" }, launchAdapter);
+    assert.equal(launchFailure.status, "failed");
+    assert.match(launchFailure.reason ?? "", /launch failed/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("OPA dirty background rejects pre-spawn while requirements bypass status and lease admission", async () => {
+  await withOpaEnv(async (root, gitState) => {
+    writeBuilderTeamConfig(root);
+    writeRequirementsTeamConfig(root);
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    writeFileSync(join(repo, "dirty.txt"), "dirty\n");
+    let builderSpawns = 0;
+    const builderBase = createStubAdapter({ exitCode: 0 });
+    const builderAdapter: RuntimeAdapter = { ...builderBase, spawn(opts) { builderSpawns += 1; return builderBase.spawn(opts); } };
+    const rejected = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174", background: true }, builderAdapter);
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /state=dirty-background/);
+    assert.ok((rejected.reason ?? "").length <= 2_000);
+    assert.equal(builderSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    writeFileSync(leasePath, "live evidence must remain byte-identical\n", { mode: 0o600 });
+    const before = readFileSync(leasePath, "utf8");
+    const commandOffset = gitState.readCommands().length;
+    let requirementsSpawns = 0;
+    const requirementsBase = createStubAdapter({ exitCode: 0 });
+    const requirementsAdapter: RuntimeAdapter = { ...requirementsBase, spawn(opts) {
+      requirementsSpawns += 1;
+      assert.equal(opts.executionPlan?.repositoryAdmission.access, "read-only");
+      assert.equal(opts.repositoryLease, undefined);
+      return requirementsBase.spawn(opts);
+    } };
+    const launched = await deployWithOpencode({ team: "requirements", mode: "analyze" }, requirementsAdapter);
+    assert.equal(launched.status, "success", launched.reason);
+    assert.equal(requirementsSpawns, 1);
+    assert.equal(readFileSync(leasePath, "utf8"), before);
+    assert.equal(gitState.readCommands().slice(commandOffset).some((args) => args[0] === "status"), false);
+    assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("OPA background launcher requires authenticated supervisor handoff and releases failed handoffs", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const repo = join(root, "repo");
+    let handedOffToken = "";
+    const acceptedBase = createStubAdapter({ exitCode: 0 });
+    const acceptedAdapter: RuntimeAdapter = { ...acceptedBase, spawn(opts) {
+      handedOffToken = opts.repositoryLease?.ownershipToken ?? "";
+      return { exitCode: 0, metadata: { pid: process.pid, repositoryLeaseTransferred: true } };
+    } };
+    const accepted = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174", background: true }, acceptedAdapter);
+    assert.equal(accepted.status, "pending", accepted.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).lease?.ownershipToken, handedOffToken);
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: handedOffToken }).status, "released");
+
+    const rejectedBase = createStubAdapter({ exitCode: 0 });
+    const rejectedAdapter: RuntimeAdapter = { ...rejectedBase, spawn() { return { exitCode: 0, metadata: { pid: process.pid } }; } };
+    const rejected = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174", background: true }, rejectedAdapter);
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /did not authenticate repository ownership transfer/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("OpenCode key/path plans stay canonical and daily modes remain explicitly non-locking", async () => {
   await withOpaEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
@@ -578,7 +697,7 @@ test("OpenCode key/path plans stay canonical and two same-root runs have no admi
       assert.equal(plan.memoryDocumentRoot, repo);
       assert.equal(plan.environment.PA_REPO, repo);
       assert.equal(plan.userObjectiveOverride, undefined);
-      assertNoRepositoryAdmissionState(plan, primer);
+      assertNonLockingRepositoryAdmission(plan, primer);
       assert.equal(opts.env?.["PA_REPO"], repo);
       assert.equal(runtimeCwd, repo);
       assert.equal(runtimePaRepo, repo);
@@ -633,7 +752,7 @@ test("PAP-162 OpenCode rejects invalid and ambiguous repository inputs before ad
     assert.equal(secondRun.status, "pending", secondRun.reason);
     assert.equal(spawns, 2);
     assert.equal(plans.length, 2);
-    for (const opts of plans) assertNoRepositoryAdmissionState(opts.executionPlan!);
+    for (const opts of plans) assertNonLockingRepositoryAdmission(opts.executionPlan!);
   });
 });
 
@@ -1288,25 +1407,32 @@ test("opa deploy registry summary includes exit code on failure", async () => {
   });
 });
 
-test("opa background termination preserves registry behavior and performs no Git state operation", async () => {
+test("opa background supervisor transfers repository ownership and releases it after terminal finalization", async () => {
   await withOpaEnv(async (root, gitState) => {
     const deploymentId = "d-bgterm";
     const deployDir = join(root, "deployments", deploymentId);
+    const repo = join(root, "repo");
     const bin = join(root, "runtime-bin");
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, "opencode"), "#!/bin/sh\nexit 0\n", "utf8");
     chmodSync(join(bin, "opencode"), 0o755);
-    appendRegistryEvent({ deployment_id: deploymentId, team: "daily", event: "started", timestamp: new Date().toISOString(), runtime: "opencode" });
+    appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: new Date().toISOString(), runtime: "opencode" });
+    const snapshot = { branch: "develop", head: "a".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    const acquired = acquireRepositoryMutationLease({ canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId, deploymentDirectory: deployDir, runtime: "opencode", mode: "implement", gitSnapshot: snapshot });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
     const configPath = join(deployDir, "background.json");
     mkdirSync(deployDir, { recursive: true });
     writeFileSync(configPath, JSON.stringify({
-      args: [], cwd: join(root, "repo"), env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` },
-      logFile: join(deployDir, "opencode.log"), deploymentId, team: "daily",
+      args: [], cwd: repo, env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      logFile: join(deployDir, "opencode.log"), deploymentId, team: "builder",
       sessionFileName: "session-id-opencode.txt", ownershipToken: "test-token",
       ownershipPath: join(deployDir, "background-ownership.json"),
+      repositoryLease: { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken },
     }));
     await runBackgroundEntry(configPath);
     assert.equal(queryDeploymentStatuses()[0]?.status, "success");
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
     assert.deepEqual(gitState.readOperations(), []);
   });
 });

@@ -19,6 +19,7 @@ export interface DeployRequest {
   timeout?: number;
   dryRun?: boolean;
   background?: boolean;
+  force?: boolean;
   provider?: string;
   model?: string;
   teamModel?: string;
@@ -114,6 +115,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   const timeout = typeof rawTimeout === "number" ? rawTimeout : undefined;
   const dryRun = booleanField(body, "dryRun");
   const background = booleanField(body, "background");
+  const force = booleanField(body, "force");
   const listModes = booleanField(body, "listModes");
   const validate = booleanField(body, "validate");
 
@@ -131,6 +133,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (resume && !/^[a-zA-Z0-9-]+$/.test(resume)) return { error: "Invalid resume deployment id" };
   if (autonomy && !VALID_AUTONOMY_LEVELS.has(autonomy)) return { error: "Invalid autonomy level: must be low, medium, or high" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
+  if (Object.prototype.hasOwnProperty.call(body, "force") && force === undefined) return { error: "force must be a boolean" };
   const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");
   if (timeoutValidation) return { error: timeoutValidation };
   const warnings: string[] = [];
@@ -157,6 +160,7 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (timeout !== undefined) request.timeout = timeout;
   if (dryRun !== undefined) request.dryRun = dryRun;
   if (background !== undefined) request.background = background;
+  if (force !== undefined) request.force = force;
   if (provider) request.provider = provider;
   if (model) request.model = model;
   if (teamModel) request.teamModel = teamModel;

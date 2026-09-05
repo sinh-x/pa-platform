@@ -4,34 +4,48 @@ import { join } from "node:path";
 
 export interface GitStateRecorder {
   binDir: string;
-  readOperations(): string[];
+  readCommands(): string[][];
+  readOperations(): string[][];
 }
 
-interface PlanWithEnvironment {
+interface PlanWithRepositoryAdmission {
   environment: Readonly<Record<string, string | undefined>>;
+  repositoryAdmission: {
+    readonly access: "read-only" | "exclusive-builder" | "non-locking";
+    readonly launchMode: "foreground" | "background" | "dry-run";
+    readonly ownershipIntent: "none" | "preview" | "acquire-before-spawn";
+    readonly force: boolean;
+    readonly gitSnapshot?: unknown;
+  };
 }
 
-export function assertNoRepositoryAdmissionState(plan: PlanWithEnvironment, primer?: string): void {
-  const retiredPlanKeys = [["repository", "Access"].join(""), ["repository", "Lease"].join("")];
-  for (const key of retiredPlanKeys) {
-    if (key in plan) throw new Error(`Unexpected retired plan key: ${key}`);
+function assertNoInternalLeaseFields(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  const internalLeasePrefix = ["PA", "REPOSITORY", "LEASE"].join("_");
+  if (Object.keys(plan.environment).some((key) => key.startsWith(internalLeasePrefix))) {
+    throw new Error("Unexpected internal repository lease environment");
   }
-  const retiredEnvPrefix = ["PA", "REPOSITORY", "LEASE"].join("_");
-  if (Object.keys(plan.environment).some((key) => key.startsWith(retiredEnvPrefix))) {
-    throw new Error("Unexpected retired repository admission environment");
+  if (primer?.includes(internalLeasePrefix)) throw new Error("Unexpected internal repository lease primer field");
+}
+
+export function assertNonLockingRepositoryAdmission(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  if (plan.repositoryAdmission.access !== "non-locking" || plan.repositoryAdmission.ownershipIntent !== "none" || plan.repositoryAdmission.gitSnapshot !== undefined) {
+    throw new Error("Expected explicit non-locking repository admission without ownership or Git status evidence");
   }
-  if (primer) {
-    const retiredPrimerFields = [["repository", "access"].join("_"), ["repository", "lease"].join("_"), retiredEnvPrefix];
-    if (retiredPrimerFields.some((field) => primer.includes(field))) {
-      throw new Error("Unexpected retired repository admission primer field");
-    }
+  assertNoInternalLeaseFields(plan, primer);
+}
+
+export function assertBuilderExclusiveRepositoryAdmission(plan: PlanWithRepositoryAdmission, primer?: string): void {
+  if (plan.repositoryAdmission.access !== "exclusive-builder" || plan.repositoryAdmission.ownershipIntent !== "acquire-before-spawn" || plan.repositoryAdmission.gitSnapshot === undefined) {
+    throw new Error("Expected builder-exclusive repository admission with pre-spawn Git evidence");
   }
+  assertNoInternalLeaseFields(plan, primer);
 }
 
 /** Records Git commands that can mutate checkout, branch, or worktree state. */
 export function installGitStateRecorder(root: string): GitStateRecorder {
   const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
   const binDir = join(root, "git-state-recorder-bin");
+  const commandLogPath = join(root, "git-state-commands.jsonl");
   const logPath = join(root, "git-state-operations.jsonl");
   const wrapperPath = join(binDir, "git");
   mkdirSync(binDir, { recursive: true });
@@ -40,6 +54,7 @@ const { appendFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const command = args[0];
+appendFileSync(${JSON.stringify(commandLogPath)}, JSON.stringify(args) + "\\n");
 const branchDelete = command === "branch" && args.slice(1).some((arg) => arg === "-d" || arg === "-D" || arg === "--delete");
 if (["checkout", "reset", "clean", "restore", "worktree"].includes(command) || branchDelete) {
   appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
@@ -53,8 +68,12 @@ if (result.signal) process.kill(process.pid, result.signal);
 process.exit(result.status ?? 1);
 `, "utf8");
   chmodSync(wrapperPath, 0o755);
+  const readLog = (path: string): string[][] => existsSync(path)
+    ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[])
+    : [];
   return {
     binDir,
+    readCommands: () => readLog(commandLogPath),
     readOperations: () => existsSync(logPath)
       ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[])
       : [],

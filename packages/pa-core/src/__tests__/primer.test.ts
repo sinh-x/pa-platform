@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generatePrimer, getPlatformHomeDir, parseTeamYamlContent, type TeamConfig } from "../index.js";
+import { generatePrimer, getPlatformHomeDir, parseTeamYamlContent, type RepositoryAdmissionEvidence, type TeamConfig } from "../index.js";
 
 const configRoot = getPlatformHomeDir();
 
@@ -1801,5 +1801,75 @@ deploy_modes:
     assert.match(primer, /Prefer these helpers/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dirty foreground builder evidence injects the complete intent contract for every mode and runtime", () => {
+  const builder = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Build safely
+agents: []
+deploy_modes:
+  - id: implement
+    label: Implement
+  - id: orchestrator
+    label: Orchestrator
+  - id: review
+    label: Review
+`);
+  const repositoryAdmission: RepositoryAdmissionEvidence = Object.freeze({
+    access: "exclusive-builder",
+    launchMode: "foreground",
+    ownershipIntent: "acquire-before-spawn",
+    force: false,
+    gitSnapshot: Object.freeze({
+      branch: "feature/PAP-174-dirty",
+      head: "c".repeat(40),
+      stagedCount: 1,
+      unstagedCount: 2,
+      untrackedCount: 3,
+      dirty: true,
+      statusSummary: "M  staged.ts\\n M unstaged.ts\\n?? untracked.ts",
+    }),
+  });
+
+  for (const runtime of ["opencode", "pi", "claude", "droid"] as const) {
+    for (const mode of builder.deploy_modes ?? []) {
+      const primer = generatePrimer({ runtime, teamConfig: builder, mode: mode.id, repositoryAdmission });
+      assert.match(primer, /Mandatory Dirty Repository Intent Contract/);
+      assert.match(primer, /Branch: feature\/PAP-174-dirty/);
+      assert.match(primer, /HEAD: c{40}/);
+      assert.match(primer, /staged=1, unstaged=2, untracked=3/);
+      assert.match(primer, /Re-evaluate the current branch, HEAD, and full Git status/);
+      assert.match(primer, /Classify whether the observed changes belong to this deployment's ticket or to other work/);
+      assert.match(primer, /preserve the changes, wait for the other work, or stop this deployment/);
+      assert.match(primer, /Ask Sinh for approval before checkout or any other Git or project-file mutation/);
+      assert.match(primer, /Immediately before acting on approval, re-read the branch, HEAD, and full Git status/);
+      assert.match(primer, /state or the proposed mutation scope drifted, ask Sinh again/);
+      assert.match(primer, /Read-only investigation is allowed.*builder\/orchestrator mode/);
+      assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
+    }
+  }
+});
+
+test("clean, background, dry-run, and non-builder evidence do not inject the foreground dirty contract", () => {
+  const baseSnapshot = {
+    branch: "develop",
+    head: "d".repeat(40),
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    dirty: false,
+    statusSummary: "",
+  } as const;
+  for (const repositoryAdmission of [
+    { access: "exclusive-builder", launchMode: "foreground", ownershipIntent: "acquire-before-spawn", force: false, gitSnapshot: baseSnapshot },
+    { access: "exclusive-builder", launchMode: "background", ownershipIntent: "acquire-before-spawn", force: false, gitSnapshot: { ...baseSnapshot, dirty: true, untrackedCount: 1 } },
+    { access: "exclusive-builder", launchMode: "dry-run", ownershipIntent: "preview", force: false, gitSnapshot: { ...baseSnapshot, dirty: true, untrackedCount: 1 } },
+    { access: "read-only", launchMode: "foreground", ownershipIntent: "none", force: false },
+  ] as const satisfies readonly RepositoryAdmissionEvidence[]) {
+    const primer = generatePrimer({ runtime: "opencode", teamConfig: team, mode: "plan", repositoryAdmission });
+    assert.doesNotMatch(primer, /Mandatory Dirty Repository Intent Contract/);
   }
 });

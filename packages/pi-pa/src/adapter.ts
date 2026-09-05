@@ -44,6 +44,10 @@ export interface PiBackgroundConfig {
   skills: string[];
   trustedExtension?: string;
   timeoutMs?: number;
+  repositoryLease?: {
+    canonicalRepoRoot: string;
+    ownershipToken: string;
+  };
 }
 export interface PiSupervisorOwnership {
   schemaVersion: 1;
@@ -512,6 +516,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     skills: plan?.skills.map((skill) => skill.path) ?? [],
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
+    ...(input.opts.repositoryLease ? { repositoryLease: input.opts.repositoryLease } : {}),
   };
   try {
     writePiBackgroundConfig(configPath, config);
@@ -583,6 +588,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       supervisorPid: established.supervisorPid,
       ...(established.childPid ? { pid: established.childPid } : {}),
       ownershipFile: ownershipPath,
+      ...(config.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
     },
   };
 }
@@ -613,7 +619,14 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`runner-readiness: Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string")) {
+  const repositoryLease = value.repositoryLease;
+  const validRepositoryLease = repositoryLease === undefined || (
+    typeof repositoryLease === "object"
+    && repositoryLease !== null
+    && typeof repositoryLease.canonicalRepoRoot === "string"
+    && typeof repositoryLease.ownershipToken === "string"
+  );
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryLease) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
