@@ -180,9 +180,10 @@ test("reuses a successful configurable version preflight and preserves timeout f
   assert.equal(spawned, false);
 });
 
-test("managed Pi invocations disable discovery and load only plan resources", async () => {
+test("managed foreground and background Pi invocations isolate discovery behind one trusted entrypoint", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
   const primer = join(dir, "primer.md");
+  const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
   writeFileSync(primer, "work");
   const invocations: string[][] = [];
   const adapter = new PiAdapter({
@@ -194,25 +195,33 @@ test("managed Pi invocations disable discovery and load only plan resources", as
       return { status: 0, stdout: "", stderr: "" };
     },
   });
-  await adapter.spawn({
-    primerPath: primer,
-    deployId: "d-managed",
-    mode: "background",
-    executionPlan: {
-      runtime: "pi",
-      team: "builder",
-      mode: "implement",
-      repositoryCwd: dir,
-      ticketRequired: false,
-      objective: "work",
-      skills: [{ name: "pa-cli", injectAs: "reference", path: join(dir, "pa-cli", "SKILL.md") }],
-      memoryDocuments: [],
-      environment: {},
-      timeoutSeconds: 60,
-      lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
-    },
-  });
-  assert.deepEqual(invocations[0]?.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocations[0]?.[4], "--no-skills", "--no-extensions", "--skill", join(dir, "pa-cli", "SKILL.md")]);
+  const executionPlan = {
+    runtime: "pi" as const,
+    team: "builder",
+    mode: "implement",
+    repositoryCwd: dir,
+    ticketRequired: false,
+    objective: "work",
+    skills: [{ name: "pa-cli", injectAs: "reference" as const, path: join(dir, "pa-cli", "SKILL.md") }],
+    memoryDocuments: [],
+    environment: {},
+    timeoutSeconds: 60,
+    trustedExtension,
+    lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
+  };
+  for (const mode of ["foreground", "background"] as const) {
+    await adapter.spawn({ primerPath: primer, deployId: `d-managed-${mode}`, mode, executionPlan });
+  }
+
+  assert.equal(invocations.length, 2);
+  assert.deepEqual(invocations[0]?.slice(0, 4), ["--session-id", invocations[0]?.[1], "--no-skills", "--no-extensions"]);
+  assert.deepEqual(invocations[1]?.slice(0, 7), ["--print", "--mode", "json", "--session-id", invocations[1]?.[4], "--no-skills", "--no-extensions"]);
+  for (const args of invocations) {
+    assert.equal(args.filter((arg) => arg === "--no-extensions").length, 1);
+    assert.equal(args.filter((arg) => arg === "--extension").length, 1);
+    assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
+    assert.equal(args.filter((arg) => /(?:^|\/)\.pi\/extensions(?:\/|$)/.test(arg)).length, 0);
+  }
 });
 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {

@@ -16,11 +16,15 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "imports": {
+    "#pi-pa-vimmode": "./dist/pi-extension/vendor/pi-vimmode.js",
+    "#pi-pa-proper-base": "./dist/pi-extension/vendor/proper-base.js"
+  },
   "scripts": {
     "validate:sources": "node scripts/validate-extension-sources.mjs",
     "bundle:extensions": "node scripts/bundle-extension-sources.mjs",
     "build": "node scripts/validate-extension-sources.mjs && tsc -p tsconfig.json && node scripts/bundle-extension-sources.mjs",
-    "test": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.mjs\"",
+    "test": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"scripts/**/*.test.mjs\" && tsx --test \"src/**/*.test.ts\"",
     "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

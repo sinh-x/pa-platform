@@ -8,6 +8,7 @@ import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
+import { registerBundledEditorsModule } from "./bundled-editors.js";
 
 // PAP-145 modules adapt the MIT-licensed Pi 0.80.8 examples at
 // examples/extensions/{question,todo,status-line,overlay-qa-tests}.ts.
@@ -22,7 +23,7 @@ export const PI_EXAMPLE_SOURCES = [
 export const MAX_TOOL_BYTES = 50 * 1024;
 export const MAX_TOOL_LINES = 2000;
 
-export interface PiToolCall { name: string; input: Record<string, unknown> }
+export interface PiToolCall { name?: string; toolName?: string; input: Record<string, unknown> }
 export interface PiTextContent { type: "text"; text: string }
 export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails }
 export interface PiToolTheme {
@@ -132,8 +133,9 @@ function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecy
 }
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
+  const name = call.name ?? call.toolName ?? "";
   const values = flattenStrings(call.input);
-  if ((call.name === "bash" || call.name === "shell" || call.name === "execute") && values.some(isDestructiveCommand)) {
+  if ((name === "bash" || name === "shell" || name === "execute") && values.some(isDestructiveCommand)) {
     return { allowed: false, reason: "BLOCKED: destructive command detected by PA safety policy." };
   }
   if (values.some(isBlockedFilePath)) return { allowed: false, reason: "BLOCKED: sensitive file access is not allowed by PA safety policy." };
@@ -182,6 +184,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
 };
 
 export const PI_PA_MODULES: readonly PiExtensionModule[] = [
+  registerBundledEditorsModule,
   registerPaToolsModule,
   registerQuestionModule,
   registerTodoModule,
