@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, releaseRepositoryMutationLease, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -75,6 +75,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), paths.activityLogPath);
   if (request.dryRun) { appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath); return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId }; }
+  let activeRepositoryLease: { canonicalRepoRoot: string; ownershipToken: string } | undefined;
+  const releaseActiveRepositoryLease = (): void => {
+    const owned = activeRepositoryLease;
+    activeRepositoryLease = undefined;
+    if (owned) releaseRepositoryMutationLease(owned);
+  };
+  const acceptRepositoryLeaseHandoff = (metadata: Record<string, unknown> | undefined): void => {
+    if (!activeRepositoryLease) return;
+    if (metadata?.["repositoryLeaseTransferred"] !== true) throw new Error("runner-readiness: background supervisor did not authenticate repository ownership transfer");
+    activeRepositoryLease = undefined;
+  };
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
   const writeTerminal = (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): { status: "success" | "failed"; reason: string } => {
     const safeReason = boundedDiagnostic(reason, env, 2000);
@@ -89,6 +100,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const outcome = registryTerminalOutcome(authoritative, env);
     writePiTerminalStatus(deployDir, terminalStatus(outcome.status, outcome.reason, authoritative.timestamp));
     if (!request.background) clearPiForegroundCompletion(deployDir);
+    releaseActiveRepositoryLease();
     return outcome;
   };
   const completeFailure = (reason: string, exitCode = 1) => {
@@ -103,6 +115,24 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
+  if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
+    try {
+      const acquisition = acquireRepositoryMutationLease({
+        canonicalRepoKey: plan.repoKey,
+        canonicalRepoRoot: plan.repoRoot,
+        deploymentId,
+        deploymentDirectory: deployDir,
+        runtime: "pi",
+        mode: plan.mode,
+        force: plan.repositoryAdmission.force,
+        gitSnapshot: plan.repositoryAdmission.gitSnapshot,
+      });
+      if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
+      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ownershipToken: acquisition.lease.ownershipToken };
+    } catch (error) {
+      return completeFailure(error instanceof Error ? error.message : String(error));
+    }
+  }
   try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
@@ -125,7 +155,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       emitPidEvent({ deploymentId, team: team.name, pid });
       publishedPid = pid;
     };
-    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, executionPlan: plan } as const;
+    const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan } as const;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
@@ -134,7 +164,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const pid = result.metadata?.["pid"]; if (typeof pid === "number") publishPid(pid);
     const monitor = result.metadata?.["monitor"] as PiSupervisionHandle | undefined;
     if (request.background && result.metadata?.["pending"] === true && monitor?.completion) {
-      const supervisorPid = result.metadata?.["supervisorPid"];
       // Backward-compatible injected-adapter seam. Production Pi background runs
       // return supervisorPid and are finalized exclusively by background-runner.ts.
       void monitor.completion.then((final) => {
@@ -152,6 +181,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (request.background && result.metadata?.["pending"] === true) {
       const supervisorPid = result.metadata?.["supervisorPid"];
       if (typeof supervisorPid !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
+      acceptRepositoryLeaseHandoff(result.metadata);
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
     const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);

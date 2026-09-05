@@ -7,10 +7,11 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { deployWithPi, piSessionCommand } from "../deploy.js";
+import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
+import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
 import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
@@ -52,6 +53,17 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     "deploy_modes:",
     "  - id: implement",
     "    label: Implement",
+  ].join("\n") + "\n");
+  writeFileSync(join(teams, "requirements.yaml"), [
+    "name: requirements",
+    "description: Requirements",
+    "objective: Analyze",
+    "agents:",
+    "  - name: researcher",
+    "    role: Researches",
+    "deploy_modes:",
+    "  - id: analyze",
+    "    label: Analyze",
   ].join("\n") + "\n");
   const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const gitState = installGitStateRecorder(root);
@@ -318,6 +330,183 @@ test("foreground and background Pi children receive distinct internal execution 
   });
 });
 
+test("PPA foreground builders own the exact repository through every adapter terminal outcome", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    for (const exitCode of [0, 17, 124, 143]) {
+      let observedToken = "";
+      const adapter = stubAdapter({
+        onSpawn: (opts) => {
+          const inspection = inspectRepositoryMutationLease(repo);
+          assert.equal(inspection.state, "live");
+          assert.equal(inspection.lease?.deploymentId, opts.deployId);
+          assert.equal(inspection.lease?.canonicalRepoRoot, repo);
+          assert.equal(inspection.lease?.runtime, "pi");
+          assert.equal(inspection.lease?.preLaunchGitSnapshot.dirty, false);
+          assert.equal(opts.repositoryLease?.ownershipToken, inspection.lease?.ownershipToken);
+          observedToken = inspection.lease?.ownershipToken ?? "";
+          assert.equal(statSync(leasePath).mode & 0o777, 0o600);
+          assert.ok(statSync(leasePath).size <= 64 * 1024);
+          assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: "not-the-owner" }).status, "token-mismatch");
+          assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+        },
+        result: (sessionId) => ({ sessionId, exitCode, ...(exitCode === 0 ? {} : { errorMessage: `terminal ${exitCode}` }), metadata: { sessionId } }),
+      });
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, adapter);
+      assert.ok(observedToken);
+      assert.equal(result.status, exitCode === 0 ? "success" : "failed");
+      assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+    }
+
+    const launchFailure = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ result: () => { throw new Error("launch failed"); } }));
+    assert.equal(launchFailure.status, "failed");
+    assert.match(launchFailure.reason ?? "", /launch failed/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("PPA dirty background rejects pre-spawn while requirements bypass status and lease admission", async () => {
+  await withPiEnv(async (root, gitState) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    writeFileSync(join(repo, "dirty.txt"), "dirty\n");
+    let builderSpawns = 0;
+    const rejected = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({ onSpawn: () => { builderSpawns += 1; } }));
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /state=dirty-background/);
+    assert.ok((rejected.reason ?? "").length <= 2_000);
+    assert.equal(builderSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    writeFileSync(leasePath, "live evidence must remain byte-identical\n", { mode: 0o600 });
+    const before = readFileSync(leasePath, "utf8");
+    const commandOffset = gitState.readCommands().length;
+    let requirementsSpawns = 0;
+    const launched = await deployWithPi({ team: "requirements", mode: "analyze", background: true }, stubAdapter({ onSpawn: (opts) => {
+      requirementsSpawns += 1;
+      assert.equal(opts.executionPlan?.repositoryAdmission.access, "read-only");
+      assert.equal(opts.repositoryLease, undefined);
+    } }));
+    assert.equal(launched.status, "success", launched.reason);
+    assert.equal(requirementsSpawns, 1);
+    assert.equal(readFileSync(leasePath, "utf8"), before);
+    assert.equal(gitState.readCommands().slice(commandOffset).some((args) => args[0] === "status"), false);
+    assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("REST-selected Pi defaults dirty builders to rejection before spawn without ownership", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "dirty-rest.txt"), "dirty\n");
+    let spawns = 0;
+    const adapter = stubAdapter({ onSpawn: () => { spawns += 1; } });
+    const { app } = createAgentApiApp({ hooks: composeRuntimeHooks({}, createPiHooks(adapter)) });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "implement", runtime: "pi" }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json() as { status: string; reason?: string };
+    assert.equal(body.status, "failed");
+    assert.match(body.reason ?? "", /state=dirty-background/);
+    assert.ok((body.reason ?? "").length <= 2_000);
+    assert.equal(spawns, 0);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("PPA background launcher requires authenticated supervisor handoff and releases failed handoffs", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    let handedOffToken = "";
+    const accepted = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { handedOffToken = opts.repositoryLease?.ownershipToken ?? ""; },
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, repositoryLeaseTransferred: true } }),
+    }));
+    assert.equal(accepted.status, "pending", accepted.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).lease?.ownershipToken, handedOffToken);
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: handedOffToken }).status, "released");
+
+    const rejected = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid } }),
+    }));
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /did not authenticate repository ownership transfer/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("50 mixed PPA and OPA same-root builder contenders produce exactly one owner and one spawn", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    let releaseFirst!: () => void;
+    let spawns = 0;
+    const held = new Promise<SpawnResult>((resolve) => { releaseFirst = () => resolve({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } }); });
+    const firstAdapter = stubAdapter({ onSpawn: () => { spawns += 1; }, result: () => held });
+    const first = deployWithPi({ team: "builder", mode: "implement" }, firstAdapter);
+    while (spawns === 0) await nextTick();
+    assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+
+    const rejectedAdapter = (runtime: "pi" | "opencode"): RuntimeAdapter => ({
+      name: runtime,
+      defaultModel: runtime === "pi" ? "" : "stub/model",
+      sessionFileName: runtime === "pi" ? "session-id-pi.txt" : "session-id-opencode.txt",
+      installHooks() {},
+      spawn() { spawns += 1; return { exitCode: 0 }; },
+      resume() { spawns += 1; return { exitCode: 0 }; },
+      extractActivity() { return []; },
+      describeTools() { return { runtime, markdown: "stub" }; },
+    });
+    const contenders = Array.from({ length: 49 }, (_, index) => index % 2 === 0
+      ? deployWithPi({ team: "builder", mode: "implement" }, rejectedAdapter("pi"))
+      : deployWithOpencode({ team: "builder", mode: "implement" }, rejectedAdapter("opencode")));
+    const outcomes = await Promise.all(contenders);
+    assert.equal(outcomes.every((outcome) => outcome.status === "failed"), true);
+    assert.equal(outcomes.every((outcome) => /state=live/.test(outcome.reason ?? "")), true);
+    assert.equal(outcomes.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
+    assert.equal(spawns, 1);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+    releaseFirst();
+    assert.equal((await first).status, "success");
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("PPA and OPA builders hold different canonical repositories independently", async () => {
+  await withPiEnv(async (root) => {
+    const firstRepo = join(root, "repo");
+    const secondRepo = join(root, "repo-two");
+    initializeGitRepo(secondRepo);
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${firstRepo}\n  second:\n    path: ${secondRepo}\n`);
+    let resolvePi!: () => void;
+    let resolveOpa!: () => void;
+    let spawns = 0;
+    const piAdapter = stubAdapter({
+      onSpawn: () => { spawns += 1; },
+      result: (sessionId) => new Promise<SpawnResult>((resolve) => { resolvePi = () => resolve({ sessionId, exitCode: 0, metadata: { sessionId } }); }),
+    });
+    const opaBase: RuntimeAdapter = {
+      name: "opencode", defaultModel: "stub/model", sessionFileName: "session-id-opencode.txt", installHooks() {},
+      spawn() { spawns += 1; return new Promise<SpawnResult>((resolve) => { resolveOpa = () => resolve({ exitCode: 0 }); }); },
+      resume() { return { exitCode: 0 }; }, extractActivity() { return []; }, describeTools() { return { runtime: "opencode", markdown: "stub" }; },
+    };
+    const piRun = deployWithPi({ team: "builder", mode: "implement", repo: "first" }, piAdapter);
+    const opaRun = deployWithOpencode({ team: "builder", mode: "implement", repo: "second" }, opaBase);
+    while (spawns < 2) await nextTick();
+    assert.equal(inspectRepositoryMutationLease(firstRepo).state, "live");
+    assert.equal(inspectRepositoryMutationLease(secondRepo).state, "live");
+    resolvePi();
+    resolveOpa();
+    const outcomes = await Promise.all([piRun, opaRun]);
+    assert.equal(outcomes.every((outcome) => outcome.status === "success"), true);
+    assert.equal(inspectRepositoryMutationLease(firstRepo).state, "absent");
+    assert.equal(inspectRepositoryMutationLease(secondRepo).state, "absent");
+  });
+});
+
 test("PPA key and exact-path requests consume one canonical execution plan with no admission state", async () => {
   await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
@@ -534,11 +723,12 @@ test("malformed foreground completion sidecars fall back without publishing befo
 });
 
 test("background registry completion remains immediate and exactly once", async () => {
-  await withPiEnv(async () => {
+  await withPiEnv(async (root) => {
     let deployId = "";
+    let repositoryToken = "";
     const adapter = stubAdapter({
-      onSpawn: (opts) => { deployId = opts.deployId; },
-      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, pid: process.pid } }),
+      onSpawn: (opts) => { deployId = opts.deployId; repositoryToken = opts.repositoryLease?.ownershipToken ?? ""; },
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, pid: process.pid, repositoryLeaseTransferred: true } }),
     });
     const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter);
     assert.equal(deployed.status, "pending");
@@ -558,6 +748,7 @@ test("background registry completion remains immediate and exactly once", async 
     const terminal = getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminal.length, 1);
     assert.equal(terminal[0]?.summary, "background complete");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: join(root, "repo"), ownershipToken: repositoryToken }).status, "released");
   });
 });
 
