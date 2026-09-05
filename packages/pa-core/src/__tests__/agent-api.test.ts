@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { serve } from "@hono/node-server";
 import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
-import type { WsClient, WsEvent } from "../index.js";
+import type { DeployRequest, WsClient, WsEvent } from "../index.js";
 import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
 
 function sleep(ms: number): Promise<void> {
@@ -570,6 +570,57 @@ test("agent API deploy validates requests and routes through deploy hook without
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { error: "Invalid team name", code: "BAD_REQUEST" });
     assert.equal(received.length, 1);
+  });
+});
+
+test("agent API deploy accepts and propagates boolean force and rejects non-boolean force", async () => {
+  await withApiEnv(async () => {
+    const received: DeployRequest[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request);
+        return { status: "pending", deploymentId: "d-force-api" };
+      },
+    } });
+
+    for (const force of [true, false]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", mode: "implement", timeout: 120, force }),
+      });
+      assert.equal(response.status, 202);
+    }
+    assert.deepEqual(received, [
+      { team: "builder", mode: "implement", timeout: 120, background: true, force: true },
+      { team: "builder", mode: "implement", timeout: 120, background: true, force: false },
+    ]);
+
+    for (const force of ["true", 1, null, {}]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", force }),
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: "force must be a boolean", code: "BAD_REQUEST" });
+    }
+    assert.equal(received.length, 2);
+  });
+});
+
+test("agent API force cannot bypass runtime validation", async () => {
+  await withApiEnv(async () => {
+    let calls = 0;
+    const { app } = createAgentApiApp({ hooks: { deploy: () => { calls += 1; return { status: "pending", deploymentId: "d-invalid-runtime" }; } } });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", runtime: "claude", force: true }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "runtime must be opencode or pi", code: "BAD_REQUEST" });
+    assert.equal(calls, 0);
   });
 });
 

@@ -118,7 +118,9 @@ test("50 simultaneous cross-process ppa/opa contenders yield exactly one owner w
       gitSnapshot: ${JSON.stringify(snapshot)},
     });
     process.stdout.write(JSON.stringify({ status: result.status, evidenceState: result.evidenceState }) + "\\n");
-    if (result.status === "acquired") setTimeout(() => {}, 3000);
+    // Keep the winner alive long enough for all 50 tsx processes to finish startup
+    // even while the full test suite is saturating the host.
+    if (result.status === "acquired") setTimeout(() => {}, 10000);
   `;
   try {
     const attempts = await Promise.all(Array.from({ length: 50 }, (_, index) => new Promise<{ status: string; evidenceState: string }>((resolvePromise, rejectPromise) => {

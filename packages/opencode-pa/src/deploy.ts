@@ -168,7 +168,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   const primerPath = resolve(deployDir, "primer.md");
   try {
     const extraInstructions = buildExtraInstructions(plan, teamConfig);
-    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
+    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, repositoryAdmission: plan.repositoryAdmission, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
     writeFileSync(primerPath, primer, "utf-8");
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };

@@ -4,6 +4,8 @@ import { getRegistryDbPath, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
+import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
+import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
 
 export interface ExecutionPlanSkill {
@@ -28,6 +30,7 @@ export interface ExecutionPlan {
   readonly repoRoot: string;
   readonly repositoryCwd: string;
   readonly memoryDocumentRoot: string;
+  readonly repositoryAdmission: RepositoryAdmissionEvidence;
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
@@ -56,6 +59,8 @@ export interface ResolveExecutionPlanOptions {
   registryDbPath?: string;
   trustedExtensionPath?: string;
   cwd?: string;
+  captureRepositoryGitSnapshot?: (canonicalRepoRoot: string) => RepositoryGitSnapshot;
+  observeRepositoryAdmissionOperation?: (operation: RepositoryAdmissionOperation) => void;
 }
 
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
@@ -73,6 +78,19 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
   }
+  const repositoryAdmission = resolveRepositoryAdmissionEvidence({
+    team: options.teamConfig.name,
+    mode: modeName,
+    canonicalRepoKey: repository.repoKey,
+    canonicalRepoRoot: repository.repoRoot,
+    runtime: options.runtime,
+    background: options.request.background,
+    dryRun: options.request.dryRun,
+    force: options.request.force,
+    ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
+    ...(options.captureRepositoryGitSnapshot ? { captureGitSnapshot: options.captureRepositoryGitSnapshot } : {}),
+    ...(options.observeRepositoryAdmissionOperation ? { observeOperation: options.observeRepositoryAdmissionOperation } : {}),
+  });
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,
     deploymentDir: options.deploymentDir,
@@ -88,6 +106,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repoRoot: repository.repoRoot,
     repositoryCwd: repository.repoRoot,
     memoryDocumentRoot: repository.repoRoot,
+    repositoryAdmission,
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
     objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,

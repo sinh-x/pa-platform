@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
+import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
 import type { ToolReference } from "../runtime-api/types.js";
 
 export interface PrimerRepositoryContext {
@@ -20,6 +21,7 @@ export interface GeneratePrimerOptions {
   skillsDir?: string;
   extraInstructions?: string;
   repository?: PrimerRepositoryContext;
+  repositoryAdmission?: RepositoryAdmissionEvidence;
   toolReference?: ToolReference;
 }
 
@@ -33,7 +35,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
   const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
-  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository);
+  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission);
 
   const body = [
     `# PA Deployment Primer`,
@@ -85,11 +87,37 @@ function resolvePrimerRepositoryContext(extraInstructions: string | undefined): 
   return { repoKey: resolved.repoKey, repoRoot: resolved.repoRoot };
 }
 
-function renderAdditionalInstructions(userObjective: string | undefined, extraInstructions: string | undefined, repository: PrimerRepositoryContext | undefined): string {
+function renderAdditionalInstructions(
+  userObjective: string | undefined,
+  extraInstructions: string | undefined,
+  repository: PrimerRepositoryContext | undefined,
+  repositoryAdmission: RepositoryAdmissionEvidence | undefined,
+): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
   const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
-  return ["## Additional Instructions", objective, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
+  return ["## Additional Instructions", objective, dirtyBuilderContract, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function renderDirtyBuilderIntentContract(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
+  const snapshot = repositoryAdmission?.gitSnapshot;
+  if (repositoryAdmission?.access !== "exclusive-builder" || repositoryAdmission.launchMode !== "foreground" || !snapshot?.dirty) return undefined;
+  return [
+    "### Mandatory Dirty Repository Intent Contract",
+    "The repository was dirty when deployment admission captured the following read-only evidence:",
+    `- Branch: ${snapshot.branch}`,
+    `- HEAD: ${snapshot.head}`,
+    `- Counts: staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
+    `- Bounded porcelain summary (JSON): ${JSON.stringify(snapshot.statusSummary)}`,
+    "Before any agent-initiated Git operation or project-file mutation, you MUST:",
+    "1. Re-evaluate the current branch, HEAD, and full Git status.",
+    "2. Classify whether the observed changes belong to this deployment's ticket or to other work.",
+    "3. Propose one concrete action to Sinh: preserve the changes, wait for the other work, or stop this deployment.",
+    "4. Ask Sinh for approval before checkout or any other Git or project-file mutation.",
+    "5. Immediately before acting on approval, re-read the branch, HEAD, and full Git status; if repository state or the proposed mutation scope drifted, ask Sinh again before acting.",
+    "Read-only investigation is allowed while waiting for Sinh, including in builder/orchestrator mode. Approval is not transferable to changed state or broader scope.",
+  ].join("\n");
 }
 
 function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext): string {
