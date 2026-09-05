@@ -144,7 +144,7 @@ test("foreground PPA /quit emits one terminal event with no Git state operation"
       running = false;
       queueMicrotask(() => pty.emitExit(0));
     });
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -263,7 +263,7 @@ test("live foreground PTY PID protects status, wait, health, and sweep before se
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
     const pty = new ForegroundDeploymentPty(() => {}, process.pid);
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -332,7 +332,7 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
         }
       }({
         cwd: join(root, "adapter-local-cwd-must-not-win"),
-        versionProbe: () => "0.80.8",
+        versionProbe: () => "0.84.4",
         nativeRegistryProbe: () => undefined,
         runCommand: (_args, options) => {
           runtimeCwd = options.cwd;
@@ -590,7 +590,7 @@ test("ordinary background termination retains one causal failure with no Git sta
   await withPiEnv(async (_root, gitState) => {
     const launcher = new BackgroundDeploymentProcess(88_001);
     let config: PiBackgroundConfig | undefined;
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       launchBackgroundRunner: ((_runnerPath, configPath) => {
         config = readPiBackgroundConfig(configPath);
         writePiSupervisorOwnership(join(configPath, "..", PI_SUPERVISOR_FILE), {
@@ -877,7 +877,7 @@ test("real foreground cleanup failures override staged success exactly once", as
           queueMicrotask(() => pty.emitExit(17));
         }
       });
-      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
         spawnPty: () => pty as never, input: input as never, output: output as never,
         processExists: () => running,
         now: () => now,
@@ -1074,7 +1074,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
     ].join("\n") + "\n");
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
-      versionProbe: () => "0.80.8",
+      versionProbe: () => "0.84.4",
       nativeRegistryProbe: () => undefined,
       runCommand: (args, opts) => {
         invocations.push({ args, env: opts.env });

@@ -13,7 +13,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import type { PiExtensionModule, PiToolDefinition } from "./index.js";
 
 export const TODO_ACTIONS = ["list", "add", "update", "start", "complete", "cancel", "reorder"] as const;
@@ -43,7 +43,7 @@ export interface TodoDetails extends Record<string, unknown> {
   error?: string;
 }
 
-export const TodoParams = Type.Object({
+export const TodoParams: TSchema = Type.Object({
   action: StringEnum(TODO_ACTIONS),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Task ID for update, start, complete, cancel, or reorder" })),
   text: Type.Optional(Type.String({ description: "Task text for add or update" })),

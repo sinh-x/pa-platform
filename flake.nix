@@ -56,13 +56,13 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-s2InnT6MZb1iVQn6rMjgRJZmiqyC5P9yBvHDRajqCZ8=";
+            hash = "sha256-uCEG5ea+qcc17EnHHD6dOg6rPF7HM/oZxRdw1eP36dg=";
             fetcherVersion = 4;
           };
 
           buildPhase = ''
             runHook preBuild
-            pnpm -r build
+            pnpm --reporter=append-only -r build
             runHook postBuild
           '';
 

@@ -32,14 +32,14 @@ refresh_pnpm_deps_hash() {
   command -v nix >/dev/null || { echo "ERROR: nix not available, cannot refresh pnpmDeps.hash"; return 1; }
 
   echo "pnpm-lock.yaml changed — refreshing flake.nix pnpmDeps.hash"
-  if nix build .#pa-platform --no-link 2>/dev/null; then
+  if nix build '.?submodules=1#pa-platform' --no-link 2>/dev/null; then
     echo "Hash already correct — no refresh needed"
     return 0
   fi
 
   local tmpfile; tmpfile=$(mktemp)
   sed -i.bak 's|hash = "sha256-[^"]*"|hash = ""|' flake.nix
-  nix build .#pa-platform --no-link 2>&1 | tee "$tmpfile" || true
+  nix build '.?submodules=1#pa-platform' --no-link 2>&1 | tee "$tmpfile" || true
   local got; got=$(grep -oP 'got:\s+\Ksha256-\S+' "$tmpfile" | head -1)
   if [[ -z "$got" ]]; then
     mv flake.nix.bak flake.nix
@@ -50,7 +50,7 @@ refresh_pnpm_deps_hash() {
   sed -i "s|hash = \"\"|hash = \"$got\"|" flake.nix
   rm -f flake.nix.bak "$tmpfile"
 
-  nix build .#pa-platform --no-link || { echo "ERROR: build still fails after hash refresh"; return 1; }
+  nix build '.?submodules=1#pa-platform' --no-link || { echo "ERROR: build still fails after hash refresh"; return 1; }
   echo "pnpmDeps.hash refreshed to $got"
 }
 

@@ -22,8 +22,8 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   const config = join(root, "config");
   const { mkdirSync } = await import("node:fs");
   mkdirSync(extension); mkdirSync(config);
-  const first = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.80.8", confirm: async () => true });
-  const second = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.80.8", confirm: async () => { throw new Error("should not confirm"); } });
+  const first = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.84.4", confirm: async () => true });
+  const second = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.84.4", confirm: async () => { throw new Error("should not confirm"); } });
   assert.equal(first.changed, true);
   assert.equal(second.changed, false);
   assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, [extension, config]);

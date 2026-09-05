@@ -1,0 +1,6 @@
+[submodule "packages/pi-pa/vendor/proper-pi-extensions"]
+	path = packages/pi-pa/vendor/proper-pi-extensions
+	url = https://github.com/sharaf-nassar/proper-pi-extensions.git
+[submodule "packages/pi-pa/vendor/pi-vimmode"]
+	path = packages/pi-pa/vendor/pi-vimmode
+	url = https://github.com/pekochan069/pi-vimmode.git

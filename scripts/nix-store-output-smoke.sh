@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-store_output=$(nix build .#ppa --no-link --print-out-paths)
+store_output=$(nix build '.?submodules=1#ppa' --no-link --print-out-paths)
 for command in "opa status" "ppa status" "opa --help" "ppa --help"; do
   "$store_output/bin/${command%% *}" ${command#* } >/dev/null
 done
@@ -9,6 +9,15 @@ done
 test -f "$store_output/share/pa-platform/packages/pi-pa/package.json"
 test -f "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/index.js"
 test -f "$store_output/share/pa-platform/packages/pi-pa/dist/pi-host-smoke.js"
+test -f "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/vendor/proper-base.js"
+test -f "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/vendor/pi-vimmode.js"
+test -f "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/vendor/provenance.json"
+grep -q '859feb321ec81d773beea379d28e21d0b7d0c8c0' "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/vendor/provenance.json"
+grep -q '52bd6ac5e905157ac46ec15c120b7d0cc61a62df' "$store_output/share/pa-platform/packages/pi-pa/dist/pi-extension/vendor/provenance.json"
+(
+  cd "$store_output/share/pa-platform/packages/pi-pa"
+  "$store_output/bin/pa-platform-node" --input-type=module --eval 'import sharp from "sharp"; if (sharp.versions.sharp !== "0.35.3") process.exit(1);'
+)
 test -f "$store_output/share/pa-platform/native-addons/node-22/better_sqlite3.node"
 test -f "$store_output/share/pa-platform/native-addons/pi-node-24/better_sqlite3.node"
 test -f "$store_output/share/pa-platform/packages/runtime-host/dist/index.js"

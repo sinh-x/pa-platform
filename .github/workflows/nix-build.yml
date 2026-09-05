@@ -4,8 +4,12 @@ on:
   push:
     branches: [main, develop]
     paths:
+      - '.gitmodules'
       - 'package.json'
       - 'packages/**/package.json'
+      - 'packages/pi-pa/extension-sources.lock.json'
+      - 'packages/pi-pa/scripts/**'
+      - 'packages/pi-pa/vendor/**'
       - 'pnpm-lock.yaml'
       - 'flake.nix'
       - 'flake.lock'
@@ -14,8 +18,12 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
+      - '.gitmodules'
       - 'package.json'
       - 'packages/**/package.json'
+      - 'packages/pi-pa/extension-sources.lock.json'
+      - 'packages/pi-pa/scripts/**'
+      - 'packages/pi-pa/vendor/**'
       - 'pnpm-lock.yaml'
       - 'flake.nix'
       - 'flake.lock'
@@ -27,12 +35,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate pinned Pi extension sources
+        run: node packages/pi-pa/scripts/validate-extension-sources.mjs
 
       - uses: DeterminateSystems/nix-installer-action@main
 
       - name: Build pa-platform
         run: |
-          if ! nix build .#pa-platform --print-build-logs; then
+          if ! nix build '.?submodules=1#pa-platform' --print-build-logs; then
             echo "::error::nix build failed. If the error mentions ERR_PNPM_NO_OFFLINE_TARBALL or a hash mismatch,"
             echo "::error::run \`bash scripts/dev/version_bump.sh --refresh-hash\` locally, commit flake.nix, and re-push."
             exit 1

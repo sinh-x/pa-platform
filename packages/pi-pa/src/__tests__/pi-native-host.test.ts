@@ -88,7 +88,7 @@ test("Pi preflight verifies version then native registry addon before objective 
   const order: string[] = [];
   const adapter = new PiAdapter({
     cwd: root,
-    versionProbe: () => { order.push("version"); return "0.80.8"; },
+    versionProbe: () => { order.push("version"); return "0.84.4"; },
     nativeRegistryProbe: () => { order.push("native"); return undefined; },
     runCommand: () => { order.push("objective"); return { status: 0, stdout: "", stderr: "" }; },
   });
@@ -112,7 +112,7 @@ test("Pi preflight overlaps independent cold version and native validations", as
     versionProbe: async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(nativeStarted, true, "native validation must start before version validation settles");
-      return "0.80.8";
+      return "0.84.4";
     },
     nativeRegistryProbe: () => { nativeStarted = true; return undefined; },
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
@@ -141,7 +141,7 @@ test("parallel preflight retains deterministic version-first causal failure", as
     const result = await adapter.spawn({ primerPath: primer, deployId: "d-causal", mode: "foreground" });
     assert.equal(result.exitCode, 1);
     assert.equal(executed, false);
-    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.80\.8 or later/);
+    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.84\.4 or later/);
     assert.doesNotMatch(result.errorMessage ?? "", /native-load/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -155,7 +155,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
   try {
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
-      /Pi is unavailable:.*Install Pi 0\.80\.8 or later/,
+      /Pi is unavailable:.*Install Pi 0\.84\.4 or later/,
     );
 
     const pi = join(bin, "pi");
@@ -166,7 +166,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
       /Pi version probe failed with exit code 7/,
     );
 
-    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.80.8");\n`);
+    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.84.4");\n`);
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 20 }).preflight(),
       /Pi version probe timed out after 20ms/,
@@ -184,7 +184,7 @@ test("missing Pi addon fails causally before objective execution", async () => {
   const adapter = new PiAdapter({
     cwd: root,
     env: { ...process.env, [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1" },
-    versionProbe: () => "0.80.8",
+    versionProbe: () => "0.84.4",
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
   });
   try {

@@ -33,12 +33,6 @@
     "better-sqlite3": "11.6.0",
     "js-yaml": "^4.1.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "node-pty"
-    ]
-  },
   "engines": {
     "node": ">=22"
   },
