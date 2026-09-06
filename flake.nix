@@ -56,13 +56,13 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-s2InnT6MZb1iVQn6rMjgRJZmiqyC5P9yBvHDRajqCZ8=";
+            hash = "sha256-uCEG5ea+qcc17EnHHD6dOg6rPF7HM/oZxRdw1eP36dg=";
             fetcherVersion = 4;
           };
 
           buildPhase = ''
             runHook preBuild
-            pnpm -r build
+            pnpm --reporter=append-only -r build
             runHook postBuild
           '';
 
@@ -90,7 +90,7 @@
             mkdir -p $share/packages/droidcode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/droidcode-pa/node_modules/@pa-platform/pa-core
 
-            cp packages/pi-pa/package.json $share/packages/pi-pa/package.json
+            cp packages/pi-pa/package.json packages/pi-pa/THIRD_PARTY_NOTICES.md $share/packages/pi-pa/
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
             cp -r packages/pi-pa/node_modules $share/packages/pi-pa/node_modules
             test -f packages/pi-pa/package.json

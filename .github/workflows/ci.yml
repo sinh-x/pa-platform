@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Read paired config SHA
         id: paired-config
@@ -30,6 +32,9 @@ jobs:
         with:
           node-version: '22'
           cache: 'pnpm'
+
+      - name: Validate pinned Pi extension sources
+        run: node packages/pi-pa/scripts/validate-extension-sources.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -50,7 +50,7 @@ class FakePiOutput { readonly chunks: string[] = []; write(chunk: string): boole
 function controlledAdapter(child: FakePiChild, options: { persistLine?: () => void; onSignal?: (signal: NodeJS.Signals) => void; onTimeout?: (callback: () => void) => void; processGroupGone?: () => boolean; onSpawn?: (args: string[], stdio: unknown) => void } = {}): PiAdapter {
   return new PiAdapter({
     cwd: tmpdir(),
-    versionProbe: () => "0.80.8",
+    versionProbe: () => "0.84.4",
     supervision: {
       spawnProcess: ((...spawnArgs: unknown[]) => {
         const args = spawnArgs[1] as string[];
@@ -128,9 +128,9 @@ function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
 }
 
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
-  assert.equal(meetsMinimum("0.80.7"), false); assert.equal(meetsMinimum("0.80.8"), true); assert.equal(meetsMinimum("0.81.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
+  assert.equal(meetsMinimum("0.80.8"), false); assert.equal(meetsMinimum("0.84.3"), false); assert.equal(meetsMinimum("0.84.4"), true); assert.equal(meetsMinimum("0.85.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
   const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0; const invocations: string[][] = [];
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.80.8"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.84.4"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
   await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" });
   await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "background" });
   assert.equal(probes, 2);
@@ -146,7 +146,7 @@ test("managed Pi invocations normalize OpenAI provider and model arguments", asy
   const primer = join(dir, "primer.md");
   writeFileSync(primer, "work");
   let invocation: string[] = [];
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: (args) => { invocation = args; return { status: 0, stdout: "", stderr: "" }; } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", runCommand: (args) => { invocation = args; return { status: 0, stdout: "", stderr: "" }; } });
   await adapter.spawn({ primerPath: primer, deployId: "d-normalize", mode: "background", model: "openai/gpt-5.6-luna", env: { PA_PROVIDER: "openai" } });
   assert.deepEqual(invocation.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocation[4], "--model", "gpt-5.6-luna", "--provider", "openai-codex"]);
 });
@@ -159,7 +159,7 @@ test("reuses a successful configurable version preflight and preserves timeout f
   const slowAdapter = new PiAdapter({
     cwd: dir,
     versionTimeoutMs: 30,
-    versionProbe: () => new Promise((resolve) => { probes++; setTimeout(() => resolve("0.80.8"), 10); }),
+    versionProbe: () => new Promise((resolve) => { probes++; setTimeout(() => resolve("0.84.4"), 10); }),
     runCommand: () => ({ status: 0, stdout: "", stderr: "" }),
   });
   await slowAdapter.preflight();
@@ -171,7 +171,7 @@ test("reuses a successful configurable version preflight and preserves timeout f
   const timedOutAdapter = new PiAdapter({
     cwd: dir,
     versionTimeoutMs: 1,
-    versionProbe: () => new Promise((resolve) => setTimeout(() => resolve("0.80.8"), 20)),
+    versionProbe: () => new Promise((resolve) => setTimeout(() => resolve("0.84.4"), 20)),
     runCommand: () => { spawned = true; return { status: 0, stdout: "", stderr: "" }; },
   });
   const timedOut = await timedOutAdapter.spawn({ primerPath: primer, deployId: "d-timeout-probe", mode: "foreground" });
@@ -180,39 +180,48 @@ test("reuses a successful configurable version preflight and preserves timeout f
   assert.equal(spawned, false);
 });
 
-test("managed Pi invocations disable discovery and load only plan resources", async () => {
+test("managed foreground and background Pi invocations isolate discovery behind one trusted entrypoint", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-"));
   const primer = join(dir, "primer.md");
+  const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
   writeFileSync(primer, "work");
   const invocations: string[][] = [];
   const adapter = new PiAdapter({
     cwd: tmpdir(),
-    versionProbe: () => "0.80.8",
+    versionProbe: () => "0.84.4",
     runCommand: (args, options) => {
       invocations.push(args);
       assert.equal(options.cwd, dir);
       return { status: 0, stdout: "", stderr: "" };
     },
   });
-  await adapter.spawn({
-    primerPath: primer,
-    deployId: "d-managed",
-    mode: "background",
-    executionPlan: {
-      runtime: "pi",
-      team: "builder",
-      mode: "implement",
-      repositoryCwd: dir,
-      ticketRequired: false,
-      objective: "work",
-      skills: [{ name: "pa-cli", injectAs: "reference", path: join(dir, "pa-cli", "SKILL.md") }],
-      memoryDocuments: [],
-      environment: {},
-      timeoutSeconds: 60,
-      lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
-    },
-  });
-  assert.deepEqual(invocations[0]?.slice(0, 9), ["--print", "--mode", "json", "--session-id", invocations[0]?.[4], "--no-skills", "--no-extensions", "--skill", join(dir, "pa-cli", "SKILL.md")]);
+  const executionPlan = {
+    runtime: "pi" as const,
+    team: "builder",
+    mode: "implement",
+    repositoryCwd: dir,
+    ticketRequired: false,
+    objective: "work",
+    skills: [{ name: "pa-cli", injectAs: "reference" as const, path: join(dir, "pa-cli", "SKILL.md") }],
+    memoryDocuments: [],
+    environment: {},
+    timeoutSeconds: 60,
+    trustedExtension,
+    lifecycle: { deploymentId: "d-managed", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), registryDbPath: join(dir, "registry.db"), terminalMarker: join(dir, "terminal.json") },
+  };
+  for (const mode of ["foreground", "background"] as const) {
+    await adapter.spawn({ primerPath: primer, deployId: `d-managed-${mode}`, mode, executionPlan });
+  }
+
+  assert.equal(invocations.length, 2);
+  assert.deepEqual(invocations[0]?.slice(0, 4), ["--session-id", invocations[0]?.[1], "--no-skills", "--no-extensions"]);
+  assert.deepEqual(invocations[1]?.slice(0, 7), ["--print", "--mode", "json", "--session-id", invocations[1]?.[4], "--no-skills", "--no-extensions"]);
+  for (const args of invocations) {
+    assert.equal(args.filter((arg) => arg === "--no-extensions").length, 1);
+    assert.equal(args.filter((arg) => arg === "--extension").length, 1);
+    assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
+    assert.equal(args.filter((arg) => /(?:^|\/)\.pi\/extensions(?:\/|$)/.test(arg)).length, 0);
+  }
 });
 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
@@ -280,7 +289,7 @@ test("split malformed oversized raw protocol stays causal, bounded, retained, an
   mkdirSync(dir, { recursive: true }); writeFileSync(primer, "work");
   try {
     const child = new FakePiChild();
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [sentinel], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [sentinel], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
     const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run" });
     await nextTick();
     const malformed = `{\"type\":\"tool_execution_start\",\"toolName\":\"read\",\"args\":\"${"x".repeat(2_000)}${sentinel}\"\n`;
@@ -364,7 +373,7 @@ test("persists sanitized streamed Pi output without reasoning signatures", async
   writeFileSync(primer, "work");
   try {
     const child = new FakePiChild();
-    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", secretValues: [configured], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.84.4", secretValues: [configured], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
     const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run", logFile });
     await nextTick();
     const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: { signature, encrypted_content: encrypted }, repeatedPayload: encrypted, diagnostic: configured } : event);
@@ -403,7 +412,7 @@ test("captured Pi logs fail safe on malformed reasoning metadata and preserve di
     `useful malformed diagnostic {"thinkingSignature":{"encrypted_content":"${encrypted}"`,
     JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" }),
   ].join("\n") + "\n";
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [configured], runCommand: () => ({ status: 0, stdout, stderr: `useful stderr ${configured}\n` }) });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [configured], runCommand: () => ({ status: 0, stdout, stderr: `useful stderr ${configured}\n` }) });
   const result = await adapter.spawn({ primerPath: primer, deployId: "d-captured-redact", mode: "background", logFile });
   assert.equal(result.exitCode, 0);
   for (const persisted of [readFileSync(logFile, "utf8"), readFileSync(join(dir, "pi-output.jsonl"), "utf8")]) {
@@ -420,7 +429,7 @@ test("managed Pi stream inspection accepts complete calls and controls malformed
     const primer = join(dir, "primer.md");
     writeFileSync(primer, "work");
     const stdout = fixture.events.map((event) => JSON.stringify(event)).join("\n") + "\n";
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => ({ status: 0, stdout, stderr: "" }) });
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", runCommand: () => ({ status: 0, stdout, stderr: "" }) });
     const result = await adapter.spawn({ primerPath: primer, deployId: `d-${fixture.id}`, mode: "background" });
     if (fixture.expected["status"] === "executed") assert.equal(result.exitCode, 0, fixture.id);
     else {
@@ -484,9 +493,9 @@ test("keeps PAP-151 fixtures sanitized and bounded", () => {
 });
 
 test("requires an exact supported Pi version and redacts nested array content", () => {
-  assert.equal(meetsMinimum("pi 0.80.8"), true);
-  assert.equal(meetsMinimum("0.80.8foo"), false);
-  assert.equal(meetsMinimum("0.80.8-dev"), false);
+  assert.equal(meetsMinimum("pi 0.84.4"), true);
+  assert.equal(meetsMinimum("0.84.4foo"), false);
+  assert.equal(meetsMinimum("0.84.4-dev"), false);
   const event = normalizePiEvent({ type: "message", content: [{ text: "hello" }, { authorization: "configured-secret", nested: [{ password: "pw" }] }] }, "d-aaaaaa", ["configured-secret"]);
   assert.match(event.body, /hello/);
   assert.doesNotMatch(event.body, /configured-secret|pw/);
@@ -496,7 +505,7 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const primer = join(mkdtempSync(join(tmpdir(), "pi-close-")), "primer.md"); writeFileSync(primer, "work");
   let spawnedArgs: string[] = []; let spawnedOptions: { cols: number; rows: number } | undefined;
-  const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: { spawnPty: (file, args, options) => { spawnedArgs = args; spawnedOptions = options; return pty as never; }, input: input as never, output: output as never, columns: 100, rows: 40 } });
+  const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", supervision: { spawnPty: (file, args, options) => { spawnedArgs = args; spawnedOptions = options; return pty as never; }, input: input as never, output: output as never, columns: 100, rows: 40 } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-close", mode: "foreground", sessionId: "interactive-session" });
   await nextTick();
   input.emit("data", Buffer.from("hello")); pty.emitData("visible\n"); process.stdout.emit("resize"); process.emit("SIGINT"); pty.emitExit(0);
@@ -528,7 +537,7 @@ test("foreground stdin flow owned by PPA is paused and raw state is restored on 
         queueMicrotask(() => pty.emitExit(0));
       }
     };
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -556,7 +565,7 @@ test("foreground stdin cleanup preserves caller-owned flow and raw mode", async 
   input.on("data", callerListener);
   assert.equal(input.readableFlowing, true);
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-caller-stdin-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-caller-stdin", mode: "foreground" });
   await nextTick();
   assert.equal(input.listenerCount("data"), 2);
@@ -576,7 +585,7 @@ test("foreground stdin cleanup preserves a caller-paused flow state", async () =
   const pauseCallsBefore = input.pauseCalls;
   assert.equal(input.readableFlowing, false);
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-paused-stdin-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-paused-stdin", mode: "foreground" });
   await nextTick();
   assert.equal(input.readableFlowing, false);
@@ -594,7 +603,7 @@ test("foreground error agent_end remains turn evidence until a fatal PTY exit", 
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-status-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let running = true; let settled = false;
   pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never, processExists: () => running,
     sleep: async () => { await nextTick(); },
   } });
@@ -625,7 +634,7 @@ test("foreground accepts a newer success marker when PTY onExit is absent", asyn
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0; let sleeps = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => false,
     now: () => now,
@@ -644,7 +653,7 @@ test("foreground retains a delayed nonzero PTY exit after process disappearance"
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-delayed-onexit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0; let sleeps = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => false,
     now: () => now,
@@ -661,7 +670,7 @@ test("foreground fails causally when process exit has no authoritative status", 
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-unknown-exit-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => false,
     now: () => now,
@@ -679,7 +688,7 @@ test("fresh foreground launch removes a stale marker and does not settle while t
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-stale-marker-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   writePiTerminalStatus(dir, { type: "agent_end", stopReason: "stop", timestamp: "2026-08-28T01:00:00.000Z" });
   let running = true; let settled = false;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
   } });
@@ -698,7 +707,7 @@ test("foreground treats three agent_end markers as turn evidence and keeps the s
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-turns-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0; let running = true; let settled = false;
   pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
@@ -733,7 +742,7 @@ test("foreground /quit remains graceful before bounded cleanup settles without o
   const resizeListeners = process.stdout.listenerCount("resize");
   const sigintListeners = process.listenerCount("SIGINT");
   pty.onKill = (signal) => { if (signal === "SIGTERM") running = false; };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running, sleep: async () => {},
     setTimeout: (callback) => { gracefulExitCallback = callback; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
@@ -770,7 +779,7 @@ test("foreground /quit cleanup requires an exact submitted logical line", async 
     const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
     const dir = mkdtempSync(join(tmpdir(), "pi-foreground-non-command-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
     let gracefulTimerArmed = false;
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => true,
       setTimeout: () => { gracefulTimerArmed = true; return {} as NodeJS.Timeout; }, clearTimeout: () => {},
@@ -793,7 +802,7 @@ test("foreground double interrupt window exits at 4999ms but starts a new sequen
     const dir = mkdtempSync(join(tmpdir(), `pi-foreground-interrupt-${secondAt}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
     let now = 0; let running = true; let settled = false;
     pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running, now: () => now, interruptNow: () => now, sleep: async () => {},
     } });
@@ -831,7 +840,7 @@ test("foreground double interrupt timing is independent of wall-clock adjustment
       pty.emitExit(0);
     }
   };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
   } });
@@ -861,7 +870,7 @@ test("foreground EOF and terminal close request bounded cleanup with zero residu
     const resizeListeners = process.stdout.listenerCount("resize");
     const sigintListeners = process.listenerCount("SIGINT");
     pty.onKill = (signal) => { if (signal === "SIGTERM" || signal === "SIGKILL") running = false; };
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running, now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
     } });
@@ -895,7 +904,7 @@ test("foreground graceful cleanup preserves a nonzero PTY exit", async () => {
       pty.emitExit(17);
     }
   };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
   } });
@@ -914,7 +923,7 @@ test("foreground graceful cleanup fails when the PTY child remains live through 
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-graceful-deadline-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0;
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => true,
     now: () => now,
@@ -939,7 +948,7 @@ test("PiAdapter.run rejects zero status with a cleanup error or unverified clean
     { name: "unverified", raw: { status: 0, stdout: "", stderr: "", metadata: { cleanupVerified: false } }, message: "Pi cleanup failed: PTY child exit was not verified" },
   ]) {
     const dir = mkdtempSync(join(tmpdir(), `pi-foreground-zero-${item.name}-`)); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => item.raw });
+    const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", runCommand: () => item.raw });
     const result = await adapter.spawn({ primerPath: primer, deployId: `d-foreground-zero-${item.name}`, mode: "foreground" });
     assert.equal(result.exitCode, 1, item.name);
     assert.equal(result.errorMessage, item.message, item.name);
@@ -954,7 +963,7 @@ test("foreground terminal restoration failure remains causal and bounded", async
     return originalSetRawMode(raw);
   }) as typeof input.setRawMode;
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-restore-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-foreground-restore", mode: "foreground" });
   await nextTick(); pty.emitExit(0);
   const result = await resultPromise;
@@ -969,7 +978,7 @@ test("foreground cleanup settles from process evidence without an onExit callbac
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-resistant-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
   let now = 0; let running = true; let timeoutCallback: (() => void) | undefined;
   pty.onKill = (signal) => { if (signal === "SIGKILL") running = false; };
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => running,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
@@ -988,7 +997,7 @@ test("foreground log redaction survives every chunk boundary", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-stream-redact-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
   const configuredValue = "sentinel-configured-value"; const shapedValue = "sentinel-shaped-value"; const assignedValue = "sentinel-assigned-value";
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [configuredValue], supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [configuredValue], supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-stream-redact", mode: "foreground", logFile });
   await nextTick();
   const shapedPrefix = ["Bea", "rer"].join("");
@@ -1015,7 +1024,7 @@ test("foreground persistence failure terminates, escalates, verifies exit, and r
   let now = 0;
   pty.onKill = (signal) => { if (signal === "SIGKILL") pty.emitExit(137); };
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-persist-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => true,
     persistLine: () => { throw new Error("foreground persistence failed"); },
@@ -1037,7 +1046,7 @@ test("foreground resistant timeout waits for verified exit and settles exactly o
   let now = 0; let timeoutCallback: (() => void) | undefined; let outcomes = 0;
   pty.onKill = (signal) => { if (signal === "SIGKILL") pty.emitExit(137); };
   const dir = mkdtempSync(join(tmpdir(), "pi-foreground-timeout-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work");
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never, input: input as never, output: output as never,
     processExists: () => true,
     now: () => now, sleep: async (milliseconds) => { now += milliseconds; },
@@ -1058,10 +1067,10 @@ test("foreground resistant timeout waits for verified exit and settles exactly o
 test("terminal Pi error fails on exit 0 and redacts persisted diagnostics", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-semantic-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
   const secret = "sentinel-secret-value"; const event = JSON.stringify({ type: "agent_end", stopReason: "error", error: `authentication ${secret}` });
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", secretValues: [secret], runCommand: () => ({ status: 0, stdout: `${event}\n`, stderr: "" }) });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [secret], runCommand: () => ({ status: 0, stdout: `${event}\n`, stderr: "" }) });
   const result = await adapter.spawn({ primerPath: primer, deployId: "d-semantic", mode: "background", logFile });
   assert.equal(result.exitCode, 1); assert.match(result.errorMessage ?? "", /authentication/); assert.doesNotMatch(result.errorMessage ?? "", /sentinel-secret-value/); assert.doesNotMatch(readFileSync(logFile, "utf8"), /sentinel-secret-value/);
-  const successful = new PiAdapter({ cwd: dir, versionProbe: () => "0.80.8", runCommand: () => ({ status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" })}\n`, stderr: "" }) });
+  const successful = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", runCommand: () => ({ status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" })}\n`, stderr: "" }) });
   assert.equal((await successful.spawn({ primerPath: primer, deployId: "d-semantic-success", mode: "background" })).exitCode, 0);
 });
 
@@ -1073,7 +1082,7 @@ test("escalates resistant timeout cleanup and settles once after the process gro
   let timeoutCallback: (() => void) | undefined;
   const primer = join(mkdtempSync(join(tmpdir(), "pi-timeout-")), "primer.md"); writeFileSync(primer, "work");
   const adapter = new PiAdapter({
-    cwd: tmpdir(), versionProbe: () => "0.80.8",
+    cwd: tmpdir(), versionProbe: () => "0.84.4",
     supervision: {
       spawnProcess: (() => child as never) as typeof spawn,
       now: () => now,
@@ -1100,7 +1109,7 @@ test("settles at the cleanup deadline when the child and process group never dis
   const signals: NodeJS.Signals[] = [];
   const primer = join(mkdtempSync(join(tmpdir(), "pi-deadline-")), "primer.md"); writeFileSync(primer, "work");
   const adapter = new PiAdapter({
-    cwd: tmpdir(), versionProbe: () => "0.80.8",
+    cwd: tmpdir(), versionProbe: () => "0.84.4",
     supervision: {
       spawnProcess: (() => child as never) as typeof spawn,
       now: () => now,
@@ -1131,7 +1140,7 @@ test("settles exactly once when persistence failure, timeout, and late close com
   const signals: NodeJS.Signals[] = [];
   const primer = join(mkdtempSync(join(tmpdir(), "pi-competing-")), "primer.md"); writeFileSync(primer, "work");
   const adapter = new PiAdapter({
-    cwd: tmpdir(), versionProbe: () => "0.80.8",
+    cwd: tmpdir(), versionProbe: () => "0.84.4",
     supervision: {
       spawnProcess: (() => child as never) as typeof spawn,
       now: () => now,
@@ -1177,7 +1186,7 @@ test("cleans up after persistence failure and completes background supervision",
 
   const backgroundRunner = new FakePiChild();
   let backgroundArgs: string[] = [];
-  const background = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", supervision: {
+  const background = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", supervision: {
     launchBackgroundRunner: ((_runnerPath, configPath) => {
       const config = readPiBackgroundConfig(configPath);
       backgroundArgs = buildPiBackgroundArgs(config);

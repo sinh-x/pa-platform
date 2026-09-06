@@ -24,6 +24,14 @@ export interface PiManagedToolSmokeEvidence {
   node: string;
   modules: string;
   tools: Array<{ name: string; status: "passed" }>;
+  extension: {
+    factories: string[];
+    commands: string[];
+    shortcuts: string[];
+    handlers: string[];
+    guards: { destructiveCommand: "passed"; sensitivePath: "passed" };
+    outputBounds: { maxBytes: number; maxLines: number; status: "passed" };
+  };
 }
 
 export function piRegistryEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

@@ -185,7 +185,7 @@ test("background launch transfers ownership without retaining caller listeners o
   const child = new CharacterizationChild();
   const adapter = new PiAdapter({
     cwd: root,
-    versionProbe: () => "0.80.8",
+    versionProbe: () => "0.84.4",
     supervision: {
       launchBackgroundRunner: ((_runnerPath, configPath) => {
         const config = readPiBackgroundConfig(configPath);
@@ -245,7 +245,7 @@ test("eight fixture calls project to eight identified uses and matching results 
   writeFileSync(primer, "sanitized activity objective");
   const child = new CharacterizationChild();
   try {
-    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.80.8", supervision: { spawnProcess: (() => child as never) as typeof spawn } });
+    const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.84.4", supervision: { spawnProcess: (() => child as never) as typeof spawn } });
     const resultPromise = adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "dry-run" });
     await new Promise<void>((resolve) => setImmediate(resolve));
     child.stdout.emit("data", Buffer.from(`${fixture.streamEvents.map((event) => JSON.stringify(event)).join("\n")}\n`));
@@ -302,7 +302,7 @@ test("execution updates remain raw evidence without duplicating canonical tool u
   try {
     const adapter = new PiAdapter({
       cwd: deployDir,
-      versionProbe: () => "0.80.8",
+      versionProbe: () => "0.84.4",
       secretValues: [fixture.syntheticSensitiveValue],
       supervision: { spawnProcess: (() => child as never) as typeof spawn },
     });
@@ -368,7 +368,7 @@ test("foreground turn markers retain one live PTY across three turns and unatten
   const output = { write() { return true; } };
   let clock = 0;
   let settled = false;
-  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", supervision: {
     spawnPty: () => pty as never,
     input: input as never,
     output: output as never,

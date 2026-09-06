@@ -142,7 +142,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
   const adapter = new PiAdapter({
     cwd: root,
     env: { ...process.env, PAP_156_SECRET: secret, PA_TEAM: "builder" },
-    versionProbe: () => "0.80.8",
+    versionProbe: () => "0.84.4",
     supervision: {
       launchBackgroundRunner: ((_path, configPath) => {
         configBody = readFileSync(configPath, "utf8");
@@ -162,7 +162,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.doesNotMatch(result.errorMessage ?? "", new RegExp(secret));
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
 
-    const readFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
+    const readFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", supervision: {
       launchBackgroundRunner: (() => new LauncherProcess() as never),
       readBackgroundOwnership: () => { throw new Error("ownership fixture unreadable"); },
     } });
@@ -171,7 +171,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.match(unreadable.errorMessage ?? "", /^runner-readiness: ownership fixture unreadable$/);
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
 
-    const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", secretValues: [secret], supervision: {
+    const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", secretValues: [secret], supervision: {
       launchBackgroundRunner: (() => { throw new Error(`launcher fixture failed ${secret}`); }),
     } });
     const failed = await launcherFailure.spawn({ primerPath: primer, deployId: "d-launcher", mode: "background", sessionId: "launcher-session" });
@@ -191,7 +191,7 @@ test("readiness timeout escalates a resistant runner and removes only its owned 
   let clock = 0;
   let gone = false;
   const signals: NodeJS.Signals[] = [];
-  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.80.8", supervision: {
+  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", supervision: {
     launchBackgroundRunner: (() => launcher as never),
     readinessNow: () => clock,
     readinessSleep: async (milliseconds) => { clock += milliseconds; },
@@ -217,7 +217,7 @@ test("launcher process exits after handoff while the persistent runner owns comp
   mkdirSync(bin, { recursive: true });
   mkdirSync(deployDir, { recursive: true });
   const fakePi = join(bin, "pi");
-  writeFileSync(fakePi, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.80.8; exit 0; fi\nsleep 0.5\nprintf '%s\\n' '{\"type\":\"agent_end\",\"stopReason\":\"stop\",\"timestamp\":\"2026-08-29T00:00:01.000Z\"}'\n");
+  writeFileSync(fakePi, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.84.4; exit 0; fi\nsleep 0.5\nprintf '%s\\n' '{\"type\":\"agent_end\",\"stopReason\":\"stop\",\"timestamp\":\"2026-08-29T00:00:01.000Z\"}'\n");
   chmodSync(fakePi, 0o755);
   const primer = join(deployDir, "primer.md");
   writeFileSync(primer, "process boundary objective");

@@ -142,7 +142,7 @@ export class PiAdapter implements RuntimeAdapter {
     return readFileSync(path, "utf8").split("\n").filter(Boolean).flatMap((line) => projector.observeLine(line));
   }
   installHooks(_targetDir: string, _config: HookConfig): void {}
-  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.80.8 or later must be installed as `pi`." }; }
+  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.84.4 or later must be installed as `pi`." }; }
 
   async preflight(): Promise<void> {
     if (!this.preflightPromise) {
@@ -159,7 +159,7 @@ export class PiAdapter implements RuntimeAdapter {
           bounded(nativeValue, this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`),
         ]);
         if (versionResult.status === "rejected") throw versionResult.reason;
-        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.80.8 or later; detected '${versionResult.value || "unknown"}'.`);
+        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.84.4 or later; detected '${versionResult.value || "unknown"}'.`);
         if (nativeResult.status === "rejected") throw nativeResult.reason;
       })();
       this.preflightPromise = probe;
@@ -212,7 +212,7 @@ export class PiAdapter implements RuntimeAdapter {
   }
 }
 
-export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 80 || actual[1] === 80 && actual[2] >= 8); }
+export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent {
   const safe = deepRedact(raw, secrets) as Record<string, unknown>;
   const outerType = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase();
@@ -913,7 +913,7 @@ function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): P
       finish(new Error(`Pi version probe timed out after ${timeout}ms.`));
     }, timeout);
     child.stdout?.on("data", (chunk: Buffer) => { stdout = tail(stdout + chunk.toString("utf8"), MAX_CAPTURE); });
-    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`)));
+    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.84.4 or later and ensure 'pi' is on PATH.`)));
     child.once("close", (code) => finish(code === 0 ? undefined : new Error(`Pi version probe failed with exit code ${code ?? 1}.`)));
   });
 }
