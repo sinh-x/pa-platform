@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,12 +29,27 @@ import {
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
 } from "../native-host.js";
-import { runHostManagedToolSmoke } from "../pi-host-smoke.js";
+import { runHostManagedToolSmoke, runHostNativeSmoke } from "../pi-host-smoke.js";
 
 const require = createRequire(import.meta.url);
 
+const PREBUILD_PLATFORMS = ["linux", "darwin", "win32"];
+const PREBUILD_ARCHS = ["x64", "arm64"];
+
 function localAddonPath(): string {
-  return join(dirname(require.resolve("better-sqlite3")), "..", "build", "Release", "better_sqlite3.node");
+  const bindingRoot = dirname(require.resolve("better-sqlite3"));
+  return resolvePackagedPrebuild(bindingRoot) ?? join(bindingRoot, "..", "build", "Release", "better_sqlite3.node");
+}
+
+function resolvePackagedPrebuild(bindingRoot: string): string | undefined {
+  if (!PREBUILD_PLATFORMS.includes(process.platform) || !PREBUILD_ARCHS.includes(process.arch)) return undefined;
+  const target = isLinuxMusl() ? `linuxmusl-${process.arch}` : `${process.platform}-${process.arch}`;
+  const candidate = join(bindingRoot, "..", "prebuilds", `${target}.node`);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function isLinuxMusl(): boolean {
+  return process.platform === "linux" && !process.report.getReport().header.glibcVersionRuntime;
 }
 
 type ShutdownReason = "reload" | "new" | "resume" | "fork" | "quit";
@@ -407,6 +422,16 @@ test("Pi child environment replaces the Node 22 wrapper binding with only the pa
   assert.equal(input[REGISTRY_NATIVE_BINDING_ENV], input[PI_REGISTRY_ADDON_ENV]);
 });
 
+test("native host smoke records its registry query and explicit close", async () => {
+  const addonPath = localAddonPath();
+  const evidence = await runHostNativeSmoke(addonPath);
+  assert.equal(evidence.node, process.version);
+  assert.equal(evidence.modules, process.versions.modules);
+  assert.equal(evidence.addonPath, addonPath);
+  assert.equal(evidence.registryQuery, "PRAGMA user_version");
+  assert.equal(evidence.close, "explicit");
+});
+
 test("deterministic managed tool harness executes the complete eight-tool matrix", async () => {
   const evidence = await runHostManagedToolSmoke(localAddonPath());
   assert.deepEqual(evidence.tools, [
@@ -421,4 +446,5 @@ test("deterministic managed tool harness executes the complete eight-tool matrix
   assert.ok(evidence.extension.handlers.includes("session_shutdown"));
   assert.deepEqual(evidence.extension.guards, { destructiveCommand: "passed", sensitivePath: "passed" });
   assert.deepEqual(evidence.extension.outputBounds, { maxBytes: 50 * 1024, maxLines: 2_000, status: "passed" });
+  assert.deepEqual(evidence.extension.todo, { registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" });
 });

@@ -13,7 +13,7 @@ import registerPiPaExtension, {
 } from "./pi-extension/index.js";
 import { BUNDLED_EDITOR_FACTORIES } from "./pi-extension/bundled-editors.js";
 import { createQuestionTool } from "./pi-extension/question.js";
-import { createTodoTool, TodoStore } from "./pi-extension/todo.js";
+import { createTodoTool, reconstructTodoState, TodoStore } from "./pi-extension/todo.js";
 
 const MANAGED_TOOLS = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"] as const;
 
@@ -26,10 +26,11 @@ interface ExtensionSmokeEvidence {
   handlers: string[];
   guards: { destructiveCommand: "passed"; sensitivePath: "passed" };
   outputBounds: { maxBytes: number; maxLines: number; status: "passed" };
+  todo: { registrations: 1; add: "passed"; list: "passed"; activeBranchRestore: "passed" };
 }
 
-export async function runHostNativeSmoke(addonPath: string): Promise<ReturnType<typeof verifyRegistryNativeAddon>> {
-  return verifyRegistryNativeAddon(addonPath);
+export async function runHostNativeSmoke(addonPath: string): Promise<ReturnType<typeof verifyRegistryNativeAddon> & { registryQuery: "PRAGMA user_version"; close: "explicit" }> {
+  return { ...verifyRegistryNativeAddon(addonPath), registryQuery: "PRAGMA user_version", close: "explicit" };
 }
 
 export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node: string; modules: string; tools: ToolSmokeResult[]; extension: ExtensionSmokeEvidence }> {
@@ -71,6 +72,7 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"];
     const expectedCommands = ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
+    if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");
     assertEqual(commands, expectedCommands, "registered extension commands");
     assertEqual(shortcuts, ["alt+i", "alt+g"], "registered panel shortcuts");
     for (const handler of ["tool_call", "agent_end", "session_shutdown"]) {
@@ -94,14 +96,17 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     );
     assertIncludes(toolText(questionResult), "Question unavailable in print mode", "question result");
 
-    const todoResult = await createTodoTool(new TodoStore()).execute(
-      "pap156-todo",
-      { action: "add", text: "fixture task" },
-      undefined,
-      undefined,
-      undefined,
-    );
-    assertIncludes(toolText(todoResult), "Task added", "todo result");
+    const todoStore = new TodoStore();
+    const todoTool = createTodoTool(todoStore);
+    const todoResult = await todoTool.execute("pap156-todo-add", { action: "add", text: "fixture task" }, undefined, undefined, undefined);
+    assertIncludes(toolText(todoResult), "Task added", "todo add result");
+    const todoList = await todoTool.execute("pap156-todo-list", { action: "list" }, undefined, undefined, undefined);
+    assertIncludes(toolText(todoList), "fixture task", "todo list result");
+    todoStore.apply({ action: "add", text: "discarded branch task" });
+    reconstructTodoState(todoStore, [{ type: "message", message: { role: "toolResult", toolName: "todo", details: todoResult.details } }]);
+    const restoredTodoList = await todoTool.execute("pap156-todo-restore", { action: "list" }, undefined, undefined, undefined);
+    assertIncludes(toolText(restoredTodoList), "fixture task", "todo active-branch restore result");
+    if (toolText(restoredTodoList).includes("discarded branch task")) throw new Error("todo active-branch restore retained an inactive branch task");
 
     const paTools = new Map(createPaTools().map((tool) => [tool.name, tool]));
     const paInputs: Array<[string, Record<string, unknown>, string]> = [
@@ -136,6 +141,7 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
         handlers: [...new Set(handlers)],
         guards: { destructiveCommand: "passed", sensitivePath: "passed" },
         outputBounds: { maxBytes: MAX_TOOL_BYTES, maxLines: MAX_TOOL_LINES, status: "passed" },
+        todo: { registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" },
       },
     };
   } finally {

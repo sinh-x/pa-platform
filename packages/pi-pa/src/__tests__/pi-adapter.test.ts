@@ -227,7 +227,9 @@ test("managed foreground and background Pi invocations isolate discovery behind 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-runtime-selection-"));
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
-  const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  const repoRoot = join(fixtureRoot, "repository");
+  mkdirSync(repoRoot);
+  execFileSync("git", ["init", "-b", "develop"], { cwd: repoRoot, stdio: "ignore" });
   process.env["PA_PLATFORM_CONFIG"] = fixtureRoot;
   writeFileSync(join(fixtureRoot, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repoRoot}\n`);
   try {
@@ -238,14 +240,14 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
       { deploy: () => { piCalls++; return { status: "pending", deploymentId: "d-pi0001" }; } }, "pi",
     );
 
-    const cliCode = await runCoreCommand(["deploy", "builder"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "ppa" });
+    const cliCode = await runCoreCommand(["deploy", "builder", "--repo", "pa-platform"], { hooks, io: { stdout: () => {}, stderr: () => {} }, binaryName: "ppa" });
     assert.equal(cliCode, 0);
     assert.equal(piCalls, 1);
     assert.equal(opencodeCalls, 0);
 
     const api = createAgentApiApp({ hooks });
-    const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
-    const explicitPi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "pi" }) });
+    const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", repo: "pa-platform" }) });
+    const explicitPi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", repo: "pa-platform", runtime: "pi" }) });
     assert.equal(omitted.status, 202);
     assert.equal(explicitPi.status, 202);
     assert.equal(opencodeCalls, 1);

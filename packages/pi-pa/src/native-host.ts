@@ -17,6 +17,8 @@ export interface PiNativeHostEvidence {
   modules: string;
   v8: string;
   addonPath: string;
+  registryQuery: "PRAGMA user_version";
+  close: "explicit";
 }
 
 export interface PiManagedToolSmokeEvidence {
@@ -31,6 +33,7 @@ export interface PiManagedToolSmokeEvidence {
     handlers: string[];
     guards: { destructiveCommand: "passed"; sensitivePath: "passed" };
     outputBounds: { maxBytes: number; maxLines: number; status: "passed" };
+    todo: { registrations: 1; add: "passed"; list: "passed"; activeBranchRestore: "passed" };
   };
 }
 
