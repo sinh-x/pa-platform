@@ -10,11 +10,30 @@ import { fileURLToPath } from "node:url";
 // Runs the pi-node-24 registry teardown case in an isolated Pi Node 24 child so
 // a native abort cannot kill the coordinator, and records child status/signal,
 // bounded stderr, host ABI, addon path, registry operation, and teardown order.
-// Usage: node scripts/pap-167-pi-retry-smoke.mjs [<ppa-store-output>] [--process-evidence|--regression] [--runs N] [--evidence <path>]
+// Usage: node scripts/pap-167-pi-retry-smoke.mjs [<ppa-store-output>] [--process-evidence|--regression|--baseline-calibrate] [--runs N] [--operations N] [--evidence <path>]
 
 const MAX_STDERR = 2_000;
 const DEFAULT_RUNS = 1;
+const DEFAULT_OPERATIONS = 250;
+const BASELINE_ADDON_VERSION = "11.6.0";
 const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
+
+export const REGISTRY_OPERATION_MIX = [
+  "appendRegistryEvent",
+  "queryDeploymentStatuses",
+  "queryDeploymentStatus",
+  "getDeploymentEvents",
+  "readRegistry",
+];
+
+export function workloadPlan(operations) {
+  const perKind = Object.fromEntries(REGISTRY_OPERATION_MIX.map((kind) => [kind, 0]));
+  for (let index = 0; index < operations; index += 1) {
+    const kind = REGISTRY_OPERATION_MIX[index % REGISTRY_OPERATION_MIX.length];
+    perKind[kind] += 1;
+  }
+  return { operations, mix: [...REGISTRY_OPERATION_MIX], perKind };
+}
 
 function configuredSecrets(env) {
   return [...new Set(Object.entries(env)
@@ -31,21 +50,25 @@ function redactDiagnostic(value, secrets) {
     .replace(/sk-[\w-]+/gi, "[REDACTED]");
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const positional = [];
   let processEvidence = false;
   let regression = false;
+  let baselineCalibrate = false;
   let runs = DEFAULT_RUNS;
+  let operations = DEFAULT_OPERATIONS;
   let evidencePath;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--process-evidence") processEvidence = true;
     else if (arg === "--regression") regression = true;
+    else if (arg === "--baseline-calibrate") baselineCalibrate = true;
     else if (arg === "--runs") { runs = Number(argv[++index]); }
+    else if (arg === "--operations") { operations = Number(argv[++index]); }
     else if (arg === "--evidence") { evidencePath = argv[++index]; }
     else positional.push(arg);
   }
-  return { storeArg: positional[0], processEvidence, regression, runs, evidencePath };
+  return { storeArg: positional[0], processEvidence, regression, baselineCalibrate, runs, operations, evidencePath };
 }
 
 export function resolveStoreOutput(storeArg, env = process.env) {
@@ -81,12 +104,31 @@ function resolvePiNodeHost(piPath) {
   throw new Error(`could not resolve Pi Node host from ${piPath}`);
 }
 
-function childSource(processEvidence) {
+export function resolveStoreAddonVersion(storeOutput) {
+  const manifestPath = join(storeOutput, "share", "pa-platform", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const version = manifest.dependencies?.["better-sqlite3"];
+  return typeof version === "string" ? version : null;
+}
+
+export function assertBaselineReproduced(cases) {
+  for (const item of cases) {
+    assert.notEqual(item.processExit.code, 0, `baseline child ${item.run} did not abort (exit ${item.processExit.code})`);
+    assert.equal(item.signatures.removeEnvironmentCleanupHook, true, `baseline child ${item.run} missing RemoveEnvironmentCleanupHook signature:\n${item.boundedStderr}`);
+    assert.equal(item.signatures.statementDestructor, true, `baseline child ${item.run} missing Statement::~Statement signature:\n${item.boundedStderr}`);
+    assert.equal(item.signatures.assertion, true, `baseline child ${item.run} missing native assertion:\n${item.boundedStderr}`);
+  }
+}
+
+function childSource({ processEvidence, workload }) {
+  const { operations, mix } = workload;
   return [
     `import { writeFileSync } from "node:fs";`,
     `const addon = process.env.PAP167_ADDON;`,
     `const closeOnTeardown = process.env.PAP167_CLOSE_ON_TEARDOWN === "1";`,
     `const processEvidence = ${JSON.stringify(processEvidence)};`,
+    `const operations = ${JSON.stringify(operations)};`,
+    `const mix = ${JSON.stringify(mix)};`,
     `process.env.PA_SQLITE_NATIVE_BINDING = addon;`,
     `process.env.PA_REGISTRY_DB = process.env.PAP167_REGISTRY_DB;`,
     `process.env.PA_AI_USAGE_HOME = process.env.PAP167_AI_USAGE;`,
@@ -97,12 +139,23 @@ function childSource(processEvidence) {
     `  v8: process.versions.v8,`,
     `  addonPath: addon,`,
     `};`,
-    `registry.appendRegistryEvent({ deployment_id: "d-pap167", team: "builder", event: "started", timestamp: new Date().toISOString(), mode: "implement", runtime: "pi", binary: "ppa" });`,
-    `const statuses = registry.queryDeploymentStatuses();`,
-    `evidence.registryOp = { kind: "queryDeploymentStatuses", deployments: statuses.length };`,
+    `const now = () => new Date().toISOString();`,
+    `const perKind = Object.fromEntries(mix.map((kind) => [kind, 0]));`,
+    `for (let i = 0; i < operations; i += 1) {`,
+    `  const kind = mix[i % mix.length];`,
+    `  perKind[kind] += 1;`,
+    `  if (kind === "appendRegistryEvent") registry.appendRegistryEvent({ deployment_id: "d-pap167-op-" + i, team: "builder", event: "started", timestamp: now(), mode: "implement", runtime: "pi", binary: "ppa" });`,
+    `  else if (kind === "queryDeploymentStatuses") registry.queryDeploymentStatuses();`,
+    `  else if (kind === "queryDeploymentStatus") registry.queryDeploymentStatus("d-pap167-op-" + (i % 7));`,
+    `  else if (kind === "getDeploymentEvents") registry.getDeploymentEvents("d-pap167-op-" + (i % 7));`,
+    `  else if (kind === "readRegistry") registry.readRegistry();`,
+    `}`,
+    `evidence.workload = { operations, mix, perKind };`,
+    `evidence.registryOp = { kind: "operationMix", operations, perKind };`,
     `evidence.teardown = closeOnTeardown ? "session_shutdown -> closeDb()" : "session_shutdown WITHOUT closeDb (baseline)";`,
+    `writeFileSync(process.env.PAP167_EVIDENCE_PATH, JSON.stringify(evidence), { mode: 0o600 });`,
     `if (processEvidence) {`,
-    `  writeFileSync(process.env.PAP167_TERMINAL_PATH, JSON.stringify({ type: "agent_end", stopReason: "stop", timestamp: new Date().toISOString() }) + "\\n", { mode: 0o600 });`,
+    `  writeFileSync(process.env.PAP167_TERMINAL_PATH, JSON.stringify({ type: "agent_end", stopReason: "stop", timestamp: now() }) + "\\n", { mode: 0o600 });`,
     `}`,
     `if (closeOnTeardown) registry.closeDb();`,
     `if (globalThis.gc) globalThis.gc();`,
@@ -151,14 +204,15 @@ function reconcileProcessEvidence({ storeOutput, registryDb, aiUsage, deployDir,
   return JSON.parse(result.stdout || "{}");
 }
 
-function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvidence, run, secrets }) {
+function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvidence, workload, run, secrets }) {
   const deployDir = join(root, `run-${run}`);
   mkdirSync(deployDir, { recursive: true });
   const registryDb = join(deployDir, "registry.db");
   const aiUsage = join(deployDir, "ai-usage");
   const childPath = join(deployDir, "pap-167-child.mjs");
   const terminalPath = join(deployDir, "pi-terminal-status.json");
-  writeFileSync(childPath, childSource(processEvidence));
+  const evidencePath = join(deployDir, "pap-167-evidence.json");
+  writeFileSync(childPath, childSource({ processEvidence, workload }));
   const env = {
     ...process.env,
     PAP167_ADDON: addon,
@@ -167,6 +221,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     PAP167_AI_USAGE: aiUsage,
     PAP167_CORE_MODULE: join(storeOutput, "share", "pa-platform", "packages", "pa-core", "dist"),
     PAP167_TERMINAL_PATH: terminalPath,
+    PAP167_EVIDENCE_PATH: evidencePath,
   };
   const result = spawnSync(piNode, ["--expose-gc", childPath], {
     cwd: root, env, encoding: "utf8", timeout: 30_000,
@@ -180,6 +235,8 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
   };
   let stdout = "";
   try { stdout = JSON.parse((result.stdout ?? "").trim().split("\n").at(-1) ?? "{}"); } catch { stdout = {}; }
+  let childEvidence = {};
+  try { childEvidence = JSON.parse(readFileSync(evidencePath, "utf8")); } catch { childEvidence = stdout; }
   let messageTerminal = null;
   try { messageTerminal = JSON.parse(readFileSync(terminalPath, "utf8")); } catch { /* absent outside process-evidence mode */ }
   const processExit = result.signal
@@ -204,6 +261,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     run,
     command: `${piNode} --expose-gc ${childPath}`,
     closeOnTeardown,
+    workload,
     status: result.status,
     signal: result.signal ?? null,
     processExit,
@@ -211,7 +269,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     messageTerminal,
     persistedEvidence,
     evidenceClassification,
-    stdoutEvidence: stdout,
+    stdoutEvidence: childEvidence,
     boundedStderr,
     diagnostics: { maxErrorCharacters: MAX_STDERR, configuredSecretLeaks },
     signatures,
@@ -219,9 +277,10 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
 }
 
 function main() {
-  const { storeArg, processEvidence, regression, runs, evidencePath } = parseArgs(process.argv.slice(2));
+  const { storeArg, processEvidence, regression, baselineCalibrate, runs, operations, evidencePath } = parseArgs(process.argv.slice(2));
   assert.ok(Number.isInteger(runs) && runs >= 1, "--runs must be a positive integer");
-  assert.equal(processEvidence && regression, false, "--process-evidence and --regression are mutually exclusive");
+  assert.ok(Number.isInteger(operations) && operations >= 1, "--operations must be a positive integer");
+  assert.equal([processEvidence, regression, baselineCalibrate].filter(Boolean).length <= 1, true, "--process-evidence, --regression, and --baseline-calibrate are mutually exclusive");
   assert.ok(evidencePath === undefined || evidencePath.length > 0, "--evidence requires a path");
   const storeOutput = resolveStoreOutput(storeArg);
   const ppa = join(storeOutput, "bin", "ppa");
@@ -231,19 +290,26 @@ function main() {
   const piPath = process.env.PAP167_REAL_PI ?? "/home/sinh/.nix-profile/bin/pi";
   const piNode = resolvePiNodeHost(piPath);
 
+  const workload = workloadPlan(operations);
+  const addonVersion = resolveStoreAddonVersion(storeOutput);
+  if (baselineCalibrate) {
+    assert.equal(addonVersion, BASELINE_ADDON_VERSION, `baseline calibration requires a ${BASELINE_ADDON_VERSION} store output; resolved ${addonVersion}`);
+  }
+
   const root = mkdtempSync(join(tmpdir(), "pap-167-pi-retry-"));
   const cases = [];
   const secrets = configuredSecrets(process.env);
+  const closeOnTeardown = regression || baselineCalibrate;
   try {
     for (let run = 1; run <= runs; run += 1) {
-      cases.push(runCase({ piNode, storeOutput, addon, root, closeOnTeardown: regression, processEvidence, run, secrets }));
+      cases.push(runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvidence, workload, run, secrets }));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 
   const evidence = {
-    mode: regression ? "regression" : processEvidence ? "process-evidence" : "baseline",
+    mode: regression ? "regression" : baselineCalibrate ? "baseline-calibrate" : processEvidence ? "process-evidence" : "baseline",
     ...(processEvidence ? {
       fixture: {
         kind: "approved-signature-replay",
@@ -253,8 +319,10 @@ function main() {
     } : {}),
     storeOutput,
     addon,
+    addonVersion,
     piNode,
     runs,
+    workload,
     cases,
   };
   const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
@@ -288,7 +356,13 @@ function main() {
       assert.equal(item.signal, null, `child ${item.run} was killed by signal ${item.signal}`);
       assert.equal(item.status, 0, `child ${item.run} exited ${item.status}:\n${item.boundedStderr}`);
       assert.equal(item.signatures.assertion, false, `child ${item.run} emitted the native assertion:\n${item.boundedStderr}`);
+      assert.equal(item.signatures.removeEnvironmentCleanupHook, false, `child ${item.run} emitted RemoveEnvironmentCleanupHook:\n${item.boundedStderr}`);
+      assert.equal(item.signatures.statementDestructor, false, `child ${item.run} emitted Statement::~Statement:\n${item.boundedStderr}`);
     }
+  }
+
+  if (baselineCalibrate) {
+    assertBaselineReproduced(cases);
   }
 }
 
