@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build, version as esbuildVersion } from "esbuild";
 import { PACKAGE_ROOT, validateExtensionSources } from "./extension-sources.mjs";
@@ -16,7 +16,7 @@ export const EXTERNAL_PACKAGES = [
 const outputRoot = resolve(PACKAGE_ROOT, "dist/pi-extension/vendor");
 const lock = validateExtensionSources();
 await rm(outputRoot, { recursive: true, force: true });
-await mkdir(outputRoot, { recursive: true });
+await mkdir(resolve(outputRoot, "licenses"), { recursive: true });
 
 for (const source of lock.sources) {
   await build({
@@ -31,18 +31,24 @@ for (const source of lock.sources) {
     external: EXTERNAL_PACKAGES,
     logLevel: "warning",
   });
+  await copyFile(resolve(PACKAGE_ROOT, source.licensePath), resolve(outputRoot, "licenses", `${source.name}-LICENSE.txt`));
 }
 
 const provenance = {
   schemaVersion: 1,
   buildTool: { name: "esbuild", version: esbuildVersion },
   externalPackages: EXTERNAL_PACKAGES,
-  sources: lock.sources.map(({ name, repository, commit, entrypoint, contentSha256, bundle }) => ({
+  sources: lock.sources.map(({ name, version, repository, commit, entrypoint, contentSha256, license, licensePath, licenseSha256, bundle }) => ({
     name,
+    version,
     repository,
     commit,
     entrypoint,
     contentSha256,
+    license,
+    licensePath,
+    licenseSha256,
+    packagedLicense: `licenses/${name}-LICENSE.txt`,
     bundle,
   })),
 };

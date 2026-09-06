@@ -181,9 +181,11 @@ test("missing Pi addon fails causally before objective execution", async () => {
   const primer = join(root, "primer.md");
   writeFileSync(primer, "objective must not execute");
   let executed = false;
+  const env = { ...process.env, [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1" };
+  delete env[PI_REGISTRY_ADDON_ENV];
   const adapter = new PiAdapter({
     cwd: root,
-    env: { ...process.env, [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1" },
+    env,
     versionProbe: () => "0.84.4",
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
   });
@@ -411,4 +413,12 @@ test("deterministic managed tool harness executes the complete eight-tool matrix
     "read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status",
   ].map((name) => ({ name, status: "passed" })));
   assert.equal(evidence.modules, process.versions.modules);
+  assert.deepEqual(evidence.extension.factories, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
+  assert.deepEqual(evidence.extension.commands, ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"]);
+  assert.deepEqual(evidence.extension.shortcuts, ["alt+i", "alt+g"]);
+  assert.ok(evidence.extension.handlers.includes("tool_call"));
+  assert.ok(evidence.extension.handlers.includes("agent_end"));
+  assert.ok(evidence.extension.handlers.includes("session_shutdown"));
+  assert.deepEqual(evidence.extension.guards, { destructiveCommand: "passed", sensitivePath: "passed" });
+  assert.deepEqual(evidence.extension.outputBounds, { maxBytes: 50 * 1024, maxLines: 2_000, status: "passed" });
 });

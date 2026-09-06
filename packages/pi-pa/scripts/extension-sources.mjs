@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 export const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const LOCK_FILENAME = "extension-sources.lock.json";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
 
 function runGit(cwd, args) {
   try {
@@ -36,12 +38,16 @@ export function readSourceLock(packageRoot = PACKAGE_ROOT) {
     if (!source || typeof source !== "object" || typeof source.name !== "string") {
       throw new Error(`${LOCK_FILENAME} contains an invalid source record.`);
     }
-    for (const field of ["repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "bundle"]) {
+    for (const field of ["version", "repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "license", "licensePath", "licenseSha256", "bundle"]) {
       if (typeof source[field] !== "string" || source[field].length === 0) {
         throw new Error(`${LOCK_FILENAME} source ${source.name} has invalid ${field}.`);
       }
     }
+    if (!SOURCE_NAME_PATTERN.test(source.name)) throw new Error(`${source.name} is not a safe source name.`);
     if (!SHA_PATTERN.test(source.commit)) throw new Error(`${source.name} commit must be an exact 40-character lowercase SHA.`);
+    if (!SHA256_PATTERN.test(source.contentSha256) || !SHA256_PATTERN.test(source.licenseSha256)) {
+      throw new Error(`${source.name} content and license digests must be lowercase SHA-256 values.`);
+    }
   }
   return lock;
 }
@@ -76,6 +82,10 @@ export function sourceContentSha256(sourceRoot) {
   return hash.digest("hex");
 }
 
+function fileSha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
 function assertGitSource(packageRoot, repositoryRoot, source) {
   const superprojectPath = relative(repositoryRoot, normalizedPath(packageRoot, source.submodulePath)).split(sep).join("/");
   const configuredUrl = runGit(repositoryRoot, ["config", "-f", ".gitmodules", "--get", `submodule.${superprojectPath}.url`]);
@@ -103,10 +113,20 @@ export function validateExtensionSources({ packageRoot = PACKAGE_ROOT } = {}) {
   for (const source of lock.sources) {
     const sourceRoot = normalizedPath(packageRoot, source.sourcePath);
     const entrypoint = normalizedPath(packageRoot, source.entrypoint);
+    const licensePath = normalizedPath(packageRoot, source.licensePath);
     if (!existsSync(entrypoint)) {
       throw new Error(`Missing ${source.name} entrypoint: ${entrypoint}. Run git submodule update --init --recursive.`);
     }
+    if (!existsSync(licensePath)) throw new Error(`Missing ${source.name} license: ${licensePath}.`);
     if (repositoryRoot) assertGitSource(packageRoot, repositoryRoot, source);
+    const manifest = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
+    if (manifest.version !== source.version || manifest.license !== source.license) {
+      throw new Error(`${source.name} package identity drifted: expected ${source.version}/${source.license}, found ${manifest.version ?? "missing"}/${manifest.license ?? "missing"}.`);
+    }
+    const licenseDigest = fileSha256(licensePath);
+    if (licenseDigest !== source.licenseSha256) {
+      throw new Error(`${source.name} license drifted: expected sha256:${source.licenseSha256}, found sha256:${licenseDigest}.`);
+    }
     const digest = sourceContentSha256(sourceRoot);
     if (digest !== source.contentSha256) {
       throw new Error(`${source.name} content drifted: expected sha256:${source.contentSha256}, found sha256:${digest}.`);

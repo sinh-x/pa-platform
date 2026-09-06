@@ -1,6 +1,6 @@
 # Pi Integration
 
-`ppa` supports Pi 0.80.8 or newer. It does not install Pi, configure authentication, or copy credentials.
+`ppa` supports Node.js 22.19.0 or newer and Pi 0.84.4 or newer. It does not install Pi, configure authentication, or copy credentials.
 
 ## Setup
 
@@ -13,15 +13,37 @@ ppa pi status
 ppa pi remove                # remove only the two PA package entries
 ```
 
-Setup is confirmation-gated and idempotent. `--local` changes only the current project's settings. Removal preserves other Pi packages. The configured package sources are shown by `ppa pi status`; the extension source is the installed `pi-pa` package and the config source is `PA_PLATFORM_CONFIG_DIR`, `PA_PLATFORM_HOME`, or the current directory.
+Setup is confirmation-gated and idempotent. `--local` changes only the current project's settings. It owns exactly two package entries: the installed `pi-pa` package and the resolved PA config package. proper-base and pi-vimmode are bundled inside `pi-pa`; they are not separate package entries. Existing unrelated settings and packages are preserved, and `ppa pi remove` removes only the two PA-owned entries. The configured package sources are shown by `ppa pi status`; the extension source is the installed `pi-pa` package and the config source is `PA_PLATFORM_CONFIG_DIR`, `PA_PLATFORM_HOME`, or the current directory.
+
+Both ordinary sessions configured this way and managed deployments load the same trusted `pi-pa` entrypoint, so both receive the PA modules and bundled editors. Ordinary Pi sessions can still discover other packages and extensions according to Pi's normal rules.
 
 After editing skills or package metadata in the config checkout, run `/reload` in an active Pi session. New ordinary sessions discover the current files without reinstalling the packages.
 
 ## Managed Deployments
 
-`ppa deploy` is isolated from ordinary Pi discovery. A managed deployment receives exactly the selected PA skills and the trusted PA extension through explicit resource arguments; it does not load unrelated user or project Pi skills/extensions. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus the interactive tools and context UI below.
+`ppa deploy` is isolated from ordinary Pi discovery. Every managed Pi argv has one `--no-extensions`, exactly one `--extension` naming the trusted `pi-pa` entrypoint, and no discovered user or project extensions. A managed deployment receives only the selected PA skills through explicit resource arguments. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus question, todo, terminal status, safety interception, and the context UI below.
 
 Pi provider/model precedence is explicit CLI flags, the selected flat mode pair (`deploy_modes[].provider` and `deploy_modes[].model`), then the PPA adapter default. A mode must provide both fields or neither. Pi remains an optional runtime; OpenCode remains the default when no runtime is selected.
+
+Print, JSON, and RPC execution loads the same extension and commands but does not install an editor, open an overlay, or wait for terminal input. `question` returns a typed `ui_unavailable` result outside TUI mode. PA tools, output bounds, tool-call guards, and terminal result handling remain active.
+
+## Bundled Editor Defaults and Composition
+
+The trusted entrypoint registers `pi-vimmode` 0.9.0 first and `proper-base` 0.5.0 second. proper-base therefore remains the outer editor wrapper around the Vim editor. Startup, resource discovery, `/reload`, new/resumed/forked sessions, and shutdown retain one active editor chain; cleanup removes stale handlers, timers, overlays, and cursor state before replacement. The upstream sources and defaults are bundled unchanged.
+
+pi-vimmode starts in **insert** mode. Press Esc for normal mode and `i` to return to insert mode. Its supported motions, edits, visual modes, registers, marks, macros, prompt search, and Ex-style commands retain upstream 0.9.0 behavior. `/vimmode`, `/vimmode on`, `/vimmode off`, `/vimmode status`, and `/vimmode reload` control the current runtime. This is practical modal prompt editing, not a claim of complete Vim compatibility. JSON settings remain under the `piVimMode` key; start mode, cursor style, keymap, protected overrides, status items, and other defaults are unchanged.
+
+proper-base keeps its 0.5.0 defaults for automatic session titles, model-preserving `/clear`, project prompt history and reverse search, prompt editing/cancellation, autocomplete, collapsed settled tool rows, transcript navigation, footer composition, image handling through packaged `sharp`, skill/image context transforms, and its commit-command guard. Internal commands beginning with `__proper-` remain reserved. PA's destructive-command and sensitive-path interception still runs independently, so the bundled editor cannot bypass PA tool-call policy.
+
+## State and Removal Ownership
+
+Extension state belongs to Pi's user agent directory (selected by `PI_CODING_AGENT_DIR` and normally `~/.pi/agent`), not to the PA package registration.
+
+- proper-base writes one private JSONL file per encoded working-directory key under `proper-history/`. It loads at most 200 entries, skips prompts longer than 4,096 characters, reads at most the newest 512 KiB at startup, and compacts stores over 2 MiB to the newest 2,000 valid entries. Delete one file to forget one project key, or the directory to forget all proper-base history.
+- pi-vimmode reads `piVimMode` JSON settings and may load the operator-owned `pi-vimmode.config.js` trusted JavaScript file from that directory. The file is unsandboxed user code. Use `/vimmode reload` after changing it.
+- Git context selection remains project-owned under the guarded Pi project configuration directory documented below. Todos remain session-branch state inside Pi's session file.
+
+`ppa pi setup`, `status`, and `remove` own only the two package entries described above. Removal preserves extension state, Git context selection, todos, sessions, and unrelated packages.
 
 ## OpenAI-to-Codex Mapping
 
@@ -106,11 +128,24 @@ RPC mode can emit the `PA Git context requires TUI mode.` warning but opens no c
 
 ## Compatibility, Reuse, and Collisions
 
-The package targets Node.js 22.19.0 or later and Pi 0.80.8 or later. The question, todo, status, and overlay implementations adapt the MIT-licensed Pi 0.80.8 examples `examples/extensions/question.ts`, `todo.ts`, `status-line.ts`, and `overlay-qa-tests.ts`; comments in the source identify intentional PA changes.
+The package targets Node.js 22.19.0 or later and Pi 0.84.4 or later. The question, todo, status, and overlay implementations adapt the MIT-licensed Pi 0.80.8 examples `examples/extensions/question.ts`, `todo.ts`, `status-line.ts`, and `overlay-qa-tests.ts`; that number identifies the adapted example source, not the supported Pi runtime floor. Comments in the source identify intentional PA changes.
 
 An ordinary session can load unrelated extensions that also register `question`, `todo`, `/pa-context`, `/pa-git-context`, Alt+I, or Alt+G. Pi keeps duplicate extension commands and assigns numeric invocation suffixes in load order (for example, `/pa-git-context:1` and `/pa-git-context:2`). For duplicate extension shortcuts, Pi emits a collision diagnostic and the later-loaded shortcut wins; an allowed built-in shortcut conflict is also diagnosed, while a restricted built-in shortcut cannot be overridden. Remove, disable, or reorder the conflicting ordinary-session extension when deterministic routing is required. The selector's plain `r` binding applies only while the Git panel is focused.
 
 Alt+I and `/pa-context` remain independent from Alt+G and `/pa-git-context`: toggling or cleaning up one PA panel does not invoke or dispose the other. Managed PPA deployments avoid unrelated extension collisions by loading `--no-extensions` plus exactly the trusted `pi-pa` extension path.
+
+## Immutable Sources, Licenses, and Updates
+
+`packages/pi-pa/extension-sources.lock.json` is the canonical source record. It contains exactly two records with upstream version, repository, 40-character commit, source and entrypoint paths, source-tree SHA-256, MIT license path/digest, and bundle name:
+
+| Bundled source | Immutable commit | Reviewed version |
+| --- | --- | --- |
+| `proper-base` from `proper-pi-extensions` | `859feb321ec81d773beea379d28e21d0b7d0c8c0` | 0.5.0 |
+| `pi-vimmode` | `52bd6ac5e905157ac46ec15c120b7d0cc61a62df` | 0.9.0 |
+
+`packages/pi-pa/THIRD_PARTY_NOTICES.md` records attribution. Builds copy both MIT texts and generate `dist/pi-extension/vendor/provenance.json` without a timestamp, so identical reviewed inputs produce deterministic provenance containing exactly the two SHAs. The build performs no source fetch or package installation. It fails before TypeScript compilation or Pi startup when a gitlink, checkout, URL, source digest, package version/license, or license digest is absent or drifted. Initialize a checkout with `git submodule update --init --recursive` before building.
+
+To update either upstream, use a separate approved ticket: review the upstream diff and license; move only the relevant gitlink to an exact commit; update its version and digests in the lock record; keep the source tree clean; run `node packages/pi-pa/scripts/validate-extension-sources.mjs`; refresh the pnpm/Nix dependency hash only when dependency inputs require it; then run the focused composition/lifecycle tests and the full repository, Nix store, setup/isolation, secrets, and diff suites. Never point the lock at a branch, fetch at runtime, or edit vendored source locally.
 
 ## Failure Diagnostics
 
@@ -161,10 +196,14 @@ Existing `ppa deploy` users can run `ppa pi setup` once at the desired scope. Ex
 
 ## Troubleshooting
 
-- `Pi version must be 0.80.8 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe allows up to 15 seconds for a loaded system to start Pi.
+- `Pi version must be 0.84.4 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe allows up to 15 seconds for a loaded system to start Pi.
+- `Missing ... entrypoint` or source/license drift: initialize recursively with `git submodule update --init --recursive`, confirm both submodules are clean at the commits above, and rerun the validator. Do not repair the mismatch by editing vendor contents.
 - `Pi PA extension package path is missing`: reinstall/build pa-platform or use the current packaged `ppa`; inspect the path printed by `ppa pi status`.
 - `PA config package path is missing`: set `PA_PLATFORM_CONFIG_DIR` to the existing `pa-platform-config` checkout.
+- Vim behavior is unavailable or misconfigured: run `/vimmode status`, `/vimmode reload`, or `/vimmode off`. In ordinary sessions inspect duplicate editor extensions; managed sessions intentionally load only pi-pa.
+- History is not recalled: verify the Pi agent directory, project working directory, file permissions, and the size/bounds above. Prompts over 4,096 characters are intentionally omitted.
+- An editor or panel appears duplicated after a change: run `/reload`; if it persists in an ordinary session, inspect extension collisions. Managed reload/lifecycle tests require exactly one composed chain.
 - Skills changed but Pi still shows old content: run `/reload`; managed deployments pick up changes on their next invocation.
-- Setup says `Already configured`: the two paths are already present. Use `ppa pi status` to inspect them.
+- Setup says `Already configured`: the two owned paths are already present. Use `ppa pi status` (and the matching `--local` scope) to inspect them.
 
-The Nix output includes the `pi-pa` extension and runtime-host resources under `$out/share/pa-platform/packages/`, plus `ppa.fish` under `$out/share/fish/vendor_completions.d/`. It does not include the operator's config checkout or credentials.
+The Nix output includes the `pi-pa` extension, both bundled factories, generated two-source provenance, MIT license texts, `THIRD_PARTY_NOTICES.md`, importable `sharp` 0.35.3, and runtime-host resources under `$out/share/pa-platform/packages/`, plus `ppa.fish` under `$out/share/fish/vendor_completions.d/`. `bash scripts/nix-store-output-smoke.sh` executes the native Linux package, imports both factories and sharp, performs a native sharp image operation, exercises packaged PA tools/guards/panel registration/status, and evaluates both `x86_64-linux` and `aarch64-linux` package derivations (dry-running the non-native package available on the host). It does not include the operator's config checkout or credentials.

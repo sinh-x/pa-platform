@@ -42,7 +42,10 @@ test("exact extension source validator rejects content drift without changing th
   const root = fixtureRoot();
   try {
     const lock = readSourceLock(root);
-    for (const source of lock.sources) createEntrypoint(root, source.entrypoint, "export default function drifted() {}\n");
+    for (const source of lock.sources) {
+      cpSync(resolve(PACKAGE_ROOT, source.sourcePath), resolve(root, source.sourcePath), { recursive: true });
+    }
+    createEntrypoint(root, lock.sources[0].entrypoint, "export default function drifted() {}\n");
     assert.throws(() => validateExtensionSources({ packageRoot: root }), /proper-base content drifted/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -56,6 +59,10 @@ test("bundle pipeline emits two factories, external imports, and immutable prove
   const bundler = readFileSync(bundlerPath, "utf8");
   execFileSync(process.execPath, [bundlerPath], { cwd: PACKAGE_ROOT, stdio: "pipe" });
   assert.equal(lock.sources.length, 2);
+  assert.deepEqual(lock.sources.map(({ name, version, license }) => ({ name, version, license })), [
+    { name: "proper-base", version: "0.5.0", license: "MIT" },
+    { name: "pi-vimmode", version: "0.9.0", license: "MIT" },
+  ]);
   assert.deepEqual(lock.sources.map((source) => source.entrypoint), [
     "vendor/proper-pi-extensions/proper-base/index.ts",
     "vendor/pi-vimmode/index.ts",
@@ -70,7 +77,12 @@ test("bundle pipeline emits two factories, external imports, and immutable prove
   const outputRoot = resolve(PACKAGE_ROOT, "dist/pi-extension/vendor");
   const provenance = JSON.parse(readFileSync(resolve(outputRoot, "provenance.json"), "utf8"));
   assert.deepEqual(provenance.sources.map((source) => source.commit), lock.sources.map((source) => source.commit));
+  assert.deepEqual(provenance.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })), lock.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })));
   assert.equal(provenance.sources.length, 2);
+  for (const source of lock.sources) {
+    assert.equal(provenance.sources.find((item) => item.name === source.name)?.packagedLicense, `licenses/${source.name}-LICENSE.txt`);
+    assert.equal(readFileSync(resolve(outputRoot, "licenses", `${source.name}-LICENSE.txt`), "utf8"), readFileSync(resolve(PACKAGE_ROOT, source.licensePath), "utf8"));
+  }
   assert.match(readFileSync(resolve(outputRoot, "proper-base.js"), "utf8"), /from "sharp"/);
   assert.match(readFileSync(resolve(outputRoot, "proper-base.js"), "utf8"), /from "@earendil-works\/pi-/);
   assert.match(readFileSync(resolve(outputRoot, "pi-vimmode.js"), "utf8"), /from "@earendil-works\/pi-/);
@@ -88,8 +100,13 @@ test("CI and Nix inputs require recursive exact sources and both Linux sharp art
     assert.match(workflow, /validate-extension-sources\.mjs/);
   }
   assert.match(nixWorkflow, /\.\?submodules=1#pa-platform/);
-  assert.match(nixSmoke, /\.\?submodules=1#ppa/);
+  assert.match(nixSmoke, /flake_ref='\.\?submodules=1'/);
+  assert.match(nixSmoke, /nix build "\$flake_ref#ppa"/);
+  assert.match(nixSmoke, /packages\.aarch64-linux\.ppa/);
+  assert.match(nixSmoke, /#pi-pa-vimmode/);
+  assert.match(nixSmoke, /sharp\.versions\.sharp/);
   assert.match(flake, /supportedSystems = \[ "x86_64-linux" "aarch64-linux" \]/);
+  assert.match(flake, /THIRD_PARTY_NOTICES\.md/);
   assert.match(workspace, /onlyBuiltDependencies:[\s\S]*- sharp/);
   assert.match(lockfile, /'@img\/sharp-linux-x64@0\.35\.3'/);
   assert.match(lockfile, /'@img\/sharp-linux-arm64@0\.35\.3'/);

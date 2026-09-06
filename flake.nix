@@ -90,7 +90,7 @@
             mkdir -p $share/packages/droidcode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/droidcode-pa/node_modules/@pa-platform/pa-core
 
-            cp packages/pi-pa/package.json $share/packages/pi-pa/package.json
+            cp packages/pi-pa/package.json packages/pi-pa/THIRD_PARTY_NOTICES.md $share/packages/pi-pa/
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
             cp -r packages/pi-pa/node_modules $share/packages/pi-pa/node_modules
             test -f packages/pi-pa/package.json
