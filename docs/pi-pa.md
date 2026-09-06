@@ -37,10 +37,10 @@ proper-base keeps its 0.5.0 defaults for automatic session titles, model-preserv
 
 ## State and Removal Ownership
 
-Extension state belongs to Pi's user agent directory (selected by `PI_CODING_AGENT_DIR` and normally `~/.pi/agent`), not to the PA package registration.
+Pi state and proper-base state belong to the selected Pi user agent directory (`PI_CODING_AGENT_DIR`, normally `~/.pi/agent`), not to the PA package registration. The pinned, unmodified pi-vimmode v0.9.0 configuration paths are an upstream exception and remain fixed under `~/.pi/agent`.
 
 - proper-base writes one private JSONL file per encoded working-directory key under `proper-history/`. It loads at most 200 entries, skips prompts longer than 4,096 characters, reads at most the newest 512 KiB at startup, and compacts stores over 2 MiB to the newest 2,000 valid entries. Delete one file to forget one project key, or the directory to forget all proper-base history.
-- pi-vimmode reads `piVimMode` JSON settings and may load the operator-owned `pi-vimmode.config.js` trusted JavaScript file from that directory. The file is unsandboxed user code. Use `/vimmode reload` after changing it.
+- pi-vimmode reads `piVimMode` JSON settings from `~/.pi/agent/settings.json` and may load the operator-owned `~/.pi/agent/pi-vimmode.config.js` trusted JavaScript file. These fixed paths do not follow `PI_CODING_AGENT_DIR`. The JavaScript file is unsandboxed user code. Use `/vimmode reload` after changing it.
 - Git context selection remains project-owned under the guarded Pi project configuration directory documented below. Todos remain session-branch state inside Pi's session file.
 
 `ppa pi setup`, `status`, and `remove` own only the two package entries described above. Removal preserves extension state, Git context selection, todos, sessions, and unrelated packages.
