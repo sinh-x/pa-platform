@@ -56,7 +56,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-uCEG5ea+qcc17EnHHD6dOg6rPF7HM/oZxRdw1eP36dg=";
+            hash = "sha256-U0endCfk4nhOnF1y8GQCHP24oAomWgM4cJG9meQFznc=";
             fetcherVersion = 4;
           };
 
@@ -175,17 +175,20 @@
               cd "$share/node_modules/better-sqlite3"
               patchShebangs .
               export npm_config_nodedir=${pkgs.nodejs_22}
-              ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22} --openssl-fips=false
+              ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs_22}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_22} --force_build=1 --openssl-fips=false
               install -Dm755 build/Release/better_sqlite3.node "$share/native-addons/node-22/better_sqlite3.node"
 
               piSqliteSource="$TMPDIR/better-sqlite3-pi-host"
-              cp -rL "$share/node_modules/better-sqlite3" "$piSqliteSource"
+              sqlitePackageSource="$(readlink -f "$share/node_modules/better-sqlite3")"
+              cp -rL "$sqlitePackageSource" "$piSqliteSource"
+              mkdir -p "$piSqliteSource/node_modules"
+              cp -rL "$(dirname "$sqlitePackageSource")/node-addon-api" "$piSqliteSource/node_modules/node-addon-api"
               chmod -R u+w "$piSqliteSource"
               rm -rf "$piSqliteSource/build"
               cd "$piSqliteSource"
               patchShebangs .
               export npm_config_nodedir=${pkgs.nodejs_24}
-              ${pkgs.nodejs_24}/bin/node ${pkgs.nodejs_24}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_24} --openssl-fips=false
+              ${pkgs.nodejs_24}/bin/node ${pkgs.nodejs_24}/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --nodedir=${pkgs.nodejs_24} --force_build=1 --openssl-fips=false
               install -Dm755 build/Release/better_sqlite3.node "$share/native-addons/pi-node-24/better_sqlite3.node"
             fi
 
