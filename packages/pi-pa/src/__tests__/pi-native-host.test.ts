@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -33,8 +33,23 @@ import { runHostManagedToolSmoke, runHostNativeSmoke } from "../pi-host-smoke.js
 
 const require = createRequire(import.meta.url);
 
+const PREBUILD_PLATFORMS = ["linux", "darwin", "win32"];
+const PREBUILD_ARCHS = ["x64", "arm64"];
+
 function localAddonPath(): string {
-  return join(dirname(require.resolve("better-sqlite3")), "..", "build", "Release", "better_sqlite3.node");
+  const bindingRoot = dirname(require.resolve("better-sqlite3"));
+  return resolvePackagedPrebuild(bindingRoot) ?? join(bindingRoot, "..", "build", "Release", "better_sqlite3.node");
+}
+
+function resolvePackagedPrebuild(bindingRoot: string): string | undefined {
+  if (!PREBUILD_PLATFORMS.includes(process.platform) || !PREBUILD_ARCHS.includes(process.arch)) return undefined;
+  const target = isLinuxMusl() ? `linuxmusl-${process.arch}` : `${process.platform}-${process.arch}`;
+  const candidate = join(bindingRoot, "..", "prebuilds", `${target}.node`);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function isLinuxMusl(): boolean {
+  return process.platform === "linux" && !process.report.getReport().header.glibcVersionRuntime;
 }
 
 type ShutdownReason = "reload" | "new" | "resume" | "fork" | "quit";
