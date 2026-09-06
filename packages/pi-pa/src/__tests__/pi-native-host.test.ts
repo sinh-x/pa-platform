@@ -29,7 +29,7 @@ import {
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
 } from "../native-host.js";
-import { runHostManagedToolSmoke } from "../pi-host-smoke.js";
+import { runHostManagedToolSmoke, runHostNativeSmoke } from "../pi-host-smoke.js";
 
 const require = createRequire(import.meta.url);
 
@@ -407,6 +407,16 @@ test("Pi child environment replaces the Node 22 wrapper binding with only the pa
   assert.equal(input[REGISTRY_NATIVE_BINDING_ENV], input[PI_REGISTRY_ADDON_ENV]);
 });
 
+test("native host smoke records its registry query and explicit close", async () => {
+  const addonPath = localAddonPath();
+  const evidence = await runHostNativeSmoke(addonPath);
+  assert.equal(evidence.node, process.version);
+  assert.equal(evidence.modules, process.versions.modules);
+  assert.equal(evidence.addonPath, addonPath);
+  assert.equal(evidence.registryQuery, "PRAGMA user_version");
+  assert.equal(evidence.close, "explicit");
+});
+
 test("deterministic managed tool harness executes the complete eight-tool matrix", async () => {
   const evidence = await runHostManagedToolSmoke(localAddonPath());
   assert.deepEqual(evidence.tools, [
@@ -421,4 +431,5 @@ test("deterministic managed tool harness executes the complete eight-tool matrix
   assert.ok(evidence.extension.handlers.includes("session_shutdown"));
   assert.deepEqual(evidence.extension.guards, { destructiveCommand: "passed", sensitivePath: "passed" });
   assert.deepEqual(evidence.extension.outputBounds, { maxBytes: 50 * 1024, maxLines: 2_000, status: "passed" });
+  assert.deepEqual(evidence.extension.todo, { registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" });
 });

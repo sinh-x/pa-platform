@@ -73,6 +73,7 @@
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
+            install -Dm755 scripts/pap-167-pi-retry-smoke.mjs $share/scripts/pap-167-pi-retry-smoke.mjs
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist
             cp -r packages/pa-core/node_modules $share/packages/pa-core/node_modules

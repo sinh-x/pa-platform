@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 // Usage: node scripts/pap-167-pi-retry-smoke.mjs [<ppa-store-output>] [--process-evidence|--regression|--baseline-calibrate] [--runs N] [--operations N] [--evidence <path>]
 
 const MAX_STDERR = 2_000;
+const CHILD_TIMEOUT_MS = 30_000;
 const DEFAULT_RUNS = 1;
 const DEFAULT_OPERATIONS = 250;
 const BASELINE_ADDON_VERSION = "11.6.0";
@@ -89,6 +90,15 @@ export function resolveStoreOutput(storeArg, env = process.env) {
     throw new Error(`could not resolve an installed pa-platform store output from PA_PI_SQLITE_NATIVE_BINDING: no ancestor of ${resolvedAddon} contains bin/ppa`);
   }
   throw new Error("could not resolve an installed pa-platform store output; pass <ppa-store-output> or set PA_PI_SQLITE_NATIVE_BINDING");
+}
+
+function probePiVersion(piPath, secrets) {
+  const result = spawnSync(piPath, ["--version"], { encoding: "utf8", timeout: 10_000 });
+  const diagnostic = redactDiagnostic(result.stderr || result.error?.message || "", secrets).slice(0, MAX_STDERR);
+  assert.equal(result.status, 0, `Pi version probe failed: ${diagnostic}`);
+  const version = result.stdout.trim();
+  assert.match(version, /(?:^|\s)v?\d+\.\d+\.\d+(?:\s|$)/, `Pi version probe returned malformed output: ${version}`);
+  return version;
 }
 
 function resolvePiNodeHost(piPath) {
@@ -224,7 +234,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
     PAP167_EVIDENCE_PATH: evidencePath,
   };
   const result = spawnSync(piNode, ["--expose-gc", childPath], {
-    cwd: root, env, encoding: "utf8", timeout: 30_000,
+    cwd: root, env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS,
   });
   const stderr = redactDiagnostic((result.stderr ?? "").trim(), secrets);
   const boundedStderr = stderr.length > MAX_STDERR ? `${stderr.slice(0, MAX_STDERR - 3)}...` : stderr;
@@ -260,6 +270,7 @@ function runCase({ piNode, storeOutput, addon, root, closeOnTeardown, processEvi
   return {
     run,
     command: `${piNode} --expose-gc ${childPath}`,
+    childTimeoutMs: CHILD_TIMEOUT_MS,
     closeOnTeardown,
     workload,
     status: result.status,
@@ -288,6 +299,9 @@ function main() {
   assert.ok(existsSync(ppa), `missing installed ppa: ${ppa}`);
   assert.ok(existsSync(addon), `missing pi-node-24 addon: ${addon}`);
   const piPath = process.env.PAP167_REAL_PI ?? "/home/sinh/.nix-profile/bin/pi";
+  assert.ok(existsSync(piPath), `missing actual Pi host: ${piPath}`);
+  const secrets = configuredSecrets(process.env);
+  const piVersion = probePiVersion(piPath, secrets);
   const piNode = resolvePiNodeHost(piPath);
 
   const workload = workloadPlan(operations);
@@ -298,7 +312,6 @@ function main() {
 
   const root = mkdtempSync(join(tmpdir(), "pap-167-pi-retry-"));
   const cases = [];
-  const secrets = configuredSecrets(process.env);
   const closeOnTeardown = regression || baselineCalibrate;
   try {
     for (let run = 1; run <= runs; run += 1) {
@@ -318,8 +331,16 @@ function main() {
       },
     } : {}),
     storeOutput,
+    ppa,
+    invokedByPpa: process.env.PAP167_PPA_INVOKED === "1",
+    coordinator: {
+      node: process.version,
+      modules: process.versions.modules ?? "unknown",
+    },
     addon,
     addonVersion,
+    piPath,
+    piVersion,
     piNode,
     runs,
     workload,
@@ -358,6 +379,10 @@ function main() {
       assert.equal(item.signatures.assertion, false, `child ${item.run} emitted the native assertion:\n${item.boundedStderr}`);
       assert.equal(item.signatures.removeEnvironmentCleanupHook, false, `child ${item.run} emitted RemoveEnvironmentCleanupHook:\n${item.boundedStderr}`);
       assert.equal(item.signatures.statementDestructor, false, `child ${item.run} emitted Statement::~Statement:\n${item.boundedStderr}`);
+      assert.equal(item.childTimeoutMs, CHILD_TIMEOUT_MS);
+      assert.equal(item.diagnostics.configuredSecretLeaks, 0, `child ${item.run} diagnostic contains a configured secret`);
+      assert.ok(item.boundedStderr.length <= MAX_STDERR, `child ${item.run} stderr exceeds ${MAX_STDERR} characters`);
+      assert.ok((item.error?.length ?? 0) <= MAX_STDERR, `child ${item.run} spawn diagnostic exceeds ${MAX_STDERR} characters`);
     }
   }
 

@@ -118,7 +118,7 @@ function wrappedNode(command: string): string {
 
 function nativeLoad(node: string, registryDb: string, addonPath: string): { status: number | null; diagnostic: string } {
   const core = pathToFileURL(fileURLToPath(new URL("../../../pa-core/dist/index.js", import.meta.url))).href;
-  const script = `const core = await import(${JSON.stringify(core)}); core.verifyRegistryNativeAddon(${JSON.stringify(addonPath)}); core.queryDeploymentStatuses();`;
+  const script = `const core = await import(${JSON.stringify(core)}); core.verifyRegistryNativeAddon(${JSON.stringify(addonPath)}); core.queryDeploymentStatuses(); core.closeDb();`;
   const result = spawnSync(node, ["--input-type=module", "--eval", script], {
     encoding: "utf8",
     env: { ...process.env, PA_REGISTRY_DB: registryDb, PA_SQLITE_NATIVE_BINDING: addonPath },

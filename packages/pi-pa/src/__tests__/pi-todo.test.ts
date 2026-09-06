@@ -7,9 +7,12 @@ import {
   boundTodoText,
   createTodoTool,
   reconstructTodoState,
+  registerTodoModule,
   type TodoDetails,
+  type TodoInput,
   type TodoTask,
 } from "../pi-extension/todo.js";
+import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 
 function tasks(store: TodoStore): TodoTask[] {
   return store.snapshot().tasks;
@@ -17,6 +20,10 @@ function tasks(store: TodoStore): TodoTask[] {
 
 function add(store: TodoStore, text: string, dependencies?: number[]): TodoDetails {
   return store.apply({ action: "add", text, ...(dependencies ? { dependencies } : {}) });
+}
+
+function assertIncludes(actual: string | undefined, expected: string): void {
+  assert.match(actual ?? "", new RegExp(expected));
 }
 
 function resultEntry(details: TodoDetails): unknown {
@@ -133,6 +140,30 @@ test("unknown targets and invalid reorder operations retain the prior snapshot",
     assert.deepEqual(rejected.tasks, before.tasks);
     assert.equal(rejected.nextId, before.nextId);
   }
+});
+
+test("managed Todo registers once and preserves add, list, and active-branch restore", async () => {
+  const tools: Array<PiToolDefinition<TodoInput, TodoDetails>> = [];
+  const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+  const runtime: PiRuntime = {
+    registerTool: (tool) => { tools.push(tool as PiToolDefinition<TodoInput, TodoDetails>); },
+    on: ((event: string, handler: (event: unknown, context: unknown) => unknown) => { handlers.set(event, handler); }) as NonNullable<PiRuntime["on"]>,
+  };
+  registerTodoModule(runtime);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0]?.name, "todo");
+
+  const tool = tools[0]!;
+  const added = await tool.execute("todo-managed-add", { action: "add", text: "active branch task" }, undefined, undefined, undefined);
+  assertIncludes(added.content[0]?.text, "Task added");
+  const listed = await tool.execute("todo-managed-list", { action: "list" }, undefined, undefined, undefined);
+  assertIncludes(listed.content[0]?.text, "active branch task");
+
+  await tool.execute("todo-managed-other-branch", { action: "add", text: "inactive branch task" }, undefined, undefined, undefined);
+  handlers.get("session_tree")?.({}, { sessionManager: { getBranch: () => [resultEntry(added.details)] } });
+  const restored = await tool.execute("todo-managed-restored-list", { action: "list" }, undefined, undefined, undefined);
+  assertIncludes(restored.content[0]?.text, "active branch task");
+  assert.doesNotMatch(restored.content[0]?.text ?? "", /inactive branch task/);
 });
 
 test("active-branch reconstruction selects the latest todo snapshot and isolates sessions", () => {
