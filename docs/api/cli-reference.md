@@ -3,7 +3,7 @@
 Complete reference for the pa-platform command-line interface. The runtime-neutral core is exposed as `pa-core` (package `@pa-platform/pa-core`), with `opa`, `cpa`, `dpa`, and `ppa` adapter binaries. All adapters wrap the shared `runCoreCommand`; provider/model defaults and mappings are adapter-specific.
 
 > **Source of truth:** `packages/pa-core/src/cli/commands/` (command implementations), `packages/pa-core/src/cli/core-command.ts` (dispatch), and each adapter's `adapter.ts` (provider/model mapping).
-> **Last updated:** 2026-08-27
+> **Last updated:** 2026-09-07
 
 ## Table of Contents
 
@@ -118,7 +118,32 @@ opa status --today
 opa status --team builder --recent 5
 ```
 
-**Environment:** `PA_STATUS_WAIT_TIMEOUT` (positive integer seconds between 60 and 7200) overrides the wait timeout.
+### Default single-deployment detail
+
+Default `status <deploy-id>` uses the same detail formatter through `opa`, `cpa`, `dpa`, and `ppa`. It emits exactly one Team line. A non-empty recorded mode is appended to the team with a slash—for example, `  Team:     builder/implement`. If mode is absent or empty, the exact team-only fallback remains `  Team:     builder`; no slash or synthetic mode is added. This formatting uses fields already loaded with the deployment, performs no additional file or database I/O, and does not add a Team/mode header to status lists, `--activity`, `--wait`, `--report`, or `--artifacts`. The change is intentionally limited to human-readable default detail; registry storage, events, and structured APIs retain separate team and mode fields.
+
+For a deployment whose recorded runtime is `pi`, default detail then appends the latest managed session task snapshot after the normal header. The Pi todo extension produces the version-1 sidecar at `$PA_DEPLOYMENT_DIR/deployment-tasks.json` after `session_start` restoration, each `session_tree` active-branch change, and every todo result. Each successful callback synchronously replaces the sidecar, so the next status invocation sees a complete snapshot without polling. The snapshot contains deployment identity, an ISO update timestamp, the complete ordered task array, monotonic `nextId`, lifecycle statuses, and dependency IDs. A private temporary file is atomically renamed into place with final mode `0600`; a failed write is non-fatal, leaves prior complete evidence intact, and records a bounded activity diagnostic. The last successful sidecar is retained through success, partial completion, failure, and crash reconciliation.
+
+A valid snapshot renders in stable `order`/`id` order, for example:
+
+```text
+Session tasks: 1/4 completed
+  Freshness: 2026-08-29T12:34:56.000Z
+  ✓ #8 Discover
+  ▶ #2 Implement ← #8
+  ○ #7 Verify ← #8,#2
+  − #5 Cancelled ← #8
+```
+
+Markers are shared with Pi's Alt+I view: `○` pending, `▶` in progress, `✓` completed, and `−` cancelled. Dependencies follow `←`, and at most one task is active. Completed excludes cancelled tasks, while total includes every task. A valid zero-task snapshot renders `Session tasks: 0/0 completed`, freshness, and `No session tasks`.
+
+Status checks the file size and rejects snapshots larger than 5 MiB before JSON parsing. Missing, malformed, unsupported-version, deployment-mismatched, oversized, or unreadable evidence produces a bounded, non-fatal `Session tasks: unavailable` section with a `Tasks unavailable` reason. The otherwise valid deployment lookup still exits 0. The rendered task section never exceeds 50 KiB or 2,000 lines; when either limit would be exceeded it keeps the header and emits an explicit count-bearing omission notice. ANSI escapes and terminal control characters are removed, and embedded line separators are normalized so each task occupies one terminal-safe row.
+
+Task snapshots and task sections are Pi-only: status does not extract tasks from OpenCode, Claude Code, or Droid, mutate todos, aggregate child task lists, or change status list/`--activity`/`--wait`/`--report`/`--artifacts` structures. Managed Pi instructions require two-or-more-step work to initialize todos after discovery and before the first target-repository mutation, complete or cancel the prior active task before the next phase starts, and complete or cancel an active task before shutdown. These lifecycle checkpoints are guidance and observable evidence, not a deployment completion gate.
+
+The task snapshot/status path uses no new external runtime dependency. It remains compatible with Node.js `>=22.19.0` and Pi APIs available since `>=0.80.8`; the synchronized `pi-pa` package currently requires Pi `>=0.84.4`.
+
+**Environment:** `PA_STATUS_WAIT_TIMEOUT` (positive integer seconds between 60 and 7200) overrides the wait timeout. Managed Pi snapshot production uses `PA_DEPLOYMENT_DIR` and `PA_DEPLOYMENT_ID`; operators do not need to set them manually for `ppa deploy`.
 
 ---
 

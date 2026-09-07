@@ -41,7 +41,7 @@ Pi state and proper-base state belong to the selected Pi user agent directory (`
 
 - proper-base writes one private JSONL file per encoded working-directory key under `proper-history/`. It loads at most 200 entries, skips prompts longer than 4,096 characters, reads at most the newest 512 KiB at startup, and compacts stores over 2 MiB to the newest 2,000 valid entries. Delete one file to forget one project key, or the directory to forget all proper-base history.
 - pi-vimmode reads `piVimMode` JSON settings from `~/.pi/agent/settings.json` and may load the operator-owned `~/.pi/agent/pi-vimmode.config.js` trusted JavaScript file. These fixed paths do not follow `PI_CODING_AGENT_DIR`. The JavaScript file is unsandboxed user code. Use `/vimmode reload` after changing it.
-- Git context selection remains project-owned under the guarded Pi project configuration directory documented below. Todos remain session-branch state inside Pi's session file.
+- Git context selection remains project-owned under the guarded Pi project configuration directory documented below. Todos remain authoritative session-branch state inside Pi's session file. Managed deployments additionally publish the latest complete active-branch state to the private status sidecar documented below; ordinary sessions do not.
 
 `ppa pi setup`, `status`, and `remove` own only the two package entries described above. Removal preserves extension state, Git context selection, todos, sessions, and unrelated packages.
 
@@ -93,7 +93,29 @@ Result details distinguish selected options, custom input, cancellation, unavail
 
 The sequential `todo` tool supports `list`, `add`, `update`, `start`, `complete`, `cancel`, and `reorder`. Tasks have monotonic session-local numeric IDs, stable order, status, text, and dependency IDs. Only one task can be `in_progress`; starting another returns the prior active task to `pending`. Completed and cancelled tasks are terminal and cannot be reopened or edited.
 
-Unknown IDs, self-dependencies, dependency cycles, incomplete dependencies, and invalid terminal mutations are rejected atomically. Every result stores the complete task snapshot and next ID in structured details. Pi reconstructs the latest snapshot on the active session branch after reload, resume, and tree navigation. A separate/new session starts empty. Todos are not written to an external file or synchronized between sessions. Full structured snapshots intentionally have no fixed task or text limit, so very large lists can increase Pi session-file size; textual tool output remains bounded to 50 KiB and 2,000 lines.
+Unknown IDs, self-dependencies, dependency cycles, incomplete dependencies, and invalid terminal mutations are rejected atomically. Every result stores the complete task snapshot and next ID in structured details. Pi reconstructs the latest snapshot on the active session branch after reload, resume, and tree navigation. A separate/new session starts empty. Ordinary sessions do not write an external task file or synchronize todos between sessions. Full structured snapshots intentionally have no fixed task or text limit, so very large lists can increase Pi session-file size; textual tool output remains bounded to 50 KiB and 2,000 lines.
+
+For managed Pi deployments, the trusted todo extension is also the snapshot producer. After `session_start` restoration, each `session_tree` active-branch change, and every todo result, it synchronously publishes a version-1 complete snapshot to `$PA_DEPLOYMENT_DIR/deployment-tasks.json`. The validated snapshot contains the deployment ID, ISO freshness timestamp, complete ordered task array, monotonic `nextId`, each lifecycle status, and dependency IDs. The writer creates a private temporary file, sets mode `0600`, and atomically renames it over the prior snapshot. A successful callback therefore makes complete evidence available to the next status invocation without polling. A failed write is non-fatal, retains the prior complete sidecar, and appends a bounded activity diagnostic. Terminal completion, partial completion, failure, and crash reconciliation do not delete the last successfully written snapshot.
+
+Default `ppa status <deploy-id>` detail appends this section only when registry evidence identifies a Pi deployment:
+
+```text
+Session tasks: 1/3 completed
+  Freshness: 2026-08-29T12:34:56.000Z
+  ✓ #1 Discover
+  ▶ #2 Implement ← #1
+  ○ #3 Verify ← #1,#2
+```
+
+Rows retain stable task `order`/`id` ordering and share Alt+I's lifecycle markers: `○` pending, `▶` in progress, `✓` completed, and `−` cancelled. Dependency IDs follow `←`; at most one row is active. The completed count includes only completed tasks, while total includes cancelled tasks. A valid empty snapshot renders `No session tasks`.
+
+Before parsing, status rejects a sidecar larger than 5 MiB. Missing, malformed, unsupported-version, deployment-mismatched, oversized, or unreadable evidence renders a bounded `Session tasks: unavailable` / `Tasks unavailable: <reason>` section without hiding the deployment detail or changing a valid lookup's exit code from 0. Rendered task evidence is capped at 50 KiB and 2,000 lines; truncation retains the header and emits an explicit task-omission notice. Task text is stripped of ANSI and terminal controls and normalized to one terminal-safe row.
+
+This snapshot and status section are Pi-only. OpenCode, Claude Code, and Droid deployments are not inspected for tasks, and status lists, `--activity`, `--wait`, `--report`, and `--artifacts` keep their existing structures without a task section. `ppa status` is read-only: it neither mutates tasks nor aggregates child task lists. Managed todo guidance requires two-or-more-step work to initialize tasks after discovery and before the first target-repository mutation, complete or cancel the prior active task before starting the next phase, and complete or cancel an active task before shutdown. These checkpoints are observable guidance, not an automatic completion gate.
+
+The shared default single-deployment header used by all adapters now renders exactly one Team line as `  Team:     <team>/<mode>` when a recorded mode is non-empty. If mode is absent, the byte-equivalent team-only fallback remains exactly `  Team:     <team>` with no slash or synthetic value. This human-readable formatting performs no additional I/O; list and alternate status paths remain unchanged. Structured registry and API fields are unchanged.
+
+The snapshot/status implementation adds no external runtime dependency and remains compatible with Node.js `>=22.19.0` and the Pi APIs available since `>=0.80.8`; the synchronized `pi-pa` package continues to require Pi `>=0.84.4`.
 
 ## Context Status and Sidebar
 
