@@ -16,7 +16,7 @@ Manual releases are the boundary for publishing from `main` and creating tags.
 
 1. Merge coordinated config changes into pa-platform-config `develop` before the consuming platform change.
 2. Check out the commit pinned by `.pa-platform-config.sha`, keep it clean, fetch `origin/develop`, and set `PA_PHASE5_CONFIG_ROOT` to that checkout.
-3. Run `corepack pnpm verify:paired-config -- --require-origin-develop` and `corepack pnpm test:paired`. The gate requires the exact SHA, a clean checkout, 9/9 active teams, 58/58 valid modes, no legacy or invalid pairs, the direct registered-checkout branch contract, and config-first ancestry.
+3. Run `corepack pnpm verify:paired-config -- --require-origin-develop` and `corepack pnpm test:paired`. The gate requires the exact SHA, a clean checkout, 9/9 active teams, 58/58 valid modes, no legacy or invalid pairs, the 6/6 builder-exclusive + 11/11 requirements-read-only + 41/41 other non-locking admission matrix, the direct registered-checkout/no-worktree contract, and config-first ancestry.
 4. Merge approved feature branches into `develop` and complete any expected auto patch bump commits there.
 5. Run `corepack pnpm typecheck`, `corepack pnpm build`, and `corepack pnpm test`.
 6. Pick version bump level from committed changes.

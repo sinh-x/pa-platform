@@ -60,7 +60,7 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
   let plan: ExecutionPlan;
   try {
     plan = resolveExecutionPlan({
-      request: { ...request, ...(ticketId ? { ticket: ticketId } : {}), provider, model },
+      request: { ...request, ...(teamConfig.name === "builder" && !request.dryRun ? { background: false } : {}), ...(ticketId ? { ticket: ticketId } : {}), provider, model },
       teamConfig,
       mode: selectedMode,
       runtime: "claude",
@@ -72,6 +72,15 @@ export async function deployWithClaude(request: DeployRequest, adapter: RuntimeA
     });
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
+  }
+  if (plan.repositoryAdmission.access === "exclusive-builder" && !request.dryRun) {
+    return {
+      status: "failed" as const,
+      team: request.team,
+      mode: request.mode ?? null,
+      deploymentId,
+      reason: boundedDiagnostic("cpa unsupported-policy: mutating builder deployments require repository ownership and dirty-intent lifecycle enforcement that the Claude adapter cannot safely supervise. No runtime was spawned; use ppa or opa."),
+    };
   }
   const env = { ...plan.environment } as Record<PaEnvKey, string>;
   const primerPath = resolve(deployDir, "primer.md");

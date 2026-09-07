@@ -1,7 +1,7 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { resolveRepoExecutionPath } from "../../repos.js";
-import { assertNoSensitiveMatch, readGuardedLocalTextFile } from "../../sensitive-patterns.js";
+import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
 
@@ -12,7 +12,7 @@ export function parseDeployArgs(argv: string[]): { fields: Record<string, unknow
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
   const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--evaluate-deployment": "evaluateDeployment", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume", "--autonomy": "autonomy" };
-  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--list-modes": "listModes", "--validate": "validate" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--force": "force", "--list-modes": "listModes", "--validate": "validate" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     const booleanKey = booleanMap[arg];
@@ -132,6 +132,9 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
   io.stdout("                      Omit to infer the exact configured root from CWD");
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
+  if (binaryName !== "cpa" && binaryName !== "dpa") {
+    io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
+  }
   io.stdout("  --timeout <seconds>    Override deployment timeout");
   io.stdout("  --resume <id>          Resume a prior deployment");
   io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");
@@ -157,19 +160,16 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   }
   const validated = validateDeployRequestFields(parsed.fields);
   if ("error" in validated) {
+    for (const warning of validated.warnings ?? []) io.stderr(warning);
     io.stderr(validated.error);
     return 1;
   }
   if (validated.warnings) {
     for (const warning of validated.warnings) io.stderr(warning);
   }
-  if (validated.request.objective) {
-    try {
-      assertNoSensitiveMatch("content", validated.request.objective);
-    } catch (error) {
-      io.stderr(error instanceof Error ? error.message : String(error));
-      return 1;
-    }
+  if ((binaryName === "cpa" || binaryName === "dpa") && validated.request.force) {
+    io.stderr(`${binaryName}: --force is unsupported because this adapter does not execute exclusive builder deployments; use ppa or opa for builder ownership enforcement`);
+    return 1;
   }
   if (validated.request.listModes) return printDeployModes(validated.request.team, io);
   if (validated.request.validate) return validateDeployConfig(validated.request.team, io, binaryName);

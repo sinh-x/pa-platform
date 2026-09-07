@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
+import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { SessionManager } from "../ws/session-hub.js";
 
 export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: SessionManager): Hono {
@@ -9,9 +10,11 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
   app.post("/api/deploy", async (c) => {
     const parsed = await parseDeployRequest(c.req.json.bind(c.req));
     if ("error" in parsed) return c.json({ error: parsed.error, code: "BAD_REQUEST" }, 400);
-    const resolved = withResolvedDeployTimeout(parsed.request);
-    if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
     try {
+      const controlResponse = resolveControlOnlyResponse(parsed.request);
+      if (controlResponse) return c.json(controlResponse, 202);
+      const resolved = withResolvedDeployTimeout(parsed.request);
+      if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
       const selectedRuntime = resolved.request.runtime ?? "opencode";
       const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
        const selectedHooks = hooks.runtimeHooks?.[selectedRuntime];
@@ -28,7 +31,7 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
       return c.json(response, 202);
     } catch (error) {
       // PAP-042 AC2 phone contract: always 202 with structured failed JSON — never 500, never throws
-      return c.json({ status: "failed", reason: error instanceof Error ? error.message : String(error), team: resolved.request.team, mode: resolved.request.mode ?? null }, 202);
+      return c.json({ status: "failed", reason: boundedControlDiagnostic(error), team: parsed.request.team, mode: parsed.request.mode ?? null }, 202);
     }
   });
 
@@ -56,6 +59,46 @@ async function parseDeployRequest(readJson: () => Promise<unknown>): Promise<{ r
   }
 
   return validateDeployRequestFields(body);
+}
+
+function resolveControlOnlyResponse(request: DeployRequest): Record<string, unknown> | undefined {
+  if (!request.listModes && !request.validate) return undefined;
+  const team = loadTeamConfig(request.team);
+  if (request.listModes) {
+    return {
+      team: team.name,
+      mode: request.mode ?? null,
+      status: "success",
+      modes: (team.deploy_modes ?? []).map((mode) => ({ id: mode.id, label: mode.label })),
+    };
+  }
+  const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === team.name);
+  if (missingReferences.length > 0) {
+    return {
+      team: team.name,
+      mode: request.mode ?? null,
+      status: "failed",
+      reason: boundedControlDiagnostic(`Team config validation failed: ${missingReferences.length} missing referenced file(s) for ${team.name}.`),
+    };
+  }
+  const modes = team.deploy_modes ?? [];
+  const configuredPairs = modes.filter((mode) => mode.provider !== undefined && mode.model !== undefined).length;
+  return {
+    team: team.name,
+    mode: request.mode ?? null,
+    status: "success",
+    validation: {
+      agents: team.agents.length,
+      modes: modes.length,
+      configuredProviderModelPairs: configuredPairs,
+      adapterDefaultProviderModelPairs: modes.length - configuredPairs,
+    },
+  };
+}
+
+function boundedControlDiagnostic(error: unknown): string {
+  const value = error instanceof Error ? error.message : String(error);
+  return value.length <= 2_000 ? value : `${value.slice(0, 1_997)}...`;
 }
 
 function toPhoneDeployResponse(response: Record<string, unknown>): Record<string, unknown> {

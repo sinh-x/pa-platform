@@ -162,14 +162,47 @@ test("deploy CLI rejects linked working-tree CWD inference before the adapter ho
   });
 });
 
-test("deploy and branch help document the registered-path-only contract", async () => {
-  const deploy = capture();
+test("ppa and opa deploy help document force and the registered-path-only contract", async () => {
+  const opa = capture();
+  const ppa = capture();
   const branch = capture();
-  assert.equal(await runCoreCommand(["deploy", "--help"], { io: deploy.io }), 0);
+  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "opa", io: opa.io }), 0);
+  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: ppa.io }), 0);
   assert.equal(await runCoreCommand(["branch", "--help"], { io: branch.io }), 0);
-  assert.match(deploy.stdout.join("\n"), /registered repository key or exact configured path/i);
-  assert.match(deploy.stdout.join("\n"), /infer the exact configured root from CWD/i);
+  for (const output of [opa.stdout.join("\n"), ppa.stdout.join("\n")]) {
+    assert.match(output, /registered repository key or exact configured path/i);
+    assert.match(output, /infer the exact configured root from CWD/i);
+    assert.match(output, /--force\s+Recover stale or malformed builder ownership evidence/);
+    assert.match(output, /never overrides a live owner or other guards/);
+  }
   assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
+});
+
+test("deploy CLI propagates force while exact-root and worktree guards remain authoritative", async () => {
+  await withFixture("force", async (fixture) => {
+    process.chdir(fixture.repo);
+    const seen: DeployRequest[] = [];
+    const accepted = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--repo", "registered", "--timeout", "120", "--force"], {
+      binaryName: "ppa",
+      io: accepted.io,
+      hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-force" }; } },
+    }), 0, accepted.stderr.join("\n"));
+    assert.deepEqual(seen, [{ team: "builder", mode: "implement", repo: fixture.repo, timeout: 120, force: true }]);
+
+    for (const rejectedRepo of [join(fixture.repo, "nested"), fixture.worktree]) {
+      if (rejectedRepo.endsWith("nested")) mkdirSync(rejectedRepo);
+      const rejected = capture();
+      assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--repo", rejectedRepo, "--force"], {
+        binaryName: "opa",
+        io: rejected.io,
+        hooks: { deploy: (request) => { seen.push(request); return { status: "pending", deploymentId: "d-forbidden" }; } },
+      }), 1);
+      assert.match(rejected.stderr.join("\n"), /registered project paths only/i);
+      assert.ok(rejected.stderr.join("\n").length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    }
+    assert.equal(seen.length, 1);
+  });
 });
 
 test("deploy and evaluate accept dotted registry keys and exact paths containing spaces", async () => {
