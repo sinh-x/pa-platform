@@ -15,7 +15,7 @@
 | 3 | `f5aa75c4b946c825f6ca7766d0d614b18165ad83` | `feat(adapters): phase 3 - add repository ownership lifecycle` |
 | 4 | _this release-evidence commit_ | `test(release): phase 4 - align paired admission evidence` |
 
-The initial release evidence used paired configuration pin `7e3a7a2015e220428c413423c2e9ffd07901a099`. Review-cycle-1 remediation now pins `df3ca1de6e017358002564dc24b50ae48ec14c52`, the clean PAP-174 paired-contract commit. Verification uses the exact clean operator checkout at that SHA without changing it.
+The initial release evidence used paired configuration pin `7e3a7a2015e220428c413423c2e9ffd07901a099`. Review-cycle-1 remediation pinned `df3ca1de6e017358002564dc24b50ae48ec14c52`, the then-current clean PAP-174 paired-contract commit. This continuation pins merged `pa-platform-config` `develop` commit `a8d2175fc2aa3988db31f894b823816b10d3369f`; verification uses local and origin `develop` at that exact SHA without changing the operator checkout.
 
 ## Automated UAT Traceability
 
@@ -54,7 +54,7 @@ The coherent follow-up is recorded as `_this review-cycle-1 remediation commit_`
 | Focused paired validator | Pass: 11/11 tests, including affirmative/negated semantics, retired-contract rejection, 58-mode matrix, seven-state direct checkout, and no-worktree/no-sandbox retention. |
 | Focused admission/API/CLI regressions | Pass: 158 tests, 156 passed and 2 fixture-dependent skips; includes 50 mixed contenders, abrupt mutex death, orphan recovery, safe quarantine races, REST redaction, CLI quarantine, and all NFR-7 mutation categories. |
 | Focused adapter regressions | Pass: cpa 49/49 and dpa 78/78, including bounded no-spawn builder-policy rejection. |
-| `corepack pnpm verify:paired-config` | Pass at exact clean config SHA `df3ca1de6e017358002564dc24b50ae48ec14c52`: 9/9 teams, 58/58 modes, builder 6/6 exclusive, requirements 11/11 read-only, other 41/41 non-locking, branch gate 7/7, no-worktree orchestration retained. |
+| `corepack pnpm verify:paired-config -- --require-origin-develop` | Pass at exact merged config `develop` SHA `a8d2175fc2aa3988db31f894b823816b10d3369f`: 9/9 teams, 58/58 modes, builder 6/6 exclusive, requirements 11/11 read-only, other 41/41 non-locking, branch gate 7/7, no-worktree orchestration retained. |
 | `corepack pnpm typecheck` | Pass: all 6 workspace projects (preserved full-run evidence after the final behavior edits). |
 | `corepack pnpm build` | Pass: all 6 workspace projects (preserved full-run evidence after the final behavior edits). |
 | `corepack pnpm test` | Pass: pa-core 451/451, pi 5/5, dpa 78/78, cpa 49/49, and opa 74/74 after paired-contract alignment. |
