@@ -6,13 +6,6 @@
  * validation, one active task, strict terminal states, and monotonic IDs.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  truncateHead,
-} from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import {
   appendActivityEvent,
   createActivityEvent,
@@ -26,8 +19,15 @@ import {
   type DeploymentTaskStatus,
 } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
-import { Type, type TSchema } from "typebox";
 import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
+import { StringEnum } from "@earendil-works/pi-ai";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+} from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { Type, type TSchema } from "typebox";
 import type { PiExtensionModule, PiToolDefinition } from "./index.js";
 
 export const TODO_ACTIONS = ["list", "add", "update", "start", "complete", "cancel", "reorder"] as const;
@@ -51,13 +51,6 @@ export interface TodoDetails extends Record<string, unknown> {
   error?: string;
 }
 
-export interface TodoModuleOptions {
-  env?: NodeJS.ProcessEnv;
-  now?: () => string;
-  writeSnapshot?: (path: string, snapshot: DeploymentTaskSnapshot) => void;
-  appendActivity?: (event: ActivityEvent, path: string) => void;
-}
-
 export const TodoParams: TSchema = Type.Object({
   action: StringEnum(TODO_ACTIONS),
   id: Type.Optional(Type.Integer({ minimum: 1, description: "Task ID for update, start, complete, cancel, or reorder" })),
@@ -65,6 +58,13 @@ export const TodoParams: TSchema = Type.Object({
   dependencies: Type.Optional(Type.Array(Type.Integer({ minimum: 1 }), { description: "Task IDs that must be completed first" })),
   beforeId: Type.Optional(Type.Integer({ minimum: 1, description: "For reorder, place the task before this task; omit to move it last" })),
 });
+
+export interface TodoModuleOptions {
+  env?: NodeJS.ProcessEnv;
+  now?: () => string;
+  writeSnapshot?: (path: string, snapshot: DeploymentTaskSnapshot) => void;
+  appendActivity?: (event: ActivityEvent, path: string) => void;
+}
 
 export class TodoStore {
   private tasks: TodoTask[] = [];
