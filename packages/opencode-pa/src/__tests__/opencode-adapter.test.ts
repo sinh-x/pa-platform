@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -430,6 +430,53 @@ test("REST-selected OpenCode defaults dirty builders to rejection before spawn w
     assert.ok((body.reason ?? "").length <= 2_000);
     assert.equal(spawns, 0);
     assert.equal(inspectRepositoryMutationLease(join(root, "repo")).state, "absent");
+  });
+});
+
+test("REST-selected OpenCode rejects malformed controls before hooks, spawn, sessions, or lease lifecycle", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    const sentinel = "malformed lease evidence must remain byte-identical\n";
+    let deployHookCalls = 0;
+    let spawns = 0;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = { ...base, spawn(opts) { spawns += 1; return base.spawn(opts); } };
+    const actualHooks = createOpencodeHooks(adapter);
+    const opencodeHooks = {
+      ...actualHooks,
+      deploy: (...args: Parameters<NonNullable<typeof actualHooks.deploy>>) => {
+        deployHookCalls += 1;
+        return actualHooks.deploy!(...args);
+      },
+    };
+    const api = createAgentApiApp({ hooks: opencodeHooks });
+
+    for (const force of [false, true]) {
+      if (force) writeFileSync(leasePath, sentinel, { mode: 0o600 });
+      for (const flag of ["listModes", "validate"] as const) {
+        for (const value of ["true", 1, null, [], {}] as const) {
+          const response = await api.app.request("/api/deploy", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "builder", mode: "implement", ticket: "PAP-174", runtime: "opencode", force, [flag]: value }),
+          });
+          assert.equal(response.status, 400);
+          const body = await response.json() as { error: string; code: string };
+          assert.deepEqual(body, { error: `${flag} must be a boolean`, code: "BAD_REQUEST" });
+          assert.ok(body.error.length <= 2_000);
+          if (force) assert.equal(readFileSync(leasePath, "utf8"), sentinel);
+          else assert.equal(existsSync(leasePath), false);
+        }
+      }
+    }
+
+    assert.equal(deployHookCalls, 0);
+    assert.equal(spawns, 0);
+    assert.deepEqual(await (await api.app.request("/api/sessions")).json(), []);
+    assert.equal(readdirSync(join(repo, ".git")).some((name) => name.includes("pa-repository-mutation.lease.json.quarantine.")), false);
+    api.cleanup();
   });
 });
 

@@ -135,6 +135,8 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   if (autonomy && !VALID_AUTONOMY_LEVELS.has(autonomy)) return { error: "Invalid autonomy level: must be low, medium, or high" };
   if (rawTimeout !== undefined && typeof rawTimeout !== "number") return { error: "timeout must be a number" };
   if (Object.prototype.hasOwnProperty.call(body, "force") && force === undefined) return { error: "force must be a boolean" };
+  if (Object.prototype.hasOwnProperty.call(body, "listModes") && listModes === undefined) return { error: "listModes must be a boolean" };
+  if (Object.prototype.hasOwnProperty.call(body, "validate") && validate === undefined) return { error: "validate must be a boolean" };
   const timeoutValidation = validateDeployTimeoutSeconds(timeout, "timeout");
   if (timeoutValidation) return { error: timeoutValidation };
   const warnings: string[] = [];
