@@ -471,10 +471,17 @@ const PA_CLI_COMMAND_RE = new RegExp(`(^|[\\s\`'"(=:{])pa(?=\\s+(?:${PA_CLI_SUBC
 const CLAUDECODE_COMMAND_PREFIX_RE = new RegExp(`(^|[\\s\`'"(=:{])(?:unset\\s+CLAUDECODE|CLAUDECODE=(?:"[^"]*"|'[^']*'|\\S+))\\s*(?:&&\\s*)?(?=pa\\s+(?:${PA_CLI_SUBCOMMANDS})\\b)`, "gm");
 const CLAUDECODE_PROSE_LINE_RE = /^\s*(?:unset\s+CLAUDECODE|CLAUDECODE=(?:"[^"]*"|'[^']*'|\S+))\s*(?:&&\s*)?(?:pa|opa|cpa|dpa|ppa)\s+(?:deploy|status|registry|ticket|board|bulletin)\b.*(?:\n|$)/gm;
 const EXTERNAL_CLAUDE_SKILLS_PATH_RE = /(?:~|\/home\/[^\s"`<>]+)\/\.claude\/skills/g;
+const RUNTIME_ADAPTER: Readonly<Record<RuntimeName, string>> = {
+  claude: "cpa",
+  opencode: "opa",
+  droid: "dpa",
+  pi: "ppa",
+};
 
 function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
+  const adapted = content.replaceAll("<runtime-adapter>", RUNTIME_ADAPTER[runtime]);
   if (runtime === "opencode") {
-    return content
+    return adapted
       .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
       .replace(PA_CLI_COMMAND_RE, "$1opa")
       .replace(CLAUDECODE_PROSE_LINE_RE, "")
@@ -490,7 +497,7 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
   if (runtime === "claude") {
-    return content
+    return adapted
       .replace(PA_CLI_COMMAND_RE, "$1cpa")
       .replace(/`pa` CLI/g, "`cpa` CLI")
       .replace(/\bPA CLI\b/g, "CPA CLI")
@@ -500,7 +507,7 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(EXTERNAL_CLAUDE_SKILLS_PATH_RE, "packaged pa-platform skills");
   }
   if (runtime === "droid") {
-    return content
+    return adapted
       .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
       .replace(PA_CLI_COMMAND_RE, "$1dpa")
       .replace(CLAUDECODE_PROSE_LINE_RE, "")
@@ -516,7 +523,7 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
   if (runtime === "pi") {
-    return content
+    return adapted
       .replace(CLAUDECODE_COMMAND_PREFIX_RE, "$1")
       .replace(PA_CLI_COMMAND_RE, "$1ppa")
       .replace(CLAUDECODE_PROSE_LINE_RE, "")
@@ -531,7 +538,7 @@ function adaptContentForRuntime(content: string, runtime: RuntimeName): string {
       .replace(/\bSendMessage\b/g, "durable ticket-comment handoff")
       .replace(/\bScheduleWakeup\b/g, "scheduled deployment capability");
   }
-  return content;
+  return adapted;
 }
 
 const ATX_HEADING_LINE_RE = /^(#{1,6})(?=\s)(.*)$/;
