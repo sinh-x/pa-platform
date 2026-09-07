@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **pi-pa**: Bundle pinned proper-base 0.5.0 and pi-vimmode 0.9.0 in the trusted Pi entrypoint, with immutable provenance, packaged MIT notices, and `sharp` 0.35.3 Linux package evidence.
 - **docs**: Add PAP-078 Phase 5 handoff documentation for packaging status, memory/skill/knowledge boundaries, UAT fixtures, and verification command contract.
 
 ### Documentation

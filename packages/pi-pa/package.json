@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pi-pa",
-  "version": "0.1.103",
+  "version": "0.1.106",
   "type": "module",
   "description": "Pi runtime adapter for the PA platform",
   "engines": {
@@ -16,14 +16,21 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "imports": {
+    "#pi-pa-vimmode": "./dist/pi-extension/vendor/pi-vimmode.js",
+    "#pi-pa-proper-base": "./dist/pi-extension/vendor/proper-base.js"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"src/**/*.test.ts\"",
+    "validate:sources": "node scripts/validate-extension-sources.mjs",
+    "bundle:extensions": "node scripts/bundle-extension-sources.mjs",
+    "build": "node scripts/validate-extension-sources.mjs && tsc -p tsconfig.json && node scripts/bundle-extension-sources.mjs",
+    "test": "node scripts/validate-extension-sources.mjs && node scripts/bundle-extension-sources.mjs && corepack pnpm --filter @pa-platform/pa-core build && tsx --test \"scripts/**/*.test.mjs\" && tsx --test \"src/**/*.test.ts\"",
     "typecheck": "corepack pnpm --filter @pa-platform/pa-core build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@pa-platform/pa-core": "workspace:*",
     "node-pty": "1.1.0",
+    "sharp": "0.35.3",
     "typebox": "1.1.38"
   },
   "peerDependencies": {
@@ -32,10 +39,11 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.80.8",
-    "@earendil-works/pi-coding-agent": "0.80.8",
-    "@earendil-works/pi-tui": "0.80.8",
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
     "@types/node": "^22.0.0",
+    "esbuild": "0.27.7",
     "tsx": "^4.20.6",
     "typescript": "^5.7.0"
   }

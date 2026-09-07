@@ -53,7 +53,7 @@ try {
     `  log("version_start");`,
     `  await new Promise((resolve) => setTimeout(resolve, ${VERSION_DELAY_MS}));`,
     `  log("version_end");`,
-    `  process.stdout.write("0.80.8\\n");`,
+    `  process.stdout.write("0.84.4\\n");`,
     `} else {`,
     `  log("child_start");`,
     `  await new Promise((resolve) => setTimeout(resolve, ${CHILD_LIFETIME_MS}));`,

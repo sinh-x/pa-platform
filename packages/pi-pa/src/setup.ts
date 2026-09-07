@@ -18,10 +18,10 @@ export async function setupPi(options: PiSetupOptions = {}): Promise<PiSetupResu
   const probe = options.piVersion ? undefined : spawnSync("pi", ["--version"], { encoding: "utf8", timeout: PI_VERSION_TIMEOUT_MS });
   if (probe?.error) {
     if ((probe.error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(`Pi version probe timed out after ${PI_VERSION_TIMEOUT_MS}ms.`);
-    throw new Error(`Pi is unavailable. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`);
+    throw new Error(`Pi is unavailable. Install Pi 0.84.4 or later and ensure 'pi' is on PATH.`);
   }
   const version = options.piVersion ?? `${probe?.stdout ?? ""}`.trim();
-  if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.80.8 or later; detected '${version || "unknown"}'.`);
+  if (!meetsMinimum(version)) throw new Error(`Pi version must be 0.84.4 or later; detected '${version || "unknown"}'.`);
   const settingsPath = settingsPathFor(options.local, cwd);
   const existing = readSettings(settingsPath);
   const packages = [...new Set([...(existing.packages ?? []), extensionPath, configDir])];

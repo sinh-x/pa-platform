@@ -17,6 +17,11 @@ export interface ToolReference {
   markdown: string;
 }
 
+export interface RepositoryLeaseHandoff {
+  canonicalRepoRoot: string;
+  ownershipToken: string;
+}
+
 export interface SpawnOpts {
   primerPath: string;
   deployId: string;
@@ -30,6 +35,8 @@ export interface SpawnOpts {
   sessionId?: string;
   /** Receives the direct runtime child PID as soon as launch establishes it. */
   onPid?: (pid: number) => void;
+  /** Token-authenticated repository ownership transferred to a background supervisor. */
+  repositoryLease?: RepositoryLeaseHandoff;
   executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 

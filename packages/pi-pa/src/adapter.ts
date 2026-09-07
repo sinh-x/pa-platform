@@ -44,6 +44,10 @@ export interface PiBackgroundConfig {
   skills: string[];
   trustedExtension?: string;
   timeoutMs?: number;
+  repositoryLease?: {
+    canonicalRepoRoot: string;
+    ownershipToken: string;
+  };
 }
 export interface PiSupervisorOwnership {
   schemaVersion: 1;
@@ -142,7 +146,7 @@ export class PiAdapter implements RuntimeAdapter {
     return readFileSync(path, "utf8").split("\n").filter(Boolean).flatMap((line) => projector.observeLine(line));
   }
   installHooks(_targetDir: string, _config: HookConfig): void {}
-  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.80.8 or later must be installed as `pi`." }; }
+  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.84.4 or later must be installed as `pi`." }; }
 
   async preflight(): Promise<void> {
     if (!this.preflightPromise) {
@@ -159,7 +163,7 @@ export class PiAdapter implements RuntimeAdapter {
           bounded(nativeValue, this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`),
         ]);
         if (versionResult.status === "rejected") throw versionResult.reason;
-        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.80.8 or later; detected '${versionResult.value || "unknown"}'.`);
+        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.84.4 or later; detected '${versionResult.value || "unknown"}'.`);
         if (nativeResult.status === "rejected") throw nativeResult.reason;
       })();
       this.preflightPromise = probe;
@@ -212,7 +216,7 @@ export class PiAdapter implements RuntimeAdapter {
   }
 }
 
-export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 80 || actual[1] === 80 && actual[2] >= 8); }
+export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent {
   const safe = deepRedact(raw, secrets) as Record<string, unknown>;
   const outerType = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase();
@@ -512,6 +516,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     skills: plan?.skills.map((skill) => skill.path) ?? [],
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
+    ...(input.opts.repositoryLease ? { repositoryLease: input.opts.repositoryLease } : {}),
   };
   try {
     writePiBackgroundConfig(configPath, config);
@@ -583,6 +588,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       supervisorPid: established.supervisorPid,
       ...(established.childPid ? { pid: established.childPid } : {}),
       ownershipFile: ownershipPath,
+      ...(config.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
     },
   };
 }
@@ -613,7 +619,14 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`runner-readiness: Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string")) {
+  const repositoryLease = value.repositoryLease;
+  const validRepositoryLease = repositoryLease === undefined || (
+    typeof repositoryLease === "object"
+    && repositoryLease !== null
+    && typeof repositoryLease.canonicalRepoRoot === "string"
+    && typeof repositoryLease.ownershipToken === "string"
+  );
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryLease) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
@@ -913,7 +926,7 @@ function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): P
       finish(new Error(`Pi version probe timed out after ${timeout}ms.`));
     }, timeout);
     child.stdout?.on("data", (chunk: Buffer) => { stdout = tail(stdout + chunk.toString("utf8"), MAX_CAPTURE); });
-    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.80.8 or later and ensure 'pi' is on PATH.`)));
+    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.84.4 or later and ensure 'pi' is on PATH.`)));
     child.once("close", (code) => finish(code === 0 ? undefined : new Error(`Pi version probe failed with exit code ${code ?? 1}.`)));
   });
 }

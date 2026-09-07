@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { appendRegistryEvent, closeDb, getDeployPaths, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { deployWithPi, piSessionCommand } from "../deploy.js";
+import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
+import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertBuilderExclusiveRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -53,6 +54,17 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     "  - id: implement",
     "    label: Implement",
   ].join("\n") + "\n");
+  writeFileSync(join(teams, "requirements.yaml"), [
+    "name: requirements",
+    "description: Requirements",
+    "objective: Analyze",
+    "agents:",
+    "  - name: researcher",
+    "    role: Researches",
+    "deploy_modes:",
+    "  - id: analyze",
+    "    label: Analyze",
+  ].join("\n") + "\n");
   const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const gitState = installGitStateRecorder(root);
   const previousCwd = process.cwd();
@@ -71,7 +83,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   });
 }
 
-function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
   const result = (sessionId: string) => options.result?.(sessionId) ?? { sessionId, exitCode: 0, metadata: { sessionId } };
   return {
     name: "pi",
@@ -83,7 +95,7 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
     spawn(opts) { options.onSpawn?.(opts); return result(opts.sessionId ?? ""); },
     resume(opts) { options.onResume?.(opts); return result(opts.sessionId); },
     extractActivity() { return []; },
-    describeTools() { return { runtime: "pi", markdown: "stub" }; },
+    describeTools() { options.onDescribe?.(); return { runtime: "pi", markdown: "stub" }; },
   };
 }
 
@@ -144,7 +156,7 @@ test("foreground PPA /quit emits one terminal event with no Git state operation"
       running = false;
       queueMicrotask(() => pty.emitExit(0));
     });
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -263,7 +275,7 @@ test("live foreground PTY PID protects status, wait, health, and sweep before se
     const input = new ForegroundDeploymentInput();
     const output = { write() { return true; } };
     const pty = new ForegroundDeploymentPty(() => {}, process.pid);
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       spawnPty: () => pty as never, input: input as never, output: output as never,
       processExists: () => running,
     } });
@@ -318,10 +330,304 @@ test("foreground and background Pi children receive distinct internal execution 
   });
 });
 
-test("PPA key and exact-path requests consume one canonical execution plan with no admission state", async () => {
+test("PPA foreground builders own the exact repository through every adapter terminal outcome", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    for (const exitCode of [0, 17, 124, 143]) {
+      let observedToken = "";
+      const adapter = stubAdapter({
+        onSpawn: (opts) => {
+          const inspection = inspectRepositoryMutationLease(repo);
+          assert.equal(inspection.state, "live");
+          assert.equal(inspection.lease?.deploymentId, opts.deployId);
+          assert.equal(inspection.lease?.canonicalRepoRoot, repo);
+          assert.equal(inspection.lease?.runtime, "pi");
+          assert.equal(inspection.lease?.preLaunchGitSnapshot.dirty, false);
+          assert.equal(opts.repositoryLease?.ownershipToken, inspection.lease?.ownershipToken);
+          observedToken = inspection.lease?.ownershipToken ?? "";
+          assert.equal(statSync(leasePath).mode & 0o777, 0o600);
+          assert.ok(statSync(leasePath).size <= 64 * 1024);
+          assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: "not-the-owner" }).status, "token-mismatch");
+          assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+        },
+        result: (sessionId) => ({ sessionId, exitCode, ...(exitCode === 0 ? {} : { errorMessage: `terminal ${exitCode}` }), metadata: { sessionId } }),
+      });
+      const result = await deployWithPi({ team: "builder", mode: "implement" }, adapter);
+      assert.ok(observedToken);
+      assert.equal(result.status, exitCode === 0 ? "success" : "failed");
+      assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+    }
+
+    const launchFailure = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ result: () => { throw new Error("launch failed"); } }));
+    assert.equal(launchFailure.status, "failed");
+    assert.match(launchFailure.reason ?? "", /launch failed/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("PPA dirty background rejects pre-spawn while requirements bypass status and lease admission", async () => {
   await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
-    const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; registryRepo?: string; runtimeCwd?: string }> = [];
+    const leasePath = repositoryMutationLeasePath(repo);
+    writeFileSync(join(repo, "dirty.txt"), "dirty\n");
+    let builderSpawns = 0;
+    const rejected = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({ onSpawn: () => { builderSpawns += 1; } }));
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /state=dirty-background/);
+    assert.ok((rejected.reason ?? "").length <= 2_000);
+    assert.equal(builderSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    writeFileSync(leasePath, "live evidence must remain byte-identical\n", { mode: 0o600 });
+    const before = readFileSync(leasePath, "utf8");
+    const commandOffset = gitState.readCommands().length;
+    let requirementsSpawns = 0;
+    const launched = await deployWithPi({ team: "requirements", mode: "analyze", background: true }, stubAdapter({ onSpawn: (opts) => {
+      requirementsSpawns += 1;
+      assert.equal(opts.executionPlan?.repositoryAdmission.access, "read-only");
+      assert.equal(opts.repositoryLease, undefined);
+    } }));
+    assert.equal(launched.status, "success", launched.reason);
+    assert.equal(requirementsSpawns, 1);
+    assert.equal(readFileSync(leasePath, "utf8"), before);
+    assert.equal(gitState.readCommands().slice(commandOffset).some((args) => args[0] === "status"), false);
+    assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("PPA re-reads clean-to-dirty state after planning before background or foreground spawn", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    let backgroundSpawns = 0;
+    const background = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onDescribe: () => writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n"),
+      onSpawn: () => { backgroundSpawns += 1; },
+    }));
+    assert.equal(background.status, "failed");
+    assert.match(background.reason ?? "", /state=dirty-background/);
+    assert.equal(backgroundSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    rmSync(join(repo, "arrived-after-plan.txt"));
+    let foregroundSpawns = 0;
+    const foreground = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onDescribe: () => writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n"),
+      onSpawn: (opts) => {
+        foregroundSpawns += 1;
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.equal(snapshot?.dirty, true);
+        assert.equal(snapshot?.untrackedCount, 1);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /arrived-after-plan\.txt/);
+        assert.match(primer, /Mandatory Dirty Repository Intent Contract/);
+        assert.match(primer, /Immediately before acting on approval, re-read the branch, HEAD, and full Git status/);
+        assert.match(primer, /arrived-after-plan\.txt/);
+      },
+    }));
+    assert.equal(foreground.status, "success", foreground.reason);
+    assert.equal(foregroundSpawns, 1);
+    assert.equal(existsSync(leasePath), false);
+  });
+});
+
+test("PPA dirty-to-changed branch, HEAD, and status drift stays consistent across plan, primer, and lease", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "dirty-before-plan.txt"), "initial dirty\n");
+    const initialHead = git(["rev-parse", "HEAD"], repo);
+    let finalHead = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onDescribe: () => {
+        git(["checkout", "-b", "feature/post-plan-drift"], repo);
+        git(["commit", "--allow-empty", "-m", "post-plan head drift"], repo);
+        writeFileSync(join(repo, "changed-after-plan.txt"), "changed dirty state\n");
+        finalHead = git(["rev-parse", "HEAD"], repo);
+      },
+      onSpawn: (opts) => {
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.notEqual(finalHead, initialHead);
+        assert.equal(snapshot?.branch, "feature/post-plan-drift");
+        assert.equal(snapshot?.head, finalHead);
+        assert.equal(snapshot?.untrackedCount, 2);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /dirty-before-plan\.txt/);
+        assert.match(snapshot?.statusSummary ?? "", /changed-after-plan\.txt/);
+        assert.match(primer, new RegExp(`- HEAD: ${finalHead}`));
+        assert.match(primer, /- Branch: feature\/post-plan-drift/);
+        assert.match(primer, /changed-after-plan\.txt/);
+      },
+    }));
+    assert.equal(result.status, "success", result.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("REST-selected Pi defaults dirty builders to rejection before spawn without ownership", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "dirty-rest.txt"), "dirty\n");
+    let spawns = 0;
+    const adapter = stubAdapter({ onSpawn: () => { spawns += 1; } });
+    const { app } = createAgentApiApp({ hooks: composeRuntimeHooks({}, createPiHooks(adapter)) });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", mode: "implement", runtime: "pi" }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json() as { status: string; reason?: string };
+    assert.equal(body.status, "failed");
+    assert.match(body.reason ?? "", /state=dirty-background/);
+    assert.ok((body.reason ?? "").length <= 2_000);
+    assert.equal(spawns, 0);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("REST-selected Pi rejects malformed controls before hooks, spawn, sessions, or lease lifecycle", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    const sentinel = "malformed lease evidence must remain byte-identical\n";
+    let deployHookCalls = 0;
+    let spawns = 0;
+    const adapter = stubAdapter({ onSpawn: () => { spawns += 1; } });
+    const actualHooks = createPiHooks(adapter);
+    const piHooks = {
+      ...actualHooks,
+      deploy: (...args: Parameters<NonNullable<typeof actualHooks.deploy>>) => {
+        deployHookCalls += 1;
+        return actualHooks.deploy!(...args);
+      },
+    };
+    const api = createAgentApiApp({ hooks: composeRuntimeHooks({}, piHooks) });
+
+    for (const force of [false, true]) {
+      if (force) writeFileSync(leasePath, sentinel, { mode: 0o600 });
+      for (const flag of ["listModes", "validate"] as const) {
+        for (const value of ["true", 1, null, [], {}] as const) {
+          const response = await api.app.request("/api/deploy", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "builder", mode: "implement", runtime: "pi", force, [flag]: value }),
+          });
+          assert.equal(response.status, 400);
+          const body = await response.json() as { error: string; code: string };
+          assert.deepEqual(body, { error: `${flag} must be a boolean`, code: "BAD_REQUEST" });
+          assert.ok(body.error.length <= 2_000);
+          if (force) assert.equal(readFileSync(leasePath, "utf8"), sentinel);
+          else assert.equal(existsSync(leasePath), false);
+        }
+      }
+    }
+
+    assert.equal(deployHookCalls, 0);
+    assert.equal(spawns, 0);
+    assert.deepEqual(await (await api.app.request("/api/sessions")).json(), []);
+    assert.equal(readdirSync(join(repo, ".git")).some((name) => name.includes("pa-repository-mutation.lease.json.quarantine.")), false);
+    api.cleanup();
+  });
+});
+
+test("PPA background launcher requires authenticated supervisor handoff and releases failed handoffs", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    let handedOffToken = "";
+    const accepted = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onSpawn: (opts) => { handedOffToken = opts.repositoryLease?.ownershipToken ?? ""; },
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, repositoryLeaseTransferred: true } }),
+    }));
+    assert.equal(accepted.status, "pending", accepted.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).lease?.ownershipToken, handedOffToken);
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: handedOffToken }).status, "released");
+
+    const rejected = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid } }),
+    }));
+    assert.equal(rejected.status, "failed");
+    assert.match(rejected.reason ?? "", /did not authenticate repository ownership transfer/);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("50 mixed PPA and OPA same-root builder contenders produce exactly one owner and one spawn", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    let releaseFirst!: () => void;
+    let spawns = 0;
+    const held = new Promise<SpawnResult>((resolve) => { releaseFirst = () => resolve({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } }); });
+    const firstAdapter = stubAdapter({ onSpawn: () => { spawns += 1; }, result: () => held });
+    const first = deployWithPi({ team: "builder", mode: "implement" }, firstAdapter);
+    while (spawns === 0) await nextTick();
+    assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+
+    const rejectedAdapter = (runtime: "pi" | "opencode"): RuntimeAdapter => ({
+      name: runtime,
+      defaultModel: runtime === "pi" ? "" : "stub/model",
+      sessionFileName: runtime === "pi" ? "session-id-pi.txt" : "session-id-opencode.txt",
+      installHooks() {},
+      spawn() { spawns += 1; return { exitCode: 0 }; },
+      resume() { spawns += 1; return { exitCode: 0 }; },
+      extractActivity() { return []; },
+      describeTools() { return { runtime, markdown: "stub" }; },
+    });
+    const contenders = Array.from({ length: 49 }, (_, index) => index % 2 === 0
+      ? deployWithPi({ team: "builder", mode: "implement" }, rejectedAdapter("pi"))
+      : deployWithOpencode({ team: "builder", mode: "implement" }, rejectedAdapter("opencode")));
+    const outcomes = await Promise.all(contenders);
+    assert.equal(outcomes.every((outcome) => outcome.status === "failed"), true);
+    assert.equal(outcomes.every((outcome) => /state=live/.test(outcome.reason ?? "")), true);
+    assert.equal(outcomes.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
+    assert.equal(spawns, 1);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "live");
+    releaseFirst();
+    assert.equal((await first).status, "success");
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("PPA and OPA builders hold different canonical repositories independently", async () => {
+  await withPiEnv(async (root) => {
+    const firstRepo = join(root, "repo");
+    const secondRepo = join(root, "repo-two");
+    initializeGitRepo(secondRepo);
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  first:\n    path: ${firstRepo}\n  second:\n    path: ${secondRepo}\n`);
+    let resolvePi!: () => void;
+    let resolveOpa!: () => void;
+    let spawns = 0;
+    const piAdapter = stubAdapter({
+      onSpawn: () => { spawns += 1; },
+      result: (sessionId) => new Promise<SpawnResult>((resolve) => { resolvePi = () => resolve({ sessionId, exitCode: 0, metadata: { sessionId } }); }),
+    });
+    const opaBase: RuntimeAdapter = {
+      name: "opencode", defaultModel: "stub/model", sessionFileName: "session-id-opencode.txt", installHooks() {},
+      spawn() { spawns += 1; return new Promise<SpawnResult>((resolve) => { resolveOpa = () => resolve({ exitCode: 0 }); }); },
+      resume() { return { exitCode: 0 }; }, extractActivity() { return []; }, describeTools() { return { runtime: "opencode", markdown: "stub" }; },
+    };
+    const piRun = deployWithPi({ team: "builder", mode: "implement", repo: "first" }, piAdapter);
+    const opaRun = deployWithOpencode({ team: "builder", mode: "implement", repo: "second" }, opaBase);
+    while (spawns < 2) await nextTick();
+    assert.equal(inspectRepositoryMutationLease(firstRepo).state, "live");
+    assert.equal(inspectRepositoryMutationLease(secondRepo).state, "live");
+    resolvePi();
+    resolveOpa();
+    const outcomes = await Promise.all([piRun, opaRun]);
+    assert.equal(outcomes.every((outcome) => outcome.status === "success"), true);
+    assert.equal(inspectRepositoryMutationLease(firstRepo).state, "absent");
+    assert.equal(inspectRepositoryMutationLease(secondRepo).state, "absent");
+  });
+});
+
+test("PPA key and exact-path builder requests consume one canonical builder-exclusive admission plan", async () => {
+  await withPiEnv(async (root, gitState) => {
+    const repo = join(root, "repo");
+    const observations: Array<{ plan: NonNullable<SpawnOpts["executionPlan"]>; primer: string; repositoryLease?: SpawnOpts["repositoryLease"]; registryRepo?: string; runtimeCwd?: string }> = [];
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
       let runtimeCwd: string | undefined;
@@ -332,7 +638,7 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
         }
       }({
         cwd: join(root, "adapter-local-cwd-must-not-win"),
-        versionProbe: () => "0.80.8",
+        versionProbe: () => "0.84.4",
         nativeRegistryProbe: () => undefined,
         runCommand: (_args, options) => {
           runtimeCwd = options.cwd;
@@ -346,7 +652,7 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
       const plan = captured.executionPlan;
       const primer = readFileSync(captured.primerPath, "utf8");
       const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
-      observations.push({ plan, primer, registryRepo: started?.repo, runtimeCwd });
+      observations.push({ plan, primer, repositoryLease: captured.repositoryLease, registryRepo: started?.repo, runtimeCwd });
     }
 
     for (const observation of observations) {
@@ -357,7 +663,12 @@ test("PPA key and exact-path requests consume one canonical execution plan with 
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
       assert.equal(observation.plan.userObjectiveOverride, undefined);
-      assertNoRepositoryAdmissionState(observation.plan, observation.primer);
+      assertBuilderExclusiveRepositoryAdmission(observation.plan, observation.primer);
+      assert.equal(observation.plan.repositoryAdmission.launchMode, "background");
+      assert.equal(observation.plan.repositoryAdmission.force, false);
+      assert.equal(observation.plan.repositoryAdmission.gitSnapshot?.dirty, false);
+      assert.ok(observation.repositoryLease?.ownershipToken);
+      assert.equal(observation.repositoryLease?.canonicalRepoRoot, repo);
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);
@@ -534,11 +845,12 @@ test("malformed foreground completion sidecars fall back without publishing befo
 });
 
 test("background registry completion remains immediate and exactly once", async () => {
-  await withPiEnv(async () => {
+  await withPiEnv(async (root) => {
     let deployId = "";
+    let repositoryToken = "";
     const adapter = stubAdapter({
-      onSpawn: (opts) => { deployId = opts.deployId; },
-      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, pid: process.pid } }),
+      onSpawn: (opts) => { deployId = opts.deployId; repositoryToken = opts.repositoryLease?.ownershipToken ?? ""; },
+      result: (sessionId) => ({ sessionId, exitCode: 0, metadata: { sessionId, pending: true, supervisorPid: process.pid, pid: process.pid, repositoryLeaseTransferred: true } }),
     });
     const deployed = await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter);
     assert.equal(deployed.status, "pending");
@@ -558,6 +870,7 @@ test("background registry completion remains immediate and exactly once", async 
     const terminal = getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
     assert.equal(terminal.length, 1);
     assert.equal(terminal[0]?.summary, "background complete");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: join(root, "repo"), ownershipToken: repositoryToken }).status, "released");
   });
 });
 
@@ -590,7 +903,7 @@ test("ordinary background termination retains one causal failure with no Git sta
   await withPiEnv(async (_root, gitState) => {
     const launcher = new BackgroundDeploymentProcess(88_001);
     let config: PiBackgroundConfig | undefined;
-    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+    const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       launchBackgroundRunner: ((_runnerPath, configPath) => {
         config = readPiBackgroundConfig(configPath);
         writePiSupervisorOwnership(join(configPath, "..", PI_SUPERVISOR_FILE), {
@@ -877,7 +1190,7 @@ test("real foreground cleanup failures override staged success exactly once", as
           queueMicrotask(() => pty.emitExit(17));
         }
       });
-      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.80.8", nativeRegistryProbe: () => undefined, supervision: {
+      const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
         spawnPty: () => pty as never, input: input as never, output: output as never,
         processExists: () => running,
         now: () => now,
@@ -1074,7 +1387,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
     ].join("\n") + "\n");
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
-      versionProbe: () => "0.80.8",
+      versionProbe: () => "0.84.4",
       nativeRegistryProbe: () => undefined,
       runCommand: (args, opts) => {
         invocations.push({ args, env: opts.env });

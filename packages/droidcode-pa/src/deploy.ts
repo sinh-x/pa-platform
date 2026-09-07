@@ -64,7 +64,7 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
   let plan: ExecutionPlan;
   try {
     plan = resolveExecutionPlan({
-      request: { ...request, ...(ticketId ? { ticket: ticketId } : {}), ...(objective ? { objective } : {}), provider, model },
+      request: { ...request, ...(teamConfig.name === "builder" && !request.dryRun ? { background: false } : {}), ...(ticketId ? { ticket: ticketId } : {}), ...(objective ? { objective } : {}), provider, model },
       teamConfig,
       mode: selectedMode,
       runtime: "droid",
@@ -76,6 +76,15 @@ export async function deployWithDroid(request: DeployRequest, adapter: RuntimeAd
     });
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
+  }
+  if (plan.repositoryAdmission.access === "exclusive-builder" && !request.dryRun) {
+    return {
+      status: "failed" as const,
+      team: request.team,
+      mode: request.mode ?? null,
+      deploymentId,
+      reason: boundedDiagnostic("dpa unsupported-policy: mutating builder deployments require repository ownership and dirty-intent lifecycle enforcement that the Droid adapter cannot safely supervise. No runtime was spawned; use ppa or opa."),
+    };
   }
   const primerPath = resolve(deployDir, "primer.md");
   try {

@@ -43,7 +43,7 @@ ppa deploy builder --mode implement
 
 See [`docs/pi-pa.md`](docs/pi-pa.md) for setup, status/removal, source paths, `/reload`, managed isolation, migration, and troubleshooting.
 
-Pi 0.80.8 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
+Pi 0.84.4 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
 
 PPA provider/model precedence is explicit CLI flags, the selected flat mode pair (`deploy_modes[].provider` and `deploy_modes[].model`), then the PPA adapter default. A mode must provide both fields or neither. PPA defaults to OpenAI Sol (`openai-codex` / `gpt-5.6-sol`) and does not inherit Pi-local Luna. Foreground `ppa deploy` launches Pi's interactive TUI with terminal input/output attached; `--background` uses non-interactive JSON mode for supervised execution and activity capture:
 

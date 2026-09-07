@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,12 +29,27 @@ import {
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
 } from "../native-host.js";
-import { runHostManagedToolSmoke } from "../pi-host-smoke.js";
+import { runHostManagedToolSmoke, runHostNativeSmoke } from "../pi-host-smoke.js";
 
 const require = createRequire(import.meta.url);
 
+const PREBUILD_PLATFORMS = ["linux", "darwin", "win32"];
+const PREBUILD_ARCHS = ["x64", "arm64"];
+
 function localAddonPath(): string {
-  return join(dirname(require.resolve("better-sqlite3")), "..", "build", "Release", "better_sqlite3.node");
+  const bindingRoot = dirname(require.resolve("better-sqlite3"));
+  return resolvePackagedPrebuild(bindingRoot) ?? join(bindingRoot, "..", "build", "Release", "better_sqlite3.node");
+}
+
+function resolvePackagedPrebuild(bindingRoot: string): string | undefined {
+  if (!PREBUILD_PLATFORMS.includes(process.platform) || !PREBUILD_ARCHS.includes(process.arch)) return undefined;
+  const target = isLinuxMusl() ? `linuxmusl-${process.arch}` : `${process.platform}-${process.arch}`;
+  const candidate = join(bindingRoot, "..", "prebuilds", `${target}.node`);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function isLinuxMusl(): boolean {
+  return process.platform === "linux" && !process.report.getReport().header.glibcVersionRuntime;
 }
 
 type ShutdownReason = "reload" | "new" | "resume" | "fork" | "quit";
@@ -88,7 +103,7 @@ test("Pi preflight verifies version then native registry addon before objective 
   const order: string[] = [];
   const adapter = new PiAdapter({
     cwd: root,
-    versionProbe: () => { order.push("version"); return "0.80.8"; },
+    versionProbe: () => { order.push("version"); return "0.84.4"; },
     nativeRegistryProbe: () => { order.push("native"); return undefined; },
     runCommand: () => { order.push("objective"); return { status: 0, stdout: "", stderr: "" }; },
   });
@@ -112,7 +127,7 @@ test("Pi preflight overlaps independent cold version and native validations", as
     versionProbe: async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(nativeStarted, true, "native validation must start before version validation settles");
-      return "0.80.8";
+      return "0.84.4";
     },
     nativeRegistryProbe: () => { nativeStarted = true; return undefined; },
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
@@ -141,7 +156,7 @@ test("parallel preflight retains deterministic version-first causal failure", as
     const result = await adapter.spawn({ primerPath: primer, deployId: "d-causal", mode: "foreground" });
     assert.equal(result.exitCode, 1);
     assert.equal(executed, false);
-    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.80\.8 or later/);
+    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.84\.4 or later/);
     assert.doesNotMatch(result.errorMessage ?? "", /native-load/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -155,7 +170,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
   try {
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
-      /Pi is unavailable:.*Install Pi 0\.80\.8 or later/,
+      /Pi is unavailable:.*Install Pi 0\.84\.4 or later/,
     );
 
     const pi = join(bin, "pi");
@@ -166,7 +181,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
       /Pi version probe failed with exit code 7/,
     );
 
-    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.80.8");\n`);
+    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.84.4");\n`);
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 20 }).preflight(),
       /Pi version probe timed out after 20ms/,
@@ -181,10 +196,12 @@ test("missing Pi addon fails causally before objective execution", async () => {
   const primer = join(root, "primer.md");
   writeFileSync(primer, "objective must not execute");
   let executed = false;
+  const env = { ...process.env, [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1" };
+  delete env[PI_REGISTRY_ADDON_ENV];
   const adapter = new PiAdapter({
     cwd: root,
-    env: { ...process.env, [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1" },
-    versionProbe: () => "0.80.8",
+    env,
+    versionProbe: () => "0.84.4",
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
   });
   try {
@@ -405,10 +422,29 @@ test("Pi child environment replaces the Node 22 wrapper binding with only the pa
   assert.equal(input[REGISTRY_NATIVE_BINDING_ENV], input[PI_REGISTRY_ADDON_ENV]);
 });
 
+test("native host smoke records its registry query and explicit close", async () => {
+  const addonPath = localAddonPath();
+  const evidence = await runHostNativeSmoke(addonPath);
+  assert.equal(evidence.node, process.version);
+  assert.equal(evidence.modules, process.versions.modules);
+  assert.equal(evidence.addonPath, addonPath);
+  assert.equal(evidence.registryQuery, "PRAGMA user_version");
+  assert.equal(evidence.close, "explicit");
+});
+
 test("deterministic managed tool harness executes the complete eight-tool matrix", async () => {
   const evidence = await runHostManagedToolSmoke(localAddonPath());
   assert.deepEqual(evidence.tools, [
     "read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status",
   ].map((name) => ({ name, status: "passed" })));
   assert.equal(evidence.modules, process.versions.modules);
+  assert.deepEqual(evidence.extension.factories, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
+  assert.deepEqual(evidence.extension.commands, ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"]);
+  assert.deepEqual(evidence.extension.shortcuts, ["alt+i", "alt+g"]);
+  assert.ok(evidence.extension.handlers.includes("tool_call"));
+  assert.ok(evidence.extension.handlers.includes("agent_end"));
+  assert.ok(evidence.extension.handlers.includes("session_shutdown"));
+  assert.deepEqual(evidence.extension.guards, { destructiveCommand: "passed", sensitivePath: "passed" });
+  assert.deepEqual(evidence.extension.outputBounds, { maxBytes: 50 * 1024, maxLines: 2_000, status: "passed" });
+  assert.deepEqual(evidence.extension.todo, { registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" });
 });

@@ -10,7 +10,7 @@ import { createDroidHooks, createDefaultDroidHooks, deployWithDroid } from "../d
 import { runBackgroundEntry } from "../background-runner.js";
 import { installDroidSafetyScript, installDroidSafetyPatterns } from "../plugins/pa-droid-safety.js";
 import { DroidMessageType, AutonomyLevel, ToolConfirmationOutcome, type DroidSession, type DroidStreamMessage } from "@factory/droid-sdk";
-import { assertNoRepositoryAdmissionState, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
+import { assertNonLockingRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 const TEST_API_KEY = "changeme";
 
@@ -985,6 +985,22 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
+function writeBuilderTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "builder.yaml"), [
+    "name: builder",
+    "description: Builder",
+    "default_mode: implement",
+    "objective: Build",
+    "agents: []",
+    "deploy_modes:",
+    "  - id: implement",
+    "    label: Implement",
+    "    mode_type: work",
+    "    provider: deepseek",
+    "    model: deepseek/deepseek-v4-pro",
+  ].join("\n"));
+}
+
 describe("dpa deploy memory-doc injection (MIN-3/FR-4)", () => {
   it("droid dry-run retains full memory-doc bodies (droid native load unconfirmed, OQ-1)", async () => {
     await withDpaEnv(async (root) => {
@@ -1101,6 +1117,24 @@ describe("PAP-162 Droid execution-plan contract", () => {
     });
   });
 
+  it("rejects mutating builders with bounded unsupported policy before foreground or background spawn", async () => {
+    await withDpaEnv(async (root, gitState) => {
+      writeBuilderTeamConfig(root);
+      let spawns = 0;
+      const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY } });
+      adapter.spawn = () => { spawns += 1; return Promise.resolve({ exitCode: 0 }); };
+      adapter.resume = () => { spawns += 1; return Promise.resolve({ exitCode: 0 }); };
+      for (const background of [false, true]) {
+        const result = await deployWithDroid({ team: "builder", mode: "implement", repo: "pa-platform", background, force: true }, adapter);
+        assert.equal(result.status, "failed");
+        assert.match(result.reason ?? "", /dpa unsupported-policy.*No runtime was spawned.*use ppa or opa/i);
+        assert.ok((result.reason ?? "").length <= 2000);
+      }
+      assert.equal(spawns, 0);
+      assert.deepEqual(gitState.readOperations(), []);
+    });
+  });
+
   it("installs runtime hooks inside the registered checkout without process isolation", async () => {
     await withDpaEnv(async (root) => {
       const repo = join(root, "repo");
@@ -1111,12 +1145,13 @@ describe("PAP-162 Droid execution-plan contract", () => {
     });
   });
 
-  it("keeps key/path plans canonical and two same-root runs have no admission state", async () => {
+  it("keeps key/path plans canonical and daily modes explicitly non-locking", async () => {
     await withDpaEnv(async (root, gitState) => {
       const repo = join(root, "repo");
       writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
       spawnSync("git", ["add", "CLAUDE.md"], { cwd: repo });
       spawnSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
+      const operationBaseline = gitState.readOperations().length;
       for (const requestedRepo of ["pa-platform", repo]) {
         let captured: SpawnOpts | undefined;
         let runtimeCwd = "";
@@ -1148,7 +1183,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.equal(plan.memoryDocumentRoot, repo);
         assert.equal(plan.environment.PA_REPO, repo);
         assert.equal(plan.userObjectiveOverride, undefined);
-        assertNoRepositoryAdmissionState(plan, primer);
+        assertNonLockingRepositoryAdmission(plan, primer);
         assert.equal(captured.env?.["PA_REPO"], repo);
         assert.equal(runtimeCwd, repo);
         assert.equal(runtimePaRepo, repo);
@@ -1161,7 +1196,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
         assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
       }
-      assert.deepEqual(gitState.readOperations(), []);
+      assert.deepEqual(gitState.readOperations().slice(operationBaseline), []);
     });
   });
 

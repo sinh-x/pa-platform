@@ -20,7 +20,7 @@ const STREAM_SECRET_PATTERNS = [/(?:\b|_)token(?:\b|_)/i, /(?:\b|_)secret(?:\b|_
 
 export interface OpencodeAdapterOptions {
   runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
+  runBackgroundCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; repositoryLease?: SpawnOpts["repositoryLease"] }) => { pid?: number; sessionId?: string; repositoryLeaseTransferred?: boolean } | Promise<{ pid?: number; sessionId?: string; repositoryLeaseTransferred?: boolean }>;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -39,7 +39,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
   readonly sessionFileName = "session-id-opencode.txt";
 
   private readonly runCommand?: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string }) => OpencodeCommandResult;
-  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string }) => { pid?: number; sessionId?: string } | Promise<{ pid?: number; sessionId?: string }>;
+  private readonly runBackgroundCommand: (args: string[], opts: { env: NodeJS.ProcessEnv; cwd: string; logFile?: string; repositoryLease?: SpawnOpts["repositoryLease"] }) => { pid?: number; sessionId?: string; repositoryLeaseTransferred?: boolean } | Promise<{ pid?: number; sessionId?: string; repositoryLeaseTransferred?: boolean }>;
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
 
@@ -54,7 +54,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
       const deploymentId = opts.env["PA_DEPLOYMENT_ID"];
       if (!deploymentId) throw new Error("runner-readiness: OpenCode background deployment identity is missing");
       const ownership = createBackgroundOwnershipConfig(dirname(logFile));
-      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId, team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName, ...ownership }, null, 2), { mode: 0o600 });
+      writeFileSync(configPath, JSON.stringify({ args, cwd: opts.cwd, env: pickBackgroundEnv(opts.env), logFile, deploymentId, team: opts.env["PA_TEAM"], sessionFileName: this.sessionFileName, ...ownership, ...(opts.repositoryLease ? { repositoryLease: opts.repositoryLease } : {}) }, null, 2), { mode: 0o600 });
       const runnerPath = resolve(dirname(fileURLToPath(import.meta.url)), "background-runner.js");
       const child = spawn(process.execPath, [runnerPath, configPath], { cwd: opts.cwd, env: opts.env, detached: true, stdio: "ignore" });
       const launchError = new Promise<Error>((resolveError) => child.once("error", resolveError));
@@ -70,7 +70,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         removeOwnedBackgroundConfig(configPath, ownership.ownershipToken);
         throw error;
       }
-      return { pid: child.pid };
+      return { pid: child.pid, ...(opts.repositoryLease ? { repositoryLeaseTransferred: true } : {}) };
     });
   }
 
@@ -153,9 +153,9 @@ export class OpencodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = await this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile });
+      const result = await this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile, ...(opts.repositoryLease ? { repositoryLease: opts.repositoryLease } : {}) });
       const captured = result.sessionId ?? sessionId;
-      return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid } };
+      return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid, ...(result.repositoryLeaseTransferred ? { repositoryLeaseTransferred: true } : {}) } };
     }
 
     const env = { ...this.env, ...opts.env };

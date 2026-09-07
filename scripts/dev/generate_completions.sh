@@ -41,6 +41,8 @@ perl \
     s/complete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''/;
     s/complete -c cpa -f -n __cpa_deploy_completing -l (?:model|team-model) -d '\''(?:Model|Deprecated model alias \(PAP-147\))'\'' -r/$& -a '\''claude-opus-4-7 claude-sonnet-4-6 claude-haiku-4-5'\''/g;
     s/(complete -c cpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/complete -c cpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''\n/;
+    s/(complete -c cpa -f -n __cpa_deploy_should_offer_options -a '\''[^'\'']*) --force/$1/;
+    s/\ncomplete -c cpa -n __cpa_deploy_completing -l force[^\n]*//;
     print;
   ' \
   "$PA_CORE" > "$CPA"
@@ -61,6 +63,8 @@ perl \
     s/complete -c dpa -f -n __dpa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c dpa -f -n __dpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''openai deepseek gemini minimax anthropic'\''/;
     s/complete -c dpa -f -n __dpa_deploy_completing -l (?:model|team-model) -d '\''(?:Model|Deprecated model alias \(PAP-147\))'\'' -r/$& -a '\''(__dpa_models_for_provider)'\''/g;
     s/(complete -c dpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r\n)/complete -c dpa -f -n '\''__fish_seen_subcommand_from evaluate'\'' -l provider -d '\''Provider'\'' -r -a '\''openai deepseek gemini minimax anthropic'\''\n/;
+    s/(complete -c dpa -f -n __dpa_deploy_should_offer_options -a '\''[^'\'']*) --force/$1/;
+    s/\ncomplete -c dpa -n __dpa_deploy_completing -l force[^\n]*//;
     print;
   ' \
   "$PA_CORE" > "$DPA"

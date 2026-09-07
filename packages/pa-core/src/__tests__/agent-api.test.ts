@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { serve } from "@hono/node-server";
 import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
-import type { WsClient, WsEvent } from "../index.js";
+import type { DeployRequest, WsClient, WsEvent } from "../index.js";
 import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
 
 function sleep(ms: number): Promise<void> {
@@ -570,6 +570,161 @@ test("agent API deploy validates requests and routes through deploy hook without
     assert.equal(invalid.status, 400);
     assert.deepEqual(await invalid.json(), { error: "Invalid team name", code: "BAD_REQUEST" });
     assert.equal(received.length, 1);
+  });
+});
+
+test("agent API deploy accepts and propagates boolean force and rejects non-boolean force", async () => {
+  await withApiEnv(async () => {
+    const received: DeployRequest[] = [];
+    const { app } = createAgentApiApp({ hooks: {
+      deploy: (request) => {
+        received.push(request);
+        return { status: "pending", deploymentId: "d-force-api" };
+      },
+    } });
+
+    for (const force of [true, false]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", mode: "implement", timeout: 120, force }),
+      });
+      assert.equal(response.status, 202);
+    }
+    assert.deepEqual(received, [
+      { team: "builder", mode: "implement", timeout: 120, background: true, force: true },
+      { team: "builder", mode: "implement", timeout: 120, background: true, force: false },
+    ]);
+
+    for (const force of ["true", 1, null, {}]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", force }),
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: "force must be a boolean", code: "BAD_REQUEST" });
+    }
+    assert.equal(received.length, 2);
+  });
+});
+
+test("agent API listModes and validate are control-only for both runtimes and force variants", async () => {
+  await withApiEnv(async () => {
+    let deployHookCalls = 0;
+    const deploy = () => {
+      deployHookCalls += 1;
+      return { status: "pending" as const, deploymentId: "d-must-not-run" };
+    };
+    const api = createAgentApiApp({ hooks: {
+      runtimeHooks: {
+        opencode: { deploy },
+        pi: { deploy },
+      },
+    } });
+
+    for (const runtime of ["opencode", "pi"] as const) {
+      for (const force of [false, true]) {
+        for (const flag of ["listModes", "validate"] as const) {
+          const response = await api.app.request("/api/deploy", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "builder", mode: "plan", runtime, force, [flag]: true }),
+          });
+          assert.equal(response.status, 202);
+          const body = await response.json() as { status: string; modes?: unknown[]; validation?: unknown };
+          assert.equal(body.status, "success");
+          if (flag === "listModes") assert.equal(body.modes?.length, 3);
+          else assert.ok(body.validation);
+        }
+      }
+    }
+    const both = await api.app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", runtime: "pi", listModes: true, validate: true }),
+    });
+    assert.equal(both.status, 202);
+    assert.equal((await both.json() as { status: string }).status, "success");
+    assert.deepEqual(await (await api.app.request("/api/sessions")).json(), []);
+    assert.equal(deployHookCalls, 0, "control-only REST requests must not enter any runtime or ownership lifecycle hook");
+    api.cleanup();
+  });
+});
+
+test("agent API rejects malformed control fields before runtime hooks and session registration", async () => {
+  await withApiEnv(async () => {
+    let deployHookCalls = 0;
+    const deploy = () => {
+      deployHookCalls += 1;
+      return { status: "pending" as const, deploymentId: "d-malformed-control" };
+    };
+    const api = createAgentApiApp({ hooks: {
+      runtimeHooks: {
+        opencode: { deploy },
+        pi: { deploy },
+      },
+    } });
+    const malformedValues: readonly unknown[] = ["true", 1, null, [], {}];
+
+    for (const runtime of ["opencode", "pi"] as const) {
+      for (const force of [false, true]) {
+        for (const flag of ["listModes", "validate"] as const) {
+          for (const value of malformedValues) {
+            const response = await api.app.request("/api/deploy", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ team: "builder", mode: "plan", runtime, force, [flag]: value }),
+            });
+            assert.equal(response.status, 400);
+            const body = await response.json() as { error: string; code: string };
+            assert.deepEqual(body, { error: `${flag} must be a boolean`, code: "BAD_REQUEST" });
+            assert.ok(body.error.length <= 2_000);
+            assert.equal(body.error.includes(JSON.stringify(value)), false, "type diagnostics must not expose input values");
+          }
+        }
+      }
+    }
+
+    assert.equal(deployHookCalls, 0, "malformed controls must reject before runtime hook lookup or execution");
+    assert.deepEqual(await (await api.app.request("/api/sessions")).json(), []);
+    api.cleanup();
+  });
+});
+
+test("agent API blocks sensitive objective content before hooks with force false or true", async () => {
+  await withApiEnv(async () => {
+    let calls = 0;
+    const { app } = createAgentApiApp({ hooks: { deploy: () => { calls += 1; return { status: "pending", deploymentId: "d-sensitive-hook" }; } } });
+    const secret = ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ");
+    for (const force of [false, true]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", mode: "implement", objective: secret, force }),
+      });
+      assert.equal(response.status, 400);
+      const body = JSON.stringify(await response.json());
+      assert.match(body, /Blocked sensitive content input by built-in sensitive defaults/);
+      assert.equal(body.includes(secret), false);
+      assert.equal(body.includes("PRIVATE KEY"), false);
+    }
+    assert.equal(calls, 0);
+  });
+});
+
+test("agent API force cannot bypass runtime validation", async () => {
+  await withApiEnv(async () => {
+    let calls = 0;
+    const { app } = createAgentApiApp({ hooks: { deploy: () => { calls += 1; return { status: "pending", deploymentId: "d-invalid-runtime" }; } } });
+    const response = await app.request("/api/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ team: "builder", runtime: "claude", force: true }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "runtime must be opencode or pi", code: "BAD_REQUEST" });
+    assert.equal(calls, 0);
   });
 });
 

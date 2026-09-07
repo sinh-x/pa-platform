@@ -4,20 +4,36 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { appendRegistryEvent, closeDb, verifyRegistryNativeAddon } from "@pa-platform/pa-core";
 import { createBashTool, createReadTool } from "@earendil-works/pi-coding-agent";
-import registerPiPaExtension, { createPaTools } from "./pi-extension/index.js";
+import registerPiPaExtension, {
+  MAX_TOOL_BYTES,
+  MAX_TOOL_LINES,
+  boundJson,
+  createPaTools,
+  interceptToolCall,
+} from "./pi-extension/index.js";
+import { BUNDLED_EDITOR_FACTORIES } from "./pi-extension/bundled-editors.js";
 import { createQuestionTool } from "./pi-extension/question.js";
-import { createTodoTool, TodoStore } from "./pi-extension/todo.js";
+import { createTodoTool, reconstructTodoState, TodoStore } from "./pi-extension/todo.js";
 
 const MANAGED_TOOLS = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"] as const;
 
 type ManagedToolName = (typeof MANAGED_TOOLS)[number];
 interface ToolSmokeResult { name: ManagedToolName; status: "passed" }
-
-export async function runHostNativeSmoke(addonPath: string): Promise<ReturnType<typeof verifyRegistryNativeAddon>> {
-  return verifyRegistryNativeAddon(addonPath);
+interface ExtensionSmokeEvidence {
+  factories: string[];
+  commands: string[];
+  shortcuts: string[];
+  handlers: string[];
+  guards: { destructiveCommand: "passed"; sensitivePath: "passed" };
+  outputBounds: { maxBytes: number; maxLines: number; status: "passed" };
+  todo: { registrations: 1; add: "passed"; list: "passed"; activeBranchRestore: "passed" };
 }
 
-export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node: string; modules: string; tools: ToolSmokeResult[] }> {
+export async function runHostNativeSmoke(addonPath: string): Promise<ReturnType<typeof verifyRegistryNativeAddon> & { registryQuery: "PRAGMA user_version"; close: "explicit" }> {
+  return { ...verifyRegistryNativeAddon(addonPath), registryQuery: "PRAGMA user_version", close: "explicit" };
+}
+
+export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node: string; modules: string; tools: ToolSmokeResult[]; extension: ExtensionSmokeEvidence }> {
   const root = mkdtempSync(join(tmpdir(), "pap-156-tools-"));
   const previous = {
     aiUsage: process.env["PA_AI_USAGE_HOME"],
@@ -44,9 +60,24 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     });
 
     const registered: string[] = [];
-    registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) });
+    const commands: string[] = [];
+    const shortcuts: string[] = [];
+    const handlers: string[] = [];
+    registerPiPaExtension({
+      registerTool: (tool) => registered.push(tool.name),
+      registerCommand: (name) => commands.push(name),
+      registerShortcut: (shortcut) => shortcuts.push(shortcut),
+      on: (event) => { handlers.push(event); },
+    });
     const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"];
+    const expectedCommands = ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
+    if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");
+    assertEqual(commands, expectedCommands, "registered extension commands");
+    assertEqual(shortcuts, ["alt+i", "alt+g"], "registered panel shortcuts");
+    for (const handler of ["tool_call", "agent_end", "session_shutdown"]) {
+      if (!handlers.includes(handler)) throw new Error(`managed extension smoke did not register ${handler}`);
+    }
 
     const read = createReadTool(root);
     const readResult = await read.execute("pap156-read", { path: fixturePath });
@@ -65,14 +96,17 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     );
     assertIncludes(toolText(questionResult), "Question unavailable in print mode", "question result");
 
-    const todoResult = await createTodoTool(new TodoStore()).execute(
-      "pap156-todo",
-      { action: "add", text: "fixture task" },
-      undefined,
-      undefined,
-      undefined,
-    );
-    assertIncludes(toolText(todoResult), "Task added", "todo result");
+    const todoStore = new TodoStore();
+    const todoTool = createTodoTool(todoStore);
+    const todoResult = await todoTool.execute("pap156-todo-add", { action: "add", text: "fixture task" }, undefined, undefined, undefined);
+    assertIncludes(toolText(todoResult), "Task added", "todo add result");
+    const todoList = await todoTool.execute("pap156-todo-list", { action: "list" }, undefined, undefined, undefined);
+    assertIncludes(toolText(todoList), "fixture task", "todo list result");
+    todoStore.apply({ action: "add", text: "discarded branch task" });
+    reconstructTodoState(todoStore, [{ type: "message", message: { role: "toolResult", toolName: "todo", details: todoResult.details } }]);
+    const restoredTodoList = await todoTool.execute("pap156-todo-restore", { action: "list" }, undefined, undefined, undefined);
+    assertIncludes(toolText(restoredTodoList), "fixture task", "todo active-branch restore result");
+    if (toolText(restoredTodoList).includes("discarded branch task")) throw new Error("todo active-branch restore retained an inactive branch task");
 
     const paTools = new Map(createPaTools().map((tool) => [tool.name, tool]));
     const paInputs: Array<[string, Record<string, unknown>, string]> = [
@@ -88,10 +122,27 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
       assertIncludes(toolText(result), expected, `${name} result`);
     }
 
+    const destructiveGuard = interceptToolCall({ name: "bash", input: { command: "rm -rf build" } });
+    const sensitivePathGuard = interceptToolCall({ name: "read", input: { path: ".env" } });
+    if (destructiveGuard.allowed || sensitivePathGuard.allowed) throw new Error("managed extension safety guard smoke failed");
+    const bounded = boundJson({ output: Array.from({ length: 2_500 }, () => "🔥".repeat(30)).join("\n") });
+    if (Buffer.byteLength(bounded, "utf8") > MAX_TOOL_BYTES || bounded.split("\n").length > MAX_TOOL_LINES) {
+      throw new Error("managed extension output bounds smoke failed");
+    }
+
     return {
       node: process.version,
       modules: process.versions.modules ?? "unknown",
       tools: MANAGED_TOOLS.map((name) => ({ name, status: "passed" as const })),
+      extension: {
+        factories: [...BUNDLED_EDITOR_FACTORIES],
+        commands,
+        shortcuts,
+        handlers: [...new Set(handlers)],
+        guards: { destructiveCommand: "passed", sensitivePath: "passed" },
+        outputBounds: { maxBytes: MAX_TOOL_BYTES, maxLines: MAX_TOOL_LINES, status: "passed" },
+        todo: { registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" },
+      },
     };
   } finally {
     closeDb();

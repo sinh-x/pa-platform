@@ -1,6 +1,6 @@
 {
   "name": "@pa-platform/pa-core",
-  "version": "0.1.103",
+  "version": "0.1.106",
   "type": "module",
   "description": "Runtime-agnostic core library for PA platform adapters",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.6",
     "@hono/node-ws": "^1.2.0",
-    "better-sqlite3": "11.6.0",
+    "better-sqlite3": "13.0.3",
     "hono": "^4.12.18",
     "js-yaml": "^4.1.0",
     "marked": "^18.0.2"

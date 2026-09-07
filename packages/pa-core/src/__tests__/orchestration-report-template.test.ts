@@ -18,7 +18,7 @@ test("orchestration report template records exact registered identity and Git st
   const template = readTemplate(t);
   if (!template) return;
 
-  assert.match(template, /> \*\*Version:\*\* 3\.0/);
+  assert.match(template, /> \*\*Version:\*\* 3\.3/);
   assert.match(template, /Repository Key: <repo_key>/);
   assert.match(template, /Repository Root: <repo_root>/);
   assert.match(template, /Branch: <feature_branch>/);
@@ -32,7 +32,7 @@ test("orchestration report template preserves launch-completion bracketing", (t)
 
   assert.match(template, /Phase <N> \(<scope>\) launched <deploy-id>/);
   assert.match(template, /Phase <N> \(<scope>\) completed <deploy-id> <status>/);
-  assert.match(template, /Keep one launch\/completion bracket around every child deployment/);
+  assert.match(template, /Keep one durable launch\/completion bracket around every child deployment/);
   assert.match(template, /\| <phase> \| d-abc123 \| builder\/implement \| success \| - \|/);
 });
 
