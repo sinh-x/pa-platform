@@ -56,7 +56,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 appendFileSync(${JSON.stringify(commandLogPath)}, JSON.stringify(args) + "\\n");
 const branchDelete = command === "branch" && args.slice(1).some((arg) => arg === "-d" || arg === "-D" || arg === "--delete");
-if (["checkout", "reset", "clean", "restore", "worktree"].includes(command) || branchDelete) {
+if (["stash", "commit", "checkout", "reset", "clean", "restore", "worktree"].includes(command) || branchDelete) {
   appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
 }
 const result = spawnSync(${JSON.stringify(realGit)}, args, { env: process.env, stdio: "inherit" });

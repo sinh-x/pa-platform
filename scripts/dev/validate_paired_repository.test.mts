@@ -10,19 +10,33 @@ function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
 
+const admissionContract = [
+  "Every `requirements/*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository.",
+  "Foreground admission permits a dirty canonical checkout for every `builder/*` mode, including `builder/orchestrator`.",
+  "After a dirty foreground launch, re-evaluate the current branch, full HEAD, and complete staged, unstaged, and untracked status.",
+  "Classify whether each observed change belongs to the active ticket, propose one concrete preserve, wait, or stop action, and ask Sinh before any agent-initiated Git mutation or project-file mutation.",
+  "Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again.",
+  "Dirty background `builder/*` deployments reject before runtime spawn and leave no ownership evidence.",
+  "Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`.",
+  "`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live ownership.",
+  "Execution remains direct: PA-managed worktrees and sandbox access classes are prohibited.",
+  "",
+].join("\n");
+
 const directBranchContract = [
   "# Orchestrator",
+  admissionContract,
   "| Repository state | Outcome |",
   "|---|---|",
-  "| Already on the exact ticket branch | Proceed. |",
+  "| Already on the exact ticket branch with zero status entries | Proceed. |",
   "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
   "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
-  "| Dirty `develop` | Stop unchanged. |",
+  "| Any dirty state | Preserve it; classify ticket relationship, propose preserve/wait/stop, and ask Sinh before Git or project-file mutation. |",
   "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
   "| On the release branch or any unrelated branch | Stop unchanged. |",
   "| Detached HEAD | Stop unchanged. |",
   "Use `opa branch create` for creation, a direct checkout only for the existing exact branch outcome, then validate.",
-  "Every stop occurs before project-file mutation or child launch.",
+  "Every stop preserves observed state before project-file mutation or child launch.",
   "",
 ].join("\n");
 
@@ -30,10 +44,15 @@ function createFixture(): { root: string; sha: string } {
   const root = mkdtempSync(join(tmpdir(), "paired-config-"));
   mkdirSync(join(root, "teams", "builder", "modes"), { recursive: true });
   mkdirSync(join(root, "skills", "global"), { recursive: true });
+  mkdirSync(join(root, "skills", "templates"), { recursive: true });
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "config.yaml"), "config_dir: .\n");
+  for (const mode of ["data-analysis", "implement", "routine", "worker"]) {
+    writeFileSync(join(root, "teams", "builder", "modes", `${mode}.md`), `# ${mode}\n${admissionContract}`);
+  }
   writeFileSync(join(root, "teams", "builder", "modes", "orchestrator.md"), directBranchContract);
-  writeFileSync(join(root, "docs", "runtime-neutral-config.md"), "# Runtime-Neutral Configuration\nDirect registered checkout; PA-managed worktrees and sandbox access classes are not part of the active contract.\n");
+  writeFileSync(join(root, "skills", "templates", "builder-objective.md"), `# Builder Objective\n${admissionContract}`);
+  writeFileSync(join(root, "docs", "runtime-neutral-config.md"), `# Runtime-Neutral Configuration\n${admissionContract}`);
   const teams = [
     ["builder", 6],
     ["requirements", 11],
@@ -52,7 +71,10 @@ function createFixture(): { root: string; sha: string } {
       "    provider: openai",
       "    model: openai/gpt-test",
     ].join("\n")).join("\n");
-    writeFileSync(join(root, "teams", `${teamName}.yaml`), `name: ${teamName}\ndescription: Team\nobjective: Work\nagents: []\ndefault_mode: mode-0\ndeploy_modes:\n${modes}\n`);
+    const objective = teamName === "builder"
+      ? `objective: |\n${admissionContract.split("\n").map((line) => `  ${line}`).join("\n")}`
+      : "objective: Work";
+    writeFileSync(join(root, "teams", `${teamName}.yaml`), `name: ${teamName}\ndescription: Team\n${objective}\nagents: []\ndefault_mode: mode-0\ndeploy_modes:\n${modes}\n`);
   }
   git(root, "init", "-q");
   git(root, "config", "user.name", "Test");
@@ -124,11 +146,42 @@ test("paired repository gate rejects removal of the no-worktree/no-sandbox contr
   const fixture = createFixture();
   try {
     const path = join(fixture.root, "docs", "runtime-neutral-config.md");
-    writeFileSync(path, "# Runtime-Neutral Configuration\nDirect registered checkout.\n");
+    writeFileSync(path, readFileSync(path, "utf8").replace("PA-managed worktrees and sandbox access classes", "managed checkout isolation"));
     git(fixture.root, "add", ".");
     git(fixture.root, "commit", "-qm", "remove no-worktree contract");
     const sha = git(fixture.root, "rev-parse", "HEAD");
     assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /no-worktree\/no-sandbox/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate requires affirmative admission clauses rather than negated keywords", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "teams", "builder", "modes", "worker.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace(
+      "Every `requirements/*` mode bypasses dirty-state inspection and repository-ownership admission",
+      "No `requirements/*` mode bypasses dirty-state inspection or repository-ownership admission",
+    ));
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "negate requirements contract");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative requirements bypass clause/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects retired blanket no-admission semantics", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "docs", "runtime-neutral-config.md");
+    writeFileSync(path, `${readFileSync(path, "utf8")}\nRepository admission has no per-mode repository access class; leases and repository ownership are not part of the active contract.\n`);
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "restore retired contract");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /retired blanket no-admission\/no-ownership semantics/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

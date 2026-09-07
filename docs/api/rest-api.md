@@ -1228,7 +1228,7 @@ Trigger a deployment. Returns `202` on accepted/failed per the phone contract (n
 
 On success/pending with a `deploymentId`, the deploy session is registered with the `SessionManager` (best-effort).
 
-Repository admission is mode-aware: requirements requests bypass Git status and lease access; builder requests are exclusive per canonical repository; other teams remain non-locking. Because REST defaults to background, a dirty builder request returns a structured failed result before runtime spawn. `force: true` only recovers stale or malformed builder evidence.
+Repository admission is mode-aware: requirements requests bypass Git status and lease access; builder requests are exclusive per canonical repository; other teams remain non-locking. Because REST defaults to background, a dirty builder request returns a structured failed result before runtime spawn. `force: true` only recovers stale or malformed builder evidence. Sensitive objective content is rejected during shared request validation with a redacted `400 BAD_REQUEST` response before any runtime hook, whether `force` is false or true.
 
 **Error codes:**
 

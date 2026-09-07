@@ -1,18 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
   existsSync,
+  fstatSync,
   linkSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import type { RuntimeName } from "../types.js";
@@ -23,6 +28,7 @@ export const MAX_GIT_STATUS_SUMMARY_CHARS = 1_024;
 
 const MUTATION_MUTEX_FILE = "pa-repository-mutation.lease.lock";
 const MUTEX_TIMEOUT_MS = 5_000;
+const MUTEX_POLL_MS = 2;
 const STRING_FIELD_LIMIT = 4_096;
 const RUNTIMES: readonly RuntimeName[] = ["claude", "opencode", "droid", "pi"];
 
@@ -116,6 +122,7 @@ export interface RepositoryEvidenceInspection {
   readonly state: RepositoryEvidenceState;
   readonly reason: string;
   readonly leasePath: string;
+  readonly evidenceIdentity?: string;
   readonly lease?: RepositoryMutationLease;
   readonly observedOwner?: Partial<RepositoryMutationLease>;
 }
@@ -140,6 +147,10 @@ export type RepositoryLeaseAcquisition =
 export type RepositoryLeaseMutationResult =
   | { readonly status: "transferred" | "released"; readonly lease?: RepositoryMutationLease }
   | { readonly status: "absent" | "token-mismatch" | "invalid-evidence" };
+
+export type RepositoryLeaseQuarantineResult =
+  | { readonly status: "quarantined"; readonly quarantinePath: string; readonly diagnostic: string }
+  | { readonly status: "rejected"; readonly evidenceState: RepositoryEvidenceState | "identity-mismatch"; readonly diagnostic: string };
 
 export function classifyRepositoryAccess(team: string, _mode?: string): RepositoryAccess {
   const normalizedTeam = team.trim().split("/", 1)[0]?.toLowerCase();
@@ -345,6 +356,36 @@ export function releaseRepositoryMutationLease(options: {
   });
 }
 
+/**
+ * Safely quarantines the exact recoverable evidence named by a prior diagnostic.
+ * The shared advisory mutex is reacquired, evidence is re-read, verified-live
+ * ownership is refused, and replacement evidence fails the identity check.
+ */
+export function quarantineRepositoryMutationLease(options: {
+  canonicalRepoKey: string;
+  canonicalRepoRoot: string;
+  expectedEvidenceIdentity: string;
+  dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "now" | "createToken">;
+}): RepositoryLeaseQuarantineResult {
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const dependencies = resolveDependencies(options.dependencies);
+  return withMutationMutex(leasePath, () => {
+    const inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
+    if (inspection.state === "absent") {
+      return { status: "rejected", evidenceState: "absent", diagnostic: boundDiagnostic(`Repository quarantine: repo=${boundedField(options.canonicalRepoKey, 160)} root=${boundedField(root, 700)}; state=absent; reason=ownership evidence no longer exists.`) };
+    }
+    if (inspection.state === "live") {
+      return { status: "rejected", evidenceState: "live", diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }) };
+    }
+    if (!inspection.evidenceIdentity || inspection.evidenceIdentity !== options.expectedEvidenceIdentity) {
+      return { status: "rejected", evidenceState: "identity-mismatch", diagnostic: boundDiagnostic(`Repository quarantine: repo=${boundedField(options.canonicalRepoKey, 160)} root=${boundedField(root, 700)}; state=identity-mismatch; reason=ownership evidence changed after inspection. Re-inspect before retrying; replacement evidence was preserved.`) };
+    }
+    const quarantinePath = quarantineLeaseUnlocked(leasePath, dependencies.now, dependencies.createToken);
+    return { status: "quarantined", quarantinePath, diagnostic: boundDiagnostic(`Repository quarantine: repo=${boundedField(options.canonicalRepoKey, 160)} root=${boundedField(root, 700)}; state=quarantined; evidence=${boundedField(options.expectedEvidenceIdentity, 240)}; destination=${boundedField(quarantinePath, 700)}.`) };
+  });
+}
+
 export function formatDirtyBackgroundBuilderDiagnostic(input: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
@@ -380,8 +421,10 @@ export function formatRepositoryAdmissionDiagnostic(input: {
       ? ` Recovery: wait for the owner to finish or inspect it with ${shellCommand(["ppa", "status", owner.deploymentId])}. Do not remove or force the live lease.`
       : " Recovery: wait for the verified live process to finish. Do not remove or force the live lease.";
   } else if (input.inspection.state !== "absent") {
-    const leasePath = repositoryMutationLeasePath(input.canonicalRepoRoot);
-    recovery = ` Recovery: retry the same deploy command with --force. Manual quarantine: ${shellCommand(["mv", "--", leasePath, `${leasePath}.manual-quarantine`])}.`;
+    const safeQuarantine = input.inspection.evidenceIdentity
+      ? ` Safe manual quarantine: ${shellCommand(["ppa", "repository", "quarantine", "--repo", input.canonicalRepoKey, "--expected-evidence", input.inspection.evidenceIdentity])}.`
+      : " Safe manual quarantine requires a fresh `ppa repository inspect --repo <key>` result.";
+    recovery = ` Recovery: retry the same deploy command with --force.${safeQuarantine}`;
   } else if (input.recovered) {
     recovery = " Recovery: recoverable evidence was quarantined exactly and replacement ownership was acquired.";
   }
@@ -395,24 +438,25 @@ function inspectLeaseUnlocked(
   getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined,
 ): RepositoryEvidenceInspection {
   if (!existsSync(leasePath)) return { state: "absent", reason: "no ownership evidence exists", leasePath };
+  const evidenceIdentity = evidenceIdentityUnlocked(leasePath);
   const size = statSync(leasePath).size;
-  if (size > MAX_REPOSITORY_LEASE_BYTES) return { state: "oversized", reason: `ownership evidence exceeds ${MAX_REPOSITORY_LEASE_BYTES} bytes`, leasePath };
+  if (size > MAX_REPOSITORY_LEASE_BYTES) return { state: "oversized", reason: `ownership evidence exceeds ${MAX_REPOSITORY_LEASE_BYTES} bytes`, leasePath, evidenceIdentity };
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(leasePath, "utf8"));
   } catch {
-    return { state: "malformed", reason: "ownership evidence is not valid JSON", leasePath };
+    return { state: "malformed", reason: "ownership evidence is not valid JSON", leasePath, evidenceIdentity };
   }
   const observedOwner = objectEvidence(value);
   const observedFingerprint = observedOwner?.processFingerprint;
   if (observedFingerprint && fingerprintsEqual(observedFingerprint, getProcessFingerprint(observedFingerprint.pid))) {
     const lease = isRepositoryMutationLease(value) ? value : undefined;
     const rootReason = lease && lease.canonicalRepoRoot !== root ? "verified live process owns root-conflicting evidence" : "PID and process-start fingerprint match a live owner";
-    return { state: "live", reason: rootReason, leasePath, ...(lease ? { lease } : {}), ...(observedOwner ? { observedOwner } : {}) };
+    return { state: "live", reason: rootReason, leasePath, evidenceIdentity, ...(lease ? { lease } : {}), ...(observedOwner ? { observedOwner } : {}) };
   }
-  if (!isRepositoryMutationLease(value)) return { state: "malformed", reason: "ownership evidence does not match schema version 1", leasePath, ...(observedOwner ? { observedOwner } : {}) };
-  if (value.canonicalRepoRoot !== root) return { state: "root-conflicting", reason: "evidence canonical root does not match the lease location", leasePath, lease: value };
-  return { state: "stale", reason: "owner PID is dead or its process-start fingerprint was reused", leasePath, lease: value };
+  if (!isRepositoryMutationLease(value)) return { state: "malformed", reason: "ownership evidence does not match schema version 1", leasePath, evidenceIdentity, ...(observedOwner ? { observedOwner } : {}) };
+  if (value.canonicalRepoRoot !== root) return { state: "root-conflicting", reason: "evidence canonical root does not match the lease location", leasePath, evidenceIdentity, lease: value };
+  return { state: "stale", reason: "owner PID is dead or its process-start fingerprint was reused", leasePath, evidenceIdentity, lease: value };
 }
 
 function readValidLeaseUnlocked(path: string): RepositoryMutationLease | null | undefined {
@@ -510,30 +554,83 @@ function writeLeaseFile(path: string, lease: RepositoryMutationLease): void {
 }
 
 function quarantineLeaseUnlocked(path: string, now: () => Date, createToken: () => string): string {
-  const quarantine = `${path}.quarantine.${now().toISOString().replace(/[:.]/g, "-")}.${boundedField(createToken(), 80)}`;
-  renameSync(path, quarantine);
-  return quarantine;
-}
-
-function withMutationMutex<T>(leasePath: string, operation: () => T): T {
-  const mutexPath = join(resolve(leasePath, ".."), MUTATION_MUTEX_FILE);
-  const deadline = Date.now() + MUTEX_TIMEOUT_MS;
-  let descriptor: number | undefined;
-  while (descriptor === undefined) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const quarantine = `${path}.quarantine.${now().toISOString().replace(/[:.]/g, "-")}.${boundedField(createToken(), 80)}${attempt === 0 ? "" : `-${attempt}`}`;
     try {
-      descriptor = openSync(mutexPath, "wx", 0o600);
+      // A hard link gives no-clobber publication. Removing the source only after
+      // that succeeds preserves exact bytes across a crash at either step.
+      linkSync(path, quarantine);
+      unlinkSync(path);
+      return quarantine;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) {
-        throw new Error(`repository-admission: could not acquire atomic ownership-operation mutex: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
   }
+  throw new Error("repository-admission: could not allocate a unique quarantine destination");
+}
+
+/**
+ * Runs a synchronous lease operation while a crash-releasing OS advisory lock is
+ * held by a tiny `flock` helper. The helper waits on a parent-owned stdin pipe, so
+ * abrupt parent death closes the pipe and the kernel releases the lock. The mutex
+ * file is durable coordination metadata, not ownership, and is never unlinked.
+ */
+function withMutationMutex<T>(leasePath: string, operation: () => T): T {
+  const mutexPath = join(resolve(leasePath, ".."), MUTATION_MUTEX_FILE);
+  mkdirSync(resolve(mutexPath, ".."), { recursive: true });
+  const descriptor = openSync(mutexPath, "a", 0o600);
+  closeSync(descriptor);
+  chmodSync(mutexPath, 0o600);
+
+  const signalDirectory = mkdtempSync(join(tmpdir(), "pa-repository-mutex-"));
+  const readyPath = join(signalDirectory, "ready");
+  const donePath = join(signalDirectory, "done");
+  const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
+  const holder = spawn("flock", ["--exclusive", "--wait", String(MUTEX_TIMEOUT_MS / 1000), mutexPath, "/bin/sh", "-c", script, "pa-repository-mutex", readyPath, donePath], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  holder.stdin.on("error", () => { /* a failed helper is reported by the handshake timeout */ });
   try {
+    waitForPath(readyPath, MUTEX_TIMEOUT_MS, "acquire crash-safe ownership-operation mutex");
     return operation();
   } finally {
+    holder.stdin.end("release\n");
+    try {
+      waitForPath(donePath, MUTEX_TIMEOUT_MS, "release crash-safe ownership-operation mutex");
+    } catch {
+      holder.kill("SIGKILL");
+    }
+    rmSync(signalDirectory, { recursive: true, force: true });
+  }
+}
+
+function waitForPath(path: string, timeoutMs: number, action: string): void {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`repository-admission: could not ${action} within ${timeoutMs}ms`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, MUTEX_POLL_MS);
+  }
+}
+
+function evidenceIdentityUnlocked(path: string): string {
+  const descriptor = openSync(path, "r");
+  try {
+    const stat = fstatSync(descriptor, { bigint: true });
+    const prefixBytes = Number(stat.size < BigInt(MAX_REPOSITORY_LEASE_BYTES) ? stat.size : BigInt(MAX_REPOSITORY_LEASE_BYTES));
+    const buffer = Buffer.alloc(prefixBytes);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const hash = createHash("sha256")
+      .update(`${stat.dev}:${stat.ino}:${stat.size}:${stat.ctimeNs}:`)
+      .update(buffer.subarray(0, offset))
+      .digest("hex");
+    return `v1-${hash}`;
+  } finally {
     closeSync(descriptor);
-    try { unlinkSync(mutexPath); } catch { /* preserve the operation result if cleanup races with external interference */ }
   }
 }
 

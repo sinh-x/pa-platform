@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import {
   classifyRepositoryAccess,
   formatRepositoryAdmissionDiagnostic,
   inspectRepositoryMutationLease,
+  quarantineRepositoryMutationLease,
   readProcessFingerprint,
   releaseRepositoryMutationLease,
   repositoryMutationLeasePath,
@@ -20,6 +21,7 @@ import {
   type RepositoryAdmissionDependencies,
   type RepositoryGitSnapshot,
 } from "../index.js";
+import { installGitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 const snapshot: RepositoryGitSnapshot = Object.freeze({
   branch: "feature/PAP-174-requirements-builder-admission",
@@ -207,6 +209,136 @@ test("malformed, oversized, and root-conflicting evidence reject without force a
   }
 });
 
+test("abrupt owner death releases the advisory mutex so force recovery can proceed", { timeout: 15_000 }, async () => {
+  const root = fixture("abrupt-mutex-owner");
+  const leasePath = repositoryMutationLeasePath(root);
+  const mutexPath = join(root, ".git", "pa-repository-mutation.lease.lock");
+  const moduleUrl = new URL("../deploy/repository-admission.ts", import.meta.url).href;
+  writeFileSync(leasePath, "{ malformed before abrupt recovery\n");
+  const childScript = `
+    import { acquireRepositoryMutationLease } from ${JSON.stringify(moduleUrl)};
+    acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: ${JSON.stringify(root)},
+      deploymentId: "d-abrupt",
+      deploymentDirectory: ${JSON.stringify(join(root, "deployment"))},
+      runtime: "pi",
+      mode: "implement",
+      force: true,
+      dependencies: { runGit: () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100000); return ""; } },
+    });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", childScript], { stdio: "ignore" });
+  try {
+    const deadline = Date.now() + 10_000;
+    let held = false;
+    while (Date.now() < deadline && !held) {
+      if (existsSync(mutexPath)) {
+        try { execFileSync("flock", ["--nonblock", mutexPath, "true"], { stdio: "ignore" }); }
+        catch { held = true; }
+      }
+      if (!held) await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    assert.equal(held, true, "child never acquired the advisory mutex");
+    child.kill("SIGKILL");
+    await new Promise<void>((resolvePromise) => child.once("close", () => resolvePromise()));
+
+    const owner = fingerprint(43500);
+    const recovered = acquire(root, owner, { force: true, token: "post-crash-owner", deps: dependencies(owner) });
+    assert.equal(recovered.status, "acquired");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an orphaned mutex file cannot block inspection or forced stale recovery", () => {
+  const root = fixture("orphaned-mutex");
+  const oldOwner = fingerprint(43501);
+  const replacement = fingerprint(43502);
+  try {
+    assert.equal(acquire(root, oldOwner, { token: "old-owner" }).status, "acquired");
+    writeFileSync(join(root, ".git", "pa-repository-mutation.lease.lock"), "orphaned-owner-bytes\n", { mode: 0o600 });
+    const staleDeps = dependencies(replacement);
+    assert.equal(inspectRepositoryMutationLease(root, staleDeps).state, "stale");
+    const recovered = acquire(root, replacement, { force: true, token: "replacement", deps: staleDeps });
+    assert.equal(recovered.status, "acquired");
+    assert.ok(recovered.quarantinedPath);
+    assert.equal(readFileSync(join(root, ".git", "pa-repository-mutation.lease.lock"), "utf8"), "orphaned-owner-bytes\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("safe manual quarantine rejects replacement and verified-live races", () => {
+  const root = fixture("quarantine-race");
+  const oldOwner = fingerprint(43601);
+  const liveReplacement = fingerprint(43602);
+  try {
+    assert.equal(acquire(root, oldOwner, { token: "old-owner" }).status, "acquired");
+    const staleInspection = inspectRepositoryMutationLease(root, dependencies(liveReplacement));
+    assert.equal(staleInspection.state, "stale");
+    assert.ok(staleInspection.evidenceIdentity);
+
+    const leasePath = repositoryMutationLeasePath(root);
+    const replacementLease = JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>;
+    replacementLease["ownershipToken"] = "live-replacement";
+    replacementLease["deploymentId"] = "d-live-replacement";
+    replacementLease["processFingerprint"] = liveReplacement;
+    writeFileSync(leasePath, `${JSON.stringify(replacementLease)}\n`);
+    const liveResult = quarantineRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      expectedEvidenceIdentity: staleInspection.evidenceIdentity!,
+      dependencies: dependencies(liveReplacement),
+    });
+    assert.equal(liveResult.status, "rejected");
+    if (liveResult.status === "rejected") assert.equal(liveResult.evidenceState, "live");
+    assert.equal((JSON.parse(readFileSync(leasePath, "utf8")) as Record<string, unknown>)["ownershipToken"], "live-replacement");
+
+    writeFileSync(leasePath, "{ replacement-malformed\n");
+    const mismatch = quarantineRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      expectedEvidenceIdentity: staleInspection.evidenceIdentity!,
+      dependencies: dependencies(),
+    });
+    assert.equal(mismatch.status, "rejected");
+    if (mismatch.status === "rejected") assert.equal(mismatch.evidenceState, "identity-mismatch");
+    assert.equal(readFileSync(leasePath, "utf8"), "{ replacement-malformed\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("safe manual quarantine uses the mutex and a unique no-clobber destination", () => {
+  const root = fixture("quarantine-no-clobber");
+  const owner = fingerprint(43701);
+  try {
+    assert.equal(acquire(root, owner, { token: "stale-owner" }).status, "acquired");
+    const inspection = inspectRepositoryMutationLease(root, dependencies());
+    assert.ok(inspection.evidenceIdentity);
+    const leasePath = repositoryMutationLeasePath(root);
+    const collision = `${leasePath}.quarantine.2026-09-05T13-00-00-000Z.manual-token`;
+    writeFileSync(collision, "preserve existing quarantine\n");
+    const result = quarantineRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      expectedEvidenceIdentity: inspection.evidenceIdentity!,
+      dependencies: {
+        ...dependencies(),
+        createToken: () => "manual-token",
+      },
+    });
+    assert.equal(result.status, "quarantined");
+    if (result.status === "quarantined") assert.equal(result.quarantinePath, `${collision}-1`);
+    assert.equal(readFileSync(collision, "utf8"), "preserve existing quarantine\n");
+    assert.equal(existsSync(leasePath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("verified process evidence is authoritative even when schema is malformed and force never quarantines it", () => {
   const root = fixture("malformed-live");
   const owner = fingerprint(44001);
@@ -259,14 +391,49 @@ test("all evidence diagnostics are bounded and expose only applicable recovery c
           state,
           reason: "r".repeat(3_000),
           leasePath: repositoryMutationLeasePath(root),
+          ...(!["live", "absent"].includes(state) ? { evidenceIdentity: `v1-${"a".repeat(64)}` } : {}),
           ...(state === "live" ? { observedOwner: { deploymentId: "d-live", runtime: "pi", mode: "implement", processFingerprint: fingerprint(46001) } } : {}),
         },
       });
       assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS, `${state}: ${diagnostic.length}`);
       assert.match(diagnostic, new RegExp(`state=${state}`));
       if (state === "live") assert.doesNotMatch(diagnostic, /--force|manual quarantine|\bmv\b/i);
-      if (!["live", "absent"].includes(state)) assert.match(diagnostic, /--force.*Manual quarantine/s);
+      if (!["live", "absent"].includes(state)) {
+        assert.match(diagnostic, /--force.*Safe manual quarantine/s);
+        assert.match(diagnostic, /ppa.*repository.*quarantine.*--expected-evidence/s);
+        assert.doesNotMatch(diagnostic, /\bmv\b/);
+      }
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Git-state recorder covers every NFR-7 mutation category and preserves allowed reads", () => {
+  const root = mkdtempSync(join(tmpdir(), "git-state-recorder-self-"));
+  try {
+    mkdirSync(join(root, "repo"));
+    execFileSync("git", ["init", "-q"], { cwd: join(root, "repo") });
+    const recorder = installGitStateRecorder(root);
+    const env = { ...process.env, PATH: `${recorder.binDir}:${process.env["PATH"] ?? ""}` };
+    const commands = [
+      ["stash", "list"],
+      ["commit", "--dry-run"],
+      ["reset", "--", "missing"],
+      ["clean", "-n"],
+      ["restore", "--", "missing"],
+      ["checkout", "--", "missing"],
+      ["branch", "-D", "missing"],
+      ["worktree", "list"],
+      ["symbolic-ref", "--quiet", "HEAD"],
+      ["rev-parse", "--git-dir"],
+      ["status", "--porcelain=v1"],
+    ];
+    for (const args of commands) {
+      try { execFileSync("git", args, { cwd: join(root, "repo"), env, stdio: "ignore" }); } catch { /* failing mutations are still observed before Git executes */ }
+    }
+    assert.deepEqual(recorder.readOperations().map((args) => args[0]), ["stash", "commit", "reset", "clean", "restore", "checkout", "branch", "worktree"]);
+    assert.deepEqual(recorder.readCommands().slice(-3).map((args) => args[0]), ["symbolic-ref", "rev-parse", "status"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

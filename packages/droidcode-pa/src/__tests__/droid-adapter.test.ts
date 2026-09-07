@@ -985,6 +985,22 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
+function writeBuilderTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "builder.yaml"), [
+    "name: builder",
+    "description: Builder",
+    "default_mode: implement",
+    "objective: Build",
+    "agents: []",
+    "deploy_modes:",
+    "  - id: implement",
+    "    label: Implement",
+    "    mode_type: work",
+    "    provider: deepseek",
+    "    model: deepseek/deepseek-v4-pro",
+  ].join("\n"));
+}
+
 describe("dpa deploy memory-doc injection (MIN-3/FR-4)", () => {
   it("droid dry-run retains full memory-doc bodies (droid native load unconfirmed, OQ-1)", async () => {
     await withDpaEnv(async (root) => {
@@ -1101,6 +1117,24 @@ describe("PAP-162 Droid execution-plan contract", () => {
     });
   });
 
+  it("rejects mutating builders with bounded unsupported policy before foreground or background spawn", async () => {
+    await withDpaEnv(async (root, gitState) => {
+      writeBuilderTeamConfig(root);
+      let spawns = 0;
+      const adapter = new DroidCodeAdapter({ env: { FACTORY_API_KEY: TEST_API_KEY } });
+      adapter.spawn = () => { spawns += 1; return Promise.resolve({ exitCode: 0 }); };
+      adapter.resume = () => { spawns += 1; return Promise.resolve({ exitCode: 0 }); };
+      for (const background of [false, true]) {
+        const result = await deployWithDroid({ team: "builder", mode: "implement", repo: "pa-platform", background, force: true }, adapter);
+        assert.equal(result.status, "failed");
+        assert.match(result.reason ?? "", /dpa unsupported-policy.*No runtime was spawned.*use ppa or opa/i);
+        assert.ok((result.reason ?? "").length <= 2000);
+      }
+      assert.equal(spawns, 0);
+      assert.deepEqual(gitState.readOperations(), []);
+    });
+  });
+
   it("installs runtime hooks inside the registered checkout without process isolation", async () => {
     await withDpaEnv(async (root) => {
       const repo = join(root, "repo");
@@ -1117,6 +1151,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
       writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
       spawnSync("git", ["add", "CLAUDE.md"], { cwd: repo });
       spawnSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
+      const operationBaseline = gitState.readOperations().length;
       for (const requestedRepo of ["pa-platform", repo]) {
         let captured: SpawnOpts | undefined;
         let runtimeCwd = "";
@@ -1161,7 +1196,7 @@ describe("PAP-162 Droid execution-plan contract", () => {
         assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
         assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
       }
-      assert.deepEqual(gitState.readOperations(), []);
+      assert.deepEqual(gitState.readOperations().slice(operationBaseline), []);
     });
   });
 

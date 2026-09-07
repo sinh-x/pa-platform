@@ -306,8 +306,10 @@ Admission class is derived from the team for every configured mode:
 `requirements/*` is read-only and bypasses Git status/lease access,
 `builder/*` is exclusive per canonical root, and other teams are non-locking.
 Dirty foreground builders receive an intent/re-read contract; dirty background
-builders reject before spawn. Deploy force recovers only stale or malformed
-builder ownership and does not bypass other guards. Implementation may proceed
+builders reject before spawn. ppa and opa enforce this lifecycle; cpa and dpa
+reject mutating builder execution before spawn because they cannot safely supervise
+ownership. Deploy force is therefore advertised only by ppa/opa, recovers only
+stale or malformed builder ownership, and does not bypass other guards. Implementation may proceed
 on the exact ticket branch, or create/check out that branch only from clean
 `develop` when `develop` equals `origin/develop`. Dirty or drifted `develop`,
 detached HEAD, release branches, and unrelated branches stop unchanged before

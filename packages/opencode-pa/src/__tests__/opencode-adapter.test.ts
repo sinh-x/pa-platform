@@ -662,6 +662,7 @@ test("OpenCode key/path plans stay canonical and daily modes remain explicitly n
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
     execFileSync("git", ["add", "CLAUDE.md"], { cwd: repo });
     execFileSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
+    const operationBaseline = gitState.readOperations().length;
     const observations: Array<{ opts: SpawnOpts; runtimeCwd: string; runtimePaRepo?: string; registryRepo?: string; primer: string }> = [];
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
@@ -710,7 +711,7 @@ test("OpenCode key/path plans stay canonical and daily modes remain explicitly n
       assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
     }
-    assert.deepEqual(gitState.readOperations(), []);
+    assert.deepEqual(gitState.readOperations().slice(operationBaseline), []);
   });
 });
 

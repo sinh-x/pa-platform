@@ -18,17 +18,24 @@ Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
 it bypasses Git status and repository-lease access even when the checkout is dirty
 or a builder owns the same canonical root. Every `builder/*` mode is
 `exclusive-builder`: one process-verified live builder may own a canonical root
-across ppa and opa. Other teams remain `non-locking`.
+across ppa and opa. Claude (`cpa`) and Droid (`dpa`) cannot safely supervise this
+lifecycle, so their mutating builder deploys fail with an explicit unsupported-policy
+result before runtime spawn; non-builder and dry-run behavior remains available.
+Other teams remain `non-locking`.
 
 Builder admission captures branch, HEAD, staged/unstaged/untracked counts, and a
 bounded porcelain summary without mutating Git. A dirty foreground builder may
 launch with that evidence and receives a mandatory intent/re-read contract before
 agent-initiated Git or project-file mutation. A dirty background builder, including
 REST's background default, rejects before runtime spawn and leaves no owned lease.
-Builder ownership uses `.git/pa-repository-mutation.lease.json`; `deploy --force`
-may quarantine stale or malformed evidence, but never overrides a process-verified
-live owner or bypasses identity, sensitive-input, ticket, or runtime guards.
-Dry-run, list-modes, and validate do not mutate lease state.
+Builder ownership uses `.git/pa-repository-mutation.lease.json`; ownership operations
+are serialized by a crash-releasing OS advisory lock. `deploy --force` may quarantine
+stale or malformed evidence, but never overrides a process-verified live owner or
+bypasses identity, sensitive-input, ticket, or runtime guards. Recovery diagnostics
+use `ppa repository quarantine --repo <key> --expected-evidence <identity>` instead
+of a raw file move; that operation locks, re-reads, rejects live or replacement
+evidence, and publishes a unique no-clobber quarantine path. Dry-run, list-modes,
+and validate do not mutate lease state.
 
 Before implementation edits, determine the exact ticket branch and apply this
 branch gate:

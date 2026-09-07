@@ -1,4 +1,5 @@
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
+import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
@@ -97,7 +98,7 @@ export interface ValidateDeployResult {
   warnings?: string[];
 }
 
-export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string } {
+export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string; warnings?: string[] } {
   const team = stringField(body, "team");
   const runtime = stringField(body, "runtime");
   const mode = stringField(body, "mode");
@@ -147,6 +148,12 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
       sanitizedCharsRemoved = result.removed;
     }
     sanitizedObjective = result.sanitized.trim();
+    try {
+      assertNoSensitiveMatch("content", sanitizedObjective);
+    } catch (error) {
+      const blocked = { error: error instanceof Error ? error.message : String(error) };
+      return warnings.length > 0 ? { ...blocked, warnings } : blocked;
+    }
   }
   if (dryRun && background) return { error: "--background and --dry-run are mutually exclusive" };
 

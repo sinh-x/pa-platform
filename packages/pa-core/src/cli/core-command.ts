@@ -6,6 +6,7 @@ import { runRegistryCommand } from "./commands/registry.js";
 import { runBoardCommand } from "./commands/board.js";
 import { runTeamsCommand } from "./commands/teams.js";
 import { runReposCommand } from "./commands/repos.js";
+import { runRepositoryCommand } from "./commands/repository.js";
 import { runDeployCommand, STATUS_WAIT_OVERRIDE_ENV } from "./commands/deploy.js";
 import { runEvaluateCommand } from "./commands/evaluate.js";
 import { runTicketCommand } from "./commands/ticket.js";
@@ -53,6 +54,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       return 0;
     }
     if (command === "repos") return runReposCommand(rest, io);
+    if (command === "repository") return runRepositoryCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), {
       sleep: opts.sleep ?? defaultSleep,
       clock: opts.clock ?? Date.now,
@@ -113,6 +115,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout("  signal              Manage signals");
   io.stdout("  semantic            Semantic briefing");
   io.stdout("  repos               List registered repositories");
+  io.stdout("  repository          Inspect or safely quarantine repository ownership evidence");
   io.stdout("");
   io.stdout("Run '<command> --help' for detailed usage of a specific command.");
 }

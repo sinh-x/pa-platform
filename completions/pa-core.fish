@@ -364,6 +364,7 @@ end
 complete -c pa-core -f
 
 complete -c pa-core -n __fish_use_subcommand -a repos -d 'Manage repositories'
+complete -c pa-core -n __fish_use_subcommand -a repository -d 'Inspect or safely quarantine repository ownership evidence'
 complete -c pa-core -n __fish_use_subcommand -a status -d 'Show deployment status'
 complete -c pa-core -n __fish_use_subcommand -a deploy -d 'Deploy an agent team'
 complete -c pa-core -n __fish_use_subcommand -a evaluate -d 'Evaluate a completed deployment'
@@ -386,6 +387,9 @@ complete -c pa-core -n __fish_use_subcommand -a codectx -d 'Analyze and query co
 complete -c pa-core -n __fish_use_subcommand -a signal -d 'Collect Signal Note to Self messages'
 
 complete -c pa-core -n '__fish_seen_subcommand_from repos; and not __fish_seen_subcommand_from list' -a list -d 'List repositories'
+complete -c pa-core -n '__fish_seen_subcommand_from repository; and not __fish_seen_subcommand_from inspect quarantine' -a 'inspect quarantine' -d 'Repository ownership action'
+complete -c pa-core -f -n '__fish_seen_subcommand_from repository; and __fish_seen_subcommand_from inspect quarantine' -l repo -d 'Registered repository key or exact configured path' -r -a '(__pa_core_projects)'
+complete -c pa-core -n '__fish_seen_subcommand_from repository; and __fish_seen_subcommand_from quarantine' -l expected-evidence -d 'Expected evidence identity from repository inspect' -r
 
 complete -c pa-core -n __pa_core_deploy_needs_team -a '(__pa_core_deploy_team_candidates)' -d 'Team name'
 complete -c pa-core -f -n __pa_core_deploy_should_offer_options -a '--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --agent-model --background --dry-run --repo --ticket --timeout --resume --autonomy --force' -d 'Deploy option'

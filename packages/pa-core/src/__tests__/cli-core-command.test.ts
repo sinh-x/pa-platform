@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, runCoreCommand, TicketStore } from "../index.js";
+import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, repositoryMutationLeasePath, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
 
@@ -906,6 +906,27 @@ test("runCoreCommand exposes registry update, search, analytics, clean, and swee
   });
 });
 
+test("runCoreCommand exposes identity-checked repository inspect and quarantine", async () => {
+  await withCliEnv(async (root) => {
+    const leasePath = repositoryMutationLeasePath(join(root, "repo"));
+    writeFileSync(leasePath, "{ malformed ownership evidence\n");
+    const inspect = capture();
+    assert.equal(await runCoreCommand(["repository", "inspect", "--repo", "pa-platform"], { binaryName: "ppa", io: inspect.io }), 0);
+    const diagnostic = inspect.stdout.join("\n");
+    assert.match(diagnostic, /state=malformed/);
+    assert.doesNotMatch(diagnostic, /\bmv\b/);
+    const identity = diagnostic.match(/v1-[a-f0-9]{64}/)?.[0];
+    assert.ok(identity);
+
+    const quarantine = capture();
+    assert.equal(await runCoreCommand(["repository", "quarantine", "--repo", "pa-platform", "--expected-evidence", identity], { binaryName: "ppa", io: quarantine.io }), 0);
+    assert.match(quarantine.stdout.join("\n"), /state=quarantined/);
+    assert.ok(quarantine.stdout.join("\n").length <= 2000);
+    assert.equal(existsSync(leasePath), false);
+    assert.equal(readdirSync(join(root, "repo", ".git")).filter((name) => name.includes(".quarantine.")).length, 1);
+  });
+});
+
 test("runCoreCommand routes deploy through adapter hook", async () => {
   await withCliEnv(async (root) => {
     const help = capture();
@@ -928,6 +949,23 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     assert.deepEqual(seen, [{ team: "builder", mode: "plan", objective: "Ship", evaluateDeployment: "d-abc123", repo: join(root, "repo"), ticket: "PAP-001", timeout: 120, force: true }]);
     assert.match(captured.stdout.join("\n"), /d-hook/);
   });
+});
+
+test("cpa and dpa remove force claims and reject the unsupported flag before hooks", async () => {
+  for (const binaryName of ["cpa", "dpa"]) {
+    const help = capture();
+    assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName, io: help.io }), 0);
+    assert.doesNotMatch(help.stdout.join("\n"), /--force/);
+    let hookCalls = 0;
+    const rejected = capture();
+    assert.equal(await runCoreCommand(["deploy", "builder", "--force"], {
+      binaryName,
+      io: rejected.io,
+      hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-unsupported" }; } },
+    }), 1);
+    assert.match(rejected.stderr.join("\n"), /--force is unsupported.*use ppa or opa/i);
+    assert.equal(hookCalls, 0);
+  }
 });
 
 test("deploy list-modes, validate, and dry-run remain non-owning when force is present", async () => {

@@ -609,6 +609,27 @@ test("agent API deploy accepts and propagates boolean force and rejects non-bool
   });
 });
 
+test("agent API blocks sensitive objective content before hooks with force false or true", async () => {
+  await withApiEnv(async () => {
+    let calls = 0;
+    const { app } = createAgentApiApp({ hooks: { deploy: () => { calls += 1; return { status: "pending", deploymentId: "d-sensitive-hook" }; } } });
+    const secret = ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ");
+    for (const force of [false, true]) {
+      const response = await app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ team: "builder", mode: "implement", objective: secret, force }),
+      });
+      assert.equal(response.status, 400);
+      const body = JSON.stringify(await response.json());
+      assert.match(body, /Blocked sensitive content input by built-in sensitive defaults/);
+      assert.equal(body.includes(secret), false);
+      assert.equal(body.includes("PRIVATE KEY"), false);
+    }
+    assert.equal(calls, 0);
+  });
+});
+
 test("agent API force cannot bypass runtime validation", async () => {
   await withApiEnv(async () => {
     let calls = 0;

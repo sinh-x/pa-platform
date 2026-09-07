@@ -220,6 +220,7 @@ test("Claude key/path plans stay canonical and daily modes remain explicitly non
     writeFileSync(join(repo, "CLAUDE.md"), "# Canonical memory\n");
     execFileSync("git", ["add", "CLAUDE.md"], { cwd: repo });
     execFileSync("git", ["commit", "-m", "memory fixture"], { cwd: repo });
+    const operationBaseline = gitState.readOperations().length;
     for (const requestedRepo of ["pa-platform", repo]) {
       let captured: SpawnOpts | undefined;
       let runtimeCwd = "";
@@ -264,7 +265,7 @@ test("Claude key/path plans stay canonical and daily modes remain explicitly non
       assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(repo)}$`, "m"));
       assert.match(primer, new RegExp(`<memory-doc path="${escapeRegExp(join(repo, "CLAUDE.md"))}">`));
     }
-    assert.deepEqual(gitState.readOperations(), []);
+    assert.deepEqual(gitState.readOperations().slice(operationBaseline), []);
   });
 });
 
@@ -650,18 +651,24 @@ test("cpa background termination preserves registry behavior and performs no Git
   });
 });
 
-test("cpa foreground failure preserves runtime diagnostics and performs no Git state operation", async () => {
+test("cpa rejects mutating builders with bounded unsupported policy before foreground or background spawn", async () => {
   await withCpaEnv(async (root, gitState) => {
     writeBuilderTeamConfig(root);
-    const adapter = createStubAdapter({ exitCode: 1, errorMessage: "runtime failed" });
-    adapter.spawn = (opts) => {
-      writeFileSync(join(opts.executionPlan!.repoRoot, "preserve.txt"), "dirty\n");
-      return { exitCode: 1, errorMessage: "runtime failed" };
+    let spawns = 0;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = {
+      ...base,
+      spawn(opts) { spawns += 1; return base.spawn(opts); },
+      resume(opts) { spawns += 1; return base.resume(opts); },
     };
-    const stderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement"], { hooks: createClaudeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } }), 1);
-    assert.match(stderr.join("\n"), /runtime failed/i);
-    assert.equal(existsSync(join(root, "repo", "preserve.txt")), true);
+    for (const background of [false, true]) {
+      const result = await deployWithClaude({ team: "builder", mode: "implement", repo: "pa-platform", background, force: true }, adapter);
+      assert.equal(result.status, "failed");
+      assert.match(result.reason ?? "", /cpa unsupported-policy.*No runtime was spawned.*use ppa or opa/i);
+      assert.ok((result.reason ?? "").length <= 2000);
+    }
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(join(root, "repo", "preserve.txt")), false);
     assert.deepEqual(gitState.readOperations(), []);
   });
 });

@@ -1,6 +1,7 @@
 # PAP-174 Mode-Aware Repository Admission — Release/UAT Evidence
 
 > Date: 2026-09-05
+> Updated: 2026-09-07 (review cycle 1 remediation)
 > Ticket: PAP-174
 > Branch: `feature/PAP-174-requirements-builder-admission`
 > Scope: Automated release evidence for approved UAT scenarios; human reviewer/sign-off remains external and unfilled.
@@ -14,7 +15,7 @@
 | 3 | `f5aa75c4b946c825f6ca7766d0d614b18165ad83` | `feat(adapters): phase 3 - add repository ownership lifecycle` |
 | 4 | _this release-evidence commit_ | `test(release): phase 4 - align paired admission evidence` |
 
-The paired configuration pin is `7e3a7a2015e220428c413423c2e9ffd07901a099` (approved PAPC-007). Verification uses a disposable clone outside the pa-platform repository, detached at that exact SHA, with a zero-entry status. The existing operator pa-platform-config checkout is not changed.
+The initial release evidence used paired configuration pin `7e3a7a2015e220428c413423c2e9ffd07901a099`. Review-cycle-1 remediation now pins `df3ca1de6e017358002564dc24b50ae48ec14c52`, the clean PAP-174 paired-contract commit. Verification uses the exact clean operator checkout at that SHA without changing it.
 
 ## Automated UAT Traceability
 
@@ -33,19 +34,33 @@ The paired configuration pin is `7e3a7a2015e220428c413423c2e9ffd07901a099` (appr
 
 Direct registered-checkout and linked/no-worktree rejection remain covered by `execution-plan.test.ts`, `deploy-cli-repository.test.ts`, and both runtime adapter suites. The paired validator additionally retains the seven-state direct-checkout branch contract and no-worktree/no-sandbox orchestration evidence while validating the actual 6 builder + 11 requirements + 41 other configured modes.
 
+## Review Cycle 1 Remediation Evidence
+
+| Review finding | Remediation evidence |
+|---|---|
+| 1 — paired contract | Pin advanced to `df3ca1de6e017358002564dc24b50ae48ec14c52`; the validator requires eight affirmative clauses on all eight builder contract surfaces and rejects negated or retired blanket semantics. |
+| 2 — cpa/dpa bypass | Mutating builder deploys return bounded `unsupported-policy` failures before foreground/background spawn; help and generated completions no longer advertise adapter-inapplicable deploy force. |
+| 3 — REST sensitive guard | Shared request validation blocks sensitive objective content before REST/CLI runtime hooks for both force values and emits only redacted diagnostics. |
+| 4 — orphaned mutex | Ownership operations use a util-linux `flock` advisory mutex whose helper releases on parent-pipe closure; abrupt-death and orphan-file regressions prove forced recovery remains available. |
+| 5 — unsafe quarantine | `ppa repository inspect/quarantine` re-locks, re-reads, refuses verified-live ownership, identity-checks replacement evidence, and creates unique no-clobber quarantine paths. |
+| 6 — mutation recorder | `stash` and `commit` join all other NFR-7 prohibited command categories; a recorder self-test distinguishes them from allowed Git reads. |
+
+The coherent follow-up is recorded as `_this review-cycle-1 remediation commit_`; the external remediation artifact records its immutable SHA after publication.
+
 ## Required Verification Results
 
 | Check | Result |
 |---|---|
-| Focused paired validator | Pass: 9/9 tests, including 58-mode matrix, seven-state direct checkout, and no-worktree/no-sandbox retention. |
-| Focused admission/runtime regressions | Pass: 14/14 selected tests across pa-core, ppa, opa, cpa, and dpa; includes requirements bypass, builder-exclusive key/path plans, 50 mixed contenders, and linked-worktree rejection. |
-| `corepack pnpm verify:paired-config` | Pass at exact clean config SHA: 9/9 teams, 58/58 modes, builder 6/6 exclusive, requirements 11/11 read-only, other 41/41 non-locking, branch gate 7/7, no-worktree orchestration retained. |
-| `corepack pnpm typecheck` | Pass: all 6 workspace projects. |
-| `corepack pnpm build` | Pass: all 6 workspace projects. |
-| `corepack pnpm test` | Pass: 841 tests total; 840 passed, 0 failed, 1 intentional skip (pa-core 443/443; cpa 49/49; dpa 77/77; opa 98/98; ppa 172 passed + 1 skipped; runtime-host 1/1). |
-| `corepack pnpm completions` | Pass: deterministic regeneration; only the genuine deploy `--force` entries changed across five Fish completion files. |
-| `corepack pnpm secrets:scan` | Pass. |
-| `git diff --check` | Pass. |
+| Focused paired validator | Pass: 11/11 tests, including affirmative/negated semantics, retired-contract rejection, 58-mode matrix, seven-state direct checkout, and no-worktree/no-sandbox retention. |
+| Focused admission/API/CLI regressions | Pass: 158 tests, 156 passed and 2 fixture-dependent skips; includes 50 mixed contenders, abrupt mutex death, orphan recovery, safe quarantine races, REST redaction, CLI quarantine, and all NFR-7 mutation categories. |
+| Focused adapter regressions | Pass: cpa 49/49 and dpa 78/78, including bounded no-spawn builder-policy rejection. |
+| `corepack pnpm verify:paired-config` | Pass at exact clean config SHA `df3ca1de6e017358002564dc24b50ae48ec14c52`: 9/9 teams, 58/58 modes, builder 6/6 exclusive, requirements 11/11 read-only, other 41/41 non-locking, branch gate 7/7, no-worktree orchestration retained. |
+| `corepack pnpm typecheck` | Pass: all 6 workspace projects (preserved full-run evidence after the final behavior edits). |
+| `corepack pnpm build` | Pass: all 6 workspace projects (preserved full-run evidence after the final behavior edits). |
+| `corepack pnpm test` | Pass: pa-core 451/451, pi 5/5, dpa 78/78, cpa 49/49, and opa 74/74 after paired-contract alignment. |
+| `corepack pnpm completions` | Pass: deterministic regeneration with unchanged diff hash; repository subcommand entries generated for all binaries and adapter-inapplicable cpa/dpa deploy-force entries removed. |
+| `corepack pnpm secrets:scan` | Pass after review-cycle-1 remediation. |
+| `git diff --check` | Pass after review-cycle-1 remediation. |
 
 The test command was run with Pi-injected deployment/session variables removed and `PA_SQLITE_NATIVE_BINDING` set to the packaged Node 22 addon; Pi tests independently verify replacement with the packaged Pi-host addon. This prevents the active Pi session's Node 24 binding and execution-mode metadata from contaminating Node 22 test processes.
 
