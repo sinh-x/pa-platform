@@ -609,6 +609,40 @@ test("agent API deploy accepts and propagates boolean force and rejects non-bool
   });
 });
 
+test("agent API listModes and validate are control-only for both runtimes and force variants", async () => {
+  await withApiEnv(async () => {
+    let deployHookCalls = 0;
+    const deploy = () => {
+      deployHookCalls += 1;
+      return { status: "pending" as const, deploymentId: "d-must-not-run" };
+    };
+    const { app } = createAgentApiApp({ hooks: {
+      runtimeHooks: {
+        opencode: { deploy },
+        pi: { deploy },
+      },
+    } });
+
+    for (const runtime of ["opencode", "pi"] as const) {
+      for (const force of [false, true]) {
+        for (const flag of ["listModes", "validate"] as const) {
+          const response = await app.request("/api/deploy", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "builder", mode: "plan", runtime, force, [flag]: true }),
+          });
+          assert.equal(response.status, 202);
+          const body = await response.json() as { status: string; modes?: unknown[]; validation?: unknown };
+          assert.equal(body.status, "success");
+          if (flag === "listModes") assert.equal(body.modes?.length, 3);
+          else assert.ok(body.validation);
+        }
+      }
+    }
+    assert.equal(deployHookCalls, 0, "control-only REST requests must not enter any runtime or ownership lifecycle hook");
+  });
+});
+
 test("agent API blocks sensitive objective content before hooks with force false or true", async () => {
   await withApiEnv(async () => {
     let calls = 0;

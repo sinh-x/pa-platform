@@ -63,6 +63,17 @@ export interface ResolveExecutionPlanOptions {
   observeRepositoryAdmissionOperation?: (operation: RepositoryAdmissionOperation) => void;
 }
 
+export function withAuthoritativeRepositoryAdmission(
+  plan: ExecutionPlan,
+  gitSnapshot: RepositoryGitSnapshot,
+): ExecutionPlan {
+  const repositoryAdmission = Object.freeze({
+    ...plan.repositoryAdmission,
+    gitSnapshot: Object.freeze({ ...gitSnapshot }),
+  });
+  return Object.freeze({ ...plan, repositoryAdmission });
+}
+
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
   const modeName = options.mode?.id ?? options.teamConfig.default_mode ?? "default";
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd());

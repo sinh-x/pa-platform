@@ -83,7 +83,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   });
 }
 
-function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
   const result = (sessionId: string) => options.result?.(sessionId) ?? { sessionId, exitCode: 0, metadata: { sessionId } };
   return {
     name: "pi",
@@ -95,7 +95,7 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
     spawn(opts) { options.onSpawn?.(opts); return result(opts.sessionId ?? ""); },
     resume(opts) { options.onResume?.(opts); return result(opts.sessionId); },
     extractActivity() { return []; },
-    describeTools() { return { runtime: "pi", markdown: "stub" }; },
+    describeTools() { options.onDescribe?.(); return { runtime: "pi", markdown: "stub" }; },
   };
 }
 
@@ -393,6 +393,78 @@ test("PPA dirty background rejects pre-spawn while requirements bypass status an
     assert.equal(readFileSync(leasePath, "utf8"), before);
     assert.equal(gitState.readCommands().slice(commandOffset).some((args) => args[0] === "status"), false);
     assert.deepEqual(gitState.readOperations(), []);
+  });
+});
+
+test("PPA re-reads clean-to-dirty state after planning before background or foreground spawn", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    let backgroundSpawns = 0;
+    const background = await deployWithPi({ team: "builder", mode: "implement", background: true }, stubAdapter({
+      onDescribe: () => writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n"),
+      onSpawn: () => { backgroundSpawns += 1; },
+    }));
+    assert.equal(background.status, "failed");
+    assert.match(background.reason ?? "", /state=dirty-background/);
+    assert.equal(backgroundSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    rmSync(join(repo, "arrived-after-plan.txt"));
+    let foregroundSpawns = 0;
+    const foreground = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onDescribe: () => writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n"),
+      onSpawn: (opts) => {
+        foregroundSpawns += 1;
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.equal(snapshot?.dirty, true);
+        assert.equal(snapshot?.untrackedCount, 1);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /arrived-after-plan\.txt/);
+        assert.match(primer, /Mandatory Dirty Repository Intent Contract/);
+        assert.match(primer, /Immediately before acting on approval, re-read the branch, HEAD, and full Git status/);
+        assert.match(primer, /arrived-after-plan\.txt/);
+      },
+    }));
+    assert.equal(foreground.status, "success", foreground.reason);
+    assert.equal(foregroundSpawns, 1);
+    assert.equal(existsSync(leasePath), false);
+  });
+});
+
+test("PPA dirty-to-changed branch, HEAD, and status drift stays consistent across plan, primer, and lease", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "dirty-before-plan.txt"), "initial dirty\n");
+    const initialHead = git(["rev-parse", "HEAD"], repo);
+    let finalHead = "";
+    const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({
+      onDescribe: () => {
+        git(["checkout", "-b", "feature/post-plan-drift"], repo);
+        git(["commit", "--allow-empty", "-m", "post-plan head drift"], repo);
+        writeFileSync(join(repo, "changed-after-plan.txt"), "changed dirty state\n");
+        finalHead = git(["rev-parse", "HEAD"], repo);
+      },
+      onSpawn: (opts) => {
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.notEqual(finalHead, initialHead);
+        assert.equal(snapshot?.branch, "feature/post-plan-drift");
+        assert.equal(snapshot?.head, finalHead);
+        assert.equal(snapshot?.untrackedCount, 2);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /dirty-before-plan\.txt/);
+        assert.match(snapshot?.statusSummary ?? "", /changed-after-plan\.txt/);
+        assert.match(primer, new RegExp(`- HEAD: ${finalHead}`));
+        assert.match(primer, /- Branch: feature\/post-plan-drift/);
+        assert.match(primer, /changed-after-plan\.txt/);
+      },
+    }));
+    assert.equal(result.status, "success", result.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
   });
 });
 

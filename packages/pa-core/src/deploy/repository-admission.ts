@@ -110,6 +110,9 @@ export interface AcquireRepositoryMutationLeaseOptions {
   readonly deploymentDirectory: string;
   readonly runtime: RuntimeName;
   readonly mode: string;
+  readonly launchMode?: RepositoryAdmissionLaunchMode;
+  readonly team?: string;
+  readonly ticket?: string;
   readonly force?: boolean;
   readonly pid?: number;
   readonly ownershipToken?: string;
@@ -138,14 +141,14 @@ export type RepositoryLeaseAcquisition =
     }
   | {
       readonly status: "rejected";
-      readonly evidenceState: Exclude<RepositoryEvidenceState, "absent">;
+      readonly evidenceState: Exclude<RepositoryEvidenceState, "absent"> | "dirty-background";
       readonly leasePath: string;
       readonly diagnostic: string;
       readonly lease?: RepositoryMutationLease;
     };
 
 export type RepositoryLeaseMutationResult =
-  | { readonly status: "transferred" | "released"; readonly lease?: RepositoryMutationLease }
+  | { readonly status: "transferred" | "updated" | "released"; readonly lease?: RepositoryMutationLease }
   | { readonly status: "absent" | "token-mismatch" | "invalid-evidence" };
 
 export type RepositoryLeaseQuarantineResult =
@@ -267,6 +270,28 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
   const leasePath = repositoryMutationLeasePath(root);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(leasePath, () => {
+    // Runtime adapters intentionally omit gitSnapshot so this read occurs after
+    // planning/tool setup and inside the same admission-critical section that
+    // publishes ownership. Tests and lower-level callers may provide a fixed
+    // snapshot when exercising the ownership primitive in synthetic fixtures.
+    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
+    if (options.launchMode === "background" && gitSnapshot.dirty) {
+      return {
+        status: "rejected",
+        evidenceState: "dirty-background",
+        leasePath,
+        diagnostic: formatDirtyBackgroundBuilderDiagnostic({
+          canonicalRepoKey: options.canonicalRepoKey,
+          canonicalRepoRoot: root,
+          team: options.team ?? "builder",
+          mode: options.mode,
+          runtime: options.runtime,
+          snapshot: gitSnapshot,
+          ...(options.ticket ? { ticket: options.ticket } : {}),
+        }),
+      };
+    }
+
     let inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
     let quarantinedPath: string | undefined;
     if (inspection.state !== "absent") {
@@ -289,7 +314,6 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
     if (!fingerprint || fingerprint.pid !== pid || !fingerprintsEqual(fingerprint, observedFingerprint)) {
       throw new Error(`repository-admission: cannot verify process start fingerprint for PID ${pid}`);
     }
-    const gitSnapshot = options.gitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit);
     const lease: RepositoryMutationLease = Object.freeze({
       schemaVersion: 1,
       ownershipToken: boundedRequired(options.ownershipToken ?? dependencies.createToken(), "ownership token"),
@@ -313,6 +337,36 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection, recovered: Boolean(quarantinedPath) }),
       ...(quarantinedPath ? { quarantinedPath } : {}),
     };
+  });
+}
+
+export function repositoryGitSnapshotsEqual(left: RepositoryGitSnapshot, right: RepositoryGitSnapshot): boolean {
+  return left.branch === right.branch
+    && left.head === right.head
+    && left.stagedCount === right.stagedCount
+    && left.unstagedCount === right.unstagedCount
+    && left.untrackedCount === right.untrackedCount
+    && left.dirty === right.dirty
+    && left.statusSummary === right.statusSummary;
+}
+
+export function updateRepositoryMutationLeaseGitSnapshot(options: {
+  canonicalRepoRoot: string;
+  ownershipToken: string;
+  gitSnapshot: RepositoryGitSnapshot;
+  dependencies?: Pick<RepositoryAdmissionDependencies, "createToken">;
+}): RepositoryLeaseMutationResult {
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const dependencies = resolveDependencies(options.dependencies);
+  return withMutationMutex(leasePath, () => {
+    const parsed = readValidLeaseUnlocked(leasePath);
+    if (parsed === undefined) return { status: "absent" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || !isGitSnapshot(options.gitSnapshot)) return { status: "invalid-evidence" };
+    if (parsed.ownershipToken !== options.ownershipToken) return { status: "token-mismatch" };
+    const lease = Object.freeze({ ...parsed, preLaunchGitSnapshot: Object.freeze({ ...options.gitSnapshot }) });
+    replaceLeaseAtomic(leasePath, lease, dependencies.createToken);
+    return { status: "updated", lease };
   });
 }
 

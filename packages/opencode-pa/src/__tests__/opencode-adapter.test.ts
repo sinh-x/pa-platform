@@ -632,6 +632,98 @@ test("OPA dirty background rejects pre-spawn while requirements bypass status an
   });
 });
 
+test("OPA re-reads clean-to-dirty state after planning before background or foreground spawn", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const repo = join(root, "repo");
+    const leasePath = repositoryMutationLeasePath(repo);
+    let backgroundSpawns = 0;
+    const backgroundBase = createStubAdapter({ exitCode: 0 });
+    const backgroundAdapter: RuntimeAdapter = {
+      ...backgroundBase,
+      describeTools() {
+        writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n");
+        return backgroundBase.describeTools();
+      },
+      spawn(opts) { backgroundSpawns += 1; return backgroundBase.spawn(opts); },
+    };
+    const background = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174", background: true }, backgroundAdapter);
+    assert.equal(background.status, "failed");
+    assert.match(background.reason ?? "", /state=dirty-background/);
+    assert.equal(backgroundSpawns, 0);
+    assert.equal(existsSync(leasePath), false);
+
+    rmSync(join(repo, "arrived-after-plan.txt"));
+    let foregroundSpawns = 0;
+    const foregroundBase = createStubAdapter({ exitCode: 0 });
+    const foregroundAdapter: RuntimeAdapter = {
+      ...foregroundBase,
+      describeTools() {
+        writeFileSync(join(repo, "arrived-after-plan.txt"), "dirty\n");
+        return foregroundBase.describeTools();
+      },
+      spawn(opts) {
+        foregroundSpawns += 1;
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.equal(snapshot?.dirty, true);
+        assert.equal(snapshot?.untrackedCount, 1);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /arrived-after-plan\.txt/);
+        assert.match(primer, /Mandatory Dirty Repository Intent Contract/);
+        assert.match(primer, /Immediately before acting on approval, re-read the branch, HEAD, and full Git status/);
+        assert.match(primer, /arrived-after-plan\.txt/);
+        return foregroundBase.spawn(opts);
+      },
+    };
+    const foreground = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174" }, foregroundAdapter);
+    assert.equal(foreground.status, "success", foreground.reason);
+    assert.equal(foregroundSpawns, 1);
+    assert.equal(existsSync(leasePath), false);
+  });
+});
+
+test("OPA dirty-to-changed branch, HEAD, and status drift stays consistent across plan, primer, and lease", async () => {
+  await withOpaEnv(async (root) => {
+    writeBuilderTeamConfig(root);
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "dirty-before-plan.txt"), "initial dirty\n");
+    const initialHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    let finalHead = "";
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = {
+      ...base,
+      describeTools() {
+        execFileSync("git", ["checkout", "-b", "feature/post-plan-drift"], { cwd: repo, stdio: "ignore" });
+        execFileSync("git", ["commit", "--allow-empty", "-m", "post-plan head drift"], { cwd: repo, stdio: "ignore" });
+        writeFileSync(join(repo, "changed-after-plan.txt"), "changed dirty state\n");
+        finalHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+        return base.describeTools();
+      },
+      spawn(opts) {
+        const snapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+        const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+        const primer = readFileSync(opts.primerPath, "utf8");
+        assert.notEqual(finalHead, initialHead);
+        assert.equal(snapshot?.branch, "feature/post-plan-drift");
+        assert.equal(snapshot?.head, finalHead);
+        assert.equal(snapshot?.untrackedCount, 2);
+        assert.deepEqual(snapshot, leaseSnapshot);
+        assert.match(snapshot?.statusSummary ?? "", /dirty-before-plan\.txt/);
+        assert.match(snapshot?.statusSummary ?? "", /changed-after-plan\.txt/);
+        assert.match(primer, new RegExp(`- HEAD: ${finalHead}`));
+        assert.match(primer, /- Branch: feature\/post-plan-drift/);
+        assert.match(primer, /changed-after-plan\.txt/);
+        return base.spawn(opts);
+      },
+    };
+    const result = await deployWithOpencode({ team: "builder", mode: "implement", ticket: "PAP-174" }, adapter);
+    assert.equal(result.status, "success", result.reason);
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
 test("OPA background launcher requires authenticated supervisor handoff and releases failed handoffs", async () => {
   await withOpaEnv(async (root) => {
     writeBuilderTeamConfig(root);

@@ -15,8 +15,10 @@ import {
   quarantineRepositoryMutationLease,
   readProcessFingerprint,
   releaseRepositoryMutationLease,
+  repositoryGitSnapshotsEqual,
   repositoryMutationLeasePath,
   transferRepositoryMutationLease,
+  updateRepositoryMutationLeaseGitSnapshot,
   type ProcessFingerprint,
   type RepositoryAdmissionDependencies,
   type RepositoryGitSnapshot,
@@ -99,6 +101,70 @@ test("Git snapshot captures bounded staged, unstaged, and untracked evidence wit
   assert.deepEqual(calls.map((args) => args[0]), ["symbolic-ref", "rev-parse", "status"]);
   const prohibited = /^(stash|commit|reset|clean|restore|checkout|branch|worktree)$/;
   assert.equal(calls.some((args) => prohibited.test(args[0] ?? "")), false);
+});
+
+test("admission captures authoritative post-plan status inside ownership critical section", () => {
+  const root = fixture("authoritative-reread");
+  const owner = fingerprint(40501);
+  const finalHead = "c".repeat(40);
+  const deps: RepositoryAdmissionDependencies = {
+    ...dependencies(owner),
+    runGit: (args) => {
+      if (args[0] === "symbolic-ref") return "feature/drifted\n";
+      if (args[0] === "rev-parse") return `${finalHead}\n`;
+      if (args[0] === "status") return "?? arrived-after-plan.txt\0";
+      throw new Error(`unexpected Git command: ${args.join(" ")}`);
+    },
+  };
+  try {
+    const background = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      deploymentId: "d-background-drift",
+      deploymentDirectory: join(root, "background"),
+      runtime: "pi",
+      mode: "implement",
+      launchMode: "background",
+      team: "builder",
+      pid: owner.pid,
+      processFingerprint: owner,
+      dependencies: deps,
+    });
+    assert.equal(background.status, "rejected");
+    assert.equal(background.evidenceState, "dirty-background");
+    assert.match(background.diagnostic, /branch=feature\/drifted/);
+    assert.ok(background.diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    assert.equal(existsSync(repositoryMutationLeasePath(root)), false);
+
+    const foreground = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      deploymentId: "d-foreground-drift",
+      deploymentDirectory: join(root, "foreground"),
+      runtime: "opencode",
+      mode: "implement",
+      launchMode: "foreground",
+      team: "builder",
+      pid: owner.pid,
+      processFingerprint: owner,
+      dependencies: deps,
+    });
+    assert.equal(foreground.status, "acquired");
+    if (foreground.status === "acquired") {
+      assert.deepEqual(foreground.lease.preLaunchGitSnapshot, {
+        branch: "feature/drifted",
+        head: finalHead,
+        stagedCount: 0,
+        unstagedCount: 0,
+        untrackedCount: 1,
+        dirty: true,
+        statusSummary: "?? arrived-after-plan.txt",
+      });
+      assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: foreground.lease.ownershipToken }).status, "released");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("50 simultaneous cross-process ppa/opa contenders yield exactly one owner while different roots remain independent", async () => {
@@ -363,6 +429,14 @@ test("transfer and release are atomic, token-owned, and preserve replacement own
   try {
     const first = acquire(root, owner, { token: "owner-token" });
     assert.equal(first.status, "acquired");
+    const changedSnapshot = Object.freeze({ ...snapshot, branch: "feature/changed", head: "b".repeat(40) });
+    assert.deepEqual(updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: root, ownershipToken: "intruder", gitSnapshot: changedSnapshot }), { status: "token-mismatch" });
+    const updated = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: root, ownershipToken: "owner-token", gitSnapshot: changedSnapshot });
+    assert.equal(updated.status, "updated");
+    if (updated.status === "updated") {
+      assert.equal(repositoryGitSnapshotsEqual(updated.lease!.preLaunchGitSnapshot, changedSnapshot), true);
+      assert.deepEqual(updated.lease!.processFingerprint, owner);
+    }
     assert.deepEqual(transferRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "intruder", nextProcessFingerprint: supervisor, dependencies: dependencies(supervisor) }), { status: "token-mismatch" });
     const transferred = transferRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "owner-token", nextProcessFingerprint: supervisor, dependencies: dependencies(supervisor) });
     assert.equal(transferred.status, "transferred");

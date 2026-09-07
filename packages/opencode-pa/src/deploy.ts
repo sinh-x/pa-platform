@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { acquireRepositoryMutationLease, appendActivityEvent, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -166,19 +166,25 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   }
   const env = { ...plan.environment } as Record<PaEnvKey, string>;
   const primerPath = resolve(deployDir, "primer.md");
+  let toolReference: ReturnType<RuntimeAdapter["describeTools"]>;
   try {
-    const extraInstructions = buildExtraInstructions(plan, teamConfig);
-    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: plan.mode, objective: plan.userObjectiveOverride, repository: { repoKey: plan.repoKey, repoRoot: plan.repoRoot }, repositoryAdmission: plan.repositoryAdmission, toolReference: adapter.describeTools(), templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(plan.ticket ? { TICKET_ID: plan.ticket } : {}) }, extraInstructions });
-    writeFileSync(primerPath, primer, "utf-8");
+    toolReference = adapter.describeTools();
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
+  const writePrimer = (currentPlan: ExecutionPlan): void => {
+    const extraInstructions = buildExtraInstructions(currentPlan, teamConfig);
+    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions });
+    writeFileSync(primerPath, primer, "utf-8");
+  };
 
   const mode = request.dryRun ? "dry-run" : request.background ? "background" : "foreground";
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
   if (request.dryRun) {
+    try { writePrimer(plan); }
+    catch (error) { return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) }; }
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}`, metadata: { provider, model } }), paths.activityLogPath);
     await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
@@ -204,6 +210,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
 
   try {
     emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
+    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
       const acquisition = acquireRepositoryMutationLease({
         canonicalRepoKey: plan.repoKey,
@@ -212,8 +219,10 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
         deploymentDirectory: deployDir,
         runtime: "opencode",
         mode: plan.mode,
+        launchMode: plan.repositoryAdmission.launchMode,
+        team: teamConfig.name,
+        ...(plan.ticket ? { ticket: plan.ticket } : {}),
         force: plan.repositoryAdmission.force,
-        gitSnapshot: plan.repositoryAdmission.gitSnapshot,
       });
       if (acquisition.status === "rejected") {
         const reason = boundedDiagnostic(acquisition.diagnostic);
@@ -221,9 +230,30 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
         ensureTerminalRegistryMarker({ deploymentId, team: teamConfig.name });
         return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason };
       }
+      plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
       activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ownershipToken: acquisition.lease.ownershipToken };
     }
-    await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
+    if (activeRepositoryLease) {
+      let stable = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        writePrimer(plan);
+        const expected = plan.repositoryAdmission.gitSnapshot!;
+        const observed = captureRepositoryGitSnapshot(plan.repoRoot);
+        if (repositoryGitSnapshotsEqual(expected, observed)) {
+          stable = true;
+          break;
+        }
+        if (plan.repositoryAdmission.launchMode === "background" && observed.dirty) {
+          throw new Error(formatDirtyBackgroundBuilderDiagnostic({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, team: teamConfig.name, mode: plan.mode, runtime: "opencode", snapshot: observed, ...(plan.ticket ? { ticket: plan.ticket } : {}) }));
+        }
+        const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
+        if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
+        plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
+      }
+      if (!stable) throw new Error("repository-admission: Git state did not stabilize before runtime spawn; ownership was released and no runtime was started");
+    } else {
+      writePrimer(plan);
+    }
     const result = priorSession
       ? await adapter.resume({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionId: priorSession, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan })
       : await adapter.spawn({ primerPath, deployId: deploymentId, mode, model, timeoutMs: plan.timeoutSeconds * 1000, logFile: resolve(deployDir, "opencode.log"), env, sessionName, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), executionPlan: plan });
