@@ -194,6 +194,29 @@ deploy_modes:
   }
 });
 
+test("generatePrimer resolves neutral runtime adapter tokens for every runtime", () => {
+  const tokenTeam = parseTeamYamlContent(`
+name: builder
+description: Builder team
+objective: Run <runtime-adapter> ticket list and then <runtime-adapter> status.
+agents:
+  - name: builder-agent
+    role: Builds things
+`);
+  const cases = [
+    ["opencode", "opa"],
+    ["claude", "cpa"],
+    ["droid", "dpa"],
+    ["pi", "ppa"],
+  ] as const;
+
+  for (const [runtime, adapter] of cases) {
+    const primer = generatePrimer({ runtime, teamConfig: tokenTeam });
+    assert.match(primer, new RegExp(`Run ${adapter} ticket list and then ${adapter} status\\.`));
+    assert.doesNotMatch(primer, /<runtime-adapter>/);
+  }
+});
+
 test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", (t) => {
   if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
   const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
