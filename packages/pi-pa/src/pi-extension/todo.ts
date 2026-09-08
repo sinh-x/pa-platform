@@ -12,6 +12,7 @@ import {
   createDeploymentTaskSnapshot,
   deploymentTaskSnapshotPath,
   deploymentTaskStatusMarker,
+  hasDeploymentTaskDependencyCycle,
   writeDeploymentTaskSnapshot,
   type ActivityEvent,
   type DeploymentTask,
@@ -126,7 +127,7 @@ export class TodoStore {
           const invalid = unknownDependency(dependencies, candidate);
           if (invalid !== undefined) return reject(`Dependency #${invalid} not found`);
           task!.dependencies = dependencies;
-          if (hasDependencyCycle(candidate)) return reject("Dependency cycle detected");
+          if (hasDeploymentTaskDependencyCycle(candidate)) return reject("Dependency cycle detected");
         }
         break;
       }
@@ -352,22 +353,6 @@ function isTerminal(status: TodoStatus): boolean {
 
 function normalizeOrder(tasks: TodoTask[]): void {
   tasks.forEach((task, index) => { task.order = index + 1; });
-}
-
-function hasDependencyCycle(tasks: TodoTask[]): boolean {
-  const visiting = new Set<number>();
-  const visited = new Set<number>();
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const visit = (id: number): boolean => {
-    if (visiting.has(id)) return true;
-    if (visited.has(id)) return false;
-    visiting.add(id);
-    for (const dependency of byId.get(id)?.dependencies ?? []) if (visit(dependency)) return true;
-    visiting.delete(id);
-    visited.add(id);
-    return false;
-  };
-  return tasks.some((task) => visit(task.id));
 }
 
 function isTodoDetails(value: unknown): value is TodoDetails {

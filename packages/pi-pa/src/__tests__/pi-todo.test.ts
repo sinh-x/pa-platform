@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES,
   createDeploymentTaskSnapshot,
   deploymentTaskSnapshotPath,
   readActivityEvents,
@@ -42,6 +43,25 @@ function resultEntry(details: TodoDetails): unknown {
   return {
     type: "message",
     message: { role: "toolResult", toolName: "todo", details },
+  };
+}
+
+const DEEP_TASK_COUNT = 20_000;
+
+function deepReverseTopologicalDetails(): TodoDetails {
+  return {
+    action: "list",
+    nextId: DEEP_TASK_COUNT + 1,
+    tasks: Array.from({ length: DEEP_TASK_COUNT }, (_, index) => {
+      const id = DEEP_TASK_COUNT - index;
+      return {
+        id,
+        text: "x",
+        status: "pending",
+        order: index + 1,
+        dependencies: id === 1 ? [] : [id - 1],
+      };
+    }),
   };
 }
 
@@ -120,6 +140,21 @@ test("dependency validation rejects unknown IDs, self-dependencies, cycles, and 
 
   store.apply({ action: "complete", id: 1 });
   assert.equal(store.apply({ action: "complete", id: 2 }).tasks.find((task) => task.id === 2)?.status, "completed");
+});
+
+test("TodoStore iteratively validates deep reverse-topological acyclic and cyclic mutations", () => {
+  const store = new TodoStore();
+  const details = deepReverseTopologicalDetails();
+  assert.ok(Buffer.byteLength(JSON.stringify(details)) < MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES);
+  store.restore(details);
+
+  const acyclic = store.apply({ action: "update", id: 1, dependencies: [] });
+  assert.equal(acyclic.error, undefined);
+  assert.equal(acyclic.tasks.length, DEEP_TASK_COUNT);
+
+  const cyclic = store.apply({ action: "update", id: 1, dependencies: [DEEP_TASK_COUNT] });
+  assert.match(cyclic.error ?? "", /Dependency cycle detected/);
+  assert.deepEqual(cyclic.tasks.at(-1)?.dependencies, []);
 });
 
 test("cancelled dependencies remain unsatisfied and terminal tasks reject every mutation", () => {

@@ -103,7 +103,7 @@ export function validateDeploymentTaskSnapshot(value: unknown, expectedDeploymen
   if (tasks.filter((task) => task.status === "in_progress").length > 1) {
     throw malformed("only one task may be in progress");
   }
-  if (hasDependencyCycle(tasks)) throw malformed("task dependencies must not contain a cycle");
+  if (hasDeploymentTaskDependencyCycle(tasks)) throw malformed("task dependencies must not contain a cycle");
 
   return {
     schemaVersion: DEPLOYMENT_TASK_SNAPSHOT_VERSION,
@@ -252,20 +252,33 @@ function cloneTask(task: DeploymentTask): DeploymentTask {
   return { ...task, dependencies: [...task.dependencies] };
 }
 
-function hasDependencyCycle(tasks: DeploymentTask[]): boolean {
+export function hasDeploymentTaskDependencyCycle(
+  tasks: readonly Pick<DeploymentTask, "id" | "dependencies">[],
+): boolean {
   const byId = new Map(tasks.map((task) => [task.id, task]));
-  const visiting = new Set<number>();
-  const visited = new Set<number>();
-  const visit = (id: number): boolean => {
-    if (visiting.has(id)) return true;
-    if (visited.has(id)) return false;
-    visiting.add(id);
-    for (const dependency of byId.get(id)?.dependencies ?? []) if (visit(dependency)) return true;
-    visiting.delete(id);
-    visited.add(id);
-    return false;
-  };
-  return tasks.some((task) => visit(task.id));
+  const state = new Map<number, "visiting" | "visited">();
+
+  for (const task of tasks) {
+    if (state.get(task.id) === "visited") continue;
+    const stack: Array<{ id: number; dependencyIndex: number }> = [{ id: task.id, dependencyIndex: 0 }];
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (state.get(frame.id) === undefined) state.set(frame.id, "visiting");
+      const dependencies = byId.get(frame.id)?.dependencies ?? [];
+      if (frame.dependencyIndex >= dependencies.length) {
+        state.set(frame.id, "visited");
+        stack.pop();
+        continue;
+      }
+
+      const dependency = dependencies[frame.dependencyIndex++]!;
+      const dependencyState = state.get(dependency);
+      if (dependencyState === "visiting") return true;
+      if (dependencyState !== "visited") stack.push({ id: dependency, dependencyIndex: 0 });
+    }
+  }
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

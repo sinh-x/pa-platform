@@ -18,10 +18,25 @@ import {
   sanitizeDeploymentTaskText,
   validateDeploymentTaskSnapshot,
   writeDeploymentTaskSnapshot,
+  type DeploymentTask,
   type DeploymentTaskSnapshot,
 } from "../index.js";
 
 const UPDATED_AT = "2026-08-29T12:34:56.000Z";
+const DEEP_TASK_COUNT = 20_000;
+
+function deepReverseTopologicalTasks(count = DEEP_TASK_COUNT): DeploymentTask[] {
+  return Array.from({ length: count }, (_, index) => {
+    const id = count - index;
+    return {
+      id,
+      text: "x",
+      status: "pending",
+      order: index + 1,
+      dependencies: id === 1 ? [] : [id - 1],
+    };
+  });
+}
 
 function snapshot(deploymentId = "d-task"): DeploymentTaskSnapshot {
   return createDeploymentTaskSnapshot({
@@ -71,6 +86,29 @@ test("deployment task snapshot rejects identity, version, and invalid task shape
   for (const invalid of invalidValues) {
     assert.throws(() => validateDeploymentTaskSnapshot(invalid, "d-task"), /malformed/);
   }
+});
+
+test("deployment task snapshot iteratively validates deep reverse-topological acyclic and cyclic graphs", () => {
+  const acyclic = {
+    schemaVersion: DEPLOYMENT_TASK_SNAPSHOT_VERSION,
+    deploymentId: "d-deep",
+    updatedAt: UPDATED_AT,
+    tasks: deepReverseTopologicalTasks(),
+    nextId: DEEP_TASK_COUNT + 1,
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(acyclic)) < MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES);
+  const validated = validateDeploymentTaskSnapshot(acyclic, "d-deep");
+  assert.equal(validated.tasks.length, DEEP_TASK_COUNT);
+  assert.match(formatDeploymentTaskSection(validated), new RegExp(`Session tasks: 0/${DEEP_TASK_COUNT} completed`));
+
+  const cyclic = {
+    ...acyclic,
+    tasks: acyclic.tasks.map((task) => task.id === 1
+      ? { ...task, dependencies: [DEEP_TASK_COUNT] }
+      : task),
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(cyclic)) < MAX_DEPLOYMENT_TASK_SNAPSHOT_BYTES);
+  assert.throws(() => validateDeploymentTaskSnapshot(cyclic, "d-deep"), /dependencies must not contain a cycle/);
 });
 
 test("deployment task snapshot reader rejects files larger than 5 MiB before parsing", (t) => {
