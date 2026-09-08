@@ -2,7 +2,16 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { maskSecrets, readActivityEvents } from "../../activity/index.js";
 import type { ActivityEvent } from "../../activity/index.js";
-import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS } from "../../deploy/index.js";
+import {
+  DEFAULT_DEPLOY_TIMEOUT_SECONDS,
+  MAX_DEPLOY_TIMEOUT_SECONDS,
+  MIN_DEPLOY_TIMEOUT_SECONDS,
+  deploymentTaskSnapshotPath,
+  deploymentTaskSnapshotUnavailableReason,
+  formatDeploymentTaskSection,
+  formatDeploymentTasksUnavailable,
+  readDeploymentTaskSnapshot,
+} from "../../deploy/index.js";
 import { getAiUsageDir, getDeploymentDir } from "../../paths.js";
 import { getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, reconcileTerminalRegistryEventIfAbsent } from "../../registry/index.js";
 import { formatLocal, formatLocalShort, nowUtc, parseTimestamp } from "../../time.js";
@@ -578,6 +587,16 @@ function localDate(timestamp: string): string {
   return parseTimestamp(timestamp).toLocaleDateString("en-CA");
 }
 
+function formatPiDeploymentTaskEvidence(deployId: string): string {
+  const path = deploymentTaskSnapshotPath(getDeploymentDir(deployId));
+  if (!existsSync(path)) return formatDeploymentTasksUnavailable("snapshot file is missing");
+  try {
+    return formatDeploymentTaskSection(readDeploymentTaskSnapshot(path, deployId));
+  } catch (error) {
+    return formatDeploymentTasksUnavailable(deploymentTaskSnapshotUnavailableReason(error));
+  }
+}
+
 export async function runStatusCommand(argv: string[], io: Required<CliIo>, now: Date, runtime: StatusWaitRuntime): Promise<number> {
   if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printStatusHelp(io);
@@ -598,7 +617,8 @@ export async function runStatusCommand(argv: string[], io: Required<CliIo>, now:
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
     if (opts.activity) return showDeploymentActivity(opts.deployId, io, opts.verbose);
-    io.stdout(formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length));
+    const detail = formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length);
+    io.stdout(deployment.runtime === "pi" ? `${detail}\n\n${formatPiDeploymentTaskEvidence(deployment.deploy_id)}` : detail);
     return 0;
   }
 

@@ -98,7 +98,8 @@ export function formatRegistryList(deployments: DeploymentStatus[]): string {
 }
 
 export function formatRegistryShow(deployment: DeploymentStatus, eventCount: number): string {
-  const lines = [`Deployment: ${deployment.deploy_id}`, `  Team:     ${deployment.team}`, `  Status:   ${deployment.status}`, `  Started:  ${shortTs(deployment.started_at)}`];
+  const teamIdentity = deployment.mode ? `${deployment.team}/${deployment.mode}` : deployment.team;
+  const lines = [`Deployment: ${deployment.deploy_id}`, `  Team:     ${teamIdentity}`, `  Status:   ${deployment.status}`, `  Started:  ${shortTs(deployment.started_at)}`];
   if (deployment.completed_at) lines.push(`  Ended:    ${shortTs(deployment.completed_at)}`);
   if (deployment.runtime) lines.push(`  Runtime:  ${deployment.runtime}`);
   if (deployment.provider) lines.push(`  Provider: ${deployment.provider}`);
