@@ -63,7 +63,9 @@ export function readPluginSelection(lock, { environment = process.env } = {}) {
 
 export function selectedExtensionSources(lock, selection) {
   const normalized = normalizePluginSelection(lock, selection);
-  return lock.sources.filter(({ name }) => normalized[name]);
+  return lock.sources
+    .filter(({ name }) => normalized[name])
+    .toSorted((left, right) => left.registrationOrder - right.registrationOrder);
 }
 
 export function readSourceLock(packageRoot = PACKAGE_ROOT) {
@@ -77,16 +79,25 @@ export function readSourceLock(packageRoot = PACKAGE_ROOT) {
     if (!source || typeof source !== "object" || typeof source.name !== "string") {
       throw new Error(`${LOCK_FILENAME} contains an invalid source record.`);
     }
-    for (const field of ["version", "repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "license", "licensePath", "licenseSha256", "bundle"]) {
+    for (const field of ["version", "import", "importTarget", "repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "license", "licensePath", "licenseSha256", "bundle"]) {
       if (typeof source[field] !== "string" || source[field].length === 0) {
         throw new Error(`${LOCK_FILENAME} source ${source.name} has invalid ${field}.`);
       }
+    }
+    if (!Number.isSafeInteger(source.registrationOrder) || source.registrationOrder < 0) {
+      throw new Error(`${LOCK_FILENAME} source ${source.name} has invalid registrationOrder.`);
     }
     if (!SOURCE_NAME_PATTERN.test(source.name)) throw new Error(`${source.name} is not a safe source name.`);
     if (!SHA_PATTERN.test(source.commit)) throw new Error(`${source.name} commit must be an exact 40-character lowercase SHA.`);
     if (!SHA256_PATTERN.test(source.contentSha256) || !SHA256_PATTERN.test(source.licenseSha256)) {
       throw new Error(`${source.name} content and license digests must be lowercase SHA-256 values.`);
     }
+  }
+  if (new Set(lock.sources.map((source) => source.import)).size !== lock.sources.length) {
+    throw new Error(`${LOCK_FILENAME} source imports must be unique.`);
+  }
+  if (new Set(lock.sources.map((source) => source.registrationOrder)).size !== lock.sources.length) {
+    throw new Error(`${LOCK_FILENAME} source registrationOrder values must be unique.`);
   }
   return lock;
 }

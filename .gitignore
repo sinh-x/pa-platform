@@ -2,6 +2,8 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+packages/pi-pa/src/pi-extension/bundled-editor-factories.ts
+packages/pi-pa/src/pi-extension/vendor/
 .direnv/
 
 # PA Platform local state

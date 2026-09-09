@@ -45,7 +45,7 @@
             src = ./.;
             filter = path: _type:
               let baseName = builtins.baseNameOf path;
-              in !(builtins.elem baseName [ "node_modules" "dist" ".git" ]);
+              in !(builtins.elem baseName [ "node_modules" "dist" ".git" "bundled-editor-factories.ts" ]);
           };
 
           nativeBuildInputs = with pkgs; [
@@ -108,8 +108,10 @@
             mkdir -p $share/packages/droidcode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/droidcode-pa/node_modules/@pa-platform/pa-core
 
-            cp packages/pi-pa/package.json packages/pi-pa/THIRD_PARTY_NOTICES.md $share/packages/pi-pa/
+            cp packages/pi-pa/dist/pi-pa-package.json $share/packages/pi-pa/package.json
+            cp packages/pi-pa/dist/THIRD_PARTY_NOTICES.md $share/packages/pi-pa/THIRD_PARTY_NOTICES.md
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
+            rm $share/packages/pi-pa/dist/pi-pa-package.json $share/packages/pi-pa/dist/THIRD_PARTY_NOTICES.md
             cp -r packages/pi-pa/node_modules $share/packages/pi-pa/node_modules
             test -f packages/pi-pa/package.json
             rm -f $share/packages/pi-pa/node_modules/@pa-platform/pa-core

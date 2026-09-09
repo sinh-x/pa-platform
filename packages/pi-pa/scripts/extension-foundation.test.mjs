@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { bundleExtensionSources } from "./bundle-extension-sources.mjs";
 import {
   PACKAGE_ROOT,
   normalizePluginSelection,
@@ -64,7 +64,7 @@ test("plugin selection normalizes all four boolean combinations from reviewed so
     [{ "pi-vimmode": false, "proper-base": false }, []],
     [{ "pi-vimmode": true, "proper-base": false }, ["pi-vimmode"]],
     [{ "pi-vimmode": false, "proper-base": true }, ["proper-base"]],
-    [{ "pi-vimmode": true, "proper-base": true }, ["proper-base", "pi-vimmode"]],
+    [{ "pi-vimmode": true, "proper-base": true }, ["pi-vimmode", "proper-base"]],
   ];
   for (const [selection, expectedSources] of matrix) {
     assert.deepEqual(normalizePluginSelection(lock, selection), selection);
@@ -74,55 +74,80 @@ test("plugin selection normalizes all four boolean combinations from reviewed so
   assert.throws(() => normalizePluginSelection(lock, { arbitrary: true }), /unknown reviewed plugin arbitrary/);
 });
 
-test("bundle pipeline records the deterministic selection with eligible source provenance", () => {
+test("bundle pipeline emits only selected artifacts, imports, notices, and immutable provenance for 4/4 selections", async () => {
   const packageJson = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, "package.json"), "utf8"));
   const lock = readSourceLock();
-  const bundlerPath = resolve(PACKAGE_ROOT, "scripts/bundle-extension-sources.mjs");
-  const bundler = readFileSync(bundlerPath, "utf8");
+  const bundler = readFileSync(resolve(PACKAGE_ROOT, "scripts/bundle-extension-sources.mjs"), "utf8");
   assert.equal(lock.sources.length, 2);
   assert.deepEqual(lock.sources.map(({ name, version, license }) => ({ name, version, license })), [
     { name: "proper-base", version: "0.5.0", license: "MIT" },
     { name: "pi-vimmode", version: "0.9.0", license: "MIT" },
   ]);
-  assert.deepEqual(lock.sources.map((source) => source.entrypoint), [
-    "vendor/proper-pi-extensions/proper-base/index.ts",
-    "vendor/pi-vimmode/index.ts",
-  ]);
+  assert.deepEqual(selectedExtensionSources(lock, { "pi-vimmode": true, "proper-base": true }).map(({ name }) => name), ["pi-vimmode", "proper-base"]);
   assert.equal(packageJson.dependencies.sharp, "0.35.3");
   assert.equal(packageJson.devDependencies.esbuild, "0.27.7");
+  assert.equal(packageJson.imports, undefined, "installed import mappings must be generated only for selected sources");
   for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "sharp", "typebox"]) {
     assert.match(bundler, new RegExp(`\\"${dependency.replaceAll("/", "\\/")}\\"`));
   }
   assert.doesNotMatch(bundler, /Date\(|generatedAt|timestamp/);
 
-  const outputRoot = resolve(PACKAGE_ROOT, "dist/pi-extension/vendor");
   const selectionMatrix = [
     [{ "pi-vimmode": false, "proper-base": false }, []],
     [{ "pi-vimmode": true, "proper-base": false }, ["pi-vimmode"]],
     [{ "pi-vimmode": false, "proper-base": true }, ["proper-base"]],
-    [{ "pi-vimmode": true, "proper-base": true }, ["proper-base", "pi-vimmode"]],
+    [{ "pi-vimmode": true, "proper-base": true }, ["pi-vimmode", "proper-base"]],
   ];
-  let provenance;
-  for (const [selection, expectedSources] of selectionMatrix) {
-    execFileSync(process.execPath, [bundlerPath], {
-      cwd: PACKAGE_ROOT,
-      env: { ...process.env, PI_PA_PLUGIN_SELECTION: JSON.stringify(selection) },
-      stdio: "pipe",
-    });
-    provenance = JSON.parse(readFileSync(resolve(outputRoot, "provenance.json"), "utf8"));
-    assert.deepEqual(provenance.pluginSelection, selection);
-    assert.deepEqual(provenance.selectedSources, expectedSources);
+  for (const [selection, expectedNames] of selectionMatrix) {
+    const outputRoot = mkdtempSync(join(tmpdir(), "pi-pa-bundle-selection-"));
+    const generatedSourcePath = resolve(outputRoot, "source/bundled-editor-factories.ts");
+    try {
+      await bundleExtensionSources({
+        outputRoot,
+        generatedSourcePath,
+        environment: { PI_PA_PLUGIN_SELECTION: JSON.stringify(selection) },
+      });
+      const provenance = JSON.parse(readFileSync(resolve(outputRoot, "pi-extension/vendor/provenance.json"), "utf8"));
+      const generatedFactories = readFileSync(resolve(outputRoot, "pi-extension/bundled-editor-factories.js"), "utf8");
+      const generatedSourceFactories = readFileSync(generatedSourcePath, "utf8");
+      const generatedPackage = JSON.parse(readFileSync(resolve(outputRoot, "pi-pa-package.json"), "utf8"));
+      const generatedNotice = readFileSync(resolve(outputRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+
+      assert.deepEqual(provenance.selectedSources, expectedNames);
+      assert.deepEqual(provenance.sources.map(({ name }) => name), expectedNames);
+      assert.deepEqual(generatedPackage.imports, Object.fromEntries(expectedNames.map((name) => {
+        const source = lock.sources.find((candidate) => candidate.name === name);
+        return [source.import, source.importTarget];
+      })));
+      for (const source of lock.sources) {
+        const enabled = expectedNames.includes(source.name);
+        assert.equal(existsSync(resolve(outputRoot, "pi-extension/vendor", source.bundle)), enabled);
+        assert.equal(existsSync(resolve(outputRoot, "pi-extension/vendor", `${source.bundle}.map`)), enabled);
+        assert.equal(existsSync(resolve(outputRoot, "pi-extension/vendor/licenses", `${source.name}-LICENSE.txt`)), enabled);
+        assert.equal(generatedFactories.includes(source.import), enabled);
+        assert.equal(generatedSourceFactories.includes(`./vendor/${source.bundle}`), enabled);
+        assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle)), enabled);
+        assert.equal(existsSync(resolve(outputRoot, "source/vendor", `${source.bundle}.map`)), enabled);
+        assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle.replace(/\.js$/, ".d.ts"))), enabled);
+        assert.equal(generatedNotice.includes(`## ${source.name} ${source.version}`), enabled);
+        assert.equal(provenance.sources.some(({ name }) => name === source.name), enabled);
+        if (enabled) {
+          const record = provenance.sources.find(({ name }) => name === source.name);
+          assert.deepEqual(
+            [record.commit, record.contentSha256, record.license, record.licenseSha256],
+            [source.commit, source.contentSha256, source.license, source.licenseSha256],
+          );
+          assert.equal(readFileSync(resolve(outputRoot, "pi-extension/vendor/licenses", `${source.name}-LICENSE.txt`), "utf8"), readFileSync(resolve(PACKAGE_ROOT, source.licensePath), "utf8"));
+        }
+      }
+      if (expectedNames.length === 2) {
+        assert.ok(generatedFactories.indexOf("#pi-pa-vimmode") < generatedFactories.indexOf("#pi-pa-proper-base"));
+        assert.match(readFileSync(resolve(outputRoot, "pi-extension/vendor/proper-base.js"), "utf8"), /from "sharp"/);
+      }
+    } finally {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
   }
-  assert.deepEqual(provenance.sources.map((source) => source.commit), lock.sources.map((source) => source.commit));
-  assert.deepEqual(provenance.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })), lock.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })));
-  assert.equal(provenance.sources.length, 2);
-  for (const source of lock.sources) {
-    assert.equal(provenance.sources.find((item) => item.name === source.name)?.packagedLicense, `licenses/${source.name}-LICENSE.txt`);
-    assert.equal(readFileSync(resolve(outputRoot, "licenses", `${source.name}-LICENSE.txt`), "utf8"), readFileSync(resolve(PACKAGE_ROOT, source.licensePath), "utf8"));
-  }
-  assert.match(readFileSync(resolve(outputRoot, "proper-base.js"), "utf8"), /from "sharp"/);
-  assert.match(readFileSync(resolve(outputRoot, "proper-base.js"), "utf8"), /from "@earendil-works\/pi-/);
-  assert.match(readFileSync(resolve(outputRoot, "pi-vimmode.js"), "utf8"), /from "@earendil-works\/pi-/);
 });
 
 test("CI and Nix inputs require recursive exact sources and both Linux sharp artifacts", () => {
