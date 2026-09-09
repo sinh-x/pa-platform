@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { PACKAGE_ROOT, readSourceLock, validateExtensionSources } from "./extension-sources.mjs";
+import {
+  PACKAGE_ROOT,
+  normalizePluginSelection,
+  readSourceLock,
+  selectedExtensionSources,
+  validateExtensionSources,
+} from "./extension-sources.mjs";
 
 const REPOSITORY_ROOT = resolve(PACKAGE_ROOT, "../..");
 
@@ -52,12 +58,27 @@ test("exact extension source validator rejects content drift without changing th
   }
 });
 
-test("bundle pipeline emits two factories, external imports, and immutable provenance", () => {
+test("plugin selection normalizes all four boolean combinations from reviewed source metadata", () => {
+  const lock = readSourceLock();
+  const matrix = [
+    [{ "pi-vimmode": false, "proper-base": false }, []],
+    [{ "pi-vimmode": true, "proper-base": false }, ["pi-vimmode"]],
+    [{ "pi-vimmode": false, "proper-base": true }, ["proper-base"]],
+    [{ "pi-vimmode": true, "proper-base": true }, ["proper-base", "pi-vimmode"]],
+  ];
+  for (const [selection, expectedSources] of matrix) {
+    assert.deepEqual(normalizePluginSelection(lock, selection), selection);
+    assert.deepEqual(selectedExtensionSources(lock, selection).map(({ name }) => name), expectedSources);
+  }
+  assert.throws(() => normalizePluginSelection(lock, { "pi-vimmode": "yes" }), /pi-vimmode must be a boolean/);
+  assert.throws(() => normalizePluginSelection(lock, { arbitrary: true }), /unknown reviewed plugin arbitrary/);
+});
+
+test("bundle pipeline records the deterministic selection with eligible source provenance", () => {
   const packageJson = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, "package.json"), "utf8"));
   const lock = readSourceLock();
   const bundlerPath = resolve(PACKAGE_ROOT, "scripts/bundle-extension-sources.mjs");
   const bundler = readFileSync(bundlerPath, "utf8");
-  execFileSync(process.execPath, [bundlerPath], { cwd: PACKAGE_ROOT, stdio: "pipe" });
   assert.equal(lock.sources.length, 2);
   assert.deepEqual(lock.sources.map(({ name, version, license }) => ({ name, version, license })), [
     { name: "proper-base", version: "0.5.0", license: "MIT" },
@@ -75,7 +96,23 @@ test("bundle pipeline emits two factories, external imports, and immutable prove
   assert.doesNotMatch(bundler, /Date\(|generatedAt|timestamp/);
 
   const outputRoot = resolve(PACKAGE_ROOT, "dist/pi-extension/vendor");
-  const provenance = JSON.parse(readFileSync(resolve(outputRoot, "provenance.json"), "utf8"));
+  const selectionMatrix = [
+    [{ "pi-vimmode": false, "proper-base": false }, []],
+    [{ "pi-vimmode": true, "proper-base": false }, ["pi-vimmode"]],
+    [{ "pi-vimmode": false, "proper-base": true }, ["proper-base"]],
+    [{ "pi-vimmode": true, "proper-base": true }, ["proper-base", "pi-vimmode"]],
+  ];
+  let provenance;
+  for (const [selection, expectedSources] of selectionMatrix) {
+    execFileSync(process.execPath, [bundlerPath], {
+      cwd: PACKAGE_ROOT,
+      env: { ...process.env, PI_PA_PLUGIN_SELECTION: JSON.stringify(selection) },
+      stdio: "pipe",
+    });
+    provenance = JSON.parse(readFileSync(resolve(outputRoot, "provenance.json"), "utf8"));
+    assert.deepEqual(provenance.pluginSelection, selection);
+    assert.deepEqual(provenance.selectedSources, expectedSources);
+  }
   assert.deepEqual(provenance.sources.map((source) => source.commit), lock.sources.map((source) => source.commit));
   assert.deepEqual(provenance.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })), lock.sources.map(({ version, license, licenseSha256 }) => ({ version, license, licenseSha256 })));
   assert.equal(provenance.sources.length, 2);

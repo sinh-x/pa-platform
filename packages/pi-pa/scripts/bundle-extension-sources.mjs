@@ -2,7 +2,7 @@
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build, version as esbuildVersion } from "esbuild";
-import { PACKAGE_ROOT, validateExtensionSources } from "./extension-sources.mjs";
+import { PACKAGE_ROOT, readPluginSelection, selectedExtensionSources, validateExtensionSources } from "./extension-sources.mjs";
 
 export const EXTERNAL_PACKAGES = [
   "@earendil-works/pi-ai",
@@ -15,6 +15,8 @@ export const EXTERNAL_PACKAGES = [
 
 const outputRoot = resolve(PACKAGE_ROOT, "dist/pi-extension/vendor");
 const lock = validateExtensionSources();
+const pluginSelection = readPluginSelection(lock);
+const selectedSources = selectedExtensionSources(lock, pluginSelection);
 await rm(outputRoot, { recursive: true, force: true });
 await mkdir(resolve(outputRoot, "licenses"), { recursive: true });
 
@@ -38,6 +40,8 @@ const provenance = {
   schemaVersion: 1,
   buildTool: { name: "esbuild", version: esbuildVersion },
   externalPackages: EXTERNAL_PACKAGES,
+  pluginSelection,
+  selectedSources: selectedSources.map(({ name }) => name),
   sources: lock.sources.map(({ name, version, repository, commit, entrypoint, contentSha256, license, licensePath, licenseSha256, bundle }) => ({
     name,
     version,

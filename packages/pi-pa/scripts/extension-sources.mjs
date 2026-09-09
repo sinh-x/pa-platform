@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const LOCK_FILENAME = "extension-sources.lock.json";
+export const PLUGIN_SELECTION_ENV = "PI_PA_PLUGIN_SELECTION";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
@@ -25,6 +26,44 @@ function normalizedPath(root, path) {
     throw new Error(`Source path escapes pi-pa package root: ${path}`);
   }
   return absolute;
+}
+
+export function normalizePluginSelection(lock, selection = {}) {
+  if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+    throw new Error(`${PLUGIN_SELECTION_ENV} must be a JSON object mapping reviewed plugin names to booleans.`);
+  }
+  const eligibleNames = new Set(lock.sources.map(({ name }) => name));
+  for (const name of Object.keys(selection)) {
+    if (!eligibleNames.has(name)) {
+      throw new Error(`${PLUGIN_SELECTION_ENV} contains unknown reviewed plugin ${name}.`);
+    }
+  }
+  const normalized = {};
+  for (const { name } of lock.sources) {
+    const enabled = Object.hasOwn(selection, name) ? selection[name] : false;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${PLUGIN_SELECTION_ENV} value for ${name} must be a boolean, received ${typeof enabled}.`);
+    }
+    normalized[name] = enabled;
+  }
+  return Object.freeze(normalized);
+}
+
+export function readPluginSelection(lock, { environment = process.env } = {}) {
+  const encoded = environment[PLUGIN_SELECTION_ENV];
+  if (encoded === undefined) return normalizePluginSelection(lock);
+  let selection;
+  try {
+    selection = JSON.parse(encoded);
+  } catch (error) {
+    throw new Error(`${PLUGIN_SELECTION_ENV} must contain valid JSON: ${error.message}`);
+  }
+  return normalizePluginSelection(lock, selection);
+}
+
+export function selectedExtensionSources(lock, selection) {
+  const normalized = normalizePluginSelection(lock, selection);
+  return lock.sources.filter(({ name }) => normalized[name]);
 }
 
 export function readSourceLock(packageRoot = PACKAGE_ROOT) {

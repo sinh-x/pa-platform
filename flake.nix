@@ -12,10 +12,21 @@
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
-      paPlatformFor = system:
+      requireBooleanOption = name: value:
+        if builtins.isBool value then value
+        else throw "lib.mkPaPlatform: option `${name}` must be a boolean, received ${builtins.typeOf value}.";
+
+      paPlatformFor = system: {
+        enablePiVimMode ? false,
+        enableProperBase ? false,
+      }:
         let
           pkgs = pkgsFor system;
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
+          pluginSelection = {
+            "pi-vimmode" = requireBooleanOption "enablePiVimMode" enablePiVimMode;
+            "proper-base" = requireBooleanOption "enableProperBase" enableProperBase;
+          };
           runtimePath = pkgs.lib.makeBinPath (with pkgs; [
             bash
             bubblewrap
@@ -53,6 +64,12 @@
           buildInputs = with pkgs; [
             sqlite.out
           ];
+
+          PI_PA_PLUGIN_SELECTION = builtins.toJSON pluginSelection;
+
+          passthru = {
+            inherit pluginSelection;
+          };
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
@@ -215,15 +232,53 @@
         });
     in
     {
-      packages = forAllSystems (system: {
-        pa-platform = paPlatformFor system;
-        pa-core = paPlatformFor system;
-        opa = paPlatformFor system;
-        cpa = paPlatformFor system;
-        dpa = paPlatformFor system;
-        ppa = paPlatformFor system;
-        default = paPlatformFor system;
-      });
+      lib.mkPaPlatform = paPlatformFor;
+
+      packages = forAllSystems (system:
+        let
+          defaultPaPlatform = paPlatformFor system {
+            enablePiVimMode = false;
+            enableProperBase = false;
+          };
+        in {
+          pa-platform = defaultPaPlatform;
+          pa-core = defaultPaPlatform;
+          opa = defaultPaPlatform;
+          cpa = defaultPaPlatform;
+          dpa = defaultPaPlatform;
+          ppa = defaultPaPlatform;
+          default = defaultPaPlatform;
+        });
+
+      checks = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          packagesForSystem = self.packages.${system};
+          overlayPackages = self.overlays.default pkgs pkgs;
+          selectionOf = package: package.pluginSelection;
+          neither = { "pi-vimmode" = false; "proper-base" = false; };
+          vimOnly = { "pi-vimmode" = true; "proper-base" = false; };
+          properOnly = { "pi-vimmode" = false; "proper-base" = true; };
+          both = { "pi-vimmode" = true; "proper-base" = true; };
+          invalidVim = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enablePiVimMode = "yes"; }) true);
+          invalidProper = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enableProperBase = 1; }) true);
+        in {
+          plugin-selection-contract =
+            assert selectionOf (paPlatformFor system {}) == neither;
+            assert selectionOf (paPlatformFor system { enablePiVimMode = true; }) == vimOnly;
+            assert selectionOf (paPlatformFor system { enableProperBase = true; }) == properOnly;
+            assert selectionOf (paPlatformFor system { enablePiVimMode = true; enableProperBase = true; }) == both;
+            assert selectionOf packagesForSystem.pa-platform == neither;
+            assert selectionOf packagesForSystem.ppa == neither;
+            assert selectionOf packagesForSystem.default == neither;
+            assert selectionOf overlayPackages.pa-platform == neither;
+            assert selectionOf overlayPackages.ppa == neither;
+            assert !invalidVim.success;
+            assert !invalidProper.success;
+            pkgs.runCommand "pa-platform-plugin-selection-contract" {} ''
+              touch $out
+            '';
+        });
 
       overlays.default = final: prev: {
         pa-platform = self.packages.${prev.stdenv.hostPlatform.system}.pa-platform;
