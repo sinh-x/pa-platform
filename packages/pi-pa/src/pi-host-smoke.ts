@@ -16,6 +16,7 @@ import { createQuestionTool } from "./pi-extension/question.js";
 import { createTodoTool, reconstructTodoState, TodoStore } from "./pi-extension/todo.js";
 
 const MANAGED_TOOLS = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"] as const;
+const INVARIANT_EXTENSION_COMMANDS = ["pa-context", "pa-git-context"] as const;
 
 type ManagedToolName = (typeof MANAGED_TOOLS)[number];
 interface ToolSmokeResult { name: ManagedToolName; status: "passed" }
@@ -31,6 +32,22 @@ interface ExtensionSmokeEvidence {
 
 export async function runHostNativeSmoke(addonPath: string): Promise<ReturnType<typeof verifyRegistryNativeAddon> & { registryQuery: "PRAGMA user_version"; close: "explicit" }> {
   return { ...verifyRegistryNativeAddon(addonPath), registryQuery: "PRAGMA user_version", close: "explicit" };
+}
+
+export function expectedManagedExtensionCommands(factories: readonly string[]): string[] {
+  const editorCommands = factories.flatMap((factory) => {
+    if (factory.startsWith("pi-vimmode@")) return ["vimmode"];
+    if (factory.startsWith("proper-base@")) return ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"];
+    throw new Error(`unknown bundled editor factory: ${factory}`);
+  });
+  return [...editorCommands, ...INVARIANT_EXTENSION_COMMANDS];
+}
+
+export function assertManagedExtensionCommands(actual: readonly string[], factories: readonly string[]): void {
+  const expected = expectedManagedExtensionCommands(factories);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`registered extension commands mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+  }
 }
 
 export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node: string; modules: string; tools: ToolSmokeResult[]; extension: ExtensionSmokeEvidence }> {
@@ -70,10 +87,9 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
       on: (event) => { handlers.push(event); },
     });
     const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"];
-    const expectedCommands = ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"];
     assertEqual(registered, expectedRegistered, "registered PA tools");
     if (registered.filter((name) => name === "todo").length !== 1) throw new Error("managed extension smoke did not register Todo exactly once");
-    assertEqual(commands, expectedCommands, "registered extension commands");
+    assertManagedExtensionCommands(commands, BUNDLED_EDITOR_FACTORIES);
     assertEqual(shortcuts, ["alt+i", "alt+g"], "registered panel shortcuts");
     for (const handler of ["tool_call", "agent_end", "session_shutdown"]) {
       if (!handlers.includes(handler)) throw new Error(`managed extension smoke did not register ${handler}`);

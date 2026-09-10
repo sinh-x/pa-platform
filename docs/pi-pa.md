@@ -129,7 +129,16 @@ PAP167_REAL_PI="$(command -v pi)" "$OUT/bin/ppa" pi preflight
 PAP167_REAL_PI="$(command -v pi)" "$OUT/bin/ppa" pi smoke-tools
 ```
 
-The preflight must report the packaged Pi-host addon and a Node 24 host. `smoke-tools` must report all eight managed PA tools as passed and its `extension.factories` array must exactly match the selected plugins. After `ppa pi setup`, start a new Pi session or run `/reload`. `/vimmode status` exists only when pi-vimmode was selected; proper-base-only behavior can be checked with its model-preserving `/clear` and prompt history. Neither command should be attributed to a disabled plugin.
+The preflight must report the packaged Pi-host addon and a Node 24 host. `smoke-tools` must report all eight managed PA tools as passed. Its factory and command evidence is exact and ordered for each choice:
+
+| Choice | `extension.factories` | `extension.commands` |
+| --- | --- | --- |
+| Neither | `[]` | `["pa-context","pa-git-context"]` |
+| pi-vimmode only | `["pi-vimmode@0.9.0"]` | `["vimmode","pa-context","pa-git-context"]` |
+| proper-base only | `["proper-base@0.5.0"]` | `["fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+| Both | `["pi-vimmode@0.9.0","proper-base@0.5.0"]` | `["vimmode","fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+
+After `ppa pi setup`, start a new Pi session or run `/reload`. `/vimmode status` exists only when pi-vimmode was selected; proper-base-only behavior can be checked with its model-preserving `/clear` and prompt history. Neither command should be attributed to a disabled plugin.
 
 ## State and Removal Ownership
 

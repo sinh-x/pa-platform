@@ -29,7 +29,12 @@ import {
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
 } from "../native-host.js";
-import { runHostManagedToolSmoke, runHostNativeSmoke } from "../pi-host-smoke.js";
+import {
+  assertManagedExtensionCommands,
+  expectedManagedExtensionCommands,
+  runHostManagedToolSmoke,
+  runHostNativeSmoke,
+} from "../pi-host-smoke.js";
 
 const require = createRequire(import.meta.url);
 
@@ -430,6 +435,37 @@ test("native host smoke records its registry query and explicit close", async ()
   assert.equal(evidence.addonPath, addonPath);
   assert.equal(evidence.registryQuery, "PRAGMA user_version");
   assert.equal(evidence.close, "explicit");
+});
+
+test("managed command expectations follow all four factory selections exactly", () => {
+  const selections = [
+    { factories: [], commands: ["pa-context", "pa-git-context"] },
+    { factories: ["pi-vimmode@0.9.0"], commands: ["vimmode", "pa-context", "pa-git-context"] },
+    { factories: ["proper-base@0.5.0"], commands: ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
+    { factories: ["pi-vimmode@0.9.0", "proper-base@0.5.0"], commands: ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
+  ] as const;
+
+  for (const { factories, commands } of selections) {
+    assert.deepEqual(expectedManagedExtensionCommands(factories), commands);
+    assert.doesNotThrow(() => assertManagedExtensionCommands(commands, factories));
+  }
+});
+
+test("managed command expectations reject extra, missing, and reordered commands", () => {
+  const factories = ["pi-vimmode@0.9.0", "proper-base@0.5.0"];
+  const expected = expectedManagedExtensionCommands(factories);
+  const fixtures = [
+    [...expected, "unexpected-editor-command"],
+    expected.slice(0, -1),
+    [expected[1]!, expected[0]!, ...expected.slice(2)],
+  ];
+
+  for (const commands of fixtures) {
+    assert.throws(
+      () => assertManagedExtensionCommands(commands, factories),
+      /registered extension commands mismatch: expected .* received /,
+    );
+  }
 });
 
 test("deterministic managed tool harness executes the complete eight-tool matrix", async () => {

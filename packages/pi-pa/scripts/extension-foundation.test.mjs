@@ -164,7 +164,8 @@ test("CI and Nix inputs require recursive exact sources and both Linux sharp art
   assert.match(nixWorkflow, /\.\?submodules=1#pa-platform/);
   assert.match(nixSmoke, /flake_ref='\.\?submodules=1'/);
   assert.match(nixSmoke, /nix build "\$flake_ref#ppa"/);
-  assert.match(nixSmoke, /packages\.aarch64-linux\.ppa/);
+  assert.match(nixSmoke, /supported_systems=\(x86_64-linux aarch64-linux\)/);
+  assert.match(nixSmoke, /nix build --impure --expr "\$expr" --dry-run --no-link/);
   assert.match(nixSmoke, /#pi-pa-vimmode/);
   assert.match(nixSmoke, /sharp\.versions\.sharp/);
   assert.match(flake, /supportedSystems = \[ "x86_64-linux" "aarch64-linux" \]/);

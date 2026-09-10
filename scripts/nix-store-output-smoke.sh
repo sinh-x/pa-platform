@@ -187,16 +187,20 @@ for variant in "${variant_names[@]}"; do
       const expectedTools = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"];
       if (JSON.stringify(tools.tools) !== JSON.stringify(expectedTools.map((name) => ({ name, status: "passed" })))) process.exit(1);
       const expectedFactories = [process.env.EXPECTED_VIM === "true" ? "pi-vimmode@0.9.0" : undefined, process.env.EXPECTED_PROPER === "true" ? "proper-base@0.5.0" : undefined].filter(Boolean);
+      const expectedCommands = [
+        ...(process.env.EXPECTED_VIM === "true" ? ["vimmode"] : []),
+        ...(process.env.EXPECTED_PROPER === "true" ? ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"] : []),
+        "pa-context",
+        "pa-git-context",
+      ];
       if (JSON.stringify(tools.extension.factories) !== JSON.stringify(expectedFactories)) process.exit(1);
-      if (tools.extension.commands.includes("vimmode") !== (process.env.EXPECTED_VIM === "true")) process.exit(1);
-      if (tools.extension.commands.includes("clear") !== (process.env.EXPECTED_PROPER === "true")) process.exit(1);
-      for (const command of ["pa-context", "pa-git-context"]) if (!tools.extension.commands.includes(command)) process.exit(1);
+      if (JSON.stringify(tools.extension.commands) !== JSON.stringify(expectedCommands)) process.exit(1);
       for (const shortcut of ["alt+i", "alt+g"]) if (!tools.extension.shortcuts.includes(shortcut)) process.exit(1);
       for (const handler of ["tool_call", "agent_end", "session_shutdown"]) if (!tools.extension.handlers.includes(handler)) process.exit(1);
       if (tools.extension.guards.destructiveCommand !== "passed" || tools.extension.guards.sensitivePath !== "passed") process.exit(1);
       if (tools.extension.outputBounds.maxBytes !== 50 * 1024 || tools.extension.outputBounds.maxLines !== 2000 || tools.extension.outputBounds.status !== "passed") process.exit(1);
       if (JSON.stringify(tools.extension.todo) !== JSON.stringify({ registrations: 1, add: "passed", list: "passed", activeBranchRestore: "passed" })) process.exit(1);
-      process.stderr.write(`runtime-smoke variant=${process.env.VARIANT} store=${process.env.STORE_OUTPUT} node22=${node22.node} abi22=${node22.modules} addon22=${node22.addonPath} node24=${pi.node} abi24=${pi.modules} pi-host=${pi.nodePath} addon24=${pi.addonPath} helper=${process.env.HELPER_PATH} registry=query/close tools=8/8 factories=${expectedFactories.join(",") || "none"}\n`);
+      process.stderr.write(`runtime-smoke variant=${process.env.VARIANT} store=${process.env.STORE_OUTPUT} node22=${node22.node} abi22=${node22.modules} addon22=${node22.addonPath} node24=${pi.node} abi24=${pi.modules} pi-host=${pi.nodePath} addon24=${pi.addonPath} helper=${process.env.HELPER_PATH} registry=query/close tools=8/8 factories=${JSON.stringify(expectedFactories)} commands=${JSON.stringify(expectedCommands)}\n`);
     '
 
   ! grep -R -E '(sk-[A-Za-z0-9]{20,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,})' "$package_root" "$store_output/share/pa-platform/packages/runtime-host"
@@ -228,7 +232,7 @@ PI_ADDON="$selected_output/share/pa-platform/native-addons/pi-node-24/better_sql
   '
 "$selected_output/bin/pa-platform-node" ./scripts/pap-156-caller-boundary-smoke.mjs "$selected_output"
 
-printf 'nix-smoke host=%s pi=%s pi-node=%s selections=4/4 evaluations=8/8 alias-systems=2/2 native-tools=32/32 teardown=20/20\n' "$host_system" "$actual_pi" "$expected_pi_node" >&2
+printf 'nix-smoke host=%s pi=%s pi-node=%s selections=4/4 evaluations=8/8 alias-systems=2/2 invalid-values=2/2 non-native-dry-runs=4/4 native-builds=4/4 artifacts=4/4 provenance=4/4 native-tools=32/32 teardown=20/20 caller-boundary=passed\n' "$host_system" "$actual_pi" "$expected_pi_node" >&2
 for system in "${supported_systems[@]}"; do
   for variant in "${variant_names[@]}"; do
     printf 'nix-smoke drv system=%s variant=%s path=%s\n' "$system" "$variant" "${drv_paths[$system/$variant]}" >&2
