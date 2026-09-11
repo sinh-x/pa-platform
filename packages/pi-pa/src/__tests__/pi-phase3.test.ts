@@ -50,7 +50,7 @@ test("Pi extension writes a redacted structured terminal status side channel", (
   assert.doesNotMatch(readFileSync(join(dir, "pi-terminal-status.json"), "utf8"), new RegExp(value));
 });
 
-test("Pi extension composes attributed modules through the trusted entrypoint", () => {
+test("trusted entrypoint registers only selected editors while preserving attributed PA modules", () => {
   const registered: string[] = [];
   const commands: string[] = [];
   const shortcuts: string[] = [];
@@ -67,9 +67,13 @@ test("Pi extension composes attributed modules through the trusted entrypoint", 
     "examples/extensions/overlay-qa-tests.ts",
   ]);
   assert.equal(PI_PA_MODULES.length, 6);
-  assert.deepEqual(BUNDLED_EDITOR_FACTORIES, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
+  const expectedEditorCommands = BUNDLED_EDITOR_FACTORIES.flatMap((factory) => {
+    if (factory.startsWith("pi-vimmode@")) return ["vimmode"];
+    if (factory.startsWith("proper-base@")) return ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"];
+    return [];
+  });
   assert.deepEqual(registered, ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
-  assert.deepEqual(commands, ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"]);
+  assert.deepEqual(commands, [...expectedEditorCommands, "pa-context", "pa-git-context"]);
   assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });
 

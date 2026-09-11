@@ -1,9 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import registerPiVimMode from "#pi-pa-vimmode";
-import registerProperBase from "#pi-pa-proper-base";
+import { SELECTED_EDITOR_FACTORIES } from "./bundled-editor-factories.js";
 import type { PiExtensionModule, PiRuntime, PiSessionShutdownHandler } from "./index.js";
 
-export const BUNDLED_EDITOR_FACTORIES = ["pi-vimmode@0.9.0", "proper-base@0.5.0"] as const;
+export interface BundledEditorFactory {
+  name: "pi-vimmode" | "proper-base";
+  version: string;
+  register: (pi: ExtensionAPI) => void;
+}
+
+export const BUNDLED_EDITOR_FACTORIES = SELECTED_EDITOR_FACTORIES.map(({ name, version }) => `${name}@${version}`);
 
 const PROPER_WRAPPED = Symbol.for("pi-proper-history.wrapped");
 const VIM_TUI_EVENTS = new Set(["session_start", "resources_discover", "agent_end"]);
@@ -25,28 +30,36 @@ interface BundledApiOptions {
 }
 
 /**
- * Register both reviewed upstream factories through the one pi-pa runtime.
- * Vim installs first; proper-base then resolves that factory as its base and
- * remains the outer editor wrapper.
+ * Register only the build-selected reviewed factories through the one pi-pa
+ * runtime. Generated metadata keeps Vim first and proper-base outer when both
+ * are selected.
  */
-export const registerBundledEditorsModule: PiExtensionModule = (pi) => {
-  let properSessionStart: PiEventHandler | undefined;
+export function createBundledEditorsModule(factories: readonly BundledEditorFactory[]): PiExtensionModule {
+  return (pi) => {
+    let properSessionStart: PiEventHandler | undefined;
 
-  registerPiVimMode(createBundledApi(pi, {
-    tuiEvents: VIM_TUI_EVENTS,
-    adaptContext: (context) => wrapVimLifecycleContext(context, () => properSessionStart),
-    adaptCommand: (name, options) => name === "vimmode"
-      ? wrapVimModeCommand(options, () => properSessionStart)
-      : options,
-  }));
+    for (const factory of factories) {
+      if (factory.name === "pi-vimmode") {
+        factory.register(createBundledApi(pi, {
+          tuiEvents: VIM_TUI_EVENTS,
+          adaptContext: (context) => wrapVimLifecycleContext(context, () => properSessionStart),
+          adaptCommand: (name, options) => name === "vimmode"
+            ? wrapVimModeCommand(options, () => properSessionStart)
+            : options,
+        }));
+      } else {
+        factory.register(createBundledApi(pi, {
+          tuiEvents: PROPER_TUI_EVENTS,
+          observeHandler: (event, handler) => {
+            if (event === "session_start") properSessionStart = handler;
+          },
+        }));
+      }
+    }
+  };
+}
 
-  registerProperBase(createBundledApi(pi, {
-    tuiEvents: PROPER_TUI_EVENTS,
-    observeHandler: (event, handler) => {
-      if (event === "session_start") properSessionStart = handler;
-    },
-  }));
-};
+export const registerBundledEditorsModule = createBundledEditorsModule(SELECTED_EDITOR_FACTORIES);
 
 function createBundledApi(pi: PiRuntime, options: BundledApiOptions): ExtensionAPI {
   const on = (event: string, handler: PiEventHandler): void => {

@@ -3,12 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import registerPiVimMode from "../../vendor/pi-vimmode/index.ts";
+import registerProperBase from "../../vendor/proper-pi-extensions/proper-base/index.ts";
 import {
-  PI_PA_MODULES,
+  createPiPaModules,
   createPiSessionLifecycle,
   registerPiSessionModules,
 } from "../pi-extension/index.js";
-import { BUNDLED_EDITOR_FACTORIES } from "../pi-extension/bundled-editors.js";
+import type { BundledEditorFactory } from "../pi-extension/bundled-editors.js";
 import {
   FakeComposedHost,
   FakeComposedTui,
@@ -22,6 +24,10 @@ import {
 const PROPER_WRAPPED = Symbol.for("pi-proper-history.wrapped");
 const TRANSCRIPT_CLEANUP = Symbol.for("pi-proper-base.transcript-cleanup");
 type ScheduledCallback = () => void;
+
+const VIM_FACTORY: BundledEditorFactory = { name: "pi-vimmode", version: "0.9.0", register: registerPiVimMode };
+const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.5.0", register: registerProperBase };
+const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
 
 async function captureScheduled(run: () => Promise<void>): Promise<ScheduledCallback[]> {
   const scheduled: ScheduledCallback[] = [];
@@ -160,6 +166,63 @@ async function exerciseRepresentativeDefaults(
   assert.ok(destructiveResults.some((result) => Boolean(result && typeof result === "object" && "block" in result)));
 }
 
+test("4/4 editor selections preserve non-editor modules and register no unselected behavior", async () => {
+  const matrix: Array<{
+    name: string;
+    factories: readonly BundledEditorFactory[];
+    vim: boolean;
+    proper: boolean;
+  }> = [
+    { name: "neither", factories: [], vim: false, proper: false },
+    { name: "Vim only", factories: [VIM_FACTORY], vim: true, proper: false },
+    { name: "proper-base only", factories: [PROPER_FACTORY], vim: false, proper: true },
+    { name: "both", factories: [VIM_FACTORY, PROPER_FACTORY], vim: true, proper: true },
+  ];
+
+  for (const selection of matrix) {
+    const root = mkdtempSync(join(tmpdir(), "pi-pa-selection-host-"));
+    const host = new FakeComposedHost();
+    const ui = new FakeComposedUi();
+    const context = createHostContext("tui", root, ui);
+    let registryCloses = 0;
+    try {
+      registerPiSessionModules(
+        host.runtime,
+        createPiSessionLifecycle(() => { registryCloses += 1; }),
+        createPiPaModules(selection.factories),
+      );
+      assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"], `${selection.name}: PA tools`);
+      assert.deepEqual(host.shortcuts, ["alt+i", "alt+g"], `${selection.name}: context shortcuts`);
+      assert.equal(host.commands.has("vimmode"), selection.vim, `${selection.name}: Vim command selection`);
+      for (const command of ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"]) {
+        assert.equal(host.commands.has(command), selection.proper, `${selection.name}: proper-base command ${command}`);
+      }
+      assert.ok(host.commands.has("pa-context"), `${selection.name}: context UI command`);
+      assert.ok(host.commands.has("pa-git-context"), `${selection.name}: Git context UI command`);
+      const safety = await host.dispatch("tool_call", { toolName: "bash", input: { command: "rm -rf build" } }, context);
+      assert.ok(safety.some((result) => Boolean(result && typeof result === "object" && "block" in result)), `${selection.name}: safety guard`);
+
+      const scheduled = await captureScheduled(async () => {
+        await host.dispatch("session_start", { type: "session_start", reason: "startup" }, context);
+        await host.dispatch("resources_discover", { type: "resources_discover", reason: "startup" }, context);
+      });
+      if (selection.proper) assertOneProperOverVim(ui.component, selection.vim);
+      else if (selection.vim) {
+        assert.equal(typeof ui.component, "function", `${selection.name}: Vim factory installed`);
+        assert.equal(PROPER_WRAPPED in ui.component!, false, `${selection.name}: no proper-base wrapper`);
+      } else assert.equal(ui.component, undefined, `${selection.name}: native editor retained`);
+
+      await host.dispatch("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
+      assert.equal(registryCloses, 1, `${selection.name}: one registry close`);
+      for (const callback of scheduled) callback();
+      assert.equal(ui.terminalInputHandlers.size, 0, `${selection.name}: terminal handlers cleaned`);
+      assert.equal(host.handlers.get("session_shutdown")?.length, 1, `${selection.name}: one central shutdown handler`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("bundled factories keep one proper-base-over-Vim chain across repeated Pi lifecycle replacement", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-pa-composed-host-"));
   const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
@@ -172,11 +235,10 @@ test("bundled factories keep one proper-base-over-Vim chain across repeated Pi l
   seedHistory(agentDir, root, historyPrompt);
 
   try {
-    assert.deepEqual(BUNDLED_EDITOR_FACTORIES, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
     for (const reason of ["startup", "reload", "new", "resume", "fork", "quit"] as const) {
       const host = new FakeComposedHost();
       let registryCloses = 0;
-      registerPiSessionModules(host.runtime, createPiSessionLifecycle(() => { registryCloses += 1; }), PI_PA_MODULES);
+      registerPiSessionModules(host.runtime, createPiSessionLifecycle(() => { registryCloses += 1; }), BOTH_EDITOR_MODULES);
       const context = createHostContext("tui", root, ui);
       const scheduled = await captureScheduled(async () => {
         await host.dispatch("session_start", { type: "session_start", reason }, context, 2);
@@ -230,7 +292,7 @@ test("print and JSON hosts load the composition without opening TUI-only compone
   try {
     for (const mode of ["print", "json"] as const) {
       const host = new FakeComposedHost();
-      registerPiSessionModules(host.runtime, createPiSessionLifecycle(() => {}), PI_PA_MODULES);
+      registerPiSessionModules(host.runtime, createPiSessionLifecycle(() => {}), BOTH_EDITOR_MODULES);
       const context = createHostContext(mode, root);
       await host.dispatch("session_start", { type: "session_start", reason: "startup" }, context, 2);
       await host.dispatch("resources_discover", { type: "resources_discover", reason: "startup" }, context);

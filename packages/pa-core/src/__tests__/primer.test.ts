@@ -3,9 +3,13 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generatePrimer, getPlatformHomeDir, parseTeamYamlContent, type RepositoryAdmissionEvidence, type TeamConfig } from "../index.js";
 
 const configRoot = getPlatformHomeDir();
+const requirementsFixtureRoot = fileURLToPath(new URL("fixtures/requirements-primer-v1/", import.meta.url));
+const externalRequirementsVersionMarker = "Ported from frozen PA teams/requirements.yaml on 2026-04-26";
+const externalRequirementsContractModes = ["analyze", "analyze-auto", "spike"] as const;
 
 function configPath(...parts: string[]): string {
   return join(configRoot, ...parts);
@@ -13,6 +17,18 @@ function configPath(...parts: string[]): string {
 
 function resolveConfigFile(relativePath: string): string | undefined {
   return configPath(relativePath);
+}
+
+function requirementsFixturePath(...parts: string[]): string {
+  return join(requirementsFixtureRoot, ...parts);
+}
+
+function resolveRequirementsFixtureFile(relativePath: string): string | undefined {
+  return requirementsFixturePath(relativePath);
+}
+
+function parseRequirementsFixture(): TeamConfig {
+  return parseTeamYamlContent(readFileSync(requirementsFixturePath("teams", "requirements.yaml"), "utf-8"));
 }
 
 function parseExternalBuilder(): TeamConfig | undefined {
@@ -217,16 +233,14 @@ agents:
   }
 });
 
-test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", (t) => {
-  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
-  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
+test("generatePrimer requirements analyze fixture preserves required opencode-safe procedures", () => {
   const primer = generatePrimer({
     runtime: "opencode",
-    teamConfig: requirements,
+    teamConfig: parseRequirementsFixture(),
     mode: "analyze",
     objective: "Analyze opencode primer parity for PAP-022.",
-    resolveFile: resolveConfigFile,
-    skillsDir: configPath("skills", "global"),
+    resolveFile: resolveRequirementsFixtureFile,
+    skillsDir: requirementsFixturePath("skills", "global"),
     extraInstructions: [
       "<deployment-context>",
       "deployment_id: d-test00",
@@ -278,16 +292,14 @@ test("generatePrimer requirements analyze fixture preserves required opencode-sa
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer requirements analyze-auto fixture remains valid under opencode", (t) => {
-  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
-  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
+test("generatePrimer requirements analyze-auto fixture remains valid under opencode", () => {
   const primer = generatePrimer({
     runtime: "opencode",
-    teamConfig: requirements,
+    teamConfig: parseRequirementsFixture(),
     mode: "analyze-auto",
     objective: "Auto-run requirements analysis for PAP-030",
-    resolveFile: resolveConfigFile,
-    skillsDir: configPath("skills", "global"),
+    resolveFile: resolveRequirementsFixtureFile,
+    skillsDir: requirementsFixturePath("skills", "global"),
   });
 
   assert.match(primer, /Runtime: opencode/);
@@ -309,16 +321,14 @@ test("generatePrimer requirements analyze-auto fixture remains valid under openc
   assertNoBannedOpencodeOperationalReferences(primer);
 });
 
-test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", (t) => {
-  if (!existsSync(configPath("teams", "requirements.yaml"))) return t.skip("external pa-platform-config fixture not available");
-  const requirements = parseTeamYamlContent(readFileSync(configPath("teams", "requirements.yaml"), "utf-8"));
+test("generatePrimer requirements spike fixture keeps ticket-driven orchestration", () => {
   const primer = generatePrimer({
     runtime: "opencode",
-    teamConfig: requirements,
+    teamConfig: parseRequirementsFixture(),
     mode: "spike",
     objective: "Research spike for PAP-030",
-    resolveFile: resolveConfigFile,
-    skillsDir: configPath("skills", "global"),
+    resolveFile: resolveRequirementsFixtureFile,
+    skillsDir: requirementsFixturePath("skills", "global"),
     extraInstructions: [
       "<deployment-context>",
       "deployment_id: d-test00",
@@ -348,6 +358,37 @@ test("generatePrimer requirements spike fixture keeps ticket-driven orchestratio
   assert.match(primer, /Add completion comment first|completion comment/);
   assertNoLegacyPaCliExamples(primer);
   assertNoBannedOpencodeOperationalReferences(primer);
+});
+
+test("generatePrimer live requirements config satisfies the versioned compatibility contract when available", (t) => {
+  const requirementsPath = configPath("teams", "requirements.yaml");
+  if (!existsSync(requirementsPath)) return t.skip("external pa-platform-config availability gate: requirements.yaml not available");
+
+  const content = readFileSync(requirementsPath, "utf-8");
+  if (!content.includes(externalRequirementsVersionMarker)) {
+    return t.skip(`external pa-platform-config version gate: expected ${externalRequirementsVersionMarker}`);
+  }
+
+  const requirements = parseTeamYamlContent(content);
+  const availableModes = new Set(requirements.deploy_modes?.map((mode) => mode.id) ?? []);
+  const missingModes = externalRequirementsContractModes.filter((mode) => !availableModes.has(mode));
+  if (missingModes.length > 0) {
+    return t.skip(`external pa-platform-config contract gate: missing modes ${missingModes.join(", ")}`);
+  }
+
+  for (const mode of externalRequirementsContractModes) {
+    const primer = generatePrimer({
+      runtime: "opencode",
+      teamConfig: requirements,
+      mode,
+      objective: `External compatibility check for ${mode}`,
+      resolveFile: resolveConfigFile,
+      skillsDir: configPath("skills", "global"),
+    });
+    assert.match(primer, /Runtime: opencode/);
+    assert.match(primer, /## Active Bulletins/);
+    assert.doesNotMatch(primer, /<runtime-adapter>/);
+  }
 });
 
 test("generatePrimer representative builder fixture stays free of legacy opencode references", (t) => {

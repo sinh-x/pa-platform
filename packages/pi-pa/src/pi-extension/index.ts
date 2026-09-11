@@ -8,7 +8,11 @@ import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
-import { registerBundledEditorsModule } from "./bundled-editors.js";
+import {
+  registerBundledEditorsModule,
+  createBundledEditorsModule,
+  type BundledEditorFactory,
+} from "./bundled-editors.js";
 
 // PAP-145 modules adapt the MIT-licensed Pi 0.80.8 examples at
 // examples/extensions/{question,todo,status-line,overlay-qa-tests}.ts.
@@ -183,13 +187,21 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
   });
 };
 
-export const PI_PA_MODULES: readonly PiExtensionModule[] = [
-  registerBundledEditorsModule,
+export const PI_PA_NON_EDITOR_MODULES: readonly PiExtensionModule[] = [
   registerPaToolsModule,
   registerQuestionModule,
   registerTodoModule,
   registerContextUiModule,
   registerGitContextUiModule,
+];
+
+export function createPiPaModules(editorFactories: readonly BundledEditorFactory[]): readonly PiExtensionModule[] {
+  return [createBundledEditorsModule(editorFactories), ...PI_PA_NON_EDITOR_MODULES];
+}
+
+export const PI_PA_MODULES: readonly PiExtensionModule[] = [
+  registerBundledEditorsModule,
+  ...PI_PA_NON_EDITOR_MODULES,
 ];
 
 export default function registerPiPaExtension(pi: PiRuntime): void {

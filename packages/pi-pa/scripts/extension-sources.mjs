@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const LOCK_FILENAME = "extension-sources.lock.json";
+export const PLUGIN_SELECTION_ENV = "PI_PA_PLUGIN_SELECTION";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const SOURCE_NAME_PATTERN = /^[a-z0-9-]+$/;
@@ -27,6 +28,46 @@ function normalizedPath(root, path) {
   return absolute;
 }
 
+export function normalizePluginSelection(lock, selection = {}) {
+  if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+    throw new Error(`${PLUGIN_SELECTION_ENV} must be a JSON object mapping reviewed plugin names to booleans.`);
+  }
+  const eligibleNames = new Set(lock.sources.map(({ name }) => name));
+  for (const name of Object.keys(selection)) {
+    if (!eligibleNames.has(name)) {
+      throw new Error(`${PLUGIN_SELECTION_ENV} contains unknown reviewed plugin ${name}.`);
+    }
+  }
+  const normalized = {};
+  for (const { name } of lock.sources) {
+    const enabled = Object.hasOwn(selection, name) ? selection[name] : false;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${PLUGIN_SELECTION_ENV} value for ${name} must be a boolean, received ${typeof enabled}.`);
+    }
+    normalized[name] = enabled;
+  }
+  return Object.freeze(normalized);
+}
+
+export function readPluginSelection(lock, { environment = process.env } = {}) {
+  const encoded = environment[PLUGIN_SELECTION_ENV];
+  if (encoded === undefined) return normalizePluginSelection(lock);
+  let selection;
+  try {
+    selection = JSON.parse(encoded);
+  } catch (error) {
+    throw new Error(`${PLUGIN_SELECTION_ENV} must contain valid JSON: ${error.message}`);
+  }
+  return normalizePluginSelection(lock, selection);
+}
+
+export function selectedExtensionSources(lock, selection) {
+  const normalized = normalizePluginSelection(lock, selection);
+  return lock.sources
+    .filter(({ name }) => normalized[name])
+    .toSorted((left, right) => left.registrationOrder - right.registrationOrder);
+}
+
 export function readSourceLock(packageRoot = PACKAGE_ROOT) {
   const lockPath = resolve(packageRoot, LOCK_FILENAME);
   if (!existsSync(lockPath)) throw new Error(`Missing Pi extension source lock: ${lockPath}`);
@@ -38,16 +79,25 @@ export function readSourceLock(packageRoot = PACKAGE_ROOT) {
     if (!source || typeof source !== "object" || typeof source.name !== "string") {
       throw new Error(`${LOCK_FILENAME} contains an invalid source record.`);
     }
-    for (const field of ["version", "repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "license", "licensePath", "licenseSha256", "bundle"]) {
+    for (const field of ["version", "import", "importTarget", "repository", "submodulePath", "sourcePath", "entrypoint", "commit", "contentSha256", "license", "licensePath", "licenseSha256", "bundle"]) {
       if (typeof source[field] !== "string" || source[field].length === 0) {
         throw new Error(`${LOCK_FILENAME} source ${source.name} has invalid ${field}.`);
       }
+    }
+    if (!Number.isSafeInteger(source.registrationOrder) || source.registrationOrder < 0) {
+      throw new Error(`${LOCK_FILENAME} source ${source.name} has invalid registrationOrder.`);
     }
     if (!SOURCE_NAME_PATTERN.test(source.name)) throw new Error(`${source.name} is not a safe source name.`);
     if (!SHA_PATTERN.test(source.commit)) throw new Error(`${source.name} commit must be an exact 40-character lowercase SHA.`);
     if (!SHA256_PATTERN.test(source.contentSha256) || !SHA256_PATTERN.test(source.licenseSha256)) {
       throw new Error(`${source.name} content and license digests must be lowercase SHA-256 values.`);
     }
+  }
+  if (new Set(lock.sources.map((source) => source.import)).size !== lock.sources.length) {
+    throw new Error(`${LOCK_FILENAME} source imports must be unique.`);
+  }
+  if (new Set(lock.sources.map((source) => source.registrationOrder)).size !== lock.sources.length) {
+    throw new Error(`${LOCK_FILENAME} source registrationOrder values must be unique.`);
   }
   return lock;
 }

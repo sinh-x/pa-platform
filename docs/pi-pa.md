@@ -13,9 +13,9 @@ ppa pi status
 ppa pi remove                # remove only the two PA package entries
 ```
 
-Setup is confirmation-gated and idempotent. `--local` changes only the current project's settings. It owns exactly two package entries: the installed `pi-pa` package and the resolved PA config package. proper-base and pi-vimmode are bundled inside `pi-pa`; they are not separate package entries. Existing unrelated settings and packages are preserved, and `ppa pi remove` removes only the two PA-owned entries. The configured package sources are shown by `ppa pi status`; the extension source is the installed `pi-pa` package and the config source is `PA_PLATFORM_CONFIG_DIR`, `PA_PLATFORM_HOME`, or the current directory.
+Setup is confirmation-gated and idempotent. `--local` changes only the current project's settings. It owns exactly two package entries: the installed `pi-pa` package and the resolved PA config package. Enabled editor plugins are bundled inside `pi-pa`; they are not separate package entries. Existing unrelated settings and packages are preserved, and `ppa pi remove` removes only the two PA-owned entries. The configured package sources are shown by `ppa pi status`; the extension source is the installed `pi-pa` package and the config source is `PA_PLATFORM_CONFIG_DIR`, `PA_PLATFORM_HOME`, or the current directory.
 
-Both ordinary sessions configured this way and managed deployments load the same trusted `pi-pa` entrypoint, so both receive the PA modules and bundled editors. Ordinary Pi sessions can still discover other packages and extensions according to Pi's normal rules.
+Both ordinary sessions configured this way and managed deployments load the same trusted `pi-pa` entrypoint, so both receive the PA modules and the editors selected in the installed build. Ordinary Pi sessions can still discover other packages and extensions according to Pi's normal rules.
 
 After editing skills or package metadata in the config checkout, run `/reload` in an active Pi session. New ordinary sessions discover the current files without reinstalling the packages.
 
@@ -27,13 +27,118 @@ Pi provider/model precedence is explicit CLI flags, the selected flat mode pair 
 
 Print, JSON, and RPC execution loads the same extension and commands but does not install an editor, open an overlay, or wait for terminal input. `question` returns a typed `ui_unavailable` result outside TUI mode. PA tools, output bounds, tool-call guards, and terminal result handling remain active.
 
-## Bundled Editor Defaults and Composition
+## Bundled Editor Selection and Composition
 
-The trusted entrypoint registers `pi-vimmode` 0.9.0 first and `proper-base` 0.5.0 second. proper-base therefore remains the outer editor wrapper around the Vim editor. Startup, resource discovery, `/reload`, new/resumed/forked sessions, and shutdown retain one active editor chain; cleanup removes stale handlers, timers, overlays, and cursor state before replacement. The upstream sources and defaults are bundled unchanged.
+> **Breaking default:** both bundled editor plugins are disabled unless the Nix package is constructed with explicit options. Updating the flake input without opting in removes the former always-enabled editor behavior. Selection happens only while building the package; `ppa`, Pi, environment variables, and runtime configuration cannot enable a plugin in an already-built output.
 
-pi-vimmode starts in **insert** mode. Press Esc for normal mode and `i` to return to insert mode. Its supported motions, edits, visual modes, registers, marks, macros, prompt search, and Ex-style commands retain upstream 0.9.0 behavior. `/vimmode`, `/vimmode on`, `/vimmode off`, `/vimmode status`, and `/vimmode reload` control the current runtime. This is practical modal prompt editing, not a claim of complete Vim compatibility. JSON settings remain under the `piVimMode` key; start mode, cursor style, keymap, protected overrides, status items, and other defaults are unchanged.
+Use `lib.mkPaPlatform system { ... }` and install the resulting package. The existing `packages.<system>.pa-platform`, `ppa`, `default`, and overlay aliases deliberately select neither plugin. These are the four supported constructor combinations; copy exactly one definition into the `let` bindings of the consumer flake's `outputs` function (where the input is named `pa-platform` and `system` is the target Nix system):
 
-proper-base keeps its 0.5.0 defaults for automatic session titles, model-preserving `/clear`, project prompt history and reverse search, prompt editing/cancellation, autocomplete, collapsed settled tool rows, transcript navigation, footer composition, image handling through packaged `sharp`, skill/image context transforms, and its commit-command guard. Internal commands beginning with `__proper-` remain reserved. PA's destructive-command and sensitive-path interception still runs independently, so the bundled editor cannot bypass PA tool-call policy.
+```nix
+# Neither plugin (the default).
+ppaPackage = pa-platform.lib.mkPaPlatform system { };
+```
+
+```nix
+# pi-vimmode only.
+ppaPackage = pa-platform.lib.mkPaPlatform system {
+  enablePiVimMode = true;
+};
+```
+
+```nix
+# proper-base only.
+ppaPackage = pa-platform.lib.mkPaPlatform system {
+  enableProperBase = true;
+};
+```
+
+```nix
+# Both plugins.
+ppaPackage = pa-platform.lib.mkPaPlatform system {
+  enablePiVimMode = true;
+  enableProperBase = true;
+};
+```
+
+For example, a flake can expose the selected package for inspection and also add it to a NixOS configuration:
+
+```nix
+{
+  inputs.pa-platform.url = "github:sinh-x/pa-platform";
+
+  outputs = inputs@{ self, nixpkgs, pa-platform, ... }:
+    let
+      system = "x86_64-linux"; # or "aarch64-linux"
+      ppaPackage = pa-platform.lib.mkPaPlatform system {
+        enablePiVimMode = true;
+        enableProperBase = true;
+      };
+    in {
+      packages.${system}.ppa = ppaPackage;
+      nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit inputs; };
+        modules = [
+          ({ ... }: { environment.systemPackages = [ ppaPackage ]; })
+        ];
+      };
+    };
+}
+```
+
+Replace `my-host` and the system with the consumer's own values. After changing the input or options, update the lock and rebuild the selected consumer output:
+
+```bash
+nix flake lock --update-input pa-platform
+nix eval --raw '.#ppa.drvPath'
+out=$(nix build --no-link --print-out-paths '.#ppa')
+# NixOS consumers can then apply the same evaluated package:
+sudo nixos-rebuild switch --flake '.#my-host'
+```
+
+A build with both plugins registers `pi-vimmode` 0.9.0 first and `proper-base` 0.5.0 second. proper-base therefore remains the outer editor wrapper around the Vim editor. A one-plugin build registers only that factory; a default build retains Pi's base editor. Startup, resource discovery, `/reload`, new/resumed/forked sessions, and shutdown retain one active selected editor chain; cleanup removes stale handlers, timers, overlays, and cursor state before replacement. The selected upstream sources and defaults are bundled unchanged.
+
+When selected, pi-vimmode starts in **insert** mode. Press Esc for normal mode and `i` to return to insert mode. Its supported motions, edits, visual modes, registers, marks, macros, prompt search, and Ex-style commands retain upstream 0.9.0 behavior. `/vimmode`, `/vimmode on`, `/vimmode off`, `/vimmode status`, and `/vimmode reload` control the current runtime. This is practical modal prompt editing, not a claim of complete Vim compatibility. JSON settings remain under the `piVimMode` key; start mode, cursor style, keymap, protected overrides, status items, and other defaults are unchanged.
+
+When selected, proper-base keeps its 0.5.0 defaults for automatic session titles, model-preserving `/clear`, project prompt history and reverse search, prompt editing/cancellation, autocomplete, collapsed settled tool rows, transcript navigation, footer composition, image handling through packaged `sharp`, skill/image context transforms, and its commit-command guard. Internal commands beginning with `__proper-` remain reserved. PA's destructive-command and sensitive-path interception still runs independently, so the bundled editor cannot bypass PA tool-call policy.
+
+### Verify the built artifacts and runtime
+
+The following inspection is read-only and uses the Node 22 executable from the built package. Change the two expected names to match the chosen combination and do not inspect implementation source:
+
+```bash
+export OUT="$out"
+export EXPECTED='["pi-vimmode","proper-base"]' # [], either one, or both in this order
+"$OUT/bin/pa-platform-node" --input-type=module --eval '
+  const { existsSync, readFileSync } = await import("node:fs");
+  const root = `${process.env.OUT}/share/pa-platform/packages/pi-pa`;
+  const pkg = JSON.parse(readFileSync(`${root}/package.json`, "utf8"));
+  const provenance = JSON.parse(readFileSync(`${root}/dist/pi-extension/vendor/provenance.json`, "utf8"));
+  const expected = JSON.parse(process.env.EXPECTED);
+  const imports = { "pi-vimmode": "#pi-pa-vimmode", "proper-base": "#pi-pa-proper-base" };
+  if (JSON.stringify(provenance.selectedSources) !== JSON.stringify(expected)) process.exit(1);
+  for (const name of Object.keys(imports)) {
+    const enabled = expected.includes(name);
+    const bundle = `${root}/dist/pi-extension/vendor/${name}.js`;
+    const license = `${root}/dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`;
+    if (existsSync(bundle) !== enabled || existsSync(license) !== enabled || Object.hasOwn(pkg.imports, imports[name]) !== enabled) process.exit(1);
+  }
+  console.log({ output: process.env.OUT, selected: expected, imports: pkg.imports });
+'
+PAP167_REAL_PI="$(command -v pi)" "$OUT/bin/ppa" pi preflight
+PAP167_REAL_PI="$(command -v pi)" "$OUT/bin/ppa" pi smoke-tools
+```
+
+The preflight must report the packaged Pi-host addon and a Node 24 host. `smoke-tools` must report all eight managed PA tools as passed. Its factory and command evidence is exact and ordered for each choice:
+
+| Choice | `extension.factories` | `extension.commands` |
+| --- | --- | --- |
+| Neither | `[]` | `["pa-context","pa-git-context"]` |
+| pi-vimmode only | `["pi-vimmode@0.9.0"]` | `["vimmode","pa-context","pa-git-context"]` |
+| proper-base only | `["proper-base@0.5.0"]` | `["fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+| Both | `["pi-vimmode@0.9.0","proper-base@0.5.0"]` | `["vimmode","fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+
+After `ppa pi setup`, start a new Pi session or run `/reload`. `/vimmode status` exists only when pi-vimmode was selected; proper-base-only behavior can be checked with its model-preserving `/clear` and prompt history. Neither command should be attributed to a disabled plugin.
 
 ## State and Removal Ownership
 
@@ -165,7 +270,7 @@ Alt+I and `/pa-context` remain independent from Alt+G and `/pa-git-context`: tog
 | `proper-base` from `proper-pi-extensions` | `859feb321ec81d773beea379d28e21d0b7d0c8c0` | 0.5.0 |
 | `pi-vimmode` | `52bd6ac5e905157ac46ec15c120b7d0cc61a62df` | 0.9.0 |
 
-`packages/pi-pa/THIRD_PARTY_NOTICES.md` records attribution. Builds copy both MIT texts and generate `dist/pi-extension/vendor/provenance.json` without a timestamp, so identical reviewed inputs produce deterministic provenance containing exactly the two SHAs. The build performs no source fetch or package installation. It fails before TypeScript compilation or Pi startup when a gitlink, checkout, URL, source digest, package version/license, or license digest is absent or drifted. Initialize a checkout with `git submodule update --init --recursive` before building.
+`packages/pi-pa/THIRD_PARTY_NOTICES.md` records the eligible source attribution. Each output copies only the selected MIT text(s), emits only selected plugin sections in its installed `THIRD_PARTY_NOTICES.md`, and generates `dist/pi-extension/vendor/provenance.json` without a timestamp. Selected provenance retains the exact reviewed commit, source digest, license, and license digest from the lock; a neither-selected output has empty selected-source and source arrays. The build performs no source fetch or package installation. It still validates both eligible source checkouts and fails before TypeScript compilation or Pi startup when a gitlink, checkout, URL, source digest, package version/license, or license digest is absent or drifted. Initialize a checkout with `git submodule update --init --recursive` before building.
 
 To update either upstream, use a separate approved ticket: review the upstream diff and license; move only the relevant gitlink to an exact commit; update its version and digests in the lock record; keep the source tree clean; run `node packages/pi-pa/scripts/validate-extension-sources.mjs`; refresh the pnpm/Nix dependency hash only when dependency inputs require it; then run the focused composition/lifecycle tests and the full repository, Nix store, setup/isolation, secrets, and diff suites. Never point the lock at a branch, fetch at runtime, or edit vendored source locally.
 
@@ -216,16 +321,21 @@ are rejected with their YAML paths.
 
 Existing `ppa deploy` users can run `ppa pi setup` once at the desired scope. Existing Pi settings and packages are retained. To move from global to project-local registration, run `ppa pi setup --local`, verify with `ppa pi status --local`, then run `ppa pi remove` globally if the global registration is no longer wanted.
 
+For the editor-default migration, choose one constructor combination above, rebuild the consumer, and rerun `ppa pi setup` only if the installed package path changed. Selecting neither does not delete editor state; it only removes editor bundles, import mappings, and registrations from that package output. Re-enabling a plugin in a later build reuses its existing user-owned state.
+
 ## Troubleshooting
 
 - `Pi version must be 0.84.4 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe allows up to 15 seconds for a loaded system to start Pi.
 - `Missing ... entrypoint` or source/license drift: initialize recursively with `git submodule update --init --recursive`, confirm both submodules are clean at the commits above, and rerun the validator. Do not repair the mismatch by editing vendor contents.
 - `Pi PA extension package path is missing`: reinstall/build pa-platform or use the current packaged `ppa`; inspect the path printed by `ppa pi status`.
 - `PA config package path is missing`: set `PA_PLATFORM_CONFIG_DIR` to the existing `pa-platform-config` checkout.
-- Vim behavior is unavailable or misconfigured: run `/vimmode status`, `/vimmode reload`, or `/vimmode off`. In ordinary sessions inspect duplicate editor extensions; managed sessions intentionally load only pi-pa.
+- A selected editor is missing: first inspect the built output with the artifact command above. If its provenance and imports omit the plugin, correct the constructor options and rebuild; runtime settings cannot enable a disabled build. Then confirm `ppa pi status` points at the new store output and run `/reload` or start a new Pi session.
+- Vim behavior is unavailable or misconfigured after its artifact is present: run `/vimmode status`, `/vimmode reload`, or `/vimmode off`. In ordinary sessions inspect duplicate editor extensions; managed sessions intentionally load only pi-pa.
 - History is not recalled: verify the Pi agent directory, project working directory, file permissions, and the size/bounds above. Prompts over 4,096 characters are intentionally omitted.
 - An editor or panel appears duplicated after a change: run `/reload`; if it persists in an ordinary session, inspect extension collisions. Managed reload/lifecycle tests require exactly one composed chain.
 - Skills changed but Pi still shows old content: run `/reload`; managed deployments pick up changes on their next invocation.
 - Setup says `Already configured`: the two owned paths are already present. Use `ppa pi status` (and the matching `--local` scope) to inspect them.
 
-The Nix output includes the `pi-pa` extension, both bundled factories, generated two-source provenance, MIT license texts, `THIRD_PARTY_NOTICES.md`, importable `sharp` 0.35.3, and runtime-host resources under `$out/share/pa-platform/packages/`, plus `ppa.fish` under `$out/share/fish/vendor_completions.d/`. `bash scripts/nix-store-output-smoke.sh` executes the native Linux package, imports both factories and sharp, performs a native sharp image operation, exercises packaged PA tools/guards/panel registration/status, and evaluates both `x86_64-linux` and `aarch64-linux` package derivations (dry-running the non-native package available on the host). It does not include the operator's config checkout or credentials.
+Every Nix output includes the trusted `pi-pa` entrypoint, selected-only provenance and notices, Node 22 and Pi-host Node 24 native addons, runtime-host resources under `$out/share/pa-platform/packages/`, and `ppa.fish` under `$out/share/fish/vendor_completions.d/`. Plugin bundles, import mappings, and MIT license copies exist only for selected plugins; shared dependencies such as `sharp` may remain present when proper-base is disabled.
+
+`bash scripts/nix-store-output-smoke.sh` evaluates all four selections on both `x86_64-linux` and `aarch64-linux`, rejects invalid constructor values, verifies default aliases and the overlay, dry-runs every non-native selection, and builds all four native outputs. It checks exact selected/absent artifacts and reviewed hashes, Node 22 registry load/query/close, Pi Node 24.19.0 addon/helper preflight, eight managed tools for each selection, both-enabled teardown regression, and caller-boundary behavior. It does not include the operator's config checkout or credentials.
