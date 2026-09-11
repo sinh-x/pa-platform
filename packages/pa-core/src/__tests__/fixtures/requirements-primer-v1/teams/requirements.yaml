@@ -1,0 +1,37 @@
+# Repository-owned immutable contract fixture: requirements-primer/v1.
+# Update this fixture and its exact assertions atomically when the primer contract changes.
+name: requirements
+summary: Frozen requirements primer contract
+objective: Produce requirements documents.
+default_mode: analyze
+deploy_modes:
+  - id: analyze
+    label: Analyze
+    agents: [analyst]
+    objective: objectives/analyze.md
+    skills: &procedures
+      - name: pa-cli
+        inject-as: reference
+      - name: pa-session-log
+        inject-as: reference
+      - name: pa-ticket-workflow
+        inject-as: reference
+      - name: pa-startup
+        inject-as: reference
+      - name: pa-self-improvement
+        inject-as: reference
+  - id: analyze-auto
+    label: Analyze (Auto)
+    agents: [researcher]
+    objective: objectives/analyze-auto.md
+    skills: *procedures
+  - id: spike
+    label: Spike Research
+    agents: [researcher]
+    objective: objectives/spike.md
+    skills: *procedures
+agents:
+  - name: analyst
+    role: Gather requirements through structured conversation.
+  - name: researcher
+    role: Autonomously research and produce requirements or spike reports.

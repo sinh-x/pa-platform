@@ -8,7 +8,11 @@ export const PA_SAFETY_PATTERNS: SafetyPatterns = {
     String.raw`\brm\b`, String.raw`\brmdir\b`, String.raw`\bunlink\b`, String.raw`\bshred\b`,
     String.raw`\bdd\b`, String.raw`\btruncate\b`, String.raw`\bfind\b.*\b-delete\b`,
     String.raw`\bfind\b.*\b-exec\b.*\brm\b`, String.raw`\bxargs\b.*\brm\b`,
-    String.raw`\bgit\s+clean\b.*-f`, String.raw`\bgit\s+push\b.*--force`, String.raw`[^>]\s*>:?\s*\S`,
+    String.raw`\bgit\s+clean\b.*-f`, String.raw`\bgit\s+push\b.*--force`,
+    // Block pathname overwrite/truncation while allowing descriptor duplication and closure.
+    String.raw`(?:^|[^>])(?:\d*)>(?:>|[:|])\s*\S`,
+    String.raw`(?:^|[^\d>])\d+>\s*(?!(?:&(?:\d+|-)|\d+|-)(?:$|[\s;&|()]))\S`,
+    String.raw`(?:^|[^\d>])>\s*(?!(?:&(?:\d+|-)|-)(?:$|[\s;&|()]))\S`,
   ],
   blockedFilePatterns: [
     String.raw`(^|[\\/])\.env(\.|$)`, String.raw`(^|[\\/])\.ssh[\\/]id_`, String.raw`credentials`,
