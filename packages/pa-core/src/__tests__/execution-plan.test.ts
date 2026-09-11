@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveExecutionPlan, type ExecutionPlan } from "../deploy/plan.js";
+import type { DeployRequest } from "../deploy/control.js";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { repositoryMutationLeasePath, type RepositoryAdmissionOperation, type RepositoryGitSnapshot } from "../deploy/repository-admission.js";
 import type { TeamConfig } from "../types.js";
@@ -208,6 +209,41 @@ test("linked working-tree inputs and CWDs fail planning with bounded diagnostics
         });
       }
     });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a self-asserted parent deployment ID never changes child planning or grants borrowed ownership", () => {
+  const fixture = createFixture("parent-id-alone");
+  const teamConfig = team();
+  try {
+    const request: DeployRequest & { parentDeploymentId: string } = {
+      team: "builder",
+      mode: "implement",
+      repo: "registered",
+      ticket: "PAP-191",
+      background: true,
+      force: true,
+      parentDeploymentId: "d-parent",
+    };
+    const plan = withPlatformConfig(fixture.config, () => resolveExecutionPlan({
+      request,
+      teamConfig,
+      mode: teamConfig.deploy_modes?.[0],
+      runtime: "pi",
+      deploymentId: "d-child",
+      deploymentDir: join(fixture.root, "d-child"),
+      activityLogPath: join(fixture.root, "d-child", "activity.jsonl"),
+      environment: {},
+      timeoutSeconds: 60,
+      cwd: fixture.repo,
+    }));
+    assert.equal(plan.repositoryAdmission.access, "exclusive-builder");
+    assert.equal(plan.repositoryAdmission.launchMode, "background");
+    assert.equal(plan.repositoryAdmission.ownershipIntent, "acquire-before-spawn");
+    assert.equal("parentDeploymentId" in plan, false);
+    assert.equal("capability" in plan.environment, false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

@@ -23,7 +23,9 @@ import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import type { RuntimeName } from "../types.js";
 
 export const REPOSITORY_MUTATION_LEASE_FILE = "pa-repository-mutation.lease.json";
+export const REPOSITORY_MUTATION_BORROWER_FILE = "pa-repository-mutation.borrower.json";
 export const MAX_REPOSITORY_LEASE_BYTES = 64 * 1024;
+export const MAX_REPOSITORY_BORROWER_BYTES = 64 * 1024;
 export const MAX_GIT_STATUS_SUMMARY_CHARS = 1_024;
 
 const MUTATION_MUTEX_FILE = "pa-repository-mutation.lease.lock";
@@ -34,6 +36,7 @@ const RUNTIMES: readonly RuntimeName[] = ["claude", "opencode", "droid", "pi"];
 
 export type RepositoryAccess = "read-only" | "exclusive-builder" | "non-locking";
 export type RepositoryEvidenceState = "absent" | "live" | "stale" | "malformed" | "oversized" | "root-conflicting";
+export type RepositoryBorrowerEvidenceState = RepositoryEvidenceState;
 
 export interface ProcessFingerprint {
   readonly pid: number;
@@ -92,6 +95,27 @@ export interface RepositoryMutationLease {
   readonly preLaunchGitSnapshot: RepositoryGitSnapshot;
 }
 
+/** Separate evidence for the one direct child borrowing a version 1 parent lease. */
+export interface RepositoryMutationBorrower {
+  readonly schemaVersion: 1;
+  readonly borrowerToken: string;
+  readonly canonicalRepoKey: string;
+  readonly canonicalRepoRoot: string;
+  readonly parentDeploymentId: string;
+  readonly parentProcessFingerprint: ProcessFingerprint;
+  readonly deploymentId: string;
+  readonly deploymentDirectory: string;
+  readonly runtime: "pi";
+  readonly team: "builder";
+  readonly mode: "implement";
+  readonly launchMode: "background";
+  readonly ticket: string;
+  readonly branch: string;
+  readonly processFingerprint: ProcessFingerprint;
+  readonly registeredAt: string;
+  readonly launchGitSnapshot: RepositoryGitSnapshot;
+}
+
 export interface GitCommandRunner {
   (args: readonly string[], cwd: string): string;
 }
@@ -101,6 +125,26 @@ export interface RepositoryAdmissionDependencies {
   readonly runGit: GitCommandRunner;
   readonly now: () => Date;
   readonly createToken: () => string;
+}
+
+export interface RegisterRepositoryMutationBorrowerOptions {
+  readonly capability: string;
+  readonly canonicalRepoKey: string;
+  readonly canonicalRepoRoot: string;
+  readonly parentDeploymentId: string;
+  readonly deploymentId: string;
+  readonly deploymentDirectory: string;
+  readonly runtime: RuntimeName;
+  readonly team: string;
+  readonly mode: string;
+  readonly launchMode: RepositoryAdmissionLaunchMode;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly force?: boolean;
+  readonly pid?: number;
+  readonly processFingerprint?: ProcessFingerprint;
+  readonly gitSnapshot?: RepositoryGitSnapshot;
+  readonly dependencies?: Partial<RepositoryAdmissionDependencies>;
 }
 
 export interface AcquireRepositoryMutationLeaseOptions {
@@ -130,6 +174,15 @@ export interface RepositoryEvidenceInspection {
   readonly observedOwner?: Partial<RepositoryMutationLease>;
 }
 
+export interface RepositoryBorrowerInspection {
+  readonly state: RepositoryBorrowerEvidenceState;
+  readonly reason: string;
+  readonly borrowerPath: string;
+  readonly evidenceIdentity?: string;
+  readonly borrower?: RepositoryMutationBorrower;
+  readonly observedBorrower?: Partial<RepositoryMutationBorrower>;
+}
+
 export type RepositoryLeaseAcquisition =
   | {
       readonly status: "acquired";
@@ -149,6 +202,26 @@ export type RepositoryLeaseAcquisition =
 
 export type RepositoryLeaseMutationResult =
   | { readonly status: "transferred" | "updated" | "released"; readonly lease?: RepositoryMutationLease }
+  | { readonly status: "absent" | "token-mismatch" | "invalid-evidence" | "borrower-live" | "borrower-invalid" };
+
+export type RepositoryBorrowRegistration =
+  | {
+      readonly status: "registered";
+      readonly borrowerPath: string;
+      readonly borrower: RepositoryMutationBorrower;
+      readonly diagnostic: string;
+      readonly quarantinedPath?: string;
+    }
+  | {
+      readonly status: "rejected";
+      readonly category: string;
+      readonly borrowerPath: string;
+      readonly diagnostic: string;
+      readonly borrower?: RepositoryMutationBorrower;
+    };
+
+export type RepositoryBorrowerMutationResult =
+  | { readonly status: "transferred" | "released"; readonly borrower?: RepositoryMutationBorrower }
   | { readonly status: "absent" | "token-mismatch" | "invalid-evidence" };
 
 export type RepositoryLeaseQuarantineResult =
@@ -164,6 +237,10 @@ export function classifyRepositoryAccess(team: string, _mode?: string): Reposito
 
 export function repositoryMutationLeasePath(canonicalRepoRoot: string): string {
   return join(assertCanonicalRoot(canonicalRepoRoot), ".git", REPOSITORY_MUTATION_LEASE_FILE);
+}
+
+export function repositoryMutationBorrowerPath(canonicalRepoRoot: string): string {
+  return join(assertCanonicalRoot(canonicalRepoRoot), ".git", REPOSITORY_MUTATION_BORROWER_FILE);
 }
 
 /**
@@ -265,6 +342,106 @@ export function inspectRepositoryMutationLease(
   return withMutationMutex(leasePath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
 }
 
+export function inspectRepositoryMutationBorrower(
+  canonicalRepoRoot: string,
+  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> = { getProcessFingerprint: readProcessFingerprint },
+): RepositoryBorrowerInspection {
+  const root = assertCanonicalRoot(canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const borrowerPath = repositoryMutationBorrowerPath(root);
+  return withMutationMutex(leasePath, () => inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint));
+}
+
+/**
+ * Authenticates a direct Pi builder/implement child against the live parent lease
+ * and publishes separate borrower evidence before the adapter spawns the child.
+ */
+export function registerRepositoryMutationBorrower(options: RegisterRepositoryMutationBorrowerOptions): RepositoryBorrowRegistration {
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const dependencies = resolveDependencies(options.dependencies);
+  return withMutationMutex(leasePath, () => {
+    const reject = (category: string, reason: string, borrower?: RepositoryMutationBorrower): RepositoryBorrowRegistration => ({
+      status: "rejected",
+      category,
+      borrowerPath,
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root }),
+      ...(borrower ? { borrower } : {}),
+    });
+    const leaseInspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
+    const lease = leaseInspection.lease;
+    if (leaseInspection.state !== "live" || !lease) return reject("parent-state", "the claimed parent lease is not process-verified live version 1 evidence");
+    if (lease.runtime !== "pi" || lease.mode !== "orchestrator") return reject("parent-identity", "the live owner is not a Pi builder/orchestrator parent");
+    if (lease.deploymentId !== options.parentDeploymentId) return reject("parent-identity", "the claimed parent deployment does not own the live lease");
+    if (lease.canonicalRepoKey !== options.canonicalRepoKey || lease.canonicalRepoRoot !== root) return reject("repository-identity", "the claimed canonical repository does not match the parent lease");
+    if (!options.capability || Buffer.byteLength(options.capability) > MAX_REPOSITORY_BORROWER_BYTES || !secureStringsEqual(lease.ownershipToken, options.capability)) {
+      return reject("capability", "the private parent capability is missing, malformed, or did not authenticate");
+    }
+    if (options.deploymentId === lease.deploymentId) return reject("child-identity", "a parent cannot borrow its own lease");
+    if (options.runtime !== "pi" || normalizedTeam(options.team) !== "builder" || options.mode !== "implement" || options.launchMode !== "background") {
+      return reject("launch-mode", "only a background Pi builder/implement direct child may borrow authority");
+    }
+    if (!options.ticket.trim() || options.branch !== lease.preLaunchGitSnapshot.branch || !options.branch.startsWith(`feature/${options.ticket}-`)) {
+      return reject("child-context", "ticket and exact linked feature branch must match the parent launch snapshot");
+    }
+
+    // This read is authoritative: it occurs under the same mutex as borrower publication.
+    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
+    if (!isGitSnapshot(gitSnapshot) || gitSnapshot.dirty) {
+      return reject("git-state", "staged, unstaged, or untracked Git state prevents inherited background admission; force does not bypass this condition");
+    }
+    if (!repositoryGitSnapshotsEqual(gitSnapshot, lease.preLaunchGitSnapshot) || gitSnapshot.branch !== options.branch) {
+      return reject("launch-snapshot", "the child launch Git snapshot does not exactly match the authenticated parent snapshot");
+    }
+
+    let inspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
+    let quarantinedPath: string | undefined;
+    if (inspection.state !== "absent") {
+      if (inspection.state === "live" || !options.force) {
+        return reject("borrower-state", inspection.state === "live" ? "a process-verified live sibling already occupies the parent execution slot" : `recoverable borrower evidence is ${inspection.state}`, inspection.borrower);
+      }
+      quarantinedPath = quarantineLeaseUnlocked(borrowerPath, dependencies.now, dependencies.createToken);
+      inspection = { state: "absent", reason: "recoverable borrower evidence was atomically quarantined", borrowerPath };
+    }
+
+    const pid = options.pid ?? process.pid;
+    const observedFingerprint = dependencies.getProcessFingerprint(pid);
+    const fingerprint = options.processFingerprint ?? observedFingerprint;
+    if (!fingerprint || fingerprint.pid !== pid || !fingerprintsEqual(fingerprint, observedFingerprint)) {
+      return reject("child-process", "the registering child launch process fingerprint could not be verified");
+    }
+    const borrower: RepositoryMutationBorrower = Object.freeze({
+      schemaVersion: 1,
+      borrowerToken: boundedRequired(dependencies.createToken(), "borrower token"),
+      canonicalRepoKey: boundedRequired(options.canonicalRepoKey, "canonical repository key"),
+      canonicalRepoRoot: root,
+      parentDeploymentId: lease.deploymentId,
+      parentProcessFingerprint: Object.freeze({ ...lease.processFingerprint }),
+      deploymentId: boundedRequired(options.deploymentId, "child deployment ID"),
+      deploymentDirectory: assertCanonicalRoot(options.deploymentDirectory),
+      runtime: "pi",
+      team: "builder",
+      mode: "implement",
+      launchMode: "background",
+      ticket: boundedRequired(options.ticket, "ticket"),
+      branch: boundedRequired(options.branch, "branch"),
+      processFingerprint: Object.freeze({ ...fingerprint }),
+      registeredAt: dependencies.now().toISOString(),
+      launchGitSnapshot: gitSnapshot,
+    });
+    assertBorrower(borrower);
+    publishBorrowerExclusive(borrowerPath, borrower, dependencies.createToken);
+    return {
+      status: "registered",
+      borrowerPath,
+      borrower,
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category: "registered", reason: inspection.reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root }),
+      ...(quarantinedPath ? { quarantinedPath } : {}),
+    };
+  });
+}
+
 export function acquireRepositoryMutationLease(options: AcquireRepositoryMutationLeaseOptions): RepositoryLeaseAcquisition {
   const root = assertCanonicalRoot(options.canonicalRepoRoot);
   const leasePath = repositoryMutationLeasePath(root);
@@ -293,17 +470,58 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
     }
 
     let inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
+    if (inspection.state === "live") {
+      return {
+        status: "rejected",
+        evidenceState: inspection.state,
+        leasePath,
+        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }),
+        ...(inspection.lease ? { lease: inspection.lease } : {}),
+      };
+    }
+    const borrowerPath = repositoryMutationBorrowerPath(root);
+    const borrowerInspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
     let quarantinedPath: string | undefined;
-    if (inspection.state !== "absent") {
-      if (inspection.state === "live" || !options.force) {
+    if (borrowerInspection.state === "live") {
+      return {
+        status: "rejected",
+        evidenceState: borrowerInspection.state,
+        leasePath,
+        diagnostic: formatRepositoryBorrowerDiagnostic({
+          category: "borrower-state",
+          reason: "a process-verified live borrower retains repository authority",
+          canonicalRepoKey: options.canonicalRepoKey,
+          canonicalRepoRoot: root,
+        }),
+      };
+    }
+    if (inspection.state !== "absent" && !options.force) {
+      return {
+        status: "rejected",
+        evidenceState: inspection.state,
+        leasePath,
+        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }),
+        ...(inspection.lease ? { lease: inspection.lease } : {}),
+      };
+    }
+    if (borrowerInspection.state !== "absent") {
+      if (!options.force) {
         return {
           status: "rejected",
-          evidenceState: inspection.state,
+          evidenceState: borrowerInspection.state,
           leasePath,
-          diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }),
-          ...(inspection.lease ? { lease: inspection.lease } : {}),
+          diagnostic: formatRepositoryBorrowerDiagnostic({
+            category: "borrower-state",
+            reason: `borrower evidence is ${borrowerInspection.state}`,
+            canonicalRepoKey: options.canonicalRepoKey,
+            canonicalRepoRoot: root,
+          }),
         };
       }
+      quarantinedPath = quarantineLeaseUnlocked(borrowerPath, dependencies.now, dependencies.createToken);
+    }
+
+    if (inspection.state !== "absent") {
       quarantinedPath = quarantineLeaseUnlocked(leasePath, dependencies.now, dependencies.createToken);
       inspection = { state: "absent", reason: "recoverable evidence was atomically quarantined", leasePath };
     }
@@ -370,6 +588,48 @@ export function updateRepositoryMutationLeaseGitSnapshot(options: {
   });
 }
 
+export function transferRepositoryMutationBorrower(options: {
+  canonicalRepoRoot: string;
+  borrowerToken: string;
+  nextProcessFingerprint: ProcessFingerprint;
+  dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "createToken">;
+}): RepositoryBorrowerMutationResult {
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const dependencies = resolveDependencies(options.dependencies);
+  return withMutationMutex(leasePath, () => {
+    const parsed = readValidBorrowerUnlocked(borrowerPath);
+    if (parsed === undefined) return { status: "absent" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken)) return { status: "token-mismatch" };
+    if (!isProcessFingerprint(options.nextProcessFingerprint)
+      || !fingerprintsEqual(options.nextProcessFingerprint, dependencies.getProcessFingerprint(options.nextProcessFingerprint.pid))) {
+      return { status: "invalid-evidence" };
+    }
+    const borrower = Object.freeze({ ...parsed, processFingerprint: Object.freeze({ ...options.nextProcessFingerprint }) });
+    replaceBorrowerAtomic(borrowerPath, borrower, dependencies.createToken);
+    return { status: "transferred", borrower };
+  });
+}
+
+export function releaseRepositoryMutationBorrower(options: {
+  canonicalRepoRoot: string;
+  borrowerToken: string;
+}): RepositoryBorrowerMutationResult {
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const leasePath = repositoryMutationLeasePath(root);
+  const borrowerPath = repositoryMutationBorrowerPath(root);
+  return withMutationMutex(leasePath, () => {
+    const parsed = readValidBorrowerUnlocked(borrowerPath);
+    if (parsed === undefined) return { status: "absent" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken)) return { status: "token-mismatch" };
+    unlinkSync(borrowerPath);
+    return { status: "released" };
+  });
+}
+
 export function transferRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   ownershipToken: string;
@@ -397,14 +657,23 @@ export function transferRepositoryMutationLease(options: {
 export function releaseRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   ownershipToken: string;
+  dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint">;
 }): RepositoryLeaseMutationResult {
   const root = assertCanonicalRoot(options.canonicalRepoRoot);
   const leasePath = repositoryMutationLeasePath(root);
+  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(leasePath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
     if (parsed === undefined) return { status: "absent" };
     if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
-    if (parsed.ownershipToken !== options.ownershipToken) return { status: "token-mismatch" };
+    if (!secureStringsEqual(parsed.ownershipToken, options.ownershipToken)) return { status: "token-mismatch" };
+    const borrowerInspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
+    if (borrowerInspection.state === "live") return { status: "borrower-live" };
+    if (borrowerInspection.state !== "absent") {
+      if (!borrowerInspection.borrower || borrowerInspection.borrower.parentDeploymentId !== parsed.deploymentId) return { status: "borrower-invalid" };
+      unlinkSync(borrowerPath);
+    }
     unlinkSync(leasePath);
     return { status: "released" };
   });
@@ -454,6 +723,17 @@ export function formatDirtyBackgroundBuilderDiagnostic(input: {
   const snapshot = input.snapshot;
   return boundDiagnostic(
     `Repository admission: repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}; state=dirty-background; reason=dirty builder repositories require foreground interaction and no ownership was acquired. Git: branch=${boundedField(snapshot.branch, 160)}, head=${boundedField(snapshot.head, 160)}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}. Recovery: retry in the foreground with ${shellCommand(retry)}. Deploy force does not bypass dirty-background interaction.`,
+  );
+}
+
+export function formatRepositoryBorrowerDiagnostic(input: {
+  category: string;
+  reason: string;
+  canonicalRepoKey: string;
+  canonicalRepoRoot: string;
+}): string {
+  return boundDiagnostic(
+    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}. Reason: ${boundedField(input.reason, 500)}. Correction: preserve parent ownership and provide fresh runtime-authenticated exact-context evidence. Resume Action: retry only after the parent orchestrator confirms no live sibling and a zero-entry Git snapshot.`,
   );
 }
 
@@ -513,12 +793,50 @@ function inspectLeaseUnlocked(
   return { state: "stale", reason: "owner PID is dead or its process-start fingerprint was reused", leasePath, evidenceIdentity, lease: value };
 }
 
+function inspectBorrowerUnlocked(
+  root: string,
+  borrowerPath: string,
+  getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined,
+): RepositoryBorrowerInspection {
+  if (!existsSync(borrowerPath)) return { state: "absent", reason: "no borrower evidence exists", borrowerPath };
+  const evidenceIdentity = evidenceIdentityUnlocked(borrowerPath);
+  const size = statSync(borrowerPath).size;
+  if (size > MAX_REPOSITORY_BORROWER_BYTES) return { state: "oversized", reason: `borrower evidence exceeds ${MAX_REPOSITORY_BORROWER_BYTES} bytes`, borrowerPath, evidenceIdentity };
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(borrowerPath, "utf8"));
+  } catch {
+    return { state: "malformed", reason: "borrower evidence is not valid JSON", borrowerPath, evidenceIdentity };
+  }
+  const observedBorrower = objectBorrowerEvidence(value);
+  const observedFingerprint = observedBorrower?.processFingerprint;
+  if (observedFingerprint && fingerprintsEqual(observedFingerprint, getProcessFingerprint(observedFingerprint.pid))) {
+    const borrower = isRepositoryMutationBorrower(value) ? value : undefined;
+    const reason = borrower && borrower.canonicalRepoRoot !== root ? "verified live process owns root-conflicting borrower evidence" : "PID and process-start fingerprint match a live borrower";
+    return { state: "live", reason, borrowerPath, evidenceIdentity, ...(borrower ? { borrower } : {}), ...(observedBorrower ? { observedBorrower } : {}) };
+  }
+  if (!isRepositoryMutationBorrower(value)) return { state: "malformed", reason: "borrower evidence does not match schema version 1", borrowerPath, evidenceIdentity, ...(observedBorrower ? { observedBorrower } : {}) };
+  if (value.canonicalRepoRoot !== root) return { state: "root-conflicting", reason: "borrower canonical root does not match its evidence location", borrowerPath, evidenceIdentity, borrower: value };
+  return { state: "stale", reason: "borrower PID is dead or its process-start fingerprint was reused", borrowerPath, evidenceIdentity, borrower: value };
+}
+
 function readValidLeaseUnlocked(path: string): RepositoryMutationLease | null | undefined {
   if (!existsSync(path)) return undefined;
   if (statSync(path).size > MAX_REPOSITORY_LEASE_BYTES) return null;
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
     return isRepositoryMutationLease(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function readValidBorrowerUnlocked(path: string): RepositoryMutationBorrower | null | undefined {
+  if (!existsSync(path)) return undefined;
+  if (statSync(path).size > MAX_REPOSITORY_BORROWER_BYTES) return null;
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isRepositoryMutationBorrower(value) ? value : null;
   } catch {
     return null;
   }
@@ -532,6 +850,17 @@ function objectEvidence(value: unknown): Partial<RepositoryMutationLease> | unde
     ...(typeof row["deploymentId"] === "string" ? { deploymentId: row["deploymentId"] } : {}),
     ...(typeof row["runtime"] === "string" && RUNTIMES.includes(row["runtime"] as RuntimeName) ? { runtime: row["runtime"] as RuntimeName } : {}),
     ...(typeof row["mode"] === "string" ? { mode: row["mode"] } : {}),
+    ...(fingerprint ? { processFingerprint: fingerprint } : {}),
+  };
+}
+
+function objectBorrowerEvidence(value: unknown): Partial<RepositoryMutationBorrower> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  const fingerprint = isProcessFingerprint(row["processFingerprint"]) ? row["processFingerprint"] : undefined;
+  return {
+    ...(typeof row["parentDeploymentId"] === "string" ? { parentDeploymentId: row["parentDeploymentId"] } : {}),
+    ...(typeof row["deploymentId"] === "string" ? { deploymentId: row["deploymentId"] } : {}),
     ...(fingerprint ? { processFingerprint: fingerprint } : {}),
   };
 }
@@ -553,6 +882,30 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && isProcessFingerprint(row["processFingerprint"])
     && validTimestamp(row["acquiredAt"])
     && isGitSnapshot(row["preLaunchGitSnapshot"]);
+}
+
+function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutationBorrower {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return row["schemaVersion"] === 1
+    && boundedString(row["borrowerToken"])
+    && boundedString(row["canonicalRepoKey"])
+    && boundedString(row["canonicalRepoRoot"])
+    && isAbsolute(row["canonicalRepoRoot"] as string)
+    && boundedString(row["parentDeploymentId"])
+    && isProcessFingerprint(row["parentProcessFingerprint"])
+    && boundedString(row["deploymentId"])
+    && boundedString(row["deploymentDirectory"])
+    && isAbsolute(row["deploymentDirectory"] as string)
+    && row["runtime"] === "pi"
+    && row["team"] === "builder"
+    && row["mode"] === "implement"
+    && row["launchMode"] === "background"
+    && boundedString(row["ticket"])
+    && boundedString(row["branch"])
+    && isProcessFingerprint(row["processFingerprint"])
+    && validTimestamp(row["registeredAt"])
+    && isGitSnapshot(row["launchGitSnapshot"]);
 }
 
 function isProcessFingerprint(value: unknown): value is ProcessFingerprint {
@@ -580,11 +933,28 @@ function assertLease(lease: RepositoryMutationLease): void {
   if (bytes > MAX_REPOSITORY_LEASE_BYTES) throw new Error(`repository-admission: generated ownership evidence exceeds ${MAX_REPOSITORY_LEASE_BYTES} bytes`);
 }
 
+function assertBorrower(borrower: RepositoryMutationBorrower): void {
+  if (!isRepositoryMutationBorrower(borrower)) throw new Error("repository-admission: generated borrower evidence is invalid");
+  const bytes = Buffer.byteLength(`${JSON.stringify(borrower, null, 2)}\n`);
+  if (bytes > MAX_REPOSITORY_BORROWER_BYTES) throw new Error(`repository-admission: generated borrower evidence exceeds ${MAX_REPOSITORY_BORROWER_BYTES} bytes`);
+}
+
 function publishLeaseExclusive(path: string, lease: RepositoryMutationLease, createToken: () => string): void {
   mkdirSync(resolve(path, ".."), { recursive: true });
   const temporary = temporaryPath(path, createToken());
   try {
     writeLeaseFile(temporary, lease);
+    linkSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* no temporary remains after a successful cleanup */ }
+  }
+}
+
+function publishBorrowerExclusive(path: string, borrower: RepositoryMutationBorrower, createToken: () => string): void {
+  mkdirSync(resolve(path, ".."), { recursive: true });
+  const temporary = temporaryPath(path, createToken());
+  try {
+    writeBorrowerFile(temporary, borrower);
     linkSync(temporary, path);
   } finally {
     try { unlinkSync(temporary); } catch { /* no temporary remains after a successful cleanup */ }
@@ -602,8 +972,24 @@ function replaceLeaseAtomic(path: string, lease: RepositoryMutationLease, create
   }
 }
 
+function replaceBorrowerAtomic(path: string, borrower: RepositoryMutationBorrower, createToken: () => string): void {
+  assertBorrower(borrower);
+  const temporary = temporaryPath(path, createToken());
+  try {
+    writeBorrowerFile(temporary, borrower);
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* rename already consumed it */ }
+  }
+}
+
 function writeLeaseFile(path: string, lease: RepositoryMutationLease): void {
   writeFileSync(path, `${JSON.stringify(lease, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  chmodSync(path, 0o600);
+}
+
+function writeBorrowerFile(path: string, borrower: RepositoryMutationBorrower): void {
+  writeFileSync(path, `${JSON.stringify(borrower, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
   chmodSync(path, 0o600);
 }
 
@@ -699,6 +1085,16 @@ function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies>
 
 function defaultGitRunner(args: readonly string[], cwd: string): string {
   return execFileSync("git", [...args], { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+}
+
+function normalizedTeam(team: string): string {
+  return team.trim().split("/", 1)[0]?.toLowerCase() ?? "";
+}
+
+function secureStringsEqual(expected: string, observed: string): boolean {
+  const expectedHash = createHash("sha256").update(expected).digest();
+  const observedHash = createHash("sha256").update(observed).digest();
+  return expectedHash.equals(observedHash);
 }
 
 function fingerprintsEqual(expected: ProcessFingerprint, observed: ProcessFingerprint | undefined): boolean {

@@ -5,18 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  MAX_REPOSITORY_BORROWER_BYTES,
   MAX_REPOSITORY_DIAGNOSTIC_CHARS,
   MAX_REPOSITORY_LEASE_BYTES,
   acquireRepositoryMutationLease,
   captureRepositoryGitSnapshot,
   classifyRepositoryAccess,
   formatRepositoryAdmissionDiagnostic,
+  inspectRepositoryMutationBorrower,
   inspectRepositoryMutationLease,
   quarantineRepositoryMutationLease,
   readProcessFingerprint,
+  registerRepositoryMutationBorrower,
+  releaseRepositoryMutationBorrower,
   releaseRepositoryMutationLease,
   repositoryGitSnapshotsEqual,
+  repositoryMutationBorrowerPath,
   repositoryMutationLeasePath,
+  transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
   updateRepositoryMutationLeaseGitSnapshot,
   type ProcessFingerprint,
@@ -26,7 +32,7 @@ import {
 import { installGitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
 const snapshot: RepositoryGitSnapshot = Object.freeze({
-  branch: "feature/PAP-174-requirements-builder-admission",
+  branch: "feature/PAP-191-ppa-parent-lease-inheritance",
   head: "a".repeat(40),
   stagedCount: 0,
   unstagedCount: 0,
@@ -52,6 +58,16 @@ function dependencies(live?: ProcessFingerprint): RepositoryAdmissionDependencie
     runGit: () => { throw new Error("unexpected Git call"); },
     now: () => new Date("2026-09-05T13:00:00.000Z"),
     createToken: () => `token-${++token}`,
+  };
+}
+
+function familyDependencies(live: readonly ProcessFingerprint[]): RepositoryAdmissionDependencies {
+  let token = 0;
+  return {
+    getProcessFingerprint: (pid) => live.find((candidate) => candidate.pid === pid),
+    runGit: () => { throw new Error("unexpected Git call"); },
+    now: () => new Date("2026-09-11T13:00:00.000Z"),
+    createToken: () => `family-token-${++token}`,
   };
 }
 
@@ -449,6 +465,202 @@ test("transfer and release are atomic, token-owned, and preserve replacement own
     assert.deepEqual(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "owner-token" }), { status: "token-mismatch" });
     assert.ok(statSync(repositoryMutationLeasePath(root)).isFile());
     assert.deepEqual(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "replacement-token" }), { status: "released" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("authenticated direct child registration is separate, bounded, mode 0600, and launch-failure rollback preserves parent bytes", () => {
+  const root = fixture("borrow-register");
+  const parent = fingerprint(45501);
+  const child = fingerprint(45502);
+  const deps = familyDependencies([parent, child]);
+  try {
+    const parentLease = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      deploymentId: "d-parent",
+      deploymentDirectory: join(root, "parent"),
+      runtime: "pi",
+      mode: "orchestrator",
+      pid: parent.pid,
+      processFingerprint: parent,
+      ownershipToken: "private-parent-capability",
+      gitSnapshot: snapshot,
+      dependencies: deps,
+    });
+    assert.equal(parentLease.status, "acquired");
+    const leaseBytes = readFileSync(repositoryMutationLeasePath(root));
+    const registration = registerRepositoryMutationBorrower({
+      capability: "private-parent-capability",
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      parentDeploymentId: "d-parent",
+      deploymentId: "d-child",
+      deploymentDirectory: join(root, "child"),
+      runtime: "pi",
+      team: "builder",
+      mode: "implement",
+      launchMode: "background",
+      ticket: "PAP-191",
+      branch: snapshot.branch,
+      pid: child.pid,
+      processFingerprint: child,
+      gitSnapshot: snapshot,
+      dependencies: deps,
+    });
+    assert.equal(registration.status, "registered");
+    if (registration.status !== "registered") return;
+    const borrowerPath = repositoryMutationBorrowerPath(root);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+    assert.equal(statSync(borrowerPath).mode & 0o777, 0o600);
+    assert.ok(statSync(borrowerPath).size <= MAX_REPOSITORY_BORROWER_BYTES);
+    assert.doesNotMatch(readFileSync(borrowerPath, "utf8"), /private-parent-capability/);
+    assert.equal(inspectRepositoryMutationBorrower(root, deps).state, "live");
+    assert.deepEqual(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: "wrong" }), { status: "token-mismatch" });
+    assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken }).status, "released");
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("borrow rejection matrix fails closed with bounded redacted diagnostics and no parent mutation", () => {
+  const cases = [
+    { name: "capability", patch: { capability: "wrong-secret" } },
+    { name: "parent", patch: { parentDeploymentId: "d-unrelated" } },
+    { name: "child", patch: { deploymentId: "d-parent" } },
+    { name: "runtime", patch: { runtime: "opencode" as const } },
+    { name: "team", patch: { team: "requirements" } },
+    { name: "mode", patch: { mode: "orchestrator" } },
+    { name: "launch", patch: { launchMode: "foreground" as const } },
+    { name: "branch", patch: { branch: "feature/PAP-191-other" } },
+  ] as const;
+  for (const rejection of cases) {
+    const root = fixture(`borrow-reject-${rejection.name}`);
+    const parent = fingerprint(45600 + rejection.name.length);
+    const child = fingerprint(45700 + rejection.name.length);
+    const deps = familyDependencies([parent, child]);
+    try {
+      assert.equal(acquireRepositoryMutationLease({
+        canonicalRepoKey: "fixture",
+        canonicalRepoRoot: root,
+        deploymentId: "d-parent",
+        deploymentDirectory: join(root, "parent"),
+        runtime: "pi",
+        mode: "orchestrator",
+        pid: parent.pid,
+        processFingerprint: parent,
+        ownershipToken: "matrix-private-capability",
+        gitSnapshot: snapshot,
+        dependencies: deps,
+      }).status, "acquired");
+      const exactLease = readFileSync(repositoryMutationLeasePath(root));
+      const result = registerRepositoryMutationBorrower({
+        capability: "matrix-private-capability",
+        canonicalRepoKey: "fixture",
+        canonicalRepoRoot: root,
+        parentDeploymentId: "d-parent",
+        deploymentId: "d-child",
+        deploymentDirectory: join(root, "child"),
+        runtime: "pi",
+        team: "builder",
+        mode: "implement",
+        launchMode: "background",
+        ticket: "PAP-191",
+        branch: snapshot.branch,
+        pid: child.pid,
+        processFingerprint: child,
+        gitSnapshot: snapshot,
+        dependencies: deps,
+        ...rejection.patch,
+      });
+      assert.equal(result.status, "rejected", rejection.name);
+      if (result.status === "rejected") {
+        assert.ok(result.diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+        assert.match(result.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.doesNotMatch(result.diagnostic, /matrix-private-capability|wrong-secret/);
+      }
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), exactLease);
+      assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("every dirty Git category rejects borrowing with and without force before evidence publication", () => {
+  for (const dirtyField of ["stagedCount", "unstagedCount", "untrackedCount"] as const) {
+    for (const force of [false, true]) {
+      const root = fixture(`borrow-dirty-${dirtyField}-${force}`);
+      const parent = fingerprint(45801);
+      const child = fingerprint(45802);
+      const deps = familyDependencies([parent, child]);
+      try {
+        assert.equal(acquireRepositoryMutationLease({
+          canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+          runtime: "pi", mode: "orchestrator", pid: parent.pid, processFingerprint: parent, ownershipToken: "dirty-capability", gitSnapshot: snapshot, dependencies: deps,
+        }).status, "acquired");
+        const leaseBytes = readFileSync(repositoryMutationLeasePath(root));
+        const dirty = Object.freeze({ ...snapshot, [dirtyField]: 1, dirty: true, statusSummary: `${dirtyField}=1` });
+        const result = registerRepositoryMutationBorrower({
+          capability: "dirty-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+          deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
+          launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: child.pid, processFingerprint: child,
+          gitSnapshot: dirty, force, dependencies: deps,
+        });
+        assert.equal(result.status, "rejected");
+        if (result.status === "rejected") assert.equal(result.category, "git-state");
+        assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
+        assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("live siblings and abnormal-parent borrowers gate release and force while fingerprint-stale evidence is recoverable", () => {
+  const root = fixture("borrow-lifecycle");
+  const parent = fingerprint(45901);
+  const launcher = fingerprint(45902);
+  const child = fingerprint(45903);
+  const liveFamily = familyDependencies([parent, launcher, child]);
+  try {
+    assert.equal(acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+      runtime: "pi", mode: "orchestrator", pid: parent.pid, processFingerprint: parent, ownershipToken: "family-capability", gitSnapshot: snapshot, dependencies: liveFamily,
+    }).status, "acquired");
+    const parentBytes = readFileSync(repositoryMutationLeasePath(root));
+    const first = registerRepositoryMutationBorrower({
+      capability: "family-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-first", deploymentDirectory: join(root, "first"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: launcher.pid, processFingerprint: launcher,
+      gitSnapshot: snapshot, dependencies: liveFamily,
+    });
+    assert.equal(first.status, "registered");
+    if (first.status !== "registered") return;
+    const second = registerRepositoryMutationBorrower({
+      capability: "family-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-second", deploymentDirectory: join(root, "second"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: child.pid, processFingerprint: child,
+      gitSnapshot: snapshot, force: true, dependencies: liveFamily,
+    });
+    assert.equal(second.status, "rejected");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "family-capability", dependencies: liveFamily }).status, "borrower-live");
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+
+    assert.equal(transferRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, nextProcessFingerprint: child, dependencies: liveFamily }).status, "transferred");
+    const childOnly = familyDependencies([child]);
+    assert.equal(inspectRepositoryMutationLease(root, childOnly).state, "stale");
+    assert.equal(inspectRepositoryMutationBorrower(root, childOnly).state, "live");
+    const blocked = acquire(root, fingerprint(45904), { force: true, deps: familyDependencies([child, fingerprint(45904)]) });
+    assert.equal(blocked.status, "rejected");
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+
+    const replacement = fingerprint(45905);
+    const recovered = acquire(root, replacement, { force: true, deps: familyDependencies([replacement]) });
+    assert.equal(recovered.status, "acquired");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
