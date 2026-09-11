@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, getDeploymentEvents, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents } from "@pa-platform/pa-core";
-import { PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 
@@ -124,6 +124,95 @@ test("Pi background supervisor authenticates transfer before readiness and relea
   });
 });
 
+test("borrowed runner transfers process identity, scrubs implementation env/config, and preserves parent lease bytes", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const repo = join(root, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const snapshot = { branch: "feature/PAP-191-runner-test", head: "b".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    const parentDeploymentId = "d-parent-runner";
+    const parentDir = join(root, "deployments", parentDeploymentId);
+    mkdirSync(parentDir, { recursive: true });
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: parentDeploymentId,
+      deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", gitSnapshot: snapshot,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    const capability = acquired.lease.ownershipToken;
+    const launcher = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    assert.ok(launcher.pid);
+    const registration = registerRepositoryMutationBorrower({
+      capability, canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, parentDeploymentId,
+      deploymentId: config.deploymentId, deploymentDirectory: deployDir, runtime: "pi", team: "builder",
+      mode: "implement", launchMode: "background", ticket: "PAP-191", branch: snapshot.branch,
+      pid: launcher.pid, gitSnapshot: snapshot,
+    });
+    assert.equal(registration.status, "registered");
+    if (registration.status !== "registered") return;
+    config.repositoryBorrower = { canonicalRepoRoot: repo, borrowerToken: registration.borrower.borrowerToken, parentDeploymentId };
+    const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+    const previousCapability = process.env[PI_PARENT_LEASE_CAPABILITY_ENV];
+    process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = capability;
+    const child = new RunnerChild();
+    let runtimeEnvironment: NodeJS.ProcessEnv | undefined;
+    try {
+      const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: ((_command, _args, options) => {
+        runtimeEnvironment = options.env;
+        const borrower = inspectRepositoryMutationBorrower(repo);
+        assert.equal(borrower.state, "live");
+        assert.equal(borrower.borrower?.processFingerprint.pid, process.pid);
+        assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+        return child as never;
+      }) as never } });
+      await immediate();
+      assert.equal(runtimeEnvironment?.[PI_PARENT_LEASE_CAPABILITY_ENV], undefined);
+      assert.equal(statSync(repositoryMutationBorrowerPath(repo)).mode & 0o777, 0o600);
+      child.emit("close", 0);
+      await running;
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+      assert.doesNotMatch(JSON.stringify(getDeploymentEvents(config.deploymentId)), new RegExp(capability));
+      assert.doesNotMatch(JSON.stringify(readActivityEvents(join(deployDir, "activity.jsonl"))), new RegExp(capability));
+
+      let persistedConfig = "";
+      let supervisorEnvironment: NodeJS.ProcessEnv | undefined;
+      const backgroundLauncher = new LauncherProcess();
+      const adapter = new PiAdapter({
+        cwd: deployDir,
+        env: { ...process.env, [PI_PARENT_LEASE_CAPABILITY_ENV]: capability, PA_TEAM: "builder" },
+        versionProbe: () => "0.84.4",
+        nativeRegistryProbe: () => undefined,
+        supervision: {
+          launchBackgroundRunner: ((_runnerPath, configPath, options) => {
+            persistedConfig = readFileSync(configPath, "utf8");
+            supervisorEnvironment = options.env;
+            const parsed = readPiBackgroundConfig(configPath);
+            writePiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE), {
+              schemaVersion: 1, deploymentId: parsed.deploymentId, ownershipToken: parsed.ownershipToken,
+              state: "active", ready: true, supervisorPid: backgroundLauncher.pid, updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5_000,
+            });
+            return backgroundLauncher as never;
+          }),
+        },
+      });
+      const launched = await adapter.spawn({
+        primerPath: config.primerPath, deployId: config.deploymentId, mode: "background", sessionId: config.sessionId,
+        repositoryBorrower: config.repositoryBorrower,
+      });
+      assert.equal(launched.exitCode, 0, launched.errorMessage);
+      assert.equal(launched.metadata?.["repositoryBorrowerTransferred"], true);
+      assert.equal(supervisorEnvironment?.[PI_PARENT_LEASE_CAPABILITY_ENV], undefined);
+      assert.doesNotMatch(persistedConfig, new RegExp(capability));
+      assert.match(persistedConfig, new RegExp(registration.borrower.borrowerToken));
+    } finally {
+      if (previousCapability === undefined) delete process.env[PI_PARENT_LEASE_CAPABILITY_ENV]; else process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = previousCapability;
+      launcher.kill("SIGKILL");
+      await new Promise<void>((resolve) => launcher.once("close", () => resolve()));
+      assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
+    }
+  });
+});
+
 test("runner failure replaces premature agent success once and keeps process category bounded", async () => {
   await withRunnerEnv(async (_root, deployDir, config) => {
     const secret = "runner-sensitive-sentinel";
@@ -174,6 +263,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     cwd: root,
     env: { ...process.env, PAP_156_SECRET: secret, PA_TEAM: "builder" },
     versionProbe: () => "0.84.4",
+    nativeRegistryProbe: () => undefined,
     supervision: {
       launchBackgroundRunner: ((_path, configPath) => {
         configBody = readFileSync(configPath, "utf8");
@@ -193,7 +283,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.doesNotMatch(result.errorMessage ?? "", new RegExp(secret));
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
 
-    const readFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", supervision: {
+    const readFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       launchBackgroundRunner: (() => new LauncherProcess() as never),
       readBackgroundOwnership: () => { throw new Error("ownership fixture unreadable"); },
     } });
@@ -202,7 +292,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     assert.match(unreadable.errorMessage ?? "", /^runner-readiness: ownership fixture unreadable$/);
     assert.equal(existsSync(join(root, PI_BACKGROUND_CONFIG_FILE)), false);
 
-    const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", secretValues: [secret], supervision: {
+    const launcherFailure = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, secretValues: [secret], supervision: {
       launchBackgroundRunner: (() => { throw new Error(`launcher fixture failed ${secret}`); }),
     } });
     const failed = await launcherFailure.spawn({ primerPath: primer, deployId: "d-launcher", mode: "background", sessionId: "launcher-session" });
@@ -222,7 +312,7 @@ test("readiness timeout escalates a resistant runner and removes only its owned 
   let clock = 0;
   let gone = false;
   const signals: NodeJS.Signals[] = [];
-  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", supervision: {
+  const adapter = new PiAdapter({ cwd: root, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
     launchBackgroundRunner: (() => launcher as never),
     readinessNow: () => clock,
     readinessSleep: async (milliseconds) => { clock += milliseconds; },
@@ -265,7 +355,7 @@ test("launcher process exits after handoff while the persistent runner owns comp
   writeFileSync(launcherPath, [
     `import { spawn } from "node:child_process";`,
     `import { PiAdapter } from ${JSON.stringify(adapterUrl)};`,
-    `const adapter = new PiAdapter({ cwd: ${JSON.stringify(deployDir)}, supervision: { launchBackgroundRunner: (_ignored, configPath, options) => spawn(process.execPath, ["--import", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(runnerWrapper)}, configPath], { ...options, detached: true, stdio: ["ignore", "ignore", "inherit"] }) } });`,
+    `const adapter = new PiAdapter({ cwd: ${JSON.stringify(deployDir)}, nativeRegistryProbe: () => undefined, supervision: { launchBackgroundRunner: (_ignored, configPath, options) => spawn(process.execPath, ["--import", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(runnerWrapper)}, configPath], { ...options, detached: true, stdio: ["ignore", "ignore", "inherit"] }) } });`,
     `const result = await adapter.spawn({ primerPath: ${JSON.stringify(primer)}, deployId: "d-boundary", mode: "background", sessionId: "boundary-session", logFile: ${JSON.stringify(join(deployDir, "pi.log"))} });`,
     `process.stdout.write(JSON.stringify(result));`,
   ].join("\n"));

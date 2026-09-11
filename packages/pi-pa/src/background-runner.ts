@@ -8,12 +8,15 @@ import {
   getDeployPaths,
   readProcessFingerprint,
   reconcileTerminalRegistryEvent,
+  releaseRepositoryMutationBorrower,
   releaseRepositoryMutationLease,
+  transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
   type RegistryEvent,
 } from "@pa-platform/pa-core";
 import {
   buildPiBackgroundArgs,
+  PI_PARENT_LEASE_CAPABILITY_ENV,
   PI_SUPERVISOR_FILE,
   readPiBackgroundConfig,
   runPiManagedProcess,
@@ -45,6 +48,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let childPid: number | undefined;
   let ready = false;
   let repositoryLeaseTransferred = false;
+  let repositoryBorrowerTransferred = false;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -76,19 +80,31 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
-    if (config.repositoryLease) {
+    if (config.repositoryLease || config.repositoryBorrower) {
       const fingerprint = readProcessFingerprint(process.pid);
       if (!fingerprint) throw new Error(`runner-readiness: cannot verify repository supervisor PID ${process.pid}`);
-      const transfer = transferRepositoryMutationLease({
-        canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
-        ownershipToken: config.repositoryLease.ownershipToken,
-        nextProcessFingerprint: fingerprint,
-      });
-      if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
-      repositoryLeaseTransferred = true;
+      if (config.repositoryLease) {
+        const transfer = transferRepositoryMutationLease({
+          canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
+          ownershipToken: config.repositoryLease.ownershipToken,
+          nextProcessFingerprint: fingerprint,
+        });
+        if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
+        repositoryLeaseTransferred = true;
+      } else if (config.repositoryBorrower) {
+        const transfer = transferRepositoryMutationBorrower({
+          canonicalRepoRoot: config.repositoryBorrower.canonicalRepoRoot,
+          borrowerToken: config.repositoryBorrower.borrowerToken,
+          nextProcessFingerprint: fingerprint,
+        });
+        if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository borrower transfer failed (${transfer.status})`);
+        repositoryBorrowerTransferred = true;
+      }
     }
     const args = buildPiBackgroundArgs(config);
-    const childEnv = piRegistryEnvironment({ ...process.env });
+    const runtimeEnvironment = { ...process.env };
+    if (config.repositoryBorrower) delete runtimeEnvironment[PI_PARENT_LEASE_CAPABILITY_ENV];
+    const childEnv = piRegistryEnvironment(runtimeEnvironment);
     const result = await runPiManagedProcess(
       args,
       config.cwd,
@@ -137,6 +153,12 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     try {
       ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
     } finally {
+      if (repositoryBorrowerTransferred && config.repositoryBorrower) {
+        releaseRepositoryMutationBorrower({
+          canonicalRepoRoot: config.repositoryBorrower.canonicalRepoRoot,
+          borrowerToken: config.repositoryBorrower.borrowerToken,
+        });
+      }
       if (repositoryLeaseTransferred && config.repositoryLease) {
         releaseRepositoryMutationLease({
           canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,

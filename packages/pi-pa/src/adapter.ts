@@ -26,6 +26,8 @@ const BACKGROUND_READINESS_POLL_MS = 25;
 const MAX_BACKGROUND_CONFIG_BYTES = 64 * 1024;
 export const PI_SUPERVISOR_FILE = "pi-supervisor.json";
 export const PI_BACKGROUND_CONFIG_FILE = "pi-background.json";
+/** Private parent capability. It is never part of a rendered execution plan or persisted child configuration. */
+export const PI_PARENT_LEASE_CAPABILITY_ENV = "PA_PI_PARENT_LEASE_TOKEN";
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 /** @deprecated Background completion is owned by the persistent runner. */
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
@@ -47,6 +49,11 @@ export interface PiBackgroundConfig {
   repositoryLease?: {
     canonicalRepoRoot: string;
     ownershipToken: string;
+  };
+  repositoryBorrower?: {
+    canonicalRepoRoot: string;
+    borrowerToken: string;
+    parentDeploymentId: string;
   };
 }
 export interface PiSupervisorOwnership {
@@ -128,7 +135,7 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly supervision: PiSupervisionOptions;
 
   constructor(options: PiAdapterOptions = {}) {
-    this.cwd = options.cwd ?? process.cwd(); this.env = options.env ?? process.env;
+    this.cwd = options.cwd ?? process.cwd(); this.env = withoutParentLeaseCapability(options.env ?? process.env);
     this.runCommand = options.runCommand;
     this.versionTimeoutMs = options.versionTimeoutMs ?? PI_VERSION_TIMEOUT_MS;
     this.versionProbe = options.versionProbe ?? (() => probePiVersion(this.cwd, this.env, this.versionTimeoutMs));
@@ -191,6 +198,7 @@ export class PiAdapter implements RuntimeAdapter {
     }
     args.push(readFileSync(opts.primerPath, "utf8"));
     const env = { ...this.env, ...opts.env };
+    if (opts.repositoryBorrower) delete env[PI_PARENT_LEASE_CAPABILITY_ENV];
     const piEnv = piRegistryEnvironment(env);
     const secrets = environmentSecrets(env, this.secretValues);
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
@@ -517,6 +525,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
     ...(input.opts.repositoryLease ? { repositoryLease: input.opts.repositoryLease } : {}),
+    ...(input.opts.repositoryBorrower ? { repositoryBorrower: input.opts.repositoryBorrower } : {}),
   };
   try {
     writePiBackgroundConfig(configPath, config);
@@ -589,6 +598,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       ...(established.childPid ? { pid: established.childPid } : {}),
       ownershipFile: ownershipPath,
       ...(config.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
+      ...(config.repositoryBorrower ? { repositoryBorrowerTransferred: true } : {}),
     },
   };
 }
@@ -626,7 +636,15 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
     && typeof repositoryLease.canonicalRepoRoot === "string"
     && typeof repositoryLease.ownershipToken === "string"
   );
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryLease) {
+  const repositoryBorrower = value.repositoryBorrower;
+  const validRepositoryBorrower = repositoryBorrower === undefined || (
+    typeof repositoryBorrower === "object"
+    && repositoryBorrower !== null
+    && typeof repositoryBorrower.canonicalRepoRoot === "string"
+    && typeof repositoryBorrower.borrowerToken === "string"
+    && typeof repositoryBorrower.parentDeploymentId === "string"
+  );
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryLease || !validRepositoryBorrower || (repositoryLease !== undefined && repositoryBorrower !== undefined)) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
@@ -677,6 +695,11 @@ function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): 
   safeUnlink(path);
 }
 function safeUnlink(path: string): void { try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
+function withoutParentLeaseCapability(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const safe = { ...env };
+  delete safe[PI_PARENT_LEASE_CAPABILITY_ENV];
+  return safe;
+}
 function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
 
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
