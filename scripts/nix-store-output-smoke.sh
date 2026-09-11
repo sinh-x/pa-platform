@@ -1,6 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+capture_fixture=${PAP183_SMOKE_CAPTURE_FIXTURE:-}
+if [[ -n "$capture_fixture" && ("${PAP183_SMOKE_TEST_FIXTURES:-}" != 1 || ! "$capture_fixture" =~ ^(success|failure)$) ]]; then
+  echo "PAP183_SMOKE_CAPTURE_FIXTURE requires PAP183_SMOKE_TEST_FIXTURES=1 and success or failure" >&2
+  exit 2
+fi
+
+if (($# > 0)); then
+  if [[ $# -ne 2 || "$1" != --log-file || -z "$2" ]]; then
+    echo "usage: nix-store-output-smoke.sh [--log-file PATH]" >&2
+    exit 2
+  fi
+  if [[ -z "${PA_DEPLOYMENT_DIR:-}" ]]; then
+    echo "--log-file requires PA_DEPLOYMENT_DIR" >&2
+    exit 2
+  fi
+  evidence_root=$(realpath -m -- "$PA_DEPLOYMENT_DIR/evidence")
+  capture_log=$(realpath -m -- "$2")
+  if [[ "$capture_log" != "$evidence_root/"* ]]; then
+    echo "--log-file must be inside PA_DEPLOYMENT_DIR/evidence" >&2
+    exit 2
+  fi
+  mkdir -p -- "$(dirname -- "$capture_log")"
+  set +e
+  bash "${BASH_SOURCE[0]}" 2>&1 | tee -- "$capture_log"
+  capture_status=("${PIPESTATUS[@]}")
+  set -e
+  if ((capture_status[0] != 0)); then
+    exit "${capture_status[0]}"
+  fi
+  exit "${capture_status[1]}"
+fi
+
+if [[ -n "$capture_fixture" ]]; then
+  printf 'capture-fixture stdout status=%s\n' "$capture_fixture"
+  printf 'capture-fixture stderr status=%s\n' "$capture_fixture" >&2
+  if [[ "$capture_fixture" == failure ]]; then
+    exit 23
+  fi
+  exit 0
+fi
+
 flake_ref='.?submodules=1'
 repo_url="git+file://$PWD?submodules=1"
 host_system=$(nix eval --raw --impure --expr builtins.currentSystem)

@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { isDestructiveCommand } from "../index.js";
 
-const group7LoggingPipeline = `bash -lc 'set -euo pipefail; mkdir -p "$PA_DEPLOYMENT_DIR/evidence"; env -u PA_PI_SQLITE_NATIVE_BINDING -u PA_REQUIRE_PI_SQLITE_NATIVE_BINDING PAP167_REAL_PI="$(command -v pi)" PAP183_EXPECTED_PI_NODE_VERSION=v24.19.0 PAP176_INSTALLED_EVIDENCE="$PA_DEPLOYMENT_DIR/evidence/pap-183-installed-teardown.json" bash scripts/nix-store-output-smoke.sh 2>&1 | tee "$PA_DEPLOYMENT_DIR/evidence/pap-183-nix-smoke.log"'`;
+const legacyGroup7LoggingPipeline = `bash -lc 'set -euo pipefail; mkdir -p "$PA_DEPLOYMENT_DIR/evidence"; env -u PA_PI_SQLITE_NATIVE_BINDING -u PA_REQUIRE_PI_SQLITE_NATIVE_BINDING PAP167_REAL_PI="$(command -v pi)" PAP183_EXPECTED_PI_NODE_VERSION=v24.19.0 PAP176_INSTALLED_EVIDENCE="$PA_DEPLOYMENT_DIR/evidence/pap-183-installed-teardown.json" bash scripts/nix-store-output-smoke.sh 2>&1 | tee "$PA_DEPLOYMENT_DIR/evidence/pap-183-nix-smoke.log"'`;
+const bootstrapCompatibleGroup7Command = `bash -lc 'set -euo pipefail; env -u PA_PI_SQLITE_NATIVE_BINDING -u PA_REQUIRE_PI_SQLITE_NATIVE_BINDING PAP167_REAL_PI="$(command -v pi)" PAP183_EXPECTED_PI_NODE_VERSION=v24.19.0 PAP176_INSTALLED_EVIDENCE="$PA_DEPLOYMENT_DIR/evidence/pap-183-installed-teardown.json" bash scripts/nix-store-output-smoke.sh --log-file "$PA_DEPLOYMENT_DIR/evidence/pap-183-nix-smoke.log"'`;
+const installedBaselineRedirectPattern = String.raw`[^>]\s*>:?\s*\S`;
 
 test("isDestructiveCommand allows descriptor duplication and closure", () => {
   const commands = [
@@ -19,8 +21,13 @@ test("isDestructiveCommand allows descriptor duplication and closure", () => {
   }
 });
 
-test("isDestructiveCommand allows the approved group-7 logging pipeline", () => {
-  assert.equal(isDestructiveCommand(group7LoggingPipeline), false);
+test("isDestructiveCommand allows the legacy group-7 descriptor-duplication pipeline", () => {
+  assert.equal(isDestructiveCommand(legacyGroup7LoggingPipeline), false);
+});
+
+test("bootstrap-compatible group-7 command passes candidate and installed baseline classifiers", () => {
+  assert.equal(isDestructiveCommand(bootstrapCompatibleGroup7Command), false);
+  assert.equal(new RegExp(installedBaselineRedirectPattern, "i").test(bootstrapCompatibleGroup7Command), false);
 });
 
 test("isDestructiveCommand blocks pathname overwrite and truncation redirects", () => {
