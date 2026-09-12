@@ -10,7 +10,6 @@ import {
   queryDeploymentStatus,
   removeRepositoryDirtyBorrowApproval,
   repositoryDirtyBorrowApprovalPath,
-  repositoryGitSnapshotsEqual,
   validateRepositoryDirtyBorrowScope,
   type RepositoryDirtyBorrowApproval,
   type RepositoryDirtyBorrowClassification,
@@ -108,9 +107,6 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
         }
         const snapshot = captureSnapshot(canonicalRepoRoot);
         const approvedPaths = [...validateRepositoryDirtyBorrowScope(canonicalRepoRoot, snapshot, input.classifications, input.plannedNewPaths)];
-        if (!repositoryGitSnapshotsEqual(snapshot, lease.preLaunchGitSnapshot)) {
-          return result("validation_error", [], snapshot.statusRecordCount ?? 0, "branch, full HEAD, or complete status differs from the parent launch snapshot");
-        }
         const classificationByPath = new Map(input.classifications.map((item) => [item.path, item.classification]));
         const lines = snapshot.statusEntries!.map((entry) => `${entry.recordIndex}. ${entry.xy} ${JSON.stringify(entry.path)}${entry.sourcePath ? ` <- ${JSON.stringify(entry.sourcePath)}` : ""} — ${classificationByPath.get(entry.path)}`);
         const action = [

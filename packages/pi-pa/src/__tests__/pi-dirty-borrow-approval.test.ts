@@ -11,12 +11,14 @@ function fixture(): { root: string; parentDirectory: string; snapshot: ReturnTyp
   mkdirSync(join(root, ".git"));
   const parentDirectory = join(root, "parent");
   const head = "a".repeat(40);
-  const snapshot = captureRepositoryGitSnapshot(root, (args) => {
+  const captureSnapshot = (status: string) => captureRepositoryGitSnapshot(root, (args) => {
     if (args[0] === "symbolic-ref") return "feature/PAP-191-dirty-approval\n";
     if (args[0] === "rev-parse") return `${head}\n`;
-    if (args[0] === "status") return `1 .M N... 100644 100644 100644 ${"b".repeat(40)} ${"b".repeat(40)} existing.ts\0? untracked.ts\0`;
+    if (args[0] === "status") return status;
     throw new Error(`unexpected Git command ${args.join(" ")}`);
   });
+  const snapshot = captureSnapshot(`1 .M N... 100644 100644 100644 ${"b".repeat(40)} ${"b".repeat(40)} existing.ts\0? untracked.ts\0`);
+  const preLaunchGitSnapshot = captureSnapshot("");
   const processFingerprint = { pid: 1234, startTimeTicks: "55", bootId: "boot" } as const;
   const inspection: RepositoryEvidenceInspection = {
     state: "live",
@@ -36,7 +38,7 @@ function fixture(): { root: string; parentDirectory: string; snapshot: ReturnTyp
       launchMode: "foreground",
       processFingerprint,
       acquiredAt: "2026-09-12T00:00:00.000Z",
-      preLaunchGitSnapshot: snapshot,
+      preLaunchGitSnapshot,
     },
   };
   return { root, parentDirectory, snapshot, inspection };
@@ -79,7 +81,7 @@ test("approval tool exists only for the exact interactive foreground orchestrato
   }
 });
 
-test("only the explicit TUI approval creates one complete receipt without protected output", async () => {
+test("a clean-launch parent can explicitly approve one complete dirty current snapshot without protected output", async () => {
   const fixtureState = fixture();
   let published: RepositoryDirtyBorrowApproval | undefined;
   try {
@@ -104,6 +106,8 @@ test("only the explicit TUI approval creates one complete receipt without protec
     assert.match(prompt, /2\. \?\? "untracked\.ts" — active-ticket-produced/);
     assert.match(prompt, /\+ "planned\.ts"/);
     assert.ok(published);
+    assert.equal(fixtureState.inspection.lease?.preLaunchGitSnapshot.statusRecordCount, 0);
+    assert.deepEqual(published.snapshot, fixtureState.snapshot);
     assert.equal(published.snapshot.statusRecordCount, 2);
     assert.equal(published.classifications.length, 2);
     assert.doesNotMatch(output.content[0]!.text, /protected-receipt-id|protected-approval-reference|parent-secret|[0-9a-f]{64}/);
