@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
-import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
@@ -21,6 +21,10 @@ function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+function markParentRunning(deploymentId: string): void {
+  appendRegistryEvent({ deployment_id: deploymentId, team: "builder", event: "started", timestamp: new Date().toISOString(), runtime: "pi", binary: "ppa" });
 }
 
 function initializeGitRepo(path: string): void {
@@ -138,7 +142,7 @@ class BackgroundDeploymentProcess extends EventEmitter {
 
 function nextTick(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
-const inheritedEnvironmentKeys = [PI_PARENT_LEASE_CAPABILITY_ENV, "PA_DEPLOYMENT_ID", "PA_TEAM", "PA_MODE", "PA_REPO", "PA_TICKET_ID"] as const;
+const inheritedEnvironmentKeys = [PI_PARENT_LEASE_CAPABILITY_ENV, "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_REPO", "PA_TICKET_ID"] as const;
 async function withInheritedEnvironment(values: Partial<Record<(typeof inheritedEnvironmentKeys)[number], string>>, fn: () => Promise<void>): Promise<void> {
   const previous = Object.fromEntries(inheritedEnvironmentKeys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   for (const key of inheritedEnvironmentKeys) {
@@ -388,12 +392,14 @@ test("authenticated inherited background implement admission preserves parent by
       });
       assert.equal(acquired.status, "acquired");
       if (acquired.status !== "acquired") continue;
+      markParentRunning(parentDeploymentId);
       const capability = acquired.lease.ownershipToken;
       const leasePath = repositoryMutationLeasePath(repo);
       const parentBytes = readFileSync(leasePath);
       await withInheritedEnvironment({
         [PI_PARENT_LEASE_CAPABILITY_ENV]: capability,
         PA_DEPLOYMENT_ID: parentDeploymentId,
+        PA_DEPLOYMENT_DIR: parentDir,
         PA_TEAM: "builder",
         PA_MODE: "orchestrator",
         PA_REPO: repo,
@@ -434,6 +440,95 @@ test("authenticated inherited background implement admission preserves parent by
   });
 });
 
+test("approved classified dirty direct child admits once, renders exact scope, and preserves parent bytes", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["checkout", "-b", "feature/PAP-191-dirty-direct"], repo);
+    writeFileSync(join(repo, "README.md"), "# Preserved PAP-191 work\n");
+    const parentDeploymentId = "d-parent-dirty";
+    const parentDir = join(root, "deployments", parentDeploymentId);
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: parentDeploymentId,
+      deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-191",
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    markParentRunning(parentDeploymentId);
+    const inspection = inspectRepositoryMutationLease(repo);
+    assert.ok(inspection.evidenceIdentity);
+    const approval: RepositoryDirtyBorrowApproval = {
+      schemaVersion: 1,
+      receiptId: "receipt-private-sentinel",
+      approvalReference: "approval-private-sentinel",
+      approvedAt: new Date().toISOString(),
+      action: "preserve-and-continue",
+      parentDeploymentId,
+      parentDeploymentDirectory: parentDir,
+      parentProcessFingerprint: acquired.lease.processFingerprint,
+      parentLeaseEvidenceIdentity: inspection.evidenceIdentity!,
+      canonicalRepoKey: "pa-platform",
+      canonicalRepoRoot: repo,
+      ticket: "PAP-191",
+      branch: acquired.lease.preLaunchGitSnapshot.branch,
+      snapshot: acquired.lease.preLaunchGitSnapshot,
+      classifications: [{ path: "README.md", classification: "active-ticket-preserved" }],
+      plannedNewPaths: ["packages/new-approved.ts"],
+    };
+    const approvalPath = publishRepositoryDirtyBorrowApproval(approval);
+    const capability = acquired.lease.ownershipToken;
+    const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+    await withInheritedEnvironment({
+      [PI_PARENT_LEASE_CAPABILITY_ENV]: capability,
+      PA_DEPLOYMENT_ID: parentDeploymentId,
+      PA_DEPLOYMENT_DIR: parentDir,
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+      PA_REPO: repo,
+      PA_TICKET_ID: "PAP-191",
+    }, async () => {
+      let spawns = 0;
+      const contenderAdapter = stubAdapter({
+        onSpawn: (opts) => {
+          spawns += 1;
+          const primer = readFileSync(opts.primerPath, "utf8");
+          assert.match(primer, /Exact Approved Dirty Borrower Scope/);
+          assert.match(primer, /- README\.md/);
+          assert.match(primer, /- packages\/new-approved\.ts/);
+          assert.doesNotMatch(primer, /receipt-private-sentinel|approval-private-sentinel|[0-9a-f]{64}/);
+          assert.deepEqual(opts.executionPlan?.repositoryAdmission.approvedMutationPaths, ["README.md", "packages/new-approved.ts"]);
+          assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+          mkdirSync(join(repo, "packages"), { recursive: true });
+          writeFileSync(join(repo, "packages", "new-approved.ts"), "export {};\n");
+        },
+      });
+      const contenders = await Promise.all(Array.from({ length: 50 }, () =>
+        deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, contenderAdapter)));
+      const admitted = contenders.find((result) => result.status === "success");
+      assert.ok(admitted);
+      assert.equal(contenders.filter((result) => result.status === "success").length, 1);
+      assert.equal(contenders.filter((result) => result.status === "failed").length, 49);
+      assert.equal(spawns, 1);
+      assert.equal(existsSync(approvalPath), false);
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+      const sinks = [
+        JSON.stringify(getDeploymentEvents(admitted.deploymentId!)),
+        JSON.stringify(readActivityEvents(getDeployPaths(admitted.deploymentId!).activityLogPath)),
+        ...readdirSync(getDeployPaths(admitted.deploymentId!).deployDir).filter((name) => statSync(join(getDeployPaths(admitted.deploymentId!).deployDir, name)).isFile()).map((name) => readFileSync(join(getDeployPaths(admitted.deploymentId!).deployDir, name), "utf8")),
+      ].join("\n");
+      for (const protectedValue of [capability, approval.receiptId, approval.approvalReference, approval.snapshot.digestSha256!]) assert.doesNotMatch(sinks, new RegExp(escapeRegExp(protectedValue)));
+
+      let replaySpawns = 0;
+      const replay = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, stubAdapter({ onSpawn: () => { replaySpawns += 1; } }));
+      assert.equal(replay.status, "failed");
+      assert.equal(replaySpawns, 0);
+      assert.match(replay.reason ?? "", /dirty-approval/);
+    });
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
+  });
+});
+
 test("inherited admission rejects parent-only, capability, context, mode, dirty-state, and rollback cases before spawn", async () => {
   await withPiEnv(async (root) => {
     const repo = join(root, "repo");
@@ -447,10 +542,11 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
     });
     assert.equal(acquired.status, "acquired");
     if (acquired.status !== "acquired") return;
+    markParentRunning(parentDeploymentId);
     const capability = acquired.lease.ownershipToken;
     const leasePath = repositoryMutationLeasePath(repo);
     const parentBytes = readFileSync(leasePath);
-    await withInheritedEnvironment({ PA_DEPLOYMENT_ID: parentDeploymentId, PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-191" }, async () => {
+    await withInheritedEnvironment({ PA_DEPLOYMENT_ID: parentDeploymentId, PA_DEPLOYMENT_DIR: parentDir, PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-191" }, async () => {
       const cases = [
         { name: "parent deployment ID alone", capability: undefined, request: { team: "builder", mode: "implement", ticket: "PAP-191", background: true } },
         { name: "malformed capability", capability: `${capability}-wrong`, request: { team: "builder", mode: "implement", ticket: "PAP-191", background: true } },
@@ -468,6 +564,7 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
         assert.equal(result.status, "failed", item.name);
         assert.equal(spawns, 0, item.name);
         assert.ok((result.reason ?? "").length <= 2_000, item.name);
+        assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s, item.name);
         assert.doesNotMatch(result.reason ?? "", new RegExp(escapeRegExp(capability)), item.name);
         assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent", item.name);
         assert.deepEqual(readFileSync(leasePath), parentBytes, item.name);
@@ -485,7 +582,8 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
         let spawns = 0;
         const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, force }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
         assert.equal(result.status, "failed", `${dirty.name} force=${force}`);
-        assert.match(result.reason ?? "", /state=dirty-background/);
+        assert.match(result.reason ?? "", /dirty-approval/);
+        assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
         assert.equal(spawns, 0);
         assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
         assert.deepEqual(readFileSync(leasePath), parentBytes);
@@ -501,6 +599,101 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
       assert.doesNotMatch(rollback.reason ?? "", new RegExp(escapeRegExp(capability)));
       assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
       assert.deepEqual(readFileSync(leasePath), parentBytes);
+    });
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
+  });
+});
+
+test("foreground and background orchestrator finalization waits for a live child before releasing parent ownership", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["checkout", "-b", "feature/PAP-191-parent-wait"], repo);
+    for (const background of [false, true]) {
+      let childFinalization: Promise<void> | undefined;
+      const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-191", background, timeout: 60 }, stubAdapter({
+        onSpawn: (opts) => {
+          const lease = inspectRepositoryMutationLease(repo).lease;
+          assert.ok(lease);
+          const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+          const childDeploymentId = `d-waiting-child-${background ? "background" : "foreground"}`;
+          const registration = registerRepositoryMutationBorrower({
+            capability: lease.ownershipToken,
+            canonicalRepoKey: "pa-platform",
+            canonicalRepoRoot: repo,
+            parentDeploymentId: opts.deployId,
+            deploymentId: childDeploymentId,
+            deploymentDirectory: join(root, "deployments", childDeploymentId),
+            runtime: "pi",
+            team: "builder",
+            mode: "implement",
+            launchMode: "background",
+            ticket: "PAP-191",
+            branch: "feature/PAP-191-parent-wait",
+            timeoutSeconds: 60,
+          });
+          assert.equal(registration.status, "registered");
+          if (registration.status !== "registered") return;
+          childFinalization = new Promise<void>((resolve) => setImmediate(() => {
+            assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+            const finalized = finalizeRepositoryMutationBorrower({
+              canonicalRepoRoot: repo,
+              borrowerToken: registration.borrower.borrowerToken,
+              deploymentId: childDeploymentId,
+            });
+            assert.equal(finalized.status, "finalized");
+            if (finalized.status === "finalized") assert.equal(finalized.parentLease, "retained");
+            resolve();
+          }));
+        },
+      }));
+      assert.equal(result.status, "success", result.reason);
+      await childFinalization;
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+      assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+    }
+  });
+});
+
+test("inherited success, failure, timeout, and cancellation finalize only the matching borrower and preserve parent bytes", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["checkout", "-b", "feature/PAP-191-terminal-test"], repo);
+    const parentDeploymentId = "d-parent-terminal";
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: parentDeploymentId,
+      deploymentDirectory: join(root, "deployments", parentDeploymentId), runtime: "pi", team: "builder", mode: "orchestrator",
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    markParentRunning(parentDeploymentId);
+    const capability = acquired.lease.ownershipToken;
+    const leasePath = repositoryMutationLeasePath(repo);
+    const parentBytes = readFileSync(leasePath);
+    await withInheritedEnvironment({
+      [PI_PARENT_LEASE_CAPABILITY_ENV]: capability,
+      PA_DEPLOYMENT_ID: parentDeploymentId,
+      PA_DEPLOYMENT_DIR: join(root, "deployments", parentDeploymentId),
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+      PA_REPO: repo,
+      PA_TICKET_ID: "PAP-191",
+    }, async () => {
+      for (const exitCode of [0, 17, 124, 143]) {
+        let spawns = 0;
+        const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, stubAdapter({
+          onSpawn: () => { spawns += 1; },
+          result: (sessionId) => ({ sessionId, exitCode, ...(exitCode === 0 ? {} : { errorMessage: `terminal ${exitCode}` }), metadata: { sessionId } }),
+        }));
+        assert.equal(result.status, exitCode === 0 ? "success" : "failed", String(exitCode));
+        assert.equal(spawns, 1);
+        if (exitCode !== 0) {
+          assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+          assert.ok((result.reason ?? "").length <= 2_000);
+          assert.doesNotMatch(result.reason ?? "", new RegExp(escapeRegExp(capability)));
+        }
+        assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+        assert.deepEqual(readFileSync(leasePath), parentBytes);
+      }
     });
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
   });
@@ -765,6 +958,128 @@ test("50 mixed PPA and OPA same-root builder contenders produce exactly one owne
     releaseFirst();
     assert.equal((await first).status, "success");
     assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("one live inherited child excludes 50 sibling and unrelated PPA/OPA spawns, then the next authenticated child enters", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["checkout", "-b", "feature/PAP-191-sibling-test"], repo);
+    const parentDeploymentId = "d-parent-sibling";
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: parentDeploymentId,
+      deploymentDirectory: join(root, "deployments", parentDeploymentId), runtime: "pi", team: "builder", mode: "orchestrator",
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    markParentRunning(parentDeploymentId);
+    const capability = acquired.lease.ownershipToken;
+    const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+    await withInheritedEnvironment({
+      [PI_PARENT_LEASE_CAPABILITY_ENV]: capability,
+      PA_DEPLOYMENT_ID: parentDeploymentId,
+      PA_DEPLOYMENT_DIR: join(root, "deployments", parentDeploymentId),
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+      PA_REPO: repo,
+      PA_TICKET_ID: "PAP-191",
+    }, async () => {
+      let releaseFirst!: () => void;
+      let spawns = 0;
+      const held = new Promise<SpawnResult>((resolve) => { releaseFirst = () => resolve({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } }); });
+      const first = deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, stubAdapter({
+        onSpawn: () => { spawns += 1; },
+        result: () => held,
+      }));
+      while (spawns === 0) await nextTick();
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+
+      const rejectedAdapter = (runtime: "pi" | "opencode"): RuntimeAdapter => ({
+        name: runtime,
+        defaultModel: runtime === "pi" ? "" : "stub/model",
+        sessionFileName: runtime === "pi" ? "session-id-pi.txt" : "session-id-opencode.txt",
+        installHooks() {},
+        spawn() { spawns += 1; return { exitCode: 0 }; },
+        resume() { spawns += 1; return { exitCode: 0 }; },
+        extractActivity() { return []; },
+        describeTools() { return { runtime, markdown: "stub" }; },
+      });
+      const contenders = Array.from({ length: 50 }, (_, index) => index % 2 === 0
+        ? deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, rejectedAdapter("pi"))
+        : deployWithOpencode({ team: "builder", mode: "implement" }, rejectedAdapter("opencode")));
+      const outcomes = await Promise.all(contenders);
+      assert.equal(outcomes.every((outcome) => outcome.status === "failed"), true);
+      assert.equal(spawns, 1);
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+
+      releaseFirst();
+      assert.equal((await first).status, "success");
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+      const next = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
+      assert.equal(next.status, "success", next.reason);
+      assert.equal(spawns, 2);
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+    });
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
+  });
+});
+
+test("abnormal parent exit leaves a live borrower blocking normal and forced PPA/OPA until fingerprint mismatch", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["checkout", "-b", "feature/PAP-191-abnormal-parent"], repo);
+    const parent = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    assert.ok(parent.pid);
+    assert.ok(child.pid);
+    try {
+      const acquired = acquireRepositoryMutationLease({
+        canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: "d-abnormal-parent",
+        deploymentDirectory: join(root, "parent"), runtime: "pi", team: "builder", mode: "orchestrator", pid: parent.pid,
+      });
+      assert.equal(acquired.status, "acquired");
+      if (acquired.status !== "acquired") return;
+      markParentRunning("d-abnormal-parent");
+      const registration = registerRepositoryMutationBorrower({
+        capability: acquired.lease.ownershipToken, canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo,
+        parentDeploymentId: "d-abnormal-parent", deploymentId: "d-live-child", deploymentDirectory: join(root, "child"),
+        runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-191",
+        branch: "feature/PAP-191-abnormal-parent", timeoutSeconds: 60, pid: child.pid,
+      });
+      assert.equal(registration.status, "registered");
+      parent.kill("SIGKILL");
+      await new Promise<void>((resolve) => parent.once("close", () => resolve()));
+      assert.equal(inspectRepositoryMutationLease(repo).state, "stale");
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+
+      let spawns = 0;
+      const adapterFor = (runtime: "pi" | "opencode"): RuntimeAdapter => ({
+        name: runtime, defaultModel: runtime === "pi" ? "" : "stub/model",
+        sessionFileName: runtime === "pi" ? "session-id-pi.txt" : "session-id-opencode.txt",
+        allocateSessionId: () => "authoritative-session-id",
+        installHooks() {}, spawn(opts) { spawns += 1; return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; }, resume(opts) { spawns += 1; return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
+        extractActivity() { return []; }, describeTools() { return { runtime, markdown: "stub" }; },
+      });
+      for (const force of [false, true]) {
+        const ppa = await deployWithPi({ team: "builder", mode: "implement", force }, adapterFor("pi"));
+        const opa = await deployWithOpencode({ team: "builder", mode: "implement", force }, adapterFor("opencode"));
+        assert.equal(ppa.status, "failed");
+        assert.equal(opa.status, "failed");
+        assert.match(ppa.reason ?? "", /live borrower/);
+        assert.match(opa.reason ?? "", /live borrower/);
+      }
+      assert.equal(spawns, 0);
+
+      child.kill("SIGKILL");
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "stale");
+      const recovered = await deployWithPi({ team: "builder", mode: "implement", force: true }, adapterFor("pi"));
+      assert.equal(recovered.status, "success", recovered.reason);
+      assert.equal(spawns, 1);
+    } finally {
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
   });
 });
 
@@ -1082,6 +1397,13 @@ test("ordinary background termination retains one causal failure with no Git sta
     const adapter = new PiAdapter({ cwd: tmpdir(), versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
       launchBackgroundRunner: ((_runnerPath, configPath) => {
         config = readPiBackgroundConfig(configPath);
+        if (config.repositoryHandoffPath) {
+          const handoff = readPiRepositoryHandoff(config.repositoryHandoffPath);
+          if (handoff.repositoryLease) config.repositoryLease = handoff.repositoryLease;
+          if (handoff.repositoryBorrower) config.repositoryBorrower = handoff.repositoryBorrower;
+          rmSync(config.repositoryHandoffPath);
+          delete config.repositoryHandoffPath;
+        }
         writePiSupervisorOwnership(join(configPath, "..", PI_SUPERVISOR_FILE), {
           schemaVersion: 1,
           deploymentId: config.deploymentId,

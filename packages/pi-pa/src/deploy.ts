@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryMutationLease, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, loadTeamConfig, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -20,15 +20,20 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
+  const inheritedAttempt = inheritedParentContext();
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
-  if ("error" in timeout) return { status: "failed", team: request.team, mode: request.mode ?? null, reason: timeout.error };
+  if ("error" in timeout) {
+    const reason = inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
+    return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
+  }
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, request.mode);
   let runtimeConfig: ReturnType<typeof resolvePiRuntimeConfig>;
   try {
     runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
   } catch (error) {
-    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
+    const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
+    const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }), paths.activityLogPath);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, process.env, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
@@ -39,7 +44,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const provider = runtimeConfig.provider;
   const model = runtimeConfig.model;
   const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
-  let plan;
+  let plan: ExecutionPlan;
   try {
     plan = resolveExecutionPlan({
       request: { ...request, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
@@ -52,9 +57,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
+      allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
     });
   } catch (error) {
-    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), requestedEnvironment, 2000);
+    const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), requestedEnvironment, 2000);
+    const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), paths.activityLogPath);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
@@ -88,14 +95,24 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
   let activeRepositoryLease: { canonicalRepoRoot: string; ownershipToken: string } | undefined;
-  let activeRepositoryBorrower: { canonicalRepoRoot: string; borrowerToken: string; parentDeploymentId: string } | undefined;
-  const releaseActiveRepositoryAuthority = (): void => {
+  let activeRepositoryBorrower: { canonicalRepoRoot: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
+  const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const borrowed = activeRepositoryBorrower;
     activeRepositoryBorrower = undefined;
-    if (borrowed) releaseRepositoryMutationBorrower(borrowed);
+    if (borrowed) {
+      const finalization = finalizeRepositoryMutationBorrower({
+        canonicalRepoRoot: borrowed.canonicalRepoRoot,
+        borrowerToken: borrowed.borrowerToken,
+        deploymentId: borrowed.deploymentId,
+      });
+      if (finalization.status === "finalized" && finalization.scopeCompliant === false) {
+        return formatRepositoryBorrowerDiagnostic({ category: "approved-path-containment", reason: "the complete final Git state contains a path or branch outside Sinh's exact approved scope", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+      }
+    }
     const owned = activeRepositoryLease;
     activeRepositoryLease = undefined;
-    if (owned) releaseRepositoryMutationLease(owned);
+    if (owned) await finalizeRepositoryMutationLease(owned);
+    return undefined;
   };
   const acceptRepositoryAuthorityHandoff = (metadata: Record<string, unknown> | undefined): void => {
     if (activeRepositoryBorrower) {
@@ -108,12 +125,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
   };
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
-  const writeTerminal = (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): { status: "success" | "failed"; reason: string } => {
-    const safeReason = boundedDiagnostic(reason, env, 2000);
-    const consistentExitCode = status === "failed" ? exitCode || 1 : exitCode;
+  const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string }> => {
+    const containmentFailure = await finalizeActiveRepositoryAuthority();
+    const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
+    const resolvedTerminalStatus = containmentFailure ? "failed" : status;
+    const consistentExitCode = resolvedTerminalStatus === "failed" ? exitCode || 1 : exitCode;
     const timestamp = new Date().toISOString();
     const requested: RegistryEvent = kind === "completed"
-      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode }
+      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status: resolvedTerminalStatus, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode }
       : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode };
     // Reconcile every terminal observation so a later causal failure can replace
     // success/partial while an existing failure remains sticky and exactly once.
@@ -121,19 +140,20 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const outcome = registryTerminalOutcome(authoritative, env);
     writePiTerminalStatus(deployDir, terminalStatus(outcome.status, outcome.reason, authoritative.timestamp));
     if (!request.background) clearPiForegroundCompletion(deployDir);
-    releaseActiveRepositoryAuthority();
     return outcome;
   };
-  const completeFailure = (reason: string, exitCode = 1) => {
-    const safeReason = boundedDiagnostic(reason, env, 2000);
+  const completeFailure = async (reason: string, exitCode = 1) => {
+    const redacted = boundedDiagnostic(reason, env, 2000);
+    const safeReason = inheritedAttempt ? inheritedAdmissionFailure(redacted, plan.repoKey, plan.repoRoot) : redacted;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
+    await writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
-  const crashFailure = (reason: string) => {
-    const safeReason = boundedDiagnostic(reason, env, 2000);
+  const crashFailure = async (reason: string) => {
+    const redacted = boundedDiagnostic(reason, env, 2000);
+    const safeReason = inheritedAttempt ? inheritedAdmissionFailure(redacted, plan.repoKey, plan.repoRoot) : redacted;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    writeTerminal("crashed", "failed", safeReason, 1);
+    await writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
   };
   try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
@@ -152,9 +172,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env });
-    const inheritedParent = inheritedParentContext();
+    const inheritedParent = inheritedAttempt;
     if (inheritedParent) {
-      const branch = plan.repositoryAdmission.gitSnapshot?.branch ?? captureRepositoryGitSnapshot(plan.repoRoot).branch;
+      const plannedSnapshot = plan.repositoryAdmission.gitSnapshot;
+      const immediateSnapshot = captureRepositoryGitSnapshot(plan.repoRoot);
+      if (plannedSnapshot && !repositoryGitSnapshotsEqual(plannedSnapshot, immediateSnapshot)) {
+        return completeFailure(formatRepositoryBorrowerDiagnostic({ category: "immediate-reread", reason: "branch, full HEAD, or complete porcelain-v2 status changed after execution planning", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
+      }
+      const branch = immediateSnapshot.branch;
       const registration = registerRepositoryMutationBorrower({
         capability: inheritedParent.capability,
         canonicalRepoKey: plan.repoKey,
@@ -168,14 +193,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         launchMode: plan.repositoryAdmission.launchMode,
         ticket: plan.ticket ?? "",
         branch,
+        timeoutSeconds: plan.timeoutSeconds,
+        expectedGitSnapshot: immediateSnapshot,
+        dirtyApprovalPath: repositoryDirtyBorrowApprovalPath(inheritedParent.parentDeploymentDirectory),
         force: plan.repositoryAdmission.force,
       });
       if (registration.status === "rejected") return completeFailure(registration.diagnostic);
-      plan = withAuthoritativeRepositoryAdmission(plan, registration.borrower.launchGitSnapshot);
+      plan = withAuthoritativeRepositoryAdmission(plan, registration.borrower.launchGitSnapshot, registration.borrower.approvedMutationPaths);
       activeRepositoryBorrower = {
         canonicalRepoRoot: plan.repoRoot,
         borrowerToken: registration.borrower.borrowerToken,
         parentDeploymentId: registration.borrower.parentDeploymentId,
+        deploymentId: registration.borrower.deploymentId,
+        ...(registration.borrower.approvedMutationPaths ? { approvedMutationPaths: [...registration.borrower.approvedMutationPaths] } : {}),
       };
     } else if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
       const acquisition = acquireRepositoryMutationLease({
@@ -233,15 +263,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (request.background && result.metadata?.["pending"] === true && monitor?.completion) {
       // Backward-compatible injected-adapter seam. Production Pi background runs
       // return supervisorPid and are finalized exclusively by background-runner.ts.
-      void monitor.completion.then((final) => {
+      void monitor.completion.then(async (final) => {
         const terminalError = typeof final.metadata?.["terminalError"] === "string" ? final.metadata["terminalError"] : undefined;
         const ok = final.status === 0 && !terminalError;
         const failure = final.status !== 0 ? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`) : terminalError;
         const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`;
         if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
-        writeTerminal("completed", ok ? "success" : "failed", reason, ok ? 0 : final.status || 1, resolve(deployDir, "pi.log"));
+        await writeTerminal("completed", ok ? "success" : "failed", reason, ok ? 0 : final.status || 1, resolve(deployDir, "pi.log"));
       }).catch((error) => {
-        crashFailure(error instanceof Error ? error.message : String(error));
+        void crashFailure(error instanceof Error ? error.message : String(error));
       });
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
@@ -253,10 +283,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
     const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);
     const outcome = request.background
-      ? writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile)
+      ? await writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile)
       : staged
-        ? writeTerminal("completed", staged.status, staged.summary ?? stagedCompletionSummary(staged.status), staged.status === "failed" ? 1 : 0, staged.logFile ?? result.logFile, { rating: staged.rating, fallback: staged.fallback })
-        : writeTerminal("completed", "partial", "ppa foreground session exited without a staged completion payload", 0, result.logFile);
+        ? await writeTerminal("completed", staged.status, staged.summary ?? stagedCompletionSummary(staged.status), staged.status === "failed" ? 1 : 0, staged.logFile ?? result.logFile, { rating: staged.rating, fallback: staged.fallback })
+        : await writeTerminal("completed", "partial", "ppa foreground session exited without a staged completion payload", 0, result.logFile);
     return outcome.status === "success"
       ? { status: "success", team: request.team, mode: request.mode ?? null, deploymentId }
       : { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.reason };
@@ -309,11 +339,22 @@ function registryTerminalOutcome(event: RegistryEvent, env: NodeJS.ProcessEnv): 
   return { status: "failed", reason: boundedDiagnostic(reason, env, 2000) };
 }
 
-function inheritedParentContext(): { capability: string; parentDeploymentId: string } | undefined {
+function inheritedAdmissionFailure(reason: string, canonicalRepoKey: string, canonicalRepoRoot: string): string {
+  if (/Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(reason)) return reason;
+  return formatRepositoryBorrowerDiagnostic({
+    category: "child-lifecycle",
+    reason,
+    canonicalRepoKey,
+    canonicalRepoRoot,
+  });
+}
+
+function inheritedParentContext(): { capability: string; parentDeploymentId: string; parentDeploymentDirectory: string } | undefined {
   const capability = process.env[PI_PARENT_LEASE_CAPABILITY_ENV];
   const parentDeploymentId = process.env["PA_DEPLOYMENT_ID"] ?? "";
-  const parentIdentity = process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "orchestrator" && Boolean(parentDeploymentId);
-  return capability !== undefined || parentIdentity ? { capability: capability ?? "", parentDeploymentId } : undefined;
+  const parentDeploymentDirectory = process.env["PA_DEPLOYMENT_DIR"] ?? "";
+  const parentIdentity = process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "orchestrator" && Boolean(parentDeploymentId) && Boolean(parentDeploymentDirectory);
+  return capability !== undefined || parentIdentity ? { capability: capability ?? "", parentDeploymentId, parentDeploymentDirectory } : undefined;
 }
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }
 function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }

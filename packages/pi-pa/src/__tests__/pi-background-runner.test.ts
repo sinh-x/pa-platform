@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
-import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
+import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PI_REPOSITORY_HANDOFF_FILE, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 
@@ -109,7 +109,12 @@ test("Pi background supervisor authenticates transfer before readiness and relea
     });
     assert.equal(acquired.status, "acquired");
     if (acquired.status !== "acquired") return;
-    config.repositoryLease = { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken };
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writePiRepositoryHandoff(config.repositoryHandoffPath, {
+      schemaVersion: 1,
+      deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken },
+    });
     const child = new RunnerChild();
     const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
     await immediate();
@@ -124,10 +129,90 @@ test("Pi background supervisor authenticates transfer before readiness and relea
   });
 });
 
-test("borrowed runner transfers process identity, scrubs implementation env/config, and preserves parent lease bytes", async () => {
+test("runner rejects and removes a hard-linked protected repository handoff before child spawn", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const handoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    const externalLink = join(root, "retained-handoff-link");
+    config.repositoryHandoffPath = handoffPath;
+    writePiRepositoryHandoff(handoffPath, {
+      schemaVersion: 1,
+      deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: join(root, "repo"), ownershipToken: "protected-handoff-token" },
+    });
+    linkSync(handoffPath, externalLink);
+    let spawns = 0;
+    await runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(handoffPath), false);
+    assert.equal(existsSync(externalLink), true);
+    assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "crashed");
+    assert.doesNotMatch(JSON.stringify(getDeploymentEvents(config.deploymentId)), /protected-handoff-token/);
+  });
+});
+
+test("background orchestrator runner waits for child finalization before releasing its parent lease", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");
     mkdirSync(join(repo, ".git"), { recursive: true });
+    const snapshot = { branch: "feature/PAP-191-background-parent", head: "c".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: config.deploymentId,
+      deploymentDirectory: deployDir, runtime: "pi", team: "builder", mode: "orchestrator", gitSnapshot: snapshot,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writePiRepositoryHandoff(config.repositoryHandoffPath, {
+      schemaVersion: 1,
+      deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken },
+    });
+    const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+    const child = new RunnerChild();
+    let borrowerToken = "";
+    const running = runPiBackgroundRunner(config, { supervision: {
+      spawnProcess: (() => child as never) as never,
+      onSpawn: () => {
+        const registration = registerRepositoryMutationBorrower({
+          capability: acquired.lease.ownershipToken, canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo,
+          parentDeploymentId: config.deploymentId, deploymentId: "d-background-child", deploymentDirectory: join(root, "child"),
+          runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-191",
+          branch: snapshot.branch, timeoutSeconds: 60, gitSnapshot: snapshot,
+        });
+        assert.equal(registration.status, "registered");
+        if (registration.status !== "registered") return;
+        borrowerToken = registration.borrower.borrowerToken;
+      },
+    } });
+    await immediate();
+    assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+    child.emit("close", 0);
+    const childFinalization = new Promise<void>((resolve) => setImmediate(() => {
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+      const finalized = finalizeRepositoryMutationBorrower({
+        canonicalRepoRoot: repo, borrowerToken,
+        deploymentId: "d-background-child", finalGitSnapshot: snapshot,
+      });
+      assert.equal(finalized.status, "finalized");
+      resolve();
+    }));
+    await running;
+    await childFinalization;
+    assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+    assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("borrowed runner transfers process identity, scrubs implementation env/config, and preserves parent lease bytes", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    const initialized = spawnSync("git", ["init", "-b", "feature/PAP-191-runner-test"], { cwd: repo, encoding: "utf8" });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    writeFileSync(join(repo, "README.md"), "# Synthetic borrower fixture\n");
+    assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repo }).status, 0);
+    const committed = spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, encoding: "utf8" });
+    assert.equal(committed.status, 0, committed.stderr);
     const snapshot = { branch: "feature/PAP-191-runner-test", head: "b".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
     const parentDeploymentId = "d-parent-runner";
     const parentDir = join(root, "deployments", parentDeploymentId);
@@ -139,17 +224,26 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
     assert.equal(acquired.status, "acquired");
     if (acquired.status !== "acquired") return;
     const capability = acquired.lease.ownershipToken;
+    appendRegistryEvent({ deployment_id: parentDeploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa" });
     const launcher = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     assert.ok(launcher.pid);
     const registration = registerRepositoryMutationBorrower({
       capability, canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, parentDeploymentId,
       deploymentId: config.deploymentId, deploymentDirectory: deployDir, runtime: "pi", team: "builder",
-      mode: "implement", launchMode: "background", ticket: "PAP-191", branch: snapshot.branch,
+      mode: "implement", launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
       pid: launcher.pid, gitSnapshot: snapshot,
     });
     assert.equal(registration.status, "registered");
     if (registration.status !== "registered") return;
-    config.repositoryBorrower = { canonicalRepoRoot: repo, borrowerToken: registration.borrower.borrowerToken, parentDeploymentId };
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    const repositoryBorrower = {
+      canonicalRepoRoot: repo,
+      borrowerToken: registration.borrower.borrowerToken,
+      parentDeploymentId,
+      deploymentId: config.deploymentId,
+      approvedMutationPaths: registration.borrower.approvedMutationPaths,
+    };
+    writePiRepositoryHandoff(config.repositoryHandoffPath, { schemaVersion: 1, deploymentId: config.deploymentId, repositoryBorrower });
     const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
     const previousCapability = process.env[PI_PARENT_LEASE_CAPABILITY_ENV];
     process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = capability;
@@ -175,6 +269,8 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
       assert.doesNotMatch(JSON.stringify(readActivityEvents(join(deployDir, "activity.jsonl"))), new RegExp(capability));
 
       let persistedConfig = "";
+      let persistedHandoff = "";
+      let handoffMode = 0;
       let supervisorEnvironment: NodeJS.ProcessEnv | undefined;
       const backgroundLauncher = new LauncherProcess();
       const adapter = new PiAdapter({
@@ -185,6 +281,10 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
         supervision: {
           launchBackgroundRunner: ((_runnerPath, configPath, options) => {
             persistedConfig = readFileSync(configPath, "utf8");
+            const parsedConfig = readPiBackgroundConfig(configPath);
+            persistedHandoff = readFileSync(parsedConfig.repositoryHandoffPath!, "utf8");
+            handoffMode = statSync(parsedConfig.repositoryHandoffPath!).mode & 0o777;
+            rmSync(parsedConfig.repositoryHandoffPath!);
             supervisorEnvironment = options.env;
             const parsed = readPiBackgroundConfig(configPath);
             writePiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE), {
@@ -197,13 +297,16 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
       });
       const launched = await adapter.spawn({
         primerPath: config.primerPath, deployId: config.deploymentId, mode: "background", sessionId: config.sessionId,
-        repositoryBorrower: config.repositoryBorrower,
+        repositoryBorrower,
       });
       assert.equal(launched.exitCode, 0, launched.errorMessage);
       assert.equal(launched.metadata?.["repositoryBorrowerTransferred"], true);
       assert.equal(supervisorEnvironment?.[PI_PARENT_LEASE_CAPABILITY_ENV], undefined);
       assert.doesNotMatch(persistedConfig, new RegExp(capability));
-      assert.match(persistedConfig, new RegExp(registration.borrower.borrowerToken));
+      assert.doesNotMatch(persistedConfig, new RegExp(registration.borrower.borrowerToken));
+      assert.doesNotMatch(persistedHandoff, new RegExp(capability));
+      assert.match(persistedHandoff, new RegExp(registration.borrower.borrowerToken));
+      assert.equal(handoffMode, 0o600);
     } finally {
       if (previousCapability === undefined) delete process.env[PI_PARENT_LEASE_CAPABILITY_ENV]; else process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = previousCapability;
       launcher.kill("SIGKILL");

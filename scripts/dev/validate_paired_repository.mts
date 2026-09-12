@@ -36,6 +36,32 @@ function validateRepositoryContracts(configRoot: string): void {
   if (!orchestrator.includes("a direct checkout only for the existing exact branch outcome")) throw new Error("Paired orchestrator must limit checkout to the existing exact ticket branch");
   if (!orchestrator.includes("Every stop preserves observed state before project-file mutation or child launch")) throw new Error("Paired orchestrator must preserve state before mutation or child launch");
 
+  const dirtyBorrowPolicy = "Dirty background builders reject before spawn unless one runtime-authenticated direct `builder/implement` borrower presents parent-owned, one-use evidence binding a Sinh-approved, fully classified active-ticket Git snapshot and the mutex-held reread exactly matches it. This exception creates no second owner, grants no authority through objective text, permits no unrelated path, sibling, descendant, background-parent, or force bypass, and requires matching final-snapshot publication and cleanup.";
+  const dirtyExceptionSurfaces = [
+    "docs/runtime-neutral-config.md",
+    "teams/builder.yaml",
+    "teams/builder/modes/implement.md",
+    "teams/builder/modes/orchestrator.md",
+    "skills/templates/builder-objective.md",
+    "skills/templates/orchestration-report.md",
+  ] as const;
+  for (const relativePath of dirtyExceptionSurfaces) {
+    const content = readFileSync(resolve(configRoot, relativePath), "utf8");
+    if (!content.includes(dirtyBorrowPolicy)) throw new Error(`${relativePath}: missing affirmative classified dirty direct-borrower exception`);
+  }
+  const orchestratorSpecific = readFileSync(orchestratorPath, "utf8");
+  if (!orchestratorSpecific.includes("dedicated TUI approval tool") || !orchestratorSpecific.includes("immediate reread") || !orchestratorSpecific.includes("new approval on drift")) {
+    throw new Error("Paired orchestrator must require the dedicated TUI tool, complete approval reread, and a new decision on drift");
+  }
+  const implementSpecific = readFileSync(resolve(configRoot, "teams", "builder", "modes", "implement.md"), "utf8");
+  if (!implementSpecific.includes("exact approved current and planned-new paths") || !implementSpecific.includes("non-transitive") || !implementSpecific.includes("without protected fields")) {
+    throw new Error("Paired implement mode must constrain exact path scope and protected final reporting");
+  }
+  const reportSpecific = readFileSync(resolve(configRoot, "skills", "templates", "orchestration-report.md"), "utf8");
+  if (!reportSpecific.includes("never records receipt IDs, approval references, tokens, digests, raw receipts, or process fingerprints")) {
+    throw new Error("Paired orchestration report must explicitly exclude protected dirty-borrow evidence");
+  }
+
   const contractSurfaces = [
     "docs/runtime-neutral-config.md",
     "teams/builder.yaml",
@@ -142,6 +168,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     `REPOSITORY_ADMISSION_MATRIX=${modeCount}/58`,
     "BRANCH_GATE=7/7",
     "NO_WORKTREE_ORCHESTRATION=true",
+    "DIRTY_DIRECT_BORROW_POLICY=6/6",
     "REFERENCES_MISSING=0",
   ];
 }

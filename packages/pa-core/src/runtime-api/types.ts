@@ -27,6 +27,8 @@ export interface RepositoryBorrowerHandoff {
   canonicalRepoRoot: string;
   borrowerToken: string;
   parentDeploymentId: string;
+  deploymentId: string;
+  approvedMutationPaths?: readonly string[];
 }
 
 export interface SpawnOpts {

@@ -75,6 +75,30 @@ function captureExtension(): { events: Map<string, EventHandler>; registrations:
   return { events, registrations, tools };
 }
 
+test("trusted dirty-borrow approval tool registers only in the exact foreground orchestrator host", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-tool-registration-"));
+  const deployDir = join(root, "deployments", "d-parent");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  mkdirSync(deployDir, { recursive: true });
+  const keys = [PA_PI_EXECUTION_MODE_ENV, "PA_TEAM", "PA_MODE", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_REPO", "PA_TICKET_ID"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  try {
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "orchestrator";
+    process.env["PA_DEPLOYMENT_ID"] = "d-parent";
+    process.env["PA_DEPLOYMENT_DIR"] = deployDir;
+    process.env["PA_REPO"] = root;
+    process.env["PA_TICKET_ID"] = "PAP-191";
+    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), true);
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "background";
+    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function withRegistryFixture(name: string, run: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), name));
   const previous = {
@@ -435,6 +459,17 @@ test("native host smoke records its registry query and explicit close", async ()
   assert.equal(evidence.addonPath, addonPath);
   assert.equal(evidence.registryQuery, "PRAGMA user_version");
   assert.equal(evidence.close, "explicit");
+});
+
+test("source adapter preflight resolves generated editor imports in the plain Pi host", async () => {
+  await assert.doesNotReject(new PiAdapter({
+    env: {
+      ...process.env,
+      [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
+      [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
+    },
+    versionProbe: () => "0.84.4",
+  }).preflight());
 });
 
 test("managed command expectations follow all four factory selections exactly", () => {

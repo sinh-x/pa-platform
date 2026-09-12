@@ -8,6 +8,7 @@ import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
+import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
 import {
   registerBundledEditorsModule,
   createBundledEditorsModule,
@@ -177,6 +178,7 @@ export function createPaExtension(): { name: string; tools: PiToolDefinition[]; 
 
 export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
   for (const tool of createPaTools(lifecycle)) pi.registerTool?.(tool);
+  registerDirtyBorrowApprovalModule(pi, lifecycle);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);
     return decision.allowed ? undefined : { block: true, reason: decision.reason };

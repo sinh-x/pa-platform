@@ -191,6 +191,46 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 
 **Repository admission:** every `requirements/*` mode bypasses Git status and ownership-lease access. Every `builder/*` mode is exclusive per canonical repository. Dirty foreground builders launch with an intent/re-read instruction contract; dirty background builders (including REST defaults) reject before spawn. ppa and opa enforce the ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
 
+PPA alone permits one authenticated exception: a process-verified,
+registry-running Pi `builder/orchestrator` owner may launch one direct background
+Pi `builder/implement` child for the exact same repository and ticket-linked
+feature branch. A clean child snapshot follows the existing path. A dirty child
+snapshot requires a consume-once receipt created only by the foreground parent
+through the trusted `pa_dirty_borrow_approval` Pi TUI tool. The tool displays the
+complete numbered porcelain-v2 path set, requires every current path to be
+classified as active-ticket produced or preserved, accepts only exact
+repository-relative nonexistent planned paths (no globs), and offers explicit
+**Approve preserve-and-continue** or rejection. Cancellation, non-TUI execution,
+partial classification, drift, and malformed evidence create no authority.
+
+There is no public delegation, parent-ID, lease-removal, dirty-bypass, or force
+flag. The mode-0600 approval receipt is at most 65,536 bytes, bound to parent
+process/registry identity, repository, ticket, branch, full HEAD, and complete
+NUL-delimited status, and consumed under the repository mutex before borrower
+publication. Receipt/capability/borrower tokens and raw digests are excluded from
+primers, ordinary background config, registry/activity/session output, and
+completion artifacts; a separate protected handoff carries the minimum runtime
+secret. The child primer lists only the exact approved mutation paths. Final
+scope or branch drift forces failed containment without reverting any work.
+
+The parent remains the sole owner, its lease bytes do not change, and a live
+borrower excludes siblings plus unrelated PPA/OPA builders. Parent finalization
+waits no longer than the admitted child's resolved timeout plus 5,000ms cleanup
+and releases only after no live borrower remains. A borrower that outlives an
+abnormal parent exit continues to block normal and forced acquisition until its
+process fingerprint becomes stale. Missing, malformed, insecure, stale,
+replayed, consumed, mismatched, or forbidden inherited context rejects before
+spawn; diagnostics redact private evidence, contain `Condition`, `Source`,
+`Reason`, `Correction`, and `Resume Action`, and are at most 2,000 JavaScript
+characters. Standalone dirty background builders still reject. OPA has exclusion
+awareness only—positive OPA, CPA, and Droid inheritance is outside this contract.
+
+Configuration evidence from the dedicated dirty-direct-borrower policy ticket
+does not itself prove runtime admission and must not be reported as a merged
+runtime SHA. Runtime acceptance separately pins that ticket's merged `develop`
+revision and exercises lifecycle, mismatch, and exactly-one-admit contention
+gates; unrelated PAPC tickets are not substitutes.
+
 **Removed flags:** `--interactive` and `--direct` were removed; foreground TUI is the default. Passing either returns an error directing the user to `--background` or `--dry-run`.
 
 **Timeout resolution:** Defaults to `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); validated against `MIN_DEPLOY_TIMEOUT_SECONDS` (60) and `MAX_DEPLOY_TIMEOUT_SECONDS` (7200). `--timeout` must be an integer in that range.

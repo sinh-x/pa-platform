@@ -1,24 +1,30 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   MAX_REPOSITORY_BORROWER_BYTES,
   MAX_REPOSITORY_DIAGNOSTIC_CHARS,
+  MAX_REPOSITORY_DIRTY_APPROVAL_BYTES,
+  MAX_GIT_STATUS_SUMMARY_CHARS,
   MAX_REPOSITORY_LEASE_BYTES,
   acquireRepositoryMutationLease,
   captureRepositoryGitSnapshot,
   classifyRepositoryAccess,
+  finalizeRepositoryMutationBorrower,
+  finalizeRepositoryMutationLease,
   formatRepositoryAdmissionDiagnostic,
   inspectRepositoryMutationBorrower,
   inspectRepositoryMutationLease,
+  publishRepositoryDirtyBorrowApproval,
   quarantineRepositoryMutationLease,
   readProcessFingerprint,
   registerRepositoryMutationBorrower,
   releaseRepositoryMutationBorrower,
   releaseRepositoryMutationLease,
+  repositoryDirtyBorrowApprovalPath,
   repositoryGitSnapshotsEqual,
   repositoryMutationBorrowerPath,
   repositoryMutationLeasePath,
@@ -27,6 +33,7 @@ import {
   updateRepositoryMutationLeaseGitSnapshot,
   type ProcessFingerprint,
   type RepositoryAdmissionDependencies,
+  type RepositoryDirtyBorrowApproval,
   type RepositoryGitSnapshot,
 } from "../index.js";
 import { installGitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
@@ -40,6 +47,15 @@ const snapshot: RepositoryGitSnapshot = Object.freeze({
   dirty: false,
   statusSummary: "",
 });
+
+function completeSnapshot(root: string, path = "ticket-work.ts", xy = ".M", head = "d".repeat(40), branch = snapshot.branch): RepositoryGitSnapshot {
+  return captureRepositoryGitSnapshot(root, (args) => {
+    if (args[0] === "symbolic-ref") return `${branch}\n`;
+    if (args[0] === "rev-parse") return `${head}\n`;
+    if (args[0] === "status") return `1 ${xy} N... 100644 100644 100644 ${"e".repeat(40)} ${"e".repeat(40)} ${path}\0`;
+    throw new Error(`unexpected Git command: ${args.join(" ")}`);
+  });
+}
 
 function fixture(name: string): string {
   const root = mkdtempSync(join(tmpdir(), `pa-repository-admission-${name}-`));
@@ -58,6 +74,7 @@ function dependencies(live?: ProcessFingerprint): RepositoryAdmissionDependencie
     runGit: () => { throw new Error("unexpected Git call"); },
     now: () => new Date("2026-09-05T13:00:00.000Z"),
     createToken: () => `token-${++token}`,
+    isDeploymentRunning: () => true,
   };
 }
 
@@ -68,6 +85,7 @@ function familyDependencies(live: readonly ProcessFingerprint[]): RepositoryAdmi
     runGit: () => { throw new Error("unexpected Git call"); },
     now: () => new Date("2026-09-11T13:00:00.000Z"),
     createToken: () => `family-token-${++token}`,
+    isDeploymentRunning: () => true,
   };
 }
 
@@ -98,13 +116,40 @@ test("repository access classification is deterministic and requirements need no
   assert.equal(classifyRepositoryAccess("requirements-helper", "analyze"), "non-locking");
 });
 
+test("snapshot capture preserves porcelain-v2 NUL bytes for rename and odd or long paths", () => {
+  const root = fixture("snapshot-odd-paths");
+  const odd = "space tab\tline\nbreak.ts";
+  const renamed = "renamed target\n.ts";
+  const source = "source\told.ts";
+  const longPath = `${"long-".repeat(230)}.ts`;
+  const raw = Buffer.concat([
+    Buffer.from(`1 .M N... 100644 100644 100644 ${"1".repeat(40)} ${"1".repeat(40)} ${odd}\0`),
+    Buffer.from(`2 R. N... 100644 100644 100644 ${"2".repeat(40)} ${"2".repeat(40)} R100 ${renamed}\0${source}\0`),
+    Buffer.from(`? ${longPath}\0`),
+  ]);
+  try {
+    const result = captureRepositoryGitSnapshot(root, (args) => {
+      if (args[0] === "symbolic-ref") return "feature/PAP-191-odd-paths\n";
+      if (args[0] === "rev-parse") return `${"f".repeat(40)}\n`;
+      if (args[0] === "status") return raw;
+      throw new Error("unexpected command");
+    });
+    assert.deepEqual(result.statusEntries?.map((entry) => [entry.path, entry.sourcePath]), [[odd, undefined], [renamed, source], [longPath, undefined]]);
+    assert.deepEqual(Buffer.from(result.statusPorcelainV2Base64!, "base64"), raw);
+    assert.equal(result.statusRecordCount, 3);
+    assert.equal(result.statusSummary.length, MAX_GIT_STATUS_SUMMARY_CHARS);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Git snapshot captures bounded staged, unstaged, and untracked evidence with read-only commands", () => {
   const calls: readonly string[][] = [];
   const mutableCalls = calls as string[][];
   const outputs = new Map<string, string>([
     ["symbolic-ref --quiet --short HEAD", "feature/PAP-174\n"],
     ["rev-parse HEAD", `${"b".repeat(40)}\n`],
-    ["status --porcelain=v1 --untracked-files=all -z", `M  staged.ts\0 M unstaged.ts\0?? untracked.ts\0R  renamed.ts\0old.ts\0`],
+    ["status --porcelain=v2 --untracked-files=all -z", `1 M. N... 100644 100644 100644 ${"a".repeat(40)} ${"a".repeat(40)} staged.ts\u00001 .M N... 100644 100644 100644 ${"b".repeat(40)} ${"b".repeat(40)} unstaged.ts\u0000? untracked.ts\u00002 R. N... 100644 100644 100644 ${"c".repeat(40)} ${"c".repeat(40)} R100 renamed.ts\u0000old.ts\u0000`],
   ]);
   const result = captureRepositoryGitSnapshot("/tmp/repository", (args) => {
     mutableCalls.push([...args]);
@@ -114,6 +159,10 @@ test("Git snapshot captures bounded staged, unstaged, and untracked evidence wit
   });
   assert.deepEqual({ staged: result.stagedCount, unstaged: result.unstagedCount, untracked: result.untrackedCount, dirty: result.dirty }, { staged: 2, unstaged: 1, untracked: 1, dirty: true });
   assert.ok(result.statusSummary.length <= 1_024);
+  assert.equal(result.statusRecordCount, 4);
+  assert.equal(result.statusEntries?.[3]?.sourcePath, "old.ts");
+  assert.match(result.digestSha256 ?? "", /^[0-9a-f]{64}$/);
+  assert.equal(Buffer.from(result.statusPorcelainV2Base64 ?? "", "base64").includes(0), true);
   assert.deepEqual(calls.map((args) => args[0]), ["symbolic-ref", "rev-parse", "status"]);
   const prohibited = /^(stash|commit|reset|clean|restore|checkout|branch|worktree)$/;
   assert.equal(calls.some((args) => prohibited.test(args[0] ?? "")), false);
@@ -128,7 +177,7 @@ test("admission captures authoritative post-plan status inside ownership critica
     runGit: (args) => {
       if (args[0] === "symbolic-ref") return "feature/drifted\n";
       if (args[0] === "rev-parse") return `${finalHead}\n`;
-      if (args[0] === "status") return "?? arrived-after-plan.txt\0";
+      if (args[0] === "status") return "? arrived-after-plan.txt\0";
       throw new Error(`unexpected Git command: ${args.join(" ")}`);
     },
   };
@@ -167,15 +216,22 @@ test("admission captures authoritative post-plan status inside ownership critica
     });
     assert.equal(foreground.status, "acquired");
     if (foreground.status === "acquired") {
-      assert.deepEqual(foreground.lease.preLaunchGitSnapshot, {
+      assert.deepEqual({
+        branch: foreground.lease.preLaunchGitSnapshot.branch,
+        head: foreground.lease.preLaunchGitSnapshot.head,
+        stagedCount: foreground.lease.preLaunchGitSnapshot.stagedCount,
+        unstagedCount: foreground.lease.preLaunchGitSnapshot.unstagedCount,
+        untrackedCount: foreground.lease.preLaunchGitSnapshot.untrackedCount,
+        dirty: foreground.lease.preLaunchGitSnapshot.dirty,
+      }, {
         branch: "feature/drifted",
         head: finalHead,
         stagedCount: 0,
         unstagedCount: 0,
         untrackedCount: 1,
         dirty: true,
-        statusSummary: "?? arrived-after-plan.txt",
       });
+      assert.equal(foreground.lease.preLaunchGitSnapshot.statusEntries?.[0]?.path, "arrived-after-plan.txt");
       assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: foreground.lease.ownershipToken }).status, "released");
     }
   } finally {
@@ -504,6 +560,7 @@ test("authenticated direct child registration is separate, bounded, mode 0600, a
       launchMode: "background",
       ticket: "PAP-191",
       branch: snapshot.branch,
+      timeoutSeconds: 60,
       pid: child.pid,
       processFingerprint: child,
       gitSnapshot: snapshot,
@@ -525,16 +582,173 @@ test("authenticated direct child registration is separate, bounded, mode 0600, a
   }
 });
 
+test("classified dirty receipt is private, consume-once, scope-bound, and leaves parent bytes unchanged", () => {
+  const root = fixture("dirty-receipt");
+  const parent = fingerprint(45511);
+  const child = fingerprint(45512);
+  const deps = familyDependencies([parent, child]);
+  const dirty = completeSnapshot(root);
+  const parentDirectory = join(root, "parent");
+  try {
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: parentDirectory,
+      runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", pid: parent.pid, processFingerprint: parent,
+      ownershipToken: "dirty-parent-capability", gitSnapshot: dirty, dependencies: deps,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    const leaseBytes = readFileSync(repositoryMutationLeasePath(root));
+    const inspection = inspectRepositoryMutationLease(root, deps);
+    assert.ok(inspection.evidenceIdentity);
+    const approval: RepositoryDirtyBorrowApproval = {
+      schemaVersion: 1,
+      receiptId: "private-receipt-id",
+      approvalReference: "private-tool-call-reference",
+      approvedAt: "2026-09-11T13:00:00.000Z",
+      action: "preserve-and-continue",
+      parentDeploymentId: "d-parent",
+      parentDeploymentDirectory: parentDirectory,
+      parentProcessFingerprint: parent,
+      parentLeaseEvidenceIdentity: inspection.evidenceIdentity!,
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      ticket: "PAP-191",
+      branch: dirty.branch,
+      snapshot: dirty,
+      classifications: [{ path: "ticket-work.ts", classification: "active-ticket-preserved" }],
+      plannedNewPaths: ["new-approved.ts"],
+    };
+    const approvalPath = publishRepositoryDirtyBorrowApproval(approval, deps);
+    assert.equal(approvalPath, repositoryDirtyBorrowApprovalPath(parentDirectory));
+    assert.equal(statSync(approvalPath).mode & 0o777, 0o600);
+    assert.ok(statSync(approvalPath).size <= MAX_REPOSITORY_DIRTY_APPROVAL_BYTES);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+
+    const registered = registerRepositoryMutationBorrower({
+      capability: "dirty-parent-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: dirty.branch, timeoutSeconds: 60,
+      pid: child.pid, processFingerprint: child, expectedGitSnapshot: dirty, gitSnapshot: dirty, dirtyApprovalPath: approvalPath, dependencies: deps,
+    });
+    assert.equal(registered.status, "registered");
+    if (registered.status !== "registered") return;
+    assert.equal(existsSync(approvalPath), false);
+    assert.deepEqual(registered.borrower.approvedMutationPaths, ["new-approved.ts", "ticket-work.ts"]);
+    assert.doesNotMatch(registered.diagnostic, /private-receipt-id|private-tool-call-reference|dirty-parent-capability|[0-9a-f]{64}/);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+
+    const escaped = captureRepositoryGitSnapshot(root, (args) => {
+      if (args[0] === "symbolic-ref") return `${dirty.branch}\n`;
+      if (args[0] === "rev-parse") return `${dirty.head}\n`;
+      if (args[0] === "status") return `${Buffer.from(dirty.statusPorcelainV2Base64!, "base64").toString("utf8")}? outside.ts\0`;
+      throw new Error("unexpected command");
+    });
+    const finalization = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: registered.borrower.borrowerToken, deploymentId: "d-child",
+      finalGitSnapshot: escaped, dependencies: deps,
+    });
+    assert.equal(finalization.status, "finalized");
+    if (finalization.status === "finalized") {
+      assert.equal(finalization.scopeCompliant, false);
+      assert.equal(finalization.parentLease, "retained");
+      assert.equal(finalization.finalGitSnapshot.statusEntries?.at(-1)?.path, "outside.ts");
+    }
+    const replay = registerRepositoryMutationBorrower({
+      capability: "dirty-parent-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-replay", deploymentDirectory: join(root, "replay"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: dirty.branch, timeoutSeconds: 60,
+      pid: child.pid, processFingerprint: child, expectedGitSnapshot: dirty, gitSnapshot: dirty, dirtyApprovalPath: approvalPath, dependencies: deps,
+    });
+    assert.equal(replay.status, "rejected");
+    if (replay.status === "rejected") assert.equal(replay.category, "dirty-approval");
+
+    const external = join(root, "external-receipt-target");
+    writeFileSync(external, "protected target\n", { mode: 0o600 });
+    for (const attack of ["symlink", "hardlink", "oversized"] as const) {
+      if (attack === "symlink") symlinkSync(external, approvalPath);
+      else if (attack === "hardlink") linkSync(external, approvalPath);
+      else writeFileSync(approvalPath, "x".repeat(MAX_REPOSITORY_DIRTY_APPROVAL_BYTES + 1), { mode: 0o600 });
+      const rejected = registerRepositoryMutationBorrower({
+        capability: "dirty-parent-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+        deploymentId: `d-${attack}`, deploymentDirectory: join(root, attack), runtime: "pi", team: "builder", mode: "implement",
+        launchMode: "background", ticket: "PAP-191", branch: dirty.branch, timeoutSeconds: 60,
+        pid: child.pid, processFingerprint: child, expectedGitSnapshot: dirty, gitSnapshot: dirty, dirtyApprovalPath: approvalPath, dependencies: deps,
+      });
+      assert.equal(rejected.status, "rejected");
+      if (rejected.status === "rejected") assert.equal(rejected.category, "dirty-approval");
+      assert.equal(readFileSync(external, "utf8"), "protected target\n");
+      assert.equal(existsSync(approvalPath), false);
+    }
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dirty receipt drift in path, XY, full HEAD, or branch consumes authority and admits no borrower", () => {
+  const cases = [
+    { name: "path", candidate: (root: string) => completeSnapshot(root, "other.ts") },
+    { name: "xy", candidate: (root: string) => completeSnapshot(root, "ticket-work.ts", "M.") },
+    { name: "head", candidate: (root: string) => completeSnapshot(root, "ticket-work.ts", ".M", "f".repeat(40)) },
+    { name: "branch", candidate: (root: string) => completeSnapshot(root, "ticket-work.ts", ".M", "d".repeat(40), "feature/PAP-191-drifted") },
+  ];
+  for (const item of cases) {
+    const root = fixture(`dirty-drift-${item.name}`);
+    const parent = fingerprint(45601);
+    const child = fingerprint(45602);
+    const deps = familyDependencies([parent, child]);
+    const approvedSnapshot = completeSnapshot(root);
+    const parentDirectory = join(root, "parent");
+    try {
+      const acquired = acquireRepositoryMutationLease({
+        canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: parentDirectory,
+        runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", pid: parent.pid,
+        processFingerprint: parent, ownershipToken: "drift-capability", gitSnapshot: approvedSnapshot, dependencies: deps,
+      });
+      assert.equal(acquired.status, "acquired");
+      if (acquired.status !== "acquired") continue;
+      const inspection = inspectRepositoryMutationLease(root, deps);
+      const approval: RepositoryDirtyBorrowApproval = {
+        schemaVersion: 1, receiptId: `receipt-${item.name}`, approvalReference: `call-${item.name}`,
+        approvedAt: "2026-09-11T13:00:00.000Z", action: "preserve-and-continue", parentDeploymentId: "d-parent",
+        parentDeploymentDirectory: parentDirectory, parentProcessFingerprint: parent, parentLeaseEvidenceIdentity: inspection.evidenceIdentity!,
+        canonicalRepoKey: "fixture", canonicalRepoRoot: root, ticket: "PAP-191", branch: approvedSnapshot.branch,
+        snapshot: approvedSnapshot, classifications: [{ path: "ticket-work.ts", classification: "active-ticket-produced" }], plannedNewPaths: [],
+      };
+      const approvalPath = publishRepositoryDirtyBorrowApproval(approval, deps);
+      const parentBytes = readFileSync(repositoryMutationLeasePath(root));
+      const candidate = item.candidate(root);
+      const result = registerRepositoryMutationBorrower({
+        capability: "drift-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+        deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
+        launchMode: "background", ticket: "PAP-191", branch: approvedSnapshot.branch, timeoutSeconds: 60,
+        pid: child.pid, processFingerprint: child, expectedGitSnapshot: candidate, gitSnapshot: candidate,
+        dirtyApprovalPath: approvalPath, dependencies: deps,
+      });
+      assert.equal(result.status, "rejected", item.name);
+      assert.equal(existsSync(approvalPath), false, `${item.name}: matching attempt must consume the receipt`);
+      assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("borrow rejection matrix fails closed with bounded redacted diagnostics and no parent mutation", () => {
   const cases = [
     { name: "capability", patch: { capability: "wrong-secret" } },
     { name: "parent", patch: { parentDeploymentId: "d-unrelated" } },
+    { name: "repository", patch: { canonicalRepoKey: "unrelated" } },
     { name: "child", patch: { deploymentId: "d-parent" } },
     { name: "runtime", patch: { runtime: "opencode" as const } },
     { name: "team", patch: { team: "requirements" } },
     { name: "mode", patch: { mode: "orchestrator" } },
     { name: "launch", patch: { launchMode: "foreground" as const } },
+    { name: "ticket", patch: { ticket: "PAP-192" } },
     { name: "branch", patch: { branch: "feature/PAP-191-other" } },
+    { name: "snapshot", patch: { expectedGitSnapshot: { ...snapshot, head: "f".repeat(40) } } },
+    { name: "timeout", patch: { timeoutSeconds: 59 } },
   ] as const;
   for (const rejection of cases) {
     const root = fixture(`borrow-reject-${rejection.name}`);
@@ -569,6 +783,7 @@ test("borrow rejection matrix fails closed with bounded redacted diagnostics and
         launchMode: "background",
         ticket: "PAP-191",
         branch: snapshot.branch,
+        timeoutSeconds: 60,
         pid: child.pid,
         processFingerprint: child,
         gitSnapshot: snapshot,
@@ -583,6 +798,44 @@ test("borrow rejection matrix fails closed with bounded redacted diagnostics and
       }
       assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), exactLease);
       assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("forbidden parent runtime/mode and stale parent fingerprints reject before borrower publication", () => {
+  for (const parentCase of [
+    { name: "runtime", runtime: "opencode" as const, mode: "orchestrator", parentLive: true },
+    { name: "mode", runtime: "pi" as const, mode: "implement", parentLive: true },
+    { name: "stale", runtime: "pi" as const, mode: "orchestrator", parentLive: false },
+  ]) {
+    const root = fixture(`borrow-parent-${parentCase.name}`);
+    const parent = fingerprint(45750 + parentCase.name.length);
+    const child = fingerprint(45780 + parentCase.name.length);
+    const acquireDeps = familyDependencies([parent, child]);
+    try {
+      const acquired = acquireRepositoryMutationLease({
+        canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+        runtime: parentCase.runtime, mode: parentCase.mode, pid: parent.pid, processFingerprint: parent,
+        ownershipToken: "parent-matrix-capability", gitSnapshot: snapshot, dependencies: acquireDeps,
+      });
+      assert.equal(acquired.status, "acquired");
+      const parentBytes = readFileSync(repositoryMutationLeasePath(root));
+      const admissionDeps = familyDependencies(parentCase.parentLive ? [parent, child] : [child]);
+      const result = registerRepositoryMutationBorrower({
+        capability: "parent-matrix-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+        deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
+        launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+        pid: child.pid, processFingerprint: child, gitSnapshot: snapshot, dependencies: admissionDeps,
+      });
+      assert.equal(result.status, "rejected", parentCase.name);
+      if (result.status === "rejected") {
+        assert.equal(result.category, parentCase.name === "stale" ? "parent-state" : "parent-identity");
+        assert.match(result.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      }
+      assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -606,11 +859,11 @@ test("every dirty Git category rejects borrowing with and without force before e
         const result = registerRepositoryMutationBorrower({
           capability: "dirty-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
           deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
-          launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: child.pid, processFingerprint: child,
+          launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
           gitSnapshot: dirty, force, dependencies: deps,
         });
         assert.equal(result.status, "rejected");
-        if (result.status === "rejected") assert.equal(result.category, "git-state");
+        if (result.status === "rejected") assert.equal(result.category, "dirty-approval");
         assert.equal(existsSync(repositoryMutationBorrowerPath(root)), false);
         assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
       } finally {
@@ -635,7 +888,7 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
     const first = registerRepositoryMutationBorrower({
       capability: "family-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
       deploymentId: "d-first", deploymentDirectory: join(root, "first"), runtime: "pi", team: "builder", mode: "implement",
-      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: launcher.pid, processFingerprint: launcher,
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60, pid: launcher.pid, processFingerprint: launcher,
       gitSnapshot: snapshot, dependencies: liveFamily,
     });
     assert.equal(first.status, "registered");
@@ -643,7 +896,7 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
     const second = registerRepositoryMutationBorrower({
       capability: "family-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
       deploymentId: "d-second", deploymentDirectory: join(root, "second"), runtime: "pi", team: "builder", mode: "implement",
-      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, pid: child.pid, processFingerprint: child,
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
       gitSnapshot: snapshot, force: true, dependencies: liveFamily,
     });
     assert.equal(second.status, "rejected");
@@ -663,6 +916,127 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
     assert.equal(recovered.status, "acquired");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("matching borrower finalization publishes final Git state, preserves live parent bytes, and admits the next clean child", () => {
+  const root = fixture("borrow-finalization");
+  const parent = fingerprint(45911);
+  const firstProcess = fingerprint(45912);
+  const secondProcess = fingerprint(45913);
+  const liveFamily = familyDependencies([parent, firstProcess, secondProcess]);
+  const finalSnapshot = Object.freeze({ ...snapshot, head: "b".repeat(40) });
+  try {
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+      runtime: "pi", mode: "orchestrator", pid: parent.pid, processFingerprint: parent, ownershipToken: "finalize-capability",
+      gitSnapshot: snapshot, dependencies: liveFamily,
+    });
+    assert.equal(acquired.status, "acquired");
+    const parentBytes = readFileSync(repositoryMutationLeasePath(root));
+    const first = registerRepositoryMutationBorrower({
+      capability: "finalize-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-first", deploymentDirectory: join(root, "first"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: firstProcess.pid, processFingerprint: firstProcess, gitSnapshot: snapshot, dependencies: liveFamily,
+    });
+    assert.equal(first.status, "registered");
+    if (first.status !== "registered") return;
+    const finalized = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
+      finalGitSnapshot: finalSnapshot, dependencies: liveFamily,
+    });
+    assert.deepEqual(finalized, { status: "finalized", parentLease: "retained", finalGitSnapshot: finalSnapshot });
+    assert.deepEqual(finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
+      finalGitSnapshot: finalSnapshot, dependencies: liveFamily,
+    }), { status: "absent" });
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+    assert.equal(inspectRepositoryMutationBorrower(root, liveFamily).state, "absent");
+
+    const second = registerRepositoryMutationBorrower({
+      capability: "finalize-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-second", deploymentDirectory: join(root, "second"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: secondProcess.pid, processFingerprint: secondProcess, gitSnapshot: finalSnapshot, dependencies: liveFamily,
+    });
+    assert.equal(second.status, "registered");
+    if (second.status !== "registered") return;
+    const terminalParent = familyDependencies([secondProcess]);
+    const terminal = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: second.borrower.borrowerToken, deploymentId: "d-second",
+      finalGitSnapshot: finalSnapshot, dependencies: terminalParent,
+    });
+    assert.equal(terminal.status, "finalized");
+    if (terminal.status === "finalized") assert.equal(terminal.parentLease, "released");
+    assert.equal(inspectRepositoryMutationLease(root, terminalParent).state, "absent");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("parent finalization waits until borrower mismatch and stops at timeout plus 5000ms without releasing live family authority", async () => {
+  const setup = (name: string) => {
+    const root = fixture(name);
+    const parent = fingerprint(name === "borrow-wait-release" ? 45921 : 45931);
+    const child = fingerprint(name === "borrow-wait-release" ? 45922 : 45932);
+    const deps = familyDependencies([parent, child]);
+    assert.equal(acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+      runtime: "pi", mode: "orchestrator", pid: parent.pid, processFingerprint: parent, ownershipToken: "wait-capability",
+      gitSnapshot: snapshot, dependencies: deps,
+    }).status, "acquired");
+    const registration = registerRepositoryMutationBorrower({
+      capability: "wait-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-child", deploymentDirectory: join(root, "child"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: child.pid, processFingerprint: child, gitSnapshot: snapshot, dependencies: deps,
+    });
+    assert.equal(registration.status, "registered");
+    return { root, parent, child, registeredAt: Date.parse("2026-09-11T13:00:00.000Z") };
+  };
+
+  const released = setup("borrow-wait-release");
+  let releaseClock = released.registeredAt;
+  let childLive = true;
+  try {
+    const result = await finalizeRepositoryMutationLease({
+      canonicalRepoRoot: released.root,
+      ownershipToken: "wait-capability",
+      dependencies: {
+        now: () => releaseClock,
+        sleep: async (milliseconds) => { releaseClock += milliseconds; childLive = false; },
+        getProcessFingerprint: (pid) => pid === released.parent.pid ? released.parent : childLive && pid === released.child.pid ? released.child : undefined,
+      },
+    });
+    assert.equal(result.status, "released");
+    assert.equal(result.waitedMs, 100);
+    assert.equal(inspectRepositoryMutationLease(released.root).state, "absent");
+  } finally {
+    rmSync(released.root, { recursive: true, force: true });
+  }
+
+  const retained = setup("borrow-wait-retain");
+  let retainedClock = retained.registeredAt;
+  try {
+    const parentBytes = readFileSync(repositoryMutationLeasePath(retained.root));
+    const result = await finalizeRepositoryMutationLease({
+      canonicalRepoRoot: retained.root,
+      ownershipToken: "wait-capability",
+      dependencies: {
+        now: () => retainedClock,
+        sleep: async () => { retainedClock += 65_000; },
+        getProcessFingerprint: (pid) => pid === retained.parent.pid ? retained.parent : pid === retained.child.pid ? retained.child : undefined,
+      },
+    });
+    assert.equal(result.status, "borrower-live");
+    assert.equal(result.waitedMs, 65_000);
+    assert.match(result.diagnostic ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    assert.ok((result.diagnostic ?? "").length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(retained.root)), parentBytes);
+    assert.equal(inspectRepositoryMutationBorrower(retained.root, familyDependencies([retained.child])).state, "live");
+  } finally {
+    rmSync(retained.root, { recursive: true, force: true });
   }
 });
 

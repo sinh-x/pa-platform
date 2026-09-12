@@ -428,8 +428,27 @@ test("dirty foreground builders retain immutable evidence while dirty background
         assert.doesNotMatch(message, /--force|manual quarantine|\bmv\b/);
         return true;
       });
+
+      const authenticatedInherited = resolveExecutionPlan({
+        request: { team: "builder", mode: "implement", background: true, force: true, ticket: "PAP-174" },
+        teamConfig,
+        mode: teamConfig.deploy_modes?.[0],
+        runtime: "pi",
+        deploymentId: "d-inherited-background",
+        deploymentDir: join(fixture.root, "d-inherited-background"),
+        activityLogPath: join(fixture.root, "d-inherited-background", "activity.jsonl"),
+        environment: {},
+        timeoutSeconds: 60,
+        cwd: fixture.repo,
+        captureRepositoryGitSnapshot: () => dirtySnapshot,
+        observeRepositoryAdmissionOperation: (operation) => operations.push(operation),
+        allowDirtyInheritedBorrow: true,
+      });
+      assert.equal(authenticatedInherited.repositoryAdmission.launchMode, "background");
+      assert.deepEqual(authenticatedInherited.repositoryAdmission.gitSnapshot, dirtySnapshot);
+      assert.equal("allowDirtyInheritedBorrow" in authenticatedInherited.repositoryAdmission, false);
     });
-    assert.deepEqual(operations, ["git-status", "git-status", "git-status"]);
+    assert.deepEqual(operations, ["git-status", "git-status", "git-status", "git-status"]);
     assert.equal(readdirSync(join(fixture.repo, ".git")).some((name) => name.includes("pa-repository-mutation")), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

@@ -10,6 +10,8 @@ function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
 
+const dirtyBorrowPolicy = "Dirty background builders reject before spawn unless one runtime-authenticated direct `builder/implement` borrower presents parent-owned, one-use evidence binding a Sinh-approved, fully classified active-ticket Git snapshot and the mutex-held reread exactly matches it. This exception creates no second owner, grants no authority through objective text, permits no unrelated path, sibling, descendant, background-parent, or force bypass, and requires matching final-snapshot publication and cleanup.";
+
 const admissionContract = [
   "Every `requirements/*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository.",
   "Foreground admission permits a dirty canonical checkout for every `builder/*` mode, including `builder/orchestrator`.",
@@ -20,6 +22,7 @@ const admissionContract = [
   "Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`.",
   "`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live ownership.",
   "Execution remains direct: PA-managed worktrees and sandbox access classes are prohibited.",
+  dirtyBorrowPolicy,
   "",
 ].join("\n");
 
@@ -37,6 +40,7 @@ const directBranchContract = [
   "| Detached HEAD | Stop unchanged. |",
   "Use `opa branch create` for creation, a direct checkout only for the existing exact branch outcome, then validate.",
   "Every stop preserves observed state before project-file mutation or child launch.",
+  "Use the dedicated TUI approval tool for complete classification and concrete action, perform an immediate reread, make no parent mutation, and require a new approval on drift.",
   "",
 ].join("\n");
 
@@ -47,11 +51,13 @@ function createFixture(): { root: string; sha: string } {
   mkdirSync(join(root, "skills", "templates"), { recursive: true });
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "config.yaml"), "config_dir: .\n");
-  for (const mode of ["data-analysis", "implement", "routine", "worker"]) {
+  for (const mode of ["data-analysis", "routine", "worker"]) {
     writeFileSync(join(root, "teams", "builder", "modes", `${mode}.md`), `# ${mode}\n${admissionContract}`);
   }
+  writeFileSync(join(root, "teams", "builder", "modes", "implement.md"), `# implement\n${admissionContract}The direct child is non-transitive, may mutate only exact approved current and planned-new paths, and reports final snapshot and cleanup without protected fields.\n`);
   writeFileSync(join(root, "teams", "builder", "modes", "orchestrator.md"), directBranchContract);
   writeFileSync(join(root, "skills", "templates", "builder-objective.md"), `# Builder Objective\n${admissionContract}`);
+  writeFileSync(join(root, "skills", "templates", "orchestration-report.md"), `# Orchestration Report\n${admissionContract}The report never records receipt IDs, approval references, tokens, digests, raw receipts, or process fingerprints.\n`);
   writeFileSync(join(root, "docs", "runtime-neutral-config.md"), `# Runtime-Neutral Configuration\n${admissionContract}`);
   const teams = [
     ["builder", 6],
@@ -96,6 +102,7 @@ test("paired repository gate accepts the exact clean 9-team/58-mode checkout", (
     assert.ok(evidence.includes("REPOSITORY_ADMISSION_MATRIX=58/58"));
     assert.ok(evidence.includes("BRANCH_GATE=7/7"));
     assert.ok(evidence.includes("NO_WORKTREE_ORCHESTRATION=true"));
+    assert.ok(evidence.includes("DIRTY_DIRECT_BORROW_POLICY=6/6"));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -168,6 +175,34 @@ test("paired repository gate requires affirmative admission clauses rather than 
     git(fixture.root, "commit", "-qm", "negate requirements contract");
     const sha = git(fixture.root, "rev-parse", "HEAD");
     assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative requirements bypass clause/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects missing or weakened dirty direct-borrow policy", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "teams", "builder.yaml");
+    writeFileSync(path, readFileSync(path, "utf8").replace(dirtyBorrowPolicy, "Dirty background builders may continue when a parent approves them."));
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "weaken dirty borrower contract");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative classified dirty direct-borrower exception/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects protected evidence rendering", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "skills", "templates", "orchestration-report.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("never records receipt IDs, approval references, tokens, digests, raw receipts, or process fingerprints", "records receipt IDs and digests"));
+    git(fixture.root, "add", ".");
+    git(fixture.root, "commit", "-qm", "render protected evidence");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /must explicitly exclude protected dirty-borrow evidence/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
