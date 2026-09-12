@@ -57,6 +57,15 @@ function completeSnapshot(root: string, path = "ticket-work.ts", xy = ".M", head
   });
 }
 
+function completeCleanSnapshot(root: string, head = "d".repeat(40), branch = snapshot.branch): RepositoryGitSnapshot {
+  return captureRepositoryGitSnapshot(root, (args) => {
+    if (args[0] === "symbolic-ref") return `${branch}\n`;
+    if (args[0] === "rev-parse") return `${head}\n`;
+    if (args[0] === "status") return "";
+    throw new Error(`unexpected Git command: ${args.join(" ")}`);
+  });
+}
+
 function fixture(name: string): string {
   const root = mkdtempSync(join(tmpdir(), `pa-repository-admission-${name}-`));
   mkdirSync(join(root, ".git"));
@@ -577,6 +586,57 @@ test("authenticated direct child registration is separate, bounded, mode 0600, a
     assert.deepEqual(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: "wrong" }), { status: "token-mismatch" });
     assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken }).status, "released");
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("approval publisher accepts a post-setup dirty snapshot only for the authenticated live clean-launch parent", () => {
+  const root = fixture("dirty-approval-after-clean-launch");
+  const parent = fingerprint(45505);
+  const deps = familyDependencies([parent]);
+  const cleanLaunch = completeCleanSnapshot(root);
+  const currentDirty = completeSnapshot(root);
+  const parentDirectory = join(root, "parent");
+  try {
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: parentDirectory,
+      runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", pid: parent.pid,
+      processFingerprint: parent, ownershipToken: "publisher-parent-capability", gitSnapshot: cleanLaunch, dependencies: deps,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    const parentBytes = readFileSync(repositoryMutationLeasePath(root));
+    const inspection = inspectRepositoryMutationLease(root, deps);
+    assert.equal(repositoryGitSnapshotsEqual(inspection.lease!.preLaunchGitSnapshot, currentDirty), false);
+    const approval: RepositoryDirtyBorrowApproval = {
+      schemaVersion: 1,
+      receiptId: "publisher-receipt-id",
+      approvalReference: "publisher-tool-call-reference",
+      approvedAt: "2026-09-11T13:00:00.000Z",
+      action: "preserve-and-continue",
+      parentDeploymentId: "d-parent",
+      parentDeploymentDirectory: parentDirectory,
+      parentProcessFingerprint: parent,
+      parentLeaseEvidenceIdentity: inspection.evidenceIdentity!,
+      canonicalRepoKey: "fixture",
+      canonicalRepoRoot: root,
+      ticket: "PAP-191",
+      branch: currentDirty.branch,
+      snapshot: currentDirty,
+      classifications: [{ path: "ticket-work.ts", classification: "active-ticket-produced" }],
+      plannedNewPaths: [],
+    };
+    assert.throws(
+      () => publishRepositoryDirtyBorrowApproval({ ...approval, parentProcessFingerprint: fingerprint(parent.pid, "unverified") }, deps),
+      /parent owner identity is not process-verified and registry-running/,
+    );
+    assert.equal(existsSync(repositoryDirtyBorrowApprovalPath(parentDirectory)), false);
+
+    const approvalPath = publishRepositoryDirtyBorrowApproval(approval, deps);
+    assert.equal(approvalPath, repositoryDirtyBorrowApprovalPath(parentDirectory));
+    assert.equal(existsSync(approvalPath), true);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

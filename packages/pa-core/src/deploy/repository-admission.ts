@@ -532,9 +532,6 @@ export function publishRepositoryDirtyBorrowApproval(
       || !resolvedDependencies.isDeploymentRunning(approval.parentDeploymentId)) {
       throw new Error("dirty-borrow-approval: parent owner identity is not process-verified and registry-running");
     }
-    if (!repositoryGitSnapshotsEqual(inspection.lease.preLaunchGitSnapshot, approval.snapshot)) {
-      throw new Error("dirty-borrow-approval: current snapshot no longer matches the parent-owned launch snapshot");
-    }
     publishApprovalExclusive(approvalPath, approval, resolvedDependencies.createToken);
     return approvalPath;
   });
