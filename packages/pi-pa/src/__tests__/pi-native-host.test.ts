@@ -509,8 +509,10 @@ test("deterministic managed tool harness executes the complete eight-tool matrix
     "read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status",
   ].map((name) => ({ name, status: "passed" })));
   assert.equal(evidence.modules, process.versions.modules);
-  assert.deepEqual(evidence.extension.factories, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
-  assert.deepEqual(evidence.extension.commands, ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"]);
+  assert.deepEqual(
+    evidence.extension.commands,
+    expectedManagedExtensionCommands(evidence.extension.factories),
+  );
   assert.deepEqual(evidence.extension.shortcuts, ["alt+i", "alt+g"]);
   assert.ok(evidence.extension.handlers.includes("tool_call"));
   assert.ok(evidence.extension.handlers.includes("agent_end"));
