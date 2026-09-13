@@ -2,6 +2,7 @@
 
 export type RuntimeName = "claude" | "opencode" | "droid" | "pi";
 export type ApiRuntimeName = "opencode" | "pi";
+export type DeploymentInvocationChannel = "cli" | "agent-api";
 export type ProviderName = string;
 export type ModelName = string;
 
@@ -137,6 +138,8 @@ export interface RegistryEvent {
   runtime?: RuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
+  rogue_one?: boolean;
+  invocation_channel?: DeploymentInvocationChannel;
 }
 
 export interface DeploymentStatus {
@@ -161,6 +164,8 @@ export interface DeploymentStatus {
   runtime?: RuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
+  rogue_one?: boolean;
+  invocation_channel?: DeploymentInvocationChannel;
 }
 
 export interface ProviderModelTier {

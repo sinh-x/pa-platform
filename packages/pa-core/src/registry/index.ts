@@ -201,11 +201,13 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, provider, rating,
-      objective, repo, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds
+      objective, repo, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds,
+      rogue_one, invocation_channel
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
-      @objective, @repo, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds
+      @objective, @repo, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds,
+      @rogue_one, @invocation_channel
     )
   `).run(row);
 }
@@ -301,11 +303,14 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       models: started?.models,
       provider: started?.provider,
       repo: started?.repo,
+      mode: started?.mode,
       fallback: completed?.fallback,
       resumed_from_deployment_id: started?.resumed_from_deployment_id,
       runtime: started?.runtime,
       binary: started?.binary,
       effective_timeout_seconds: started?.effective_timeout_seconds,
+      rogue_one: started?.rogue_one,
+      invocation_channel: started?.invocation_channel,
     };
   }));
 }
@@ -320,10 +325,12 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare(`
       INSERT INTO deployments (
         deployment_id, team, status, started_at, pid, primer, agents, models,
-        ticket_id, objective, repo, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds
+        ticket_id, objective, repo, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds,
+        rogue_one, invocation_channel
       ) VALUES (
         @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
-        @ticket_id, @objective, @repo, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds
+        @ticket_id, @objective, @repo, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds,
+        @rogue_one, @invocation_channel
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         status = excluded.status,
         started_at = excluded.started_at,
@@ -339,7 +346,9 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         resumed_from_deployment_id = excluded.resumed_from_deployment_id,
         runtime = excluded.runtime,
         binary = excluded.binary,
-        effective_timeout_seconds = excluded.effective_timeout_seconds
+        effective_timeout_seconds = excluded.effective_timeout_seconds,
+        rogue_one = excluded.rogue_one,
+        invocation_channel = excluded.invocation_channel
     `).run(row);
   } else if (event.event === "pid") {
     db.prepare("UPDATE deployments SET pid = ? WHERE deployment_id = ?").run(event.pid ?? null, event.deployment_id);
@@ -385,6 +394,8 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     runtime: event.runtime ?? null,
     binary: event.binary ?? null,
     effective_timeout_seconds: event.effective_timeout_seconds ?? null,
+    rogue_one: event.rogue_one ? 1 : 0,
+    invocation_channel: event.invocation_channel ?? null,
   };
 }
 
@@ -415,6 +426,8 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     runtime: row["runtime"] as RegistryEvent["runtime"],
     binary: optionalString(row["binary"]),
     effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
+    rogue_one: Boolean(row["rogue_one"]),
+    invocation_channel: row["invocation_channel"] as RegistryEvent["invocation_channel"],
   };
 }
 
@@ -441,6 +454,8 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     runtime: row["runtime"] as DeploymentStatus["runtime"],
     binary: optionalString(row["binary"]),
     effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
+    rogue_one: Boolean(row["rogue_one"]),
+    invocation_channel: row["invocation_channel"] as DeploymentStatus["invocation_channel"],
   };
 }
 

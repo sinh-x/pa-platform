@@ -63,6 +63,27 @@ test("registry appends WAL-backed events and materializes deployment status", ()
   }
 });
 
+test("registry persists rogue-one audit evidence without credentials", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-registry-rogue-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try {
+    appendRegistryEvent({ deployment_id: "d-rogue", team: "rogue-one", mode: "rogue-one", event: "started", timestamp: "2026-09-13T10:00:00Z", rogue_one: true, invocation_channel: "agent-api" });
+    const event = getDeploymentEvents("d-rogue")[0];
+    const status = queryDeploymentStatus("d-rogue");
+    assert.equal(event?.rogue_one, true);
+    assert.equal(event?.invocation_channel, "agent-api");
+    assert.equal(status?.rogue_one, true);
+    assert.equal(status?.invocation_channel, "agent-api");
+    assert.deepEqual(Object.keys(event ?? {}).filter((key) => /credential|identity|authorization/i.test(key)), []);
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("registry materializes effective timeout metadata from started events", () => {
   const statuses = computeDeploymentStatuses([
     { deployment_id: "d-timeout", team: "builder", event: "started", timestamp: "2026-04-26T10:00:00Z", effective_timeout_seconds: 1800 },
@@ -225,7 +246,7 @@ test("registry migration preserves legacy deployments without timeout metadata",
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
     assert.equal(eventColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
     assert.equal(deploymentColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "10" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "11" });
 
     const status = queryDeploymentStatus("d-legacy");
     assert.equal(status?.status, "running");

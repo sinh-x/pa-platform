@@ -221,7 +221,12 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
     };
   }));
   app.route("/", configRoutes());
-  app.route("/", deployControlRoutes(hooks, sessionManager));
+  app.route("/", deployControlRoutes(hooks, sessionManager, {
+    isOperatorAuthorized(authorization, claimedDeploymentId) {
+      const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+      return claimedDeploymentId === undefined && credentialsMatch(token, mutationAuth.operatorCredential);
+    },
+  }));
   app.route("/", deploymentsRoutes());
   app.route("/", deployRoutingRoutes());
   app.route("/", deployStatusRoutes());

@@ -412,11 +412,14 @@ interface RegistryEvent {
   rating?: Rating;
   objective?: string;
   repo?: string;
+  mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
+  rogue_one?: boolean;
+  invocation_channel?: "cli" | "agent-api";
 }
 ```
 
@@ -441,11 +444,14 @@ interface RegistryEvent {
 | `rating` | [`Rating`](#rating) | no | Session rating (agent/system/user). |
 | `objective` | `string` | no | Deployment objective text. |
 | `repo` | `string` | no | Repository path. |
+| `mode` | `string` | no | Resolved deployment mode. |
 | `fallback` | `boolean` | no | Whether the completion marker was a fallback. |
 | `resumed_from_deployment_id` | `string` | no | If this deployment resumed a prior one, the prior deployment id. |
 | `runtime` | [`RuntimeName`](#runtimename) | no | Runtime that executed the deployment. |
 | `binary` | `string` | no | Binary path that was spawned. |
 | `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
+| `rogue_one` | `boolean` | no | True only for an explicitly selected rogue-one bare deployment. |
+| `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel; never contains caller credentials or identity values. |
 
 ### `DeploymentStatus`
 
@@ -468,11 +474,14 @@ interface DeploymentStatus {
   models?: Record<string, string>;
   provider?: string;
   repo?: string;
+  mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
   runtime?: RuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
+  rogue_one?: boolean;
+  invocation_channel?: "cli" | "agent-api";
 }
 ```
 
@@ -493,11 +502,14 @@ interface DeploymentStatus {
 | `models` | `Record<string, string>` | no | Agent → model map. |
 | `provider` | `string` | no | Model provider. |
 | `repo` | `string` | no | Repository path. |
+| `mode` | `string` | no | Resolved deployment mode. |
 | `fallback` | `boolean` | no | Whether the completion was a fallback. |
 | `resumed_from_deployment_id` | `string` | no | Prior deployment id if resumed. |
 | `runtime` | [`RuntimeName`](#runtimename) | no | Runtime. |
 | `binary` | `string` | no | Binary path. |
 | `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
+| `rogue_one` | `boolean` | no | True for rogue-one deployment evidence. |
+| `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel. |
 
 ### `Rating`
 

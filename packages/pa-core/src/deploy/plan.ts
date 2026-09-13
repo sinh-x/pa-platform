@@ -7,6 +7,7 @@ import type { DeployRequest } from "./control.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
 import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
+import { isRogueOneTeam, ROGUE_ONE_MODE, type DeploymentInvocationChannel } from "./rogue-one.js";
 
 export interface ExecutionPlanSkill {
   name: string;
@@ -31,6 +32,8 @@ export interface ExecutionPlan {
   readonly repositoryCwd: string;
   readonly memoryDocumentRoot: string;
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
+  readonly rogue_one?: true;
+  readonly invocation_channel?: DeploymentInvocationChannel;
   readonly ticket?: string;
   readonly ticketRequired: boolean;
   readonly objective: string;
@@ -75,17 +78,19 @@ export function withAuthoritativeRepositoryAdmission(
 }
 
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
-  const modeName = options.mode?.id ?? options.teamConfig.default_mode ?? "default";
+  const rogueOne = isRogueOneTeam(options.request.team) && isRogueOneTeam(options.teamConfig.name);
+  const modeName = rogueOne ? ROGUE_ONE_MODE : options.mode?.id ?? options.teamConfig.default_mode ?? "default";
+  const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
   const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd());
   const skillsDir = options.skillsDir ?? getSkillsDir();
-  const skills = (options.mode?.skills ?? []).map((skill) => {
+  const skills = (rogueOne ? [] : options.mode?.skills ?? []).map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
     if (!existsSync(path)) {
       throw new Error(`Missing selected PA skill: team '${options.teamConfig.name}', mode '${modeName}', skill '${skill.name}', attempted path '${path}'.`);
     }
     return Object.freeze({ name: skill.name, injectAs: skill["inject-as"], path });
   });
-  const ticketRequired = options.mode?.require_ticket === true;
+  const ticketRequired = !rogueOne && options.mode?.require_ticket === true;
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
   }
@@ -118,17 +123,24 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repositoryCwd: repository.repoRoot,
     memoryDocumentRoot: repository.repoRoot,
     repositoryAdmission,
+    ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
-    objective: options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,
+    objective: rogueOne
+      ? options.request.objective ?? "No user objective was provided."
+      : options.request.objective ?? options.mode?.objective ?? options.teamConfig.objective,
     ...(options.request.objective ? { userObjectiveOverride: options.request.objective } : {}),
     skills: Object.freeze(skills),
-    memoryDocuments: Object.freeze([
+    memoryDocuments: Object.freeze(rogueOne ? [] : [
       ...(options.teamConfig.global_docs ?? []),
       ...(options.mode?.global_docs ?? []),
       ...(options.mode?.project_guides?.[repository.repoKey] ?? []),
     ]),
-    environment: Object.freeze({ ...options.environment, PA_REPO: repository.repoRoot }),
+    environment: Object.freeze({
+      ...options.environment,
+      PA_REPO: repository.repoRoot,
+      ...(rogueOne ? { PA_TEAM: options.teamConfig.name, PA_MODE: modeName, PA_ROGUE_ONE: "1" } : {}),
+    }),
     timeoutSeconds: options.timeoutSeconds,
     ...(options.request.provider ? { provider: options.request.provider } : {}),
     ...(options.request.model ? { model: options.request.model } : {}),

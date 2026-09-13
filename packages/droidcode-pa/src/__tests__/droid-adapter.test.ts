@@ -985,6 +985,22 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
+function writeRogueOneTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "rogue-one.yaml"), [
+    "name: rogue-one",
+    "description: configured workflow must be omitted",
+    "default_mode: direct",
+    "objective: configured objective must be omitted",
+    "agents: []",
+    "deploy_modes:",
+    "  - id: direct",
+    "    label: Direct",
+    "    provider: deepseek",
+    "    model: deepseek/deepseek-v4-pro",
+    "    require_ticket: true",
+  ].join("\n"));
+}
+
 function writeBuilderTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "builder.yaml"), [
     "name: builder",
@@ -1000,6 +1016,39 @@ function writeBuilderTeamConfig(root: string): void {
     "    model: deepseek/deepseek-v4-pro",
   ].join("\n"));
 }
+
+describe("dpa rogue-one bare runtime", () => {
+  it("reaches the normal hook/spawn seam with fixed non-owning evidence", async () => {
+    await withDpaEnv(async (root, gitState) => {
+      writeRogueOneTeamConfig(root);
+      let installedPlan: SpawnOpts["executionPlan"];
+      let spawned: SpawnOpts | undefined;
+      const adapter: RuntimeAdapter = {
+        name: "droid",
+        defaultModel: "deepseek-v4-pro",
+        sessionFileName: "session-id-droid.txt",
+        installHooks(_dir, config) { installedPlan = config.executionPlan; },
+        spawn(opts) { spawned = opts; return { sessionId: "rogue-session", exitCode: 0 }; },
+        resume(opts) { return { sessionId: opts.sessionId, exitCode: 0 }; },
+        extractActivity() { return []; },
+        describeTools() { return { runtime: "droid", markdown: "stub" }; },
+      };
+      const warnings: string[] = [];
+      const result = await deployWithDroid({ team: "rogue-one", mode: "implement", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
+      assert.equal(result.status, "success");
+      assert.equal(result.mode, "rogue-one");
+      assert.equal(installedPlan, spawned?.executionPlan);
+      assert.equal(spawned?.executionPlan?.rogue_one, true);
+      assert.equal(spawned?.env.PA_ROGUE_ONE, "1");
+      assertNonLockingRepositoryAdmission(spawned!.executionPlan!, readFileSync(spawned!.primerPath, "utf8"));
+      assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
+      assert.match(warnings.join("\n"), /supplied --mode is ignored/);
+      const started = getDeploymentEvents(result.deploymentId!)[0];
+      assert.equal(started?.rogue_one, true);
+      assert.equal(started?.invocation_channel, "cli");
+    });
+  });
+});
 
 describe("dpa deploy memory-doc injection (MIN-3/FR-4)", () => {
   it("droid dry-run retains full memory-doc bodies (droid native load unconfirmed, OQ-1)", async () => {
