@@ -10,7 +10,13 @@ function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
 
-const dirtyBorrowPolicy = "Dirty background builders reject before spawn unless one runtime-authenticated direct `builder/implement` borrower presents parent-owned, one-use evidence binding a Sinh-approved, fully classified active-ticket Git snapshot and the mutex-held reread exactly matches it. This exception creates no second owner, grants no authority through objective text, permits no unrelated path, sibling, descendant, background-parent, or force bypass, and requires matching final-snapshot publication and cleanup.";
+const dirtyBorrowPolicy = [
+  "Classified dirty direct-borrower exception: default dirty-background rejection remains fail-closed; the only dirty-background exception is one runtime-authenticated direct `builder/implement` child of the process-verified, registry-running `builder/orchestrator` that owns the exact canonical repository. Before approval, every entry in the complete NUL-safe porcelain-v2 path/status metadata set must be classified as active-ticket work. Protected one-use evidence is mode `0600`, at most 65,536 bytes, and non-user-visible; approval binds canonical repository key/root, ticket, exact linked branch, full HEAD, that complete path/status set, and exactly one delegated action: `commit` or `cleanup`. File contents are not part of the approval hash.",
+  "The parent performs an immediate pre-intent reread and the runtime performs the mutex-serialized admission reread. Any state, scope, context, action, or reread difference must reject before spawn and requires fresh approval and evidence.",
+  "While admitted, the child must touch only the approved path set for the approved action; the parent must not mutate or dispatch a sibling, the child must not delegate, and the parent retains phase acceptance and commit/cleanup accountability. Active sibling, descendant, unrelated builder, forbidden-mode, self-asserted, context-mismatch, snapshot-mismatch, and public or force bypass requests reject before spawn.",
+  "Under the canonical-repository mutex, matching finalization publishes the exact final Git snapshot, clears only matching borrower/transient/approval evidence, retains authority for the same process-verified live parent or releases it for a terminal or unverifiable parent, and is idempotent.",
+  "PAPC-017 must merge first, after which PAP-191 must pin its exact 40-lowercase-hex merged `develop` SHA before paired completion. Config-only and paired config UAT evidence do not prove runtime-admission success.",
+].join("\n\n");
 
 const admissionContract = [
   "Every `requirements/*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository.",
@@ -62,6 +68,7 @@ function createFixture(): { root: string; sha: string } {
   const teams = [
     ["builder", 6],
     ["requirements", 11],
+    ["rogue-one", 1],
     ["evaluator", 1],
     ["insights", 5],
     ["kpi-reviewer", 6],
@@ -90,19 +97,21 @@ function createFixture(): { root: string; sha: string } {
   return { root, sha: git(root, "rev-parse", "HEAD") };
 }
 
-test("paired repository gate accepts the exact clean 9-team/58-mode checkout", () => {
+test("paired repository gate accepts the exact clean 10-team/59-mode checkout", () => {
   const fixture = createFixture();
   try {
     const evidence = validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha });
-    assert.ok(evidence.includes("TEAMS_VALID=9/9"));
-    assert.ok(evidence.includes("MODES_VALID=58/58"));
+    assert.ok(evidence.includes("TEAMS_VALID=10/10"));
+    assert.ok(evidence.includes("MODES_VALID=59/59"));
     assert.ok(evidence.includes("BUILDER_EXCLUSIVE=6/6"));
     assert.ok(evidence.includes("REQUIREMENTS_READ_ONLY=11/11"));
-    assert.ok(evidence.includes("OTHER_NON_LOCKING=41/41"));
-    assert.ok(evidence.includes("REPOSITORY_ADMISSION_MATRIX=58/58"));
+    assert.ok(evidence.includes("OTHER_NON_LOCKING=42/42"));
+    assert.ok(evidence.includes("REPOSITORY_ADMISSION_MATRIX=59/59"));
     assert.ok(evidence.includes("BRANCH_GATE=7/7"));
     assert.ok(evidence.includes("NO_WORKTREE_ORCHESTRATION=true"));
     assert.ok(evidence.includes("DIRTY_DIRECT_BORROW_POLICY=6/6"));
+    assert.ok(evidence.includes("DIRTY_DIRECT_BORROWER_EXCEPTION=1/1"));
+    assert.ok(evidence.includes("GENERAL_DIRTY_BACKGROUND_REJECTION=true"));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -184,11 +193,11 @@ test("paired repository gate rejects missing or weakened dirty direct-borrow pol
   const fixture = createFixture();
   try {
     const path = join(fixture.root, "teams", "builder.yaml");
-    writeFileSync(path, readFileSync(path, "utf8").replace(dirtyBorrowPolicy, "Dirty background builders may continue when a parent approves them."));
+    writeFileSync(path, readFileSync(path, "utf8").replace("default dirty-background rejection remains fail-closed", "dirty-background admission is unrestricted"));
     git(fixture.root, "add", ".");
     git(fixture.root, "commit", "-qm", "weaken dirty borrower contract");
     const sha = git(fixture.root, "rev-parse", "HEAD");
-    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative classified dirty direct-borrower exception/);
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative classified dirty direct-borrower case: default rejection and narrow exception/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -198,11 +207,11 @@ test("paired repository gate rejects protected evidence rendering", () => {
   const fixture = createFixture();
   try {
     const path = join(fixture.root, "skills", "templates", "orchestration-report.md");
-    writeFileSync(path, readFileSync(path, "utf8").replace("never records receipt IDs, approval references, tokens, digests, raw receipts, or process fingerprints", "records receipt IDs and digests"));
+    writeFileSync(path, readFileSync(path, "utf8").replace("non-user-visible", "rendered with receipt IDs and digests"));
     git(fixture.root, "add", ".");
     git(fixture.root, "commit", "-qm", "render protected evidence");
     const sha = git(fixture.root, "rev-parse", "HEAD");
-    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /must explicitly exclude protected dirty-borrow evidence/);
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative classified dirty direct-borrower case: protected evidence bounds/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

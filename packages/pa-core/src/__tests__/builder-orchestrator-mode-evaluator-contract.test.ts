@@ -75,18 +75,18 @@ test("builder orchestrator mode passes stable direct-checkout context to report-
   assert.match(modeDoc, /Every child receives the same `repo_key`, `repo_root`, ticket, exact feature branch/);
   assert.match(modeDoc, /Launch against the registry key or exact root; never derive a child path from CWD/);
   assert.match(modeDoc, /--repo "<repo_key>"[\s\S]*--ticket <ticket_id>/);
-  assert.match(modeDoc, /Implement children are report-only: they never change ticket status or requirements checkboxes\./);
+  assert.match(modeDoc, /Implement children are report-only\.[^\n]*edit requirements checkboxes, change ticket status/);
 });
 
 test("builder orchestrator mode keeps review fixes on the same branch and records evidence", (t) => {
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
-  assert.match(modeDoc, /Compose one fix objective per feedback bundle with `Goal`, `Requirements`, `Verification`, `Context`, and `Guardrails`/);
-  assert.match(modeDoc, /Launch builder\/implement with the same repository key\/root, branch, and ticket/);
-  assert.match(modeDoc, /Record the feedback source, objective artifact, child IDs\/statuses, verification, confirmation, and cycle count/);
+  assert.match(modeDoc, /compose one fix objective per feedback bundle with `Goal`, `Requirements`, `Verification`, `Context`, and `Guardrails`/i);
+  assert.match(modeDoc, /Delegate the fix to `builder\/implement` on the same repository, ticket, and branch/);
+  assert.match(modeDoc, /persist the accepted review bracket and finding decisions before checklist or lifecycle mutation/i);
   assert.match(modeDoc, /Do not create another branch for review feedback/);
-  assert.match(modeDoc, /Never launch while confirmation is pending, rejected, or stopped/);
+  assert.match(modeDoc, /Critical\/Major objectives require Sinh confirmation before launch/);
 });
 
 test("decision payload builder renders unrelated tickets exactly and stays bounded", () => {
