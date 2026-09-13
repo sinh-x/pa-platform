@@ -598,7 +598,6 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
         { name: "mismatched parent", capability, parentId: "d-unrelated-parent", request: { team: "builder", mode: "implement", ticket: "PAP-191", background: true } },
         { name: "foreground child", capability, request: { team: "builder", mode: "implement", ticket: "PAP-191" } },
         { name: "child mode", capability, request: { team: "builder", mode: "orchestrator", ticket: "PAP-191", background: true } },
-        { name: "child team", capability, request: { team: "requirements", mode: "analyze", ticket: "PAP-191", background: true } },
       ] as const;
       for (const item of cases) {
         if (item.capability === undefined) delete process.env[PI_PARENT_LEASE_CAPABILITY_ENV];
@@ -617,6 +616,16 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
 
       process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = capability;
       process.env["PA_DEPLOYMENT_ID"] = parentDeploymentId;
+      let requirementsSpawns = 0;
+      const requirements = await deployWithPi(
+        { team: "requirements", mode: "analyze", ticket: "PAP-191", background: true },
+        stubAdapter({ onSpawn: () => { requirementsSpawns += 1; } }),
+      );
+      assert.equal(requirements.status, "success", requirements.reason);
+      assert.equal(requirementsSpawns, 1);
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+      assert.deepEqual(readFileSync(leasePath), parentBytes);
+
       const dirtyCases = [
         { name: "staged", prepare: () => { writeFileSync(join(repo, "staged.txt"), "staged\n"); git(["add", "staged.txt"], repo); }, clean: () => { git(["restore", "--staged", "staged.txt"], repo); rmSync(join(repo, "staged.txt")); } },
         { name: "unstaged", prepare: () => writeFileSync(join(repo, "README.md"), "# Changed\n"), clean: () => { git(["restore", "README.md"], repo); } },

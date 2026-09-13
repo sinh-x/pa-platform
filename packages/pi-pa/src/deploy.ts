@@ -20,7 +20,7 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
-  const inheritedAttempt = request.team === "rogue-one" ? undefined : inheritedParentContext();
+  const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
     const reason = inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
