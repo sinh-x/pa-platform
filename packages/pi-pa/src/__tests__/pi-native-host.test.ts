@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,6 +28,7 @@ import {
   configurePiRegistryBinding,
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
+  resolvePiNodeHost,
 } from "../native-host.js";
 import {
   assertManagedExtensionCommands,
@@ -437,6 +438,21 @@ test("a later extension session lazily reopens the registry singleton after shut
   });
 });
 
+test("npm-style Pi shebang resolves the Node host from PATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-pi-shebang-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const pi = join(bin, "pi");
+  writeFileSync(pi, "#!/usr/bin/env node\n");
+  chmodSync(pi, 0o755);
+  symlinkSync(process.execPath, join(bin, "node"));
+  try {
+    assert.equal(resolvePiNodeHost({ PATH: bin }), realpathSync(process.execPath));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi child environment replaces the Node 22 wrapper binding with only the packaged Pi-host binding", () => {
   const input = {
     KEEP: "yes",
@@ -461,15 +477,27 @@ test("native host smoke records its registry query and explicit close", async ()
   assert.equal(evidence.close, "explicit");
 });
 
-test("source adapter preflight resolves generated editor imports in the plain Pi host", async () => {
-  await assert.doesNotReject(new PiAdapter({
-    env: {
-      ...process.env,
-      [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
-      [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
-    },
-    versionProbe: () => "0.84.4",
-  }).preflight());
+test("source adapter preflight resolves generated editor imports in an npm-style plain Pi host", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-source-pi-host-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const pi = join(bin, "pi");
+  writeFileSync(pi, "#!/usr/bin/env node\n");
+  chmodSync(pi, 0o755);
+  symlinkSync(process.execPath, join(bin, "node"));
+  try {
+    await assert.doesNotReject(new PiAdapter({
+      env: {
+        ...process.env,
+        PATH: bin,
+        [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
+        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
+      },
+      versionProbe: () => "0.84.4",
+    }).preflight());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("managed command expectations follow all four factory selections exactly", () => {

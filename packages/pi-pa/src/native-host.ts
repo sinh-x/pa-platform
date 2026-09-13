@@ -85,9 +85,14 @@ export function resolvePiNodeHost(env: NodeJS.ProcessEnv = process.env): string 
     const body = readBoundedWrapper(current);
     const targets = [...body.matchAll(/"([^"\n]+\/bin\/(?:node|\.pi-wrapped))"/g)].map((match) => match[1]!);
     const target = targets.at(-1);
-    if (!target) break;
-    if (target.endsWith("/bin/node")) return realpathSync(target);
-    current = realpathSync(target);
+    if (target) {
+      if (target.endsWith("/bin/node")) return realpathSync(target);
+      current = realpathSync(target);
+      continue;
+    }
+    const shebangNode = resolveShebangNode(body, env);
+    if (shebangNode) return realpathSync(shebangNode);
+    break;
   }
   throw new Error(`native-load: Could not resolve the Pi Node host from ${current}`);
 }
@@ -108,6 +113,17 @@ function runPiHost(nodePath: string, args: string[], env: NodeJS.ProcessEnv): Sp
     timeout: HOST_PROBE_TIMEOUT_MS,
     maxBuffer: 64 * 1024,
   });
+}
+
+function resolveShebangNode(body: string, env: NodeJS.ProcessEnv): string | undefined {
+  const firstLine = body.split("\n", 1)[0] ?? "";
+  const direct = firstLine.match(/^#!\s*(\/[^\s]+\/node)(?:\s|$)/)?.[1];
+  if (direct && isExecutable(direct)) return direct;
+  if (/^#!\s*\/usr\/bin\/env(?:\s+-S)?\s+node(?:\s|$)/.test(firstLine)) {
+    const resolved = resolveExternalCommand("node", env);
+    return isExecutable(resolved) ? resolved : undefined;
+  }
+  return undefined;
 }
 
 function resolveExternalCommand(command: string, env: NodeJS.ProcessEnv): string {
