@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -13,19 +13,20 @@ function buildPaEnvVars(args: {
   request: DeployRequest;
   provider?: string;
   model?: string;
-}): Record<PaEnvKey, string> {
+}): Partial<Record<PaEnvKey, string>> {
   return {
     PA_DEPLOYMENT_ID: args.deploymentId,
     PA_DEPLOYMENT_DIR: args.deployDir,
     PA_ACTIVITY_LOG: args.activityLogPath,
     PA_TEAM: args.teamConfig.name,
     PA_MODE: args.request.mode ?? args.teamConfig.default_mode ?? "",
-    PA_TICKET_ID: args.request.ticket || process.env["PA_TICKET_ID"] || "",
+    PA_TICKET_ID: args.request.ticket || (isRogueOneTeam(args.teamConfig.name) ? "" : process.env["PA_TICKET_ID"]) || "",
     PA_REPO: args.request.repo ?? "",
     PA_PROVIDER: args.provider ?? "",
     PA_MODEL: args.model ?? "",
     PA_TEAM_MODEL: args.request.teamModel ?? "",
     PA_AGENT_MODEL: args.request.agentModel ?? "",
+    ...(isRogueOneTeam(args.teamConfig.name) ? { PA_ROGUE_ONE: "1" } : {}),
   };
 }
 
@@ -124,15 +125,17 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
+  const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
+  request = normalizeRogueOneDeployRequest(request);
   const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
-  const selectedMode = selectDeployMode(teamConfig, request.mode);
+  const selectedMode = selectDeployMode(teamConfig, isRogueOneTeam(teamConfig.name) ? undefined : request.mode);
   const runtimeConfig = resolveOpencodeRuntimeConfig(resolveRuntimeConfig({ runtime: "opencode", request, team: teamConfig, mode: selectedMode, local: { provider: "ollama-cloud" } }));
   const provider = runtimeConfig.provider!;
   const model = runtimeConfig.model!;
   const today = nowUtc().slice(0, 10);
-  const ticketId = request.ticket || process.env["PA_TICKET_ID"] || undefined;
-  if (!ticketId && selectedMode?.require_ticket === true) {
+  const ticketId = request.ticket || (isRogueOneTeam(teamConfig.name) ? undefined : process.env["PA_TICKET_ID"]) || undefined;
+  if (!isRogueOneTeam(teamConfig.name) && !ticketId && selectedMode?.require_ticket === true) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: "Hard block: no resolvable ticket id. Provide --ticket <id> or set PA_TICKET_ID before deploying. The opencode adapter refuses to launch without a ticket for traceability." };
   }
   let sessionName: string | undefined;
@@ -174,7 +177,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   }
   const writePrimer = (currentPlan: ExecutionPlan): void => {
     const extraInstructions = buildExtraInstructions(currentPlan, teamConfig);
-    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions });
+    const primer = generatePrimer({ runtime: "opencode", teamConfig, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { ...computePlannerVars(teamConfig.name, selectedMode?.id, today), DEPLOY_ID: deploymentId, TEAM_NAME: teamConfig.name, TODAY: today, ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions });
     writeFileSync(primerPath, primer, "utf-8");
   };
 
@@ -182,6 +185,8 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   process.stdout.write(`Deployment: ${deploymentId}\n`);
 
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
+  emitResolutionWarning({ warning: rogueModeDiagnostic }, deploymentId, paths.activityLogPath, diagnostics);
+  if (plan.rogue_one) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: rogueOneAuditNotice(plan.invocation_channel!), metadata: { rogue_one: true, invocation_channel: plan.invocation_channel, team: plan.team, mode: plan.mode } }), paths.activityLogPath);
   if (request.dryRun) {
     try { writePrimer(plan); }
     catch (error) { return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) }; }
@@ -209,7 +214,7 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   };
 
   try {
-    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds });
+    emitStartedEvent({ deploymentId, team: teamConfig.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : teamConfig.agents.map((agent) => agent.name), models: { team: model, ...(request.agentModel ? { agents: request.agentModel } : {}) }, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repoRoot, runtime: "opencode", binary: "opa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     if (plan.repositoryAdmission.ownershipIntent === "acquire-before-spawn") {
       const acquisition = acquireRepositoryMutationLease({
@@ -410,7 +415,7 @@ const MAX_MEMORY_DOC_CHARS = 20000;
 const MEMORY_DOC_POINTER_MODE = true;
 
 function buildExtraInstructions(plan: ExecutionPlan, teamConfig: DeploymentContextTeam): string | undefined {
-  const sections = [buildMemoryDocsBlock(plan), buildDeploymentContextBlock(plan, teamConfig)].filter(Boolean);
+  const sections = [plan.rogue_one ? undefined : buildMemoryDocsBlock(plan), buildDeploymentContextBlock(plan, teamConfig)].filter(Boolean);
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
@@ -446,9 +451,7 @@ team_workspace: ${teamWorkspace}
 cwd: ${plan.repositoryCwd}
 repo_root: ${plan.repoRoot}
 ticket_id: ${plan.ticket ?? "none"}
-agents:
-${teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}
-mode: ${plan.mode}
+${plan.rogue_one ? "" : `agents:\n${teamConfig.agents.map((a) => `  - ${a.name}`).join("\n")}\n`}mode: ${plan.mode}
 ${envVarLines}</deployment-context>`;
 }
 

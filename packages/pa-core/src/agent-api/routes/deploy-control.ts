@@ -1,22 +1,33 @@
 import { Hono } from "hono";
-import { validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { isRogueOneTeam, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { SessionManager } from "../ws/session-hub.js";
 
-export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: SessionManager): Hono {
+export interface DeployControlAuthorization {
+  isOperatorAuthorized(authorization: string | undefined, claimedDeploymentId: string | undefined): boolean;
+}
+
+export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: SessionManager, authorization?: DeployControlAuthorization): Hono {
   const app = new Hono();
 
   app.post("/api/deploy", async (c) => {
     const parsed = await parseDeployRequest(c.req.json.bind(c.req));
     if ("error" in parsed) return c.json({ error: parsed.error, code: "BAD_REQUEST" }, 400);
+    if (isRogueOneTeam(parsed.request.team) && !authorization?.isOperatorAuthorized(c.req.header("Authorization"), c.req.header("X-PA-Deployment-ID"))) {
+      return c.json({ error: "Rogue-one deployment requires configured operator identity", code: "FORBIDDEN" }, 403);
+    }
     try {
       const controlResponse = resolveControlOnlyResponse(parsed.request);
       if (controlResponse) return c.json(controlResponse, 202);
       const resolved = withResolvedDeployTimeout(parsed.request);
       if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
       const selectedRuntime = resolved.request.runtime ?? "opencode";
-      const deployRequest = { ...resolved.request, background: resolved.request.background ?? true };
+      const deployRequest = {
+        ...resolved.request,
+        background: resolved.request.background ?? true,
+        ...(isRogueOneTeam(resolved.request.team) ? { invocationChannel: "agent-api" as const } : {}),
+      };
        const selectedHooks = hooks.runtimeHooks?.[selectedRuntime];
       if (!selectedHooks) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);
       if (!selectedHooks.deploy) return c.json({ error: `No adapter registered for runtime ${selectedRuntime}`, code: "NOT_IMPLEMENTED" }, 501);

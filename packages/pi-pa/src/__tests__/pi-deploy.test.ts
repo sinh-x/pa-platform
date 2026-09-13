@@ -83,7 +83,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   });
 }
 
-function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
+function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onInstall?: (plan: SpawnOpts["executionPlan"]) => void; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
   const result = (sessionId: string) => options.result?.(sessionId) ?? { sessionId, exitCode: 0, metadata: { sessionId } };
   return {
     name: "pi",
@@ -91,12 +91,28 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
     sessionFileName: "session-id-pi.txt",
     preflight: options.preflight ?? (async () => {}),
     allocateSessionId: () => "authoritative-session-id",
-    installHooks() {},
+    installHooks(_dir, config) { options.onInstall?.(config.executionPlan); },
     spawn(opts) { options.onSpawn?.(opts); return result(opts.sessionId ?? ""); },
     resume(opts) { options.onResume?.(opts); return result(opts.sessionId); },
     extractActivity() { return []; },
     describeTools() { options.onDescribe?.(); return { runtime: "pi", markdown: "stub" }; },
   };
+}
+
+function writeRogueOneTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "rogue-one.yaml"), [
+    "name: rogue-one",
+    "description: configured workflow must be omitted",
+    "default_mode: direct",
+    "objective: configured objective must be omitted",
+    "agents: []",
+    "deploy_modes:",
+    "  - id: direct",
+    "    label: Direct",
+    "    provider: openai",
+    "    model: openai/gpt-5.6-sol",
+    "    require_ticket: true",
+  ].join("\n"));
 }
 
 function assertTimeoutMetadata(opts: SpawnOpts, timeoutSeconds: number): void {
@@ -145,6 +161,35 @@ function within<T>(promise: Promise<T>, milliseconds: number, message: string | 
     );
   });
 }
+
+test("ppa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
+  await withPiEnv(async (root, gitState) => {
+    writeRogueOneTeamConfig(root);
+    let installedPlan: SpawnOpts["executionPlan"];
+    let spawned: SpawnOpts | undefined;
+    const adapter = stubAdapter({
+      onInstall: (plan) => { installedPlan = plan; },
+      onSpawn: (opts) => { spawned = opts; },
+    });
+    const warnings: string[] = [];
+    const result = await deployWithPi({ team: "rogue-one", mode: "implement", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
+    assert.equal(result.status, "success");
+    assert.equal(result.mode, "rogue-one");
+    assert.equal(installedPlan, spawned?.executionPlan);
+    assert.equal(spawned?.executionPlan?.rogue_one, true);
+    assert.equal(spawned?.executionPlan?.invocation_channel, "cli");
+    assert.equal(spawned?.env.PA_ROGUE_ONE, "1");
+    assert.equal(spawned?.executionPlan?.repositoryAdmission.access, "non-locking");
+    assert.equal(spawned?.executionPlan?.repositoryAdmission.ownershipIntent, "none");
+    assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
+    assert.match(readFileSync(spawned!.primerPath, "utf8"), /ROGUE-ONE ACTIVE/);
+    assert.doesNotMatch(readFileSync(spawned!.primerPath, "utf8"), /configured workflow|configured objective/);
+    assert.match(warnings.join("\n"), /supplied --mode is ignored/);
+    const started = getDeploymentEvents(result.deploymentId!)[0];
+    assert.equal(started?.rogue_one, true);
+    assert.equal(started?.invocation_channel, "cli");
+  });
+});
 
 test("foreground PPA /quit emits one terminal event with no Git state operation", async () => {
   await withPiEnv(async (_root, gitState) => {

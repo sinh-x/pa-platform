@@ -1230,6 +1230,8 @@ On success/pending with a `deploymentId`, the deploy session is registered with 
 
 Repository admission is mode-aware: requirements requests bypass Git status and lease access; builder requests are exclusive per canonical repository; other teams remain non-locking. Because REST defaults to background, a dirty builder request returns a structured failed result before runtime spawn. `force: true` only recovers stale or malformed builder evidence. Sensitive objective content is rejected during shared request validation with a redacted `400 BAD_REQUEST` response before any runtime hook, whether `force` is false or true.
 
+Exact `team: "rogue-one"` requests select fixed bare mode `rogue-one` for OpenCode or Pi. They require `Authorization: Bearer <PA_AGENT_API_OPERATOR_CREDENTIAL>` and return `403 FORBIDDEN` before adapter hooks/spawn when operator identity is absent or invalid. The credential is timing-safe compared and never added to audit evidence. Rogue-one bypasses PA ticket, Git-status, lease, workflow-approval, and final-review admission, while registered repository identity, sensitive-input/runtime validation, adapter safety, logging, and registry lifecycle remain active.
+
 **Error codes:**
 
 | HTTP | Code | Condition |

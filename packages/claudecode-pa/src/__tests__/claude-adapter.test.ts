@@ -99,6 +99,22 @@ function withCpaEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<vo
   });
 }
 
+function writeRogueOneTeamConfig(root: string): void {
+  writeFileSync(join(root, "teams", "rogue-one.yaml"), [
+    "name: rogue-one",
+    "description: configured workflow must be omitted",
+    "default_mode: direct",
+    "objective: configured objective must be omitted",
+    "agents: []",
+    "deploy_modes:",
+    "  - id: direct",
+    "    label: Direct",
+    "    provider: anthropic",
+    "    model: claude-sonnet-4-6",
+    "    require_ticket: true",
+  ].join("\n"));
+}
+
 function writeBuilderTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "builder.yaml"), [
     "name: builder",
@@ -128,6 +144,34 @@ function readDryRunBody(root: string, stdout: string[]): string {
   const activity = readActivityEvents(join(root, "deployments", deployId, "activity.jsonl"));
   return activity.map((event) => event.body).join("\n");
 }
+
+test("cpa rogue-one bypasses builder policy and reaches the normal hook/spawn seam", async () => {
+  await withCpaEnv(async (root, gitState) => {
+    writeRogueOneTeamConfig(root);
+    let installedPlan: SpawnOpts["executionPlan"];
+    let spawned: SpawnOpts | undefined;
+    const base = createStubAdapter({ exitCode: 0 });
+    const adapter: RuntimeAdapter = {
+      ...base,
+      installHooks(_dir, config) { installedPlan = config.executionPlan; },
+      spawn(opts) { spawned = opts; return { sessionId: "rogue-session", exitCode: 0 }; },
+    };
+    const warnings: string[] = [];
+    const result = await deployWithClaude({ team: "rogue-one", mode: "implement", repo: "pa-platform", objective: "Direct work" }, adapter, { stderr: (line) => warnings.push(line) });
+    assert.equal(result.status, "success");
+    assert.equal(result.mode, "rogue-one");
+    assert.equal(installedPlan, spawned?.executionPlan);
+    assert.equal(spawned?.executionPlan?.rogue_one, true);
+    assert.equal(spawned?.executionPlan?.mode, "rogue-one");
+    assert.equal(spawned?.env.PA_ROGUE_ONE, "1");
+    assertNonLockingRepositoryAdmission(spawned!.executionPlan!, readFileSync(spawned!.primerPath, "utf8"));
+    assert.equal(gitState.readCommands().some((args) => args[0] === "status"), false);
+    assert.match(warnings.join("\n"), /supplied --mode is ignored/);
+    const started = getDeploymentEvents(result.deploymentId!)[0];
+    assert.equal(started?.rogue_one, true);
+    assert.equal(started?.invocation_channel, "cli");
+  });
+});
 
 test("resolveClaudeModel honors precedence (model > env > default)", () => {
   const env: NodeJS.ProcessEnv = {};
