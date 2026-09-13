@@ -5,6 +5,7 @@ import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
 import type { ToolReference } from "../runtime-api/types.js";
+import { isRogueOneTeam, rogueOneAuditNotice, type DeploymentInvocationChannel } from "../deploy/rogue-one.js";
 
 export interface PrimerRepositoryContext {
   repoKey: string;
@@ -23,9 +24,12 @@ export interface GeneratePrimerOptions {
   repository?: PrimerRepositoryContext;
   repositoryAdmission?: RepositoryAdmissionEvidence;
   toolReference?: ToolReference;
+  rogueOne?: boolean;
+  invocationChannel?: DeploymentInvocationChannel;
 }
 
 export function generatePrimer(options: GeneratePrimerOptions): string {
+  if (options.rogueOne === true && isRogueOneTeam(options.teamConfig.name)) return generateRogueOnePrimer(options);
   const mode = selectMode(options.teamConfig, options.mode);
   const agents = selectAgents(options.teamConfig, mode);
   const skills = collectSkills(options.teamConfig, mode);
@@ -74,6 +78,42 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
     throw new Error("Primer generation requires exactly one authoritative Additional Instructions heading.");
   }
   return `${body}\n${renderSizeSignal(body, mode?.id)}`;
+}
+
+function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
+  const userObjective = adaptContentForRuntime(
+    applyTemplateVars(options.objective?.trim() || "No user objective was provided.", options.templateVars ?? {}),
+    options.runtime,
+  );
+  const toolReference = demoteAuthoritativeAdditionalInstructionsHeading(
+    adaptContentForRuntime(options.toolReference?.markdown ?? defaultToolReference(options.runtime), options.runtime),
+  );
+  const extra = options.extraInstructions
+    ? demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.extraInstructions.trim(), options.runtime))
+    : undefined;
+  const repository = options.repository ?? resolvePrimerRepositoryContext(extra);
+  const context = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const channel = options.invocationChannel ?? "cli";
+  const body = [
+    "# PA Deployment Primer",
+    "",
+    `Runtime: ${options.runtime}`,
+    "Team: rogue-one",
+    "Mode: rogue-one",
+    "",
+    "## Additional Instructions",
+    demoteAuthoritativeAdditionalInstructionsHeading(userObjective),
+    "",
+    "## Deployment Context",
+    context ?? "Canonical deployment context unavailable.",
+    "",
+    "## Runtime Tools",
+    toolReference,
+    "",
+    "## Rogue-One Audit Notice",
+    rogueOneAuditNotice(channel),
+  ].join("\n");
+  return `${body}\n${renderSizeSignal(body, "rogue-one")}`;
 }
 
 function resolvePrimerRepositoryContext(extraInstructions: string | undefined): PrimerRepositoryContext | undefined {
@@ -742,7 +782,7 @@ export const PA_ENV_KEYS = [
   "PA_AGENT_MODEL",
 ] as const;
 
-export type PaEnvKey = (typeof PA_ENV_KEYS)[number];
+export type PaEnvKey = (typeof PA_ENV_KEYS)[number] | "PA_ROGUE_ONE";
 
 /**
  * Renders the `pa_env_vars:` subsection for the `<deployment-context>` block.
@@ -756,5 +796,6 @@ export function renderEnvVarsBlock(envVars: Partial<Record<PaEnvKey, string>> | 
   return [
     "pa_env_vars:",
     ...PA_ENV_KEYS.map((key) => `  ${key}: ${envVars[key] ?? ""}`),
+    ...(envVars.PA_ROGUE_ONE ? [`  PA_ROGUE_ONE: ${envVars.PA_ROGUE_ONE}`] : []),
   ].join("\n");
 }

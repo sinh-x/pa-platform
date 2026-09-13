@@ -1,6 +1,7 @@
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
+import type { DeploymentInvocationChannel } from "./rogue-one.js";
 
 export const DEFAULT_DEPLOY_TIMEOUT_SECONDS = 1800;
 export const MIN_DEPLOY_TIMEOUT_SECONDS = 60;
@@ -30,6 +31,8 @@ export interface DeployRequest {
   listModes?: boolean;
   validate?: boolean;
   sanitizedCharsRemoved?: number;
+  /** Trusted internal provenance; API/CLI parsers never accept this from user fields. */
+  invocationChannel?: DeploymentInvocationChannel;
 }
 
 export interface DeployTimeoutResolutionInput {

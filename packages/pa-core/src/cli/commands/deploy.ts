@@ -146,6 +146,10 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --agent-model <name>   Rejected; per-agent overrides are tracked by PAP-148");
   io.stdout(`  Defaults:              ${profile.defaultDescription}`);
   io.stdout("  Config:                deploy_modes[].provider and deploy_modes[].model must both be present or both absent");
+  io.stdout("");
+  io.stdout("Rogue-one:");
+  io.stdout(`  ${binaryName} deploy rogue-one activates the fixed bare profile; no bypass flag is used.`);
+  io.stdout("  It bypasses PA ticket/Git/lease/workflow/review admission, not identity, sensitive-input, runtime, hook, host, tool, logging, or registry boundaries.");
 }
 
 export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks, binaryName = "opa"): Promise<number> {

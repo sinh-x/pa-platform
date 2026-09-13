@@ -1,6 +1,7 @@
 import { appendRegistryEvent, getDeploymentEvents } from "../registry/index.js";
 import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
+import type { DeploymentInvocationChannel } from "./rogue-one.js";
 
 export const OPA_WRAPPER_FALLBACK_SUMMARY = "Automated fallback: opa wrapper wrote this partial registry marker after OpenCode exited without an agent completion marker.";
 
@@ -19,6 +20,8 @@ export interface StartDeploymentOpts {
   binary?: string;
   resumedFromDeploymentId?: string;
   effectiveTimeoutSeconds?: number;
+  rogueOne?: boolean;
+  invocationChannel?: DeploymentInvocationChannel;
 }
 
 /**
@@ -42,6 +45,8 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     binary: opts.binary,
     resumed_from_deployment_id: opts.resumedFromDeploymentId,
     effective_timeout_seconds: opts.effectiveTimeoutSeconds,
+    rogue_one: opts.rogueOne,
+    invocation_channel: opts.invocationChannel,
   });
 }
 

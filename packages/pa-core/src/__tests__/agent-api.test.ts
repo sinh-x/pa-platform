@@ -692,6 +692,43 @@ test("agent API rejects malformed control fields before runtime hooks and sessio
   });
 });
 
+test("rogue-one Agent API deploy requires configured operator identity for OpenCode and Pi", async () => {
+  await withApiEnv(async () => {
+    const received: DeployRequest[] = [];
+    const deploy = (request: DeployRequest) => {
+      received.push(request);
+      return { status: "pending" as const, team: request.team, mode: "rogue-one", deploymentId: `d-rogue-${received.length}` };
+    };
+    const api = createAgentApiApp({
+      ticketMutationAuth: { operatorCredential: "operator-credential" },
+      hooks: { runtimeHooks: { opencode: { deploy }, pi: { deploy } } },
+    });
+
+    for (const runtime of ["opencode", "pi"] as const) {
+      for (const authorization of [undefined, "Bearer wrong-credential"]) {
+        const rejected = await api.app.request("/api/deploy", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(authorization ? { Authorization: authorization } : {}) },
+          body: JSON.stringify({ team: "rogue-one", runtime }),
+        });
+        assert.equal(rejected.status, 403);
+        assert.deepEqual(await rejected.json(), { error: "Rogue-one deployment requires configured operator identity", code: "FORBIDDEN" });
+      }
+      const accepted = await api.app.request("/api/deploy", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: "Bearer operator-credential" },
+        body: JSON.stringify({ team: "rogue-one", runtime }),
+      });
+      assert.equal(accepted.status, 202);
+    }
+
+    assert.equal(received.length, 2);
+    assert.deepEqual(received.map((request) => [request.runtime, request.invocationChannel]), [["opencode", "agent-api"], ["pi", "agent-api"]]);
+    assert.equal(JSON.stringify(received).includes("operator-credential"), false);
+    api.cleanup();
+  });
+});
+
 test("agent API blocks sensitive objective content before hooks with force false or true", async () => {
   await withApiEnv(async () => {
     let calls = 0;

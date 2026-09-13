@@ -39,6 +39,12 @@ ppa deploy builder --mode implement
 
 `dpa` defaults to model `deepseek-v4-pro` and requires `FACTORY_API_KEY` in the environment. Provider hints map to Droid model IDs. See `docs/dpa-droid-adapter.md` for the full adapter overview.
 
+### Rogue-One bare deployment
+
+Exact team selection `ppa|opa|cpa|dpa deploy rogue-one` activates a fixed `rogue-one` bare profile; there is no bypass flag. It omits PA workflow/review primer content and bypasses ticket, Git-status, repository-lease, workflow-approval, and final-review admission. It does **not** bypass registered repository identity, sensitive-input or runtime/provider validation, adapter hooks and permissions, runtime tool/host constraints, logging, or registry lifecycle. A supplied `--mode` is ignored with a warning.
+
+Rogue-one intentionally does not serialize repository mutation, so concurrent or dirty-checkout work can overwrite other work. The Agent API supports rogue-one only for OpenCode/Pi and requires `Authorization: Bearer <PA_AGENT_API_OPERATOR_CREDENTIAL>`; credentials are not persisted in rogue audit evidence.
+
 ### Pi Adapter
 
 See [`docs/pi-pa.md`](docs/pi-pa.md) for setup, status/removal, source paths, `/reload`, managed isolation, migration, and troubleshooting.

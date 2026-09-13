@@ -231,6 +231,8 @@ runtime SHA. Runtime acceptance separately pins that ticket's merged `develop`
 revision and exercises lifecycle, mismatch, and exactly-one-admit contention
 gates; unrelated PAPC tickets are not substitutes.
 
+**Rogue-one:** exact team selection `<adapter> deploy rogue-one` activates fixed mode `rogue-one`; no bypass flag exists. Any `--mode` is ignored with a bounded warning. The bare profile bypasses ticket, Git-status, mutation-lease, workflow-approval, and final-review admission while retaining canonical repository identity, sensitive-input and runtime/provider validation, adapter hooks/permissions, host/tool constraints, activity, and registry lifecycle. This intentionally permits concurrent and dirty-checkout mutation without PA serialization.
+
 **Removed flags:** `--interactive` and `--direct` were removed; foreground TUI is the default. Passing either returns an error directing the user to `--background` or `--dry-run`.
 
 **Timeout resolution:** Defaults to `DEFAULT_DEPLOY_TIMEOUT_SECONDS` (1800); validated against `MIN_DEPLOY_TIMEOUT_SECONDS` (60) and `MAX_DEPLOY_TIMEOUT_SECONDS` (7200). `--timeout` must be an integer in that range.
