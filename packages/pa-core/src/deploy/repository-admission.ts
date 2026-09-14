@@ -685,7 +685,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       status: "rejected",
       category,
       borrowerPath,
-      diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree }),
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot: "implement" }),
       ...(borrower ? { borrower } : {}),
     });
     try { assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir); }
@@ -821,7 +821,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       status: "registered",
       borrowerPath,
       borrower,
-      diagnostic: formatRepositoryBorrowerDiagnostic({ category: "registered", reason: inspection.reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree }),
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category: "registered", reason: inspection.reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot: "implement" }),
       ...(quarantinedPath ? { quarantinedPath } : {}),
     };
   });
@@ -881,6 +881,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
           reason: "a process-verified live borrower retains repository authority",
           canonicalRepoKey: options.canonicalRepoKey,
           canonicalRepoRoot: root,
+          worktreeRoot: worktree,
+          slot,
         }),
       };
     }
@@ -904,6 +906,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
             reason: `borrower evidence is ${borrowerInspection.state}`,
             canonicalRepoKey: options.canonicalRepoKey,
             canonicalRepoRoot: root,
+            worktreeRoot: worktree,
+            slot,
           }),
         };
       }
@@ -1283,8 +1287,9 @@ export function formatRepositoryBorrowerDiagnostic(input: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  slot?: RepositoryMutationSlot;
 }): string {
-  const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
+  const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "pre-spawn-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
   const siblingRecovery = new Set([
     "borrower-state",
     "sibling-finalizing",
@@ -1309,8 +1314,9 @@ export function formatRepositoryBorrowerDiagnostic(input: {
   const roots = input.worktreeRoot && input.worktreeRoot !== input.canonicalRepoRoot
     ? `repo_root=${boundedField(input.canonicalRepoRoot, 700)} worktree_root=${boundedField(input.worktreeRoot, 700)}`
     : `root=${boundedField(input.canonicalRepoRoot, 700)}`;
+  const slot = input.slot ? ` slot=${input.slot}` : "";
   return boundDiagnostic(
-    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} ${roots}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
+    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} ${roots}${slot}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
   );
 }
 

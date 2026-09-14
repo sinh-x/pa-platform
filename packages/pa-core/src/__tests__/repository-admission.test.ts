@@ -1399,6 +1399,27 @@ test("linked-worktree inherited borrower occupies only that worktree's implement
       pid: sibling.pid, processFingerprint: sibling, gitSnapshot: snapshot, dependencies: deps,
     });
     assert.equal(blocked.status, "rejected");
+    if (blocked.status === "rejected") {
+      assert.match(blocked.diagnostic, /state|borrower-state/);
+      assert.ok(blocked.diagnostic.includes(`repo_root=${primary}`));
+      assert.ok(blocked.diagnostic.includes(`worktree_root=${worktreeA}`));
+      assert.match(blocked.diagnostic, /slot=implement/);
+      assert.match(blocked.diagnostic, /process-verified live borrower/);
+    }
+
+    const staleBlocked = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      deploymentId: "d-stale-contender", deploymentDirectory: join(root, "d-stale-contender"), runtime: "pi", team: "builder", mode: "implement", launchMode: "foreground",
+      pid: contender.pid, processFingerprint: contender, gitSnapshot: snapshot, dependencies: familyDependencies([parent, contender, sibling]),
+    });
+    assert.equal(staleBlocked.status, "rejected");
+    if (staleBlocked.status === "rejected") {
+      assert.ok(staleBlocked.diagnostic.includes(`repo_root=${primary}`));
+      assert.ok(staleBlocked.diagnostic.includes(`worktree_root=${worktreeA}`));
+      assert.match(staleBlocked.diagnostic, /slot=implement/);
+      assert.match(staleBlocked.diagnostic, /borrower evidence is stale/);
+    }
+
     assert.equal(admittedSibling.status, "acquired");
     assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, borrowerToken: borrower.borrower.borrowerToken }).status, "released");
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: parentLease.lease.ownershipToken, dependencies: deps }).status, "released");

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
@@ -37,6 +37,29 @@ function initializeGitRepo(path: string): void {
   writeFileSync(join(path, "README.md"), "# Test\n");
   git(["add", "README.md"], path);
   git(["commit", "-m", "initial"], path);
+}
+
+type PreflightGitDrift = "branch" | "head" | "staged" | "unstaged" | "untracked";
+
+function applyPreflightGitDrift(worktree: string, drift: PreflightGitDrift): void {
+  switch (drift) {
+    case "branch":
+      git(["checkout", "-b", "feature/PAP-195-preflight-branch"], worktree);
+      break;
+    case "head":
+      git(["commit", "--allow-empty", "-m", "preflight head drift"], worktree);
+      break;
+    case "staged":
+      writeFileSync(join(worktree, "preflight-staged.txt"), "staged during preflight\n");
+      git(["add", "preflight-staged.txt"], worktree);
+      break;
+    case "unstaged":
+      writeFileSync(join(worktree, "README.md"), "# changed during preflight\n");
+      break;
+    case "untracked":
+      writeFileSync(join(worktree, "preflight-untracked.txt"), "untracked during preflight\n");
+      break;
+  }
 }
 
 function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
@@ -992,6 +1015,163 @@ test("PPA dirty-to-changed branch, HEAD, and status drift stays consistent acros
     }));
     assert.equal(result.status, "success", result.reason);
     assert.equal(inspectRepositoryMutationLease(repo).state, "absent");
+  });
+});
+
+test("owned linked-worktree slots reconcile branch, HEAD, staged, unstaged, and untracked preflight drift before spawn", async () => {
+  for (const drift of ["branch", "head", "staged", "unstaged", "untracked"] as const) {
+    await withPiEnv(async (root) => {
+      const primary = join(root, "repo");
+      const worktree = join(root, `owned-preflight-${drift}`);
+      execFileSync(REAL_GIT, ["worktree", "add", "-b", `feature/PAP-195-owned-${drift}`, worktree], { cwd: primary, stdio: "ignore" });
+      process.chdir(worktree);
+      let preflights = 0;
+      let spawns = 0;
+      const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195" }, stubAdapter({
+        preflight: async () => {
+          preflights += 1;
+          applyPreflightGitDrift(worktree, drift);
+        },
+        onSpawn: (opts) => {
+          spawns += 1;
+          const observed = captureRepositoryGitSnapshot(worktree);
+          const planSnapshot = opts.executionPlan?.repositoryAdmission.gitSnapshot;
+          const leaseSnapshot = inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot: "implement" }).lease?.preLaunchGitSnapshot;
+          assert.ok(planSnapshot, `${drift}: spawn plan snapshot`);
+          assert.equal(repositoryGitSnapshotsEqual(planSnapshot!, observed), true, `${drift}: spawn plan snapshot`);
+          assert.deepEqual(leaseSnapshot, planSnapshot, `${drift}: lease snapshot`);
+          assert.match(
+            readFileSync(opts.primerPath, "utf8"),
+            new RegExp(`- Git: branch=${escapeRegExp(observed.branch)}, head=${observed.head}, staged=${observed.stagedCount}, unstaged=${observed.unstagedCount}, untracked=${observed.untrackedCount}`),
+            `${drift}: primer snapshot`,
+          );
+        },
+      }));
+      assert.equal(result.status, "success", `${drift}: ${result.reason ?? ""}`);
+      assert.equal(preflights, 1, drift);
+      assert.equal(spawns, 1, drift);
+      assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot: "implement" }).state, "absent", drift);
+    });
+  }
+});
+
+test("borrowed linked-worktree children reject branch, HEAD, staged, unstaged, and untracked preflight drift before spawn", async () => {
+  for (const drift of ["branch", "head", "staged", "unstaged", "untracked"] as const) {
+    await withPiEnv(async (root) => {
+      const primary = join(root, "repo");
+      const worktree = join(root, `borrowed-preflight-${drift}`);
+      const branch = `feature/PAP-195-borrowed-${drift}`;
+      execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, worktree], { cwd: primary, stdio: "ignore" });
+      process.chdir(worktree);
+      const parentDeploymentId = `d-parent-preflight-${drift}`;
+      const parentDir = join(root, "deployments", parentDeploymentId);
+      mkdirSync(parentDir, { recursive: true });
+      const parent = acquireRepositoryMutationLease({
+        canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+        deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-195",
+      });
+      assert.equal(parent.status, "acquired", drift);
+      if (parent.status !== "acquired") return;
+      markParentRunning(parentDeploymentId);
+      const parentPath = repositoryMutationLeasePath(worktree);
+      const parentBytes = readFileSync(parentPath);
+      await withInheritedEnvironment({
+        [PI_PARENT_LEASE_CAPABILITY_ENV]: parent.lease.ownershipToken,
+        PA_DEPLOYMENT_ID: parentDeploymentId,
+        PA_DEPLOYMENT_DIR: parentDir,
+        PA_TEAM: "builder",
+        PA_MODE: "orchestrator",
+        PA_REPO: primary,
+        PA_TICKET_ID: "PAP-195",
+      }, async () => {
+        let preflights = 0;
+        let spawns = 0;
+        const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195", background: true, timeout: 60 }, stubAdapter({
+          preflight: async () => {
+            preflights += 1;
+            applyPreflightGitDrift(worktree, drift);
+          },
+          onSpawn: () => { spawns += 1; },
+        }));
+        assert.equal(result.status, "failed", drift);
+        assert.equal(preflights, 1, drift);
+        assert.equal(spawns, 0, drift);
+        assert.match(result.reason ?? "", /pre-spawn-reread/, drift);
+        assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s, drift);
+        assert.ok((result.reason ?? "").length <= 2_000, drift);
+        assert.equal(inspectRepositoryMutationBorrower(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree }).state, "absent", drift);
+        assert.deepEqual(readFileSync(parentPath), parentBytes, drift);
+      });
+      assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktree, slot: "orchestrator", ownershipToken: parent.lease.ownershipToken }).status, "released", drift);
+    });
+  }
+});
+
+test("consumed dirty approval cannot authorize borrower drift introduced during Pi preflight", async () => {
+  await withPiEnv(async (root) => {
+    const primary = join(root, "repo");
+    const worktree = join(root, "borrowed-preflight-dirty-approval");
+    const branch = "feature/PAP-195-borrowed-dirty-approval";
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, worktree], { cwd: primary, stdio: "ignore" });
+    process.chdir(worktree);
+    writeFileSync(join(worktree, "README.md"), "# approved dirty work\n");
+    const parentDeploymentId = "d-parent-preflight-dirty";
+    const parentDir = join(root, "deployments", parentDeploymentId);
+    mkdirSync(parentDir, { recursive: true });
+    const parent = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+      deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-195",
+    });
+    assert.equal(parent.status, "acquired");
+    if (parent.status !== "acquired") return;
+    markParentRunning(parentDeploymentId);
+    const inspection = inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot: "orchestrator" });
+    assert.ok(inspection.evidenceIdentity);
+    const approval: RepositoryDirtyBorrowApproval = {
+      schemaVersion: 1,
+      receiptId: "preflight-dirty-receipt",
+      approvalReference: "preflight-dirty-approval",
+      approvedAt: new Date().toISOString(),
+      action: "preserve-and-continue",
+      parentDeploymentId,
+      parentDeploymentDirectory: parentDir,
+      parentProcessFingerprint: parent.lease.processFingerprint,
+      parentLeaseEvidenceIdentity: inspection.evidenceIdentity!,
+      canonicalRepoKey: "pa-platform",
+      canonicalRepoRoot: primary,
+      worktreeRoot: worktree,
+      ticket: "PAP-195",
+      branch,
+      snapshot: parent.lease.preLaunchGitSnapshot,
+      classifications: [{ path: "README.md", classification: "active-ticket-preserved" }],
+      plannedNewPaths: [],
+    };
+    const approvalPath = publishRepositoryDirtyBorrowApproval(approval);
+    const parentPath = repositoryMutationLeasePath(worktree);
+    const parentBytes = readFileSync(parentPath);
+    await withInheritedEnvironment({
+      [PI_PARENT_LEASE_CAPABILITY_ENV]: parent.lease.ownershipToken,
+      PA_DEPLOYMENT_ID: parentDeploymentId,
+      PA_DEPLOYMENT_DIR: parentDir,
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+      PA_REPO: primary,
+      PA_TICKET_ID: "PAP-195",
+    }, async () => {
+      let spawns = 0;
+      const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195", background: true, timeout: 60 }, stubAdapter({
+        preflight: async () => { writeFileSync(join(worktree, "outside-approved-scope.txt"), "arrived during preflight\n"); },
+        onSpawn: () => { spawns += 1; },
+      }));
+      assert.equal(result.status, "failed");
+      assert.equal(spawns, 0);
+      assert.equal(existsSync(approvalPath), false, "the one-use dirty approval must remain consumed");
+      assert.match(result.reason ?? "", /approved-path-containment/);
+      assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.equal(inspectRepositoryMutationBorrower(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree }).state, "absent");
+      assert.deepEqual(readFileSync(parentPath), parentBytes);
+    });
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktree, slot: "orchestrator", ownershipToken: parent.lease.ownershipToken }).status, "released");
   });
 });
 

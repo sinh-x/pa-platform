@@ -256,7 +256,37 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       // The Pi model and every tool/child environment authenticate nested direct
       // borrowing through the process-verified launcher lineage instead.
     }
-    if (activeRepositoryLease) {
+    // Slot and physical Git identity admission must reject before Pi preflight,
+    // because preflight may launch runtime/native-host probe processes.
+    try { await adapterPreflight(adapter); }
+    catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
+    try {
+      writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
+      renameSync(`${sessionPath}.tmp`, sessionPath);
+      if (readFileSync(sessionPath, "utf8").trim() !== sessionId) throw new Error("persisted Pi session id does not match the authoritative session id");
+    } catch (error) {
+      const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
+      return crashFailure(reason);
+    }
+
+    // Pi/native-host preflight can yield while another admitted worktree slot
+    // changes Git state. Reconcile only after that await, then build spawn options
+    // from the final plan immediately before entering the adapter.
+    if (activeRepositoryBorrower) {
+      writePrimer(plan);
+      const expected = plan.repositoryAdmission.gitSnapshot;
+      const observed = captureRepositoryGitSnapshot(plan.worktreeRoot);
+      if (!expected || !repositoryGitSnapshotsEqual(expected, observed)) {
+        throw new Error(formatRepositoryBorrowerDiagnostic({
+          category: "pre-spawn-reread",
+          reason: "branch, full HEAD, or complete porcelain-v2 status changed after authenticated borrower admission and Pi preflight",
+          canonicalRepoKey: plan.repoKey,
+          canonicalRepoRoot: plan.repoRoot,
+          worktreeRoot: plan.worktreeRoot,
+          slot: "implement",
+        }));
+      }
+    } else if (activeRepositoryLease) {
       let stable = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         writePrimer(plan);
@@ -273,10 +303,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
         plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
       }
-      if (!stable) throw new Error("repository-admission: Git state did not stabilize before runtime spawn; ownership was released and no runtime was started");
+      if (!stable) throw new Error("repository-admission: Git state did not stabilize after Pi preflight; ownership was released and no runtime was started");
     } else {
       writePrimer(plan);
     }
+
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {
       if (!Number.isInteger(pid) || pid <= 0 || publishedPid !== undefined) return;
@@ -284,18 +315,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       publishedPid = pid;
     };
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
-    // Slot and physical Git identity admission must reject before Pi preflight,
-    // because preflight may launch runtime/native-host probe processes.
-    try { await adapterPreflight(adapter); }
-    catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
-    try {
-      writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
-      renameSync(`${sessionPath}.tmp`, sessionPath);
-      if (readFileSync(sessionPath, "utf8").trim() !== sessionId) throw new Error("persisted Pi session id does not match the authoritative session id");
-    } catch (error) {
-      const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
-      return crashFailure(reason);
-    }
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
