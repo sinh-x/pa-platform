@@ -721,6 +721,9 @@ test("failed readiness with an unverified live transferred runner retains blocki
         const failed = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-191", background: true, timeout: 60 }, adapter);
         assert.equal(failed.status, "failed");
         assert.match(failed.reason ?? "", /uncertain-live/);
+        assert.match(failed.reason ?? "", /preserve the blocking borrower\/finalizing evidence.*verify the recorded sibling runner has terminated/s);
+        assert.match(failed.reason ?? "", /finalize the matching borrower only after verified death.*do not dispatch a sibling or unrelated builder/s);
+        assert.doesNotMatch(failed.reason ?? "", /zero-entry Git snapshot|for clean borrowing|ordinary clean retry/i);
         assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
         assert.equal((JSON.parse(readFileSync(repositoryMutationBorrowerPath(repo), "utf8")) as Record<string, unknown>)["finalizationState"], "finalizing");
 
@@ -732,6 +735,9 @@ test("failed readiness with an unverified live transferred runner retains blocki
         assert.equal(sibling.status, "failed");
         assert.equal(siblingSpawns, 0);
         assert.match(sibling.reason ?? "", /borrower-state/);
+        assert.match(sibling.reason ?? "", /preserve the blocking borrower\/finalizing evidence.*verify the recorded sibling runner has terminated/s);
+        assert.match(sibling.reason ?? "", /finalize the matching borrower only after verified death.*do not dispatch a sibling or unrelated builder/s);
+        assert.doesNotMatch(sibling.reason ?? "", /zero-entry Git snapshot|for clean borrowing|ordinary clean retry/i);
 
         const unrelated = acquireRepositoryMutationLease({
           canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: "d-unrelated",

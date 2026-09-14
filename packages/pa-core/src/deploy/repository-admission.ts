@@ -1184,7 +1184,13 @@ export function formatRepositoryBorrowerDiagnostic(input: {
   canonicalRepoRoot: string;
 }): string {
   const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
-  const siblingRecovery = new Set(["borrower-state", "parent-finalization", "uncertain-live"]);
+  const siblingRecovery = new Set([
+    "borrower-state",
+    "sibling-finalizing",
+    "parent-finalization",
+    "uncertain-live",
+    "owner-finalization-borrower-live",
+  ]);
   const [correction, resumeAction] = dirtyRecovery.has(input.category)
     ? [
         "preserve parent ownership and capture a fresh complete NUL-safe Git snapshot with one classification for every entry and exact context",

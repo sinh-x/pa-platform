@@ -1168,21 +1168,30 @@ test("parent finalization waits until borrower mismatch and stops at timeout plu
   }
 });
 
-test("borrower diagnostics distinguish dirty approval, live sibling, context, and clean recovery", () => {
+test("borrower diagnostics distinguish dirty approval, sibling/finalizing, context, and clean recovery", () => {
   const root = fixture("borrow-diagnostics");
   try {
     const render = (category: string) => formatRepositoryBorrowerDiagnostic({ category, reason: "fixture", canonicalRepoKey: "fixture", canonicalRepoRoot: root });
+    const diagnostics: string[] = [];
     for (const category of ["dirty-approval", "child-context"]) {
       const diagnostic = render(category);
+      diagnostics.push(diagnostic);
       assert.match(diagnostic, /fresh complete NUL-safe Git snapshot.*one classification/s);
       assert.match(diagnostic, /fresh one-use Sinh approval.*unchanged immediate and mutex-held rereads/s);
     }
-    const sibling = render("borrower-state");
-    assert.match(sibling, /verify the recorded sibling runner has terminated/);
-    assert.match(sibling, /only after verified death/);
-    const clean = render("capability");
+    for (const category of ["borrower-state", "sibling-finalizing", "parent-finalization", "uncertain-live", "owner-finalization-borrower-live"]) {
+      const diagnostic = render(category);
+      diagnostics.push(diagnostic);
+      assert.match(diagnostic, /preserve the blocking borrower\/finalizing evidence/);
+      assert.match(diagnostic, /verify the recorded sibling runner has terminated/);
+      assert.match(diagnostic, /finalize the matching borrower only after verified death/);
+      assert.match(diagnostic, /do not dispatch a sibling or unrelated builder while liveness is uncertain/);
+      assert.doesNotMatch(diagnostic, /zero-entry Git snapshot|for clean borrowing|ordinary clean retry/i);
+    }
+    const clean = render("clean-recovery");
+    diagnostics.push(clean);
     assert.match(clean, /for clean borrowing.*zero-entry Git snapshot/);
-    for (const diagnostic of [render("dirty-approval"), sibling, clean]) {
+    for (const diagnostic of diagnostics) {
       assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
       assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
     }
