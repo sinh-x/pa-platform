@@ -19,6 +19,8 @@ import { assertBuilderExclusiveRepositoryAdmission, installGitStateRecorder, typ
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
+const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
@@ -1268,6 +1270,162 @@ test("PPA and OPA builders hold different canonical repositories independently",
     assert.equal(outcomes.every((outcome) => outcome.status === "success"), true);
     assert.equal(inspectRepositoryMutationLease(firstRepo).state, "absent");
     assert.equal(inspectRepositoryMutationLease(secondRepo).state, "absent");
+  });
+});
+
+test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root evidence through foreground and background", async () => {
+  await withPiEnv(async (root, gitState) => {
+    const primary = join(root, "repo");
+    const worktree = join(root, "linked-pap-195");
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-195-linked", worktree], { cwd: primary, stdio: "ignore" });
+    writeFileSync(join(worktree, "README.md"), "# staged\n");
+    execFileSync(REAL_GIT, ["add", "README.md"], { cwd: worktree, stdio: "ignore" });
+    writeFileSync(join(worktree, "README.md"), "# staged\nunstaged\n");
+    writeFileSync(join(worktree, "untracked.txt"), "preserve me\n");
+    const nested = join(worktree, "nested");
+    mkdirSync(nested);
+
+    const beforeStatus = execFileSync(REAL_GIT, ["status", "--porcelain=v2", "--untracked-files=all", "-z"], { cwd: worktree });
+    const beforeReadme = readFileSync(join(worktree, "README.md"));
+    const beforeUntracked = readFileSync(join(worktree, "untracked.txt"));
+    const observations: SpawnOpts[] = [];
+    const adapter = stubAdapter({ onSpawn: (opts) => observations.push(opts), onResume: (opts) => observations.push(opts) });
+    let resumeFrom = "";
+
+    const launches = [
+      { cwd: worktree, background: false },
+      { cwd: nested, background: false },
+      { cwd: nested, background: true },
+    ];
+    for (const [index, launch] of launches.entries()) {
+      process.chdir(launch.cwd);
+      const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195", ...(launch.background ? { background: true } : {}) }, adapter);
+      assert.equal(result.status, "success", result.reason);
+      assert.equal(observations.length, index + 1, result.reason);
+      if (index === 0) resumeFrom = result.deploymentId!;
+      const opts = observations.at(-1)!;
+      const plan = opts.executionPlan!;
+      assert.equal(plan.repoRoot, primary);
+      assert.equal(plan.worktreeRoot, worktree);
+      assert.equal(plan.repositoryCwd, worktree);
+      assert.equal(plan.repositoryKind, "linked");
+      assert.equal(plan.memoryDocumentRoot, worktree);
+      assert.equal(plan.environment.PA_REPO, primary);
+      assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
+      assert.equal(plan.repositoryAdmission.slot, "implement");
+      assert.equal(plan.repositoryAdmission.gitSnapshot?.dirty, true);
+      assert.equal(opts.repositoryLease?.canonicalRepoRoot, primary);
+      assert.equal(opts.repositoryLease?.worktreeRoot, worktree);
+      assert.equal(opts.repositoryLease?.slot, "implement");
+      const primer = readFileSync(opts.primerPath, "utf8");
+      assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(primary)}$`, "m"));
+      assert.match(primer, new RegExp(`^worktree_root: ${escapeRegExp(worktree)}$`, "m"));
+      assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(worktree)}$`, "m"));
+      assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(primary)}$`, "m"));
+      assert.match(primer, new RegExp(`^  PA_WORKTREE_ROOT: ${escapeRegExp(worktree)}$`, "m"));
+      const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+      assert.deepEqual({ repo: started?.repo, repoRoot: started?.repo_root, worktreeRoot: started?.worktree_root, slot: started?.repository_slot }, { repo: worktree, repoRoot: primary, worktreeRoot: worktree, slot: "implement" });
+      assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot: "implement" }).state, "absent");
+    }
+
+    process.chdir(nested);
+    const resumed = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195", resume: resumeFrom }, adapter);
+    assert.equal(resumed.status, "success", resumed.reason);
+    assert.equal(observations.length, 4);
+    assert.equal(observations.at(-1)?.executionPlan?.repoRoot, primary);
+    assert.equal(observations.at(-1)?.executionPlan?.worktreeRoot, worktree);
+    assert.equal(observations.at(-1)?.executionPlan?.repositoryCwd, worktree);
+
+    assert.deepEqual(execFileSync(REAL_GIT, ["status", "--porcelain=v2", "--untracked-files=all", "-z"], { cwd: worktree }), beforeStatus);
+    assert.deepEqual(readFileSync(join(worktree, "README.md")), beforeReadme);
+    assert.deepEqual(readFileSync(join(worktree, "untracked.txt")), beforeUntracked);
+    const lifecycleOperations = gitState.readOperations().filter((args) => /^(checkout|switch|branch|reset|clean|restore|stash)$/.test(args[0] ?? "") || (args[0] === "worktree" && args[1] !== "list"));
+    assert.deepEqual(lifecycleOperations, []);
+  });
+});
+
+test("PPA linked-worktree local-remote commit and push stay on the preselected execution branch", async () => {
+  await withPiEnv(async (root) => {
+    const primary = join(root, "repo");
+    const remote = join(root, "remote.git");
+    const worktree = join(root, "git-workflow");
+    const branch = "feature/PAP-195-local-remote";
+    execFileSync(REAL_GIT, ["init", "--bare", remote], { stdio: "ignore" });
+    execFileSync(REAL_GIT, ["remote", "add", "origin", remote], { cwd: primary, stdio: "ignore" });
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, worktree], { cwd: primary, stdio: "ignore" });
+    process.chdir(worktree);
+
+    let runtimeCwd = "";
+    const adapter = stubAdapter({
+      onSpawn: (opts) => {
+        runtimeCwd = opts.executionPlan?.repositoryCwd ?? "";
+        writeFileSync(join(runtimeCwd, "agent-authored.txt"), "committed from linked worktree\n");
+        execFileSync(REAL_GIT, ["add", "agent-authored.txt"], { cwd: runtimeCwd, stdio: "ignore" });
+        execFileSync(REAL_GIT, ["commit", "-m", "test linked-worktree workflow"], { cwd: runtimeCwd, stdio: "ignore" });
+        execFileSync(REAL_GIT, ["push", "--set-upstream", "origin", branch], { cwd: runtimeCwd, stdio: "ignore" });
+      },
+    });
+    const result = await deployWithPi({ team: "builder", mode: "implement", objective: "Exercise the existing Git workflow", foreground: true }, adapter);
+
+    assert.equal(result.status, "success");
+    assert.equal(runtimeCwd, worktree);
+    assert.equal(execFileSync(REAL_GIT, ["branch", "--show-current"], { cwd: worktree, encoding: "utf8" }).trim(), branch);
+    const localHead = execFileSync(REAL_GIT, ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim();
+    assert.equal(execFileSync(REAL_GIT, ["--git-dir", remote, "rev-parse", `refs/heads/${branch}`], { encoding: "utf8" }).trim(), localHead);
+    assert.equal(execFileSync(REAL_GIT, ["branch", "--show-current"], { cwd: primary, encoding: "utf8" }).trim(), "develop");
+    assert.equal(existsSync(join(primary, "agent-authored.txt")), false);
+  });
+});
+
+test("PPA linked-worktree deployments enforce one orchestrator and one shared implement slot without blocking siblings", async () => {
+  await withPiEnv(async (root) => {
+    const primary = join(root, "repo");
+    const worktreeA = join(root, "linked-slot-a");
+    const worktreeB = join(root, "linked-slot-b");
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-195-slot-a", worktreeA], { cwd: primary, stdio: "ignore" });
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-195-slot-b", worktreeB], { cwd: primary, stdio: "ignore" });
+
+    const releases: Array<() => void> = [];
+    let spawns = 0;
+    const heldAdapter = () => stubAdapter({
+      onSpawn: () => { spawns += 1; },
+      result: (sessionId) => new Promise<SpawnResult>((resolveResult) => {
+        releases.push(() => resolveResult({ sessionId, exitCode: 0, metadata: { sessionId } }));
+      }),
+    });
+    const start = (worktree: string, mode: string) => {
+      process.chdir(worktree);
+      return deployWithPi({ team: "builder", mode, ticket: "PAP-195" }, heldAdapter());
+    };
+
+    const active = [
+      start(worktreeA, "orchestrator"),
+      start(worktreeA, "implement"),
+      start(worktreeB, "orchestrator"),
+      start(worktreeB, "implement"),
+    ];
+    while (spawns < 4) await nextTick();
+    assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktreeA, slot: "orchestrator" }).state, "live");
+    assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktreeA, slot: "implement" }).state, "live");
+    assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktreeB, slot: "orchestrator" }).state, "live");
+    assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktreeB, slot: "implement" }).state, "live");
+
+    process.chdir(worktreeA);
+    const duplicateOrchestrator = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-195" }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
+    const duplicateImplement = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195" }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
+    assert.equal(duplicateOrchestrator.status, "failed");
+    assert.equal(duplicateImplement.status, "failed");
+    assert.match(duplicateOrchestrator.reason ?? "", /slot=orchestrator.*state=live/);
+    assert.match(duplicateImplement.reason ?? "", /slot=implement.*state=live/);
+    assert.equal(spawns, 4, "occupied slots must reject before adapter spawn");
+
+    for (const release of releases) release();
+    await Promise.all(active);
+    for (const worktree of [worktreeA, worktreeB]) {
+      for (const slot of ["orchestrator", "implement"] as const) {
+        assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot }).state, "absent");
+      }
+    }
   });
 });
 

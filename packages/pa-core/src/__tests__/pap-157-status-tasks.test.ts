@@ -152,6 +152,25 @@ test("shared detail formatter changes only the Team value when recorded mode exi
   assert.doesNotMatch(withMode, /\u001b|\u009b/);
 });
 
+test("status detail surfaces distinct registered and worktree roots with the selected slot", () => {
+  const output = formatRegistryShow({
+    deploy_id: "d-pap195-format",
+    team: "builder",
+    mode: "implement",
+    status: "running",
+    started_at: "2026-09-13T12:00:00.000Z",
+    agents: [],
+    runtime: "pi",
+    repo: "/worktrees/PAP-195",
+    repo_root: "/repos/pa-platform",
+    worktree_root: "/worktrees/PAP-195",
+    repository_slot: "implement",
+  }, 1);
+  assert.match(output, /^  Repo Root: \/repos\/pa-platform$/m);
+  assert.match(output, /^  Worktree:  \/worktrees\/PAP-195$/m);
+  assert.match(output, /^  Repo Slot: implement$/m);
+});
+
 test("shared default detail appends recorded mode to exactly one Team line across runtimes", async () => {
   await withStatusEnv(async () => {
     const expectedTeamLine = "  Team:     builder/implement";

@@ -475,7 +475,7 @@ test("a later extension session lazily reopens the registry singleton after shut
     const replacementDb = getDb();
     assert.notEqual(replacementDb, outgoingDb);
     assert.equal(replacementDb.open, true);
-    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "11" });
+    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "12" });
     const replacement = captureExtension();
     await replacement.events.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
     assert.equal(replacementDb.open, false);

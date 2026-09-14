@@ -67,6 +67,10 @@ function completeCleanSnapshot(root: string, head = "d".repeat(40), branch = sna
   });
 }
 
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
 function fixture(name: string): string {
   const root = mkdtempSync(join(tmpdir(), `pa-repository-admission-${name}-`));
   mkdirSync(join(root, ".git"));
@@ -1254,6 +1258,151 @@ test("Git-state recorder covers every NFR-7 mutation category and preserves allo
     }
     assert.deepEqual(recorder.readOperations().map((args) => args[0]), ["stash", "commit", "reset", "clean", "restore", "checkout", "branch", "worktree"]);
     assert.deepEqual(recorder.readCommands().slice(-3).map((args) => args[0]), ["symbolic-ref", "rev-parse", "status"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("linked worktrees store physical per-worktree evidence and admit one orchestrator plus one implement slot independently", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-repository-linked-slots-"));
+  const primary = join(root, "primary");
+  const worktreeA = join(root, "worktree-a");
+  const worktreeB = join(root, "worktree-b");
+  mkdirSync(primary);
+  git(["init", "-b", "develop"], primary);
+  git(["config", "user.email", "test@example.com"], primary);
+  git(["config", "user.name", "Test"], primary);
+  writeFileSync(join(primary, "README.md"), "# slots\n");
+  git(["add", "README.md"], primary);
+  git(["commit", "-m", "initial"], primary);
+  git(["worktree", "add", "-b", "feature/PAP-195-a", worktreeA], primary);
+  git(["worktree", "add", "-b", "feature/PAP-195-b", worktreeB], primary);
+
+  const owners = [fingerprint(50101), fingerprint(50102), fingerprint(50103), fingerprint(50104), fingerprint(50105), fingerprint(50106)];
+  const deps = familyDependencies(owners);
+  const acquireSlot = (worktreeRoot: string, mode: string, owner: ProcessFingerprint) => acquireRepositoryMutationLease({
+    canonicalRepoKey: "fixture",
+    canonicalRepoRoot: primary,
+    worktreeRoot,
+    deploymentId: `d-${owner.pid}`,
+    deploymentDirectory: join(root, `d-${owner.pid}`),
+    runtime: "pi",
+    team: "builder",
+    mode,
+    launchMode: "foreground",
+    pid: owner.pid,
+    processFingerprint: owner,
+    gitSnapshot: snapshot,
+    dependencies: deps,
+  });
+  try {
+    const orchestratorA = acquireSlot(worktreeA, "orchestrator", owners[0]!);
+    const implementA = acquireSlot(worktreeA, "implement", owners[1]!);
+    const duplicateOrchestratorA = acquireSlot(worktreeA, "orchestrator", owners[2]!);
+    const duplicateImplementA = acquireSlot(worktreeA, "review-fix", owners[3]!);
+    const orchestratorB = acquireSlot(worktreeB, "orchestrator", owners[4]!);
+    const implementB = acquireSlot(worktreeB, "implement", owners[5]!);
+
+    assert.equal(orchestratorA.status, "acquired");
+    assert.equal(implementA.status, "acquired");
+    assert.equal(duplicateOrchestratorA.status, "rejected");
+    assert.equal(duplicateImplementA.status, "rejected");
+    assert.equal(orchestratorB.status, "acquired");
+    assert.equal(implementB.status, "acquired");
+    if (orchestratorA.status !== "acquired" || implementA.status !== "acquired" || orchestratorB.status !== "acquired" || implementB.status !== "acquired") assert.fail("expected all independent slots to acquire");
+
+    const gitDirA = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktreeA);
+    const gitDirB = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktreeB);
+    assert.equal(orchestratorA.leasePath, join(gitDirA, "pa-repository-mutation.lease.json"));
+    assert.equal(implementA.leasePath, join(gitDirA, "pa-repository-mutation.implement.lease.json"));
+    assert.equal(orchestratorB.leasePath, join(gitDirB, "pa-repository-mutation.lease.json"));
+    assert.equal(implementB.leasePath, join(gitDirB, "pa-repository-mutation.implement.lease.json"));
+    assert.equal(statSync(orchestratorA.leasePath).mode & 0o777, 0o600);
+    assert.equal(statSync(implementA.leasePath).mode & 0o777, 0o600);
+
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "implement", ownershipToken: implementA.lease.ownershipToken, dependencies: deps }).status, "released");
+    assert.equal(existsSync(orchestratorA.leasePath), true, "implement release must preserve orchestrator evidence");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: orchestratorA.lease.ownershipToken, dependencies: deps }).status, "released");
+
+    const staleOwner = fingerprint(50107);
+    const replacementOwner = fingerprint(50108);
+    const stale = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      deploymentId: "d-stale", deploymentDirectory: join(root, "d-stale"), runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground",
+      pid: staleOwner.pid, processFingerprint: staleOwner, gitSnapshot: snapshot, dependencies: familyDependencies([staleOwner]),
+    });
+    assert.equal(stale.status, "acquired");
+    if (stale.status !== "acquired") assert.fail("stale fixture did not acquire");
+    const recovered = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      deploymentId: "d-replacement", deploymentDirectory: join(root, "d-replacement"), runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", force: true,
+      pid: replacementOwner.pid, processFingerprint: replacementOwner, gitSnapshot: snapshot, dependencies: familyDependencies([replacementOwner]),
+    });
+    assert.equal(recovered.status, "acquired");
+    if (recovered.status !== "acquired") assert.fail("stale slot was not recovered");
+    assert.ok(recovered.quarantinedPath?.startsWith(`${stale.leasePath}.quarantine.`));
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: stale.lease.ownershipToken, dependencies: familyDependencies([replacementOwner]) }).status, "token-mismatch");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: recovered.lease.ownershipToken, dependencies: familyDependencies([replacementOwner]) }).status, "released");
+
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "implement", ownershipToken: implementB.lease.ownershipToken, dependencies: deps }).status, "released");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "orchestrator", ownershipToken: orchestratorB.lease.ownershipToken, dependencies: deps }).status, "released");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("linked-worktree inherited borrower occupies only that worktree's implement slot", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-repository-linked-borrower-"));
+  const primary = join(root, "primary");
+  const worktreeA = join(root, "worktree-a");
+  const worktreeB = join(root, "worktree-b");
+  mkdirSync(primary);
+  git(["init", "-b", "develop"], primary);
+  git(["config", "user.email", "test@example.com"], primary);
+  git(["config", "user.name", "Test"], primary);
+  writeFileSync(join(primary, "README.md"), "# borrower\n");
+  git(["add", "README.md"], primary);
+  git(["commit", "-m", "initial"], primary);
+  git(["worktree", "add", "-b", snapshot.branch, worktreeA], primary);
+  git(["worktree", "add", "-b", "feature/PAP-191-sibling", worktreeB], primary);
+  const parent = fingerprint(50201);
+  const child = fingerprint(50202);
+  const contender = fingerprint(50203);
+  const sibling = fingerprint(50204);
+  const deps = familyDependencies([parent, child, contender, sibling]);
+  try {
+    const parentLease = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      deploymentId: "d-parent", deploymentDirectory: join(root, "d-parent"), runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground",
+      pid: parent.pid, processFingerprint: parent, gitSnapshot: snapshot, dependencies: deps,
+    });
+    assert.equal(parentLease.status, "acquired");
+    if (parentLease.status !== "acquired") assert.fail("parent did not acquire");
+    const borrower = registerRepositoryMutationBorrower({
+      capability: parentLease.lease.ownershipToken,
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      parentDeploymentId: "d-parent", deploymentId: "d-child", deploymentDirectory: join(root, "d-child"),
+      runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: child.pid, processFingerprint: child, expectedGitSnapshot: snapshot, gitSnapshot: snapshot, dependencies: deps,
+    });
+    assert.equal(borrower.status, "registered");
+    if (borrower.status !== "registered") assert.fail("borrower did not register");
+
+    const blocked = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
+      deploymentId: "d-contender", deploymentDirectory: join(root, "d-contender"), runtime: "pi", team: "builder", mode: "implement", launchMode: "foreground",
+      pid: contender.pid, processFingerprint: contender, gitSnapshot: snapshot, dependencies: deps,
+    });
+    const admittedSibling = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeB,
+      deploymentId: "d-sibling", deploymentDirectory: join(root, "d-sibling"), runtime: "pi", team: "builder", mode: "implement", launchMode: "foreground",
+      pid: sibling.pid, processFingerprint: sibling, gitSnapshot: snapshot, dependencies: deps,
+    });
+    assert.equal(blocked.status, "rejected");
+    assert.equal(admittedSibling.status, "acquired");
+    assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, borrowerToken: borrower.borrower.borrowerToken }).status, "released");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: parentLease.lease.ownershipToken, dependencies: deps }).status, "released");
+    if (admittedSibling.status === "acquired") assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "implement", ownershipToken: admittedSibling.lease.ownershipToken, dependencies: deps }).status, "released");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -150,6 +150,40 @@ Pi state and proper-base state belong to the selected Pi user agent directory (`
 
 `ppa pi setup`, `status`, and `remove` own only the two package entries described above. Removal preserves extension state, Git context selection, todos, sessions, and unrelated packages.
 
+## Existing Linked-Worktree Deployments
+
+Run `ppa deploy` without `--repo` from an existing Git linked-worktree root or
+any physical descendant to keep Pi in that exact worktree. PPA authenticates the
+worktree by its physical Git directory, common directory, reciprocal `.git`
+metadata, and exact membership in the registered primary checkout's physical
+`git worktree list`, then requires the common directory to identify exactly one
+registered primary repository. PA does not create, switch, move, prune, lock, unlock, or
+remove a worktree or branch.
+
+The two roots have deliberately different roles:
+
+- `repo_root` and `PA_REPO` identify the registered primary repository and remain
+  the trust anchor.
+- `worktree_root`, `PA_WORKTREE_ROOT`, `repositoryCwd`, project and memory access,
+  Git snapshots, and Pi process CWD identify the selected execution worktree.
+- Explicit `--repo <registered-key-or-primary-path>` always executes at the
+  primary root, even when invoked from a linked worktree. Explicit worktree paths
+  remain invalid.
+
+Authenticated linked worktrees may be dirty for foreground or background PPA
+launches. Admission records branch, full HEAD, and staged/unstaged/untracked
+state without changing files. Ownership evidence is stored under the physical
+per-worktree Git directory, never beneath the worktree's `.git` file. One live
+`builder/orchestrator` and one live implement-slot deployment may coexist in an
+exact linked worktree; every other builder mode shares the implement slot.
+Sibling worktrees have independent slots. Token-verified transfer, borrowing,
+and cleanup affect only the exact slot and worktree.
+
+Primers, environment, background configuration, registry start events, default
+status detail, and runtime spawn evidence carry both roots. `ppa status <id>`
+shows `Repo Root`, a distinct `Worktree`, and `Repo Slot` when recorded. OPA,
+CPA, and DPA retain their prior repository behavior.
+
 ## OpenAI-to-Codex Mapping
 
 PPA applies this normalization only after Pi runtime precedence has resolved the

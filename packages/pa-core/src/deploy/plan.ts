@@ -28,8 +28,14 @@ export interface ExecutionPlan {
   readonly team: string;
   readonly mode: string;
   readonly repoKey: string;
+  /** Registered primary repository root and PA_REPO trust anchor. */
   readonly repoRoot: string;
+  /** Exact physical root selected for project and runtime operations. */
+  readonly worktreeRoot: string;
   readonly repositoryCwd: string;
+  readonly repositoryGitDir: string;
+  readonly repositoryGitCommonDir: string;
+  readonly repositoryKind: "primary" | "linked";
   readonly memoryDocumentRoot: string;
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
   readonly rogue_one?: true;
@@ -85,7 +91,9 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   const rogueOne = isRogueOneTeam(options.request.team) && isRogueOneTeam(options.teamConfig.name);
   const modeName = rogueOne ? ROGUE_ONE_MODE : options.mode?.id ?? options.teamConfig.default_mode ?? "default";
   const invocationChannel: DeploymentInvocationChannel = options.request.invocationChannel ?? "cli";
-  const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd());
+  const repository = resolveRepoExecutionPath(options.request.repo, options.cwd ?? process.cwd(), {
+    allowLinkedWorktreeCwd: options.runtime === "pi" && options.request.repo === undefined,
+  });
   const skillsDir = options.skillsDir ?? getSkillsDir();
   const skills = (rogueOne ? [] : options.mode?.skills ?? []).map((skill) => {
     const path = resolve(skillsDir, skill.name, "SKILL.md");
@@ -103,6 +111,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     mode: modeName,
     canonicalRepoKey: repository.repoKey,
     canonicalRepoRoot: repository.repoRoot,
+    worktreeRoot: repository.worktreeRoot,
     runtime: options.runtime,
     background: options.request.background,
     dryRun: options.request.dryRun,
@@ -125,8 +134,12 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     mode: modeName,
     repoKey: repository.repoKey,
     repoRoot: repository.repoRoot,
-    repositoryCwd: repository.repoRoot,
-    memoryDocumentRoot: repository.repoRoot,
+    worktreeRoot: repository.worktreeRoot,
+    repositoryCwd: repository.repositoryCwd,
+    repositoryGitDir: repository.gitDir,
+    repositoryGitCommonDir: repository.gitCommonDir,
+    repositoryKind: repository.worktreeKind,
+    memoryDocumentRoot: repository.worktreeRoot,
     repositoryAdmission,
     ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
@@ -144,6 +157,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     environment: Object.freeze({
       ...options.environment,
       PA_REPO: repository.repoRoot,
+      PA_WORKTREE_ROOT: repository.worktreeRoot,
       ...(rogueOne ? { PA_TEAM: options.teamConfig.name, PA_MODE: modeName, PA_ROGUE_ONE: "1" } : {}),
     }),
     timeoutSeconds: options.timeoutSeconds,

@@ -107,6 +107,9 @@ export function formatRegistryShow(deployment: DeploymentStatus, eventCount: num
   if (deployment.models?.["agents"]) lines.push(`  Agents Model: ${deployment.models["agents"]}`);
   if (deployment.agents.length > 0) lines.push(`  Agents:   ${deployment.agents.join(",")}`);
   if (deployment.effective_timeout_seconds !== undefined) lines.push(`  Timeout:  ${deployment.effective_timeout_seconds}s`);
+  if (deployment.repo_root) lines.push(`  Repo Root: ${deployment.repo_root}`);
+  if (deployment.worktree_root && deployment.worktree_root !== deployment.repo_root) lines.push(`  Worktree:  ${deployment.worktree_root}`);
+  if (deployment.repository_slot) lines.push(`  Repo Slot: ${deployment.repository_slot}`);
   if (deployment.pid !== undefined) lines.push(`  PID:      ${deployment.pid}`);
   if (deployment.summary) lines.push(`  Summary:  ${deployment.summary}`);
   lines.push(`  Events:   ${eventCount}`);

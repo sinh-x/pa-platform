@@ -19,12 +19,15 @@ export interface ToolReference {
 
 export interface RepositoryLeaseHandoff {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  slot?: "orchestrator" | "implement";
   ownershipToken: string;
 }
 
 /** Internal child-supervisor handoff; it never contains the parent capability. */
 export interface RepositoryBorrowerHandoff {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
   borrowerToken: string;
   parentDeploymentId: string;
   deploymentId: string;

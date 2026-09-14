@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -115,7 +115,11 @@ test("omitted input resolves the exact configured root from root and nested CWDs
         const resolved = resolveRepoExecutionPath(undefined, cwd);
         assert.equal(resolved.repoKey, "registered");
         assert.equal(resolved.repoRoot, fixture.repo);
+        assert.equal(resolved.worktreeRoot, fixture.repo);
         assert.equal(resolved.repositoryCwd, fixture.repo);
+        assert.equal(resolved.worktreeKind, "primary");
+        assert.equal(resolved.gitDir, join(fixture.repo, ".git"));
+        assert.equal(resolved.gitCommonDir, join(fixture.repo, ".git"));
         assert.equal(resolved.inferredFrom, "cwd");
       }
       assert.deepEqual(resolveProjectFromCwd(nested), { key: "registered", prefix: "REG", repoRoot: fixture.repo });
@@ -137,15 +141,51 @@ test("explicit linked working-tree input fails with a bounded actionable diagnos
   }
 });
 
-test("linked working-tree CWD inference fails with a bounded actionable diagnostic", () => {
+test("linked working-tree CWD inference is authenticated only when explicitly enabled", () => {
   const fixture = createFixture("cwd-linked");
   const nested = join(fixture.linked, "nested");
   mkdirSync(nested);
   try {
-    const message = withPlatformConfig(fixture.config, () => diagnostic(() => resolveRepoExecutionPath(undefined, nested)));
-    assertBoundedActionable(message);
-    assert.match(message, /linked Git working tree/i);
-    assert.equal(withPlatformConfig(fixture.config, () => resolveProjectFromCwd(nested)), undefined);
+    withPlatformConfig(fixture.config, () => {
+      const message = diagnostic(() => resolveRepoExecutionPath(undefined, nested));
+      assertBoundedActionable(message);
+      assert.match(message, /linked Git working tree/i);
+
+      const resolved = resolveRepoExecutionPath(undefined, nested, { allowLinkedWorktreeCwd: true });
+      assert.equal(resolved.repoKey, "registered");
+      assert.equal(resolved.repoRoot, fixture.repo);
+      assert.equal(resolved.worktreeRoot, fixture.linked);
+      assert.equal(resolved.repositoryCwd, fixture.linked);
+      assert.equal(resolved.worktreeKind, "linked");
+      assert.equal(resolved.gitCommonDir, join(fixture.repo, ".git"));
+      assert.notEqual(resolved.gitDir, resolved.gitCommonDir);
+      assert.equal(resolveProjectFromCwd(nested), undefined);
+    });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+ test("linked CWD authentication rejects symlink aliases, forged metadata, and ambiguous common-dir registrations", () => {
+  const fixture = createFixture("linked-negative");
+  const alias = join(fixture.root, "linked-alias");
+  const forged = join(fixture.root, "forged");
+  symlinkSync(fixture.linked, alias, "dir");
+  mkdirSync(forged);
+  writeFileSync(join(forged, ".git"), readFileSync(join(fixture.linked, ".git"), "utf8"));
+  try {
+    withPlatformConfig(fixture.config, () => {
+      for (const cwd of [alias, forged]) {
+        const message = diagnostic(() => resolveRepoExecutionPath(undefined, cwd, { allowLinkedWorktreeCwd: true }));
+        assertBoundedActionable(message);
+        assert.match(message, /symlink|malformed|forged/i);
+      }
+    });
+
+    writeFileSync(join(fixture.config, "config.yaml"), `repos:\n  first:\n    path: ${fixture.repo}\n  second:\n    path: ${fixture.repo}\n`);
+    const ambiguous = withPlatformConfig(fixture.config, () => diagnostic(() => resolveRepoExecutionPath(undefined, fixture.linked, { allowLinkedWorktreeCwd: true })));
+    assertBoundedActionable(ambiguous);
+    assert.match(ambiguous, /multiple registered primary repositories/i);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

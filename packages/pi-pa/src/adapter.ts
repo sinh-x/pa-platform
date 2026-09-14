@@ -38,6 +38,9 @@ export interface PiBackgroundConfig {
   deploymentId: string;
   team: string;
   cwd: string;
+  repoRoot?: string;
+  worktreeRoot?: string;
+  repositorySlot?: "orchestrator" | "implement";
   primerPath: string;
   logFile: string;
   sessionId: string;
@@ -51,10 +54,13 @@ export interface PiBackgroundConfig {
   /** In-memory only after the runner consumes the separate protected handoff. */
   repositoryLease?: {
     canonicalRepoRoot: string;
+    worktreeRoot?: string;
+    slot?: "orchestrator" | "implement";
     ownershipToken: string;
   };
   repositoryBorrower?: {
     canonicalRepoRoot: string;
+    worktreeRoot?: string;
     borrowerToken: string;
     parentDeploymentId: string;
     deploymentId: string;
@@ -604,6 +610,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     deploymentId: input.opts.deployId,
     team: input.env["PA_TEAM"] || plan?.team || "unknown",
     cwd: input.cwd,
+    ...(plan ? { repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ...(plan.repositoryAdmission.slot ? { repositorySlot: plan.repositoryAdmission.slot } : {}) } : {}),
     primerPath: input.opts.primerPath,
     logFile: input.opts.logFile ?? resolve(deployDir, "pi.log"),
     sessionId: input.id,
@@ -723,7 +730,11 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
   const repositoryHandoffPath = value.repositoryHandoffPath;
   const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
+  const validRepositoryEvidence = (value.repoRoot === undefined || typeof value.repoRoot === "string")
+    && (value.worktreeRoot === undefined || typeof value.worktreeRoot === "string")
+    && (value.repositorySlot === undefined || value.repositorySlot === "orchestrator" || value.repositorySlot === "implement")
+    && (value.managed !== true || (typeof value.repoRoot === "string" && typeof value.worktreeRoot === "string"));
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validRepositoryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
@@ -758,10 +769,12 @@ function validPiRepositoryHandoff(value: unknown): value is PiRepositoryHandoff 
   const row = value as Record<string, unknown>;
   const lease = row["repositoryLease"] as Record<string, unknown> | undefined;
   const borrower = row["repositoryBorrower"] as Record<string, unknown> | undefined;
-  const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string";
+  const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string"
+    && (lease["worktreeRoot"] === undefined || typeof lease["worktreeRoot"] === "string")
+    && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement");
   const approvedPaths = borrower?.["approvedMutationPaths"];
   const validApprovedPaths = approvedPaths === undefined || (Array.isArray(approvedPaths) && approvedPaths.length <= 512 && approvedPaths.every((path) => typeof path === "string" && path.length > 0 && path.length <= 1_024));
-  const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && typeof borrower["borrowerToken"] === "string" && typeof borrower["parentDeploymentId"] === "string" && typeof borrower["deploymentId"] === "string" && validApprovedPaths;
+  const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && (borrower["worktreeRoot"] === undefined || typeof borrower["worktreeRoot"] === "string") && typeof borrower["borrowerToken"] === "string" && typeof borrower["parentDeploymentId"] === "string" && typeof borrower["deploymentId"] === "string" && validApprovedPaths;
   return row["schemaVersion"] === 1 && typeof row["deploymentId"] === "string" && (validLease !== validBorrower);
 }
 

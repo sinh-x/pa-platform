@@ -104,6 +104,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       if (repositoryLease) {
         const transfer = transferRepositoryMutationLease({
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          worktreeRoot: repositoryLease.worktreeRoot,
+          slot: repositoryLease.slot,
           ownershipToken: repositoryLease.ownershipToken,
           nextProcessFingerprint: fingerprint,
         });
@@ -113,6 +115,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         if (repositoryBorrower.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository borrower deployment identity mismatch");
         const transfer = transferRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
+          worktreeRoot: repositoryBorrower.worktreeRoot,
           borrowerToken: repositoryBorrower.borrowerToken,
           nextProcessFingerprint: fingerprint,
         });
@@ -174,6 +177,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       if (repositoryBorrowerTransferred && repositoryBorrower) {
         const finalization = finalizeRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
+          worktreeRoot: repositoryBorrower.worktreeRoot,
           borrowerToken: repositoryBorrower.borrowerToken,
           deploymentId: config.deploymentId,
         });
@@ -196,6 +200,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       if (repositoryLeaseTransferred && repositoryLease) {
         const finalization = await finalizeRepositoryMutationLease({
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          worktreeRoot: repositoryLease.worktreeRoot,
+          slot: repositoryLease.slot,
           ownershipToken: repositoryLease.ownershipToken,
         });
         switch (finalization.status) {

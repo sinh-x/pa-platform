@@ -15,6 +15,9 @@ export interface StartDeploymentOpts {
   objective?: string;
   provider?: string;
   repo?: string;
+  repoRoot?: string;
+  worktreeRoot?: string;
+  repositorySlot?: "orchestrator" | "implement";
   mode?: string;
   runtime?: RuntimeName;
   binary?: string;
@@ -40,6 +43,9 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     objective: opts.objective,
     provider: opts.provider,
     repo: opts.repo,
+    repo_root: opts.repoRoot,
+    worktree_root: opts.worktreeRoot,
+    repository_slot: opts.repositorySlot,
     mode: opts.mode,
     runtime: opts.runtime,
     binary: opts.binary,

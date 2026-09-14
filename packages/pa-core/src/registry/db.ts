@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -73,6 +73,9 @@ function migrate(db: Database.Database): void {
       rating TEXT,
       objective TEXT,
       repo TEXT,
+      repo_root TEXT,
+      worktree_root TEXT,
+      repository_slot TEXT,
       mode TEXT,
       fallback INTEGER DEFAULT 0,
       resumed_from_deployment_id TEXT,
@@ -98,6 +101,9 @@ function migrate(db: Database.Database): void {
       ticket_id TEXT,
       objective TEXT,
       repo TEXT,
+      repo_root TEXT,
+      worktree_root TEXT,
+      repository_slot TEXT,
       mode TEXT,
       provider TEXT,
       error TEXT,
@@ -153,6 +159,9 @@ function migrate(db: Database.Database): void {
   addColumn(db, "registry_events", "binary", "TEXT");
   addColumn(db, "registry_events", "effective_timeout_seconds", "INTEGER");
   addColumn(db, "registry_events", "mode", "TEXT");
+  addColumn(db, "registry_events", "repo_root", "TEXT");
+  addColumn(db, "registry_events", "worktree_root", "TEXT");
+  addColumn(db, "registry_events", "repository_slot", "TEXT");
   addColumn(db, "registry_events", "rogue_one", "INTEGER DEFAULT 0");
   addColumn(db, "registry_events", "invocation_channel", "TEXT");
   addColumn(db, "deployments", "fallback", "INTEGER DEFAULT 0");
@@ -161,6 +170,9 @@ function migrate(db: Database.Database): void {
   addColumn(db, "deployments", "binary", "TEXT");
   addColumn(db, "deployments", "effective_timeout_seconds", "INTEGER");
   addColumn(db, "deployments", "mode", "TEXT");
+  addColumn(db, "deployments", "repo_root", "TEXT");
+  addColumn(db, "deployments", "worktree_root", "TEXT");
+  addColumn(db, "deployments", "repository_slot", "TEXT");
   addColumn(db, "deployments", "rogue_one", "INTEGER DEFAULT 0");
   addColumn(db, "deployments", "invocation_channel", "TEXT");
   db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));

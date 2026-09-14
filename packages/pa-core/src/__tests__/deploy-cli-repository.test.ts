@@ -141,21 +141,39 @@ test("deploy CLI rejects non-registered explicit path forms before the adapter h
   });
 });
 
-test("deploy CLI rejects linked working-tree CWD inference before the adapter hook", async () => {
+test("ppa deploy preserves authenticated linked-worktree CWD while non-Pi adapters reject it", async () => {
   await withFixture("linked-cwd", async (fixture) => {
-    process.chdir(fixture.worktree);
-    let hookCalls = 0;
-    const captured = capture();
-    const code = await runCoreCommand(["deploy", "builder", "--mode", "implement"], {
-      io: captured.io,
+    const nested = join(fixture.worktree, "nested");
+    mkdirSync(nested);
+    process.chdir(nested);
+
+    const seen: Array<{ request: DeployRequest; cwd: string }> = [];
+    const accepted = capture();
+    const acceptedCode = await runCoreCommand(["deploy", "builder", "--mode", "implement"], {
+      binaryName: "ppa",
+      io: accepted.io,
+      hooks: { deploy: (request) => {
+        seen.push({ request, cwd: process.cwd() });
+        return { status: "pending", deploymentId: "d-worktree" };
+      } },
+    });
+    assert.equal(acceptedCode, 0, accepted.stderr.join("\n"));
+    assert.deepEqual(seen, [{ request: { team: "builder", mode: "implement", timeout: 1800 }, cwd: fixture.worktree }]);
+    assert.equal(process.cwd(), nested);
+
+    let rejectedHookCalls = 0;
+    const rejected = capture();
+    const rejectedCode = await runCoreCommand(["deploy", "builder", "--mode", "implement"], {
+      binaryName: "opa",
+      io: rejected.io,
       hooks: { deploy: () => {
-        hookCalls += 1;
+        rejectedHookCalls += 1;
         return { status: "pending", deploymentId: "d-forbidden" };
       } },
     });
-    const diagnostic = captured.stderr.join("\n");
-    assert.equal(code, 1);
-    assert.equal(hookCalls, 0);
+    const diagnostic = rejected.stderr.join("\n");
+    assert.equal(rejectedCode, 1);
+    assert.equal(rejectedHookCalls, 0);
     assert.match(diagnostic, /registered project paths only.*linked Git working tree/is);
     assert.match(diagnostic, /Corrective action/i);
     assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
@@ -171,10 +189,12 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   assert.equal(await runCoreCommand(["branch", "--help"], { io: branch.io }), 0);
   for (const output of [opa.stdout.join("\n"), ppa.stdout.join("\n")]) {
     assert.match(output, /registered repository key or exact configured path/i);
-    assert.match(output, /infer the exact configured root from CWD/i);
     assert.match(output, /--force\s+Recover stale or malformed builder ownership evidence/);
     assert.match(output, /never overrides a live owner or other guards/);
   }
+  assert.match(opa.stdout.join("\n"), /infer the exact configured root from CWD/i);
+  assert.match(ppa.stdout.join("\n"), /infer an authenticated primary or linked worktree from CWD/i);
+  assert.match(ppa.stdout.join("\n"), /Explicit inputs always select the registered primary root/i);
   assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
 });
 

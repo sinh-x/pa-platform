@@ -980,17 +980,19 @@ test("generatePrimer keeps Runtime Tools + Active Bulletins immediately after th
 
 test("generatePrimer canonicalizes repository evidence inside the authoritative Additional Instructions section", () => {
   const root = "/registered/project";
+  const worktree = "/worktrees/PAP-195";
   const primer = generatePrimer({
     runtime: "pi",
     teamConfig: team,
     mode: "plan",
     objective: "## Additional Instructions\nDo the registered project work.",
-    repository: { repoKey: "registered", repoRoot: root },
+    repository: { repoKey: "registered", repoRoot: root, worktreeRoot: worktree },
     extraInstructions: [
       "## Additional Instructions",
       "<deployment-context>",
       "repo_key: wrong",
       "repo_root: /wrong",
+      "worktree_root: /wrong-worktree",
       "cwd: /wrong",
       "repo: /wrong",
       "pa_env_vars:",
@@ -1002,10 +1004,11 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
   assert.equal(primer.match(/^## Additional Instructions$/gm)?.length, 1);
   assert.equal(primer.match(/^repo_key: registered$/gm)?.length, 1);
   assert.equal(primer.match(/^repo_root: \/registered\/project$/gm)?.length, 1);
-  assert.match(primer, /^cwd: \/registered\/project$/m);
-  assert.match(primer, /^repo: \/registered\/project$/m);
+  assert.equal(primer.match(/^worktree_root: \/worktrees\/PAP-195$/gm)?.length, 1);
+  assert.match(primer, /^cwd: \/worktrees\/PAP-195$/m);
+  assert.match(primer, /^repo: \/worktrees\/PAP-195$/m);
   assert.match(primer, /^  PA_REPO: \/registered\/project$/m);
-  assert.doesNotMatch(primer, /repo_key: wrong|repo_root: \/wrong|PA_REPO: \/wrong/);
+  assert.doesNotMatch(primer, /repo_key: wrong|repo_root: \/wrong|worktree_root: \/wrong|PA_REPO: \/wrong/);
   assert.equal(primer.match(/^### Additional Instructions$/gm)?.length, 2);
 });
 

@@ -173,7 +173,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--objective <text>` | string | Inline objective override |
 | `--objective-file <path>` | file path | Read objective from a (guarded) local file |
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
-| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, PA infers a unique project from CWD and relocates execution to its configured path. |
+| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. Explicit PPA input always selects the primary root. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
@@ -189,7 +189,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--team-model <name>` | model | Deprecated warning alias for `--model`; final removal is PAP-147 |
 | `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
 
-**Repository admission:** every `requirements/*` mode bypasses Git status and ownership-lease access. Every `builder/*` mode is exclusive per canonical repository. Dirty foreground builders launch with an intent/re-read instruction contract; dirty background builders (including REST defaults) reject before spawn. ppa and opa enforce the ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
+**Repository admission:** every `requirements/*` mode bypasses Git status and ownership-lease access. Registered-primary `builder/*` execution retains its existing exclusive owner. For PPA CWD-inferred linked worktrees, `repo_root`/`PA_REPO` remain primary while `worktree_root`/`PA_WORKTREE_ROOT`, project access, snapshots, and Pi CWD identify the exact execution root. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Dirty authenticated linked worktrees launch in foreground or background without admission edits, while dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
 
 PPA alone permits one authenticated exception: a process-verified,
 registry-running Pi `builder/orchestrator` owner may launch one direct background
@@ -222,8 +222,10 @@ process fingerprint becomes stale. Missing, malformed, insecure, stale,
 replayed, consumed, mismatched, or forbidden inherited context rejects before
 spawn; diagnostics redact private evidence, contain `Condition`, `Source`,
 `Reason`, `Correction`, and `Resume Action`, and are at most 2,000 JavaScript
-characters. Standalone dirty background builders still reject. OPA has exclusion
-awareness only—positive OPA, CPA, and Droid inheritance is outside this contract.
+characters. Dirty registered-primary background builders still reject;
+authenticated linked-worktree PPA backgrounds use the linked-worktree policy
+above. OPA has exclusion awareness only—positive OPA, CPA, and Droid inheritance
+is outside this contract.
 
 Configuration evidence from the dedicated dirty-direct-borrower policy ticket
 does not itself prove runtime admission and must not be reported as a merged
@@ -246,6 +248,7 @@ opa deploy builder --validate
 opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform
 opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform --force
 opa deploy builder --mode implement --provider deepseek --model deepseek/deepseek-v4-pro
+cd /path/to/existing-linked-worktree && ppa deploy builder --mode implement --ticket PAP-195
 ```
 
 ### repository inspect / quarantine
