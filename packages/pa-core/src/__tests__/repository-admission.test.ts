@@ -16,6 +16,7 @@ import {
   finalizeRepositoryMutationBorrower,
   finalizeRepositoryMutationLease,
   formatRepositoryAdmissionDiagnostic,
+  formatRepositoryBorrowerDiagnostic,
   inspectRepositoryMutationBorrower,
   inspectRepositoryMutationLease,
   publishRepositoryDirtyBorrowApproval,
@@ -705,11 +706,10 @@ test("classified dirty receipt is private, consume-once, scope-bound, and leaves
     });
     const finalization = finalizeRepositoryMutationBorrower({
       canonicalRepoRoot: root, borrowerToken: registered.borrower.borrowerToken, deploymentId: "d-child",
-      finalGitSnapshot: escaped, dependencies: deps,
+      finalGitSnapshot: escaped, dependencies: { ...deps, getCurrentProcessFingerprint: () => child },
     });
-    assert.equal(finalization.status, "finalized");
-    if (finalization.status === "finalized") {
-      assert.equal(finalization.scopeCompliant, false);
+    assert.equal(finalization.status, "scope-noncompliant");
+    if (finalization.status === "scope-noncompliant") {
       assert.equal(finalization.parentLease, "retained");
       assert.equal(finalization.finalGitSnapshot.statusEntries?.at(-1)?.path, "outside.ts");
     }
@@ -1004,12 +1004,12 @@ test("matching borrower finalization publishes final Git state, preserves live p
     if (first.status !== "registered") return;
     const finalized = finalizeRepositoryMutationBorrower({
       canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
-      finalGitSnapshot: finalSnapshot, dependencies: liveFamily,
+      finalGitSnapshot: finalSnapshot, dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => firstProcess },
     });
     assert.deepEqual(finalized, { status: "finalized", parentLease: "retained", finalGitSnapshot: finalSnapshot });
     assert.deepEqual(finalizeRepositoryMutationBorrower({
       canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
-      finalGitSnapshot: finalSnapshot, dependencies: liveFamily,
+      finalGitSnapshot: finalSnapshot, dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => firstProcess },
     }), { status: "absent" });
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
     assert.equal(inspectRepositoryMutationBorrower(root, liveFamily).state, "absent");
@@ -1025,11 +1025,79 @@ test("matching borrower finalization publishes final Git state, preserves live p
     const terminalParent = familyDependencies([secondProcess]);
     const terminal = finalizeRepositoryMutationBorrower({
       canonicalRepoRoot: root, borrowerToken: second.borrower.borrowerToken, deploymentId: "d-second",
-      finalGitSnapshot: finalSnapshot, dependencies: terminalParent,
+      finalGitSnapshot: finalSnapshot, dependencies: { ...terminalParent, getCurrentProcessFingerprint: () => secondProcess },
     });
     assert.equal(terminal.status, "finalized");
     if (terminal.status === "finalized") assert.equal(terminal.parentLease, "released");
     assert.equal(inspectRepositoryMutationLease(root, terminalParent).state, "absent");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("borrower finalization handles token mismatch, uncertain liveness, verified death, and invalid evidence explicitly", () => {
+  const root = fixture("borrow-finalization-statuses");
+  const parent = fingerprint(45915);
+  const runner = fingerprint(45916);
+  const contender = fingerprint(45917);
+  const liveFamily = familyDependencies([parent, runner, contender]);
+  try {
+    assert.equal(acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
+      runtime: "pi", mode: "orchestrator", pid: parent.pid, processFingerprint: parent, ownershipToken: "status-capability",
+      gitSnapshot: snapshot, dependencies: liveFamily,
+    }).status, "acquired");
+    const registration = registerRepositoryMutationBorrower({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent", deploymentId: "d-runner",
+      deploymentDirectory: join(root, "runner"), runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+      ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60, pid: runner.pid, processFingerprint: runner,
+      gitSnapshot: snapshot, dependencies: { ...liveFamily, isProcessInLineage: () => true },
+    });
+    assert.equal(registration.status, "registered");
+    if (registration.status !== "registered") return;
+    assert.deepEqual(finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: "wrong", deploymentId: "d-runner", finalGitSnapshot: snapshot, dependencies: liveFamily,
+    }), { status: "token-mismatch" });
+
+    const uncertain = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken, deploymentId: "d-runner", finalGitSnapshot: snapshot,
+      dependencies: {
+        ...liveFamily,
+        getProcessFingerprint: (pid) => pid === parent.pid ? parent : undefined,
+        isProcessAlive: (pid) => pid === runner.pid,
+      },
+    });
+    assert.equal(uncertain.status, "uncertain-live");
+    assert.equal(inspectRepositoryMutationBorrower(root, liveFamily).state, "live");
+    assert.equal((JSON.parse(readFileSync(repositoryMutationBorrowerPath(root), "utf8")) as Record<string, unknown>)["finalizationState"], "finalizing");
+
+    const sibling = registerRepositoryMutationBorrower({
+      capability: "status-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-sibling", deploymentDirectory: join(root, "sibling"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: contender.pid, processFingerprint: contender, gitSnapshot: snapshot, force: true, dependencies: liveFamily,
+    });
+    assert.equal(sibling.status, "rejected");
+    if (sibling.status === "rejected") assert.equal(sibling.category, "borrower-state");
+
+    const afterDeath = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken, deploymentId: "d-runner", finalGitSnapshot: snapshot,
+      dependencies: { ...liveFamily, getProcessFingerprint: (pid) => pid === parent.pid ? parent : undefined, isProcessAlive: () => false },
+    });
+    assert.equal(afterDeath.status, "finalized");
+    assert.equal(inspectRepositoryMutationBorrower(root).state, "absent");
+
+    const malformed = registerRepositoryMutationBorrower({
+      capability: "status-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-malformed", deploymentDirectory: join(root, "malformed"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: contender.pid, processFingerprint: contender, gitSnapshot: snapshot, dependencies: liveFamily,
+    });
+    assert.equal(malformed.status, "registered");
+    writeFileSync(repositoryMutationBorrowerPath(root), "{ malformed\n", { mode: 0o600 });
+    assert.deepEqual(finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: "unpublished", deploymentId: "d-malformed", finalGitSnapshot: snapshot, dependencies: liveFamily,
+    }), { status: "invalid-evidence" });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1097,6 +1165,29 @@ test("parent finalization waits until borrower mismatch and stops at timeout plu
     assert.equal(inspectRepositoryMutationBorrower(retained.root, familyDependencies([retained.child])).state, "live");
   } finally {
     rmSync(retained.root, { recursive: true, force: true });
+  }
+});
+
+test("borrower diagnostics distinguish dirty approval, live sibling, context, and clean recovery", () => {
+  const root = fixture("borrow-diagnostics");
+  try {
+    const render = (category: string) => formatRepositoryBorrowerDiagnostic({ category, reason: "fixture", canonicalRepoKey: "fixture", canonicalRepoRoot: root });
+    for (const category of ["dirty-approval", "child-context"]) {
+      const diagnostic = render(category);
+      assert.match(diagnostic, /fresh complete NUL-safe Git snapshot.*one classification/s);
+      assert.match(diagnostic, /fresh one-use Sinh approval.*unchanged immediate and mutex-held rereads/s);
+    }
+    const sibling = render("borrower-state");
+    assert.match(sibling, /verify the recorded sibling runner has terminated/);
+    assert.match(sibling, /only after verified death/);
+    const clean = render("capability");
+    assert.match(clean, /for clean borrowing.*zero-entry Git snapshot/);
+    for (const diagnostic of [render("dirty-approval"), sibling, clean]) {
+      assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

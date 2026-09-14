@@ -27,7 +27,7 @@ const MAX_BACKGROUND_CONFIG_BYTES = 64 * 1024;
 export const PI_SUPERVISOR_FILE = "pi-supervisor.json";
 export const PI_BACKGROUND_CONFIG_FILE = "pi-background.json";
 export const PI_REPOSITORY_HANDOFF_FILE = "pi-repository-handoff.json";
-/** Private parent capability. It is never part of a rendered execution plan or persisted child configuration. */
+/** Legacy capability key scrubbed at every process boundary. New launches never set it. */
 export const PI_PARENT_LEASE_CAPABILITY_ENV = "PA_PI_PARENT_LEASE_TOKEN";
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 /** @deprecated Background completion is owned by the persistent runner. */
@@ -208,10 +208,10 @@ export class PiAdapter implements RuntimeAdapter {
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
     args.push(readFileSync(opts.primerPath, "utf8"));
-    const env = { ...this.env, ...opts.env };
-    if (opts.repositoryBorrower) delete env[PI_PARENT_LEASE_CAPABILITY_ENV];
+    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     const piEnv = piRegistryEnvironment(env);
-    const secrets = environmentSecrets(env, this.secretValues);
+    const protectedAuthority = [opts.repositoryLease?.ownershipToken, opts.repositoryBorrower?.borrowerToken].filter((value): value is string => Boolean(value));
+    const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
@@ -669,13 +669,13 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     && (!repositoryHandoff || !existsSync(handoffPath))
     && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized");
   if (!ready) {
-    const cleanupError = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
+    const cleanup = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
     let configCleanupError: string | undefined;
     try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); }
     catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
     const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
-    const reason = [baseReason, cleanupError, configCleanupError].filter(Boolean).join("; ");
-    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
+    const reason = [baseReason, cleanup.diagnostic, configCleanupError].filter(Boolean).join("; ");
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
   }
   const established = ownership!;
   runner.unref();
@@ -781,8 +781,8 @@ export function writePiSupervisorOwnership(path: string, ownership: PiSupervisor
   renameSync(temporary, path);
 }
 
-async function terminateRunner(pid: number | undefined, supervision: PiSupervisionOptions, now: () => number, wait: (milliseconds: number) => Promise<void>, deadline: number): Promise<string | undefined> {
-  if (!pid) return undefined;
+async function terminateRunner(pid: number | undefined, supervision: PiSupervisionOptions, now: () => number, wait: (milliseconds: number) => Promise<void>, deadline: number): Promise<{ verified: boolean; diagnostic?: string }> {
+  if (!pid) return { verified: false, diagnostic: "runner cleanup remained unverifiable because the launcher exposed no process id" };
   const sendSignal = supervision.sendSignal ?? ((target: number, signal: NodeJS.Signals) => {
     try { process.kill(-target, signal); } catch { process.kill(target, signal); }
   });
@@ -791,14 +791,16 @@ async function terminateRunner(pid: number | undefined, supervision: PiSupervisi
   let killSent = false;
   try { sendSignal(pid, "SIGTERM"); } catch { /* process may already be gone */ }
   while (now() < deadline) {
-    if (groupGone(pid)) return undefined;
+    if (groupGone(pid)) return { verified: true };
     if (!killSent && now() - startedAt >= TERM_GRACE) {
       killSent = true;
       try { sendSignal(pid, "SIGKILL"); } catch { /* process may already be gone */ }
     }
     await wait(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
   }
-  return groupGone(pid) ? undefined : `runner cleanup failed: process group ${pid} remained before the ${PROCESS_TREE_TIMEOUT}ms launch deadline`;
+  return groupGone(pid)
+    ? { verified: true }
+    : { verified: false, diagnostic: `runner cleanup failed: process group ${pid} remained before the ${PROCESS_TREE_TIMEOUT}ms launch deadline` };
 }
 function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): void {
   if (!existsSync(path)) return;
@@ -1009,7 +1011,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const onData = (chunk: string): void => {
       if (settled || cleanupPending) return;
       try {
-        stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk); logRedactor?.push(chunk);
+        const safeChunk = redact(chunk, secrets);
+        stdout = tail(stdout + safeChunk, MAX_CAPTURE); carry = tail(carry + safeChunk, MAX_CARRY); output.write(safeChunk); logRedactor?.push(safeChunk);
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
         for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }

@@ -91,6 +91,9 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         if (handoff.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository handoff deployment identity mismatch");
         repositoryLease = handoff.repositoryLease;
         repositoryBorrower = handoff.repositoryBorrower;
+        for (const value of [repositoryLease?.ownershipToken, repositoryBorrower?.borrowerToken]) {
+          if (value && !secrets.includes(value)) secrets.push(value);
+        }
       } finally {
         try { unlinkSync(config.repositoryHandoffPath); } catch { /* missing or consumed protected handoff remains a causal failure */ }
       }
@@ -167,21 +170,53 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     process.removeListener("SIGINT", onSigint);
     options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
     try {
+      let authorityFailure: string | undefined;
       if (repositoryBorrowerTransferred && repositoryBorrower) {
         const finalization = finalizeRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
           borrowerToken: repositoryBorrower.borrowerToken,
           deploymentId: config.deploymentId,
         });
-        if (finalization.status === "finalized" && finalization.scopeCompliant === false) {
-          finalizeRunnerFailure(config, deployDir, bounded("Condition: inherited repository admission approved-path-containment. Source: complete final Git snapshot. Reason: final state contains a path or branch outside Sinh's exact approved scope. Correction: preserve state and obtain a fresh parent decision. Resume Action: do not replay the consumed receipt; launch only after new approval.", secrets, TERMINAL_DIAGNOSTIC_MAX), secrets, now());
+        switch (finalization.status) {
+          case "finalized":
+            break;
+          case "scope-noncompliant":
+            authorityFailure = "Condition: inherited repository admission approved-path-containment. Source: complete final Git snapshot. Reason: final state contains a path or branch outside Sinh's exact approved scope. Correction: preserve state and obtain a fresh parent decision. Resume Action: do not replay the consumed receipt; launch only after new approval.";
+            break;
+          case "uncertain-live":
+            authorityFailure = "Condition: inherited repository admission uncertain-live. Source: matching borrower finalization. Reason: runner death remains unverifiable and blocking finalizing evidence was retained. Correction: preserve the evidence and verify runner termination. Resume Action: finalize only after verified death; dispatch no sibling or unrelated builder.";
+            break;
+          case "absent":
+          case "invalid-evidence":
+          case "token-mismatch":
+            authorityFailure = `Condition: inherited repository admission finalization-${finalization.status}. Source: matching borrower finalization. Reason: authority cleanup did not complete (${finalization.status}). Correction: preserve repository state and reconcile matching evidence. Resume Action: do not report the original outcome or dispatch another builder until authority is finalized.`;
+            break;
         }
       }
       if (repositoryLeaseTransferred && repositoryLease) {
-        await finalizeRepositoryMutationLease({
+        const finalization = await finalizeRepositoryMutationLease({
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
           ownershipToken: repositoryLease.ownershipToken,
         });
+        switch (finalization.status) {
+          case "released":
+            break;
+          case "absent":
+          case "invalid-evidence":
+          case "token-mismatch":
+          case "borrower-live":
+          case "borrower-invalid":
+          case "transferred":
+          case "updated":
+            authorityFailure ??= `Condition: repository owner finalization-${finalization.status}. Source: matching lease finalization. Reason: authority cleanup did not complete (${finalization.status}). Correction: preserve repository state and reconcile matching evidence. Resume Action: dispatch no builder until authority is finalized.`;
+            break;
+        }
+      }
+      if (authorityFailure) {
+        finalState = "failed";
+        const reason = bounded(authorityFailure, secrets, TERMINAL_DIAGNOSTIC_MAX);
+        const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
+        writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
       }
     } finally {
       ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });

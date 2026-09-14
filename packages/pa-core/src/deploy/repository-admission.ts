@@ -174,6 +174,8 @@ export interface RepositoryMutationBorrower {
   readonly launchGitSnapshot: RepositoryGitSnapshot;
   readonly approvedMutationPaths?: readonly string[];
   readonly dirtyApprovalReceiptId?: string;
+  readonly finalizationState?: "finalizing";
+  readonly finalizationAttemptedAt?: string;
   readonly finalizedAt?: string;
   readonly finalGitSnapshot?: RepositoryGitSnapshot;
 }
@@ -188,10 +190,20 @@ export interface RepositoryAdmissionDependencies {
   readonly now: () => Date;
   readonly createToken: () => string;
   readonly isDeploymentRunning: (deploymentId: string) => boolean;
+  readonly isProcessInLineage?: (pid: number, ancestor: ProcessFingerprint) => boolean;
+  readonly isProcessAlive?: (pid: number) => boolean;
+  readonly getCurrentProcessFingerprint?: () => ProcessFingerprint | undefined;
+}
+
+interface ResolvedRepositoryAdmissionDependencies extends RepositoryAdmissionDependencies {
+  readonly isProcessInLineage: (pid: number, ancestor: ProcessFingerprint) => boolean;
+  readonly isProcessAlive: (pid: number) => boolean;
+  readonly getCurrentProcessFingerprint: () => ProcessFingerprint | undefined;
 }
 
 export interface RegisterRepositoryMutationBorrowerOptions {
-  readonly capability: string;
+  /** Legacy trusted-caller authentication. Model/tool processes must use verified process lineage instead. */
+  readonly capability?: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
   readonly parentDeploymentId: string;
@@ -295,10 +307,13 @@ export type RepositoryBorrowerMutationResult =
 
 export type RepositoryBorrowerFinalizationResult =
   | {
-      readonly status: "finalized";
+      readonly status: "finalized" | "scope-noncompliant";
       readonly parentLease: "retained" | "released" | "absent" | "replacement-preserved";
       readonly finalGitSnapshot: RepositoryGitSnapshot;
-      readonly scopeCompliant?: boolean;
+    }
+  | {
+      readonly status: "uncertain-live";
+      readonly borrower: RepositoryMutationBorrower;
     }
   | { readonly status: "absent" | "token-mismatch" | "invalid-evidence" };
 
@@ -612,8 +627,21 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     if (lease.runtime !== "pi" || lease.mode !== "orchestrator" || (lease.team !== undefined && normalizedTeam(lease.team) !== "builder")) return reject("parent-identity", "the live owner is not a Pi builder/orchestrator parent");
     if (lease.deploymentId !== options.parentDeploymentId) return reject("parent-identity", "the claimed parent deployment does not own the live lease");
     if (lease.canonicalRepoKey !== options.canonicalRepoKey || lease.canonicalRepoRoot !== root) return reject("repository-identity", "the claimed canonical repository does not match the parent lease");
-    if (!options.capability || Buffer.byteLength(options.capability) > MAX_REPOSITORY_BORROWER_BYTES || !secureStringsEqual(lease.ownershipToken, options.capability)) {
-      return reject("capability", "the private parent capability is missing, malformed, or did not authenticate");
+    const pid = options.pid ?? process.pid;
+    const observedFingerprint = dependencies.getProcessFingerprint(pid);
+    const fingerprint = options.processFingerprint ?? observedFingerprint;
+    if (!fingerprint || fingerprint.pid !== pid || !fingerprintsEqual(fingerprint, observedFingerprint)) {
+      return reject("child-process", "the registering child launch process fingerprint could not be verified");
+    }
+    const capabilityPresented = options.capability !== undefined;
+    const capabilityAuthenticated = capabilityPresented
+      && Buffer.byteLength(options.capability ?? "") <= MAX_REPOSITORY_BORROWER_BYTES
+      && secureStringsEqual(lease.ownershipToken, options.capability ?? "");
+    const lineageAuthenticated = !capabilityPresented && dependencies.isProcessInLineage(pid, lease.processFingerprint);
+    if (!capabilityAuthenticated && !lineageAuthenticated) {
+      return reject(capabilityPresented ? "capability" : "parent-lineage", capabilityPresented
+        ? "the private parent capability is malformed or did not authenticate"
+        : "the registering process is not within the process-verified parent launcher lineage");
     }
     if (options.deploymentId === lease.deploymentId) return reject("child-identity", "a parent cannot borrow its own lease");
     if (options.runtime !== "pi" || normalizedTeam(options.team) !== "builder" || options.mode !== "implement" || options.launchMode !== "background") {
@@ -686,12 +714,6 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       inspection = { state: "absent", reason: "recoverable borrower evidence was atomically quarantined", borrowerPath };
     }
 
-    const pid = options.pid ?? process.pid;
-    const observedFingerprint = dependencies.getProcessFingerprint(pid);
-    const fingerprint = options.processFingerprint ?? observedFingerprint;
-    if (!fingerprint || fingerprint.pid !== pid || !fingerprintsEqual(fingerprint, observedFingerprint)) {
-      return reject("child-process", "the registering child launch process fingerprint could not be verified");
-    }
     const borrower: RepositoryMutationBorrower = Object.freeze({
       schemaVersion: 1,
       borrowerToken: boundedRequired(dependencies.createToken(), "borrower token"),
@@ -937,6 +959,25 @@ export function finalizeRepositoryMutationBorrower(options: {
     if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken) || parsed.deploymentId !== options.deploymentId) return { status: "token-mismatch" };
 
+    const terminalFingerprint = dependencies.getCurrentProcessFingerprint();
+    const matchingTerminalProcess = Boolean(
+      terminalFingerprint
+      && fingerprintsEqual(parsed.processFingerprint, terminalFingerprint)
+      && fingerprintsEqual(terminalFingerprint, dependencies.getProcessFingerprint(terminalFingerprint.pid)),
+    );
+    const observedRunner = dependencies.getProcessFingerprint(parsed.processFingerprint.pid);
+    const recordedRunnerIsLive = fingerprintsEqual(parsed.processFingerprint, observedRunner);
+    const runnerLivenessUnverifiable = observedRunner === undefined && dependencies.isProcessAlive(parsed.processFingerprint.pid);
+    if (!matchingTerminalProcess && (recordedRunnerIsLive || runnerLivenessUnverifiable)) {
+      const finalizing = Object.freeze({
+        ...parsed,
+        finalizationState: "finalizing" as const,
+        finalizationAttemptedAt: dependencies.now().toISOString(),
+      });
+      replaceBorrowerAtomic(borrowerPath, finalizing, dependencies.createToken);
+      return { status: "uncertain-live", borrower: finalizing };
+    }
+
     const finalGitSnapshot = Object.freeze({ ...(options.finalGitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
     if (!isGitSnapshot(finalGitSnapshot)) return { status: "invalid-evidence" };
     const approved = new Set(parsed.approvedMutationPaths ?? []);
@@ -969,7 +1010,7 @@ export function finalizeRepositoryMutationBorrower(options: {
       if (matchingApproval && secureStringsEqual(matchingApproval.receiptId, parsed.dirtyApprovalReceiptId)) unlinkSync(approvalPath);
     }
     unlinkSync(borrowerPath);
-    return { status: "finalized", parentLease, finalGitSnapshot, ...(parsed.dirtyApprovalReceiptId ? { scopeCompliant } : {}) };
+    return { status: scopeCompliant ? "finalized" : "scope-noncompliant", parentLease, finalGitSnapshot };
   });
 }
 
@@ -1142,8 +1183,24 @@ export function formatRepositoryBorrowerDiagnostic(input: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
 }): string {
+  const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
+  const siblingRecovery = new Set(["borrower-state", "parent-finalization", "uncertain-live"]);
+  const [correction, resumeAction] = dirtyRecovery.has(input.category)
+    ? [
+        "preserve parent ownership and capture a fresh complete NUL-safe Git snapshot with one classification for every entry and exact context",
+        "obtain a fresh one-use Sinh approval, then require unchanged immediate and mutex-held rereads before retrying",
+      ]
+    : siblingRecovery.has(input.category)
+      ? [
+          "preserve the blocking borrower/finalizing evidence and verify the recorded sibling runner has terminated",
+          "finalize the matching borrower only after verified death; do not dispatch a sibling or unrelated builder while liveness is uncertain",
+        ]
+      : [
+          "preserve parent ownership and provide fresh runtime-authenticated exact-context evidence",
+          "for clean borrowing, retry only after the parent confirms no live sibling and a zero-entry Git snapshot",
+        ];
   return boundDiagnostic(
-    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}. Reason: ${boundedField(input.reason, 500)}. Correction: preserve parent ownership and provide fresh runtime-authenticated exact-context evidence. Resume Action: retry only after the parent orchestrator confirms no live sibling and a zero-entry Git snapshot.`,
+    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
   );
 }
 
@@ -1336,6 +1393,9 @@ function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutati
     && (row["approvedMutationPaths"] === undefined || isExactPathArray(row["approvedMutationPaths"], row["canonicalRepoRoot"] as string))
     && (row["dirtyApprovalReceiptId"] === undefined || boundedString(row["dirtyApprovalReceiptId"]))
     && ((row["dirtyApprovalReceiptId"] === undefined) === (row["approvedMutationPaths"] === undefined))
+    && (row["finalizationState"] === undefined || row["finalizationState"] === "finalizing")
+    && (row["finalizationAttemptedAt"] === undefined || validTimestamp(row["finalizationAttemptedAt"]))
+    && ((row["finalizationState"] === undefined) === (row["finalizationAttemptedAt"] === undefined))
     && (row["finalizedAt"] === undefined || validTimestamp(row["finalizedAt"]))
     && (row["finalGitSnapshot"] === undefined || isGitSnapshot(row["finalGitSnapshot"]));
 }
@@ -1613,14 +1673,46 @@ function evidenceIdentityUnlocked(path: string): string {
   }
 }
 
-function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies> | undefined): RepositoryAdmissionDependencies {
+function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies> | undefined): ResolvedRepositoryAdmissionDependencies {
   return {
     getProcessFingerprint: overrides?.getProcessFingerprint ?? readProcessFingerprint,
     runGit: overrides?.runGit ?? defaultGitRunner,
     now: overrides?.now ?? (() => new Date()),
     createToken: overrides?.createToken ?? randomUUID,
     isDeploymentRunning: overrides?.isDeploymentRunning ?? ((deploymentId) => queryDeploymentStatus(deploymentId)?.status === "running"),
+    isProcessInLineage: overrides?.isProcessInLineage ?? processIsWithinFingerprintLineage,
+    isProcessAlive: overrides?.isProcessAlive ?? processIsAlive,
+    getCurrentProcessFingerprint: overrides?.getCurrentProcessFingerprint ?? (() => readProcessFingerprint(process.pid)),
   };
+}
+
+function processIsWithinFingerprintLineage(pid: number, ancestor: ProcessFingerprint): boolean {
+  if (!fingerprintsEqual(ancestor, readProcessFingerprint(ancestor.pid))) return false;
+  let current = pid;
+  for (let depth = 0; depth < 64 && current > 0; depth += 1) {
+    if (current === ancestor.pid) return true;
+    const parent = readProcessParentPid(current);
+    if (parent === undefined || parent === current) return false;
+    current = parent;
+  }
+  return false;
+}
+
+function readProcessParentPid(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closingParenthesis = stat.lastIndexOf(")");
+    if (closingParenthesis < 0) return undefined;
+    const parent = Number(stat.slice(closingParenthesis + 2).trim().split(/\s+/)[1]);
+    return Number.isInteger(parent) && parent >= 0 ? parent : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 function defaultGitRunner(args: readonly string[], cwd: string): Buffer {

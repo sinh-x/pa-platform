@@ -72,6 +72,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const env = { ...plan.environment, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<string, string>;
+  // A legacy parent shell may still contain this key. Never carry it into the
+  // model/tool environment; direct borrowing is authenticated by live process lineage.
+  delete env[PI_PARENT_LEASE_CAPABILITY_ENV];
   const primerPath = resolve(deployDir, "primer.md");
   let toolReference: ReturnType<RuntimeAdapter["describeTools"]>;
   try {
@@ -102,20 +105,44 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let activeRepositoryBorrower: { canonicalRepoRoot: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const borrowed = activeRepositoryBorrower;
-    activeRepositoryBorrower = undefined;
     if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
         borrowerToken: borrowed.borrowerToken,
         deploymentId: borrowed.deploymentId,
       });
-      if (finalization.status === "finalized" && finalization.scopeCompliant === false) {
-        return formatRepositoryBorrowerDiagnostic({ category: "approved-path-containment", reason: "the complete final Git state contains a path or branch outside Sinh's exact approved scope", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+      switch (finalization.status) {
+        case "finalized":
+          activeRepositoryBorrower = undefined;
+          break;
+        case "scope-noncompliant":
+          activeRepositoryBorrower = undefined;
+          return formatRepositoryBorrowerDiagnostic({ category: "approved-path-containment", reason: "the complete final Git state contains a path or branch outside Sinh's exact approved scope", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+        case "uncertain-live":
+          return formatRepositoryBorrowerDiagnostic({ category: "uncertain-live", reason: "borrower finalization was withheld because the transferred runner remains live or its death is unverifiable", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+        case "absent":
+        case "invalid-evidence":
+        case "token-mismatch":
+          return formatRepositoryBorrowerDiagnostic({ category: `finalization-${finalization.status}`, reason: `matching borrower finalization did not complete (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
       }
     }
     const owned = activeRepositoryLease;
-    activeRepositoryLease = undefined;
-    if (owned) await finalizeRepositoryMutationLease(owned);
+    if (owned) {
+      const finalization = await finalizeRepositoryMutationLease(owned);
+      switch (finalization.status) {
+        case "released":
+          activeRepositoryLease = undefined;
+          break;
+        case "absent":
+        case "invalid-evidence":
+        case "token-mismatch":
+        case "borrower-live":
+        case "borrower-invalid":
+        case "transferred":
+        case "updated":
+          return formatRepositoryBorrowerDiagnostic({ category: `owner-finalization-${finalization.status}`, reason: finalization.diagnostic ?? `matching parent lease finalization did not release authority (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+      }
+    }
     return undefined;
   };
   const acceptRepositoryAuthorityHandoff = (metadata: Record<string, unknown> | undefined): void => {
@@ -129,7 +156,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
   };
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
-  const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string }> => {
+  const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     const containmentFailure = await finalizeActiveRepositoryAuthority();
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
     const resolvedTerminalStatus = containmentFailure ? "failed" : status;
@@ -144,21 +171,21 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const outcome = registryTerminalOutcome(authoritative, env);
     writePiTerminalStatus(deployDir, terminalStatus(outcome.status, outcome.reason, authoritative.timestamp));
     if (!request.background) clearPiForegroundCompletion(deployDir);
-    return outcome;
+    return { ...outcome, authorityFailure: containmentFailure !== undefined };
   };
   const completeFailure = async (reason: string, exitCode = 1) => {
     const redacted = boundedDiagnostic(reason, env, 2000);
     const safeReason = inheritedAttempt ? inheritedAdmissionFailure(redacted, plan.repoKey, plan.repoRoot) : redacted;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    await writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
+    const outcome = await writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
   };
   const crashFailure = async (reason: string) => {
     const redacted = boundedDiagnostic(reason, env, 2000);
     const safeReason = inheritedAttempt ? inheritedAdmissionFailure(redacted, plan.repoKey, plan.repoRoot) : redacted;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
-    await writeTerminal("crashed", "failed", safeReason, 1);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: safeReason };
+    const outcome = await writeTerminal("crashed", "failed", safeReason, 1);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
   };
   try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
@@ -185,7 +212,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       const branch = immediateSnapshot.branch;
       const registration = registerRepositoryMutationBorrower({
-        capability: inheritedParent.capability,
         canonicalRepoKey: plan.repoKey,
         canonicalRepoRoot: plan.repoRoot,
         parentDeploymentId: inheritedParent.parentDeploymentId,
@@ -227,7 +253,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
       plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
       activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ownershipToken: acquisition.lease.ownershipToken };
-      if (team.name === "builder" && plan.mode === "orchestrator") env[PI_PARENT_LEASE_CAPABILITY_ENV] = acquisition.lease.ownershipToken;
+      // Keep the ownership capability in this trusted launcher closure only.
+      // The Pi model and every tool/child environment authenticate nested direct
+      // borrowing through the process-verified launcher lineage instead.
     }
     if (activeRepositoryLease) {
       let stable = false;
@@ -353,12 +381,11 @@ function inheritedAdmissionFailure(reason: string, canonicalRepoKey: string, can
   });
 }
 
-function inheritedParentContext(): { capability: string; parentDeploymentId: string; parentDeploymentDirectory: string } | undefined {
-  const capability = process.env[PI_PARENT_LEASE_CAPABILITY_ENV];
+function inheritedParentContext(): { parentDeploymentId: string; parentDeploymentDirectory: string } | undefined {
   const parentDeploymentId = process.env["PA_DEPLOYMENT_ID"] ?? "";
   const parentDeploymentDirectory = process.env["PA_DEPLOYMENT_DIR"] ?? "";
   const parentIdentity = process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "orchestrator" && Boolean(parentDeploymentId) && Boolean(parentDeploymentDirectory);
-  return capability !== undefined || parentIdentity ? { capability: capability ?? "", parentDeploymentId, parentDeploymentDirectory } : undefined;
+  return parentIdentity ? { parentDeploymentId, parentDeploymentDirectory } : undefined;
 }
 function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }
 function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Partial<Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string>> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", ...(isRogueOneTeam(team.name) ? { PA_ROGUE_ONE: "1" } : {}), [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }

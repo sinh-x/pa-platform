@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,7 +13,7 @@ import {
   readPiForegroundCompletion,
   runCoreCommand,
 } from "@pa-platform/pa-core";
-import { PiAdapter } from "../adapter.js";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter } from "../adapter.js";
 import registerPiPaExtension, {
   createPiSessionLifecycle,
   registerPiSessionModules,
@@ -125,6 +125,50 @@ function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
+
+test("real managed Pi shell environment enumeration cannot observe or emit the parent lease capability", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-managed-env-"));
+  const bin = join(root, "bin");
+  const primer = join(root, "primer.md");
+  const log = join(root, "pi.log");
+  const sentinel = "pap191-private-parent-capability-sentinel";
+  mkdirSync(bin);
+  writeFileSync(primer, "managed environment confidentiality fixture");
+  const pi = join(bin, "pi");
+  writeFileSync(pi, [
+    "#!/bin/sh",
+    `plain=$(env | grep -c '^${PI_PARENT_LEASE_CAPABILITY_ENV}=' || true)`,
+    `printed=$(printenv | grep -c '^${PI_PARENT_LEASE_CAPABILITY_ENV}=' || true)`,
+    `indirect=$(node -e 'process.stdout.write(String(Object.prototype.hasOwnProperty.call(process.env, ${JSON.stringify(PI_PARENT_LEASE_CAPABILITY_ENV)})))')`,
+    "printf 'managed-shell environment-counts=%s/%s/%s\\n' \"$plain\" \"$printed\" \"$indirect\"",
+  ].join("\n"));
+  chmodSync(pi, 0o755);
+  const persisted: string[] = [];
+  const adapter = new PiAdapter({
+    cwd: root,
+    env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
+    versionProbe: () => "0.84.4",
+    nativeRegistryProbe: () => undefined,
+    supervision: { persistLine: (line) => { persisted.push(line); } },
+  });
+  try {
+    const result = await adapter.spawn({
+      primerPath: primer,
+      deployId: "d-managed-env",
+      mode: "dry-run",
+      sessionId: "managed-env-session",
+      logFile: log,
+      env: { [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
+      repositoryLease: { canonicalRepoRoot: root, ownershipToken: sentinel },
+    });
+    assert.equal(result.exitCode, 0, result.errorMessage);
+    const sinks = [persisted.join("\n"), readFileSync(log, "utf8")].join("\n");
+    assert.match(sinks, /managed-shell environment-counts=0\/0\/false/);
+    assert.doesNotMatch(sinks, new RegExp(sentinel));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Pi preflight verifies version then native registry addon before objective execution", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-156-preflight-order-"));

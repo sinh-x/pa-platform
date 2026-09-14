@@ -6,6 +6,7 @@
   "scripts": {
     "build": "corepack pnpm -r build",
     "test": "corepack pnpm -r test",
+    "test:coverage": "corepack pnpm --filter @pa-platform/pa-core build && corepack pnpm --filter @pa-platform/pi-pa validate:sources && corepack pnpm --filter @pa-platform/pi-pa bundle:extensions && corepack pnpm -r --filter '!@pa-platform/pi-pa' exec node --experimental-test-coverage --import=tsx --test \"src/**/*.test.ts\" && corepack pnpm --filter @pa-platform/pi-pa exec node --experimental-test-coverage --import=tsx --test \"scripts/**/*.test.mjs\" && PI_PA_PLUGIN_SELECTION='{\"pi-vimmode\":true,\"proper-base\":true}' corepack pnpm --filter @pa-platform/pi-pa bundle:extensions && corepack pnpm --filter @pa-platform/pi-pa exec node --experimental-test-coverage --import=tsx --test \"src/**/*.test.ts\" && corepack pnpm --filter @pa-platform/pi-pa bundle:extensions",
     "test:paired": "bash scripts/dev/test_paired_repository.sh",
     "test:paired-gate": "tsx --test scripts/dev/validate_paired_repository.test.mts",
     "verify:paired-config": "tsx scripts/dev/validate_paired_repository.mts",
