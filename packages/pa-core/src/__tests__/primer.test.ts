@@ -1917,6 +1917,23 @@ deploy_modes:
   }
 });
 
+test("approved dirty background borrower primer renders only exact non-protected path scope", () => {
+  const repositoryAdmission: RepositoryAdmissionEvidence = {
+    access: "exclusive-builder",
+    launchMode: "background",
+    ownershipIntent: "acquire-before-spawn",
+    force: false,
+    approvedMutationPaths: ["existing ticket.ts", "packages/new-ticket.ts"],
+  };
+  const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: { id: "plan", label: "Plan" }, repositoryAdmission });
+  assert.match(primer, /Exact Approved Dirty Borrower Scope/);
+  assert.match(primer, /- existing ticket\.ts/);
+  assert.match(primer, /- packages\/new-ticket\.ts/);
+  assert.match(primer, /No glob or directory-wide authority/);
+  assert.match(primer, /Borrowing is direct and non-transitive/);
+  assert.doesNotMatch(primer, /receipt|approval reference|token|digest|process fingerprint/i);
+});
+
 test("clean, background, dry-run, and non-builder evidence do not inject the foreground dirty contract", () => {
   const baseSnapshot = {
     branch: "develop",

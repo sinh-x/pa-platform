@@ -17,6 +17,8 @@ export const PA_SAFETY_PATTERNS: SafetyPatterns = {
   blockedFilePatterns: [
     String.raw`(^|[\\/])\.env(\.|$)`, String.raw`(^|[\\/])\.ssh[\\/]id_`, String.raw`credentials`,
     String.raw`secrets?.*\.(json|ya?ml)$`, String.raw`[-_]token\.json$`, String.raw`[-_]api[-_]?key\.json$`,
+    String.raw`(^|[\\/])pa-repository-mutation\.(?:lease|borrower)\.json$`,
+    String.raw`(^|[\\/])repository-dirty-borrow\.approval\.json$`, String.raw`(^|[\\/])pi-repository-handoff\.json$`,
     String.raw`(^|[\\/])\.netrc$`, String.raw`(^|[\\/])\.npmrc$`, String.raw`(^|[\\/])\.pypirc$`,
   ],
 };

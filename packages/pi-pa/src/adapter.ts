@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -9,7 +9,7 @@ import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestam
 import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
-import { piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
+import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 
 const MAX_BODY = 500;
 const MAX_STDERR = 2000;
@@ -26,6 +26,9 @@ const BACKGROUND_READINESS_POLL_MS = 25;
 const MAX_BACKGROUND_CONFIG_BYTES = 64 * 1024;
 export const PI_SUPERVISOR_FILE = "pi-supervisor.json";
 export const PI_BACKGROUND_CONFIG_FILE = "pi-background.json";
+export const PI_REPOSITORY_HANDOFF_FILE = "pi-repository-handoff.json";
+/** Legacy capability key scrubbed at every process boundary. New launches never set it. */
+export const PI_PARENT_LEASE_CAPABILITY_ENV = "PA_PI_PARENT_LEASE_TOKEN";
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 /** @deprecated Background completion is owned by the persistent runner. */
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
@@ -44,10 +47,26 @@ export interface PiBackgroundConfig {
   skills: string[];
   trustedExtension?: string;
   timeoutMs?: number;
+  repositoryHandoffPath?: string;
+  /** In-memory only after the runner consumes the separate protected handoff. */
   repositoryLease?: {
     canonicalRepoRoot: string;
     ownershipToken: string;
   };
+  repositoryBorrower?: {
+    canonicalRepoRoot: string;
+    borrowerToken: string;
+    parentDeploymentId: string;
+    deploymentId: string;
+    approvedMutationPaths?: readonly string[];
+  };
+}
+
+export interface PiRepositoryHandoff {
+  schemaVersion: 1;
+  deploymentId: string;
+  repositoryLease?: NonNullable<PiBackgroundConfig["repositoryLease"]>;
+  repositoryBorrower?: NonNullable<PiBackgroundConfig["repositoryBorrower"]>;
 }
 export interface PiSupervisorOwnership {
   schemaVersion: 1;
@@ -128,11 +147,11 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly supervision: PiSupervisionOptions;
 
   constructor(options: PiAdapterOptions = {}) {
-    this.cwd = options.cwd ?? process.cwd(); this.env = options.env ?? process.env;
+    this.cwd = options.cwd ?? process.cwd(); this.env = withoutParentLeaseCapability(options.env ?? process.env);
     this.runCommand = options.runCommand;
     this.versionTimeoutMs = options.versionTimeoutMs ?? PI_VERSION_TIMEOUT_MS;
     this.versionProbe = options.versionProbe ?? (() => probePiVersion(this.cwd, this.env, this.versionTimeoutMs));
-    this.nativeRegistryProbe = options.nativeRegistryProbe ?? (() => probePiNativeRegistryAddon(this.env, this.secretValues));
+    this.nativeRegistryProbe = options.nativeRegistryProbe ?? (() => probeNativeRegistryFromCurrentBuild(this.env, this.secretValues));
     this.sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.secretValues = [...(options.secretValues ?? [])];
     this.supervision = options.supervision ?? {};
@@ -154,14 +173,13 @@ export class PiAdapter implements RuntimeAdapter {
         // The installed Pi version and native-host addon are independent process
         // validations. Start both before awaiting either so their cold startup
         // costs overlap, while retaining deterministic version-first failures.
-        let versionValue: string | Promise<string>;
-        try { versionValue = this.versionProbe(); } catch (error) { versionValue = Promise.reject(error); }
-        let nativeValue: PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
-        try { nativeValue = this.nativeRegistryProbe(); } catch (error) { nativeValue = Promise.reject(error); }
-        const [versionResult, nativeResult] = await Promise.allSettled([
-          bounded(versionValue, this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`),
-          bounded(nativeValue, this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`),
-        ]);
+        let versionResultPromise: Promise<string>;
+        try { versionResultPromise = bounded(this.versionProbe(), this.versionTimeoutMs, `Pi version probe timed out after ${this.versionTimeoutMs}ms.`); }
+        catch (error) { versionResultPromise = Promise.reject(error); }
+        let nativeResultPromise: Promise<PiNativeHostEvidence | undefined>;
+        try { nativeResultPromise = bounded(this.nativeRegistryProbe(), this.versionTimeoutMs, `native-load: Pi registry addon probe timed out after ${this.versionTimeoutMs}ms.`); }
+        catch (error) { nativeResultPromise = Promise.reject(error); }
+        const [versionResult, nativeResult] = await Promise.allSettled([versionResultPromise, nativeResultPromise]);
         if (versionResult.status === "rejected") throw versionResult.reason;
         if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.84.4 or later; detected '${versionResult.value || "unknown"}'.`);
         if (nativeResult.status === "rejected") throw nativeResult.reason;
@@ -190,9 +208,10 @@ export class PiAdapter implements RuntimeAdapter {
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
     args.push(readFileSync(opts.primerPath, "utf8"));
-    const env = { ...this.env, ...opts.env };
+    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     const piEnv = piRegistryEnvironment(env);
-    const secrets = environmentSecrets(env, this.secretValues);
+    const protectedAuthority = [opts.repositoryLease?.ownershipToken, opts.repositoryBorrower?.borrowerToken].filter((value): value is string => Boolean(value));
+    const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
@@ -214,6 +233,78 @@ export class PiAdapter implements RuntimeAdapter {
     if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     return { sessionId: id, exitCode: 0, logFile: opts.logFile, metadata: { ...(result.metadata ?? {}), sessionId: id } };
   }
+}
+
+function probeNativeRegistryFromCurrentBuild(env: NodeJS.ProcessEnv, secretValues: string[]): PiNativeHostEvidence | undefined {
+  // Source tests execute adapter.ts through tsx while the host smoke must run as
+  // plain JavaScript under Pi's Node. The approved verification builds dist
+  // first, so use that exact compiled probe instead of a nonexistent source JS
+  // sibling. Keep this boundary synchronous like the installed probe so fixture
+  // child events cannot race ahead of adapter process attachment.
+  if (fileURLToPath(import.meta.url).endsWith(".ts")) {
+    if (!env[PI_REGISTRY_ADDON_ENV]?.trim()) return probePiNativeRegistryAddon(env, secretValues);
+    const compiledProbeUrl = new URL("../dist/native-host.js", import.meta.url);
+    if (existsSync(fileURLToPath(compiledProbeUrl))) {
+      const runner = 'let body=""; for await (const chunk of process.stdin) body += chunk; const secrets=JSON.parse(body); const module=await import(process.argv[1]); const evidence=module.probePiNativeRegistryAddon(process.env, secrets); process.stdout.write(JSON.stringify(evidence ?? null));';
+      const result = spawnSync(process.execPath, ["--input-type=module", "--eval", runner, compiledProbeUrl.href], {
+        encoding: "utf8",
+        env: sourcePiHostEnvironment(env),
+        input: JSON.stringify(secretValues),
+        timeout: PI_VERSION_TIMEOUT_MS,
+        maxBuffer: 64 * 1024,
+      });
+      if (result.status !== 0) {
+        throw sourceNativeProbeError(result.stderr || result.error?.message || result.stdout || "source Pi host probe failed", env, secretValues);
+      }
+      return parseSourcePiHostEvidence(result.stdout);
+    }
+  }
+  return probePiNativeRegistryAddon(env, secretValues);
+}
+
+function sourcePiHostEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const packageRootUrl = new URL("../", import.meta.url);
+  const generatedPackagePath = fileURLToPath(new URL("dist/pi-pa-package.json", packageRootUrl));
+  if (!existsSync(generatedPackagePath)) return env;
+  const generatedPackage = JSON.parse(readFileSync(generatedPackagePath, "utf8")) as unknown;
+  if (!generatedPackage || typeof generatedPackage !== "object" || Array.isArray(generatedPackage)) {
+    throw new Error("native-load: generated Pi package metadata is malformed");
+  }
+  const imports = (generatedPackage as Record<string, unknown>)["imports"];
+  if (!imports || typeof imports !== "object" || Array.isArray(imports)) {
+    throw new Error("native-load: generated Pi package imports are malformed");
+  }
+  const aliases: Record<string, string> = {};
+  for (const [specifier, target] of Object.entries(imports)) {
+    if (!specifier.startsWith("#pi-pa-") || typeof target !== "string" || !target.startsWith("./dist/pi-extension/vendor/")) {
+      throw new Error("native-load: generated Pi package import is malformed");
+    }
+    aliases[specifier] = new URL(target, packageRootUrl).href;
+  }
+  if (Object.keys(aliases).length === 0) return env;
+  const hookSource = `import { registerHooks } from "node:module"; const aliases=${JSON.stringify(aliases)}; registerHooks({ resolve(specifier, context, nextResolve) { const url=aliases[specifier]; return url ? { url, shortCircuit: true } : nextResolve(specifier, context); } });`;
+  const hookUrl = `data:text/javascript,${encodeURIComponent(hookSource)}`;
+  const existingOptions = env["NODE_OPTIONS"]?.trim();
+  return { ...env, NODE_OPTIONS: `${existingOptions ? `${existingOptions} ` : ""}--import=${hookUrl}` };
+}
+
+function parseSourcePiHostEvidence(output: string): PiNativeHostEvidence | undefined {
+  let value: unknown;
+  try { value = JSON.parse(output); }
+  catch { throw new Error("native-load: source Pi host returned malformed addon evidence"); }
+  if (value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("native-load: source Pi host returned malformed addon evidence");
+  const evidence = value as Record<string, unknown>;
+  if (typeof evidence["nodePath"] !== "string" || typeof evidence["node"] !== "string" || typeof evidence["modules"] !== "string" || typeof evidence["v8"] !== "string" || typeof evidence["addonPath"] !== "string" || evidence["registryQuery"] !== "PRAGMA user_version" || evidence["close"] !== "explicit") {
+    throw new Error("native-load: source Pi host returned malformed addon evidence");
+  }
+  return evidence as unknown as PiNativeHostEvidence;
+}
+
+function sourceNativeProbeError(message: string, env: NodeJS.ProcessEnv, secretValues: string[]): Error {
+  const safe = redactDiagnostic(message, environmentSecrets(env, secretValues)).replace(/^native-load:\s*/, "");
+  const diagnostic = `native-load: ${safe}`;
+  return new Error(diagnostic.length > MAX_STDERR ? `${diagnostic.slice(0, MAX_STDERR - 3)}...` : diagnostic);
 }
 
 export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
@@ -499,8 +590,14 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   const deployDir = dirname(input.opts.primerPath);
   const configPath = resolve(deployDir, PI_BACKGROUND_CONFIG_FILE);
   const ownershipPath = resolve(deployDir, PI_SUPERVISOR_FILE);
+  const handoffPath = resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE);
   const ownershipToken = randomUUID();
   const plan = input.opts.executionPlan;
+  const repositoryHandoff: PiRepositoryHandoff | undefined = input.opts.repositoryLease
+    ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryLease: input.opts.repositoryLease }
+    : input.opts.repositoryBorrower
+      ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryBorrower: input.opts.repositoryBorrower }
+      : undefined;
   const config: PiBackgroundConfig = {
     schemaVersion: 1,
     ownershipToken,
@@ -516,11 +613,13 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     skills: plan?.skills.map((skill) => skill.path) ?? [],
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
-    ...(input.opts.repositoryLease ? { repositoryLease: input.opts.repositoryLease } : {}),
+    ...(repositoryHandoff ? { repositoryHandoffPath: handoffPath } : {}),
   };
   try {
+    if (repositoryHandoff) writePiRepositoryHandoff(handoffPath, repositoryHandoff);
     writePiBackgroundConfig(configPath, config);
   } catch (error) {
+    safeUnlink(handoffPath);
     return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
   }
 
@@ -533,6 +632,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     runner = launch(runnerPath, configPath, { cwd: input.cwd, env: input.env });
   } catch (error) {
     safeUnlink(configPath);
+    safeUnlink(handoffPath);
     return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
   }
 
@@ -553,7 +653,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       break;
     }
     if (ownership?.deploymentId === input.opts.deployId && ownership.ownershipToken === ownershipToken) {
-      if (ownership.ready && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized")) break;
+      if (ownership.ready && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized") && (!repositoryHandoff || !existsSync(handoffPath))) break;
       if (ownership.state === "failed") {
         launchError = new Error(ownership.error ?? "Pi background supervisor failed before readiness");
         break;
@@ -566,15 +666,16 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   const ready = ownership?.deploymentId === input.opts.deployId
     && ownership.ownershipToken === ownershipToken
     && ownership.ready
+    && (!repositoryHandoff || !existsSync(handoffPath))
     && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized");
   if (!ready) {
-    const cleanupError = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
+    const cleanup = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
     let configCleanupError: string | undefined;
-    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); }
+    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); }
     catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
     const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
-    const reason = [baseReason, cleanupError, configCleanupError].filter(Boolean).join("; ");
-    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
+    const reason = [baseReason, cleanup.diagnostic, configCleanupError].filter(Boolean).join("; ");
+    return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-readiness: ${reason}`), metadata: { sessionId: input.id, cleanupVerified: cleanup.verified, ...(runner.pid ? { supervisorPid: runner.pid } : {}) } };
   }
   const established = ownership!;
   runner.unref();
@@ -588,7 +689,8 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       supervisorPid: established.supervisorPid,
       ...(established.childPid ? { pid: established.childPid } : {}),
       ownershipFile: ownershipPath,
-      ...(config.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
+      ...(input.opts.repositoryLease ? { repositoryLeaseTransferred: true } : {}),
+      ...(input.opts.repositoryBorrower ? { repositoryBorrowerTransferred: true } : {}),
     },
   };
 }
@@ -619,17 +721,48 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`runner-readiness: Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
-  const repositoryLease = value.repositoryLease;
-  const validRepositoryLease = repositoryLease === undefined || (
-    typeof repositoryLease === "object"
-    && repositoryLease !== null
-    && typeof repositoryLease.canonicalRepoRoot === "string"
-    && typeof repositoryLease.ownershipToken === "string"
-  );
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryLease) {
+  const repositoryHandoffPath = value.repositoryHandoffPath;
+  const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
+}
+
+export function writePiRepositoryHandoff(path: string, handoff: PiRepositoryHandoff): void {
+  const body = `${JSON.stringify(handoff)}\n`;
+  if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES || !validPiRepositoryHandoff(handoff)) throw new Error(`Pi repository handoff is malformed or exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const parent = lstatSync(dirname(path));
+  if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Pi repository handoff parent must be a real directory");
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    chmodSync(temporary, 0o600);
+    linkSync(temporary, path);
+  } finally {
+    safeUnlink(temporary);
+  }
+}
+
+export function readPiRepositoryHandoff(path: string): PiRepositoryHandoff {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_BACKGROUND_CONFIG_BYTES) throw new Error("runner-readiness: Pi repository handoff is insecure or oversized");
+  const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!validPiRepositoryHandoff(value)) throw new Error("runner-readiness: Pi repository handoff is malformed");
+  return value;
+}
+
+function validPiRepositoryHandoff(value: unknown): value is PiRepositoryHandoff {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const lease = row["repositoryLease"] as Record<string, unknown> | undefined;
+  const borrower = row["repositoryBorrower"] as Record<string, unknown> | undefined;
+  const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string";
+  const approvedPaths = borrower?.["approvedMutationPaths"];
+  const validApprovedPaths = approvedPaths === undefined || (Array.isArray(approvedPaths) && approvedPaths.length <= 512 && approvedPaths.every((path) => typeof path === "string" && path.length > 0 && path.length <= 1_024));
+  const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && typeof borrower["borrowerToken"] === "string" && typeof borrower["parentDeploymentId"] === "string" && typeof borrower["deploymentId"] === "string" && validApprovedPaths;
+  return row["schemaVersion"] === 1 && typeof row["deploymentId"] === "string" && (validLease !== validBorrower);
 }
 
 export function readPiSupervisorOwnership(path: string): PiSupervisorOwnership | undefined {
@@ -648,8 +781,8 @@ export function writePiSupervisorOwnership(path: string, ownership: PiSupervisor
   renameSync(temporary, path);
 }
 
-async function terminateRunner(pid: number | undefined, supervision: PiSupervisionOptions, now: () => number, wait: (milliseconds: number) => Promise<void>, deadline: number): Promise<string | undefined> {
-  if (!pid) return undefined;
+async function terminateRunner(pid: number | undefined, supervision: PiSupervisionOptions, now: () => number, wait: (milliseconds: number) => Promise<void>, deadline: number): Promise<{ verified: boolean; diagnostic?: string }> {
+  if (!pid) return { verified: false, diagnostic: "runner cleanup remained unverifiable because the launcher exposed no process id" };
   const sendSignal = supervision.sendSignal ?? ((target: number, signal: NodeJS.Signals) => {
     try { process.kill(-target, signal); } catch { process.kill(target, signal); }
   });
@@ -658,14 +791,16 @@ async function terminateRunner(pid: number | undefined, supervision: PiSupervisi
   let killSent = false;
   try { sendSignal(pid, "SIGTERM"); } catch { /* process may already be gone */ }
   while (now() < deadline) {
-    if (groupGone(pid)) return undefined;
+    if (groupGone(pid)) return { verified: true };
     if (!killSent && now() - startedAt >= TERM_GRACE) {
       killSent = true;
       try { sendSignal(pid, "SIGKILL"); } catch { /* process may already be gone */ }
     }
     await wait(Math.min(PROCESS_TREE_POLL, Math.max(1, deadline - now())));
   }
-  return groupGone(pid) ? undefined : `runner cleanup failed: process group ${pid} remained before the ${PROCESS_TREE_TIMEOUT}ms launch deadline`;
+  return groupGone(pid)
+    ? { verified: true }
+    : { verified: false, diagnostic: `runner cleanup failed: process group ${pid} remained before the ${PROCESS_TREE_TIMEOUT}ms launch deadline` };
 }
 function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): void {
   if (!existsSync(path)) return;
@@ -677,6 +812,11 @@ function safeUnlinkOwnedBackgroundConfig(path: string, ownershipToken: string): 
   safeUnlink(path);
 }
 function safeUnlink(path: string): void { try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
+function withoutParentLeaseCapability(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const safe = { ...env };
+  delete safe[PI_PARENT_LEASE_CAPABILITY_ENV];
+  return safe;
+}
 function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
 
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
@@ -871,7 +1011,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const onData = (chunk: string): void => {
       if (settled || cleanupPending) return;
       try {
-        stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk); logRedactor?.push(chunk);
+        const safeChunk = redact(chunk, secrets);
+        stdout = tail(stdout + safeChunk, MAX_CAPTURE); carry = tail(carry + safeChunk, MAX_CARRY); output.write(safeChunk); logRedactor?.push(safeChunk);
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
         for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }

@@ -137,7 +137,8 @@ function renderAdditionalInstructions(
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
   const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
-  return ["## Additional Instructions", objective, dirtyBuilderContract, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
+  return ["## Additional Instructions", objective, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 function renderDirtyBuilderIntentContract(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
@@ -157,6 +158,17 @@ function renderDirtyBuilderIntentContract(repositoryAdmission: RepositoryAdmissi
     "4. Ask Sinh for approval before checkout or any other Git or project-file mutation.",
     "5. Immediately before acting on approval, re-read the branch, HEAD, and full Git status; if repository state or the proposed mutation scope drifted, ask Sinh again before acting.",
     "Read-only investigation is allowed while waiting for Sinh, including in builder/orchestrator mode. Approval is not transferable to changed state or broader scope.",
+  ].join("\n");
+}
+
+function renderApprovedBorrowerScope(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
+  const paths = repositoryAdmission?.approvedMutationPaths;
+  if (repositoryAdmission?.access !== "exclusive-builder" || repositoryAdmission.launchMode !== "background" || !paths?.length) return undefined;
+  return [
+    "### Exact Approved Dirty Borrower Scope",
+    "Sinh approved preserve-and-continue only for these exact repository-relative current/new paths:",
+    ...paths.map((path) => `- ${path}`),
+    "No glob or directory-wide authority is implied. Before creating or mutating any other path, or after observing branch, HEAD, status-scope, or unrelated-path drift, stop unchanged and request a fresh parent decision. Borrowing is direct and non-transitive; do not launch a child.",
   ].join("\n");
 }
 

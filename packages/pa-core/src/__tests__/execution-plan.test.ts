@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveExecutionPlan, type ExecutionPlan } from "../deploy/plan.js";
+import type { DeployRequest } from "../deploy/control.js";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { repositoryMutationLeasePath, type RepositoryAdmissionOperation, type RepositoryGitSnapshot } from "../deploy/repository-admission.js";
 import type { TeamConfig } from "../types.js";
@@ -213,6 +214,41 @@ test("linked working-tree inputs and CWDs fail planning with bounded diagnostics
   }
 });
 
+test("a self-asserted parent deployment ID never changes child planning or grants borrowed ownership", () => {
+  const fixture = createFixture("parent-id-alone");
+  const teamConfig = team();
+  try {
+    const request: DeployRequest & { parentDeploymentId: string } = {
+      team: "builder",
+      mode: "implement",
+      repo: "registered",
+      ticket: "PAP-191",
+      background: true,
+      force: true,
+      parentDeploymentId: "d-parent",
+    };
+    const plan = withPlatformConfig(fixture.config, () => resolveExecutionPlan({
+      request,
+      teamConfig,
+      mode: teamConfig.deploy_modes?.[0],
+      runtime: "pi",
+      deploymentId: "d-child",
+      deploymentDir: join(fixture.root, "d-child"),
+      activityLogPath: join(fixture.root, "d-child", "activity.jsonl"),
+      environment: {},
+      timeoutSeconds: 60,
+      cwd: fixture.repo,
+    }));
+    assert.equal(plan.repositoryAdmission.access, "exclusive-builder");
+    assert.equal(plan.repositoryAdmission.launchMode, "background");
+    assert.equal(plan.repositoryAdmission.ownershipIntent, "acquire-before-spawn");
+    assert.equal("parentDeploymentId" in plan, false);
+    assert.equal("capability" in plan.environment, false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("two same-root plans independently reach the injected spawn seam without ownership mutation", async () => {
   const fixture = createFixture("same-root");
   try {
@@ -392,8 +428,27 @@ test("dirty foreground builders retain immutable evidence while dirty background
         assert.doesNotMatch(message, /--force|manual quarantine|\bmv\b/);
         return true;
       });
+
+      const authenticatedInherited = resolveExecutionPlan({
+        request: { team: "builder", mode: "implement", background: true, force: true, ticket: "PAP-174" },
+        teamConfig,
+        mode: teamConfig.deploy_modes?.[0],
+        runtime: "pi",
+        deploymentId: "d-inherited-background",
+        deploymentDir: join(fixture.root, "d-inherited-background"),
+        activityLogPath: join(fixture.root, "d-inherited-background", "activity.jsonl"),
+        environment: {},
+        timeoutSeconds: 60,
+        cwd: fixture.repo,
+        captureRepositoryGitSnapshot: () => dirtySnapshot,
+        observeRepositoryAdmissionOperation: (operation) => operations.push(operation),
+        allowDirtyInheritedBorrow: true,
+      });
+      assert.equal(authenticatedInherited.repositoryAdmission.launchMode, "background");
+      assert.deepEqual(authenticatedInherited.repositoryAdmission.gitSnapshot, dirtySnapshot);
+      assert.equal("allowDirtyInheritedBorrow" in authenticatedInherited.repositoryAdmission, false);
     });
-    assert.deepEqual(operations, ["git-status", "git-status", "git-status"]);
+    assert.deepEqual(operations, ["git-status", "git-status", "git-status", "git-status"]);
     assert.equal(readdirSync(join(fixture.repo, ".git")).some((name) => name.includes("pa-repository-mutation")), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

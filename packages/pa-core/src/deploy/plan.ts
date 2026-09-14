@@ -64,15 +64,19 @@ export interface ResolveExecutionPlanOptions {
   cwd?: string;
   captureRepositoryGitSnapshot?: (canonicalRepoRoot: string) => RepositoryGitSnapshot;
   observeRepositoryAdmissionOperation?: (operation: RepositoryAdmissionOperation) => void;
+  /** Runtime-authenticated direct-parent context; not user request authority. */
+  allowDirtyInheritedBorrow?: boolean;
 }
 
 export function withAuthoritativeRepositoryAdmission(
   plan: ExecutionPlan,
   gitSnapshot: RepositoryGitSnapshot,
+  approvedMutationPaths?: readonly string[],
 ): ExecutionPlan {
   const repositoryAdmission = Object.freeze({
     ...plan.repositoryAdmission,
     gitSnapshot: Object.freeze({ ...gitSnapshot }),
+    ...(approvedMutationPaths ? { approvedMutationPaths: Object.freeze([...approvedMutationPaths]) } : {}),
   });
   return Object.freeze({ ...plan, repositoryAdmission });
 }
@@ -106,6 +110,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ...(options.captureRepositoryGitSnapshot ? { captureGitSnapshot: options.captureRepositoryGitSnapshot } : {}),
     ...(options.observeRepositoryAdmissionOperation ? { observeOperation: options.observeRepositoryAdmissionOperation } : {}),
+    ...(options.allowDirtyInheritedBorrow ? { allowDirtyInheritedBorrow: true } : {}),
   });
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,

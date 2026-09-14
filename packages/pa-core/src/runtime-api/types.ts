@@ -22,6 +22,15 @@ export interface RepositoryLeaseHandoff {
   ownershipToken: string;
 }
 
+/** Internal child-supervisor handoff; it never contains the parent capability. */
+export interface RepositoryBorrowerHandoff {
+  canonicalRepoRoot: string;
+  borrowerToken: string;
+  parentDeploymentId: string;
+  deploymentId: string;
+  approvedMutationPaths?: readonly string[];
+}
+
 export interface SpawnOpts {
   primerPath: string;
   deployId: string;
@@ -37,6 +46,8 @@ export interface SpawnOpts {
   onPid?: (pid: number) => void;
   /** Token-authenticated repository ownership transferred to a background supervisor. */
   repositoryLease?: RepositoryLeaseHandoff;
+  /** Token-authenticated borrowed authority transferred without parent ownership. */
+  repositoryBorrower?: RepositoryBorrowerHandoff;
   executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 

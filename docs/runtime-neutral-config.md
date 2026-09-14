@@ -23,11 +23,68 @@ lifecycle, so their mutating builder deploys fail with an explicit unsupported-p
 result before runtime spawn; non-builder and dry-run behavior remains available.
 Other teams remain `non-locking`.
 
+PPA has one narrow positive inheritance exception to builder exclusivity. One
+direct **background** Pi `builder/implement` child may borrow the execution slot
+of a process-verified, registry-running Pi `builder/orchestrator` parent that
+already owns the same canonical repository. Admission requires exact
+parent/child deployment identity, repository key/root, ticket-linked feature
+branch, launch mode, and complete child launch snapshot. Clean snapshots use the
+existing authenticated path. Dirty snapshots require a private consume-once
+approval receipt created only by the exact **foreground** parent through the
+trusted `pa_dirty_borrow_approval` Pi TUI tool. A parent ID, objective text,
+`--force`, or copied environment value is never authority. Borrowing does not
+transfer or rewrite the version-1 parent lease; OPA, CPA, Droid, foreground
+children, descendants, other modes, and concurrent siblings have no positive
+inheritance path. Standalone dirty background builders remain rejected.
+
+Snapshot evidence retains the raw complete
+`git status --porcelain=v2 --untracked-files=all -z` byte stream as Base64, its
+decoded record/path set (including rename sources), record counts, branch, full
+HEAD, and a SHA-256 over length-prefixed branch/HEAD/status bytes. The bounded
+human summary is display-only. Before approval, every current status path must
+be classified as active-ticket produced or preserved; planned additions must be
+unique exact nonexistent repository-relative paths with no glob syntax. The TUI
+shows one numbered complete list and explicit **Approve preserve-and-continue**
+and rejection choices. Cancel, non-TUI mode, partial/unrelated classification,
+malformed evidence, drift, replacement, replay, and timeout fail closed.
+
+The approval receipt and borrower evidence are separate atomic mode-`0600`
+files, each at most 65,536 bytes, and are serialized under the existing
+repository mutex. Receipt consumption precedes borrower publication, so 50
+contenders still admit exactly one. Protected capabilities, receipt IDs,
+approval references, borrower tokens, and raw digests never enter primers,
+ordinary background config, registry/activity/session output, completion
+artifacts, or diagnostics. Pi transfers lease/borrower secrets only through a
+separate protected mode-`0600` handoff file, rejects links/malformed/oversized
+handoffs, and deletes it on consumption or failure.
+
+The borrower records its process fingerprint, resolved 60–7,200 second timeout,
+and exact approved paths. Every terminal path captures the complete final Git
+snapshot under the mutex and clears only matching borrower evidence. A branch or
+path outside the approved set produces failed containment while preserving all
+work for a fresh decision. A normal foreground or background orchestrator waits
+until the child exits, bounded by the child's timeout plus 5,000ms cleanup, and
+never releases while a process-verified borrower remains. If the parent dies
+first, the live borrower continues to exclude normal and forced PPA/OPA
+acquisition; recovery is possible only after its PID/start fingerprint no longer
+matches. Matching finalization retains a live parent's byte-identical lease and
+releases a stale matching parent lease; repeated finalization is idempotent.
+Inherited-admission failures include `Condition`, `Source`, `Reason`,
+`Correction`, and `Resume Action`, are bounded to 2,000 JavaScript characters,
+and redact private evidence before bounding.
+
+The dedicated dirty-direct-borrower configuration ticket is a dependency
+boundary only: config-only or paired configuration UAT does not prove runtime
+admission. Runtime acceptance must pin its exact merged `develop` SHA and
+independently pass lifecycle, mismatch, and 50-contender gates; no unmerged
+candidate SHA is represented as merged proof.
+
 Builder admission captures branch, HEAD, staged/unstaged/untracked counts, and a
 bounded porcelain summary without mutating Git. A dirty foreground builder may
 launch with that evidence and receives a mandatory intent/re-read contract before
-agent-initiated Git or project-file mutation. A dirty background builder, including
-REST's background default, rejects before runtime spawn and leaves no owned lease.
+agent-initiated Git or project-file mutation. A standalone or otherwise
+non-exception dirty background builder, including REST's background default,
+rejects before runtime spawn and leaves no owned lease.
 Builder ownership uses `.git/pa-repository-mutation.lease.json`; ownership operations
 are serialized by a crash-releasing OS advisory lock. `deploy --force` may quarantine
 stale or malformed evidence, but never overrides a process-verified live owner or

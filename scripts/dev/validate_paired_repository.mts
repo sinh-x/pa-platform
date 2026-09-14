@@ -36,6 +36,35 @@ function validateRepositoryContracts(configRoot: string): void {
   if (!orchestrator.includes("a direct checkout only for the existing exact branch outcome")) throw new Error("Paired orchestrator must limit checkout to the existing exact ticket branch");
   if (!orchestrator.includes("Every stop preserves observed state before project-file mutation or child launch")) throw new Error("Paired orchestrator must preserve state before mutation or child launch");
 
+  const dirtyBorrowRequiredCases = [
+    ["default rejection and narrow exception", /default dirty-background rejection remains fail-closed[\s\S]{0,240}only dirty-background exception/iu],
+    ["authenticated direct implement lineage", /one runtime-authenticated direct `builder\/implement` child[\s\S]{0,240}process-verified, registry-running `builder\/orchestrator`/iu],
+    ["complete classified path set", /complete NUL-safe porcelain-v2 path\/status metadata set[\s\S]{0,240}active-ticket work/iu],
+    ["approval identity and action bindings", /canonical repository key\/root, ticket, exact linked branch, full HEAD[\s\S]{0,320}exactly one delegated action[\s\S]{0,80}`commit` or `cleanup`/iu],
+    ["metadata-only hash boundary", /File contents are not part of the approval hash/iu],
+    ["two unchanged rereads", /immediate pre-intent reread[\s\S]{0,160}mutex-serialized admission reread[\s\S]{0,240}(?:difference|change)[\s\S]{0,160}reject before spawn/iu],
+    ["delegated scope and custody", /touch only the approved path set for the approved action[\s\S]{0,240}parent (?:must not|neither) mutate[\s\S]{0,160}sibling[\s\S]{0,160}child (?:must not|cannot) delegate/iu],
+    ["parent accountability", /parent retains phase acceptance and commit\/cleanup accountability/iu],
+    ["matching idempotent finalization", /matching finalization[\s\S]{0,240}exact final Git snapshot[\s\S]{0,240}clears only matching[\s\S]{0,240}retains authority[\s\S]{0,240}releases[\s\S]{0,240}idempotent/iu],
+    ["protected evidence bounds", /one-use[\s\S]{0,160}(?:mode[- ]`0600`|mode `0600`)[\s\S]{0,160}(?:at most|max(?:imum)?)[- ]65,536 bytes[\s\S]{0,200}non-user-visible|non-user-visible[\s\S]{0,200}one-use[\s\S]{0,160}(?:mode[- ]`0600`|mode `0600`)[\s\S]{0,160}(?:at most|max(?:imum)?)[- ]65,536 bytes/iu],
+    ["forbidden lineage and bypasses", /sibling[\s\S]{0,160}descendant[\s\S]{0,160}(?:unrelated builder|unrelated-builder)[\s\S]{0,240}(?:public|force)[\s\S]{0,240}bypass/iu],
+    ["config-first pairing", /PAPC-017[\s\S]{0,240}PAP-191[\s\S]{0,240}merged `develop` SHA[\s\S]{0,240}(?:do not prove|does not prove|not runtime-admission success)/iu],
+  ] as const;
+  const dirtyExceptionSurfaces = [
+    "docs/runtime-neutral-config.md",
+    "teams/builder.yaml",
+    "teams/builder/modes/implement.md",
+    "teams/builder/modes/orchestrator.md",
+    "skills/templates/builder-objective.md",
+    "skills/templates/orchestration-report.md",
+  ] as const;
+  for (const relativePath of dirtyExceptionSurfaces) {
+    const content = readFileSync(resolve(configRoot, relativePath), "utf8");
+    for (const [label, pattern] of dirtyBorrowRequiredCases) {
+      if (!pattern.test(content)) throw new Error(`${relativePath}: missing affirmative classified dirty direct-borrower case: ${label}`);
+    }
+  }
+
   const contractSurfaces = [
     "docs/runtime-neutral-config.md",
     "teams/builder.yaml",
@@ -47,20 +76,20 @@ function validateRepositoryContracts(configRoot: string): void {
     "skills/templates/builder-objective.md",
   ] as const;
   const affirmativeClauses = [
-    ["requirements bypass", "Every `requirements/*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository"],
-    ["dirty foreground admission", "Foreground admission permits a dirty canonical checkout for every `builder/*` mode, including `builder/orchestrator`"],
-    ["dirty foreground re-evaluation", "After a dirty foreground launch, re-evaluate the current branch, full HEAD, and complete staged, unstaged, and untracked status"],
-    ["dirty foreground intent question", "Classify whether each observed change belongs to the active ticket, propose one concrete preserve, wait, or stop action, and ask Sinh before any agent-initiated Git mutation or project-file mutation"],
-    ["dirty foreground re-read", "Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again"],
-    ["dirty background rejection", "Dirty background `builder/*` deployments reject before runtime spawn and leave no ownership evidence"],
-    ["verified-live ppa/opa ownership", "Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`"],
-    ["verified-live force boundary", "`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live ownership"],
+    ["requirements bypass", /Every `requirements\/\*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository/iu],
+    ["dirty foreground admission", /Foreground admission permits a dirty canonical checkout for every `builder\/\*` mode, including `builder\/orchestrator`/iu],
+    ["dirty foreground re-evaluation", /After a dirty foreground launch, re-evaluate the current branch, full HEAD, and complete staged, unstaged, and untracked status/iu],
+    ["dirty foreground intent question", /Classify whether each observed change belongs to the active ticket, propose one concrete preserve, wait, or stop action, and ask Sinh before any agent-initiated Git mutation or project-file mutation/iu],
+    ["dirty foreground re-read", /Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again/iu],
+    ["dirty background rejection", /Dirty background `builder\/\*` deployments reject before runtime spawn and leave no ownership evidence/iu],
+    ["verified-live ppa/opa ownership", /Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`/iu],
+    ["verified-live force boundary", /`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live (?:owner or borrower authority|ownership)/iu],
   ] as const;
   const retiredBlanketContract = /no per-mode repository access class|(?:leases|repository ownership).{0,160}not part of the active contract|repository admission.{0,120}(?:does not exist|is not part of the active contract)/is;
   for (const relativePath of contractSurfaces) {
     const content = readFileSync(resolve(configRoot, relativePath), "utf8");
-    for (const [label, clause] of affirmativeClauses) {
-      if (!content.includes(clause)) throw new Error(`${relativePath}: missing affirmative ${label} clause`);
+    for (const [label, pattern] of affirmativeClauses) {
+      if (!pattern.test(content)) throw new Error(`${relativePath}: missing affirmative ${label} clause`);
     }
     if (retiredBlanketContract.test(content)) throw new Error(`${relativePath}: contains retired blanket no-admission/no-ownership semantics`);
   }
@@ -113,11 +142,11 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     }
     if (team.default_mode && !modeIds.has(team.default_mode)) throw new Error(`teams/${file}: default_mode ${team.default_mode} does not exist`);
   }
-  if (teamFiles.length !== 9) throw new Error(`Expected 9 active teams, found ${teamFiles.length}`);
-  if (modeCount !== 58) throw new Error(`Expected 58 active modes, found ${modeCount}`);
+  if (teamFiles.length !== 10) throw new Error(`Expected 10 active teams, found ${teamFiles.length}`);
+  if (modeCount !== 59) throw new Error(`Expected 59 active modes, found ${modeCount}`);
   if (builderExclusiveCount !== 6) throw new Error(`Expected 6 exclusive builder modes, found ${builderExclusiveCount}`);
   if (requirementsReadOnlyCount !== 11) throw new Error(`Expected 11 read-only requirements modes, found ${requirementsReadOnlyCount}`);
-  if (otherNonLockingCount !== 41) throw new Error(`Expected 41 non-locking modes for other teams, found ${otherNonLockingCount}`);
+  if (otherNonLockingCount !== 42) throw new Error(`Expected 42 non-locking modes for other teams, found ${otherNonLockingCount}`);
   // Absolute project guides are operator-owned inputs and cannot be present on a
   // generic CI runner. Runtime deploy validation remains responsible for them.
   const missing = validateTeamSkillReferences(resolve(configRoot, "teams"), configRoot, resolve(configRoot, "skills", "global"))
@@ -132,16 +161,19 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
   return [
     `CONFIG_SHA=${actualSha}`,
     "CONFIG_CLEAN=true",
-    `TEAMS_VALID=${teamFiles.length}/9`,
-    `MODES_VALID=${modeCount}/58`,
+    `TEAMS_VALID=${teamFiles.length}/10`,
+    `MODES_VALID=${modeCount}/59`,
     "LEGACY_RUNTIMES=0",
     "INVALID_PAIRS=0",
     `BUILDER_EXCLUSIVE=${builderExclusiveCount}/6`,
     `REQUIREMENTS_READ_ONLY=${requirementsReadOnlyCount}/11`,
-    `OTHER_NON_LOCKING=${otherNonLockingCount}/41`,
-    `REPOSITORY_ADMISSION_MATRIX=${modeCount}/58`,
+    `OTHER_NON_LOCKING=${otherNonLockingCount}/42`,
+    `REPOSITORY_ADMISSION_MATRIX=${modeCount}/59`,
     "BRANCH_GATE=7/7",
     "NO_WORKTREE_ORCHESTRATION=true",
+    "DIRTY_DIRECT_BORROW_POLICY=6/6",
+    "DIRTY_DIRECT_BORROWER_EXCEPTION=1/1",
+    "GENERAL_DIRTY_BACKGROUND_REJECTION=true",
     "REFERENCES_MISSING=0",
   ];
 }

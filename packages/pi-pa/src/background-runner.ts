@@ -5,17 +5,22 @@ import {
   appendActivityEvent,
   createActivityEvent,
   ensureTerminalRegistryMarker,
+  finalizeRepositoryMutationBorrower,
+  finalizeRepositoryMutationLease,
   getDeployPaths,
   readProcessFingerprint,
   reconcileTerminalRegistryEvent,
-  releaseRepositoryMutationLease,
+  transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
   type RegistryEvent,
 } from "@pa-platform/pa-core";
 import {
   buildPiBackgroundArgs,
+  PI_PARENT_LEASE_CAPABILITY_ENV,
+  PI_REPOSITORY_HANDOFF_FILE,
   PI_SUPERVISOR_FILE,
   readPiBackgroundConfig,
+  readPiRepositoryHandoff,
   runPiManagedProcess,
   writePiSupervisorOwnership,
   type PiBackgroundConfig,
@@ -44,7 +49,10 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   const secrets = environmentSecrets(process.env);
   let childPid: number | undefined;
   let ready = false;
+  let repositoryLease = config.repositoryLease;
+  let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
+  let repositoryBorrowerTransferred = false;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -76,19 +84,46 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
-    if (config.repositoryLease) {
+    if (config.repositoryHandoffPath) {
+      try {
+        if (config.repositoryHandoffPath !== resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE)) throw new Error("runner-readiness: repository handoff path mismatch");
+        const handoff = readPiRepositoryHandoff(config.repositoryHandoffPath);
+        if (handoff.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository handoff deployment identity mismatch");
+        repositoryLease = handoff.repositoryLease;
+        repositoryBorrower = handoff.repositoryBorrower;
+        for (const value of [repositoryLease?.ownershipToken, repositoryBorrower?.borrowerToken]) {
+          if (value && !secrets.includes(value)) secrets.push(value);
+        }
+      } finally {
+        try { unlinkSync(config.repositoryHandoffPath); } catch { /* missing or consumed protected handoff remains a causal failure */ }
+      }
+    }
+    if (repositoryLease || repositoryBorrower) {
       const fingerprint = readProcessFingerprint(process.pid);
       if (!fingerprint) throw new Error(`runner-readiness: cannot verify repository supervisor PID ${process.pid}`);
-      const transfer = transferRepositoryMutationLease({
-        canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
-        ownershipToken: config.repositoryLease.ownershipToken,
-        nextProcessFingerprint: fingerprint,
-      });
-      if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
-      repositoryLeaseTransferred = true;
+      if (repositoryLease) {
+        const transfer = transferRepositoryMutationLease({
+          canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          ownershipToken: repositoryLease.ownershipToken,
+          nextProcessFingerprint: fingerprint,
+        });
+        if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
+        repositoryLeaseTransferred = true;
+      } else if (repositoryBorrower) {
+        if (repositoryBorrower.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository borrower deployment identity mismatch");
+        const transfer = transferRepositoryMutationBorrower({
+          canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
+          borrowerToken: repositoryBorrower.borrowerToken,
+          nextProcessFingerprint: fingerprint,
+        });
+        if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository borrower transfer failed (${transfer.status})`);
+        repositoryBorrowerTransferred = true;
+      }
     }
     const args = buildPiBackgroundArgs(config);
-    const childEnv = piRegistryEnvironment({ ...process.env });
+    const runtimeEnvironment = { ...process.env };
+    if (repositoryBorrower) delete runtimeEnvironment[PI_PARENT_LEASE_CAPABILITY_ENV];
+    const childEnv = piRegistryEnvironment(runtimeEnvironment);
     const result = await runPiManagedProcess(
       args,
       config.cwd,
@@ -135,14 +170,56 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     process.removeListener("SIGINT", onSigint);
     options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
     try {
-      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
-    } finally {
-      if (repositoryLeaseTransferred && config.repositoryLease) {
-        releaseRepositoryMutationLease({
-          canonicalRepoRoot: config.repositoryLease.canonicalRepoRoot,
-          ownershipToken: config.repositoryLease.ownershipToken,
+      let authorityFailure: string | undefined;
+      if (repositoryBorrowerTransferred && repositoryBorrower) {
+        const finalization = finalizeRepositoryMutationBorrower({
+          canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
+          borrowerToken: repositoryBorrower.borrowerToken,
+          deploymentId: config.deploymentId,
         });
+        switch (finalization.status) {
+          case "finalized":
+            break;
+          case "scope-noncompliant":
+            authorityFailure = "Condition: inherited repository admission approved-path-containment. Source: complete final Git snapshot. Reason: final state contains a path or branch outside Sinh's exact approved scope. Correction: preserve state and obtain a fresh parent decision. Resume Action: do not replay the consumed receipt; launch only after new approval.";
+            break;
+          case "uncertain-live":
+            authorityFailure = "Condition: inherited repository admission uncertain-live. Source: matching borrower finalization. Reason: runner death remains unverifiable and blocking finalizing evidence was retained. Correction: preserve the evidence and verify runner termination. Resume Action: finalize only after verified death; dispatch no sibling or unrelated builder.";
+            break;
+          case "absent":
+          case "invalid-evidence":
+          case "token-mismatch":
+            authorityFailure = `Condition: inherited repository admission finalization-${finalization.status}. Source: matching borrower finalization. Reason: authority cleanup did not complete (${finalization.status}). Correction: preserve repository state and reconcile matching evidence. Resume Action: do not report the original outcome or dispatch another builder until authority is finalized.`;
+            break;
+        }
       }
+      if (repositoryLeaseTransferred && repositoryLease) {
+        const finalization = await finalizeRepositoryMutationLease({
+          canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          ownershipToken: repositoryLease.ownershipToken,
+        });
+        switch (finalization.status) {
+          case "released":
+            break;
+          case "absent":
+          case "invalid-evidence":
+          case "token-mismatch":
+          case "borrower-live":
+          case "borrower-invalid":
+          case "transferred":
+          case "updated":
+            authorityFailure ??= `Condition: repository owner finalization-${finalization.status}. Source: matching lease finalization. Reason: authority cleanup did not complete (${finalization.status}). Correction: preserve repository state and reconcile matching evidence. Resume Action: dispatch no builder until authority is finalized.`;
+            break;
+        }
+      }
+      if (authorityFailure) {
+        finalState = "failed";
+        const reason = bounded(authorityFailure, secrets, TERMINAL_DIAGNOSTIC_MAX);
+        const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
+        writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
+      }
+    } finally {
+      ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
     }
   }
 }

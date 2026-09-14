@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,7 +13,7 @@ import {
   readPiForegroundCompletion,
   runCoreCommand,
 } from "@pa-platform/pa-core";
-import { PiAdapter } from "../adapter.js";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter } from "../adapter.js";
 import registerPiPaExtension, {
   createPiSessionLifecycle,
   registerPiSessionModules,
@@ -28,6 +28,7 @@ import {
   configurePiRegistryBinding,
   piRegistryEnvironment,
   probePiNativeRegistryAddon,
+  resolvePiNodeHost,
 } from "../native-host.js";
 import {
   assertManagedExtensionCommands,
@@ -75,6 +76,30 @@ function captureExtension(): { events: Map<string, EventHandler>; registrations:
   return { events, registrations, tools };
 }
 
+test("trusted dirty-borrow approval tool registers only in the exact foreground orchestrator host", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-tool-registration-"));
+  const deployDir = join(root, "deployments", "d-parent");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  mkdirSync(deployDir, { recursive: true });
+  const keys = [PA_PI_EXECUTION_MODE_ENV, "PA_TEAM", "PA_MODE", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_REPO", "PA_TICKET_ID"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  try {
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
+    process.env["PA_TEAM"] = "builder";
+    process.env["PA_MODE"] = "orchestrator";
+    process.env["PA_DEPLOYMENT_ID"] = "d-parent";
+    process.env["PA_DEPLOYMENT_DIR"] = deployDir;
+    process.env["PA_REPO"] = root;
+    process.env["PA_TICKET_ID"] = "PAP-191";
+    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), true);
+    process.env[PA_PI_EXECUTION_MODE_ENV] = "background";
+    assert.equal(captureExtension().tools.has("pa_dirty_borrow_approval"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function withRegistryFixture(name: string, run: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), name));
   const previous = {
@@ -100,6 +125,50 @@ function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
+
+test("real managed Pi shell environment enumeration cannot observe or emit the parent lease capability", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-managed-env-"));
+  const bin = join(root, "bin");
+  const primer = join(root, "primer.md");
+  const log = join(root, "pi.log");
+  const sentinel = "pap191-private-parent-capability-sentinel";
+  mkdirSync(bin);
+  writeFileSync(primer, "managed environment confidentiality fixture");
+  const pi = join(bin, "pi");
+  writeFileSync(pi, [
+    "#!/bin/sh",
+    `plain=$(env | grep -c '^${PI_PARENT_LEASE_CAPABILITY_ENV}=' || true)`,
+    `printed=$(printenv | grep -c '^${PI_PARENT_LEASE_CAPABILITY_ENV}=' || true)`,
+    `indirect=$(node -e 'process.stdout.write(String(Object.prototype.hasOwnProperty.call(process.env, ${JSON.stringify(PI_PARENT_LEASE_CAPABILITY_ENV)})))')`,
+    "printf 'managed-shell environment-counts=%s/%s/%s\\n' \"$plain\" \"$printed\" \"$indirect\"",
+  ].join("\n"));
+  chmodSync(pi, 0o755);
+  const persisted: string[] = [];
+  const adapter = new PiAdapter({
+    cwd: root,
+    env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
+    versionProbe: () => "0.84.4",
+    nativeRegistryProbe: () => undefined,
+    supervision: { persistLine: (line) => { persisted.push(line); } },
+  });
+  try {
+    const result = await adapter.spawn({
+      primerPath: primer,
+      deployId: "d-managed-env",
+      mode: "dry-run",
+      sessionId: "managed-env-session",
+      logFile: log,
+      env: { [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
+      repositoryLease: { canonicalRepoRoot: root, ownershipToken: sentinel },
+    });
+    assert.equal(result.exitCode, 0, result.errorMessage);
+    const sinks = [persisted.join("\n"), readFileSync(log, "utf8")].join("\n");
+    assert.match(sinks, /managed-shell environment-counts=0\/0\/false/);
+    assert.doesNotMatch(sinks, new RegExp(sentinel));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Pi preflight verifies version then native registry addon before objective execution", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-156-preflight-order-"));
@@ -413,6 +482,21 @@ test("a later extension session lazily reopens the registry singleton after shut
   });
 });
 
+test("npm-style Pi shebang resolves the Node host from PATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-pi-shebang-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const pi = join(bin, "pi");
+  writeFileSync(pi, "#!/usr/bin/env node\n");
+  chmodSync(pi, 0o755);
+  symlinkSync(process.execPath, join(bin, "node"));
+  try {
+    assert.equal(resolvePiNodeHost({ PATH: bin }), realpathSync(process.execPath));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi child environment replaces the Node 22 wrapper binding with only the packaged Pi-host binding", () => {
   const input = {
     KEEP: "yes",
@@ -435,6 +519,29 @@ test("native host smoke records its registry query and explicit close", async ()
   assert.equal(evidence.addonPath, addonPath);
   assert.equal(evidence.registryQuery, "PRAGMA user_version");
   assert.equal(evidence.close, "explicit");
+});
+
+test("source adapter preflight resolves generated editor imports in an npm-style plain Pi host", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pap-191-source-pi-host-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const pi = join(bin, "pi");
+  writeFileSync(pi, "#!/usr/bin/env node\n");
+  chmodSync(pi, 0o755);
+  symlinkSync(process.execPath, join(bin, "node"));
+  try {
+    await assert.doesNotReject(new PiAdapter({
+      env: {
+        ...process.env,
+        PATH: bin,
+        [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
+        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
+      },
+      versionProbe: () => "0.84.4",
+    }).preflight());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("managed command expectations follow all four factory selections exactly", () => {
@@ -474,8 +581,10 @@ test("deterministic managed tool harness executes the complete eight-tool matrix
     "read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status",
   ].map((name) => ({ name, status: "passed" })));
   assert.equal(evidence.modules, process.versions.modules);
-  assert.deepEqual(evidence.extension.factories, ["pi-vimmode@0.9.0", "proper-base@0.5.0"]);
-  assert.deepEqual(evidence.extension.commands, ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"]);
+  assert.deepEqual(
+    evidence.extension.commands,
+    expectedManagedExtensionCommands(evidence.extension.factories),
+  );
   assert.deepEqual(evidence.extension.shortcuts, ["alt+i", "alt+g"]);
   assert.ok(evidence.extension.handlers.includes("tool_call"));
   assert.ok(evidence.extension.handlers.includes("agent_end"));
