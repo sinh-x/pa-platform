@@ -270,6 +270,43 @@ test("managed Pi background configuration carries registered and linked-worktree
   assert.equal(observed?.repoRoot, primary);
   assert.equal(observed?.worktreeRoot, worktree);
   assert.equal(observed?.repositorySlot, "implement");
+
+  const mismatchedConfig = join(dir, "mismatched-background.json");
+  writeFileSync(mismatchedConfig, `${JSON.stringify({ ...observed, cwd: primary })}\n`);
+  assert.throws(() => readPiBackgroundConfig(mismatchedConfig), /background configuration is malformed/);
+});
+
+test("managed Pi rejects root disagreement before preflight or background runner spawn", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-managed-root-mismatch-"));
+  const primary = join(dir, "primary");
+  const worktree = join(dir, "linked");
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  let preflights = 0;
+  let launches = 0;
+  const adapter = new PiAdapter({
+    versionProbe: () => { preflights += 1; return "0.84.4"; },
+    supervision: { launchBackgroundRunner: (() => { launches += 1; return new FakePiChild() as never; }) },
+  });
+  const result = await adapter.spawn({
+    primerPath: primer,
+    deployId: "d-root-mismatch",
+    mode: "background",
+    executionPlan: {
+      runtime: "pi",
+      team: "builder",
+      mode: "implement",
+      repoRoot: primary,
+      worktreeRoot: worktree,
+      repositoryCwd: primary,
+      repositoryAdmission: { slot: "implement" },
+      skills: [],
+    } as never,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /repositoryCwd must equal the exact absolute worktree root/);
+  assert.equal(preflights, 0);
+  assert.equal(launches, 0);
 });
 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {

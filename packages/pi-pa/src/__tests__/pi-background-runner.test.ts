@@ -150,6 +150,28 @@ test("runner rejects and removes a hard-linked protected repository handoff befo
   });
 });
 
+test("managed runner rejects repository handoff root disagreement before child spawn", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    config.managed = true;
+    config.repoRoot = join(root, "primary");
+    config.worktreeRoot = join(root, "linked");
+    config.cwd = config.worktreeRoot;
+    config.repositorySlot = "implement";
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writePiRepositoryHandoff(config.repositoryHandoffPath, {
+      schemaVersion: 1,
+      deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: join(root, "wrong-primary"), worktreeRoot: config.worktreeRoot, slot: "implement", ownershipToken: "mismatched-root-token" },
+    });
+    let spawns = 0;
+    await runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(config.repositoryHandoffPath), false);
+    assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "crashed");
+    assert.match(terminalEvents(config.deploymentId)[0]?.summary ?? "", /repository handoff roots or slot do not match/);
+  });
+});
+
 test("background orchestrator runner waits for child finalization before releasing its parent lease", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");

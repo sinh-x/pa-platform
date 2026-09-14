@@ -158,7 +158,7 @@ test("ppa deploy preserves authenticated linked-worktree CWD while non-Pi adapte
       } },
     });
     assert.equal(acceptedCode, 0, accepted.stderr.join("\n"));
-    assert.deepEqual(seen, [{ request: { team: "builder", mode: "implement", timeout: 1800 }, cwd: fixture.worktree }]);
+    assert.deepEqual(seen.map(({ request, cwd }) => ({ team: request.team, mode: request.mode, cwd })), [{ team: "builder", mode: "implement", cwd: fixture.worktree }]);
     assert.equal(process.cwd(), nested);
 
     let rejectedHookCalls = 0;

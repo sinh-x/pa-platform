@@ -1386,8 +1386,10 @@ test("PPA linked-worktree deployments enforce one orchestrator and one shared im
     execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-195-slot-b", worktreeB], { cwd: primary, stdio: "ignore" });
 
     const releases: Array<() => void> = [];
+    let preflights = 0;
     let spawns = 0;
     const heldAdapter = () => stubAdapter({
+      preflight: async () => { preflights += 1; },
       onSpawn: () => { spawns += 1; },
       result: (sessionId) => new Promise<SpawnResult>((resolveResult) => {
         releases.push(() => resolveResult({ sessionId, exitCode: 0, metadata: { sessionId } }));
@@ -1411,12 +1413,13 @@ test("PPA linked-worktree deployments enforce one orchestrator and one shared im
     assert.equal(inspectRepositoryMutationLease(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktreeB, slot: "implement" }).state, "live");
 
     process.chdir(worktreeA);
-    const duplicateOrchestrator = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-195" }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
-    const duplicateImplement = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195" }, stubAdapter({ onSpawn: () => { spawns += 1; } }));
+    const duplicateOrchestrator = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-195" }, stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: () => { spawns += 1; } }));
+    const duplicateImplement = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195" }, stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: () => { spawns += 1; } }));
     assert.equal(duplicateOrchestrator.status, "failed");
     assert.equal(duplicateImplement.status, "failed");
     assert.match(duplicateOrchestrator.reason ?? "", /slot=orchestrator.*state=live/);
     assert.match(duplicateImplement.reason ?? "", /slot=implement.*state=live/);
+    assert.equal(preflights, 4, "occupied slots must reject before Pi/native-host preflight processes");
     assert.equal(spawns, 4, "occupied slots must reject before adapter spawn");
 
     for (const release of releases) release();

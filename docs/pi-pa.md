@@ -153,7 +153,10 @@ Pi state and proper-base state belong to the selected Pi user agent directory (`
 ## Existing Linked-Worktree Deployments
 
 Run `ppa deploy` without `--repo` from an existing Git linked-worktree root or
-any physical descendant to keep Pi in that exact worktree. PPA authenticates the
+any physical descendant to keep Pi in that exact worktree. PAP-195 supersedes
+PAP-162's linked-worktree prohibition only for this authenticated PPA
+CWD-inference path; explicit inputs and non-Pi adapters retain the prior
+restriction. PPA authenticates the
 worktree by its physical Git directory, common directory, reciprocal `.git`
 metadata, and exact membership in the registered primary checkout's physical
 `git worktree list`, then requires the common directory to identify exactly one

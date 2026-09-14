@@ -198,6 +198,9 @@ export class PiAdapter implements RuntimeAdapter {
 
   allocateSessionId(): string { return this.sessionIdFactory(); }
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
+    const plan = opts.executionPlan;
+    try { assertPiExecutionRootAgreement(plan, opts.env); }
+    catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
     try { await this.preflight(); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
     finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
@@ -206,7 +209,6 @@ export class PiAdapter implements RuntimeAdapter {
     const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
     if (normalized.model) args.push("--model", normalized.model);
     if (normalized.provider) args.push("--provider", normalized.provider);
-    const plan = opts.executionPlan;
     const cwd = plan?.repositoryCwd ?? this.cwd;
     if (plan) {
       args.push("--no-skills", "--no-extensions");
@@ -238,6 +240,18 @@ export class PiAdapter implements RuntimeAdapter {
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
     if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     return { sessionId: id, exitCode: 0, logFile: opts.logFile, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+  }
+}
+
+function assertPiExecutionRootAgreement(plan: SpawnOpts["executionPlan"], env: Record<string, string> | undefined): void {
+  if (!plan || (plan.repoRoot === undefined && plan.worktreeRoot === undefined && env?.["PA_REPO"] === undefined && env?.["PA_WORKTREE_ROOT"] === undefined)) return;
+  const roots = [plan.repoRoot, plan.worktreeRoot, plan.repositoryCwd];
+  if (roots.some((root) => !root || resolve(root) !== root) || plan.repositoryCwd !== plan.worktreeRoot) {
+    throw new Error("repository-identity: Pi execution plan repositoryCwd must equal the exact absolute worktree root; no runtime was started");
+  }
+  if ((env?.["PA_REPO"] !== undefined && env["PA_REPO"] !== plan.repoRoot)
+    || (env?.["PA_WORKTREE_ROOT"] !== undefined && env["PA_WORKTREE_ROOT"] !== plan.worktreeRoot)) {
+    throw new Error("repository-identity: Pi environment roots do not match the immutable execution plan; no runtime was started");
   }
 }
 
@@ -730,10 +744,10 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
   const repositoryHandoffPath = value.repositoryHandoffPath;
   const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
-  const validRepositoryEvidence = (value.repoRoot === undefined || typeof value.repoRoot === "string")
-    && (value.worktreeRoot === undefined || typeof value.worktreeRoot === "string")
+  const validRepositoryEvidence = (value.repoRoot === undefined || (typeof value.repoRoot === "string" && resolve(value.repoRoot) === value.repoRoot))
+    && (value.worktreeRoot === undefined || (typeof value.worktreeRoot === "string" && resolve(value.worktreeRoot) === value.worktreeRoot))
     && (value.repositorySlot === undefined || value.repositorySlot === "orchestrator" || value.repositorySlot === "implement")
-    && (value.managed !== true || (typeof value.repoRoot === "string" && typeof value.worktreeRoot === "string"));
+    && (value.managed !== true || (typeof value.repoRoot === "string" && typeof value.worktreeRoot === "string" && value.cwd === value.worktreeRoot));
   if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validRepositoryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }

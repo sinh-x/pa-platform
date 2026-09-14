@@ -13,8 +13,10 @@ nested directory within it and executes at that configured root. Explicit
 non-registered paths, aliases, independent clones, and linked-worktree paths
 fail before runtime spawn with a bounded corrective diagnostic.
 
-PPA has a Pi-only CWD exception. With `--repo` omitted, an invocation from an
-exact physical linked-worktree root or descendant may execute in that existing
+PPA has a Pi-only CWD exception. PAP-195 supersedes PAP-162's linked-worktree
+prohibition only for this authenticated omitted-`--repo` PPA path. With `--repo`
+omitted, an invocation from an exact physical linked-worktree root or descendant
+may execute in that existing
 worktree when its physical root appears in the primary checkout's exact
 `git worktree list`, its physical Git common directory maps to exactly one
 registered primary repository, and its `.git` forward/reverse metadata is consistent.

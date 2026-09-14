@@ -408,7 +408,7 @@ complete -c ppa -f -n __ppa_deploy_completing -l agent-model -d 'Unsupported per
 complete -c ppa -n __ppa_deploy_completing -l background -d 'Run detached/headless'
 complete -c ppa -n __ppa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
 complete -c ppa -n __ppa_deploy_completing -l force -d 'Recover stale or malformed builder ownership evidence'
-complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Registered repository key or exact configured path' -r -a '(__ppa_projects)'
+complete -c ppa -f -n __ppa_deploy_completing -l repo -d 'Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD' -r -a '(__ppa_projects)'
 complete -c ppa -f -n __ppa_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__ppa_ticket_ids)'
 complete -c ppa -n __ppa_deploy_completing -l timeout -d 'Timeout seconds' -r
 complete -c ppa -f -n __ppa_deploy_completing -l resume -d 'Resume from deployment ID' -r -a '(__ppa_deployments)'

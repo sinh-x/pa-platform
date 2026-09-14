@@ -987,6 +987,14 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
     mode: "plan",
     objective: "## Additional Instructions\nDo the registered project work.",
     repository: { repoKey: "registered", repoRoot: root, worktreeRoot: worktree },
+    repositoryAdmission: {
+      access: "exclusive-builder",
+      launchMode: "background",
+      ownershipIntent: "acquire-before-spawn",
+      force: false,
+      slot: "implement",
+      gitSnapshot: { branch: "feature/PAP-195-worktree", head: "a".repeat(40), stagedCount: 1, unstagedCount: 2, untrackedCount: 3, dirty: true, statusSummary: "" },
+    },
     extraInstructions: [
       "## Additional Instructions",
       "<deployment-context>",
@@ -1008,6 +1016,10 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
   assert.match(primer, /^cwd: \/worktrees\/PAP-195$/m);
   assert.match(primer, /^repo: \/worktrees\/PAP-195$/m);
   assert.match(primer, /^  PA_REPO: \/registered\/project$/m);
+  assert.match(primer, /^### Repository Admission Evidence$/m);
+  assert.match(primer, /^- Slot: implement$/m);
+  assert.match(primer, /Git: branch=feature\/PAP-195-worktree, head=a{40}, staged=1, unstaged=2, untracked=3/);
+  assert.match(primer, /Recovery: preserve the recorded branch and files/);
   assert.doesNotMatch(primer, /repo_key: wrong|repo_root: \/wrong|worktree_root: \/wrong|PA_REPO: \/wrong/);
   assert.equal(primer.match(/^### Additional Instructions$/gm)?.length, 2);
 });

@@ -188,7 +188,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const outcome = await writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
   };
-  try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
@@ -293,6 +292,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       publishedPid = pid;
     };
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    // Slot and physical Git identity admission must reject before Pi preflight,
+    // because preflight may launch runtime/native-host probe processes.
+    await adapterPreflight(adapter);
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;

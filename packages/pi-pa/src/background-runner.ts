@@ -89,6 +89,14 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         if (config.repositoryHandoffPath !== resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE)) throw new Error("runner-readiness: repository handoff path mismatch");
         const handoff = readPiRepositoryHandoff(config.repositoryHandoffPath);
         if (handoff.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository handoff deployment identity mismatch");
+        const authority = handoff.repositoryLease ?? handoff.repositoryBorrower;
+        const authorityWorktreeRoot = authority?.worktreeRoot ?? authority?.canonicalRepoRoot;
+        if (config.managed && (!authority
+          || authority.canonicalRepoRoot !== config.repoRoot
+          || authorityWorktreeRoot !== config.worktreeRoot
+          || (handoff.repositoryLease?.slot !== undefined && handoff.repositoryLease.slot !== config.repositorySlot))) {
+          throw new Error("runner-readiness: repository handoff roots or slot do not match the managed background configuration");
+        }
         repositoryLease = handoff.repositoryLease;
         repositoryBorrower = handoff.repositoryBorrower;
         for (const value of [repositoryLease?.ownershipToken, repositoryBorrower?.borrowerToken]) {

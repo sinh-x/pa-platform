@@ -139,9 +139,21 @@ function renderAdditionalInstructions(
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
   const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
-  return ["## Additional Instructions", objective, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  return ["## Additional Instructions", objective, repositoryEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
+  const snapshot = repositoryAdmission?.gitSnapshot;
+  if (repositoryAdmission?.access !== "exclusive-builder" || !snapshot) return undefined;
+  return [
+    "### Repository Admission Evidence",
+    `- Slot: ${repositoryAdmission.slot ?? "implement"}`,
+    `- Git: branch=${snapshot.branch}, head=${snapshot.head}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
+    "- Recovery: preserve the recorded branch and files; on identity, slot, or snapshot drift, stop before spawn and retry only after the blocking evidence is reconciled.",
+  ].join("\n");
 }
 
 function renderDirtyBuilderIntentContract(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
