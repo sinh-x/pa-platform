@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, normalizeRogueOneDeployRequest, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, assertRepositoryGitIdentity, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, normalizeRogueOneDeployRequest, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -19,6 +19,7 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
+
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
@@ -84,7 +85,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan): void => {
-    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     writeFileSync(primerPath, primer, "utf8");
   };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
@@ -101,13 +102,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
-  let activeRepositoryLease: { canonicalRepoRoot: string; ownershipToken: string } | undefined;
-  let activeRepositoryBorrower: { canonicalRepoRoot: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
+  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
+  let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const borrowed = activeRepositoryBorrower;
     if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
+        worktreeRoot: borrowed.worktreeRoot,
+        repositoryGitDir: borrowed.repositoryGitDir,
+        repositoryGitCommonDir: borrowed.repositoryGitCommonDir,
         borrowerToken: borrowed.borrowerToken,
         deploymentId: borrowed.deploymentId,
       });
@@ -155,7 +159,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     const containmentFailure = await finalizeActiveRepositoryAuthority();
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
@@ -187,26 +191,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const outcome = await writeTerminal("crashed", "failed", safeReason, 1);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
   };
-  try { await adapterPreflight(adapter); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
   const sessionPath = resolve(deployDir, adapter.sessionFileName);
-  try {
-    writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
-    renameSync(`${sessionPath}.tmp`, sessionPath);
-    if (readFileSync(sessionPath, "utf8").trim() !== sessionId) throw new Error("persisted Pi session id does not match the authoritative session id");
-  } catch (error) {
-    const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
-    return crashFailure(reason);
-  }
   try {
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
     const inheritedParent = inheritedAttempt;
     if (inheritedParent) {
       const plannedSnapshot = plan.repositoryAdmission.gitSnapshot;
-      const immediateSnapshot = captureRepositoryGitSnapshot(plan.repoRoot);
+      const immediateSnapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
       if (plannedSnapshot && !repositoryGitSnapshotsEqual(plannedSnapshot, immediateSnapshot)) {
         return completeFailure(formatRepositoryBorrowerDiagnostic({ category: "immediate-reread", reason: "branch, full HEAD, or complete porcelain-v2 status changed after execution planning", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
       }
@@ -214,6 +209,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const registration = registerRepositoryMutationBorrower({
         canonicalRepoKey: plan.repoKey,
         canonicalRepoRoot: plan.repoRoot,
+        worktreeRoot: plan.worktreeRoot,
+        expectedGitDir: plan.repositoryGitDir,
+        expectedGitCommonDir: plan.repositoryGitCommonDir,
         parentDeploymentId: inheritedParent.parentDeploymentId,
         deploymentId,
         deploymentDirectory: deployDir,
@@ -232,6 +230,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       plan = withAuthoritativeRepositoryAdmission(plan, registration.borrower.launchGitSnapshot, registration.borrower.approvedMutationPaths);
       activeRepositoryBorrower = {
         canonicalRepoRoot: plan.repoRoot,
+        ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot } : {}),
+        repositoryGitDir: plan.repositoryGitDir,
+        repositoryGitCommonDir: plan.repositoryGitCommonDir,
         borrowerToken: registration.borrower.borrowerToken,
         parentDeploymentId: registration.borrower.parentDeploymentId,
         deploymentId: registration.borrower.deploymentId,
@@ -241,6 +242,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const acquisition = acquireRepositoryMutationLease({
         canonicalRepoKey: plan.repoKey,
         canonicalRepoRoot: plan.repoRoot,
+        worktreeRoot: plan.worktreeRoot,
+        expectedGitDir: plan.repositoryGitDir,
+        expectedGitCommonDir: plan.repositoryGitCommonDir,
         deploymentId,
         deploymentDirectory: deployDir,
         runtime: "pi",
@@ -252,32 +256,81 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
       plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
-      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ownershipToken: acquisition.lease.ownershipToken };
+      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir, ownershipToken: acquisition.lease.ownershipToken };
       // Keep the ownership capability in this trusted launcher closure only.
       // The Pi model and every tool/child environment authenticate nested direct
       // borrowing through the process-verified launcher lineage instead.
     }
-    if (activeRepositoryLease) {
+    // Slot and physical Git identity admission must reject before Pi preflight,
+    // because preflight may launch runtime/native-host probe processes.
+    try { await adapterPreflight(adapter); }
+    catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); }
+    try {
+      writeFileSync(`${sessionPath}.tmp`, `${sessionId}\n`, "utf8");
+      renameSync(`${sessionPath}.tmp`, sessionPath);
+      if (readFileSync(sessionPath, "utf8").trim() !== sessionId) throw new Error("persisted Pi session id does not match the authoritative session id");
+    } catch (error) {
+      const reason = `could not persist Pi session id: ${error instanceof Error ? error.message : String(error)}`;
+      return crashFailure(reason);
+    }
+
+    // Pi/native-host preflight can yield while another admitted worktree slot
+    // changes Git state or worktree metadata. Re-authenticate the immutable
+    // physical identity first, then reconcile the snapshot immediately before spawn.
+    if (activeRepositoryBorrower || activeRepositoryLease) {
+      try {
+        assertRepositoryGitIdentity(plan.worktreeRoot, plan.repositoryGitDir, plan.repositoryGitCommonDir);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (activeRepositoryBorrower) {
+          throw new Error(formatRepositoryBorrowerDiagnostic({
+            category: "repository-identity",
+            reason,
+            canonicalRepoKey: plan.repoKey,
+            canonicalRepoRoot: plan.repoRoot,
+            worktreeRoot: plan.worktreeRoot,
+            slot: "implement",
+          }));
+        }
+        throw error;
+      }
+    }
+    if (activeRepositoryBorrower) {
+      writePrimer(plan);
+      const expected = plan.repositoryAdmission.gitSnapshot;
+      const observed = captureRepositoryGitSnapshot(plan.worktreeRoot);
+      if (!expected || !repositoryGitSnapshotsEqual(expected, observed)) {
+        throw new Error(formatRepositoryBorrowerDiagnostic({
+          category: "pre-spawn-reread",
+          reason: "branch, full HEAD, or complete porcelain-v2 status changed after authenticated borrower admission and Pi preflight",
+          canonicalRepoKey: plan.repoKey,
+          canonicalRepoRoot: plan.repoRoot,
+          worktreeRoot: plan.worktreeRoot,
+          slot: "implement",
+        }));
+      }
+    } else if (activeRepositoryLease) {
       let stable = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         writePrimer(plan);
         const expected = plan.repositoryAdmission.gitSnapshot!;
-        const observed = captureRepositoryGitSnapshot(plan.repoRoot);
+        const observed = captureRepositoryGitSnapshot(plan.worktreeRoot);
         if (repositoryGitSnapshotsEqual(expected, observed)) {
           stable = true;
           break;
         }
-        if (plan.repositoryAdmission.launchMode === "background" && observed.dirty) {
-          throw new Error(formatDirtyBackgroundBuilderDiagnostic({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, team: team.name, mode: plan.mode, runtime: "pi", snapshot: observed, ...(plan.ticket ? { ticket: plan.ticket } : {}) }));
+        if (plan.repositoryAdmission.launchMode === "background" && observed.dirty && plan.repositoryKind === "primary") {
+          throw new Error(formatDirtyBackgroundBuilderDiagnostic({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, team: team.name, mode: plan.mode, runtime: "pi", snapshot: observed, ...(plan.ticket ? { ticket: plan.ticket } : {}) }));
         }
-        const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
+        const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositoryGitDir: activeRepositoryLease.repositoryGitDir, slot: activeRepositoryLease.slot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
         if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
         plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
       }
-      if (!stable) throw new Error("repository-admission: Git state did not stabilize before runtime spawn; ownership was released and no runtime was started");
+      if (!stable) throw new Error("repository-admission: Git state did not stabilize after Pi preflight; ownership was released and no runtime was started");
     } else {
       writePrimer(plan);
     }
+
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {
       if (!Number.isInteger(pid) || pid <= 0 || publishedPid !== undefined) return;

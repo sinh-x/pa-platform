@@ -130,7 +130,12 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --objective-file <path>  Read objective from file");
   io.stdout("  --evaluate-deployment <id>  Generate evaluator primer objective for a completed deployment");
   io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
-  io.stdout("                      Omit to infer the exact configured root from CWD");
+  if (binaryName === "ppa") {
+    io.stdout("                      Omit to infer an authenticated primary or linked worktree from CWD");
+    io.stdout("                      Explicit inputs always select the registered primary root");
+  } else {
+    io.stdout("                      Omit to infer the exact configured root from CWD");
+  }
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
   if (binaryName !== "cpa" && binaryName !== "dpa") {
     io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
@@ -189,7 +194,9 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
 
   let repository: ReturnType<typeof resolveRepoExecutionPath>;
   try {
-    repository = resolveRepoExecutionPath(resolved.request.repo);
+    repository = resolveRepoExecutionPath(resolved.request.repo, process.cwd(), {
+      allowLinkedWorktreeCwd: binaryName === "ppa" && resolved.request.repo === undefined,
+    });
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
@@ -198,8 +205,11 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   const originalCwd = process.cwd();
   let result: Awaited<ReturnType<NonNullable<CoreExecutionHooks["deploy"]>>>;
   try {
-    process.chdir(repository.repoRoot);
-    result = await hooks.deploy({ ...resolved.request, repo: repository.repoRoot }, { stderr: io.stderr });
+    process.chdir(repository.repositoryCwd);
+    const adapterRequest = binaryName === "ppa" && resolved.request.repo === undefined
+      ? resolved.request
+      : { ...resolved.request, repo: repository.repoRoot };
+    result = await hooks.deploy(adapterRequest, { stderr: io.stderr });
   } finally {
     process.chdir(originalCwd);
   }

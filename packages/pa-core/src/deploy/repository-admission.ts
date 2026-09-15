@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -26,6 +27,8 @@ import type { RuntimeName } from "../types.js";
 
 export const REPOSITORY_MUTATION_LEASE_FILE = "pa-repository-mutation.lease.json";
 export const REPOSITORY_MUTATION_BORROWER_FILE = "pa-repository-mutation.borrower.json";
+export const REPOSITORY_IMPLEMENT_LEASE_FILE = "pa-repository-mutation.implement.lease.json";
+const REPOSITORY_SLOT_MUTEX_ANCHOR = "pa-repository-mutation.slots";
 export const REPOSITORY_DIRTY_BORROW_APPROVAL_FILE = "repository-dirty-borrow.approval.json";
 export const MAX_REPOSITORY_LEASE_BYTES = 64 * 1024;
 export const MAX_REPOSITORY_BORROWER_BYTES = 64 * 1024;
@@ -99,6 +102,7 @@ export interface RepositoryDirtyBorrowApproval {
   readonly parentLeaseEvidenceIdentity: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  readonly worktreeRoot?: string;
   readonly ticket: string;
   readonly branch: string;
   readonly snapshot: RepositoryGitSnapshot;
@@ -108,6 +112,7 @@ export interface RepositoryDirtyBorrowApproval {
 
 export type RepositoryAdmissionLaunchMode = "foreground" | "background" | "dry-run";
 export type RepositoryOwnershipIntent = "none" | "preview" | "acquire-before-spawn";
+export type RepositoryMutationSlot = "orchestrator" | "implement";
 export type RepositoryAdmissionOperation = "git-status" | "lease-read" | "lease-write" | "lease-remove" | "lease-quarantine";
 
 /** Immutable repository evidence carried by the shared execution plan. */
@@ -116,6 +121,7 @@ export interface RepositoryAdmissionEvidence {
   readonly launchMode: RepositoryAdmissionLaunchMode;
   readonly ownershipIntent: RepositoryOwnershipIntent;
   readonly force: boolean;
+  readonly slot?: RepositoryMutationSlot;
   readonly gitSnapshot?: RepositoryGitSnapshot;
   readonly approvedMutationPaths?: readonly string[];
 }
@@ -125,6 +131,8 @@ export interface ResolveRepositoryAdmissionEvidenceOptions {
   readonly mode: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  /** Exact execution root; defaults to canonicalRepoRoot for primary-root compatibility. */
+  readonly worktreeRoot?: string;
   readonly runtime: RuntimeName;
   readonly background?: boolean;
   readonly dryRun?: boolean;
@@ -141,6 +149,8 @@ export interface RepositoryMutationLease {
   readonly ownershipToken: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  readonly worktreeRoot?: string;
+  readonly slot?: RepositoryMutationSlot;
   readonly deploymentId: string;
   readonly deploymentDirectory: string;
   readonly runtime: RuntimeName;
@@ -158,6 +168,7 @@ export interface RepositoryMutationBorrower {
   readonly borrowerToken: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  readonly worktreeRoot?: string;
   readonly parentDeploymentId: string;
   readonly parentProcessFingerprint: ProcessFingerprint;
   readonly deploymentId: string;
@@ -180,8 +191,14 @@ export interface RepositoryMutationBorrower {
   readonly finalGitSnapshot?: RepositoryGitSnapshot;
 }
 
+export interface GitCommandOptions {
+  /** Immutable physical identity used after repository admission. */
+  readonly repositoryGitDir?: string;
+  readonly repositoryGitCommonDir?: string;
+}
+
 export interface GitCommandRunner {
-  (args: readonly string[], cwd: string): string | Buffer;
+  (args: readonly string[], cwd: string, options?: GitCommandOptions): string | Buffer;
 }
 
 export interface RepositoryAdmissionDependencies {
@@ -206,6 +223,9 @@ export interface RegisterRepositoryMutationBorrowerOptions {
   readonly capability?: string;
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  readonly worktreeRoot?: string;
+  readonly expectedGitDir?: string;
+  readonly expectedGitCommonDir?: string;
   readonly parentDeploymentId: string;
   readonly deploymentId: string;
   readonly deploymentDirectory: string;
@@ -231,6 +251,9 @@ export interface RegisterRepositoryMutationBorrowerOptions {
 export interface AcquireRepositoryMutationLeaseOptions {
   readonly canonicalRepoKey: string;
   readonly canonicalRepoRoot: string;
+  readonly worktreeRoot?: string;
+  readonly expectedGitDir?: string;
+  readonly expectedGitCommonDir?: string;
   readonly deploymentId: string;
   readonly deploymentDirectory: string;
   readonly runtime: RuntimeName;
@@ -339,12 +362,68 @@ export function classifyRepositoryAccess(team: string, _mode?: string): Reposito
   return "non-locking";
 }
 
-export function repositoryMutationLeasePath(canonicalRepoRoot: string): string {
-  return join(assertCanonicalRoot(canonicalRepoRoot), ".git", REPOSITORY_MUTATION_LEASE_FILE);
+export function classifyRepositoryMutationSlot(mode: string): RepositoryMutationSlot {
+  return mode.trim().toLowerCase() === "orchestrator" ? "orchestrator" : "implement";
 }
 
-export function repositoryMutationBorrowerPath(canonicalRepoRoot: string): string {
-  return join(assertCanonicalRoot(canonicalRepoRoot), ".git", REPOSITORY_MUTATION_BORROWER_FILE);
+export function repositoryMutationLeasePath(worktreeRoot: string, slot: RepositoryMutationSlot = "orchestrator"): string {
+  const gitDir = repositoryPhysicalGitDir(worktreeRoot);
+  return join(gitDir, slot === "implement" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE);
+}
+
+export function repositoryMutationBorrowerPath(worktreeRoot: string): string {
+  return join(repositoryPhysicalGitDir(worktreeRoot), REPOSITORY_MUTATION_BORROWER_FILE);
+}
+
+function repositoryPhysicalGitDir(worktreeRoot: string): string {
+  const root = assertCanonicalRoot(worktreeRoot);
+  const dotGit = join(root, ".git");
+  try {
+    const metadata = lstatSync(dotGit);
+    if (metadata.isDirectory() && !metadata.isSymbolicLink()) return realpathSync(dotGit);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("invalid .git metadata");
+    const output = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const physical = realpathSync(output);
+    if (!isAbsolute(output) || resolve(output) !== physical) throw new Error("non-physical Git directory");
+    return physical;
+  } catch {
+    throw new Error(`repository-admission: cannot resolve the physical Git directory for ${root}`);
+  }
+}
+
+function repositoryPhysicalGitCommonDir(worktreeRoot: string): string {
+  const root = assertCanonicalRoot(worktreeRoot);
+  try {
+    const output = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const physical = realpathSync(output);
+    if (!isAbsolute(output) || resolve(output) !== physical) throw new Error("non-physical Git common directory");
+    return physical;
+  } catch {
+    throw new Error(`repository-admission: cannot resolve the physical Git common directory for ${root}`);
+  }
+}
+
+export function assertRepositoryGitIdentity(worktreeRoot: string, expectedGitDir: string, expectedGitCommonDir: string): void {
+  assertExpectedGitIdentity(assertCanonicalRoot(worktreeRoot), expectedGitDir, expectedGitCommonDir);
+}
+
+function assertExpectedGitIdentity(worktree: string, expectedGitDir?: string, expectedGitCommonDir?: string): void {
+  if (expectedGitDir !== undefined && repositoryPhysicalGitDir(worktree) !== expectedGitDir) {
+    throw new Error("repository-admission: execution worktree Git directory changed after planning; no runtime was started");
+  }
+  if (expectedGitCommonDir !== undefined && repositoryPhysicalGitCommonDir(worktree) !== expectedGitCommonDir) {
+    throw new Error("repository-admission: execution worktree Git common directory changed after planning; no runtime was started");
+  }
+}
+
+function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string | undefined, slot: RepositoryMutationSlot, admittedGitDir?: string): { root: string; worktree: string; gitDir: string; leasePath: string; mutexPath: string; linked: boolean } {
+  const root = assertCanonicalRoot(canonicalRepoRoot);
+  const worktree = assertCanonicalRoot(worktreeRoot ?? root);
+  const linked = worktree !== root;
+  const gitDir = admittedGitDir === undefined ? repositoryPhysicalGitDir(worktree) : assertPhysicalDirectory(admittedGitDir, "admitted Git directory");
+  const leasePath = join(gitDir, linked && slot === "implement" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE);
+  const mutexPath = linked ? resolve(gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR) : leasePath;
+  return { root, worktree, gitDir, leasePath, mutexPath, linked };
 }
 
 export function repositoryDirtyBorrowApprovalPath(parentDeploymentDirectory: string): string {
@@ -357,6 +436,7 @@ export function repositoryDirtyBorrowApprovalPath(parentDeploymentDirectory: str
  */
 export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdmissionEvidenceOptions): RepositoryAdmissionEvidence {
   const canonicalRepoRoot = assertCanonicalRoot(options.canonicalRepoRoot);
+  const worktreeRoot = assertCanonicalRoot(options.worktreeRoot ?? canonicalRepoRoot);
   const access = classifyRepositoryAccess(options.team, options.mode);
   const launchMode: RepositoryAdmissionLaunchMode = options.dryRun ? "dry-run" : options.background ? "background" : "foreground";
   if (access !== "exclusive-builder") {
@@ -364,11 +444,12 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
   }
 
   options.observeOperation?.("git-status");
-  const snapshot = Object.freeze({ ...(options.captureGitSnapshot ?? captureRepositoryGitSnapshot)(canonicalRepoRoot) });
-  if (snapshot.dirty && launchMode === "background" && !options.allowDirtyInheritedBorrow) {
+  const snapshot = Object.freeze({ ...(options.captureGitSnapshot ?? captureRepositoryGitSnapshot)(worktreeRoot) });
+  if (snapshot.dirty && launchMode === "background" && worktreeRoot === canonicalRepoRoot && !options.allowDirtyInheritedBorrow) {
     throw new Error(formatDirtyBackgroundBuilderDiagnostic({
       canonicalRepoKey: options.canonicalRepoKey,
       canonicalRepoRoot,
+      ...(worktreeRoot !== canonicalRepoRoot ? { worktreeRoot } : {}),
       team: options.team,
       mode: options.mode,
       runtime: options.runtime,
@@ -382,20 +463,25 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
     launchMode,
     ownershipIntent: launchMode === "dry-run" ? "preview" : "acquire-before-spawn",
     force: Boolean(options.force),
+    slot: classifyRepositoryMutationSlot(options.mode),
     gitSnapshot: snapshot,
   });
 }
 
-export function captureRepositoryGitSnapshot(canonicalRepoRoot: string, runGit: GitCommandRunner = defaultGitRunner): RepositoryGitSnapshot {
+export function captureRepositoryGitSnapshot(canonicalRepoRoot: string, runGit: GitCommandRunner = defaultGitRunner, gitIdentity?: GitCommandOptions): RepositoryGitSnapshot {
   const root = assertCanonicalRoot(canonicalRepoRoot);
+  const identity = gitIdentity === undefined ? undefined : {
+    repositoryGitDir: assertPhysicalDirectory(gitIdentity.repositoryGitDir ?? "", "admitted Git directory"),
+    repositoryGitCommonDir: assertPhysicalDirectory(gitIdentity.repositoryGitCommonDir ?? "", "admitted Git common directory"),
+  };
   let branch = "(detached)";
   try {
-    branch = boundedField(gitText(runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], root)).trim(), STRING_FIELD_LIMIT) || "(detached)";
+    branch = boundedField(gitText(runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], root, identity)).trim(), STRING_FIELD_LIMIT) || "(detached)";
   } catch {
     // Detached HEAD is valid evidence and does not cause admission to mutate Git.
   }
-  const head = boundedField(gitText(runGit(["rev-parse", "HEAD"], root)).trim(), STRING_FIELD_LIMIT);
-  const rawStatus = gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], root));
+  const head = boundedField(gitText(runGit(["rev-parse", "HEAD"], root, identity)).trim(), STRING_FIELD_LIMIT);
+  const rawStatus = gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], root, identity));
   const entries = parseRepositoryGitStatus(rawStatus);
   let stagedCount = 0;
   let unstagedCount = 0;
@@ -526,13 +612,12 @@ export function publishRepositoryDirtyBorrowApproval(
   approval: RepositoryDirtyBorrowApproval,
   dependencies?: Partial<RepositoryAdmissionDependencies>,
 ): string {
-  const root = assertCanonicalRoot(approval.canonicalRepoRoot);
+  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(approval.canonicalRepoRoot, approval.worktreeRoot, "orchestrator");
   const approvalPath = repositoryDirtyBorrowApprovalPath(approval.parentDeploymentDirectory);
-  const leasePath = repositoryMutationLeasePath(root);
   const resolvedDependencies = resolveDependencies(dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     if (!isRepositoryDirtyBorrowApproval(approval)) throw new Error("dirty-borrow-approval: generated receipt is invalid or incomplete");
-    validateRepositoryDirtyBorrowScope(root, approval.snapshot, approval.classifications, approval.plannedNewPaths);
+    validateRepositoryDirtyBorrowScope(worktree, approval.snapshot, approval.classifications, approval.plannedNewPaths);
     const inspection = inspectLeaseUnlocked(root, leasePath, resolvedDependencies.getProcessFingerprint);
     if (inspection.state !== "live" || !inspection.lease
       || inspection.lease.deploymentId !== approval.parentDeploymentId
@@ -542,6 +627,7 @@ export function publishRepositoryDirtyBorrowApproval(
       || normalizedTeam(inspection.lease.team ?? "") !== "builder"
       || inspection.lease.launchMode !== "foreground"
       || inspection.lease.canonicalRepoKey !== approval.canonicalRepoKey
+      || (inspection.lease.worktreeRoot ?? root) !== worktree
       || inspection.evidenceIdentity !== approval.parentLeaseEvidenceIdentity
       || !fingerprintsEqual(inspection.lease.processFingerprint, approval.parentProcessFingerprint)
       || !resolvedDependencies.isDeploymentRunning(approval.parentDeploymentId)) {
@@ -554,15 +640,15 @@ export function publishRepositoryDirtyBorrowApproval(
 
 export function removeRepositoryDirtyBorrowApproval(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
   approvalPath: string;
   receiptId: string;
 }): "removed" | "absent" | "replacement-preserved" {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  return withMutationMutex(leasePath, () => {
+  const { root, worktree, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
+  return withMutationMutex(mutexPath, () => {
     const approval = readValidApprovalUnlocked(options.approvalPath);
     if (approval === undefined) return "absent";
-    if (!approval || approval.canonicalRepoRoot !== root || !secureStringsEqual(approval.receiptId, options.receiptId)) return "replacement-preserved";
+    if (!approval || approval.canonicalRepoRoot !== root || (approval.worktreeRoot ?? root) !== worktree || !secureStringsEqual(approval.receiptId, options.receiptId)) return "replacement-preserved";
     unlinkSync(options.approvalPath);
     return "removed";
   });
@@ -586,21 +672,19 @@ export function readProcessFingerprint(pid: number): ProcessFingerprint | undefi
 
 export function inspectRepositoryMutationLease(
   canonicalRepoRoot: string,
-  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> = { getProcessFingerprint: readProcessFingerprint },
+  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; slot?: RepositoryMutationSlot; repositoryGitDir?: string } = { getProcessFingerprint: readProcessFingerprint },
 ): RepositoryEvidenceInspection {
-  const root = assertCanonicalRoot(canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  return withMutationMutex(leasePath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
+  const { root, leasePath, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, dependencies.slot ?? "orchestrator", dependencies.repositoryGitDir);
+  return withMutationMutex(mutexPath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
 }
 
 export function inspectRepositoryMutationBorrower(
   canonicalRepoRoot: string,
-  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> = { getProcessFingerprint: readProcessFingerprint },
+  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; repositoryGitDir?: string } = { getProcessFingerprint: readProcessFingerprint },
 ): RepositoryBorrowerInspection {
-  const root = assertCanonicalRoot(canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
-  return withMutationMutex(leasePath, () => inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint));
+  const { root, gitDir, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, "orchestrator", dependencies.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
+  return withMutationMutex(mutexPath, () => inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint));
 }
 
 /**
@@ -608,25 +692,26 @@ export function inspectRepositoryMutationBorrower(
  * and publishes separate borrower evidence before the adapter spawns the child.
  */
 export function registerRepositoryMutationBorrower(options: RegisterRepositoryMutationBorrowerOptions): RepositoryBorrowRegistration {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const { root, worktree, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
+  const borrowerPath = repositoryMutationBorrowerPath(worktree);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const reject = (category: string, reason: string, borrower?: RepositoryMutationBorrower): RepositoryBorrowRegistration => ({
       status: "rejected",
       category,
       borrowerPath,
-      diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root }),
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot: "implement" }),
       ...(borrower ? { borrower } : {}),
     });
+    try { assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir); }
+    catch (error) { return reject("repository-identity", error instanceof Error ? error.message : String(error)); }
     const leaseInspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
     const lease = leaseInspection.lease;
     if (leaseInspection.state !== "live" || !lease) return reject("parent-state", "the claimed parent lease is not process-verified live version 1 evidence");
     if (!dependencies.isDeploymentRunning(lease.deploymentId)) return reject("parent-registry", "the claimed parent deployment is not registry-running");
     if (lease.runtime !== "pi" || lease.mode !== "orchestrator" || (lease.team !== undefined && normalizedTeam(lease.team) !== "builder")) return reject("parent-identity", "the live owner is not a Pi builder/orchestrator parent");
     if (lease.deploymentId !== options.parentDeploymentId) return reject("parent-identity", "the claimed parent deployment does not own the live lease");
-    if (lease.canonicalRepoKey !== options.canonicalRepoKey || lease.canonicalRepoRoot !== root) return reject("repository-identity", "the claimed canonical repository does not match the parent lease");
+    if (lease.canonicalRepoKey !== options.canonicalRepoKey || lease.canonicalRepoRoot !== root || (lease.worktreeRoot ?? root) !== worktree) return reject("repository-identity", "the claimed canonical repository or execution worktree does not match the parent lease");
     const pid = options.pid ?? process.pid;
     const observedFingerprint = dependencies.getProcessFingerprint(pid);
     const fingerprint = options.processFingerprint ?? observedFingerprint;
@@ -656,7 +741,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
 
     // This read is authoritative: it occurs under the same mutex as receipt
     // consumption and borrower publication.
-    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
+    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit)) });
     if (!isGitSnapshot(gitSnapshot)) return reject("git-state", "the mutex-held Git snapshot is malformed");
     if (!gitSnapshot.dirty && options.expectedGitSnapshot && (!isGitSnapshot(options.expectedGitSnapshot) || !repositoryGitSnapshotsEqual(options.expectedGitSnapshot, gitSnapshot))) {
       return reject("launch-snapshot", "the mutex-held child launch Git snapshot does not exactly match its immediate immutable reread");
@@ -681,7 +766,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       if (!approval) return reject("dirty-approval", "the parent-owned approval receipt is missing, malformed, oversized, insecure, or already consumed");
       let scope: readonly string[];
       try {
-        scope = validateRepositoryDirtyBorrowScope(root, approval.snapshot, approval.classifications, approval.plannedNewPaths);
+        scope = validateRepositoryDirtyBorrowScope(worktree, approval.snapshot, approval.classifications, approval.plannedNewPaths);
       } catch {
         return reject("dirty-approval", "the approval receipt classifications or planned new paths are incomplete or invalid");
       }
@@ -691,6 +776,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
         || !fingerprintsEqual(approval.parentProcessFingerprint, lease.processFingerprint)
         || approval.canonicalRepoKey !== options.canonicalRepoKey
         || approval.canonicalRepoRoot !== root
+        || (approval.worktreeRoot ?? root) !== worktree
         || approval.ticket !== options.ticket
         || approval.branch !== options.branch
         || approval.action !== "preserve-and-continue"
@@ -702,6 +788,13 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       }
       approvedMutationPaths = scope;
       dirtyApprovalReceiptId = approval.receiptId;
+    }
+
+    if (linked) {
+      const implementLeasePath = repositoryMutationLeasePath(worktree, "implement");
+      const implementInspection = inspectLeaseUnlocked(root, implementLeasePath, dependencies.getProcessFingerprint);
+      if (implementInspection.state === "live") return reject("borrower-state", "a process-verified live implement owner already occupies the worktree implement slot");
+      if (implementInspection.state !== "absent") return reject("borrower-state", `recoverable implement-slot evidence is ${implementInspection.state}`);
     }
 
     let inspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
@@ -719,6 +812,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       borrowerToken: boundedRequired(dependencies.createToken(), "borrower token"),
       canonicalRepoKey: boundedRequired(options.canonicalRepoKey, "canonical repository key"),
       canonicalRepoRoot: root,
+      ...(worktree !== root ? { worktreeRoot: worktree } : {}),
       parentDeploymentId: lease.deploymentId,
       parentProcessFingerprint: Object.freeze({ ...lease.processFingerprint }),
       deploymentId: boundedRequired(options.deploymentId, "child deployment ID"),
@@ -742,23 +836,24 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       status: "registered",
       borrowerPath,
       borrower,
-      diagnostic: formatRepositoryBorrowerDiagnostic({ category: "registered", reason: inspection.reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root }),
+      diagnostic: formatRepositoryBorrowerDiagnostic({ category: "registered", reason: inspection.reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot: "implement" }),
       ...(quarantinedPath ? { quarantinedPath } : {}),
     };
   });
 }
 
 export function acquireRepositoryMutationLease(options: AcquireRepositoryMutationLeaseOptions): RepositoryLeaseAcquisition {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
+  const slot = classifyRepositoryMutationSlot(options.mode);
+  const { root, worktree, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, slot);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
+    assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir);
     // Runtime adapters intentionally omit gitSnapshot so this read occurs after
     // planning/tool setup and inside the same admission-critical section that
     // publishes ownership. Tests and lower-level callers may provide a fixed
     // snapshot when exercising the ownership primitive in synthetic fixtures.
-    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
-    if (options.launchMode === "background" && gitSnapshot.dirty) {
+    const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit)) });
+    if (options.launchMode === "background" && gitSnapshot.dirty && worktree === root) {
       return {
         status: "rejected",
         evidenceState: "dirty-background",
@@ -766,6 +861,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
         diagnostic: formatDirtyBackgroundBuilderDiagnostic({
           canonicalRepoKey: options.canonicalRepoKey,
           canonicalRepoRoot: root,
+          ...(worktree !== root ? { worktreeRoot: worktree } : {}),
           team: options.team ?? "builder",
           mode: options.mode,
           runtime: options.runtime,
@@ -781,12 +877,14 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
         status: "rejected",
         evidenceState: inspection.state,
         leasePath,
-        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }),
+        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot, inspection }),
         ...(inspection.lease ? { lease: inspection.lease } : {}),
       };
     }
-    const borrowerPath = repositoryMutationBorrowerPath(root);
-    const borrowerInspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
+    const borrowerPath = repositoryMutationBorrowerPath(worktree);
+    const borrowerInspection = slot === "implement" || !linked
+      ? inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint)
+      : { state: "absent" as const, reason: "orchestrator slot is independent", borrowerPath };
     let quarantinedPath: string | undefined;
     if (borrowerInspection.state === "live") {
       return {
@@ -798,6 +896,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
           reason: "a process-verified live borrower retains repository authority",
           canonicalRepoKey: options.canonicalRepoKey,
           canonicalRepoRoot: root,
+          worktreeRoot: worktree,
+          slot,
         }),
       };
     }
@@ -806,7 +906,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
         status: "rejected",
         evidenceState: inspection.state,
         leasePath,
-        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection }),
+        diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot, inspection }),
         ...(inspection.lease ? { lease: inspection.lease } : {}),
       };
     }
@@ -821,6 +921,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
             reason: `borrower evidence is ${borrowerInspection.state}`,
             canonicalRepoKey: options.canonicalRepoKey,
             canonicalRepoRoot: root,
+            worktreeRoot: worktree,
+            slot,
           }),
         };
       }
@@ -843,6 +945,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       ownershipToken: boundedRequired(options.ownershipToken ?? dependencies.createToken(), "ownership token"),
       canonicalRepoKey: boundedRequired(options.canonicalRepoKey, "canonical repository key"),
       canonicalRepoRoot: root,
+      ...(worktree !== root ? { worktreeRoot: worktree, slot } : {}),
       deploymentId: boundedRequired(options.deploymentId, "deployment ID"),
       deploymentDirectory: boundedRequired(options.deploymentDirectory, "deployment directory"),
       runtime: options.runtime,
@@ -860,7 +963,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       evidenceState: "absent",
       leasePath,
       lease,
-      diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, inspection, recovered: Boolean(quarantinedPath) }),
+      diagnostic: formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot, inspection, recovered: Boolean(quarantinedPath) }),
       ...(quarantinedPath ? { quarantinedPath } : {}),
     };
   });
@@ -882,17 +985,19 @@ export function repositoryGitSnapshotsEqual(left: RepositoryGitSnapshot, right: 
 
 export function updateRepositoryMutationLeaseGitSnapshot(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  slot?: RepositoryMutationSlot;
   ownershipToken: string;
   gitSnapshot: RepositoryGitSnapshot;
   dependencies?: Pick<RepositoryAdmissionDependencies, "createToken">;
 }): RepositoryLeaseMutationResult {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
+  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, options.slot ?? "orchestrator", options.repositoryGitDir);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root || !isGitSnapshot(options.gitSnapshot)) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree || !isGitSnapshot(options.gitSnapshot)) return { status: "invalid-evidence" };
     if (parsed.ownershipToken !== options.ownershipToken) return { status: "token-mismatch" };
     const lease = Object.freeze({ ...parsed, preLaunchGitSnapshot: Object.freeze({ ...options.gitSnapshot }) });
     replaceLeaseAtomic(leasePath, lease, dependencies.createToken);
@@ -902,18 +1007,24 @@ export function updateRepositoryMutationLeaseGitSnapshot(options: {
 
 export function transferRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   borrowerToken: string;
   nextProcessFingerprint: ProcessFingerprint;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "createToken">;
 }): RepositoryBorrowerMutationResult {
   const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const worktree = assertCanonicalRoot(options.worktreeRoot ?? root);
+  try { assertExpectedGitIdentity(worktree, options.repositoryGitDir, options.repositoryGitCommonDir); }
+  catch { return { status: "invalid-evidence" }; }
+  const { gitDir, mutexPath } = repositoryLeaseLocation(root, worktree, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken)) return { status: "token-mismatch" };
     if (!isProcessFingerprint(options.nextProcessFingerprint)
       || !fingerprintsEqual(options.nextProcessFingerprint, dependencies.getProcessFingerprint(options.nextProcessFingerprint.pid))) {
@@ -927,15 +1038,16 @@ export function transferRepositoryMutationBorrower(options: {
 
 export function releaseRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
   borrowerToken: string;
 }): RepositoryBorrowerMutationResult {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
-  return withMutationMutex(leasePath, () => {
+  const { root, worktree, gitDir, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken)) return { status: "token-mismatch" };
     unlinkSync(borrowerPath);
     return { status: "released" };
@@ -944,19 +1056,21 @@ export function releaseRepositoryMutationBorrower(options: {
 
 export function finalizeRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   borrowerToken: string;
   deploymentId: string;
   finalGitSnapshot?: RepositoryGitSnapshot;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryBorrowerFinalizationResult {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const { root, worktree, gitDir, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.borrowerToken, options.borrowerToken) || parsed.deploymentId !== options.deploymentId) return { status: "token-mismatch" };
 
     const terminalFingerprint = dependencies.getCurrentProcessFingerprint();
@@ -978,7 +1092,7 @@ export function finalizeRepositoryMutationBorrower(options: {
       return { status: "uncertain-live", borrower: finalizing };
     }
 
-    const finalGitSnapshot = Object.freeze({ ...(options.finalGitSnapshot ?? captureRepositoryGitSnapshot(root, dependencies.runGit)) });
+    const finalGitSnapshot = Object.freeze({ ...(options.finalGitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit, options.repositoryGitDir && options.repositoryGitCommonDir ? { repositoryGitDir: options.repositoryGitDir, repositoryGitCommonDir: options.repositoryGitCommonDir } : undefined)) });
     if (!isGitSnapshot(finalGitSnapshot)) return { status: "invalid-evidence" };
     const approved = new Set(parsed.approvedMutationPaths ?? []);
     const finalEntries = finalGitSnapshot.statusEntries ?? [];
@@ -998,7 +1112,7 @@ export function finalizeRepositoryMutationBorrower(options: {
     const parent = parentInspection.lease;
     let parentLease: "retained" | "released" | "absent" | "replacement-preserved";
     if (parentInspection.state === "absent") parentLease = "absent";
-    else if (!parent || parent.deploymentId !== parsed.parentDeploymentId || parent.canonicalRepoRoot !== root || !fingerprintsEqual(parent.processFingerprint, parsed.parentProcessFingerprint)) parentLease = "replacement-preserved";
+    else if (!parent || parent.deploymentId !== parsed.parentDeploymentId || parent.canonicalRepoRoot !== root || (parent.worktreeRoot ?? root) !== worktree || !fingerprintsEqual(parent.processFingerprint, parsed.parentProcessFingerprint)) parentLease = "replacement-preserved";
     else if (parentInspection.state === "live" && dependencies.isDeploymentRunning(parent.deploymentId)) parentLease = "retained";
     else {
       unlinkSync(leasePath);
@@ -1021,6 +1135,10 @@ export function finalizeRepositoryMutationBorrower(options: {
  */
 export async function finalizeRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
+  slot?: RepositoryMutationSlot;
   ownershipToken: string;
   dependencies?: Partial<RepositoryLeaseFinalizationDependencies>;
 }): Promise<RepositoryLeaseFinalizationResult> {
@@ -1028,14 +1146,16 @@ export async function finalizeRepositoryMutationLease(options: {
   const now = options.dependencies?.now ?? Date.now;
   const sleep = options.dependencies?.sleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const getProcessFingerprint = options.dependencies?.getProcessFingerprint ?? readProcessFingerprint;
-  const ownerInspection = inspectRepositoryMutationLease(options.canonicalRepoRoot, { getProcessFingerprint });
+  const ownerInspection = inspectRepositoryMutationLease(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot, repositoryGitDir: options.repositoryGitDir, slot: options.slot });
   if (ownerInspection.state === "absent") return { status: "absent", waitedMs: 0 };
   if (!ownerInspection.lease || ownerInspection.lease.canonicalRepoRoot !== options.canonicalRepoRoot) return { status: "invalid-evidence", waitedMs: 0 };
   if (!secureStringsEqual(ownerInspection.lease.ownershipToken, options.ownershipToken)) return { status: "token-mismatch", waitedMs: 0 };
   const parentDeploymentId = ownerInspection.lease.deploymentId;
 
   while (true) {
-    const inspection = inspectRepositoryMutationBorrower(options.canonicalRepoRoot, { getProcessFingerprint });
+    const inspection = options.slot === "implement"
+      ? { state: "absent" as const }
+      : inspectRepositoryMutationBorrower(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot, repositoryGitDir: options.repositoryGitDir });
     if (inspection.state !== "live") break;
     const borrower = inspection.borrower;
     if (!borrower || borrower.parentDeploymentId !== parentDeploymentId) {
@@ -1071,6 +1191,9 @@ export async function finalizeRepositoryMutationLease(options: {
 
   const released = releaseRepositoryMutationLease({
     canonicalRepoRoot: options.canonicalRepoRoot,
+    worktreeRoot: options.worktreeRoot,
+    repositoryGitDir: options.repositoryGitDir,
+    slot: options.slot,
     ownershipToken: options.ownershipToken,
     dependencies: { getProcessFingerprint },
   });
@@ -1079,17 +1202,24 @@ export async function finalizeRepositoryMutationLease(options: {
 
 export function transferRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
+  slot?: RepositoryMutationSlot;
   ownershipToken: string;
   nextProcessFingerprint: ProcessFingerprint;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryLeaseMutationResult {
   const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
+  const worktree = assertCanonicalRoot(options.worktreeRoot ?? root);
+  try { assertExpectedGitIdentity(worktree, options.repositoryGitDir, options.repositoryGitCommonDir); }
+  catch { return { status: "invalid-evidence" }; }
+  const { leasePath, mutexPath } = repositoryLeaseLocation(root, worktree, options.slot ?? "orchestrator", options.repositoryGitDir);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (parsed.ownershipToken !== options.ownershipToken) return { status: "token-mismatch" };
     if (!isProcessFingerprint(options.nextProcessFingerprint)
       || !fingerprintsEqual(options.nextProcessFingerprint, dependencies.getProcessFingerprint(options.nextProcessFingerprint.pid))) {
@@ -1103,19 +1233,24 @@ export function transferRepositoryMutationLease(options: {
 
 export function releaseRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir?: string;
+  slot?: RepositoryMutationSlot;
   ownershipToken: string;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint">;
 }): RepositoryLeaseMutationResult {
-  const root = assertCanonicalRoot(options.canonicalRepoRoot);
-  const leasePath = repositoryMutationLeasePath(root);
-  const borrowerPath = repositoryMutationBorrowerPath(root);
+  const slot = options.slot ?? "orchestrator";
+  const { root, worktree, gitDir, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, slot, options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
-  return withMutationMutex(leasePath, () => {
+  return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
     if (parsed === undefined) return { status: "absent" };
-    if (parsed === null || parsed.canonicalRepoRoot !== root) return { status: "invalid-evidence" };
+    if (parsed === null || parsed.canonicalRepoRoot !== root || (parsed.worktreeRoot ?? root) !== worktree) return { status: "invalid-evidence" };
     if (!secureStringsEqual(parsed.ownershipToken, options.ownershipToken)) return { status: "token-mismatch" };
-    const borrowerInspection = inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
+    const borrowerInspection = slot === "implement" && linked
+      ? { state: "absent" as const, reason: "independent implement owner has no borrower", borrowerPath }
+      : inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint);
     if (borrowerInspection.state === "live") return { status: "borrower-live" };
     if (borrowerInspection.state !== "absent") {
       if (!borrowerInspection.borrower || borrowerInspection.borrower.parentDeploymentId !== parsed.deploymentId) return { status: "borrower-invalid" };
@@ -1163,6 +1298,7 @@ export function quarantineRepositoryMutationLease(options: {
 export function formatDirtyBackgroundBuilderDiagnostic(input: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
   team: string;
   mode: string;
   runtime: RuntimeName;
@@ -1172,8 +1308,11 @@ export function formatDirtyBackgroundBuilderDiagnostic(input: {
   const retry = [runtimeBinary(input.runtime), "deploy", input.team, "--mode", input.mode, "--repo", input.canonicalRepoKey];
   if (input.ticket) retry.push("--ticket", input.ticket);
   const snapshot = input.snapshot;
+  const roots = input.worktreeRoot && input.worktreeRoot !== input.canonicalRepoRoot
+    ? `repo_root=${boundedField(input.canonicalRepoRoot, 700)} worktree_root=${boundedField(input.worktreeRoot, 700)}`
+    : `root=${boundedField(input.canonicalRepoRoot, 700)}`;
   return boundDiagnostic(
-    `Repository admission: repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}; state=dirty-background; reason=dirty builder repositories require foreground interaction and no ownership was acquired. Git: branch=${boundedField(snapshot.branch, 160)}, head=${boundedField(snapshot.head, 160)}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}. Recovery: retry in the foreground with ${shellCommand(retry)}. Deploy force does not bypass dirty-background interaction.`,
+    `Repository admission: repo=${boundedField(input.canonicalRepoKey, 160)} ${roots}; state=dirty-background; reason=dirty builder repositories require foreground interaction and no ownership was acquired. Git: branch=${boundedField(snapshot.branch, 160)}, head=${boundedField(snapshot.head, 160)}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}. Recovery: retry in the foreground with ${shellCommand(retry)}. Deploy force does not bypass dirty-background interaction.`,
   );
 }
 
@@ -1182,8 +1321,10 @@ export function formatRepositoryBorrowerDiagnostic(input: {
   reason: string;
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  slot?: RepositoryMutationSlot;
 }): string {
-  const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
+  const dirtyRecovery = new Set(["dirty-approval", "launch-snapshot", "immediate-reread", "pre-spawn-reread", "child-context", "repository-identity", "parent-identity", "parent-registry", "parent-state", "approved-path-containment"]);
   const siblingRecovery = new Set([
     "borrower-state",
     "sibling-finalizing",
@@ -1205,19 +1346,27 @@ export function formatRepositoryBorrowerDiagnostic(input: {
           "preserve parent ownership and provide fresh runtime-authenticated exact-context evidence",
           "for clean borrowing, retry only after the parent confirms no live sibling and a zero-entry Git snapshot",
         ];
+  const roots = input.worktreeRoot && input.worktreeRoot !== input.canonicalRepoRoot
+    ? `repo_root=${boundedField(input.canonicalRepoRoot, 700)} worktree_root=${boundedField(input.worktreeRoot, 700)}`
+    : `root=${boundedField(input.canonicalRepoRoot, 700)}`;
+  const slot = input.slot ? ` slot=${input.slot}` : "";
   return boundDiagnostic(
-    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} root=${boundedField(input.canonicalRepoRoot, 700)}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
+    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} ${roots}${slot}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
   );
 }
 
 export function formatRepositoryAdmissionDiagnostic(input: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  slot?: RepositoryMutationSlot;
   inspection: RepositoryEvidenceInspection;
   recovered?: boolean;
 }): string {
   const key = boundedField(input.canonicalRepoKey, 160);
   const root = boundedField(input.canonicalRepoRoot, 700);
+  const worktree = boundedField(input.worktreeRoot ?? input.canonicalRepoRoot, 700);
+  const slot = input.slot ? ` slot=${input.slot}` : "";
   const owner = input.inspection.lease ?? input.inspection.observedOwner;
   const ownerText = owner
     ? ` Owner: deployment=${boundedField(owner.deploymentId ?? "unknown", 160)}, runtime=${boundedField(owner.runtime ?? "unknown", 80)}, mode=${boundedField(owner.mode ?? "unknown", 120)}, pid=${owner.processFingerprint?.pid ?? "unknown"}.`
@@ -1228,14 +1377,17 @@ export function formatRepositoryAdmissionDiagnostic(input: {
       ? ` Recovery: wait for the owner to finish or inspect it with ${shellCommand(["ppa", "status", owner.deploymentId])}. Do not remove or force the live lease.`
       : " Recovery: wait for the verified live process to finish. Do not remove or force the live lease.";
   } else if (input.inspection.state !== "absent") {
-    const safeQuarantine = input.inspection.evidenceIdentity
-      ? ` Safe manual quarantine: ${shellCommand(["ppa", "repository", "quarantine", "--repo", input.canonicalRepoKey, "--expected-evidence", input.inspection.evidenceIdentity])}.`
-      : " Safe manual quarantine requires a fresh `ppa repository inspect --repo <key>` result.";
+    const safeQuarantine = worktree !== root
+      ? " Linked-worktree recovery remains scoped to this exact worktree and slot; retry from that physical worktree with --force after verifying the recorded owner is dead."
+      : input.inspection.evidenceIdentity
+        ? ` Safe manual quarantine: ${shellCommand(["ppa", "repository", "quarantine", "--repo", input.canonicalRepoKey, "--expected-evidence", input.inspection.evidenceIdentity])}.`
+        : " Safe manual quarantine requires a fresh `ppa repository inspect --repo <key>` result.";
     recovery = ` Recovery: retry the same deploy command with --force.${safeQuarantine}`;
   } else if (input.recovered) {
     recovery = " Recovery: recoverable evidence was quarantined exactly and replacement ownership was acquired.";
   }
-  const message = `Repository admission: repo=${key} root=${root}; state=${input.inspection.state}; reason=${boundedField(input.inspection.reason, 500)}.${ownerText}${recovery}`;
+  const location = worktree === root ? `root=${root}` : `repo_root=${root} worktree_root=${worktree}`;
+  const message = `Repository admission: repo=${key} ${location}${slot}; state=${input.inspection.state}; reason=${boundedField(input.inspection.reason, 500)}.${ownerText}${recovery}`;
   return boundDiagnostic(message);
 }
 
@@ -1358,6 +1510,8 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && boundedString(row["canonicalRepoKey"])
     && boundedString(row["canonicalRepoRoot"])
     && isAbsolute(row["canonicalRepoRoot"] as string)
+    && (row["worktreeRoot"] === undefined || (boundedString(row["worktreeRoot"]) && isAbsolute(row["worktreeRoot"] as string)))
+    && (row["slot"] === undefined || row["slot"] === "orchestrator" || row["slot"] === "implement")
     && boundedString(row["deploymentId"])
     && boundedString(row["deploymentDirectory"])
     && isAbsolute(row["deploymentDirectory"] as string)
@@ -1379,6 +1533,7 @@ function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutati
     && boundedString(row["canonicalRepoKey"])
     && boundedString(row["canonicalRepoRoot"])
     && isAbsolute(row["canonicalRepoRoot"] as string)
+    && (row["worktreeRoot"] === undefined || (boundedString(row["worktreeRoot"]) && isAbsolute(row["worktreeRoot"] as string)))
     && boundedString(row["parentDeploymentId"])
     && isProcessFingerprint(row["parentProcessFingerprint"])
     && boundedString(row["deploymentId"])
@@ -1396,7 +1551,7 @@ function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutati
     && Number(row["timeoutSeconds"]) >= MIN_BORROWER_TIMEOUT_SECONDS
     && Number(row["timeoutSeconds"]) <= MAX_BORROWER_TIMEOUT_SECONDS
     && isGitSnapshot(row["launchGitSnapshot"])
-    && (row["approvedMutationPaths"] === undefined || isExactPathArray(row["approvedMutationPaths"], row["canonicalRepoRoot"] as string))
+    && (row["approvedMutationPaths"] === undefined || isExactPathArray(row["approvedMutationPaths"], (row["worktreeRoot"] ?? row["canonicalRepoRoot"]) as string))
     && (row["dirtyApprovalReceiptId"] === undefined || boundedString(row["dirtyApprovalReceiptId"]))
     && ((row["dirtyApprovalReceiptId"] === undefined) === (row["approvedMutationPaths"] === undefined))
     && (row["finalizationState"] === undefined || row["finalizationState"] === "finalizing")
@@ -1422,6 +1577,7 @@ function isRepositoryDirtyBorrowApproval(value: unknown): value is RepositoryDir
     || !boundedString(row["canonicalRepoKey"])
     || !boundedString(row["canonicalRepoRoot"])
     || !isAbsolute(row["canonicalRepoRoot"] as string)
+    || (row["worktreeRoot"] !== undefined && (!boundedString(row["worktreeRoot"]) || !isAbsolute(row["worktreeRoot"] as string)))
     || !boundedString(row["ticket"])
     || !boundedString(row["branch"])
     || !isCompleteGitSnapshot(row["snapshot"] as RepositoryGitSnapshot)
@@ -1721,8 +1877,11 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-function defaultGitRunner(args: readonly string[], cwd: string): Buffer {
-  return execFileSync("git", [...args], { cwd, maxBuffer: 16 * 1024 * 1024 });
+function defaultGitRunner(args: readonly string[], cwd: string, options?: GitCommandOptions): Buffer {
+  const env = options?.repositoryGitDir && options.repositoryGitCommonDir
+    ? { ...process.env, GIT_DIR: options.repositoryGitDir, GIT_COMMON_DIR: options.repositoryGitCommonDir, GIT_WORK_TREE: cwd }
+    : process.env;
+  return execFileSync("git", [...args], { cwd, env, maxBuffer: 16 * 1024 * 1024 });
 }
 
 function gitText(output: string | Buffer): string {
@@ -1846,6 +2005,16 @@ function fingerprintsEqual(expected: ProcessFingerprint, observed: ProcessFinger
 function assertCanonicalRoot(value: string): string {
   if (!value || !isAbsolute(value) || resolve(value) !== value) throw new Error("repository-admission: canonical repository root must be an exact absolute normalized path");
   return value;
+}
+
+function assertPhysicalDirectory(value: string, label: string): string {
+  const path = assertCanonicalRoot(value);
+  try {
+    if (!statSync(path).isDirectory() || realpathSync(path) !== path) throw new Error("not physical");
+    return path;
+  } catch {
+    throw new Error(`repository-admission: ${label} must remain an exact physical directory`);
+  }
 }
 
 function boundedString(value: unknown): value is string {

@@ -8,6 +8,7 @@ import {
   inspectRepositoryMutationLease,
   publishRepositoryDirtyBorrowApproval,
   queryDeploymentStatus,
+  readProcessFingerprint,
   removeRepositoryDirtyBorrowApproval,
   repositoryDirtyBorrowApprovalPath,
   validateRepositoryDirtyBorrowScope,
@@ -38,7 +39,7 @@ interface ApprovalContext {
 export interface DirtyBorrowApprovalToolOptions {
   env?: NodeJS.ProcessEnv;
   captureSnapshot?: (root: string) => RepositoryGitSnapshot;
-  inspectLease?: (root: string) => RepositoryEvidenceInspection;
+  inspectLease?: (root: string, worktreeRoot?: string) => RepositoryEvidenceInspection;
   isDeploymentRunning?: (deploymentId: string) => boolean;
   now?: () => Date;
   createToken?: () => string;
@@ -68,7 +69,7 @@ export function isForegroundPiOrchestratorEnvironment(env: NodeJS.ProcessEnv = p
 export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOptions = {}): PiToolDefinition<DirtyBorrowApprovalInput, DirtyBorrowApprovalDetails> {
   const env = options.env ?? process.env;
   const captureSnapshot = options.captureSnapshot ?? captureRepositoryGitSnapshot;
-  const inspectLease = options.inspectLease ?? inspectRepositoryMutationLease;
+  const inspectLease = options.inspectLease ?? ((root: string, worktreeRoot?: string) => inspectRepositoryMutationLease(root, { getProcessFingerprint: readProcessFingerprint, worktreeRoot }));
   const isDeploymentRunning = options.isDeploymentRunning ?? ((deploymentId: string) => queryDeploymentStatus(deploymentId)?.status === "running");
   const now = options.now ?? (() => new Date());
   const createToken = options.createToken ?? randomUUID;
@@ -91,13 +92,15 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
         const parentDeploymentId = requiredEnv(env, "PA_DEPLOYMENT_ID");
         const parentDeploymentDirectory = requiredEnv(env, "PA_DEPLOYMENT_DIR");
         const canonicalRepoRoot = requiredEnv(env, "PA_REPO");
+        const worktreeRoot = env["PA_WORKTREE_ROOT"]?.trim() || canonicalRepoRoot;
         const ticket = requiredEnv(env, "PA_TICKET_ID");
-        const leaseInspection = inspectLease(canonicalRepoRoot);
+        const leaseInspection = inspectLease(canonicalRepoRoot, worktreeRoot);
         const lease = leaseInspection.lease;
         if (leaseInspection.state !== "live" || !lease || !leaseInspection.evidenceIdentity
           || lease.deploymentId !== parentDeploymentId
           || lease.deploymentDirectory !== parentDeploymentDirectory
           || lease.canonicalRepoRoot !== canonicalRepoRoot
+          || (lease.worktreeRoot ?? canonicalRepoRoot) !== worktreeRoot
           || lease.runtime !== "pi"
           || lease.team !== "builder"
           || lease.mode !== "orchestrator"
@@ -105,8 +108,8 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
           || !isDeploymentRunning(parentDeploymentId)) {
           return result("validation_error", [], 0, "parent owner is not exact, process-verified, and registry-running");
         }
-        const snapshot = captureSnapshot(canonicalRepoRoot);
-        const approvedPaths = [...validateRepositoryDirtyBorrowScope(canonicalRepoRoot, snapshot, input.classifications, input.plannedNewPaths)];
+        const snapshot = captureSnapshot(worktreeRoot);
+        const approvedPaths = [...validateRepositoryDirtyBorrowScope(worktreeRoot, snapshot, input.classifications, input.plannedNewPaths)];
         const classificationByPath = new Map(input.classifications.map((item) => [item.path, item.classification]));
         const lines = snapshot.statusEntries!.map((entry) => `${entry.recordIndex}. ${entry.xy} ${JSON.stringify(entry.path)}${entry.sourcePath ? ` <- ${JSON.stringify(entry.sourcePath)}` : ""} — ${classificationByPath.get(entry.path)}`);
         const action = [
@@ -131,6 +134,7 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
           parentLeaseEvidenceIdentity: leaseInspection.evidenceIdentity,
           canonicalRepoKey: lease.canonicalRepoKey,
           canonicalRepoRoot,
+          ...(worktreeRoot !== canonicalRepoRoot ? { worktreeRoot } : {}),
           ticket,
           branch: snapshot.branch,
           snapshot,
@@ -151,13 +155,14 @@ export const registerDirtyBorrowApprovalModule: PiExtensionModule = (pi, lifecyc
   const tool = createDirtyBorrowApprovalTool();
   pi.registerTool?.(tool);
   const root = process.env["PA_REPO"]!;
+  const worktreeRoot = process.env["PA_WORKTREE_ROOT"]?.trim() || root;
   const approvalPath = repositoryDirtyBorrowApprovalPath(process.env["PA_DEPLOYMENT_DIR"]!);
   lifecycle?.addShutdownStep(() => {
     try {
       const stat = lstatSync(approvalPath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_REPOSITORY_DIRTY_APPROVAL_BYTES) return;
       const body = JSON.parse(readFileSync(approvalPath, "utf8")) as { receiptId?: unknown };
-      if (typeof body.receiptId === "string") removeRepositoryDirtyBorrowApproval({ canonicalRepoRoot: root, approvalPath, receiptId: body.receiptId });
+      if (typeof body.receiptId === "string") removeRepositoryDirtyBorrowApproval({ canonicalRepoRoot: root, worktreeRoot, approvalPath, receiptId: body.receiptId });
     } catch {
       // Missing, consumed, or malformed evidence is left to admission's exact cleanup rules.
     }

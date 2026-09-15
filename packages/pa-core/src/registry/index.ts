@@ -201,12 +201,12 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, provider, rating,
-      objective, repo, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds,
+      objective, repo, repo_root, worktree_root, repository_slot, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds,
       rogue_one, invocation_channel
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
-      @objective, @repo, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds,
+      @objective, @repo, @repo_root, @worktree_root, @repository_slot, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds,
       @rogue_one, @invocation_channel
     )
   `).run(row);
@@ -303,6 +303,9 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       models: started?.models,
       provider: started?.provider,
       repo: started?.repo,
+      repo_root: started?.repo_root,
+      worktree_root: started?.worktree_root,
+      repository_slot: started?.repository_slot,
       mode: started?.mode,
       fallback: completed?.fallback,
       resumed_from_deployment_id: started?.resumed_from_deployment_id,
@@ -325,11 +328,11 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare(`
       INSERT INTO deployments (
         deployment_id, team, status, started_at, pid, primer, agents, models,
-        ticket_id, objective, repo, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds,
+        ticket_id, objective, repo, repo_root, worktree_root, repository_slot, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds,
         rogue_one, invocation_channel
       ) VALUES (
         @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
-        @ticket_id, @objective, @repo, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds,
+        @ticket_id, @objective, @repo, @repo_root, @worktree_root, @repository_slot, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds,
         @rogue_one, @invocation_channel
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         status = excluded.status,
@@ -341,6 +344,9 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         ticket_id = excluded.ticket_id,
         objective = excluded.objective,
         repo = excluded.repo,
+        repo_root = excluded.repo_root,
+        worktree_root = excluded.worktree_root,
+        repository_slot = excluded.repository_slot,
         mode = excluded.mode,
         provider = excluded.provider,
         resumed_from_deployment_id = excluded.resumed_from_deployment_id,
@@ -387,6 +393,9 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     rating: event.rating ? JSON.stringify(event.rating) : null,
     objective: event.objective ?? null,
     repo: event.repo ?? null,
+    repo_root: event.repo_root ?? null,
+    worktree_root: event.worktree_root ?? null,
+    repository_slot: event.repository_slot ?? null,
     mode: event.mode ?? null,
     fallback: event.fallback ? 1 : 0,
     resumed_from_deployment_id: event.resumed_from_deployment_id ?? null,
@@ -419,6 +428,9 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     rating: parseJson<RegistryEvent["rating"]>(row["rating"]),
     objective: optionalString(row["objective"]),
     repo: optionalString(row["repo"]),
+    repo_root: optionalString(row["repo_root"]),
+    worktree_root: optionalString(row["worktree_root"]),
+    repository_slot: repositorySlot(row["repository_slot"]),
     mode: optionalString(row["mode"]),
     fallback: Boolean(row["fallback"]),
     resumed_from_deployment_id: optionalString(row["resumed_from_deployment_id"]),
@@ -448,6 +460,9 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     models: parseJson<Record<string, string>>(row["models"]),
     provider: optionalString(row["provider"]),
     repo: optionalString(row["repo"]),
+    repo_root: optionalString(row["repo_root"]),
+    worktree_root: optionalString(row["worktree_root"]),
+    repository_slot: repositorySlot(row["repository_slot"]),
     mode: optionalString(row["mode"]),
     fallback: Boolean(row["fallback"]),
     resumed_from_deployment_id: optionalString(row["resumed_from_deployment_id"]),
@@ -461,6 +476,10 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function repositorySlot(value: unknown): "orchestrator" | "implement" | undefined {
+  return value === "orchestrator" || value === "implement" ? value : undefined;
 }
 
 function normalizeTimestamp(value: unknown): string {

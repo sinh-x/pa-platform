@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import yaml from "js-yaml";
 import { loadConfig, normalizeRepoConfig } from "./config.js";
 import { expandHome, getPlatformHomeDir, getUserConfigPath } from "./paths.js";
@@ -23,9 +23,20 @@ export type RegisteredRepo = { name: string } & RepoEntry;
 export interface ResolvedRepoExecutionPath {
   repo: RegisteredRepo;
   repoKey: string;
+  /** Registered primary repository root and trust anchor. */
   repoRoot: string;
+  /** Exact physical root where project and runtime operations execute. */
+  worktreeRoot: string;
   repositoryCwd: string;
+  gitDir: string;
+  gitCommonDir: string;
+  worktreeKind: "primary" | "linked";
   inferredFrom: "explicit" | "cwd";
+}
+
+export interface ResolveRepoExecutionPathOptions {
+  /** Internal Pi-only CWD policy. Explicit linked-worktree inputs remain invalid. */
+  allowLinkedWorktreeCwd?: boolean;
 }
 
 export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
@@ -77,7 +88,7 @@ export function resolveRepo(nameOrPath: string): RegisteredRepo {
   return resolveRepoExecutionPath(nameOrPath).repo;
 }
 
-export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd()): ResolvedRepoExecutionPath {
+export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd(), options: ResolveRepoExecutionPathOptions = {}): ResolvedRepoExecutionPath {
   const repos = listRepos();
   if (repos.length === 0) {
     throw repositoryResolutionError("No repositories are configured in the PA registry.", []);
@@ -109,16 +120,45 @@ export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd(
   if (!statSync(requestedPath).isDirectory()) {
     throw repositoryResolutionError(`Current working directory is not a directory: ${requestedPath}.`, repos);
   }
-  let repoRoot: string;
+  const physicalRequestedPath = realpathSync(requestedPath);
+  if (physicalRequestedPath !== requestedPath) {
+    throw repositoryResolutionError(`Current working directory "${cwd}" uses a symlink alias. Use the physical Git working-tree path.`, repos);
+  }
+
+  let evidence: GitWorkingTreeEvidence;
   try {
-    repoRoot = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], requestedPath));
+    evidence = gitWorkingTreeEvidence(requestedPath);
   } catch {
-    throw repositoryResolutionError(`Current working directory "${cwd}" is not a Git working tree.`, repos);
+    throw repositoryResolutionError(`Current working directory "${cwd}" is not a valid physical Git working tree.`, repos);
   }
-  if (isLinkedGitWorkingTree(repoRoot)) {
-    throw repositoryResolutionError(`Current working directory "${cwd}" belongs to a linked Git working tree. Run from the exact configured repository root or pass its registered key.`, repos);
+  if (evidence.worktreeRoot !== realpathSync(evidence.worktreeRoot)) {
+    throw repositoryResolutionError(`Current working directory "${cwd}" resolves through a symlinked Git working-tree root. Use its physical path.`, repos);
   }
-  const matches = repos.filter((candidate) => candidate.path === repoRoot);
+
+  if (evidence.kind === "linked") {
+    if (!options.allowLinkedWorktreeCwd) {
+      throw repositoryResolutionError(`Current working directory "${cwd}" belongs to a linked Git working tree. Run from the exact configured repository root or pass its registered key.`, repos);
+    }
+    if (!isAuthenticatedLinkedWorktree(evidence)) {
+      throw repositoryResolutionError(`Current working directory "${cwd}" has malformed or forged linked-worktree metadata.`, repos);
+    }
+    const matches = repos.filter((candidate) => {
+      try {
+        const registered = resolvedRegisteredRepo(candidate, "cwd");
+        return registered.gitCommonDir === evidence.gitCommonDir
+          && registeredPhysicalWorktrees(registered.repoRoot).includes(evidence.worktreeRoot);
+      } catch {
+        return false;
+      }
+    });
+    if (matches.length === 1) return resolvedRegisteredRepo(matches[0]!, "cwd", evidence);
+    if (matches.length > 1) {
+      throw repositoryResolutionError("Current linked working tree matches multiple registered primary repositories by physical Git common directory.", matches);
+    }
+    throw repositoryResolutionError(`Current linked working tree "${evidence.worktreeRoot}" does not have a unique registered primary repository with the same physical Git common directory. Independent clones and remote-only matches are not eligible.`, repos);
+  }
+
+  const matches = repos.filter((candidate) => candidate.path === evidence.worktreeRoot);
   if (matches.length === 1) return resolvedRegisteredRepo(matches[0]!, "cwd");
   if (matches.length > 1) {
     throw repositoryResolutionError("Current working directory matches multiple exact configured repository roots.", matches);
@@ -126,7 +166,7 @@ export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd(
   throw repositoryResolutionError(`Current working directory "${cwd}" does not resolve to an exact configured repository root. Independent clones and remote-only matches are not eligible.`, repos);
 }
 
-function resolvedRegisteredRepo(repo: RegisteredRepo, inferredFrom: "explicit" | "cwd"): ResolvedRepoExecutionPath {
+function resolvedRegisteredRepo(repo: RegisteredRepo, inferredFrom: "explicit" | "cwd", executionEvidence?: GitWorkingTreeEvidence): ResolvedRepoExecutionPath {
   if (!existsSync(repo.path)) {
     throw repositoryResolutionError(`Configured path for "${repo.name}" does not exist: ${repo.path}.`, [repo]);
   }
@@ -137,21 +177,92 @@ function resolvedRegisteredRepo(repo: RegisteredRepo, inferredFrom: "explicit" |
   if (repo.path !== physicalPath) {
     throw repositoryResolutionError(`Configured path for "${repo.name}" must be its physical Git root, not a relative path or symlink: ${repo.path}.`, []);
   }
-  if (configuredRepoRoot(repo.path) !== repo.path) {
+  let primaryEvidence: GitWorkingTreeEvidence;
+  try {
+    primaryEvidence = gitWorkingTreeEvidence(repo.path);
+  } catch {
     throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, []);
   }
-  if (isLinkedGitWorkingTree(repo.path)) {
+  if (primaryEvidence.worktreeRoot !== repo.path) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, []);
+  }
+  if (primaryEvidence.kind === "linked") {
     throw repositoryResolutionError(`Configured path for "${repo.name}" is a linked Git working tree. Register the primary working tree root instead.`, []);
   }
-  return { repo, repoKey: repo.name, repoRoot: repo.path, repositoryCwd: repo.path, inferredFrom };
+  const execution = executionEvidence ?? primaryEvidence;
+  if (execution.gitCommonDir !== primaryEvidence.gitCommonDir) {
+    throw repositoryResolutionError(`Execution working tree does not match the registered Git common directory for "${repo.name}".`, [repo]);
+  }
+  return {
+    repo,
+    repoKey: repo.name,
+    repoRoot: repo.path,
+    worktreeRoot: execution.worktreeRoot,
+    repositoryCwd: execution.worktreeRoot,
+    gitDir: execution.gitDir,
+    gitCommonDir: execution.gitCommonDir,
+    worktreeKind: execution.kind,
+    inferredFrom,
+  };
 }
 
-function configuredRepoRoot(path: string): string | undefined {
+interface GitWorkingTreeEvidence {
+  worktreeRoot: string;
+  gitDir: string;
+  gitCommonDir: string;
+  kind: "primary" | "linked";
+}
+
+function gitWorkingTreeEvidence(path: string): GitWorkingTreeEvidence {
+  const worktreeRoot = absolutePhysicalGitPath(gitOutput(["rev-parse", "--path-format=absolute", "--show-toplevel"], path));
+  const gitDir = absolutePhysicalGitPath(gitOutput(["rev-parse", "--path-format=absolute", "--git-dir"], path));
+  const gitCommonDir = absolutePhysicalGitPath(gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"], path));
+  return { worktreeRoot, gitDir, gitCommonDir, kind: gitDir === gitCommonDir ? "primary" : "linked" };
+}
+
+function absolutePhysicalGitPath(path: string): string {
+  if (!isAbsolute(path)) throw new Error("Git returned a non-absolute path");
+  const absolute = resolve(path);
+  const physical = realpathSync(absolute);
+  if (absolute !== physical) throw new Error("Git metadata resolves through a symlink");
+  return physical;
+}
+
+function registeredPhysicalWorktrees(repoRoot: string): readonly string[] {
+  const worktrees: string[] = [];
+  for (const field of gitOutput(["worktree", "list", "--porcelain", "-z"], repoRoot).split("\0")) {
+    if (!field.startsWith("worktree ")) continue;
+    try {
+      worktrees.push(absolutePhysicalGitPath(field.slice("worktree ".length)));
+    } catch {
+      // Stale/prunable worktree records cannot authenticate a deployment CWD.
+    }
+  }
+  return worktrees;
+}
+
+function isAuthenticatedLinkedWorktree(evidence: GitWorkingTreeEvidence): boolean {
   try {
-    const root = realpathSync(gitOutput(["rev-parse", "--show-toplevel"], path));
-    return root === realpathSync(path) ? root : undefined;
+    if (evidence.kind !== "linked") return false;
+    const dotGit = join(evidence.worktreeRoot, ".git");
+    if (!lstatSync(dotGit).isFile() || lstatSync(dotGit).isSymbolicLink()) return false;
+    const pointer = readFileSync(dotGit, "utf8").trim();
+    if (!pointer.startsWith("gitdir:")) return false;
+    const pointerPath = pointer.slice("gitdir:".length).trim();
+    const resolvedPointer = realpathSync(isAbsolute(pointerPath) ? pointerPath : resolve(evidence.worktreeRoot, pointerPath));
+    if (resolvedPointer !== evidence.gitDir) return false;
+
+    const reversePointer = readFileSync(join(evidence.gitDir, "gitdir"), "utf8").trim();
+    const resolvedReverse = realpathSync(isAbsolute(reversePointer) ? reversePointer : resolve(evidence.gitDir, reversePointer));
+    if (resolvedReverse !== dotGit) return false;
+
+    const commonPointer = readFileSync(join(evidence.gitDir, "commondir"), "utf8").trim();
+    const resolvedCommon = realpathSync(isAbsolute(commonPointer) ? commonPointer : resolve(evidence.gitDir, commonPointer));
+    if (resolvedCommon !== evidence.gitCommonDir) return false;
+
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
 }
 

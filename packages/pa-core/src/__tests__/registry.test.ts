@@ -45,7 +45,7 @@ test("registry appends WAL-backed events and materializes deployment status", ()
   const previous = process.env["PA_REGISTRY_DB"];
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   try {
-    appendRegistryEvent({ deployment_id: "d-test", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T10:00:00Z", agents: ["team-manager"], runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200 });
+    appendRegistryEvent({ deployment_id: "d-test", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T10:00:00Z", agents: ["team-manager"], runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200, repo: "/worktree", repo_root: "/primary", worktree_root: "/worktree", repository_slot: "implement" });
     appendRegistryEvent({ deployment_id: "d-test", team: "builder", event: "completed", timestamp: "2026-04-26T10:01:00Z", status: "success", summary: "ok" });
     const events = getDeploymentEvents("d-test");
     assert.equal(events.length, 2);
@@ -55,6 +55,7 @@ test("registry appends WAL-backed events and materializes deployment status", ()
     assert.equal(status?.runtime, "opencode");
     assert.equal(status?.effective_timeout_seconds, 1200);
     assert.equal(status?.mode, "implement");
+    assert.deepEqual({ repo: status?.repo, repoRoot: status?.repo_root, worktreeRoot: status?.worktree_root, slot: status?.repository_slot }, { repo: "/worktree", repoRoot: "/primary", worktreeRoot: "/worktree", slot: "implement" });
   } finally {
     closeDb();
     if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
@@ -246,7 +247,7 @@ test("registry migration preserves legacy deployments without timeout metadata",
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
     assert.equal(eventColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
     assert.equal(deploymentColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "11" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "12" });
 
     const status = queryDeploymentStatus("d-legacy");
     assert.equal(status?.status, "running");

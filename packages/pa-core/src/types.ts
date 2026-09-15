@@ -132,6 +132,9 @@ export interface RegistryEvent {
   rating?: Rating;
   objective?: string;
   repo?: string;
+  repo_root?: string;
+  worktree_root?: string;
+  repository_slot?: "orchestrator" | "implement";
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
@@ -158,6 +161,9 @@ export interface DeploymentStatus {
   models?: Record<string, string>;
   provider?: string;
   repo?: string;
+  repo_root?: string;
+  worktree_root?: string;
+  repository_slot?: "orchestrator" | "implement";
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;

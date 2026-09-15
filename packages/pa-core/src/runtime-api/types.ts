@@ -19,17 +19,27 @@ export interface ToolReference {
 
 export interface RepositoryLeaseHandoff {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir: string;
+  repositoryGitCommonDir: string;
+  slot?: "orchestrator" | "implement";
   ownershipToken: string;
 }
 
 /** Internal child-supervisor handoff; it never contains the parent capability. */
 export interface RepositoryBorrowerHandoff {
   canonicalRepoRoot: string;
+  worktreeRoot?: string;
+  repositoryGitDir: string;
+  repositoryGitCommonDir: string;
   borrowerToken: string;
   parentDeploymentId: string;
   deploymentId: string;
   approvedMutationPaths?: readonly string[];
 }
+
+type RuntimeRepositoryLeaseHandoff = Omit<RepositoryLeaseHandoff, "repositoryGitDir" | "repositoryGitCommonDir"> & Partial<Pick<RepositoryLeaseHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
+type RuntimeRepositoryBorrowerHandoff = Omit<RepositoryBorrowerHandoff, "repositoryGitDir" | "repositoryGitCommonDir"> & Partial<Pick<RepositoryBorrowerHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
 
 export interface SpawnOpts {
   primerPath: string;
@@ -45,9 +55,9 @@ export interface SpawnOpts {
   /** Receives the direct runtime child PID as soon as launch establishes it. */
   onPid?: (pid: number) => void;
   /** Token-authenticated repository ownership transferred to a background supervisor. */
-  repositoryLease?: RepositoryLeaseHandoff;
+  repositoryLease?: RuntimeRepositoryLeaseHandoff;
   /** Token-authenticated borrowed authority transferred without parent ownership. */
-  repositoryBorrower?: RepositoryBorrowerHandoff;
+  repositoryBorrower?: RuntimeRepositoryBorrowerHandoff;
   executionPlan?: import("../deploy/plan.js").ExecutionPlan;
 }
 

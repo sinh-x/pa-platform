@@ -18,6 +18,7 @@ perl \
     s/Fish completions for pa-core/Fish completions for opa (opencode-pa adapter)/;
     s/__pa_core_/__opa_/g;
     s/\bpa-core\b/opa/g;
+    s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
     s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume/;
     s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume/;
     s/complete -c opa -f -n __opa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c opa -f -n __opa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''opencode-go minimax openai deepseek ollama-cloud'\''/;
@@ -36,6 +37,7 @@ perl \
     s/Fish completions for pa-core/Fish completions for cpa (claudecode-pa adapter)/;
     s/__pa_core_/__cpa_/g;
     s/\bpa-core\b/cpa/g;
+    s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
     s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume/;
     s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume/;
     s/complete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c cpa -f -n __cpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''anthropic'\''/;
@@ -58,6 +60,7 @@ perl \
     s/Fish completions for pa-core/Fish completions for dpa (droidcode-pa adapter)/;
     s/__pa_core_/__dpa_/g;
     s/\bpa-core\b/dpa/g;
+    s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
     s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume/;
     s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume/;
     s/complete -c dpa -f -n __dpa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c dpa -f -n __dpa_deploy_completing -l provider -d '\''Provider'\'' -r -a '\''openai deepseek gemini minimax anthropic'\''/;

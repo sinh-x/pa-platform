@@ -9,7 +9,10 @@ import { isRogueOneTeam, rogueOneAuditNotice, type DeploymentInvocationChannel }
 
 export interface PrimerRepositoryContext {
   repoKey: string;
+  /** Registered primary trust anchor. */
   repoRoot: string;
+  /** Exact project/runtime execution root; defaults to repoRoot. */
+  worktreeRoot?: string;
 }
 
 export interface GeneratePrimerOptions {
@@ -124,7 +127,7 @@ function resolvePrimerRepositoryContext(extraInstructions: string | undefined): 
   const resolved = paRepo
     ? resolveRepoExecutionPath(paRepo, cwd ?? process.cwd())
     : resolveRepoExecutionPath(undefined, cwd ?? process.cwd());
-  return { repoKey: resolved.repoKey, repoRoot: resolved.repoRoot };
+  return { repoKey: resolved.repoKey, repoRoot: resolved.repoRoot, worktreeRoot: resolved.worktreeRoot };
 }
 
 function renderAdditionalInstructions(
@@ -136,9 +139,21 @@ function renderAdditionalInstructions(
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
   const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
-  return ["## Additional Instructions", objective, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  return ["## Additional Instructions", objective, repositoryEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
+  const snapshot = repositoryAdmission?.gitSnapshot;
+  if (repositoryAdmission?.access !== "exclusive-builder" || !snapshot) return undefined;
+  return [
+    "### Repository Admission Evidence",
+    `- Slot: ${repositoryAdmission.slot ?? "implement"}`,
+    `- Git: branch=${snapshot.branch}, head=${snapshot.head}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
+    "- Recovery: preserve the recorded branch and files; on identity, slot, or snapshot drift, stop before spawn and retry only after the blocking evidence is reconciled.",
+  ].join("\n");
 }
 
 function renderDirtyBuilderIntentContract(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
@@ -173,7 +188,8 @@ function renderApprovedBorrowerScope(repositoryAdmission: RepositoryAdmissionEvi
 }
 
 function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext): string {
-  const evidence = `repo_key: ${repository.repoKey}\nrepo_root: ${repository.repoRoot}`;
+  const worktreeRoot = repository.worktreeRoot ?? repository.repoRoot;
+  const evidence = `repo_key: ${repository.repoKey}\nrepo_root: ${repository.repoRoot}\nworktree_root: ${worktreeRoot}`;
   if (!extraInstructions) return `<deployment-context>\n${evidence}\n</deployment-context>`;
 
   const contextMatch = extraInstructions.match(/<deployment-context>\n?([\s\S]*?)\n?<\/deployment-context>/);
@@ -181,8 +197,9 @@ function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined,
   const normalizedContext = contextMatch[1]!
     .replace(/^repo_key:.*(?:\n|$)/gm, "")
     .replace(/^repo_root:.*(?:\n|$)/gm, "")
-    .replace(/^cwd:.*$/gm, `cwd: ${repository.repoRoot}`)
-    .replace(/^repo:.*$/gm, `repo: ${repository.repoRoot}`)
+    .replace(/^worktree_root:.*(?:\n|$)/gm, "")
+    .replace(/^cwd:.*$/gm, `cwd: ${worktreeRoot}`)
+    .replace(/^repo:.*$/gm, `repo: ${worktreeRoot}`)
     .replace(/^  PA_REPO:.*$/gm, `  PA_REPO: ${repository.repoRoot}`)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -776,6 +793,7 @@ export const PA_ENV_KEYS = [
   "PA_MODE",
   "PA_TICKET_ID",
   "PA_REPO",
+  "PA_WORKTREE_ROOT",
   "PA_PROVIDER",
   "PA_MODEL",
   "PA_TEAM_MODEL",

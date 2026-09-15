@@ -107,7 +107,9 @@ test("execution plans are immutable and resolve selected skill paths", () => {
     assert.equal(plan.skills[0]?.path, skillPath);
     assert.equal(plan.repoKey, "registered");
     assert.equal(plan.repoRoot, fixture.repo);
+    assert.equal(plan.worktreeRoot, fixture.repo);
     assert.equal(plan.repositoryCwd, fixture.repo);
+    assert.equal(plan.repositoryKind, "primary");
     assert.equal(plan.memoryDocumentRoot, fixture.repo);
     assert.equal(plan.objective, "objective");
     assert.equal(plan.userObjectiveOverride, undefined);
@@ -190,15 +192,36 @@ test("registered key and exact root produce identical repository plan fields", (
   }
 });
 
-test("linked working-tree inputs and CWDs fail planning with bounded diagnostics", () => {
-  const fixture = createFixture("linked-rejection");
+test("Pi plans authenticate omitted linked-worktree CWD while explicit and non-Pi paths remain rejected", () => {
+  const fixture = createFixture("linked-resolution");
   const nested = join(fixture.linked, "nested");
   mkdirSync(nested);
   try {
     withPlatformConfig(fixture.config, () => {
+      const plan = resolveRepoPlan(undefined, fixture, "d-cwd", nested);
+      assert.equal(plan.repoKey, "registered");
+      assert.equal(plan.repoRoot, fixture.repo);
+      assert.equal(plan.worktreeRoot, fixture.linked);
+      assert.equal(plan.repositoryCwd, fixture.linked);
+      assert.equal(plan.repositoryKind, "linked");
+      assert.equal(plan.memoryDocumentRoot, fixture.linked);
+      assert.equal(plan.environment.PA_REPO, fixture.repo);
+      assert.equal(plan.repositoryAdmission.gitSnapshot?.branch, "feature/linked-resolution");
+
       for (const resolvePlan of [
         () => resolveRepoPlan(fixture.linked, fixture, "d-explicit"),
-        () => resolveRepoPlan(undefined, fixture, "d-cwd", nested),
+        () => resolveExecutionPlan({
+          request: { team: "builder", mode: "implement" },
+          teamConfig: team(),
+          mode: team().deploy_modes?.[0],
+          runtime: "opencode",
+          deploymentId: "d-opencode",
+          deploymentDir: fixture.root,
+          activityLogPath: join(fixture.root, "activity.jsonl"),
+          environment: {},
+          timeoutSeconds: 60,
+          cwd: nested,
+        }),
       ]) {
         assert.throws(resolvePlan, (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -260,7 +283,7 @@ test("two same-root plans independently reach the injected spawn seam without ow
     const spawned: string[] = [];
     const injectedSpawn = async (plan: ExecutionPlan): Promise<void> => {
       assert.equal(plan.repoRoot, fixture.repo);
-      assert.deepEqual(Object.keys(plan.environment).sort(), ["PA_REPO"]);
+      assert.deepEqual(Object.keys(plan.environment).sort(), ["PA_REPO", "PA_WORKTREE_ROOT"]);
       spawned.push(plan.lifecycle.deploymentId);
     };
 
@@ -383,6 +406,7 @@ test("dirty foreground builders retain immutable evidence while dirty background
         launchMode: "foreground",
         ownershipIntent: "acquire-before-spawn",
         force: true,
+        slot: "implement",
         gitSnapshot: dirtySnapshot,
       });
       assert.equal(Object.isFrozen(foreground.repositoryAdmission), true);

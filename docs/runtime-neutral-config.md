@@ -7,21 +7,40 @@ Team YAML files are active shared configuration and should remain structurally c
 ## Registered Repository and Branch Contract
 
 Every deployment resolves a repository key or exact configured path to one
-immutable execution plan before primer generation or runtime spawn. When
-`--repo` is omitted, PA may infer identity from the registered checkout or a
-nested directory within it. Runtime CWD, `PA_REPO`, primer evidence, memory
-roots, and registry evidence all use the exact configured root. Explicit
-non-registered paths, aliases, independent clones, and linked Git working trees
+immutable execution plan before primer generation or runtime spawn. Normally,
+when `--repo` is omitted, PA infers identity from the registered checkout or a
+nested directory within it and executes at that configured root. Explicit
+non-registered paths, aliases, independent clones, and linked-worktree paths
 fail before runtime spawn with a bounded corrective diagnostic.
+
+PPA has a Pi-only CWD exception. PAP-195 supersedes PAP-162's linked-worktree
+prohibition only for this authenticated omitted-`--repo` PPA path. With `--repo`
+omitted, an invocation from an exact physical linked-worktree root or descendant
+may execute in that existing
+worktree when its physical root appears in the primary checkout's exact
+`git worktree list`, its physical Git common directory maps to exactly one
+registered primary repository, and its `.git` forward/reverse metadata is consistent.
+`repo_root` and `PA_REPO` remain the registered primary trust anchor;
+`worktree_root`, `PA_WORKTREE_ROOT`, `repositoryCwd`, memory/project access, Git
+snapshots, and Pi process CWD use the linked worktree. Explicit `--repo` key or
+primary-path input still selects the primary root. Symlink aliases, malformed or
+forged metadata, independent clones, stale worktree entries, ambiguous
+common-directory matches, and unrelated repositories remain rejected. OPA,
+CPA, and DPA do not gain this
+exception.
 
 Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
 it bypasses Git status and repository-lease access even when the checkout is dirty
 or a builder owns the same canonical root. Every `builder/*` mode is
-`exclusive-builder`: one process-verified live builder may own a canonical root
-across ppa and opa. Claude (`cpa`) and Droid (`dpa`) cannot safely supervise this
-lifecycle, so their mutating builder deploys fail with an explicit unsupported-policy
-result before runtime spawn; non-builder and dry-run behavior remains available.
-Other teams remain `non-locking`.
+`exclusive-builder`. Registered-primary execution retains the existing single
+process-verified owner across ppa and opa. Each authenticated PPA linked
+worktree instead has two independent physical-Git-dir slots: one orchestrator
+slot and one implement slot; every non-orchestrator builder mode uses the
+implement slot. Sibling linked worktrees do not block one another. Claude
+(`cpa`) and Droid (`dpa`) cannot safely supervise this lifecycle, so their
+mutating builder deploys fail with an explicit unsupported-policy result before
+runtime spawn; non-builder and dry-run behavior remains available. Other teams
+remain `non-locking`.
 
 PPA has one narrow positive inheritance exception to builder exclusivity. One
 direct **background** Pi `builder/implement` child may borrow the execution slot
@@ -35,7 +54,10 @@ trusted `pa_dirty_borrow_approval` Pi TUI tool. A parent ID, objective text,
 `--force`, or copied environment value is never authority. Borrowing does not
 transfer or rewrite the version-1 parent lease; OPA, CPA, Droid, foreground
 children, descendants, other modes, and concurrent siblings have no positive
-inheritance path. Standalone dirty background builders remain rejected.
+inheritance path. Standalone dirty background builders at the registered primary root remain
+rejected. Authenticated linked-worktree PPA foreground and background launches
+preserve and admit staged, unstaged, and untracked state; PA admission performs
+no branch or worktree lifecycle operation.
 
 Snapshot evidence retains the raw complete
 `git status --porcelain=v2 --untracked-files=all -z` byte stream as Base64, its
