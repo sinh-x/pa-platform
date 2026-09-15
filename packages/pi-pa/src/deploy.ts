@@ -102,8 +102,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
-  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
-  let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
+  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
+  let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const borrowed = activeRepositoryBorrower;
     if (borrowed) {
@@ -111,6 +111,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
         worktreeRoot: borrowed.worktreeRoot,
         repositoryGitDir: borrowed.repositoryGitDir,
+        repositoryGitCommonDir: borrowed.repositoryGitCommonDir,
         borrowerToken: borrowed.borrowerToken,
         deploymentId: borrowed.deploymentId,
       });
@@ -231,6 +232,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         canonicalRepoRoot: plan.repoRoot,
         ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot } : {}),
         repositoryGitDir: plan.repositoryGitDir,
+        repositoryGitCommonDir: plan.repositoryGitCommonDir,
         borrowerToken: registration.borrower.borrowerToken,
         parentDeploymentId: registration.borrower.parentDeploymentId,
         deploymentId: registration.borrower.deploymentId,
@@ -254,7 +256,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
       plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
-      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, ownershipToken: acquisition.lease.ownershipToken };
+      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir, ownershipToken: acquisition.lease.ownershipToken };
       // Keep the ownership capability in this trusted launcher closure only.
       // The Pi model and every tool/child environment authenticate nested direct
       // borrowing through the process-verified launcher lineage instead.
@@ -320,7 +322,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         if (plan.repositoryAdmission.launchMode === "background" && observed.dirty && plan.repositoryKind === "primary") {
           throw new Error(formatDirtyBackgroundBuilderDiagnostic({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, team: team.name, mode: plan.mode, runtime: "pi", snapshot: observed, ...(plan.ticket ? { ticket: plan.ticket } : {}) }));
         }
-        const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, slot: activeRepositoryLease.slot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
+        const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositoryGitDir: activeRepositoryLease.repositoryGitDir, slot: activeRepositoryLease.slot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
         if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
         plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
       }

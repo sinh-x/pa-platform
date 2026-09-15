@@ -191,8 +191,14 @@ export interface RepositoryMutationBorrower {
   readonly finalGitSnapshot?: RepositoryGitSnapshot;
 }
 
+export interface GitCommandOptions {
+  /** Immutable physical identity used after repository admission. */
+  readonly repositoryGitDir?: string;
+  readonly repositoryGitCommonDir?: string;
+}
+
 export interface GitCommandRunner {
-  (args: readonly string[], cwd: string): string | Buffer;
+  (args: readonly string[], cwd: string, options?: GitCommandOptions): string | Buffer;
 }
 
 export interface RepositoryAdmissionDependencies {
@@ -462,16 +468,20 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
   });
 }
 
-export function captureRepositoryGitSnapshot(canonicalRepoRoot: string, runGit: GitCommandRunner = defaultGitRunner): RepositoryGitSnapshot {
+export function captureRepositoryGitSnapshot(canonicalRepoRoot: string, runGit: GitCommandRunner = defaultGitRunner, gitIdentity?: GitCommandOptions): RepositoryGitSnapshot {
   const root = assertCanonicalRoot(canonicalRepoRoot);
+  const identity = gitIdentity === undefined ? undefined : {
+    repositoryGitDir: assertPhysicalDirectory(gitIdentity.repositoryGitDir ?? "", "admitted Git directory"),
+    repositoryGitCommonDir: assertPhysicalDirectory(gitIdentity.repositoryGitCommonDir ?? "", "admitted Git common directory"),
+  };
   let branch = "(detached)";
   try {
-    branch = boundedField(gitText(runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], root)).trim(), STRING_FIELD_LIMIT) || "(detached)";
+    branch = boundedField(gitText(runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], root, identity)).trim(), STRING_FIELD_LIMIT) || "(detached)";
   } catch {
     // Detached HEAD is valid evidence and does not cause admission to mutate Git.
   }
-  const head = boundedField(gitText(runGit(["rev-parse", "HEAD"], root)).trim(), STRING_FIELD_LIMIT);
-  const rawStatus = gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], root));
+  const head = boundedField(gitText(runGit(["rev-parse", "HEAD"], root, identity)).trim(), STRING_FIELD_LIMIT);
+  const rawStatus = gitBytes(runGit(["status", "--porcelain=v2", "--untracked-files=all", "-z"], root, identity));
   const entries = parseRepositoryGitStatus(rawStatus);
   let stagedCount = 0;
   let unstagedCount = 0;
@@ -976,12 +986,13 @@ export function repositoryGitSnapshotsEqual(left: RepositoryGitSnapshot, right: 
 export function updateRepositoryMutationLeaseGitSnapshot(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
   slot?: RepositoryMutationSlot;
   ownershipToken: string;
   gitSnapshot: RepositoryGitSnapshot;
   dependencies?: Pick<RepositoryAdmissionDependencies, "createToken">;
 }): RepositoryLeaseMutationResult {
-  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, options.slot ?? "orchestrator");
+  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, options.slot ?? "orchestrator", options.repositoryGitDir);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
@@ -997,12 +1008,18 @@ export function updateRepositoryMutationLeaseGitSnapshot(options: {
 export function transferRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   borrowerToken: string;
   nextProcessFingerprint: ProcessFingerprint;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "createToken">;
 }): RepositoryBorrowerMutationResult {
-  const { root, worktree, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
-  const borrowerPath = repositoryMutationBorrowerPath(worktree);
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const worktree = assertCanonicalRoot(options.worktreeRoot ?? root);
+  try { assertExpectedGitIdentity(worktree, options.repositoryGitDir, options.repositoryGitCommonDir); }
+  catch { return { status: "invalid-evidence" }; }
+  const { gitDir, mutexPath } = repositoryLeaseLocation(root, worktree, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
@@ -1041,6 +1058,7 @@ export function finalizeRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
   repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   borrowerToken: string;
   deploymentId: string;
   finalGitSnapshot?: RepositoryGitSnapshot;
@@ -1074,7 +1092,7 @@ export function finalizeRepositoryMutationBorrower(options: {
       return { status: "uncertain-live", borrower: finalizing };
     }
 
-    const finalGitSnapshot = Object.freeze({ ...(options.finalGitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit)) });
+    const finalGitSnapshot = Object.freeze({ ...(options.finalGitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit, options.repositoryGitDir && options.repositoryGitCommonDir ? { repositoryGitDir: options.repositoryGitDir, repositoryGitCommonDir: options.repositoryGitCommonDir } : undefined)) });
     if (!isGitSnapshot(finalGitSnapshot)) return { status: "invalid-evidence" };
     const approved = new Set(parsed.approvedMutationPaths ?? []);
     const finalEntries = finalGitSnapshot.statusEntries ?? [];
@@ -1119,6 +1137,7 @@ export async function finalizeRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
   repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   slot?: RepositoryMutationSlot;
   ownershipToken: string;
   dependencies?: Partial<RepositoryLeaseFinalizationDependencies>;
@@ -1184,12 +1203,18 @@ export async function finalizeRepositoryMutationLease(options: {
 export function transferRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
+  repositoryGitCommonDir?: string;
   slot?: RepositoryMutationSlot;
   ownershipToken: string;
   nextProcessFingerprint: ProcessFingerprint;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryLeaseMutationResult {
-  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, options.slot ?? "orchestrator");
+  const root = assertCanonicalRoot(options.canonicalRepoRoot);
+  const worktree = assertCanonicalRoot(options.worktreeRoot ?? root);
+  try { assertExpectedGitIdentity(worktree, options.repositoryGitDir, options.repositoryGitCommonDir); }
+  catch { return { status: "invalid-evidence" }; }
+  const { leasePath, mutexPath } = repositoryLeaseLocation(root, worktree, options.slot ?? "orchestrator", options.repositoryGitDir);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
@@ -1852,8 +1877,11 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-function defaultGitRunner(args: readonly string[], cwd: string): Buffer {
-  return execFileSync("git", [...args], { cwd, maxBuffer: 16 * 1024 * 1024 });
+function defaultGitRunner(args: readonly string[], cwd: string, options?: GitCommandOptions): Buffer {
+  const env = options?.repositoryGitDir && options.repositoryGitCommonDir
+    ? { ...process.env, GIT_DIR: options.repositoryGitDir, GIT_COMMON_DIR: options.repositoryGitCommonDir, GIT_WORK_TREE: cwd }
+    : process.env;
+  return execFileSync("git", [...args], { cwd, env, maxBuffer: 16 * 1024 * 1024 });
 }
 
 function gitText(output: string | Buffer): string {

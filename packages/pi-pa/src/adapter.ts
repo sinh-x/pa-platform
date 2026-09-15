@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
@@ -32,6 +32,9 @@ export const PI_PARENT_LEASE_CAPABILITY_ENV = "PA_PI_PARENT_LEASE_TOKEN";
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 /** @deprecated Background completion is owned by the persistent runner. */
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
+type PiRepositoryLeaseHandoff = RepositoryLeaseHandoff & Required<Pick<RepositoryLeaseHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
+type PiRepositoryBorrowerHandoff = RepositoryBorrowerHandoff & Required<Pick<RepositoryBorrowerHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
+
 export interface PiBackgroundConfig {
   schemaVersion: 1;
   ownershipToken: string;
@@ -52,20 +55,8 @@ export interface PiBackgroundConfig {
   timeoutMs?: number;
   repositoryHandoffPath?: string;
   /** In-memory only after the runner consumes the separate protected handoff. */
-  repositoryLease?: {
-    canonicalRepoRoot: string;
-    worktreeRoot?: string;
-    slot?: "orchestrator" | "implement";
-    ownershipToken: string;
-  };
-  repositoryBorrower?: {
-    canonicalRepoRoot: string;
-    worktreeRoot?: string;
-    borrowerToken: string;
-    parentDeploymentId: string;
-    deploymentId: string;
-    approvedMutationPaths?: readonly string[];
-  };
+  repositoryLease?: PiRepositoryLeaseHandoff;
+  repositoryBorrower?: PiRepositoryBorrowerHandoff;
 }
 
 export interface PiRepositoryHandoff {
@@ -613,10 +604,13 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   const handoffPath = resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE);
   const ownershipToken = randomUUID();
   const plan = input.opts.executionPlan;
-  const repositoryHandoff: PiRepositoryHandoff | undefined = input.opts.repositoryLease
-    ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryLease: input.opts.repositoryLease }
-    : input.opts.repositoryBorrower
-      ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryBorrower: input.opts.repositoryBorrower }
+  if ((input.opts.repositoryLease || input.opts.repositoryBorrower) && !plan) {
+    return { status: null, stdout: "", stderr: "", spawnError: new Error("runner-launcher: repository authority requires an authoritative execution plan"), metadata: { sessionId: input.id } };
+  }
+  const repositoryHandoff: PiRepositoryHandoff | undefined = input.opts.repositoryLease && plan
+    ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryLease: { ...input.opts.repositoryLease, repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir } }
+    : input.opts.repositoryBorrower && plan
+      ? { schemaVersion: 1, deploymentId: input.opts.deployId, repositoryBorrower: { ...input.opts.repositoryBorrower, repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir } }
       : undefined;
   const config: PiBackgroundConfig = {
     schemaVersion: 1,
@@ -785,11 +779,26 @@ function validPiRepositoryHandoff(value: unknown): value is PiRepositoryHandoff 
   const borrower = row["repositoryBorrower"] as Record<string, unknown> | undefined;
   const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string"
     && (lease["worktreeRoot"] === undefined || typeof lease["worktreeRoot"] === "string")
+    && validPhysicalAbsoluteDirectory(lease["repositoryGitDir"])
+    && validPhysicalAbsoluteDirectory(lease["repositoryGitCommonDir"])
     && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement");
   const approvedPaths = borrower?.["approvedMutationPaths"];
   const validApprovedPaths = approvedPaths === undefined || (Array.isArray(approvedPaths) && approvedPaths.length <= 512 && approvedPaths.every((path) => typeof path === "string" && path.length > 0 && path.length <= 1_024));
-  const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && (borrower["worktreeRoot"] === undefined || typeof borrower["worktreeRoot"] === "string") && typeof borrower["borrowerToken"] === "string" && typeof borrower["parentDeploymentId"] === "string" && typeof borrower["deploymentId"] === "string" && validApprovedPaths;
+  const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && (borrower["worktreeRoot"] === undefined || typeof borrower["worktreeRoot"] === "string")
+    && validPhysicalAbsoluteDirectory(borrower["repositoryGitDir"])
+    && validPhysicalAbsoluteDirectory(borrower["repositoryGitCommonDir"])
+    && typeof borrower["borrowerToken"] === "string" && typeof borrower["parentDeploymentId"] === "string" && typeof borrower["deploymentId"] === "string" && validApprovedPaths;
   return row["schemaVersion"] === 1 && typeof row["deploymentId"] === "string" && (validLease !== validBorrower);
+}
+
+function validPhysicalAbsoluteDirectory(value: unknown): value is string {
+  if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value) return false;
+  try {
+    const stat = lstatSync(value);
+    return stat.isDirectory() && !stat.isSymbolicLink() && realpathSync(value) === value;
+  } catch {
+    return false;
+  }
 }
 
 export function readPiSupervisorOwnership(path: string): PiSupervisorOwnership | undefined {

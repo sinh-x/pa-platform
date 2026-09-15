@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   appendActivityEvent,
+  assertRepositoryGitIdentity,
+  captureRepositoryGitSnapshot,
   createActivityEvent,
   ensureTerminalRegistryMarker,
   finalizeRepositoryMutationBorrower,
@@ -13,6 +15,7 @@ import {
   transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
   type RegistryEvent,
+  type RepositoryGitSnapshot,
 } from "@pa-platform/pa-core";
 import {
   buildPiBackgroundArgs,
@@ -53,6 +56,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
   let repositoryBorrowerTransferred = false;
+  let terminalGitSnapshot: RepositoryGitSnapshot | undefined;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -97,6 +101,10 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           || (handoff.repositoryLease?.slot !== undefined && handoff.repositoryLease.slot !== config.repositorySlot))) {
           throw new Error("runner-readiness: repository handoff roots or slot do not match the managed background configuration");
         }
+        if (authority && authorityWorktreeRoot) {
+          try { assertRepositoryGitIdentity(authorityWorktreeRoot, authority.repositoryGitDir, authority.repositoryGitCommonDir); }
+          catch { throw new Error("runner-readiness: protected repository handoff identity does not match the managed execution worktree"); }
+        }
         repositoryLease = handoff.repositoryLease;
         repositoryBorrower = handoff.repositoryBorrower;
         for (const value of [repositoryLease?.ownershipToken, repositoryBorrower?.borrowerToken]) {
@@ -113,6 +121,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         const transfer = transferRepositoryMutationLease({
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
           worktreeRoot: repositoryLease.worktreeRoot,
+          repositoryGitDir: repositoryLease.repositoryGitDir,
+          repositoryGitCommonDir: repositoryLease.repositoryGitCommonDir,
           slot: repositoryLease.slot,
           ownershipToken: repositoryLease.ownershipToken,
           nextProcessFingerprint: fingerprint,
@@ -124,6 +134,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         const transfer = transferRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
           worktreeRoot: repositoryBorrower.worktreeRoot,
+          repositoryGitDir: repositoryBorrower.repositoryGitDir,
+          repositoryGitCommonDir: repositoryBorrower.repositoryGitCommonDir,
           borrowerToken: repositoryBorrower.borrowerToken,
           nextProcessFingerprint: fingerprint,
         });
@@ -163,6 +175,25 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
     if (!ready) throw new Error("runner-spawn: Pi child did not expose a process id");
     writePiSupervisorOwnership(ownershipPath, ownership("finalizing"));
+    const authority = repositoryLease ?? repositoryBorrower;
+    if (authority) {
+      const worktreeRoot = authority.worktreeRoot ?? authority.canonicalRepoRoot;
+      try {
+        assertRepositoryGitIdentity(worktreeRoot, authority.repositoryGitDir, authority.repositoryGitCommonDir);
+      } catch {
+        if (repositoryBorrower) {
+          terminalGitSnapshot = captureRepositoryGitSnapshot(worktreeRoot, undefined, {
+            repositoryGitDir: authority.repositoryGitDir,
+            repositoryGitCommonDir: authority.repositoryGitCommonDir,
+          });
+        }
+        throw new Error("runner-terminal: Condition: repository metadata identity drift. Source: post-runtime physical Git-dir/common-dir re-authentication. Reason: the execution worktree no longer resolves to its admitted identity. Correction: preserve replacement metadata and repository state for diagnosis. Resume Action: repair metadata only under operator control, then launch a fresh deployment.");
+      }
+      terminalGitSnapshot = captureRepositoryGitSnapshot(worktreeRoot, undefined, {
+        repositoryGitDir: authority.repositoryGitDir,
+        repositoryGitCommonDir: authority.repositoryGitCommonDir,
+      });
+    }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
     finalState = "finalized";
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
@@ -186,8 +217,11 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         const finalization = finalizeRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
           worktreeRoot: repositoryBorrower.worktreeRoot,
+          repositoryGitDir: repositoryBorrower.repositoryGitDir,
+          repositoryGitCommonDir: repositoryBorrower.repositoryGitCommonDir,
           borrowerToken: repositoryBorrower.borrowerToken,
           deploymentId: config.deploymentId,
+          ...(terminalGitSnapshot ? { finalGitSnapshot: terminalGitSnapshot } : {}),
         });
         switch (finalization.status) {
           case "finalized":
@@ -209,6 +243,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         const finalization = await finalizeRepositoryMutationLease({
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
           worktreeRoot: repositoryLease.worktreeRoot,
+          repositoryGitDir: repositoryLease.repositoryGitDir,
+          repositoryGitCommonDir: repositoryLease.repositoryGitCommonDir,
           slot: repositoryLease.slot,
           ownershipToken: repositoryLease.ownershipToken,
         });

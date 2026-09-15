@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, appendRegistryEvent, closeDb, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PI_REPOSITORY_HANDOFF_FILE, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
@@ -64,6 +64,30 @@ async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBac
 
 function immediate(): Promise<void> { return new Promise((resolve) => setImmediate(resolve)); }
 
+function runGit(repo: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+function gitPath(repo: string, argument: "--git-dir" | "--git-common-dir"): string {
+  return runGit(repo, ["rev-parse", "--path-format=absolute", argument]);
+}
+
+function linkedRepository(root: string, branch: string): { primary: string; worktree: string; gitDir: string; gitCommonDir: string } {
+  const primary = join(root, "primary");
+  const worktree = join(root, "linked");
+  mkdirSync(primary);
+  runGit(primary, ["init", "-b", "develop"]);
+  runGit(primary, ["config", "user.name", "Test"]);
+  runGit(primary, ["config", "user.email", "test@example.com"]);
+  writeFileSync(join(primary, "README.md"), "# linked runner fixture\n");
+  runGit(primary, ["add", "README.md"]);
+  runGit(primary, ["commit", "-m", "initial"]);
+  runGit(primary, ["worktree", "add", "-b", branch, worktree]);
+  return { primary, worktree, gitDir: gitPath(worktree, "--git-dir"), gitCommonDir: gitPath(worktree, "--git-common-dir") };
+}
+
 function terminalEvents(deployId: string) {
   return getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
 }
@@ -96,7 +120,13 @@ test("persistent runner publishes active ownership before finalizing one natural
 test("Pi background supervisor authenticates transfer before readiness and releases after terminal finalization", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");
-    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(repo);
+    runGit(repo, ["init", "-b", "develop"]);
+    runGit(repo, ["config", "user.name", "Test"]);
+    runGit(repo, ["config", "user.email", "test@example.com"]);
+    writeFileSync(join(repo, "README.md"), "# owner fixture\n");
+    runGit(repo, ["add", "README.md"]);
+    runGit(repo, ["commit", "-m", "initial"]);
     const snapshot = { branch: "develop", head: "a".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
     const acquired = acquireRepositoryMutationLease({
       canonicalRepoKey: "pa-platform",
@@ -113,7 +143,7 @@ test("Pi background supervisor authenticates transfer before readiness and relea
     writePiRepositoryHandoff(config.repositoryHandoffPath, {
       schemaVersion: 1,
       deploymentId: config.deploymentId,
-      repositoryLease: { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken },
+      repositoryLease: { canonicalRepoRoot: repo, repositoryGitDir: join(repo, ".git"), repositoryGitCommonDir: join(repo, ".git"), ownershipToken: acquired.lease.ownershipToken },
     });
     const child = new RunnerChild();
     const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
@@ -133,11 +163,13 @@ test("runner rejects and removes a hard-linked protected repository handoff befo
   await withRunnerEnv(async (root, deployDir, config) => {
     const handoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
     const externalLink = join(root, "retained-handoff-link");
+    const repo = join(root, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
     config.repositoryHandoffPath = handoffPath;
     writePiRepositoryHandoff(handoffPath, {
       schemaVersion: 1,
       deploymentId: config.deploymentId,
-      repositoryLease: { canonicalRepoRoot: join(root, "repo"), ownershipToken: "protected-handoff-token" },
+      repositoryLease: { canonicalRepoRoot: repo, repositoryGitDir: join(repo, ".git"), repositoryGitCommonDir: join(repo, ".git"), ownershipToken: "protected-handoff-token" },
     });
     linkSync(handoffPath, externalLink);
     let spawns = 0;
@@ -157,11 +189,15 @@ test("managed runner rejects repository handoff root disagreement before child s
     config.worktreeRoot = join(root, "linked");
     config.cwd = config.worktreeRoot;
     config.repositorySlot = "implement";
+    const admittedGitDir = join(root, "admitted-git-dir");
+    const admittedGitCommonDir = join(root, "admitted-git-common-dir");
+    mkdirSync(admittedGitDir);
+    mkdirSync(admittedGitCommonDir);
     config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
     writePiRepositoryHandoff(config.repositoryHandoffPath, {
       schemaVersion: 1,
       deploymentId: config.deploymentId,
-      repositoryLease: { canonicalRepoRoot: join(root, "wrong-primary"), worktreeRoot: config.worktreeRoot, slot: "implement", ownershipToken: "mismatched-root-token" },
+      repositoryLease: { canonicalRepoRoot: join(root, "wrong-primary"), worktreeRoot: config.worktreeRoot, repositoryGitDir: admittedGitDir, repositoryGitCommonDir: admittedGitCommonDir, slot: "implement", ownershipToken: "mismatched-root-token" },
     });
     let spawns = 0;
     await runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
@@ -172,10 +208,173 @@ test("managed runner rejects repository handoff root disagreement before child s
   });
 });
 
+test("runner rejects malformed or mismatched protected Git identity before child spawn", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const { primary, worktree, gitDir, gitCommonDir } = linkedRepository(root, "feature/PAP-195-handoff-mismatch");
+    config.managed = true;
+    config.repoRoot = primary;
+    config.worktreeRoot = worktree;
+    config.cwd = worktree;
+    config.repositorySlot = "implement";
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writeFileSync(config.repositoryHandoffPath, `${JSON.stringify({
+      schemaVersion: 1,
+      deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: "relative", repositoryGitCommonDir: gitCommonDir, slot: "implement", ownershipToken: "malformed" },
+    })}\n`, { mode: 0o600 });
+    let spawns = 0;
+    await runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(config.repositoryHandoffPath), false);
+    assert.match(terminalEvents(config.deploymentId)[0]?.summary ?? "", /repository handoff is malformed/);
+
+    const alternateGitDir = join(root, "alternate-git-dir");
+    const alternateCommonDir = join(root, "alternate-common-dir");
+    mkdirSync(alternateGitDir);
+    mkdirSync(alternateCommonDir);
+    const secondDeployId = `${config.deploymentId}-identity`;
+    appendRegistryEvent({ deployment_id: secondDeployId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa" });
+    const mismatched = { ...config, deploymentId: secondDeployId };
+    writePiRepositoryHandoff(mismatched.repositoryHandoffPath!, {
+      schemaVersion: 1,
+      deploymentId: secondDeployId,
+      repositoryLease: { canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: alternateGitDir, repositoryGitCommonDir: alternateCommonDir, slot: "implement", ownershipToken: "mismatched" },
+    });
+    await runPiBackgroundRunner(mismatched, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(mismatched.repositoryHandoffPath!), false);
+    assert.match(terminalEvents(secondDeployId)[0]?.summary ?? "", /protected repository handoff identity does not match/);
+    assert.equal(existsSync(join(alternateGitDir, "pa-repository-mutation.implement.lease.json")), false);
+    assert.notEqual(gitDir, alternateGitDir);
+  });
+});
+
+test("owned linked-worktree runner fails closed on post-readiness Git-dir drift and cleans only admitted authority", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const { primary, worktree, gitDir, gitCommonDir } = linkedRepository(root, "feature/PAP-195-owned-drift");
+    const snapshot = captureRepositoryGitSnapshot(worktree);
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+      expectedGitDir: gitDir, expectedGitCommonDir: gitCommonDir, deploymentId: config.deploymentId,
+      deploymentDirectory: deployDir, runtime: "pi", team: "builder", mode: "implement", launchMode: "background", gitSnapshot: snapshot,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    config.managed = true;
+    config.repoRoot = primary;
+    config.worktreeRoot = worktree;
+    config.cwd = worktree;
+    config.repositorySlot = "implement";
+    config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+    writePiRepositoryHandoff(config.repositoryHandoffPath, {
+      schemaVersion: 1, deploymentId: config.deploymentId,
+      repositoryLease: { canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir, slot: "implement", ownershipToken: acquired.lease.ownershipToken },
+    });
+    const originalLeasePath = repositoryMutationLeasePath(worktree, "implement");
+    const replacementGitDir = join(root, "replacement-git-dir");
+    cpSync(gitDir, replacementGitDir, { recursive: true });
+    const replacementLeasePath = join(replacementGitDir, "pa-repository-mutation.implement.lease.json");
+    const replacementBytes = Buffer.from("unrelated replacement authority\n");
+    writeFileSync(replacementLeasePath, replacementBytes, { mode: 0o600 });
+    const child = new RunnerChild();
+    const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
+    await immediate();
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.state, "active");
+    writeFileSync(join(worktree, ".git"), `gitdir: ${replacementGitDir}\n`);
+    child.emit("close", 0);
+    await running;
+
+    const terminal = terminalEvents(config.deploymentId);
+    assert.equal(terminal.length, 1);
+    assert.deepEqual(terminal.map((event) => [event.event, event.status]), [["crashed", null]]);
+    assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "crashed");
+    assert.match(terminal[0]?.summary ?? "", /repository metadata identity drift/);
+    assert.ok((terminal[0]?.summary ?? "").length <= 2_000);
+    assert.equal(existsSync(originalLeasePath), false);
+    assert.deepEqual(readFileSync(replacementLeasePath), replacementBytes);
+    assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.state, "failed");
+  });
+});
+
+test("borrowed linked-worktree runner fails closed on post-readiness common-dir drift and preserves parent and unrelated evidence", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const { primary, worktree, gitDir, gitCommonDir } = linkedRepository(root, "feature/PAP-195-borrowed-drift");
+    const snapshot = captureRepositoryGitSnapshot(worktree);
+    const parentDeploymentId = "d-parent-common-drift";
+    const parentDir = join(root, "deployments", parentDeploymentId);
+    mkdirSync(parentDir, { recursive: true });
+    const parent = acquireRepositoryMutationLease({
+      canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+      expectedGitDir: gitDir, expectedGitCommonDir: gitCommonDir, deploymentId: parentDeploymentId,
+      deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", gitSnapshot: snapshot,
+    });
+    assert.equal(parent.status, "acquired");
+    if (parent.status !== "acquired") return;
+    appendRegistryEvent({ deployment_id: parentDeploymentId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa" });
+    const launcher = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    assert.ok(launcher.pid);
+    try {
+      const registration = registerRepositoryMutationBorrower({
+        capability: parent.lease.ownershipToken, canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+        expectedGitDir: gitDir, expectedGitCommonDir: gitCommonDir, parentDeploymentId, deploymentId: config.deploymentId,
+        deploymentDirectory: deployDir, runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+        ticket: "PAP-195", branch: snapshot.branch, timeoutSeconds: 60, pid: launcher.pid, expectedGitSnapshot: snapshot, gitSnapshot: snapshot,
+      });
+      assert.equal(registration.status, "registered");
+      if (registration.status !== "registered") return;
+      config.managed = true;
+      config.repoRoot = primary;
+      config.worktreeRoot = worktree;
+      config.cwd = worktree;
+      config.repositorySlot = "implement";
+      config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+      writePiRepositoryHandoff(config.repositoryHandoffPath, {
+        schemaVersion: 1, deploymentId: config.deploymentId,
+        repositoryBorrower: { canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir, borrowerToken: registration.borrower.borrowerToken, parentDeploymentId, deploymentId: config.deploymentId },
+      });
+      const parentLeasePath = repositoryMutationLeasePath(worktree);
+      const parentBytes = readFileSync(parentLeasePath);
+      const originalCommonPointer = readFileSync(join(gitDir, "commondir"), "utf8");
+      const replacementCommonDir = join(root, "replacement-common-dir");
+      cpSync(gitCommonDir, replacementCommonDir, { recursive: true });
+      const unrelatedPath = join(replacementCommonDir, "unrelated-authority.json");
+      const unrelatedBytes = Buffer.from("unrelated common-dir evidence\n");
+      writeFileSync(unrelatedPath, unrelatedBytes, { mode: 0o600 });
+      const child = new RunnerChild();
+      const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
+      await immediate();
+      assert.equal(inspectRepositoryMutationBorrower(primary, { worktreeRoot: worktree, repositoryGitDir: gitDir, getProcessFingerprint: () => undefined }).borrower?.borrowerToken, registration.borrower.borrowerToken);
+      writeFileSync(join(gitDir, "commondir"), `${replacementCommonDir}\n`);
+      child.emit("close", 0);
+      await running;
+
+      const terminal = terminalEvents(config.deploymentId);
+      assert.equal(terminal.length, 1);
+      assert.deepEqual(terminal.map((event) => [event.event, event.status]), [["crashed", null]]);
+      assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "crashed");
+      assert.match(terminal[0]?.summary ?? "", /repository metadata identity drift/);
+      assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), false);
+      assert.deepEqual(readFileSync(parentLeasePath), parentBytes);
+      assert.deepEqual(readFileSync(unrelatedPath), unrelatedBytes);
+      writeFileSync(join(gitDir, "commondir"), originalCommonPointer);
+      assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: gitDir, ownershipToken: parent.lease.ownershipToken }).status, "released");
+    } finally {
+      launcher.kill("SIGKILL");
+      await new Promise<void>((resolve) => launcher.once("close", () => resolve()));
+    }
+  });
+});
+
 test("background orchestrator runner waits for child finalization before releasing its parent lease", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");
-    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(repo);
+    runGit(repo, ["init", "-b", "develop"]);
+    runGit(repo, ["config", "user.name", "Test"]);
+    runGit(repo, ["config", "user.email", "test@example.com"]);
+    writeFileSync(join(repo, "README.md"), "# parent fixture\n");
+    runGit(repo, ["add", "README.md"]);
+    runGit(repo, ["commit", "-m", "initial"]);
     const snapshot = { branch: "feature/PAP-191-background-parent", head: "c".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
     const acquired = acquireRepositoryMutationLease({
       canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: config.deploymentId,
@@ -187,7 +386,7 @@ test("background orchestrator runner waits for child finalization before releasi
     writePiRepositoryHandoff(config.repositoryHandoffPath, {
       schemaVersion: 1,
       deploymentId: config.deploymentId,
-      repositoryLease: { canonicalRepoRoot: repo, ownershipToken: acquired.lease.ownershipToken },
+      repositoryLease: { canonicalRepoRoot: repo, repositoryGitDir: join(repo, ".git"), repositoryGitCommonDir: join(repo, ".git"), ownershipToken: acquired.lease.ownershipToken },
     });
     const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
     const child = new RunnerChild();
@@ -260,6 +459,8 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
     config.repositoryHandoffPath = join(deployDir, PI_REPOSITORY_HANDOFF_FILE);
     const repositoryBorrower = {
       canonicalRepoRoot: repo,
+      repositoryGitDir: gitPath(repo, "--git-dir"),
+      repositoryGitCommonDir: gitPath(repo, "--git-common-dir"),
       borrowerToken: registration.borrower.borrowerToken,
       parentDeploymentId,
       deploymentId: config.deploymentId,
@@ -320,14 +521,23 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
       const launched = await adapter.spawn({
         primerPath: config.primerPath, deployId: config.deploymentId, mode: "background", sessionId: config.sessionId,
         repositoryBorrower,
+        executionPlan: {
+          runtime: "pi", team: "builder", mode: "implement", repoRoot: repo, worktreeRoot: repo,
+          repositoryCwd: repo, repositoryGitDir: repositoryBorrower.repositoryGitDir,
+          repositoryGitCommonDir: repositoryBorrower.repositoryGitCommonDir, repositoryAdmission: {}, skills: [],
+        } as never,
       });
       assert.equal(launched.exitCode, 0, launched.errorMessage);
       assert.equal(launched.metadata?.["repositoryBorrowerTransferred"], true);
       assert.equal(supervisorEnvironment?.[PI_PARENT_LEASE_CAPABILITY_ENV], undefined);
       assert.doesNotMatch(persistedConfig, new RegExp(capability));
       assert.doesNotMatch(persistedConfig, new RegExp(registration.borrower.borrowerToken));
+      assert.equal(persistedConfig.includes(repositoryBorrower.repositoryGitDir), false);
+      assert.equal(persistedConfig.includes(repositoryBorrower.repositoryGitCommonDir), false);
       assert.doesNotMatch(persistedHandoff, new RegExp(capability));
       assert.match(persistedHandoff, new RegExp(registration.borrower.borrowerToken));
+      assert.equal(persistedHandoff.includes(repositoryBorrower.repositoryGitDir), true);
+      assert.equal(persistedHandoff.includes(repositoryBorrower.repositoryGitCommonDir), true);
       assert.equal(handoffMode, 0o600);
     } finally {
       if (previousCapability === undefined) delete process.env[PI_PARENT_LEASE_CAPABILITY_ENV]; else process.env[PI_PARENT_LEASE_CAPABILITY_ENV] = previousCapability;

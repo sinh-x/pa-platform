@@ -592,6 +592,8 @@ test("approved classified dirty direct child admits once, renders exact scope, a
           assert.match(primer, /- packages\/new-approved\.ts/);
           assert.doesNotMatch(primer, /receipt-private-sentinel|approval-private-sentinel|[0-9a-f]{64}/);
           assert.deepEqual(opts.executionPlan?.repositoryAdmission.approvedMutationPaths, ["README.md", "packages/new-approved.ts"]);
+          assert.equal(opts.repositoryBorrower?.repositoryGitDir, opts.executionPlan?.repositoryGitDir);
+          assert.equal(opts.repositoryBorrower?.repositoryGitCommonDir, opts.executionPlan?.repositoryGitCommonDir);
           assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
           mkdirSync(join(repo, "packages"), { recursive: true });
           writeFileSync(join(repo, "packages", "new-approved.ts"), "export {};\n");
@@ -1771,6 +1773,8 @@ test("PPA key and exact-path builder requests consume one canonical builder-excl
       assert.equal(observation.plan.repositoryAdmission.gitSnapshot?.dirty, false);
       assert.ok(observation.repositoryLease?.ownershipToken);
       assert.equal(observation.repositoryLease?.canonicalRepoRoot, repo);
+      assert.equal(observation.repositoryLease?.repositoryGitDir, observation.plan.repositoryGitDir);
+      assert.equal(observation.repositoryLease?.repositoryGitCommonDir, observation.plan.repositoryGitCommonDir);
       assert.equal(observation.runtimeCwd, repo);
       assert.equal(observation.registryRepo, repo);
       assert.equal(observation.primer.match(/^## Additional Instructions$/gm)?.length, 1);

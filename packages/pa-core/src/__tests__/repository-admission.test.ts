@@ -1445,6 +1445,7 @@ test("shared Git identity verifier rejects exact linked-worktree Git-dir and com
   try {
     const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktree);
     const commonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree);
+    const admittedSnapshot = captureRepositoryGitSnapshot(worktree);
     assert.doesNotThrow(() => assertRepositoryGitIdentity(worktree, gitDir, commonDir));
 
     const alternateGitDir = join(root, "alternate-git-dir");
@@ -1455,6 +1456,7 @@ test("shared Git identity verifier rejects exact linked-worktree Git-dir and com
       () => assertRepositoryGitIdentity(worktree, gitDir, commonDir),
       /Git directory changed after planning/,
     );
+    assert.deepEqual(captureRepositoryGitSnapshot(worktree, undefined, { repositoryGitDir: gitDir, repositoryGitCommonDir: commonDir }), admittedSnapshot);
 
     writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
     const alternateCommonDir = join(root, "alternate-common-dir");
@@ -1464,6 +1466,7 @@ test("shared Git identity verifier rejects exact linked-worktree Git-dir and com
       () => assertRepositoryGitIdentity(worktree, gitDir, commonDir),
       /Git common directory changed after planning/,
     );
+    assert.deepEqual(captureRepositoryGitSnapshot(worktree, undefined, { repositoryGitDir: gitDir, repositoryGitCommonDir: commonDir }), admittedSnapshot);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
