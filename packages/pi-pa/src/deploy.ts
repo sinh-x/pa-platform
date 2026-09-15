@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, normalizeRogueOneDeployRequest, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, assertRepositoryGitIdentity, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, normalizeRogueOneDeployRequest, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -19,6 +19,7 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
+
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
@@ -101,14 +102,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
-  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
-  let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
+  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
+  let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const borrowed = activeRepositoryBorrower;
     if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
         worktreeRoot: borrowed.worktreeRoot,
+        repositoryGitDir: borrowed.repositoryGitDir,
         borrowerToken: borrowed.borrowerToken,
         deploymentId: borrowed.deploymentId,
       });
@@ -228,6 +230,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryBorrower = {
         canonicalRepoRoot: plan.repoRoot,
         ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot } : {}),
+        repositoryGitDir: plan.repositoryGitDir,
         borrowerToken: registration.borrower.borrowerToken,
         parentDeploymentId: registration.borrower.parentDeploymentId,
         deploymentId: registration.borrower.deploymentId,
@@ -251,7 +254,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
       plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
-      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), ownershipToken: acquisition.lease.ownershipToken };
+      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, ownershipToken: acquisition.lease.ownershipToken };
       // Keep the ownership capability in this trusted launcher closure only.
       // The Pi model and every tool/child environment authenticate nested direct
       // borrowing through the process-verified launcher lineage instead.
@@ -270,8 +273,26 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
 
     // Pi/native-host preflight can yield while another admitted worktree slot
-    // changes Git state. Reconcile only after that await, then build spawn options
-    // from the final plan immediately before entering the adapter.
+    // changes Git state or worktree metadata. Re-authenticate the immutable
+    // physical identity first, then reconcile the snapshot immediately before spawn.
+    if (activeRepositoryBorrower || activeRepositoryLease) {
+      try {
+        assertRepositoryGitIdentity(plan.worktreeRoot, plan.repositoryGitDir, plan.repositoryGitCommonDir);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (activeRepositoryBorrower) {
+          throw new Error(formatRepositoryBorrowerDiagnostic({
+            category: "repository-identity",
+            reason,
+            canonicalRepoKey: plan.repoKey,
+            canonicalRepoRoot: plan.repoRoot,
+            worktreeRoot: plan.worktreeRoot,
+            slot: "implement",
+          }));
+        }
+        throw error;
+      }
+    }
     if (activeRepositoryBorrower) {
       writePrimer(plan);
       const expected = plan.repositoryAdmission.gitSnapshot;

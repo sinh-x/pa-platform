@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
   MAX_GIT_STATUS_SUMMARY_CHARS,
   MAX_REPOSITORY_LEASE_BYTES,
   acquireRepositoryMutationLease,
+  assertRepositoryGitIdentity,
   captureRepositoryGitSnapshot,
   classifyRepositoryAccess,
   finalizeRepositoryMutationBorrower,
@@ -1424,6 +1425,45 @@ test("linked-worktree inherited borrower occupies only that worktree's implement
     assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, borrowerToken: borrower.borrower.borrowerToken }).status, "released");
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: parentLease.lease.ownershipToken, dependencies: deps }).status, "released");
     if (admittedSibling.status === "acquired") assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "implement", ownershipToken: admittedSibling.lease.ownershipToken, dependencies: deps }).status, "released");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("shared Git identity verifier rejects exact linked-worktree Git-dir and common-dir drift", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-repository-linked-identity-"));
+  const primary = join(root, "primary");
+  const worktree = join(root, "worktree");
+  mkdirSync(primary);
+  git(["init", "-b", "develop"], primary);
+  git(["config", "user.email", "test@example.com"], primary);
+  git(["config", "user.name", "Test"], primary);
+  writeFileSync(join(primary, "README.md"), "# identity\n");
+  git(["add", "README.md"], primary);
+  git(["commit", "-m", "initial"], primary);
+  git(["worktree", "add", "-b", "feature/PAP-195-identity", worktree], primary);
+  try {
+    const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktree);
+    const commonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree);
+    assert.doesNotThrow(() => assertRepositoryGitIdentity(worktree, gitDir, commonDir));
+
+    const alternateGitDir = join(root, "alternate-git-dir");
+    cpSync(gitDir, alternateGitDir, { recursive: true });
+    writeFileSync(join(alternateGitDir, "commondir"), `${commonDir}\n`);
+    writeFileSync(join(worktree, ".git"), `gitdir: ${alternateGitDir}\n`);
+    assert.throws(
+      () => assertRepositoryGitIdentity(worktree, gitDir, commonDir),
+      /Git directory changed after planning/,
+    );
+
+    writeFileSync(join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    const alternateCommonDir = join(root, "alternate-common-dir");
+    cpSync(commonDir, alternateCommonDir, { recursive: true });
+    writeFileSync(join(gitDir, "commondir"), `${alternateCommonDir}\n`);
+    assert.throws(
+      () => assertRepositoryGitIdentity(worktree, gitDir, commonDir),
+      /Git common directory changed after planning/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

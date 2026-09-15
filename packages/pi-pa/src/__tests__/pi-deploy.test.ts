@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -40,6 +40,7 @@ function initializeGitRepo(path: string): void {
 }
 
 type PreflightGitDrift = "branch" | "head" | "staged" | "unstaged" | "untracked";
+type PreflightMetadataDrift = "git-dir" | "common-dir";
 
 function applyPreflightGitDrift(worktree: string, drift: PreflightGitDrift): void {
   switch (drift) {
@@ -60,6 +61,31 @@ function applyPreflightGitDrift(worktree: string, drift: PreflightGitDrift): voi
       writeFileSync(join(worktree, "preflight-untracked.txt"), "untracked during preflight\n");
       break;
   }
+}
+
+function preparePreflightMetadataDrift(root: string, worktree: string, drift: PreflightMetadataDrift): { gitDir: string; apply: () => void; restore: () => void } {
+  const dotGitPath = join(worktree, ".git");
+  const originalDotGit = readFileSync(dotGitPath, "utf8");
+  const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktree);
+  const commonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree);
+  const originalCommonPointer = readFileSync(join(gitDir, "commondir"), "utf8");
+  if (drift === "git-dir") {
+    const replacementGitDir = join(root, `replacement-${drift}`);
+    cpSync(gitDir, replacementGitDir, { recursive: true });
+    writeFileSync(join(replacementGitDir, "commondir"), `${commonDir}\n`);
+    return {
+      gitDir,
+      apply: () => { writeFileSync(dotGitPath, `gitdir: ${replacementGitDir}\n`); },
+      restore: () => { writeFileSync(dotGitPath, originalDotGit); },
+    };
+  }
+  const replacementCommonDir = join(root, `replacement-${drift}`);
+  cpSync(commonDir, replacementCommonDir, { recursive: true });
+  return {
+    gitDir,
+    apply: () => { writeFileSync(join(gitDir, "commondir"), `${replacementCommonDir}\n`); },
+    restore: () => { writeFileSync(join(gitDir, "commondir"), originalCommonPointer); },
+  };
 }
 
 function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
@@ -1102,6 +1128,94 @@ test("borrowed linked-worktree children reject branch, HEAD, staged, unstaged, a
         assert.equal(inspectRepositoryMutationBorrower(primary, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree }).state, "absent", drift);
         assert.deepEqual(readFileSync(parentPath), parentBytes, drift);
       });
+      assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktree, slot: "orchestrator", ownershipToken: parent.lease.ownershipToken }).status, "released", drift);
+    });
+  }
+});
+
+test("owned linked-worktree launch rejects equal-snapshot Git metadata identity drift and safely finalizes without spawn", async () => {
+  for (const drift of ["git-dir", "common-dir"] as const) {
+    await withPiEnv(async (root) => {
+      const primary = join(root, "repo");
+      const worktree = join(root, `owned-metadata-${drift}`);
+      execFileSync(REAL_GIT, ["worktree", "add", "-b", `feature/PAP-195-owned-metadata-${drift}`, worktree], { cwd: primary, stdio: "ignore" });
+      process.chdir(worktree);
+      const plannedSnapshot = captureRepositoryGitSnapshot(worktree);
+      const metadata = preparePreflightMetadataDrift(root, worktree, drift);
+      const leasePath = repositoryMutationLeasePath(worktree, "implement");
+      let spawns = 0;
+      try {
+        const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195" }, stubAdapter({
+          preflight: async () => {
+            metadata.apply();
+            assert.equal(repositoryGitSnapshotsEqual(plannedSnapshot, captureRepositoryGitSnapshot(worktree)), true, `${drift}: snapshot fixture`);
+          },
+          onSpawn: () => { spawns += 1; },
+        }));
+        assert.equal(result.status, "failed", drift);
+        assert.match(result.reason ?? "", drift === "git-dir" ? /Git directory changed after planning/ : /Git common directory changed after planning/, drift);
+        assert.equal(spawns, 0, drift);
+        assert.equal(existsSync(leasePath), false, `${drift}: matching owned authority finalized`);
+      } finally {
+        metadata.restore();
+      }
+    });
+  }
+});
+
+test("borrowed linked-worktree launch rejects equal-snapshot Git metadata identity drift and safely finalizes without spawn", async () => {
+  for (const drift of ["git-dir", "common-dir"] as const) {
+    await withPiEnv(async (root) => {
+      const primary = join(root, "repo");
+      const worktree = join(root, `borrowed-metadata-${drift}`);
+      const branch = `feature/PAP-195-borrowed-metadata-${drift}`;
+      execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, worktree], { cwd: primary, stdio: "ignore" });
+      process.chdir(worktree);
+      const plannedSnapshot = captureRepositoryGitSnapshot(worktree);
+      const metadata = preparePreflightMetadataDrift(root, worktree, drift);
+      const parentDeploymentId = `d-parent-metadata-${drift}`;
+      const parentDir = join(root, "deployments", parentDeploymentId);
+      mkdirSync(parentDir, { recursive: true });
+      const parent = acquireRepositoryMutationLease({
+        canonicalRepoKey: "pa-platform", canonicalRepoRoot: primary, worktreeRoot: worktree,
+        deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-195",
+      });
+      assert.equal(parent.status, "acquired", drift);
+      if (parent.status !== "acquired") return;
+      markParentRunning(parentDeploymentId);
+      const parentPath = repositoryMutationLeasePath(worktree);
+      const borrowerPath = repositoryMutationBorrowerPath(worktree);
+      const parentBytes = readFileSync(parentPath);
+      try {
+        await withInheritedEnvironment({
+          [PI_PARENT_LEASE_CAPABILITY_ENV]: parent.lease.ownershipToken,
+          PA_DEPLOYMENT_ID: parentDeploymentId,
+          PA_DEPLOYMENT_DIR: parentDir,
+          PA_TEAM: "builder",
+          PA_MODE: "orchestrator",
+          PA_REPO: primary,
+          PA_TICKET_ID: "PAP-195",
+        }, async () => {
+          let spawns = 0;
+          const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-195", background: true, timeout: 60 }, stubAdapter({
+            preflight: async () => {
+              metadata.apply();
+              assert.equal(repositoryGitSnapshotsEqual(plannedSnapshot, captureRepositoryGitSnapshot(worktree)), true, `${drift}: snapshot fixture`);
+            },
+            onSpawn: () => { spawns += 1; },
+          }));
+          assert.equal(result.status, "failed", drift);
+          assert.match(result.reason ?? "", /repository-identity/, drift);
+          assert.match(result.reason ?? "", drift === "git-dir" ? /Git directory changed after planning/ : /Git common directory changed after planning/, drift);
+          assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s, drift);
+          assert.equal((result.reason ?? "").length <= 2_000, true, drift);
+          assert.equal(spawns, 0, drift);
+          assert.equal(existsSync(borrowerPath), false, `${drift}: matching borrower finalized`);
+          assert.deepEqual(readFileSync(parentPath), parentBytes, `${drift}: parent authority preserved`);
+        });
+      } finally {
+        metadata.restore();
+      }
       assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktree, slot: "orchestrator", ownershipToken: parent.lease.ownershipToken }).status, "released", drift);
     });
   }

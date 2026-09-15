@@ -397,6 +397,10 @@ function repositoryPhysicalGitCommonDir(worktreeRoot: string): string {
   }
 }
 
+export function assertRepositoryGitIdentity(worktreeRoot: string, expectedGitDir: string, expectedGitCommonDir: string): void {
+  assertExpectedGitIdentity(assertCanonicalRoot(worktreeRoot), expectedGitDir, expectedGitCommonDir);
+}
+
 function assertExpectedGitIdentity(worktree: string, expectedGitDir?: string, expectedGitCommonDir?: string): void {
   if (expectedGitDir !== undefined && repositoryPhysicalGitDir(worktree) !== expectedGitDir) {
     throw new Error("repository-admission: execution worktree Git directory changed after planning; no runtime was started");
@@ -406,13 +410,14 @@ function assertExpectedGitIdentity(worktree: string, expectedGitDir?: string, ex
   }
 }
 
-function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string | undefined, slot: RepositoryMutationSlot): { root: string; worktree: string; leasePath: string; mutexPath: string; linked: boolean } {
+function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string | undefined, slot: RepositoryMutationSlot, admittedGitDir?: string): { root: string; worktree: string; gitDir: string; leasePath: string; mutexPath: string; linked: boolean } {
   const root = assertCanonicalRoot(canonicalRepoRoot);
   const worktree = assertCanonicalRoot(worktreeRoot ?? root);
   const linked = worktree !== root;
-  const leasePath = repositoryMutationLeasePath(worktree, linked ? slot : "orchestrator");
-  const mutexPath = linked ? resolve(leasePath, "..", REPOSITORY_SLOT_MUTEX_ANCHOR) : leasePath;
-  return { root, worktree, leasePath, mutexPath, linked };
+  const gitDir = admittedGitDir === undefined ? repositoryPhysicalGitDir(worktree) : assertPhysicalDirectory(admittedGitDir, "admitted Git directory");
+  const leasePath = join(gitDir, linked && slot === "implement" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE);
+  const mutexPath = linked ? resolve(gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR) : leasePath;
+  return { root, worktree, gitDir, leasePath, mutexPath, linked };
 }
 
 export function repositoryDirtyBorrowApprovalPath(parentDeploymentDirectory: string): string {
@@ -657,18 +662,18 @@ export function readProcessFingerprint(pid: number): ProcessFingerprint | undefi
 
 export function inspectRepositoryMutationLease(
   canonicalRepoRoot: string,
-  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; slot?: RepositoryMutationSlot } = { getProcessFingerprint: readProcessFingerprint },
+  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; slot?: RepositoryMutationSlot; repositoryGitDir?: string } = { getProcessFingerprint: readProcessFingerprint },
 ): RepositoryEvidenceInspection {
-  const { root, leasePath, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, dependencies.slot ?? "orchestrator");
+  const { root, leasePath, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, dependencies.slot ?? "orchestrator", dependencies.repositoryGitDir);
   return withMutationMutex(mutexPath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
 }
 
 export function inspectRepositoryMutationBorrower(
   canonicalRepoRoot: string,
-  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string } = { getProcessFingerprint: readProcessFingerprint },
+  dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; repositoryGitDir?: string } = { getProcessFingerprint: readProcessFingerprint },
 ): RepositoryBorrowerInspection {
-  const { root, worktree, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, "orchestrator");
-  const borrowerPath = repositoryMutationBorrowerPath(worktree);
+  const { root, gitDir, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, "orchestrator", dependencies.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   return withMutationMutex(mutexPath, () => inspectBorrowerUnlocked(root, borrowerPath, dependencies.getProcessFingerprint));
 }
 
@@ -1017,10 +1022,11 @@ export function transferRepositoryMutationBorrower(options: {
 export function releaseRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
   borrowerToken: string;
 }): RepositoryBorrowerMutationResult {
-  const { root, worktree, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
-  const borrowerPath = repositoryMutationBorrowerPath(worktree);
+  const { root, worktree, gitDir, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
     if (parsed === undefined) return { status: "absent" };
@@ -1034,13 +1040,14 @@ export function releaseRepositoryMutationBorrower(options: {
 export function finalizeRepositoryMutationBorrower(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
   borrowerToken: string;
   deploymentId: string;
   finalGitSnapshot?: RepositoryGitSnapshot;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryBorrowerFinalizationResult {
-  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
-  const borrowerPath = repositoryMutationBorrowerPath(worktree);
+  const { root, worktree, gitDir, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidBorrowerUnlocked(borrowerPath);
@@ -1111,6 +1118,7 @@ export function finalizeRepositoryMutationBorrower(options: {
 export async function finalizeRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
   slot?: RepositoryMutationSlot;
   ownershipToken: string;
   dependencies?: Partial<RepositoryLeaseFinalizationDependencies>;
@@ -1119,7 +1127,7 @@ export async function finalizeRepositoryMutationLease(options: {
   const now = options.dependencies?.now ?? Date.now;
   const sleep = options.dependencies?.sleep ?? ((milliseconds: number) => new Promise<void>((resolveValue) => setTimeout(resolveValue, milliseconds)));
   const getProcessFingerprint = options.dependencies?.getProcessFingerprint ?? readProcessFingerprint;
-  const ownerInspection = inspectRepositoryMutationLease(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot, slot: options.slot });
+  const ownerInspection = inspectRepositoryMutationLease(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot, repositoryGitDir: options.repositoryGitDir, slot: options.slot });
   if (ownerInspection.state === "absent") return { status: "absent", waitedMs: 0 };
   if (!ownerInspection.lease || ownerInspection.lease.canonicalRepoRoot !== options.canonicalRepoRoot) return { status: "invalid-evidence", waitedMs: 0 };
   if (!secureStringsEqual(ownerInspection.lease.ownershipToken, options.ownershipToken)) return { status: "token-mismatch", waitedMs: 0 };
@@ -1128,7 +1136,7 @@ export async function finalizeRepositoryMutationLease(options: {
   while (true) {
     const inspection = options.slot === "implement"
       ? { state: "absent" as const }
-      : inspectRepositoryMutationBorrower(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot });
+      : inspectRepositoryMutationBorrower(options.canonicalRepoRoot, { getProcessFingerprint, worktreeRoot: options.worktreeRoot, repositoryGitDir: options.repositoryGitDir });
     if (inspection.state !== "live") break;
     const borrower = inspection.borrower;
     if (!borrower || borrower.parentDeploymentId !== parentDeploymentId) {
@@ -1165,6 +1173,7 @@ export async function finalizeRepositoryMutationLease(options: {
   const released = releaseRepositoryMutationLease({
     canonicalRepoRoot: options.canonicalRepoRoot,
     worktreeRoot: options.worktreeRoot,
+    repositoryGitDir: options.repositoryGitDir,
     slot: options.slot,
     ownershipToken: options.ownershipToken,
     dependencies: { getProcessFingerprint },
@@ -1200,13 +1209,14 @@ export function transferRepositoryMutationLease(options: {
 export function releaseRepositoryMutationLease(options: {
   canonicalRepoRoot: string;
   worktreeRoot?: string;
+  repositoryGitDir?: string;
   slot?: RepositoryMutationSlot;
   ownershipToken: string;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint">;
 }): RepositoryLeaseMutationResult {
   const slot = options.slot ?? "orchestrator";
-  const { root, worktree, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, slot);
-  const borrowerPath = repositoryMutationBorrowerPath(worktree);
+  const { root, worktree, gitDir, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, slot, options.repositoryGitDir);
+  const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     const parsed = readValidLeaseUnlocked(leasePath);
@@ -1967,6 +1977,16 @@ function fingerprintsEqual(expected: ProcessFingerprint, observed: ProcessFinger
 function assertCanonicalRoot(value: string): string {
   if (!value || !isAbsolute(value) || resolve(value) !== value) throw new Error("repository-admission: canonical repository root must be an exact absolute normalized path");
   return value;
+}
+
+function assertPhysicalDirectory(value: string, label: string): string {
+  const path = assertCanonicalRoot(value);
+  try {
+    if (!statSync(path).isDirectory() || realpathSync(path) !== path) throw new Error("not physical");
+    return path;
+  } catch {
+    throw new Error(`repository-admission: ${label} must remain an exact physical directory`);
+  }
 }
 
 function boundedString(value: unknown): value is string {
