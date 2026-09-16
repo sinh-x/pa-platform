@@ -673,6 +673,25 @@ test("transition reconciliation is all or nothing", () => {
         assert.notDeepEqual(readFileSync(parentPath), before);
         assert.equal(statSync(parentPath).mode & 0o777, 0o600);
         assert.equal(statSync(repositoryMutationBorrowerPath(fixture.root)).mode & 0o777, 0o600);
+        assert.equal(releaseRepositoryMutationBorrower({
+          canonicalRepoRoot: fixture.root,
+          borrowerToken: registration.borrower.borrowerToken,
+        }).status, "released");
+        git(["checkout", "-b", "feature/PAP-198-second-transition"], fixture.root);
+        const secondSnapshot = captureRepositoryGitSnapshot(fixture.root);
+        const onceReconciledBytes = readFileSync(parentPath);
+        const repeated = registerRepositoryMutationBorrower({
+          capability: "transition-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+          expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+          parentDeploymentId: "d-parent", deploymentId: "d-second", deploymentDirectory: join(fixture.root, "second"),
+          runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-198",
+          branch: secondSnapshot.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
+          expectedGitSnapshot: secondSnapshot, gitSnapshot: secondSnapshot, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+        });
+        assert.equal(repeated.status, "rejected");
+        if (repeated.status === "rejected") assert.equal(repeated.category, "branch-transition");
+        assert.deepEqual(readFileSync(parentPath), onceReconciledBytes);
+        assert.equal(existsSync(repositoryMutationBorrowerPath(fixture.root)), false);
       }
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
@@ -681,47 +700,69 @@ test("transition reconciliation is all or nothing", () => {
 });
 
 test("ineligible orchestrator branch transitions fail closed", () => {
-  const fixture = transitionFixture("rejections");
-  const parent = fingerprint(45521);
-  const child = fingerprint(45522);
-  const deps: RepositoryAdmissionDependencies = {
-    ...familyDependencies([parent, child]),
-    runGit: (args, cwd) => execFileSync("git", [...args], { cwd }),
-  };
-  try {
-    const initial = captureRepositoryGitSnapshot(fixture.root);
-    const acquired = acquireRepositoryMutationLease({
-      canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
-      expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
-      deploymentId: "d-parent", deploymentDirectory: join(fixture.root, "parent"), runtime: "pi",
-      team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-198",
-      pid: parent.pid, processFingerprint: parent, ownershipToken: "reject-capability",
-      gitSnapshot: initial, branchTransitionPolicy: transitionPolicy, dependencies: deps,
-    });
-    assert.equal(acquired.status, "acquired");
-    if (acquired.status !== "acquired") return;
-    git(["checkout", "-b", "feature/PAP-198-rejected"], fixture.root);
-    const current = captureRepositoryGitSnapshot(fixture.root);
-    const before = readFileSync(repositoryMutationLeasePath(fixture.root));
-    const mismatchedPolicy = { ...transitionPolicy, ticketFeatureBranchPattern: "change/<ticket>-<topic>" };
-    const rejected = registerRepositoryMutationBorrower({
-      capability: "reject-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
-      expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
-      parentDeploymentId: "d-parent", deploymentId: "d-child", deploymentDirectory: join(fixture.root, "child"),
-      runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-198",
-      branch: current.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
-      expectedGitSnapshot: current, gitSnapshot: current, branchTransitionPolicy: mismatchedPolicy, dependencies: deps,
-    });
-    assert.equal(rejected.status, "rejected");
-    if (rejected.status === "rejected") {
-      assert.equal(rejected.category, "child-context");
-      assert.match(rejected.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
-      assert.ok(rejected.diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+  const cases = [
+    { name: "dirty-develop", dirtyInitial: true },
+    { name: "unsynchronized-develop", unsynchronized: true },
+    { name: "dirty-current", dirtyCurrent: true },
+    { name: "execution-ticket-pattern-disagreement", mismatchedPolicy: true },
+    { name: "wrong-ticket", wrongTicket: true },
+    { name: "unrelated-branch", unrelatedBranch: true },
+    { name: "stale-immediate-snapshot", staleExpected: true },
+    { name: "git-directory-drift", driftGitDirectory: true },
+  ] as const;
+  for (const [index, item] of cases.entries()) {
+    const fixture = transitionFixture(item.name);
+    const parent = fingerprint(45521 + index * 2);
+    const child = fingerprint(45522 + index * 2);
+    const deps: RepositoryAdmissionDependencies = {
+      ...familyDependencies([parent, child]),
+      runGit: (args, cwd) => item.unsynchronized && args[0] === "rev-parse" && args[1] === "--verify"
+        ? `${"f".repeat(40)}\n`
+        : execFileSync("git", [...args], { cwd }),
+    };
+    try {
+      if (item.dirtyInitial) writeFileSync(join(fixture.root, "dirty-develop.txt"), "dirty\n");
+      const initial = captureRepositoryGitSnapshot(fixture.root);
+      const acquired = acquireRepositoryMutationLease({
+        canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+        expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+        deploymentId: "d-parent", deploymentDirectory: join(fixture.root, "parent"), runtime: "pi",
+        team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-198",
+        pid: parent.pid, processFingerprint: parent, ownershipToken: "reject-capability",
+        gitSnapshot: initial, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+      });
+      assert.equal(acquired.status, "acquired", item.name);
+      if (acquired.status !== "acquired") continue;
+      if (item.dirtyInitial) rmSync(join(fixture.root, "dirty-develop.txt"));
+      const branch = item.unrelatedBranch ? "feature/PAP-999-unrelated" : `feature/PAP-198-${item.name}`;
+      git(["checkout", "-b", branch], fixture.root);
+      if (item.dirtyCurrent) writeFileSync(join(fixture.root, "dirty-current.txt"), "dirty\n");
+      const current = captureRepositoryGitSnapshot(fixture.root);
+      const before = readFileSync(repositoryMutationLeasePath(fixture.root));
+      const childPolicy = item.mismatchedPolicy
+        ? { ...transitionPolicy, ticketFeatureBranchPattern: "change/<ticket>-<topic>" }
+        : transitionPolicy;
+      const expected = item.staleExpected ? { ...current, head: "e".repeat(40) } : current;
+      const rejected = registerRepositoryMutationBorrower({
+        capability: "reject-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+        expectedGitDir: item.driftGitDirectory ? fixture.root : fixture.gitDir,
+        expectedGitCommonDir: fixture.gitCommonDir,
+        parentDeploymentId: "d-parent", deploymentId: "d-child", deploymentDirectory: join(fixture.root, "child"),
+        runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+        ticket: item.wrongTicket ? "PAP-999" : "PAP-198",
+        branch: current.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
+        expectedGitSnapshot: expected, gitSnapshot: current, branchTransitionPolicy: childPolicy, dependencies: deps,
+      });
+      assert.equal(rejected.status, "rejected", item.name);
+      if (rejected.status === "rejected") {
+        assert.match(rejected.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s, item.name);
+        assert.ok(rejected.diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS, item.name);
+      }
+      assert.deepEqual(readFileSync(repositoryMutationLeasePath(fixture.root)), before, item.name);
+      assert.equal(existsSync(repositoryMutationBorrowerPath(fixture.root)), false, item.name);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
     }
-    assert.deepEqual(readFileSync(repositoryMutationLeasePath(fixture.root)), before);
-    assert.equal(existsSync(repositoryMutationBorrowerPath(fixture.root)), false);
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 

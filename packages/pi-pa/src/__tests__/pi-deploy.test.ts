@@ -591,13 +591,14 @@ test("matching ticket branches preserve ordinary admission", async () => {
 });
 
 test("new ticket branch transition reconciles at child admission", async () => {
-  await withPiEnv(async (root) => {
+  await withPiEnv(async (root, gitState) => {
     const repo = join(root, "repo");
     git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
     const parent = await startHeldOrchestrator();
     const parentPath = repositoryMutationLeasePath(repo);
     const before = readFileSync(parentPath);
-    git(["checkout", "-b", "feature/PAP-198-created"], repo);
+    const operationOffset = gitState.readCommands().length;
+    assert.equal(await runCoreCommand(["branch", "create", "PAP-198", "--topic", "created"]), 0);
     const current = captureRepositoryGitSnapshot(repo);
     await withInheritedEnvironment({
       PA_DEPLOYMENT_ID: parent.opts.deployId,
@@ -619,6 +620,7 @@ test("new ticket branch transition reconciles at child admission", async () => {
       assert.equal(spawns, 1);
       assert.notDeepEqual(readFileSync(parentPath), before);
       assert.equal(inspectRepositoryMutationLease(repo).lease?.branchTransitioned, true);
+      assert.equal(gitState.readCommands().slice(operationOffset).some((args) => args[0] === "fetch"), false);
     });
     parent.release();
     assert.equal((await parent.result).status, "success");
@@ -655,12 +657,44 @@ test("existing ticket branch switch reconciles at child admission", async () => 
   });
 });
 
+test("ineligible Pi orchestrator branch transitions spawn no child", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const parent = await startHeldOrchestrator();
+    const parentPath = repositoryMutationLeasePath(repo);
+    const before = readFileSync(parentPath);
+    git(["checkout", "-b", "feature/PAP-198-missing-origin"], repo);
+    await withInheritedEnvironment({
+      PA_DEPLOYMENT_ID: parent.opts.deployId,
+      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+    }, async () => {
+      let spawns = 0;
+      const child = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, stubAdapter({
+        onSpawn: () => { spawns += 1; },
+      }));
+      assert.equal(child.status, "failed");
+      assert.equal(spawns, 0);
+      assert.match(child.reason ?? "", /local origin develop reference is absent/);
+      assert.match(child.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((child.reason ?? "").length <= 2_000);
+      assert.deepEqual(readFileSync(parentPath), before);
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
+    });
+    parent.release();
+    assert.equal((await parent.result).status, "success");
+  });
+});
+
 test("transition contenders admit exactly one child", { timeout: 120_000 }, async () => {
   await withPiEnv(async (root) => {
     const repo = join(root, "repo");
     git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
     const parent = await startHeldOrchestrator();
+    const protectedCapability = inspectRepositoryMutationLease(repo).lease!.ownershipToken;
     git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
+    const protectedDigest = captureRepositoryGitSnapshot(repo).digestSha256!;
+    let protectedBorrowerToken = "";
     let releaseWinner!: () => void;
     const heldWinner = new Promise<SpawnResult>((resolveResult) => {
       releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
@@ -672,7 +706,7 @@ test("transition contenders admit exactly one child", { timeout: 120_000 }, asyn
       PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
       PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
     }, async () => {
-      const adapter = stubAdapter({ onSpawn: () => { spawns += 1; }, result: () => heldWinner });
+      const adapter = stubAdapter({ onSpawn: (opts) => { spawns += 1; protectedBorrowerToken = opts.repositoryBorrower?.borrowerToken ?? ""; }, result: () => heldWinner });
       const contenders = Array.from({ length: 50 }, () => deployWithPi(
         { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
       ).then((outcome) => { completed += 1; return outcome; }));
@@ -686,6 +720,12 @@ test("transition contenders admit exactly one child", { timeout: 120_000 }, asyn
       assert.equal(failures.length, 49);
       assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
       assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
+      assert.ok(protectedBorrowerToken);
+      for (const outcome of failures) {
+        for (const protectedValue of [protectedCapability, protectedBorrowerToken, protectedDigest]) {
+          assert.doesNotMatch(outcome.reason ?? "", new RegExp(escapeRegExp(protectedValue)));
+        }
+      }
     });
     parent.release();
     assert.equal((await parent.result).status, "success");
