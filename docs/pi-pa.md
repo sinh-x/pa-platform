@@ -187,6 +187,39 @@ status detail, and runtime spawn evidence carry both roots. `ppa status <id>`
 shows `Repo Root`, a distinct `Worktree`, and `Repo Slot` when recorded. OPA,
 CPA, and DPA retain their prior repository behavior.
 
+## Orchestrator Branch Reconciliation
+
+A foreground Pi `builder/orchestrator` has two supported direct-child entry
+paths. It may launch already on a clean exact ticket branch in the registered
+primary root or an authenticated linked worktree; ordinary borrower admission
+then leaves the parent lease bytes unchanged. It may instead launch only at the
+registered primary root on clean configured `develop` synchronized with the
+local `origin/develop` remote-tracking ref, create the exact branch with the
+existing `ppa branch create` command or select an existing exact branch with
+`git switch`, and request one direct background `builder/implement` child
+without restarting the orchestrator.
+
+The child-admission gate, not the launcher, authenticates that one-way change.
+Under the repository mutex it rechecks parent process lineage and registry
+state, primary-root and physical Git identity, the same parent/child ticket,
+both configured feature-branch patterns (execution repository and ticket
+project), complete clean Git evidence, borrower/slot exclusion, and the initial
+local develop synchronization. It performs no fetch or other network access and
+never creates, switches, cleans, stashes, resets, commits, or discards work. A
+new branch may retain develop's HEAD; an existing branch may have another exact
+40-lowercase-hex HEAD.
+
+Successful reconciliation replaces only the parent's authoritative Git snapshot
+and publishes borrower evidence carrying that same complete snapshot. Both
+mode-`0600` files remain within the 65,536-byte evidence limits. Replacement and
+publication are one logical transaction: publication failure removes no
+unrelated evidence, restores the prior parent bytes exactly, and spawns no
+runtime. Dirty or stale states, missing local remote refs, ticket/pattern
+mismatch, repeated transitions, linked-worktree transitions, physical identity
+drift, and live ownership conflicts fail with bounded structured recovery
+diagnostics before spawn. This transition path is Pi-only and does not broaden
+OPA, CPA, or DPA policy.
+
 ## OpenAI-to-Codex Mapping
 
 PPA applies this normalization only after Pi runtime precedence has resolved the

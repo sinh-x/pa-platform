@@ -95,9 +95,11 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   const repo = join(root, "repo");
   mkdirSync(config, { recursive: true });
   mkdirSync(teams, { recursive: true });
+  mkdirSync(join(root, "tickets"), { recursive: true });
   initializeGitRepo(repo);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\n`);
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n`);
+  writeFileSync(join(root, "tickets", "PAP-198.json"), JSON.stringify({ id: "PAP-198", project: "pa-platform", title: "Transition fixture" }));
   writeFileSync(join(teams, "builder.yaml"), [
     "name: builder",
     "description: Builder",
@@ -228,6 +230,24 @@ function within<T>(promise: Promise<T>, milliseconds: number, message: string | 
       (error: unknown) => { clearTimeout(timer); reject(error); },
     );
   });
+}
+
+async function startHeldOrchestrator(ticket = "PAP-198"): Promise<{
+  opts: SpawnOpts;
+  release: () => void;
+  result: Promise<Awaited<ReturnType<typeof deployWithPi>>>;
+}> {
+  let opts: SpawnOpts | undefined;
+  let release!: () => void;
+  const held = new Promise<SpawnResult>((resolveResult) => {
+    release = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
+  });
+  const result = deployWithPi({ team: "builder", mode: "orchestrator", ticket, timeout: 60 }, stubAdapter({
+    onSpawn: (spawnOpts) => { opts = spawnOpts; },
+    result: () => held,
+  }));
+  await within((async () => { while (!opts) await nextTick(); })(), 10_000, "orchestrator did not reach spawn");
+  return { opts: opts!, release, result };
 }
 
 test("ppa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
@@ -533,6 +553,142 @@ test("authenticated inherited background implement admission preserves parent by
       });
       assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, ownershipToken: capability }).status, "released");
     }
+  });
+});
+
+test("matching ticket branches preserve ordinary admission", async () => {
+  for (const kind of ["primary", "linked"] as const) {
+    await withPiEnv(async (root) => {
+      const primary = join(root, "repo");
+      let worktree = primary;
+      if (kind === "linked") {
+        worktree = join(root, "matching-linked");
+        execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-198-matching-linked", worktree], { cwd: primary, stdio: "ignore" });
+      } else {
+        git(["checkout", "-b", "feature/PAP-198-matching-primary"], primary);
+      }
+      process.chdir(worktree);
+      const parent = await startHeldOrchestrator();
+      const parentPath = repositoryMutationLeasePath(worktree);
+      const before = readFileSync(parentPath);
+      await withInheritedEnvironment({
+        PA_DEPLOYMENT_ID: parent.opts.deployId,
+        PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+        PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: primary, PA_TICKET_ID: "PAP-198",
+      }, async () => {
+        let spawns = 0;
+        const child = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, stubAdapter({
+          onSpawn: () => { spawns += 1; assert.deepEqual(readFileSync(parentPath), before); },
+        }));
+        assert.equal(child.status, "success", `${kind}: ${child.reason ?? ""}`);
+        assert.equal(spawns, 1);
+        assert.deepEqual(readFileSync(parentPath), before);
+      });
+      parent.release();
+      assert.equal((await parent.result).status, "success");
+    });
+  }
+});
+
+test("new ticket branch transition reconciles at child admission", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
+    const parent = await startHeldOrchestrator();
+    const parentPath = repositoryMutationLeasePath(repo);
+    const before = readFileSync(parentPath);
+    git(["checkout", "-b", "feature/PAP-198-created"], repo);
+    const current = captureRepositoryGitSnapshot(repo);
+    await withInheritedEnvironment({
+      PA_DEPLOYMENT_ID: parent.opts.deployId,
+      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+    }, async () => {
+      let spawns = 0;
+      const child = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, stubAdapter({
+        onSpawn: (opts) => {
+          spawns += 1;
+          const leaseSnapshot = inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot;
+          const borrowerSnapshot = inspectRepositoryMutationBorrower(repo).borrower?.launchGitSnapshot;
+          assert.equal(repositoryGitSnapshotsEqual(opts.executionPlan!.repositoryAdmission.gitSnapshot!, current), true);
+          assert.equal(repositoryGitSnapshotsEqual(leaseSnapshot!, current), true);
+          assert.equal(repositoryGitSnapshotsEqual(borrowerSnapshot!, current), true);
+        },
+      }));
+      assert.equal(child.status, "success", child.reason);
+      assert.equal(spawns, 1);
+      assert.notDeepEqual(readFileSync(parentPath), before);
+      assert.equal(inspectRepositoryMutationLease(repo).lease?.branchTransitioned, true);
+    });
+    parent.release();
+    assert.equal((await parent.result).status, "success");
+  });
+});
+
+test("existing ticket branch switch reconciles at child admission", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    const developHead = git(["rev-parse", "HEAD"], repo);
+    git(["update-ref", "refs/remotes/origin/develop", developHead], repo);
+    git(["checkout", "-b", "feature/PAP-198-existing"], repo);
+    git(["commit", "--allow-empty", "-m", "existing branch head"], repo);
+    const existingHead = git(["rev-parse", "HEAD"], repo);
+    assert.notEqual(existingHead, developHead);
+    git(["switch", "develop"], repo);
+    const parent = await startHeldOrchestrator();
+    git(["switch", "feature/PAP-198-existing"], repo);
+    await withInheritedEnvironment({
+      PA_DEPLOYMENT_ID: parent.opts.deployId,
+      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+    }, async () => {
+      let observedHead = "";
+      const child = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, stubAdapter({
+        onSpawn: (opts) => { observedHead = opts.executionPlan?.repositoryAdmission.gitSnapshot?.head ?? ""; },
+      }));
+      assert.equal(child.status, "success", child.reason);
+      assert.equal(observedHead, existingHead);
+      assert.equal(inspectRepositoryMutationLease(repo).lease?.preLaunchGitSnapshot.head, existingHead);
+    });
+    parent.release();
+    assert.equal((await parent.result).status, "success");
+  });
+});
+
+test("transition contenders admit exactly one child", { timeout: 120_000 }, async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    git(["update-ref", "refs/remotes/origin/develop", "HEAD"], repo);
+    const parent = await startHeldOrchestrator();
+    git(["checkout", "-b", "feature/PAP-198-contenders"], repo);
+    let releaseWinner!: () => void;
+    const heldWinner = new Promise<SpawnResult>((resolveResult) => {
+      releaseWinner = () => resolveResult({ sessionId: "authoritative-session-id", exitCode: 0, metadata: { sessionId: "authoritative-session-id" } });
+    });
+    let spawns = 0;
+    let completed = 0;
+    await withInheritedEnvironment({
+      PA_DEPLOYMENT_ID: parent.opts.deployId,
+      PA_DEPLOYMENT_DIR: getDeployPaths(parent.opts.deployId).deployDir,
+      PA_TEAM: "builder", PA_MODE: "orchestrator", PA_REPO: repo, PA_TICKET_ID: "PAP-198",
+    }, async () => {
+      const adapter = stubAdapter({ onSpawn: () => { spawns += 1; }, result: () => heldWinner });
+      const contenders = Array.from({ length: 50 }, () => deployWithPi(
+        { team: "builder", mode: "implement", ticket: "PAP-198", background: true, timeout: 60 }, adapter,
+      ).then((outcome) => { completed += 1; return outcome; }));
+      await within((async () => { while (completed < 49) await nextTick(); })(), 90_000, () => `only ${completed} transition contenders completed`);
+      assert.equal(spawns, 1);
+      assert.equal(inspectRepositoryMutationBorrower(repo).state, "live");
+      releaseWinner();
+      const outcomes = await Promise.all(contenders);
+      assert.equal(outcomes.filter((outcome) => outcome.status === "success").length, 1);
+      const failures = outcomes.filter((outcome) => outcome.status === "failed");
+      assert.equal(failures.length, 49);
+      assert.equal(failures.every((outcome) => (outcome.reason ?? "").length <= 2_000), true);
+      assert.equal(failures.every((outcome) => /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(outcome.reason ?? "")), true);
+    });
+    parent.release();
+    assert.equal((await parent.result).status, "success");
   });
 });
 

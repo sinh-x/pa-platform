@@ -50,6 +50,16 @@ export function validateBranchName(branch: string, pattern: string): boolean {
   return regex.test(branch);
 }
 
+/** Validates one branch against one exact ticket rather than the multi-ticket grammar. */
+export function validateBranchNameForTicket(branch: string, ticket: string, pattern: string): boolean {
+  if (!/^[A-Z]+-\d+$/.test(ticket)) return false;
+  const topicSegment = "[a-z0-9-]+";
+  const regexBody = escapeRegex(pattern)
+    .replace(/<ticket>/g, escapeRegex(ticket))
+    .replace(/<topic>/g, topicSegment);
+  return new RegExp(`^${regexBody}$`).test(branch);
+}
+
 function validateRepoKey(repo: string): { name: string; path: string } {
   const entry = loadRepoEntry(repo);
   if (!entry) {

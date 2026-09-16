@@ -104,6 +104,29 @@ function familyDependencies(live: readonly ProcessFingerprint[]): RepositoryAdmi
   };
 }
 
+const transitionPolicy = Object.freeze({
+  developBranch: "develop",
+  executionFeatureBranchPattern: "feature/<ticket>-<topic>",
+  ticketProject: "pa-platform",
+  ticketFeatureBranchPattern: "feature/<ticket>-<topic>",
+});
+
+function transitionFixture(name: string): { root: string; gitDir: string; gitCommonDir: string } {
+  const root = mkdtempSync(join(tmpdir(), `pa-repository-transition-${name}-`));
+  git(["init", "-b", "develop"], root);
+  git(["config", "user.email", "test@example.com"], root);
+  git(["config", "user.name", "Test"], root);
+  writeFileSync(join(root, "README.md"), "# transition\n");
+  git(["add", "README.md"], root);
+  git(["commit", "-m", "initial"], root);
+  git(["update-ref", "refs/remotes/origin/develop", "HEAD"], root);
+  return {
+    root,
+    gitDir: git(["rev-parse", "--path-format=absolute", "--git-dir"], root),
+    gitCommonDir: git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root),
+  };
+}
+
 function acquire(root: string, owner: ProcessFingerprint, extra: { force?: boolean; token?: string; deps?: RepositoryAdmissionDependencies } = {}) {
   const deps = extra.deps ?? dependencies(owner);
   return acquireRepositoryMutationLease({
@@ -594,6 +617,111 @@ test("authenticated direct child registration is separate, bounded, mode 0600, a
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("transition reconciliation is all or nothing", () => {
+  for (const failAfterReplacement of [false, true]) {
+    const fixture = transitionFixture(failAfterReplacement ? "rollback" : "success");
+    const parent = fingerprint(failAfterReplacement ? 45504 : 45503);
+    const child = fingerprint(failAfterReplacement ? 45506 : 45505);
+    const deps: RepositoryAdmissionDependencies = {
+      ...familyDependencies([parent, child]),
+      runGit: (args, cwd, options) => execFileSync("git", [...args], {
+        cwd,
+        env: options?.repositoryGitDir && options.repositoryGitCommonDir
+          ? { ...process.env, GIT_DIR: options.repositoryGitDir, GIT_COMMON_DIR: options.repositoryGitCommonDir, GIT_WORK_TREE: cwd }
+          : process.env,
+      }),
+      ...(failAfterReplacement ? { afterParentSnapshotReplacement: () => { throw new Error("injected publication failure"); } } : {}),
+    };
+    try {
+      const initial = captureRepositoryGitSnapshot(fixture.root);
+      const acquired = acquireRepositoryMutationLease({
+        canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+        expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+        deploymentId: "d-parent", deploymentDirectory: join(fixture.root, "parent"), runtime: "pi",
+        team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-198",
+        pid: parent.pid, processFingerprint: parent, ownershipToken: "transition-capability",
+        gitSnapshot: initial, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+      });
+      assert.equal(acquired.status, "acquired");
+      if (acquired.status !== "acquired") continue;
+      const parentPath = repositoryMutationLeasePath(fixture.root);
+      const before = readFileSync(parentPath);
+      git(["checkout", "-b", "feature/PAP-198-atomic"], fixture.root);
+      const current = captureRepositoryGitSnapshot(fixture.root);
+      const registration = registerRepositoryMutationBorrower({
+        capability: "transition-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+        expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+        parentDeploymentId: "d-parent", deploymentId: "d-child", deploymentDirectory: join(fixture.root, "child"),
+        runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-198",
+        branch: current.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
+        expectedGitSnapshot: current, gitSnapshot: current, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+      });
+      if (failAfterReplacement) {
+        assert.equal(registration.status, "rejected");
+        assert.deepEqual(readFileSync(parentPath), before);
+        assert.equal(existsSync(repositoryMutationBorrowerPath(fixture.root)), false);
+      } else {
+        assert.equal(registration.status, "registered");
+        if (registration.status !== "registered") continue;
+        const reconciled = inspectRepositoryMutationLease(fixture.root, deps).lease;
+        assert.equal(reconciled?.branchTransitioned, true);
+        assert.equal(repositoryGitSnapshotsEqual(reconciled!.preLaunchGitSnapshot, current), true);
+        assert.equal(repositoryGitSnapshotsEqual(registration.borrower.launchGitSnapshot, current), true);
+        assert.notDeepEqual(readFileSync(parentPath), before);
+        assert.equal(statSync(parentPath).mode & 0o777, 0o600);
+        assert.equal(statSync(repositoryMutationBorrowerPath(fixture.root)).mode & 0o777, 0o600);
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("ineligible orchestrator branch transitions fail closed", () => {
+  const fixture = transitionFixture("rejections");
+  const parent = fingerprint(45521);
+  const child = fingerprint(45522);
+  const deps: RepositoryAdmissionDependencies = {
+    ...familyDependencies([parent, child]),
+    runGit: (args, cwd) => execFileSync("git", [...args], { cwd }),
+  };
+  try {
+    const initial = captureRepositoryGitSnapshot(fixture.root);
+    const acquired = acquireRepositoryMutationLease({
+      canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+      expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+      deploymentId: "d-parent", deploymentDirectory: join(fixture.root, "parent"), runtime: "pi",
+      team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-198",
+      pid: parent.pid, processFingerprint: parent, ownershipToken: "reject-capability",
+      gitSnapshot: initial, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+    });
+    assert.equal(acquired.status, "acquired");
+    if (acquired.status !== "acquired") return;
+    git(["checkout", "-b", "feature/PAP-198-rejected"], fixture.root);
+    const current = captureRepositoryGitSnapshot(fixture.root);
+    const before = readFileSync(repositoryMutationLeasePath(fixture.root));
+    const mismatchedPolicy = { ...transitionPolicy, ticketFeatureBranchPattern: "change/<ticket>-<topic>" };
+    const rejected = registerRepositoryMutationBorrower({
+      capability: "reject-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
+      expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
+      parentDeploymentId: "d-parent", deploymentId: "d-child", deploymentDirectory: join(fixture.root, "child"),
+      runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-198",
+      branch: current.branch, timeoutSeconds: 60, pid: child.pid, processFingerprint: child,
+      expectedGitSnapshot: current, gitSnapshot: current, branchTransitionPolicy: mismatchedPolicy, dependencies: deps,
+    });
+    assert.equal(rejected.status, "rejected");
+    if (rejected.status === "rejected") {
+      assert.equal(rejected.category, "child-context");
+      assert.match(rejected.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(rejected.diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    }
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(fixture.root)), before);
+    assert.equal(existsSync(repositoryMutationBorrowerPath(fixture.root)), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
