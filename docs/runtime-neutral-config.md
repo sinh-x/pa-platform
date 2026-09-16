@@ -67,8 +67,9 @@ then launch one direct background implement child without redeployment. The
 launcher and admission layer never create or switch branches: use `ppa branch
 create <ticket> --topic <topic>` when the exact branch is absent, or exact `git
 switch <branch>` when it already exists. At child admission, the mutex-held gate
-requires the initial develop HEAD to equal the local
-`refs/remotes/origin/<develop>` value, a clean current branch for the same exact
+captures the local `refs/remotes/origin/<develop>` HEAD with the initial develop
+snapshot and requires those immutable launch-time values to be equal, then
+rechecks that the local ref has not drifted; it also requires a clean current branch for the same exact
 ticket, both the execution-repository and ticket-project feature patterns, the
 same canonical root/worktree/Git directory/common directory, and no conflicting
 borrower or slot owner. This check is local-only and never fetches; the operator

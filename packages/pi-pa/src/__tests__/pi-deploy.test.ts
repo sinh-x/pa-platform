@@ -675,7 +675,7 @@ test("ineligible Pi orchestrator branch transitions spawn no child", async () =>
       }));
       assert.equal(child.status, "failed");
       assert.equal(spawns, 0);
-      assert.match(child.reason ?? "", /local origin develop reference is absent/);
+      assert.match(child.reason ?? "", /immutable launch-time origin develop HEAD is absent/);
       assert.match(child.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
       assert.ok((child.reason ?? "").length <= 2_000);
       assert.deepEqual(readFileSync(parentPath), before);

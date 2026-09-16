@@ -175,6 +175,8 @@ export interface RepositoryMutationLease {
   readonly repositoryGitDir?: string;
   readonly repositoryGitCommonDir?: string;
   readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
+  /** Local remote-tracking HEAD captured with the initial develop snapshot; never fetched. */
+  readonly initialDevelopRemoteHead?: string;
   readonly branchTransitioned?: true;
 }
 
@@ -923,6 +925,11 @@ function validateBranchTransition(input: {
     || lease.preLaunchGitSnapshot.branch !== policy.developBranch) {
     return "the parent did not launch from a complete clean configured develop snapshot";
   }
+  if (!lease.initialDevelopRemoteHead
+    || !/^[0-9a-f]{40}$/.test(lease.initialDevelopRemoteHead)
+    || lease.initialDevelopRemoteHead !== lease.preLaunchGitSnapshot.head) {
+    return "the immutable launch-time origin develop HEAD is absent, malformed, or not synchronized with the initial develop HEAD";
+  }
   if (!isCompleteGitSnapshot(gitSnapshot) || gitSnapshot.dirty) return "the current ticket branch is not a complete clean Git snapshot";
   if (!options.expectedGitSnapshot || !isCompleteGitSnapshot(options.expectedGitSnapshot)
     || !repositoryGitSnapshotsEqual(options.expectedGitSnapshot, gitSnapshot)) {
@@ -944,8 +951,8 @@ function validateBranchTransition(input: {
   } catch {
     return "the local origin develop reference is absent or unreadable; admission performs no network access";
   }
-  if (!/^[0-9a-f]{40}$/.test(remoteDevelopHead) || remoteDevelopHead !== lease.preLaunchGitSnapshot.head) {
-    return "the parent launch develop HEAD was not synchronized with the local origin develop reference";
+  if (!/^[0-9a-f]{40}$/.test(remoteDevelopHead) || remoteDevelopHead !== lease.initialDevelopRemoteHead) {
+    return "the local origin develop reference changed after the synchronized parent launch";
   }
   return undefined;
 }
@@ -997,6 +1004,23 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
     // publishes ownership. Tests and lower-level callers may provide a fixed
     // snapshot when exercising the ownership primitive in synthetic fixtures.
     const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit)) });
+    let initialDevelopRemoteHead: string | undefined;
+    if (options.branchTransitionPolicy
+      && isBranchTransitionPolicy(options.branchTransitionPolicy)
+      && gitSnapshot.branch === options.branchTransitionPolicy.developBranch) {
+      try {
+        const observed = gitText(dependencies.runGit(
+          ["rev-parse", "--verify", `refs/remotes/origin/${options.branchTransitionPolicy.developBranch}`],
+          worktree,
+          options.expectedGitDir && options.expectedGitCommonDir
+            ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir }
+            : undefined,
+        )).trim();
+        if (/^[0-9a-f]{40}$/.test(observed)) initialDevelopRemoteHead = observed;
+      } catch {
+        // Absence is immutable evidence too; a later transition remains ineligible.
+      }
+    }
     if (options.launchMode === "background" && gitSnapshot.dirty && worktree === root) {
       return {
         status: "rejected",
@@ -1104,6 +1128,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
         ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir }
         : {}),
       ...(options.branchTransitionPolicy ? { branchTransitionPolicy: Object.freeze({ ...options.branchTransitionPolicy }) } : {}),
+      ...(initialDevelopRemoteHead ? { initialDevelopRemoteHead } : {}),
     });
     assertLease(lease);
     publishLeaseExclusive(leasePath, lease, dependencies.createToken);
@@ -1677,6 +1702,7 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
       || (boundedString(row["repositoryGitDir"]) && isAbsolute(row["repositoryGitDir"] as string)
         && boundedString(row["repositoryGitCommonDir"]) && isAbsolute(row["repositoryGitCommonDir"] as string)))
     && (row["branchTransitionPolicy"] === undefined || isBranchTransitionPolicy(row["branchTransitionPolicy"]))
+    && (row["initialDevelopRemoteHead"] === undefined || (typeof row["initialDevelopRemoteHead"] === "string" && /^[0-9a-f]{40}$/.test(row["initialDevelopRemoteHead"])))
     && (row["branchTransitioned"] === undefined || row["branchTransitioned"] === true);
 }
 

@@ -203,8 +203,8 @@ The child-admission gate, not the launcher, authenticates that one-way change.
 Under the repository mutex it rechecks parent process lineage and registry
 state, primary-root and physical Git identity, the same parent/child ticket,
 both configured feature-branch patterns (execution repository and ticket
-project), complete clean Git evidence, borrower/slot exclusion, and the initial
-local develop synchronization. It performs no fetch or other network access and
+project), complete clean Git evidence, borrower/slot exclusion, and the immutable
+launch-time local develop/remote-tracking HEAD pair plus a no-drift reread. It performs no fetch or other network access and
 never creates, switches, cleans, stashes, resets, commits, or discards work. A
 new branch may retain develop's HEAD; an existing branch may have another exact
 40-lowercase-hex HEAD.

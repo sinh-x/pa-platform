@@ -647,6 +647,7 @@ test("transition reconciliation is all or nothing", () => {
       });
       assert.equal(acquired.status, "acquired");
       if (acquired.status !== "acquired") continue;
+      assert.equal(acquired.lease.initialDevelopRemoteHead, initial.head);
       const parentPath = repositoryMutationLeasePath(fixture.root);
       const before = readFileSync(parentPath);
       git(["checkout", "-b", "feature/PAP-198-atomic"], fixture.root);
@@ -704,7 +705,8 @@ test("ineligible orchestrator branch transitions fail closed", () => {
     { name: "dirty-develop", dirtyInitial: true },
     { name: "unsynchronized-develop", unsynchronized: true },
     { name: "dirty-current", dirtyCurrent: true },
-    { name: "execution-ticket-pattern-disagreement", mismatchedPolicy: true },
+    { name: "immutable-dual-pattern-disagreement", immutablePatternDisagreement: true },
+    { name: "stale-policy-evidence", mismatchedPolicy: true },
     { name: "wrong-ticket", wrongTicket: true },
     { name: "unrelated-branch", unrelatedBranch: true },
     { name: "stale-immediate-snapshot", staleExpected: true },
@@ -723,13 +725,16 @@ test("ineligible orchestrator branch transitions fail closed", () => {
     try {
       if (item.dirtyInitial) writeFileSync(join(fixture.root, "dirty-develop.txt"), "dirty\n");
       const initial = captureRepositoryGitSnapshot(fixture.root);
+      const parentPolicy = item.immutablePatternDisagreement
+        ? { ...transitionPolicy, ticketFeatureBranchPattern: "change/<ticket>-<topic>" }
+        : transitionPolicy;
       const acquired = acquireRepositoryMutationLease({
         canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
         expectedGitDir: fixture.gitDir, expectedGitCommonDir: fixture.gitCommonDir,
         deploymentId: "d-parent", deploymentDirectory: join(fixture.root, "parent"), runtime: "pi",
         team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-198",
         pid: parent.pid, processFingerprint: parent, ownershipToken: "reject-capability",
-        gitSnapshot: initial, branchTransitionPolicy: transitionPolicy, dependencies: deps,
+        gitSnapshot: initial, branchTransitionPolicy: parentPolicy, dependencies: deps,
       });
       assert.equal(acquired.status, "acquired", item.name);
       if (acquired.status !== "acquired") continue;
@@ -740,8 +745,8 @@ test("ineligible orchestrator branch transitions fail closed", () => {
       const current = captureRepositoryGitSnapshot(fixture.root);
       const before = readFileSync(repositoryMutationLeasePath(fixture.root));
       const childPolicy = item.mismatchedPolicy
-        ? { ...transitionPolicy, ticketFeatureBranchPattern: "change/<ticket>-<topic>" }
-        : transitionPolicy;
+        ? { ...parentPolicy, ticketFeatureBranchPattern: "release/<ticket>-<topic>" }
+        : parentPolicy;
       const expected = item.staleExpected ? { ...current, head: "e".repeat(40) } : current;
       const rejected = registerRepositoryMutationBorrower({
         capability: "reject-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: fixture.root,
