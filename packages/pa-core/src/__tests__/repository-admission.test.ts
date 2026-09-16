@@ -704,6 +704,7 @@ test("ineligible orchestrator branch transitions fail closed", () => {
   const cases = [
     { name: "dirty-develop", dirtyInitial: true },
     { name: "unsynchronized-develop", unsynchronized: true },
+    { name: "post-launch-origin-drift", postLaunchRemoteDrift: true },
     { name: "dirty-current", dirtyCurrent: true },
     { name: "immutable-dual-pattern-disagreement", immutablePatternDisagreement: true },
     { name: "stale-policy-evidence", mismatchedPolicy: true },
@@ -716,11 +717,16 @@ test("ineligible orchestrator branch transitions fail closed", () => {
     const fixture = transitionFixture(item.name);
     const parent = fingerprint(45521 + index * 2);
     const child = fingerprint(45522 + index * 2);
+    let remoteDevelopReads = 0;
     const deps: RepositoryAdmissionDependencies = {
       ...familyDependencies([parent, child]),
-      runGit: (args, cwd) => item.unsynchronized && args[0] === "rev-parse" && args[1] === "--verify"
-        ? `${"f".repeat(40)}\n`
-        : execFileSync("git", [...args], { cwd }),
+      runGit: (args, cwd) => {
+        if (args[0] === "rev-parse" && args[1] === "--verify") {
+          remoteDevelopReads += 1;
+          if (item.unsynchronized || (item.postLaunchRemoteDrift && remoteDevelopReads > 1)) return `${"f".repeat(40)}\n`;
+        }
+        return execFileSync("git", [...args], { cwd });
+      },
     };
     try {
       if (item.dirtyInitial) writeFileSync(join(fixture.root, "dirty-develop.txt"), "dirty\n");
