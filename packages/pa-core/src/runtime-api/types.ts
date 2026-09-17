@@ -24,6 +24,8 @@ export interface RepositoryLeaseHandoff {
   repositoryGitCommonDir: string;
   slot?: "orchestrator" | "implement";
   ownershipToken: string;
+  /** Matching repo/ticket concurrency authority transferred with the owner. */
+  ticketSlot?: import("../deploy/ticket-concurrency.js").RepositoryTicketSlotHandoff;
 }
 
 /** Internal child-supervisor handoff; it never contains the parent capability. */

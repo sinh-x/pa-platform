@@ -5,4 +5,5 @@ export * from "./plan.js";
 export * from "./task-snapshot.js";
 export * from "./background-ownership.js";
 export * from "./repository-admission.js";
+export * from "./ticket-concurrency.js";
 export * from "./rogue-one.js";

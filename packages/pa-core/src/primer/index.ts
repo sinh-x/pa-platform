@@ -4,6 +4,7 @@ import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
+import type { TreehouseLaunchEvidence } from "../deploy/plan.js";
 import type { ToolReference } from "../runtime-api/types.js";
 import { isRogueOneTeam, rogueOneAuditNotice, type DeploymentInvocationChannel } from "../deploy/rogue-one.js";
 
@@ -26,6 +27,7 @@ export interface GeneratePrimerOptions {
   extraInstructions?: string;
   repository?: PrimerRepositoryContext;
   repositoryAdmission?: RepositoryAdmissionEvidence;
+  treehouse?: TreehouseLaunchEvidence;
   toolReference?: ToolReference;
   rogueOne?: boolean;
   invocationChannel?: DeploymentInvocationChannel;
@@ -42,7 +44,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
   const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
-  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission);
+  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission, options.treehouse);
 
   const body = [
     `# PA Deployment Primer`,
@@ -135,6 +137,7 @@ function renderAdditionalInstructions(
   extraInstructions: string | undefined,
   repository: PrimerRepositoryContext | undefined,
   repositoryAdmission: RepositoryAdmissionEvidence | undefined,
+  treehouse: TreehouseLaunchEvidence | undefined,
 ): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
@@ -142,7 +145,8 @@ function renderAdditionalInstructions(
   const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
-  return ["## Additional Instructions", objective, repositoryEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  const treehouseEvidence = renderTreehouseLaunchEvidence(treehouse);
+  return ["## Additional Instructions", objective, repositoryEvidence, treehouseEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
@@ -153,6 +157,18 @@ function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmiss
     `- Slot: ${repositoryAdmission.slot ?? "implement"}`,
     `- Git: branch=${snapshot.branch}, head=${snapshot.head}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
     "- Recovery: preserve the recorded branch and files; on identity, slot, or snapshot drift, stop before spawn and retry only after the blocking evidence is reconciled.",
+  ].join("\n");
+}
+
+function renderTreehouseLaunchEvidence(treehouse: TreehouseLaunchEvidence | undefined): string | undefined {
+  if (!treehouse) return undefined;
+  return [
+    "### Immutable Treehouse Ticket Checkout Evidence",
+    `- Path: ${treehouse.path}`,
+    `- Lease: id=${treehouse.leaseId}, holder=${treehouse.leaseHolder}`,
+    `- Branch: ${treehouse.branch}, base=${treehouse.baseSha}, head=${treehouse.headSha}`,
+    `- Concurrency: ticket_slot=${treehouse.ticketSlotId}, repository_permit=${treehouse.repositoryPermit}`,
+    "- Finalization: PA-owned slot, permit, mutation lease, and borrower evidence finalize automatically; the Treehouse lease and branch remain preserved.",
   ].join("\n");
 }
 
@@ -794,6 +810,10 @@ export const PA_ENV_KEYS = [
   "PA_TICKET_ID",
   "PA_REPO",
   "PA_WORKTREE_ROOT",
+  "PA_TREEHOUSE_LEASE_ID",
+  "PA_TREEHOUSE_LEASE_HOLDER",
+  "PA_TICKET_SLOT",
+  "PA_REPOSITORY_PERMIT",
   "PA_PROVIDER",
   "PA_MODEL",
   "PA_TEAM_MODEL",

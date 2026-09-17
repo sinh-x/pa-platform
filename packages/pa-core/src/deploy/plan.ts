@@ -24,6 +24,17 @@ export interface ExecutionPlanLifecycle {
   terminalMarker: string;
 }
 
+export interface TreehouseLaunchEvidence {
+  readonly path: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly headSha: string;
+  readonly ticketSlotId: string;
+  readonly repositoryPermit: 1 | 2 | 3 | 4;
+}
+
 export interface ExecutionPlan {
   readonly runtime: RuntimeName;
   readonly team: string;
@@ -39,6 +50,7 @@ export interface ExecutionPlan {
   readonly repositoryKind: "primary" | "linked";
   readonly memoryDocumentRoot: string;
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
+  readonly treehouse?: TreehouseLaunchEvidence;
   readonly rogue_one?: true;
   readonly invocation_channel?: DeploymentInvocationChannel;
   readonly ticket?: string;
@@ -73,6 +85,8 @@ export interface ResolveExecutionPlanOptions {
   observeRepositoryAdmissionOperation?: (operation: RepositoryAdmissionOperation) => void;
   /** Runtime-authenticated direct-parent context; not user request authority. */
   allowDirtyInheritedBorrow?: boolean;
+  /** Trusted PPA-only evidence established before immutable planning. */
+  treehouse?: TreehouseLaunchEvidence;
 }
 
 export function withAuthoritativeRepositoryAdmission(
@@ -126,6 +140,23 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.allowDirtyInheritedBorrow ? { allowDirtyInheritedBorrow: true } : {}),
     ...(branchTransitionPolicy ? { branchTransitionPolicy } : {}),
   });
+  if (options.treehouse) {
+    const evidence = options.treehouse;
+    const snapshot = repositoryAdmission.gitSnapshot;
+    if (repository.worktreeKind !== "linked"
+      || evidence.path !== repository.worktreeRoot
+      || options.request.ticket === undefined
+      || evidence.leaseHolder !== `pa:${repository.repoKey}:${options.request.ticket}`
+      || evidence.ticketSlotId !== `pa:${repository.repoKey}:${options.request.ticket}`
+      || !snapshot
+      || snapshot.branch !== evidence.branch
+      || snapshot.head !== evidence.headSha
+      || !/^[0-9a-f]{40}$/.test(evidence.baseSha)
+      || !/^[0-9a-f]{40}$/.test(evidence.headSha)
+      || ![1, 2, 3, 4].includes(evidence.repositoryPermit)) {
+      throw new Error("execution-plan: trusted Treehouse lease, branch, slot, permit, and authenticated Git snapshot must agree exactly");
+    }
+  }
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,
     deploymentDir: options.deploymentDir,
@@ -146,6 +177,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repositoryKind: repository.worktreeKind,
     memoryDocumentRoot: repository.worktreeRoot,
     repositoryAdmission,
+    ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
     ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
@@ -163,6 +195,12 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       ...options.environment,
       PA_REPO: repository.repoRoot,
       PA_WORKTREE_ROOT: repository.worktreeRoot,
+      ...(options.treehouse ? {
+        PA_TREEHOUSE_LEASE_ID: options.treehouse.leaseId,
+        PA_TREEHOUSE_LEASE_HOLDER: options.treehouse.leaseHolder,
+        PA_TICKET_SLOT: options.treehouse.ticketSlotId,
+        PA_REPOSITORY_PERMIT: String(options.treehouse.repositoryPermit),
+      } : {}),
       ...(rogueOne ? { PA_TEAM: options.teamConfig.name, PA_MODE: modeName, PA_ROGUE_ONE: "1" } : {}),
     }),
     timeoutSeconds: options.timeoutSeconds,

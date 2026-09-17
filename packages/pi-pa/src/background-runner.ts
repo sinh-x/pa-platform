@@ -12,8 +12,11 @@ import {
   getDeployPaths,
   readProcessFingerprint,
   reconcileTerminalRegistryEvent,
+  refreshTicketLinkedBranchHead,
+  releaseRepositoryTicketSlot,
   transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
+  transferRepositoryTicketSlot,
   type RegistryEvent,
   type RepositoryGitSnapshot,
 } from "@pa-platform/pa-core";
@@ -56,6 +59,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
   let repositoryBorrowerTransferred = false;
+  let repositoryTicketSlotTransferred = false;
   let terminalGitSnapshot: RepositoryGitSnapshot | undefined;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
@@ -129,6 +133,11 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         });
         if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
         repositoryLeaseTransferred = true;
+        if (repositoryLease.ticketSlot) {
+          const slotTransfer = transferRepositoryTicketSlot({ ...repositoryLease.ticketSlot, nextProcessFingerprint: fingerprint });
+          if (slotTransfer.status !== "transferred") throw new Error(`runner-readiness: repository ticket-slot transfer failed (${slotTransfer.status})`);
+          repositoryTicketSlotTransferred = true;
+        }
       } else if (repositoryBorrower) {
         if (repositoryBorrower.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository borrower deployment identity mismatch");
         const transfer = transferRepositoryMutationBorrower({
@@ -193,6 +202,14 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         repositoryGitDir: authority.repositoryGitDir,
         repositoryGitCommonDir: authority.repositoryGitCommonDir,
       });
+      if (repositoryLease?.ticketSlot) {
+        refreshTicketLinkedBranchHead({
+          canonicalRepoKey: repositoryLease.ticketSlot.canonicalRepoKey,
+          canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          worktreeRoot,
+          ticketId: repositoryLease.ticketSlot.ticket,
+        });
+      }
     }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
     finalState = "finalized";
@@ -260,6 +277,12 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           case "updated":
             authorityFailure ??= `Condition: repository owner finalization-${finalization.status}. Source: matching lease finalization. Reason: authority cleanup did not complete (${finalization.status}). Correction: preserve repository state and reconcile matching evidence. Resume Action: dispatch no builder until authority is finalized.`;
             break;
+        }
+      }
+      if (repositoryTicketSlotTransferred && repositoryLease?.ticketSlot) {
+        const release = releaseRepositoryTicketSlot(repositoryLease.ticketSlot);
+        if (release.status !== "released" && release.status !== "absent") {
+          authorityFailure ??= `Condition: repository ticket concurrency finalization. Source: matching PA ticket slot. Reason: cleanup did not complete (${release.status}). Correction: preserve Treehouse lease and branch. Resume Action: reconcile only the matching slot token before another launch.`;
         }
       }
       if (authorityFailure) {

@@ -777,11 +777,21 @@ function validPiRepositoryHandoff(value: unknown): value is PiRepositoryHandoff 
   const row = value as Record<string, unknown>;
   const lease = row["repositoryLease"] as Record<string, unknown> | undefined;
   const borrower = row["repositoryBorrower"] as Record<string, unknown> | undefined;
+  const ticketSlot = lease?.["ticketSlot"] as Record<string, unknown> | undefined;
+  const validTicketSlot = ticketSlot === undefined || (typeof ticketSlot === "object"
+    && typeof ticketSlot["canonicalRepoKey"] === "string"
+    && typeof ticketSlot["canonicalRepoRoot"] === "string"
+    && ticketSlot["canonicalRepoRoot"] === lease?.["canonicalRepoRoot"]
+    && typeof ticketSlot["ticket"] === "string"
+    && typeof ticketSlot["slotToken"] === "string"
+    && typeof ticketSlot["slotId"] === "string"
+    && (ticketSlot["repositoryPermit"] === 1 || ticketSlot["repositoryPermit"] === 2 || ticketSlot["repositoryPermit"] === 3 || ticketSlot["repositoryPermit"] === 4));
   const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string"
     && (lease["worktreeRoot"] === undefined || typeof lease["worktreeRoot"] === "string")
     && validPhysicalAbsoluteDirectory(lease["repositoryGitDir"])
     && validPhysicalAbsoluteDirectory(lease["repositoryGitCommonDir"])
-    && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement");
+    && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement")
+    && validTicketSlot;
   const approvedPaths = borrower?.["approvedMutationPaths"];
   const validApprovedPaths = approvedPaths === undefined || (Array.isArray(approvedPaths) && approvedPaths.length <= 512 && approvedPaths.every((path) => typeof path === "string" && path.length > 0 && path.length <= 1_024));
   const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && (borrower["worktreeRoot"] === undefined || typeof borrower["worktreeRoot"] === "string")
