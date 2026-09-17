@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { queryDeploymentStatus } from "../registry/index.js";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 
 export const REPOSITORY_MUTATION_LEASE_FILE = "pa-repository-mutation.lease.json";
@@ -116,6 +117,13 @@ export type RepositoryMutationSlot = "orchestrator" | "implement";
 export type RepositoryAdmissionOperation = "git-status" | "lease-read" | "lease-write" | "lease-remove" | "lease-quarantine";
 
 /** Immutable repository evidence carried by the shared execution plan. */
+export interface RepositoryBranchTransitionPolicy {
+  readonly developBranch: string;
+  readonly executionFeatureBranchPattern: string;
+  readonly ticketProject: string;
+  readonly ticketFeatureBranchPattern: string;
+}
+
 export interface RepositoryAdmissionEvidence {
   readonly access: RepositoryAccess;
   readonly launchMode: RepositoryAdmissionLaunchMode;
@@ -124,6 +132,8 @@ export interface RepositoryAdmissionEvidence {
   readonly slot?: RepositoryMutationSlot;
   readonly gitSnapshot?: RepositoryGitSnapshot;
   readonly approvedMutationPaths?: readonly string[];
+  /** Immutable configured policy used only by Pi direct-child transition admission. */
+  readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
 }
 
 export interface ResolveRepositoryAdmissionEvidenceOptions {
@@ -142,6 +152,7 @@ export interface ResolveRepositoryAdmissionEvidenceOptions {
   readonly observeOperation?: (operation: RepositoryAdmissionOperation) => void;
   /** Internal runtime-authenticated intent; never exposed as a CLI flag. */
   readonly allowDirtyInheritedBorrow?: boolean;
+  readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
 }
 
 export interface RepositoryMutationLease {
@@ -160,6 +171,13 @@ export interface RepositoryMutationLease {
   readonly processFingerprint: ProcessFingerprint;
   readonly acquiredAt: string;
   readonly preLaunchGitSnapshot: RepositoryGitSnapshot;
+  readonly ticket?: string;
+  readonly repositoryGitDir?: string;
+  readonly repositoryGitCommonDir?: string;
+  readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
+  /** Local remote-tracking HEAD captured with the initial develop snapshot; never fetched. */
+  readonly initialDevelopRemoteHead?: string;
+  readonly branchTransitioned?: true;
 }
 
 /** Separate evidence for the one direct child borrowing a version 1 parent lease. */
@@ -210,6 +228,8 @@ export interface RepositoryAdmissionDependencies {
   readonly isProcessInLineage?: (pid: number, ancestor: ProcessFingerprint) => boolean;
   readonly isProcessAlive?: (pid: number) => boolean;
   readonly getCurrentProcessFingerprint?: () => ProcessFingerprint | undefined;
+  /** Test-only fault seam exercised after a transition lease replacement. */
+  readonly afterParentSnapshotReplacement?: () => void;
 }
 
 interface ResolvedRepositoryAdmissionDependencies extends RepositoryAdmissionDependencies {
@@ -245,6 +265,7 @@ export interface RegisterRepositoryMutationBorrowerOptions {
   readonly gitSnapshot?: RepositoryGitSnapshot;
   /** Exact parent-owned one-use approval path, required only for dirty admission. */
   readonly dirtyApprovalPath?: string;
+  readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
   readonly dependencies?: Partial<RepositoryAdmissionDependencies>;
 }
 
@@ -266,6 +287,7 @@ export interface AcquireRepositoryMutationLeaseOptions {
   readonly ownershipToken?: string;
   readonly processFingerprint?: ProcessFingerprint;
   readonly gitSnapshot?: RepositoryGitSnapshot;
+  readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
   readonly dependencies?: Partial<RepositoryAdmissionDependencies>;
 }
 
@@ -465,6 +487,7 @@ export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdm
     force: Boolean(options.force),
     slot: classifyRepositoryMutationSlot(options.mode),
     gitSnapshot: snapshot,
+    ...(options.branchTransitionPolicy ? { branchTransitionPolicy: Object.freeze({ ...options.branchTransitionPolicy }) } : {}),
   });
 }
 
@@ -732,8 +755,15 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     if (options.runtime !== "pi" || normalizedTeam(options.team) !== "builder" || options.mode !== "implement" || options.launchMode !== "background") {
       return reject("launch-mode", "only a background Pi builder/implement direct child may borrow authority");
     }
-    if (!options.ticket.trim() || options.branch !== lease.preLaunchGitSnapshot.branch || !options.branch.startsWith(`feature/${options.ticket}-`)) {
-      return reject("child-context", "ticket and exact linked feature branch must match the parent launch snapshot");
+    if (!options.ticket.trim() || (lease.ticket !== undefined && lease.ticket !== options.ticket)) {
+      return reject("child-context", "the child ticket must exactly match the parent ticket authority");
+    }
+    const branchChangedSinceParentLaunch = options.branch !== lease.preLaunchGitSnapshot.branch;
+    if (lease.branchTransitionPolicy && (!options.branchTransitionPolicy || !branchTransitionPoliciesEqual(lease.branchTransitionPolicy, options.branchTransitionPolicy))) {
+      return reject("child-context", "the current ticket and repository branch policy does not match the immutable parent policy");
+    }
+    if (!branchChangedSinceParentLaunch && !branchMatchesTicketPolicy(options.branch, options.ticket, options.branchTransitionPolicy ?? lease.branchTransitionPolicy)) {
+      return reject("child-context", "ticket and exact linked feature branch must match the parent launch snapshot and configured branch policy");
     }
     if (!Number.isInteger(options.timeoutSeconds) || options.timeoutSeconds < MIN_BORROWER_TIMEOUT_SECONDS || options.timeoutSeconds > MAX_BORROWER_TIMEOUT_SECONDS) {
       return reject("child-timeout", `the child timeout must be an integer from ${MIN_BORROWER_TIMEOUT_SECONDS} through ${MAX_BORROWER_TIMEOUT_SECONDS} seconds`);
@@ -746,7 +776,12 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     if (!gitSnapshot.dirty && options.expectedGitSnapshot && (!isGitSnapshot(options.expectedGitSnapshot) || !repositoryGitSnapshotsEqual(options.expectedGitSnapshot, gitSnapshot))) {
       return reject("launch-snapshot", "the mutex-held child launch Git snapshot does not exactly match its immediate immutable reread");
     }
-    if (!gitSnapshot.dirty && gitSnapshot.branch !== options.branch) return reject("launch-snapshot", "the child launch Git branch does not exactly match the authenticated parent branch");
+    if (!gitSnapshot.dirty && gitSnapshot.branch !== options.branch) return reject("launch-snapshot", "the child launch Git branch does not exactly match the requested branch");
+
+    if (branchChangedSinceParentLaunch) {
+      const transitionFailure = validateBranchTransition({ root, worktree, lease, options, gitSnapshot, runGit: dependencies.runGit });
+      if (transitionFailure) return reject("branch-transition", transitionFailure);
+    }
 
     let approvedMutationPaths: readonly string[] | undefined;
     let dirtyApprovalReceiptId: string | undefined;
@@ -831,7 +866,28 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       ...(dirtyApprovalReceiptId ? { dirtyApprovalReceiptId } : {}),
     });
     assertBorrower(borrower);
-    publishBorrowerExclusive(borrowerPath, borrower, dependencies.createToken);
+    const parentBytes = branchChangedSinceParentLaunch ? readFileSync(leasePath) : undefined;
+    let parentReplaced = false;
+    try {
+      if (branchChangedSinceParentLaunch) {
+        const reconciledLease: RepositoryMutationLease = Object.freeze({
+          ...lease,
+          preLaunchGitSnapshot: gitSnapshot,
+          branchTransitioned: true,
+        });
+        replaceLeaseAtomic(leasePath, reconciledLease, dependencies.createToken);
+        parentReplaced = true;
+        dependencies.afterParentSnapshotReplacement?.();
+      }
+      publishBorrowerExclusive(borrowerPath, borrower, dependencies.createToken);
+    } catch {
+      if (parentReplaced && parentBytes) {
+        const published = readValidBorrowerUnlocked(borrowerPath);
+        if (published && secureStringsEqual(published.borrowerToken, borrower.borrowerToken)) unlinkSync(borrowerPath);
+        replaceEvidenceBytesAtomic(leasePath, parentBytes, dependencies.createToken);
+      }
+      return reject("transition-transaction", "parent reconciliation and borrower publication did not complete atomically");
+    }
     return {
       status: "registered",
       borrowerPath,
@@ -840,6 +896,101 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       ...(quarantinedPath ? { quarantinedPath } : {}),
     };
   });
+}
+
+function validateBranchTransition(input: {
+  root: string;
+  worktree: string;
+  lease: RepositoryMutationLease;
+  options: RegisterRepositoryMutationBorrowerOptions;
+  gitSnapshot: RepositoryGitSnapshot;
+  runGit: GitCommandRunner;
+}): string | undefined {
+  const { root, worktree, lease, options, gitSnapshot, runGit } = input;
+  if (worktree !== root) return "branch reconciliation is allowed only in the registered primary repository root";
+  if (lease.launchMode !== "foreground") return "branch reconciliation requires the foreground Pi builder/orchestrator parent";
+  if (lease.branchTransitioned) return "the parent has already consumed its one-way branch transition";
+  if (!lease.ticket || lease.ticket !== options.ticket) return "parent and child must be bound to the same exact ticket";
+  if (!lease.repositoryGitDir || !lease.repositoryGitCommonDir
+    || lease.repositoryGitDir !== options.expectedGitDir
+    || lease.repositoryGitCommonDir !== options.expectedGitCommonDir) {
+    return "the parent launch Git directory or common-directory identity is absent or changed";
+  }
+  const policy = lease.branchTransitionPolicy;
+  if (!policy || !isBranchTransitionPolicy(policy) || !isBranchTransitionPolicy(options.branchTransitionPolicy)
+    || !branchTransitionPoliciesEqual(policy, options.branchTransitionPolicy)) {
+    return "execution-repository and ticket-project branch policy evidence is absent, stale, or inconsistent";
+  }
+  if (!isCompleteGitSnapshot(lease.preLaunchGitSnapshot) || lease.preLaunchGitSnapshot.dirty
+    || lease.preLaunchGitSnapshot.branch !== policy.developBranch) {
+    return "the parent did not launch from a complete clean configured develop snapshot";
+  }
+  if (!lease.initialDevelopRemoteHead
+    || !/^[0-9a-f]{40}$/.test(lease.initialDevelopRemoteHead)
+    || lease.initialDevelopRemoteHead !== lease.preLaunchGitSnapshot.head) {
+    return "the immutable launch-time origin develop HEAD is absent, malformed, or not synchronized with the initial develop HEAD";
+  }
+  if (!isCompleteGitSnapshot(gitSnapshot) || gitSnapshot.dirty) return "the current ticket branch is not a complete clean Git snapshot";
+  if (!options.expectedGitSnapshot || !isCompleteGitSnapshot(options.expectedGitSnapshot)
+    || !repositoryGitSnapshotsEqual(options.expectedGitSnapshot, gitSnapshot)) {
+    return "the immediate child-plan snapshot is absent, malformed, or stale";
+  }
+  if (!/^[0-9a-f]{40}$/.test(lease.preLaunchGitSnapshot.head) || !/^[0-9a-f]{40}$/.test(gitSnapshot.head)) {
+    return "the initial or current HEAD is not an exact 40-lowercase-hex commit";
+  }
+  if (!branchMatchesTicketPolicy(gitSnapshot.branch, options.ticket, policy)) {
+    return "the current branch does not satisfy the exact ticket under both configured feature-branch patterns";
+  }
+  let remoteDevelopHead: string;
+  try {
+    remoteDevelopHead = gitText(runGit(
+      ["rev-parse", "--verify", `refs/remotes/origin/${policy.developBranch}`],
+      worktree,
+      { repositoryGitDir: lease.repositoryGitDir, repositoryGitCommonDir: lease.repositoryGitCommonDir },
+    )).trim();
+  } catch {
+    return "the local origin develop reference is absent or unreadable; admission performs no network access";
+  }
+  if (!/^[0-9a-f]{40}$/.test(remoteDevelopHead) || remoteDevelopHead !== lease.initialDevelopRemoteHead) {
+    return "the local origin develop reference changed after the synchronized parent launch";
+  }
+  return undefined;
+}
+
+function branchMatchesTicketPolicy(branch: string, ticket: string, policy?: RepositoryBranchTransitionPolicy): boolean {
+  if (!policy) return branch.startsWith(`feature/${ticket}-`);
+  return isBranchTransitionPolicy(policy)
+    && validateBranchNameForTicket(branch, ticket, policy.executionFeatureBranchPattern)
+    && validateBranchNameForTicket(branch, ticket, policy.ticketFeatureBranchPattern);
+}
+
+function branchTransitionPoliciesEqual(left: RepositoryBranchTransitionPolicy, right: RepositoryBranchTransitionPolicy): boolean {
+  return left.developBranch === right.developBranch
+    && left.executionFeatureBranchPattern === right.executionFeatureBranchPattern
+    && left.ticketProject === right.ticketProject
+    && left.ticketFeatureBranchPattern === right.ticketFeatureBranchPattern;
+}
+
+function isBranchTransitionPolicy(value: unknown): value is RepositoryBranchTransitionPolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return boundedString(row["developBranch"])
+    && safeGitRefComponent(row["developBranch"] as string)
+    && boundedString(row["executionFeatureBranchPattern"])
+    && (row["executionFeatureBranchPattern"] as string).includes("<ticket>")
+    && (row["executionFeatureBranchPattern"] as string).includes("<topic>")
+    && boundedString(row["ticketProject"])
+    && boundedString(row["ticketFeatureBranchPattern"])
+    && (row["ticketFeatureBranchPattern"] as string).includes("<ticket>")
+    && (row["ticketFeatureBranchPattern"] as string).includes("<topic>");
+}
+
+function safeGitRefComponent(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value)
+    && !value.includes("..")
+    && !value.includes("@{")
+    && !value.endsWith("/")
+    && !value.endsWith(".lock");
 }
 
 export function acquireRepositoryMutationLease(options: AcquireRepositoryMutationLeaseOptions): RepositoryLeaseAcquisition {
@@ -853,6 +1004,23 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
     // publishes ownership. Tests and lower-level callers may provide a fixed
     // snapshot when exercising the ownership primitive in synthetic fixtures.
     const gitSnapshot = Object.freeze({ ...(options.gitSnapshot ?? captureRepositoryGitSnapshot(worktree, dependencies.runGit)) });
+    let initialDevelopRemoteHead: string | undefined;
+    if (options.branchTransitionPolicy
+      && isBranchTransitionPolicy(options.branchTransitionPolicy)
+      && gitSnapshot.branch === options.branchTransitionPolicy.developBranch) {
+      try {
+        const observed = gitText(dependencies.runGit(
+          ["rev-parse", "--verify", `refs/remotes/origin/${options.branchTransitionPolicy.developBranch}`],
+          worktree,
+          options.expectedGitDir && options.expectedGitCommonDir
+            ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir }
+            : undefined,
+        )).trim();
+        if (/^[0-9a-f]{40}$/.test(observed)) initialDevelopRemoteHead = observed;
+      } catch {
+        // Absence is immutable evidence too; a later transition remains ineligible.
+      }
+    }
     if (options.launchMode === "background" && gitSnapshot.dirty && worktree === root) {
       return {
         status: "rejected",
@@ -955,6 +1123,12 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       processFingerprint: Object.freeze({ ...fingerprint }),
       acquiredAt: dependencies.now().toISOString(),
       preLaunchGitSnapshot: Object.freeze({ ...gitSnapshot }),
+      ...(options.ticket ? { ticket: boundedRequired(options.ticket, "ticket") } : {}),
+      ...(options.expectedGitDir && options.expectedGitCommonDir
+        ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir }
+        : {}),
+      ...(options.branchTransitionPolicy ? { branchTransitionPolicy: Object.freeze({ ...options.branchTransitionPolicy }) } : {}),
+      ...(initialDevelopRemoteHead ? { initialDevelopRemoteHead } : {}),
     });
     assertLease(lease);
     publishLeaseExclusive(leasePath, lease, dependencies.createToken);
@@ -1522,7 +1696,14 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && (row["launchMode"] === undefined || row["launchMode"] === "foreground" || row["launchMode"] === "background" || row["launchMode"] === "dry-run")
     && isProcessFingerprint(row["processFingerprint"])
     && validTimestamp(row["acquiredAt"])
-    && isGitSnapshot(row["preLaunchGitSnapshot"]);
+    && isGitSnapshot(row["preLaunchGitSnapshot"])
+    && (row["ticket"] === undefined || boundedString(row["ticket"]))
+    && ((row["repositoryGitDir"] === undefined && row["repositoryGitCommonDir"] === undefined)
+      || (boundedString(row["repositoryGitDir"]) && isAbsolute(row["repositoryGitDir"] as string)
+        && boundedString(row["repositoryGitCommonDir"]) && isAbsolute(row["repositoryGitCommonDir"] as string)))
+    && (row["branchTransitionPolicy"] === undefined || isBranchTransitionPolicy(row["branchTransitionPolicy"]))
+    && (row["initialDevelopRemoteHead"] === undefined || (typeof row["initialDevelopRemoteHead"] === "string" && /^[0-9a-f]{40}$/.test(row["initialDevelopRemoteHead"])))
+    && (row["branchTransitioned"] === undefined || row["branchTransitioned"] === true);
 }
 
 function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutationBorrower {
@@ -1737,6 +1918,18 @@ function replaceBorrowerAtomic(path: string, borrower: RepositoryMutationBorrowe
   }
 }
 
+function replaceEvidenceBytesAtomic(path: string, bytes: Buffer, createToken: () => string): void {
+  if (bytes.length > MAX_REPOSITORY_LEASE_BYTES) throw new Error("repository-admission: prior parent evidence exceeds the rollback limit");
+  const temporary = temporaryPath(path, createToken());
+  try {
+    writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* rename already consumed it */ }
+  }
+}
+
 function writeLeaseFile(path: string, lease: RepositoryMutationLease): void {
   writeFileSync(path, `${JSON.stringify(lease, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
   chmodSync(path, 0o600);
@@ -1845,6 +2038,7 @@ function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies>
     isProcessInLineage: overrides?.isProcessInLineage ?? processIsWithinFingerprintLineage,
     isProcessAlive: overrides?.isProcessAlive ?? processIsAlive,
     getCurrentProcessFingerprint: overrides?.getCurrentProcessFingerprint ?? (() => readProcessFingerprint(process.pid)),
+    afterParentSnapshotReplacement: overrides?.afterParentSnapshotReplacement,
   };
 }
 

@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getRegistryDbPath, getSkillsDir } from "../paths.js";
-import { resolveRepoExecutionPath } from "../repos.js";
+import { getBranchPattern, loadRepoEntry, resolveRepoExecutionPath } from "../repos.js";
+import { TicketStore } from "../tickets/store.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
-import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryGitSnapshot } from "./repository-admission.js";
+import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryBranchTransitionPolicy, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
 import { isRogueOneTeam, ROGUE_ONE_MODE, type DeploymentInvocationChannel } from "./rogue-one.js";
 
@@ -106,6 +107,9 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
   if (ticketRequired && !options.request.ticket) {
     throw new Error(`Ticket is required for team '${options.teamConfig.name}', mode '${modeName}'.`);
   }
+  const branchTransitionPolicy = options.runtime === "pi" && options.request.ticket
+    ? resolveBranchTransitionPolicy(repository.repo, options.request.ticket)
+    : undefined;
   const repositoryAdmission = resolveRepositoryAdmissionEvidence({
     team: options.teamConfig.name,
     mode: modeName,
@@ -120,6 +124,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.captureRepositoryGitSnapshot ? { captureGitSnapshot: options.captureRepositoryGitSnapshot } : {}),
     ...(options.observeRepositoryAdmissionOperation ? { observeOperation: options.observeRepositoryAdmissionOperation } : {}),
     ...(options.allowDirtyInheritedBorrow ? { allowDirtyInheritedBorrow: true } : {}),
+    ...(branchTransitionPolicy ? { branchTransitionPolicy } : {}),
   });
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,
@@ -165,5 +170,18 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ...(options.request.model ? { model: options.request.model } : {}),
     ...(options.trustedExtensionPath ? { trustedExtension: options.trustedExtensionPath } : {}),
     lifecycle,
+  });
+}
+
+function resolveBranchTransitionPolicy(executionRepo: ReturnType<typeof resolveRepoExecutionPath>["repo"], ticketId: string): RepositoryBranchTransitionPolicy | undefined {
+  const ticket = new TicketStore().get(ticketId);
+  if (!ticket) return undefined;
+  const ticketRepo = loadRepoEntry(ticket.project);
+  if (!ticketRepo) return undefined;
+  return Object.freeze({
+    developBranch: executionRepo.developBranch ?? "develop",
+    executionFeatureBranchPattern: getBranchPattern(executionRepo),
+    ticketProject: ticket.project,
+    ticketFeatureBranchPattern: getBranchPattern(ticketRepo),
   });
 }

@@ -224,6 +224,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         timeoutSeconds: plan.timeoutSeconds,
         expectedGitSnapshot: immediateSnapshot,
         dirtyApprovalPath: repositoryDirtyBorrowApprovalPath(inheritedParent.parentDeploymentDirectory),
+        ...(plan.repositoryAdmission.branchTransitionPolicy ? { branchTransitionPolicy: plan.repositoryAdmission.branchTransitionPolicy } : {}),
         force: plan.repositoryAdmission.force,
       });
       if (registration.status === "rejected") return completeFailure(registration.diagnostic);
@@ -252,6 +253,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         launchMode: plan.repositoryAdmission.launchMode,
         team: team.name,
         ...(plan.ticket ? { ticket: plan.ticket } : {}),
+        ...(plan.repositoryAdmission.branchTransitionPolicy ? { branchTransitionPolicy: plan.repositoryAdmission.branchTransitionPolicy } : {}),
         force: plan.repositoryAdmission.force,
       });
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);

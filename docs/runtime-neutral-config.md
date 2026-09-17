@@ -51,13 +51,40 @@ branch, launch mode, and complete child launch snapshot. Clean snapshots use the
 existing authenticated path. Dirty snapshots require a private consume-once
 approval receipt created only by the exact **foreground** parent through the
 trusted `pa_dirty_borrow_approval` Pi TUI tool. A parent ID, objective text,
-`--force`, or copied environment value is never authority. Borrowing does not
-transfer or rewrite the version-1 parent lease; OPA, CPA, Droid, foreground
-children, descendants, other modes, and concurrent siblings have no positive
-inheritance path. Standalone dirty background builders at the registered primary root remain
+`--force`, or copied environment value is never authority. Ordinary borrowing
+on an already-matching ticket branch does not transfer or rewrite the version-1
+parent lease. The one primary-root transition described below may replace only
+its authoritative Git snapshot before borrower publication. OPA, CPA, Droid,
+foreground children, descendants, other modes, and concurrent siblings have no
+positive inheritance path. Standalone dirty background builders at the registered primary root remain
 rejected. Authenticated linked-worktree PPA foreground and background launches
 preserve and admit staged, unstaged, and untracked state; PA admission performs
 no branch or worktree lifecycle operation.
+
+A foreground Pi `builder/orchestrator` may also launch at the registered primary
+root on clean configured `develop`, perform the existing branch workflow, and
+then launch one direct background implement child without redeployment. The
+launcher and admission layer never create or switch branches: use `ppa branch
+create <ticket> --topic <topic>` when the exact branch is absent, or exact `git
+switch <branch>` when it already exists. At child admission, the mutex-held gate
+captures the local `refs/remotes/origin/<develop>` HEAD with the initial develop
+snapshot and requires those immutable launch-time values to be equal, then
+rechecks that the local ref has not drifted; it also requires a clean current branch for the same exact
+ticket, both the execution-repository and ticket-project feature patterns, the
+same canonical root/worktree/Git directory/common directory, and no conflicting
+borrower or slot owner. This check is local-only and never fetches; the operator
+must refresh remote-tracking refs before the parent launch when needed.
+
+For an eligible one-way transition, PA atomically replaces the parent's complete
+Git snapshot and publishes the borrower with the same branch, full HEAD, raw
+porcelain-v2 bytes, counts, entries, summary, and digest. A post-replacement
+publication failure restores the prior parent evidence byte-for-byte and leaves
+no borrower. An existing branch may have a different clean HEAD from develop.
+Linked worktrees, dirty or unsynchronized bases, dirty targets, detached or
+unrelated branches, pattern/ticket disagreement, physical identity drift, and a
+second branch transition remain fail-closed. Already-matching primary and linked
+worktree branches continue through ordinary borrowing with byte-identical parent
+evidence.
 
 Snapshot evidence retains the raw complete
 `git status --porcelain=v2 --untracked-files=all -z` byte stream as Base64, its
