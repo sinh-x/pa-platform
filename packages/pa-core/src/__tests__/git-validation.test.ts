@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildBranchName, validateBranchName } from "../tickets/git-validation.js";
+import { buildBranchName, validateBranchName, validateBranchNameForTicket } from "../tickets/git-validation.js";
 
 const PATTERN = "feature/<ticket>-<topic>";
 
@@ -95,4 +95,10 @@ test("validateBranchName: custom pattern rejects non-matching", () => {
 
 test("validateBranchName: empty branch returns false", () => {
   assert.equal(validateBranchName("", PATTERN), false);
+});
+
+test("validateBranchNameForTicket requires the exact ticket rather than generic branch shape", () => {
+  assert.equal(validateBranchNameForTicket("feature/PAP-189-treehouse", "PAP-189", PATTERN), true);
+  assert.equal(validateBranchNameForTicket("feature/PAP-190-treehouse", "PAP-189", PATTERN), false);
+  assert.equal(validateBranchNameForTicket("feature/PAP-189-PAP-190-shared", "PAP-189", PATTERN), false);
 });

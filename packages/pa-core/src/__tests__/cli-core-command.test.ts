@@ -2249,6 +2249,37 @@ test("ticket update --help shows usage and returns exit 0 without touching store
   });
 });
 
+test("ticket --linked-branch stores planned intent, promotes the same entry, and projects evidence", async () => {
+  await withCliEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "README.md"), "# CLI branch test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Branch lifecycle", "--type", "feature", "--priority", "high", "--estimate", "M", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+
+    const planned = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-cli"], { io: planned.io }), 0);
+    assert.equal(new TicketStore().get("PAP-001")?.linkedBranches[0]?.state, "planned");
+    assert.equal(execFileSync("git", ["branch", "--list", "feature/PAP-001-cli"], { cwd: repo, encoding: "utf-8" }).trim(), "");
+
+    execFileSync("git", ["branch", "feature/PAP-001-cli", "develop"], { cwd: repo, stdio: "ignore" });
+    const promoted = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-cli"], { io: promoted.io }), 0);
+    const materialized = new TicketStore().get("PAP-001")?.linkedBranches[0];
+    assert.equal(materialized?.state, "materialized");
+    assert.match(materialized?.baseSha ?? "", /^[0-9a-f]{40}$/);
+    assert.match(materialized?.headSha ?? "", /^[0-9a-f]{40}$/);
+
+    const show = capture();
+    assert.equal(await runCoreCommand(["ticket", "show", "PAP-001"], { io: show.io }), 0);
+    assert.match(show.stdout.join("\n"), /Linked branches: pa-platform\|feature\/PAP-001-cli \[materialized\] base=[0-9a-f]{40} head=[0-9a-f]{40}/);
+
+    const callerSha = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", `pa-platform|feature/PAP-001-cli|${"a".repeat(40)}`], { io: callerSha.io }), 1);
+    assert.match(callerSha.stderr.join("\n"), /Expected exactly: repo\|branch/);
+  });
+});
+
 test("bulletin create sanitizes invalid characters from title and message with stderr warning", async () => {
   await withCliEnv(async () => {
     const withSemicolon = capture();

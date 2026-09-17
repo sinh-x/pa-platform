@@ -73,6 +73,14 @@ export function formatTicketShow(ticket: Ticket): string {
   lines.push(`Updated: ${formatLocal(ticket.updatedAt)}`);
   if (ticket.resolvedAt) lines.push(`Resolved: ${formatLocal(ticket.resolvedAt)}`);
   if (ticket.doc_refs.length > 0) lines.push(`Doc refs: ${ticket.doc_refs.map((ref) => ref.path).join(", ")}`);
+  if (ticket.linkedBranches.length > 0) {
+    lines.push(`Linked branches: ${ticket.linkedBranches.map((branch) => {
+      const evidence = branch.state === "materialized"
+        ? ` base=${branch.baseSha ?? "unknown"} head=${branch.headSha ?? "unknown"}`
+        : "";
+      return `${branch.repo}|${branch.branch} [${branch.state}]${evidence}`;
+    }).join(", ")}`);
+  }
   if (ticket.comments.length > 0) lines.push(`Comments: ${ticket.comments.length}`);
   return renderLines(lines);
 }

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { loadRepoEntry, listRepos } from "../repos.js";
+import { getBranchPattern, loadRepoEntry, listRepos, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { nowUtc } from "../time.js";
-import type { AddLinkedBranchInput, AddLinkedCommitInput, LinkedBranch, LinkedCommit } from "./types.js";
+import type { AddLinkedBranchInput, AddLinkedCommitInput, LinkedBranch, LinkedCommit, Ticket } from "./types.js";
 
 const GIT_REF_ILLEGAL_CHARS = /[\s~^:?*\[\\]/;
 const GIT_REF_ILLEGAL_SEQUENCES = /(?:\.\.|\/\/|@{|\.\.lock$|\.lock$)/;
@@ -60,13 +60,17 @@ export function validateBranchNameForTicket(branch: string, ticket: string, patt
   return new RegExp(`^${regexBody}$`).test(branch);
 }
 
-function validateRepoKey(repo: string): { name: string; path: string } {
+function boundedBranchError(message: string): Error {
+  return new Error(message.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS));
+}
+
+function validateRepoKey(repo: string): NonNullable<ReturnType<typeof loadRepoEntry>> {
   const entry = loadRepoEntry(repo);
   if (!entry) {
     const valid = listRepos().map((candidate) => candidate.name).sort();
-    throw new Error(`Unknown repo "${repo}". Valid repos: ${valid.join(", ") || "(none)"}`);
+    throw boundedBranchError(`Unknown linked-branch repository "${repo}". Correction: use one registered repository key. Valid repositories: ${valid.join(", ") || "(none)"}`);
   }
-  return { name: entry.name, path: entry.path };
+  return entry;
 }
 
 function isGitRepo(path: string): boolean {
@@ -78,16 +82,59 @@ function isGitRepo(path: string): boolean {
   }
 }
 
-export function resolveLinkedBranch(input: AddLinkedBranchInput, actor: string): LinkedBranch {
+export function resolveLinkedBranch(input: AddLinkedBranchInput, ticket: Pick<Ticket, "id" | "project">, actor: string): LinkedBranch {
   const repoEntry = validateRepoKey(input.repo);
-  if (!isGitRepo(repoEntry.path)) throw new Error(`Path is not a git repository: ${repoEntry.path}`);
-  let sha: string;
-  try {
-    sha = execFileSync("git", ["rev-parse", "--verify", `refs/heads/${input.branch}`], { cwd: repoEntry.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-  } catch {
-    throw new Error(`Branch "${input.branch}" not found in repo "${input.repo}". Hint: local branches only. Run "git fetch" first if the branch exists on a remote.`);
+  if (repoEntry.name !== ticket.project) {
+    throw boundedBranchError(`Cross-project linked branch rejected: ticket ${ticket.id} belongs to "${ticket.project}", but repository "${repoEntry.name}" was supplied. Correction: link the ticket's registered project repository.`);
   }
-  return { repo: input.repo, branch: input.branch, sha, linkedAt: nowUtc(), linkedBy: input.linkedBy ?? actor };
+  if (!isGitRepo(repoEntry.path)) {
+    throw boundedBranchError(`Linked-branch repository "${repoEntry.name}" is unavailable at its registered Git path "${repoEntry.path}". Correction: restore the registered checkout before retrying.`);
+  }
+  const pattern = getBranchPattern(repoEntry);
+  if (!validateBranchNameForTicket(input.branch, ticket.id, pattern)) {
+    throw boundedBranchError(`Invalid ticket branch "${input.branch}" for ${ticket.id}. Correction: use the exact configured pattern "${pattern}" with ticket ${ticket.id} and a lowercase topic.`);
+  }
+
+  const headSha = localBranchHead(repoEntry.path, input.branch);
+  const common = { repo: repoEntry.name, branch: input.branch, linkedAt: nowUtc(), linkedBy: input.linkedBy ?? actor };
+  if (!headSha) return { ...common, state: "planned" };
+
+  return { ...common, state: "materialized", baseSha: headSha, headSha, sha: headSha };
+}
+
+export function requireTicketLinkedBranch(ticket: Pick<Ticket, "id" | "project" | "linkedBranches">, repo: string): LinkedBranch {
+  const repoEntry = validateRepoKey(repo);
+  if (ticket.project !== repoEntry.name) {
+    throw boundedBranchError(`Cross-project linked-branch evidence rejected for ${ticket.id}: ticket project is "${ticket.project}", requested repository is "${repoEntry.name}". Correction: launch from the ticket's registered project.`);
+  }
+  const matches = ticket.linkedBranches.filter((branch) => branch.repo === repoEntry.name);
+  if (matches.length === 0) {
+    throw boundedBranchError(`Missing linked-branch evidence for ${ticket.id} in "${repoEntry.name}". Correction: run ticket update ${ticket.id} --linked-branch ${repoEntry.name}|<exact-ticket-branch>.`);
+  }
+  if (matches.length > 1) {
+    throw boundedBranchError(`Ambiguous linked-branch evidence for ${ticket.id} in "${repoEntry.name}": found ${matches.length} entries. Correction: retain exactly one repository/branch entry before launch.`);
+  }
+  const branch = matches[0]!;
+  const pattern = getBranchPattern(repoEntry);
+  if (!validateBranchNameForTicket(branch.branch, ticket.id, pattern)) {
+    throw boundedBranchError(`Invalid linked-branch evidence for ${ticket.id}: "${branch.branch}" does not match exact ticket pattern "${pattern}". Correction: replace it with one branch for ${ticket.id}.`);
+  }
+  if (branch.state === "planned" && (branch.baseSha || branch.headSha || branch.sha)) {
+    throw boundedBranchError(`Invalid planned linked-branch evidence for ${ticket.id}: planned entries cannot contain base/head SHA evidence. Correction: remove the conflicting SHA fields or promote the same entry from authenticated Git evidence.`);
+  }
+  if (branch.state === "materialized" && !branch.headSha) {
+    throw boundedBranchError(`Invalid materialized linked-branch evidence for ${ticket.id}: headSha is missing. Correction: refresh the same entry from the authenticated local branch.`);
+  }
+  return branch;
+}
+
+function localBranchHead(repoPath: string, branch: string): string | undefined {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveLinkedCommit(input: AddLinkedCommitInput, actor: string): LinkedCommit {
