@@ -1024,6 +1024,27 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
   assert.equal(primer.match(/^### Additional Instructions$/gm)?.length, 2);
 });
 
+test("generatePrimer renders automatic PA finalization and Sinh-approved identity-fenced Treehouse return", () => {
+  const primer = generatePrimer({
+    runtime: "pi", teamConfig: team, mode: "plan", templateVars: { TICKET_ID: "PAP-189" },
+    treehouse: {
+      authority: "standalone-implement", ticket: "PAP-189", path: "/treehouse/PAP-189", leaseId: "lease-189",
+      leaseHolder: "pa:pa-platform:PAP-189", branch: "feature/PAP-189-treehouse-workflow", branchState: "materialized",
+      baseSha: "a".repeat(40), headSha: "b".repeat(40), ticketSlotId: "pa:pa-platform:PAP-189", repositoryPermit: 3,
+    },
+  });
+  assert.match(primer, /Automatic PA finalization/);
+  assert.match(primer, /Treehouse return is never automatic/);
+  assert.match(primer, /no live PA owner/);
+  assert.match(primer, /clean with all work committed/);
+  assert.match(primer, /fresh approval/);
+  assert.match(primer, /durable ticket comment/);
+  assert.match(primer, /treehouse return --if-lease-id lease-189 --if-lease-holder pa:pa-platform:PAP-189 \/treehouse\/PAP-189/);
+  assert.match(primer, /Never add --force/);
+  assert.match(primer, /nonzero return preserves the lease/);
+  assert.doesNotMatch(primer, /Treehouse return is automatic|automatically (?:merge|return)|filesystem sandbox provides/i);
+});
+
 test("generatePrimer skips placeholder-only template global_docs and keeps docs that use <angle> in code examples (FR-2, AC2)", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-primer-placeholder-"));
   try {

@@ -935,6 +935,14 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     assert.match(help.stdout.join("\n"), /--dry-run/);
     assert.match(help.stdout.join("\n"), /--force/);
     assert.doesNotMatch(help.stdout.join("\n"), /--interactive|--direct/);
+    const ppaHelp = capture();
+    assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: ppaHelp.io }), 0);
+    const ppaText = ppaHelp.stdout.join("\n");
+    assert.match(ppaText, /Treehouse builder workflow/);
+    assert.match(ppaText, /direct background builder\/implement/);
+    assert.match(ppaText, /standalone implement must start from the free matching leased checkout/);
+    assert.match(ppaText, /fresh interactive Sinh approval.*durable ticket comment.*conditional non-force return/);
+    assert.match(ppaText, /does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox/);
 
     const missing = capture();
     assert.equal(await runCoreCommand(["deploy", "builder"], { io: missing.io }), 1);

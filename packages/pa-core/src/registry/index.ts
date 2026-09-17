@@ -156,12 +156,13 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
     const existingRows = terminalRows(db, requested.deployment_id);
     const existing = existingRows.map(fromRow).find(isFailedTerminal) ?? existingRows.map(fromRow)[0];
     if (existing && (isFailedTerminal(existing) || !isFailedTerminal(requested))) {
-      if (existingRows.length > 1) {
+      const retained = withTerminalCorrelation(existing, requested);
+      if (existingRows.length > 1 || retained !== existing) {
         db.prepare("DELETE FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed')").run(requested.deployment_id);
-        insertRegistryEvent(db, existing);
-        upsertDeployment(db, existing);
+        insertRegistryEvent(db, retained);
+        upsertDeployment(db, retained);
       }
-      return { event: existing, retainedExisting: true };
+      return { event: retained, retainedExisting: true };
     }
 
     db.prepare("DELETE FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed')").run(requested.deployment_id);
@@ -201,13 +202,15 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, provider, rating,
-      objective, repo, repo_root, worktree_root, repository_slot, mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds,
-      rogue_one, invocation_channel
+      objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
+      treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
+      mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
-      @objective, @repo, @repo_root, @worktree_root, @repository_slot, @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds,
-      @rogue_one, @invocation_channel
+      @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
+      @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
+      @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel
     )
   `).run(row);
 }
@@ -306,6 +309,16 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       repo_root: started?.repo_root,
       worktree_root: started?.worktree_root,
       repository_slot: started?.repository_slot,
+      parent_deployment_id: started?.parent_deployment_id,
+      builder_authority: started?.builder_authority,
+      treehouse_path: started?.treehouse_path,
+      treehouse_lease_id: started?.treehouse_lease_id,
+      treehouse_lease_holder: started?.treehouse_lease_holder,
+      branch_state: completed?.branch_state ?? crashed?.branch_state ?? started?.branch_state,
+      branch_base_sha: completed?.branch_base_sha ?? crashed?.branch_base_sha ?? started?.branch_base_sha,
+      branch_head_sha: completed?.branch_head_sha ?? crashed?.branch_head_sha ?? started?.branch_head_sha,
+      ticket_slot_id: started?.ticket_slot_id,
+      repository_permit: started?.repository_permit,
       mode: started?.mode,
       fallback: completed?.fallback,
       resumed_from_deployment_id: started?.resumed_from_deployment_id,
@@ -328,12 +341,14 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare(`
       INSERT INTO deployments (
         deployment_id, team, status, started_at, pid, primer, agents, models,
-        ticket_id, objective, repo, repo_root, worktree_root, repository_slot, mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds,
-        rogue_one, invocation_channel
+        ticket_id, objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
+        treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
+        mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel
       ) VALUES (
         @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
-        @ticket_id, @objective, @repo, @repo_root, @worktree_root, @repository_slot, @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds,
-        @rogue_one, @invocation_channel
+        @ticket_id, @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
+        @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
+        @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel
       ) ON CONFLICT(deployment_id) DO UPDATE SET
         status = excluded.status,
         started_at = excluded.started_at,
@@ -347,6 +362,16 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         repo_root = excluded.repo_root,
         worktree_root = excluded.worktree_root,
         repository_slot = excluded.repository_slot,
+        parent_deployment_id = excluded.parent_deployment_id,
+        builder_authority = excluded.builder_authority,
+        treehouse_path = excluded.treehouse_path,
+        treehouse_lease_id = excluded.treehouse_lease_id,
+        treehouse_lease_holder = excluded.treehouse_lease_holder,
+        branch_state = excluded.branch_state,
+        branch_base_sha = excluded.branch_base_sha,
+        branch_head_sha = excluded.branch_head_sha,
+        ticket_slot_id = excluded.ticket_slot_id,
+        repository_permit = excluded.repository_permit,
         mode = excluded.mode,
         provider = excluded.provider,
         resumed_from_deployment_id = excluded.resumed_from_deployment_id,
@@ -361,12 +386,25 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
   } else if (event.event === "completed") {
     db.prepare(`
       UPDATE deployments SET status = @status, completed_at = @timestamp, summary = @summary,
-        log_file = @log_file, rating = @rating, error = NULL, exit_code = @exit_code, fallback = @fallback
+        log_file = @log_file, rating = @rating, error = NULL, exit_code = @exit_code, fallback = @fallback,
+        branch_state = COALESCE(@branch_state, branch_state), branch_base_sha = COALESCE(@branch_base_sha, branch_base_sha),
+        branch_head_sha = COALESCE(@branch_head_sha, branch_head_sha)
       WHERE deployment_id = @deployment_id
     `).run({ ...row, status: event.status ?? "success" });
   } else if (event.event === "crashed") {
-    db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, summary = NULL, log_file = NULL, rating = NULL, error = @error, exit_code = @exit_code, fallback = 0 WHERE deployment_id = @deployment_id").run(row);
+    db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, summary = NULL, log_file = NULL, rating = NULL, error = @error, exit_code = @exit_code, fallback = 0, branch_state = COALESCE(@branch_state, branch_state), branch_base_sha = COALESCE(@branch_base_sha, branch_base_sha), branch_head_sha = COALESCE(@branch_head_sha, branch_head_sha) WHERE deployment_id = @deployment_id").run(row);
   }
+}
+
+function withTerminalCorrelation(existing: RegistryEvent, requested: RegistryEvent): RegistryEvent {
+  const fields = ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"] as const;
+  if (!fields.some((field) => requested[field] !== undefined && requested[field] !== existing[field])) return existing;
+  const merged: RegistryEvent = { ...existing };
+  for (const field of fields) {
+    const value = requested[field];
+    if (value !== undefined) Object.assign(merged, { [field]: value });
+  }
+  return merged;
 }
 
 function isFailedTerminal(event: RegistryEvent): boolean {
@@ -396,6 +434,16 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     repo_root: event.repo_root ?? null,
     worktree_root: event.worktree_root ?? null,
     repository_slot: event.repository_slot ?? null,
+    parent_deployment_id: event.parent_deployment_id ?? null,
+    builder_authority: event.builder_authority ?? null,
+    treehouse_path: event.treehouse_path ?? null,
+    treehouse_lease_id: event.treehouse_lease_id ?? null,
+    treehouse_lease_holder: event.treehouse_lease_holder ?? null,
+    branch_state: event.branch_state ?? null,
+    branch_base_sha: event.branch_base_sha ?? null,
+    branch_head_sha: event.branch_head_sha ?? null,
+    ticket_slot_id: event.ticket_slot_id ?? null,
+    repository_permit: event.repository_permit ?? null,
     mode: event.mode ?? null,
     fallback: event.fallback ? 1 : 0,
     resumed_from_deployment_id: event.resumed_from_deployment_id ?? null,
@@ -440,6 +488,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
     rogue_one: Boolean(row["rogue_one"]),
     invocation_channel: row["invocation_channel"] as RegistryEvent["invocation_channel"],
+    ...correlationFromRow(row),
   };
 }
 
@@ -471,6 +520,28 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
     effective_timeout_seconds: optionalNumber(row["effective_timeout_seconds"]),
     rogue_one: Boolean(row["rogue_one"]),
     invocation_channel: row["invocation_channel"] as DeploymentStatus["invocation_channel"],
+    ...correlationFromRow(row),
+  };
+}
+
+function correlationFromRow(row: Record<string, unknown>): Pick<DeploymentStatus,
+  "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
+  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
+> {
+  const authority = row["builder_authority"];
+  const state = row["branch_state"];
+  const permit = optionalNumber(row["repository_permit"]);
+  return {
+    parent_deployment_id: optionalString(row["parent_deployment_id"]),
+    builder_authority: authority === "orchestrator" || authority === "parented-implement" || authority === "standalone-implement" ? authority : undefined,
+    treehouse_path: optionalString(row["treehouse_path"]),
+    treehouse_lease_id: optionalString(row["treehouse_lease_id"]),
+    treehouse_lease_holder: optionalString(row["treehouse_lease_holder"]),
+    branch_state: state === "planned" || state === "materialized" ? state : undefined,
+    branch_base_sha: optionalString(row["branch_base_sha"]),
+    branch_head_sha: optionalString(row["branch_head_sha"]),
+    ticket_slot_id: optionalString(row["ticket_slot_id"]),
+    repository_permit: permit === 1 || permit === 2 || permit === 3 || permit === 4 ? permit : undefined,
   };
 }
 

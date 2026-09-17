@@ -25,10 +25,14 @@ export interface ExecutionPlanLifecycle {
 }
 
 export interface TreehouseLaunchEvidence {
+  readonly authority: "orchestrator" | "parented-implement" | "standalone-implement";
+  readonly parentDeploymentId?: string;
+  readonly ticket: string;
   readonly path: string;
   readonly leaseId: string;
   readonly leaseHolder: string;
   readonly branch: string;
+  readonly branchState: "materialized";
   readonly baseSha: string;
   readonly headSha: string;
   readonly ticketSlotId: string;
@@ -146,8 +150,11 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     if (repository.worktreeKind !== "linked"
       || evidence.path !== repository.worktreeRoot
       || options.request.ticket === undefined
+      || evidence.ticket !== options.request.ticket
       || evidence.leaseHolder !== `pa:${repository.repoKey}:${options.request.ticket}`
       || evidence.ticketSlotId !== `pa:${repository.repoKey}:${options.request.ticket}`
+      || evidence.branchState !== "materialized"
+      || (evidence.authority === "parented-implement") !== Boolean(evidence.parentDeploymentId)
       || !snapshot
       || snapshot.branch !== evidence.branch
       || snapshot.head !== evidence.headSha

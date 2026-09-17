@@ -13,6 +13,19 @@ export interface StartDeployBody {
   objective?: string;
   provider?: string;
   repo?: string;
+  repoRoot?: string;
+  worktreeRoot?: string;
+  repositorySlot?: "orchestrator" | "implement";
+  parentDeploymentId?: string;
+  builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
+  treehousePath?: string;
+  treehouseLeaseId?: string;
+  treehouseLeaseHolder?: string;
+  branchState?: "planned" | "materialized";
+  branchBaseSha?: string;
+  branchHeadSha?: string;
+  ticketSlotId?: string;
+  repositoryPermit?: 1 | 2 | 3 | 4;
   mode?: string;
   runtime?: RuntimeName;
   binary?: string;
@@ -25,7 +38,7 @@ export interface PidBody {
   pid: number;
 }
 
-export interface CompleteBody {
+export interface CompleteBody extends Pick<StartDeployBody, "branchState" | "branchBaseSha" | "branchHeadSha"> {
   deploymentId: string;
   team: string;
   status?: "success" | "partial" | "failed";
@@ -35,7 +48,7 @@ export interface CompleteBody {
   fallback?: boolean;
 }
 
-export interface CrashBody {
+export interface CrashBody extends Pick<StartDeployBody, "branchState" | "branchBaseSha" | "branchHeadSha"> {
   deploymentId: string;
   team: string;
   error?: string;
@@ -84,6 +97,19 @@ export function deployStatusRoutes(): Hono {
       objective: body.objective,
       provider: body.provider,
       repo: body.repo,
+      repoRoot: body.repoRoot,
+      worktreeRoot: body.worktreeRoot,
+      repositorySlot: body.repositorySlot,
+      parentDeploymentId: body.parentDeploymentId,
+      builderAuthority: body.builderAuthority,
+      treehousePath: body.treehousePath,
+      treehouseLeaseId: body.treehouseLeaseId,
+      treehouseLeaseHolder: body.treehouseLeaseHolder,
+      branchState: body.branchState,
+      branchBaseSha: body.branchBaseSha,
+      branchHeadSha: body.branchHeadSha,
+      ticketSlotId: body.ticketSlotId,
+      repositoryPermit: body.repositoryPermit,
       mode: body.mode,
       runtime: body.runtime,
       binary: body.binary,
@@ -116,6 +142,9 @@ export function deployStatusRoutes(): Hono {
       logFile: body.logFile,
       exitCode: body.exitCode,
       fallback: body.fallback,
+      branchState: body.branchState,
+      branchBaseSha: body.branchBaseSha,
+      branchHeadSha: body.branchHeadSha,
     });
     return c.json({ ok: true, event: "completed" });
   });
@@ -126,7 +155,7 @@ export function deployStatusRoutes(): Hono {
     if (!body.deploymentId || !body.team) {
       return c.json({ error: "deploymentId and team are required", code: "BAD_REQUEST" }, 400);
     }
-    emitCrashedEvent({ deploymentId: body.deploymentId, team: body.team, error: body.error, exitCode: body.exitCode });
+    emitCrashedEvent({ deploymentId: body.deploymentId, team: body.team, error: body.error, exitCode: body.exitCode, branchState: body.branchState, branchBaseSha: body.branchBaseSha, branchHeadSha: body.branchHeadSha });
     return c.json({ ok: true, event: "crashed" });
   });
 

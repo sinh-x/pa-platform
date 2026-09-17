@@ -118,6 +118,13 @@ export function formatRegistryShow(deployment: DeploymentStatus, eventCount: num
   if (deployment.repo_root) lines.push(`  Repo Root: ${deployment.repo_root}`);
   if (deployment.worktree_root && deployment.worktree_root !== deployment.repo_root) lines.push(`  Worktree:  ${deployment.worktree_root}`);
   if (deployment.repository_slot) lines.push(`  Repo Slot: ${deployment.repository_slot}`);
+  if (deployment.builder_authority) lines.push(`  Authority: ${deployment.builder_authority}`);
+  if (deployment.parent_deployment_id) lines.push(`  Parent:    ${deployment.parent_deployment_id}`);
+  if (deployment.treehouse_path) lines.push(`  Treehouse: ${deployment.treehouse_path}`);
+  if (deployment.treehouse_lease_id) lines.push(`  Lease:     ${deployment.treehouse_lease_id} (${deployment.treehouse_lease_holder ?? "unknown holder"})`);
+  if (deployment.branch_state) lines.push(`  Branch:    ${deployment.branch_state} base=${deployment.branch_base_sha ?? "unknown"} head=${deployment.branch_head_sha ?? "unknown"}`);
+  if (deployment.ticket_slot_id) lines.push(`  Ticket Slot: ${deployment.ticket_slot_id}`);
+  if (deployment.repository_permit !== undefined) lines.push(`  Repo Permit: ${deployment.repository_permit}`);
   if (deployment.pid !== undefined) lines.push(`  PID:      ${deployment.pid}`);
   if (deployment.summary) lines.push(`  Summary:  ${deployment.summary}`);
   lines.push(`  Events:   ${eventCount}`);

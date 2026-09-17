@@ -30,7 +30,7 @@ test("deploy status API emits started, pid, completed, crashed events", async ()
     const started = await app.request("/api/deploy/start", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deploymentId: deployId, team: "builder", ticketId: "PAP-001" }),
+      body: JSON.stringify({ deploymentId: deployId, team: "builder", ticketId: "PAP-001", repoRoot: "/repo", worktreeRoot: "/treehouse/PAP-001", repositorySlot: "implement", parentDeploymentId: "d-parent", builderAuthority: "parented-implement", treehousePath: "/treehouse/PAP-001", treehouseLeaseId: "lease-1", treehouseLeaseHolder: "pa:repo:PAP-001", branchState: "materialized", branchBaseSha: "a".repeat(40), branchHeadSha: "b".repeat(40), ticketSlotId: "pa:repo:PAP-001", repositoryPermit: 1 }),
     });
     assert.equal(started.status, 200);
     let body = await started.json();
@@ -52,12 +52,13 @@ test("deploy status API emits started, pid, completed, crashed events", async ()
     body = await status.json();
     assert.equal(body.status?.status, "running");
     assert.equal(body.status?.pid, 12345);
+    assert.deepEqual({ parent: body.status?.parent_deployment_id, authority: body.status?.builder_authority, path: body.status?.treehouse_path, lease: body.status?.treehouse_lease_id, holder: body.status?.treehouse_lease_holder, branch: body.status?.branch_state, base: body.status?.branch_base_sha, head: body.status?.branch_head_sha, slot: body.status?.ticket_slot_id, permit: body.status?.repository_permit }, { parent: "d-parent", authority: "parented-implement", path: "/treehouse/PAP-001", lease: "lease-1", holder: "pa:repo:PAP-001", branch: "materialized", base: "a".repeat(40), head: "b".repeat(40), slot: "pa:repo:PAP-001", permit: 1 });
 
     // Emit completed event
     const completed = await app.request("/api/deploy/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deploymentId: deployId, team: "builder", status: "success", summary: "done" }),
+      body: JSON.stringify({ deploymentId: deployId, team: "builder", status: "success", summary: "done", branchState: "materialized", branchBaseSha: "a".repeat(40), branchHeadSha: "c".repeat(40) }),
     });
     assert.equal(completed.status, 200);
     body = await completed.json();
@@ -68,6 +69,7 @@ test("deploy status API emits started, pid, completed, crashed events", async ()
     assert.equal(finalStatus.status, 200);
     body = await finalStatus.json();
     assert.equal(body.status?.status, "success");
+    assert.equal(body.status?.branch_head_sha, "c".repeat(40));
   });
 });
 

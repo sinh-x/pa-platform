@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -76,6 +76,16 @@ function migrate(db: Database.Database): void {
       repo_root TEXT,
       worktree_root TEXT,
       repository_slot TEXT,
+      parent_deployment_id TEXT,
+      builder_authority TEXT,
+      treehouse_path TEXT,
+      treehouse_lease_id TEXT,
+      treehouse_lease_holder TEXT,
+      branch_state TEXT,
+      branch_base_sha TEXT,
+      branch_head_sha TEXT,
+      ticket_slot_id TEXT,
+      repository_permit INTEGER,
       mode TEXT,
       fallback INTEGER DEFAULT 0,
       resumed_from_deployment_id TEXT,
@@ -104,6 +114,16 @@ function migrate(db: Database.Database): void {
       repo_root TEXT,
       worktree_root TEXT,
       repository_slot TEXT,
+      parent_deployment_id TEXT,
+      builder_authority TEXT,
+      treehouse_path TEXT,
+      treehouse_lease_id TEXT,
+      treehouse_lease_holder TEXT,
+      branch_state TEXT,
+      branch_base_sha TEXT,
+      branch_head_sha TEXT,
+      ticket_slot_id TEXT,
+      repository_permit INTEGER,
       mode TEXT,
       provider TEXT,
       error TEXT,
@@ -162,6 +182,7 @@ function migrate(db: Database.Database): void {
   addColumn(db, "registry_events", "repo_root", "TEXT");
   addColumn(db, "registry_events", "worktree_root", "TEXT");
   addColumn(db, "registry_events", "repository_slot", "TEXT");
+  addCorrelationColumns(db, "registry_events");
   addColumn(db, "registry_events", "rogue_one", "INTEGER DEFAULT 0");
   addColumn(db, "registry_events", "invocation_channel", "TEXT");
   addColumn(db, "deployments", "fallback", "INTEGER DEFAULT 0");
@@ -173,9 +194,18 @@ function migrate(db: Database.Database): void {
   addColumn(db, "deployments", "repo_root", "TEXT");
   addColumn(db, "deployments", "worktree_root", "TEXT");
   addColumn(db, "deployments", "repository_slot", "TEXT");
+  addCorrelationColumns(db, "deployments");
   addColumn(db, "deployments", "rogue_one", "INTEGER DEFAULT 0");
   addColumn(db, "deployments", "invocation_channel", "TEXT");
   db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
+}
+
+function addCorrelationColumns(db: Database.Database, table: string): void {
+  for (const [column, type] of [
+    ["parent_deployment_id", "TEXT"], ["builder_authority", "TEXT"], ["treehouse_path", "TEXT"],
+    ["treehouse_lease_id", "TEXT"], ["treehouse_lease_holder", "TEXT"], ["branch_state", "TEXT"],
+    ["branch_base_sha", "TEXT"], ["branch_head_sha", "TEXT"], ["ticket_slot_id", "TEXT"], ["repository_permit", "INTEGER"],
+  ] as const) addColumn(db, table, column, type);
 }
 
 function addColumn(db: Database.Database, table: string, column: string, type: string): void {

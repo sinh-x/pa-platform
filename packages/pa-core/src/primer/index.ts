@@ -164,11 +164,18 @@ function renderTreehouseLaunchEvidence(treehouse: TreehouseLaunchEvidence | unde
   if (!treehouse) return undefined;
   return [
     "### Immutable Treehouse Ticket Checkout Evidence",
+    `- Authority: ${treehouse.authority}${treehouse.parentDeploymentId ? `, parent=${treehouse.parentDeploymentId}` : ""}`,
+    `- Ticket: ${treehouse.ticket}`,
     `- Path: ${treehouse.path}`,
     `- Lease: id=${treehouse.leaseId}, holder=${treehouse.leaseHolder}`,
-    `- Branch: ${treehouse.branch}, base=${treehouse.baseSha}, head=${treehouse.headSha}`,
+    `- Branch: ${treehouse.branch}, state=${treehouse.branchState}, base=${treehouse.baseSha}, head=${treehouse.headSha}`,
     `- Concurrency: ticket_slot=${treehouse.ticketSlotId}, repository_permit=${treehouse.repositoryPermit}`,
-    "- Finalization: PA-owned slot, permit, mutation lease, and borrower evidence finalize automatically; the Treehouse lease and branch remain preserved.",
+    "- Automatic PA finalization: the matching ticket/worktree slot, repository permit, mutation lease, and borrower evidence finalize on verified terminal handling; the Treehouse lease and branch remain preserved.",
+    "### Explicit Treehouse Return Contract",
+    "Treehouse return is never automatic. Before one return attempt, prove there is no live PA owner and the checkout is clean with all work committed, then display and re-check the exact repository key/root, ticket, path, branch, full HEAD, lease ID, and lease holder shown above.",
+    "Ask Sinh interactively for fresh approval of those exact displayed identities. After approval, first persist a durable ticket comment recording the approval and identities; if that comment fails, do not invoke Treehouse.",
+    `Only after the comment succeeds, run exactly one conditional non-force command: \`treehouse return --if-lease-id ${treehouse.leaseId} --if-lease-holder ${treehouse.leaseHolder} ${treehouse.path}\``,
+    "Never add --force, merge, rebase, delete the branch, prune, destroy, or claim sandboxing/automatic cleanup. Missing approval, live ownership, dirty/uncommitted state, identity drift, comment failure, or nonzero return preserves the lease and must be reported as the blocker.",
   ].join("\n");
 }
 

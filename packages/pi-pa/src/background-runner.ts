@@ -61,6 +61,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let repositoryBorrowerTransferred = false;
   let repositoryTicketSlotTransferred = false;
   let terminalGitSnapshot: RepositoryGitSnapshot | undefined;
+  let terminalRegistryEvidence = config.registryEvidence;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -203,12 +204,36 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         repositoryGitCommonDir: authority.repositoryGitCommonDir,
       });
       if (repositoryLease?.ticketSlot) {
-        refreshTicketLinkedBranchHead({
+        const refreshed = refreshTicketLinkedBranchHead({
           canonicalRepoKey: repositoryLease.ticketSlot.canonicalRepoKey,
           canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
           worktreeRoot,
           ticketId: repositoryLease.ticketSlot.ticket,
         });
+        if (terminalRegistryEvidence) {
+          terminalRegistryEvidence = {
+            ...terminalRegistryEvidence,
+            branch_state: "materialized",
+            branch_base_sha: refreshed.baseSha!,
+            branch_head_sha: refreshed.headSha!,
+          };
+          config.registryEvidence = terminalRegistryEvidence;
+        }
+      }
+      if (!repositoryLease?.ticketSlot && config.registryEvidence && config.repoKey && config.ticketId) {
+        const refreshed = refreshTicketLinkedBranchHead({
+          canonicalRepoKey: config.repoKey,
+          canonicalRepoRoot: authority.canonicalRepoRoot,
+          worktreeRoot,
+          ticketId: config.ticketId,
+        });
+        terminalRegistryEvidence = {
+          ...config.registryEvidence,
+          branch_state: "materialized",
+          branch_base_sha: refreshed.baseSha!,
+          branch_head_sha: refreshed.headSha!,
+        };
+        config.registryEvidence = terminalRegistryEvidence;
       }
     }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
@@ -322,6 +347,7 @@ function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, res
     summary: reason,
     log_file: config.logFile,
     exit_code: ok ? 0 : result.status && result.status !== 0 ? result.status : 1,
+    ...(config.registryEvidence ?? {}),
   }, secrets);
 }
 
@@ -335,6 +361,7 @@ function finalizeRunnerFailure(config: PiBackgroundConfig, deployDir: string, re
     error: reason,
     summary: reason,
     exit_code: 1,
+    ...(config.registryEvidence ?? {}),
   }, secrets);
 }
 
