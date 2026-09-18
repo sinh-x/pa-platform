@@ -42,7 +42,8 @@ export interface PiRegistryCorrelation {
   treehouse_lease_id: string;
   treehouse_lease_holder: string;
   branch_state: "materialized";
-  branch_base_sha: string;
+  /** Absent only when a legacy materialized linked branch has no historical base evidence. */
+  branch_base_sha?: string;
   branch_head_sha: string;
   ticket_slot_id: string;
   repository_permit: 1 | 2 | 3 | 4;
@@ -778,7 +779,8 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
     && (registry.parent_deployment_id === undefined || typeof registry.parent_deployment_id === "string")
     && typeof registry.treehouse_path === "string" && resolve(registry.treehouse_path) === registry.treehouse_path
     && typeof registry.treehouse_lease_id === "string" && typeof registry.treehouse_lease_holder === "string"
-    && registry.branch_state === "materialized" && typeof registry.branch_base_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_base_sha)
+    && registry.branch_state === "materialized"
+    && (registry.branch_base_sha === undefined || (typeof registry.branch_base_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_base_sha)))
     && typeof registry.branch_head_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_head_sha)
     && typeof registry.ticket_slot_id === "string" && (registry.repository_permit === 1 || registry.repository_permit === 2 || registry.repository_permit === 3 || registry.repository_permit === 4)
   );

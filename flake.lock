@@ -16,9 +16,45 @@
         "type": "github"
       }
     },
+    "piVimMode": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784735821,
+        "narHash": "sha256-PNkKCjIXCA/gNSuXkUp6JcRk28CpJLdKrE+JqKidocI=",
+        "owner": "pekochan069",
+        "repo": "pi-vimmode",
+        "rev": "52bd6ac5e905157ac46ec15c120b7d0cc61a62df",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pekochan069",
+        "repo": "pi-vimmode",
+        "rev": "52bd6ac5e905157ac46ec15c120b7d0cc61a62df",
+        "type": "github"
+      }
+    },
+    "properPiExtensions": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1788299273,
+        "narHash": "sha256-XVrUvN4F7xgVeDZb4oOm0CIdbjlmd7mkuGTYbUZJfAM=",
+        "owner": "sharaf-nassar",
+        "repo": "proper-pi-extensions",
+        "rev": "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sharaf-nassar",
+        "repo": "proper-pi-extensions",
+        "rev": "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "piVimMode": "piVimMode",
+        "properPiExtensions": "properPiExtensions"
       }
     }
   },

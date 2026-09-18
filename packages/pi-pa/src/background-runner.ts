@@ -214,7 +214,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           terminalRegistryEvidence = {
             ...terminalRegistryEvidence,
             branch_state: "materialized",
-            branch_base_sha: refreshed.baseSha!,
+            branch_base_sha: refreshed.baseSha,
             branch_head_sha: refreshed.headSha!,
           };
           config.registryEvidence = terminalRegistryEvidence;
@@ -230,7 +230,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         terminalRegistryEvidence = {
           ...config.registryEvidence,
           branch_state: "materialized",
-          branch_base_sha: refreshed.baseSha!,
+          branch_base_sha: refreshed.baseSha,
           branch_head_sha: refreshed.headSha!,
         };
         config.registryEvidence = terminalRegistryEvidence;

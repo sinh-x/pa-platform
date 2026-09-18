@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
@@ -44,6 +44,20 @@ test("Treehouse JSON boundary acquires on zero, reuses one, and rejects duplicat
   assert.equal(reuse.acquireOrReuse("/repo", "registered", "PAP-1").leaseId, "lease-1");
   assert.equal(getCalled, false);
 
+  const absentFlagLeased = new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, leased: undefined }] }) });
+  assert.equal(absentFlagLeased.status("/repo")[0]?.leased, true, "v2.3.0 status without the flag infers a lease only from complete metadata");
+  const absentFlagFree = new TreehouseClient({ run: () => result({ worktrees: [{ path: "/tmp/treehouse/free" }] }) });
+  assert.deepEqual(absentFlagFree.status("/repo"), [{ path: "/tmp/treehouse/free", leased: false }]);
+  for (const fixture of [
+    { ...lease, leased: false },
+    { ...lease, lease_holder: undefined },
+  ]) {
+    assert.throws(
+      () => new TreehouseClient({ run: () => result({ worktrees: [fixture] }) }).status("/repo"),
+      /declares leased=false while retaining lease metadata|leased entries require both lease_id and lease_holder/,
+    );
+  }
+
   const rejected = [
     new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease, path: "/tmp/treehouse/two", lease_id: "lease-2" }] }) }),
     new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease }] }) }),
@@ -66,7 +80,7 @@ test("Treehouse JSON boundary acquires on zero, reuses one, and rejects duplicat
   assert.equal(calls.some((args) => args[0] === "return"), false, "PA never invokes Treehouse return automatically");
 });
 
-test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes only PA evidence", async () => {
+test("ticketed orchestrator admits legacy unknown-base evidence through immutable planning and terminal projection", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-treehouse-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -76,13 +90,16 @@ test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes
   mkdirSync(config); mkdirSync(teams); mkdirSync(tickets);
   initializeRepo(repo);
   git(["worktree", "add", "--detach", worktree, "develop"], repo);
+  const legacyHead = git(["rev-parse", "develop"], repo);
+  git(["branch", "feature/PAP-1-work", legacyHead], repo);
+  git(["checkout", "--no-guess", "feature/PAP-1-work"], worktree);
   writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  registered:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n    feature_branch_pattern: feature/<ticket>-<topic>\n`);
   writeFileSync(join(teams, "builder.yaml"), [
     "name: builder", "description: Builder", "objective: Build", "agents: []", "deploy_modes:",
     "  - id: orchestrator", "    label: Orchestrator", "    require_ticket: true",
     "  - id: implement", "    label: Implement", "    require_ticket: true",
   ].join("\n") + "\n");
-  writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({ id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", state: "planned", linkedAt: "2026-09-17T00:00:00Z", linkedBy: "test" }] }));
+  writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({ id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", sha: legacyHead, linkedAt: "2026-09-17T00:00:00Z", linkedBy: "legacy" }] }));
   const prior = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_WORKTREE_ROOT", "PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const priorCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;
@@ -122,10 +139,19 @@ test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes
     assert.equal(plan.environment.PA_TREEHOUSE_LEASE_ID, "lease-1");
     assert.equal(plan.treehouse?.leaseHolder, "pa:registered:PAP-1");
     assert.equal(plan.treehouse?.branch, "feature/PAP-1-work");
+    assert.equal(plan.treehouse?.baseSha, undefined, "immutable planning preserves the unknown legacy base");
+    assert.equal(plan.treehouse?.headSha, legacyHead);
     assert.equal(Object.isFrozen(plan.treehouse), true);
-    assert.match(readFileSync(spawned!.primerPath, "utf8"), /Immutable Treehouse Ticket Checkout Evidence/);
+    const primer = readFileSync(spawned!.primerPath, "utf8");
+    assert.match(primer, /Immutable Treehouse Ticket Checkout Evidence/);
+    assert.match(primer, new RegExp(`state=materialized, base=unknown, head=${legacyHead}`));
     assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-1-work");
-    assert.equal(readFileSync(join(tickets, "PAP-1.json"), "utf8").includes('"state": "materialized"'), true);
+    const persistedAfterLaunch = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ baseSha?: string; headSha: string }> };
+    assert.equal(persistedAfterLaunch.linkedBranches[0]?.baseSha, undefined);
+    assert.equal(persistedAfterLaunch.linkedBranches[0]?.headSha, legacyHead);
+    const terminalStatus = queryDeploymentStatus(deployment.deploymentId!);
+    assert.equal(terminalStatus?.branch_base_sha, undefined, "registry terminal projection preserves the unknown base");
+    assert.equal(terminalStatus?.branch_head_sha, legacyHead);
     assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-1")), false);
     const canonicalAfter = Buffer.concat([Buffer.from(git(["branch", "--show-current"], repo)), Buffer.from(git(["rev-parse", "HEAD"], repo)), execFileSync("git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: repo })]);
     assert.deepEqual(canonicalAfter, canonicalBefore);
@@ -156,7 +182,7 @@ test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes
     const parentLease = acquireRepositoryMutationLease({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, worktreeRoot: worktree, deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-1" });
     assert.equal(parentLease.status, "acquired");
     if (parentLease.status !== "acquired") return;
-    const linked = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ branch: string; baseSha: string; headSha: string }> };
+    const linked = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ branch: string; baseSha?: string; headSha: string }> };
     const branch = linked.linkedBranches[0]!;
     appendRegistryEvent({
       deployment_id: parentDeploymentId, team: "builder", event: "started", timestamp: "2026-09-17T01:00:00Z", status: undefined,

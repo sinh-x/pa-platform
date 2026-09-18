@@ -33,7 +33,8 @@ export interface TreehouseLaunchEvidence {
   readonly leaseHolder: string;
   readonly branch: string;
   readonly branchState: "materialized";
-  readonly baseSha: string;
+  /** Absent only for legacy linked-branch evidence with an unknown historical base. */
+  readonly baseSha?: string;
   readonly headSha: string;
   readonly ticketSlotId: string;
   readonly repositoryPermit: 1 | 2 | 3 | 4;
@@ -158,7 +159,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       || !snapshot
       || snapshot.branch !== evidence.branch
       || snapshot.head !== evidence.headSha
-      || !/^[0-9a-f]{40}$/.test(evidence.baseSha)
+      || (evidence.baseSha !== undefined && !/^[0-9a-f]{40}$/.test(evidence.baseSha))
       || !/^[0-9a-f]{40}$/.test(evidence.headSha)
       || ![1, 2, 3, 4].includes(evidence.repositoryPermit)) {
       throw new Error("execution-plan: trusted Treehouse lease, branch, slot, permit, and authenticated Git snapshot must agree exactly");

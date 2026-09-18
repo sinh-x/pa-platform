@@ -115,9 +115,14 @@ function parseStatusEntry(value: unknown, label: string): TreehouseStatusEntry {
   const leaseId = optionalField(value["lease_id"], `${label}.lease_id`);
   const leaseHolder = optionalField(value["lease_holder"], `${label}.lease_holder`);
   const leasedAt = optionalTimestamp(value["leased_at"], `${label}.leased_at`);
-  const leased = value["leased"] === true || leaseId !== undefined || leaseHolder !== undefined || leasedAt !== undefined;
-  if (leased !== Boolean(leaseId && leaseHolder) || (!leased && value["leased"] === true)) {
-    throw treehouseError(`${label} has incomplete or contradictory lease identity`, "reconcile the Treehouse lease before launch");
+  const leaseFlag = value["leased"];
+  const hasLeaseMetadata = leaseId !== undefined || leaseHolder !== undefined || leasedAt !== undefined;
+  if (leaseFlag === false && hasLeaseMetadata) {
+    throw treehouseError(`${label} declares leased=false while retaining lease metadata`, "clear the stale lease fields or restore a truthful active lease before launch");
+  }
+  const leased = leaseFlag === true || (leaseFlag === undefined && hasLeaseMetadata);
+  if (leased && (!leaseId || !leaseHolder)) {
+    throw treehouseError(`${label} has incomplete lease identity; leased entries require both lease_id and lease_holder`, "reconcile the Treehouse lease before launch");
   }
   return Object.freeze({ path, leased, ...(leaseId ? { leaseId } : {}), ...(leaseHolder ? { leaseHolder } : {}), ...(leasedAt ? { leasedAt } : {}) });
 }

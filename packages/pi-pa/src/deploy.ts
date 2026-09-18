@@ -106,7 +106,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const parentSlot = parent ? authenticateParentTreehouse(parent, {
         ticketId, repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot,
         leaseId: lease.leaseId, leaseHolder: lease.leaseHolder, branch: branchEvidence.branch,
-        baseSha: branchEvidence.baseSha!, headSha: branchEvidence.headSha!,
+        baseSha: branchEvidence.baseSha, headSha: branchEvidence.headSha!,
       }) : undefined;
       const slotId = activeTicketSlot?.slotId ?? parentSlot!.slotId;
       const repositoryPermit = activeTicketSlot?.repositoryPermit ?? parentSlot!.repositoryPermit;
@@ -119,7 +119,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         leaseHolder: lease.leaseHolder,
         branch: branchEvidence.branch,
         branchState: "materialized",
-        baseSha: branchEvidence.baseSha!,
+        ...(branchEvidence.baseSha ? { baseSha: branchEvidence.baseSha } : {}),
         headSha: branchEvidence.headSha!,
         ticketSlotId: slotId,
         repositoryPermit,
@@ -197,14 +197,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
   let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string; ticketSlot?: RepositoryTicketSlotHandoff } | undefined;
-  let terminalBranchEvidence: { branchState: "materialized"; branchBaseSha: string; branchHeadSha: string } | undefined;
+  let terminalBranchEvidence: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string } | undefined;
   let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
     const failures: string[] = [];
     if (plan.treehouse && plan.ticket) {
       try {
         const refreshed = refreshTicketLinkedBranchHead({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ticketId: plan.ticket });
-        terminalBranchEvidence = { branchState: "materialized", branchBaseSha: refreshed.baseSha!, branchHeadSha: refreshed.headSha! };
+        terminalBranchEvidence = { branchState: "materialized", ...(refreshed.baseSha ? { branchBaseSha: refreshed.baseSha } : {}), branchHeadSha: refreshed.headSha! };
       } catch (error) {
         failures.push(`ticket head refresh failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -569,7 +569,7 @@ function deploymentCorrelation(plan: ExecutionPlan): {
   } : {};
 }
 
-function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "materialized"; branchBaseSha: string; branchHeadSha: string }): Pick<RegistryEvent,
+function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string }): Pick<RegistryEvent,
   "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
   "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
 > {
@@ -585,7 +585,7 @@ function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "mat
 
 function authenticateParentTreehouse(
   parent: { parentDeploymentId: string; parentDeploymentDirectory: string },
-  expected: { ticketId: string; repoKey: string; repoRoot: string; worktreeRoot: string; leaseId: string; leaseHolder: string; branch: string; baseSha: string; headSha: string },
+  expected: { ticketId: string; repoKey: string; repoRoot: string; worktreeRoot: string; leaseId: string; leaseHolder: string; branch: string; baseSha?: string; headSha: string },
 ): { slotId: string; repositoryPermit: 1 | 2 | 3 | 4 } {
   const status = queryDeploymentStatus(parent.parentDeploymentId);
   const permitText = process.env["PA_REPOSITORY_PERMIT"] ?? "";

@@ -19,7 +19,8 @@ export interface MaterializeTicketBranchOptions {
 
 export interface MaterializedTicketBranch {
   readonly branch: string;
-  readonly baseSha: string;
+  /** Absent only for admitted legacy materialized records whose historical base is unknown. */
+  readonly baseSha?: string;
   readonly headSha: string;
   readonly created: boolean;
   readonly linkedBranch: LinkedBranch;
@@ -107,14 +108,14 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
 
     const promoted = store.update(options.ticketId, { add_linked_branch: { repo: options.canonicalRepoKey, branch: linked.branch, linkedBy: options.actor ?? "ppa" } }, options.actor ?? "ppa");
     const refreshed = requireTicketLinkedBranch(promoted, options.canonicalRepoKey);
-    if (refreshed.state !== "materialized" || refreshed.headSha !== headSha || !refreshed.baseSha) {
-      throw diagnostic("ticket promotion did not persist authenticated base/head evidence", "preserve the Treehouse branch and repair only the matching ticket record");
+    if (refreshed.state !== "materialized" || refreshed.headSha !== headSha || refreshed.baseSha !== baseSha) {
+      throw diagnostic("ticket promotion did not preserve authenticated base/head evidence, including an unknown legacy base", "preserve the Treehouse branch and repair only the matching ticket record");
     }
     if (linked.baseSha && refreshed.baseSha !== linked.baseSha) throw diagnostic("immutable ticket baseSha changed during refresh", "restore the original baseSha and inspect the branch for replacement");
 
     const canonicalAfter = canonicalSnapshot(canonicalRoot, runGit);
     if (!canonicalBefore.equals(canonicalAfter)) throw diagnostic("canonical checkout branch, HEAD, or porcelain-v2 bytes changed during ticket materialization", "preserve both checkouts and diagnose the unexpected canonical mutation");
-    return Object.freeze({ branch: linked.branch, baseSha: refreshed.baseSha, headSha, created, linkedBranch: Object.freeze({ ...refreshed }) });
+    return Object.freeze({ branch: linked.branch, ...(refreshed.baseSha ? { baseSha: refreshed.baseSha } : {}), headSha, created, linkedBranch: Object.freeze({ ...refreshed }) });
   });
 }
 

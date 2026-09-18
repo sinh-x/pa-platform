@@ -168,7 +168,7 @@ function renderTreehouseLaunchEvidence(treehouse: TreehouseLaunchEvidence | unde
     `- Ticket: ${treehouse.ticket}`,
     `- Path: ${treehouse.path}`,
     `- Lease: id=${treehouse.leaseId}, holder=${treehouse.leaseHolder}`,
-    `- Branch: ${treehouse.branch}, state=${treehouse.branchState}, base=${treehouse.baseSha}, head=${treehouse.headSha}`,
+    `- Branch: ${treehouse.branch}, state=${treehouse.branchState}, base=${treehouse.baseSha ?? "unknown"}, head=${treehouse.headSha}`,
     `- Concurrency: ticket_slot=${treehouse.ticketSlotId}, repository_permit=${treehouse.repositoryPermit}`,
     "- Automatic PA finalization: the matching ticket/worktree slot, repository permit, mutation lease, and borrower evidence finalize on verified terminal handling; the Treehouse lease and branch remain preserved.",
     "### Explicit Treehouse Return Contract",
