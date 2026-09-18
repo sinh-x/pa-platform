@@ -229,7 +229,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
   }));
   app.route("/", deploymentsRoutes());
   app.route("/", deployRoutingRoutes());
-  app.route("/", deployStatusRoutes());
+  app.route("/", deployStatusRoutes((c) => authenticateMutationPrincipal(c, mutationAuth)));
   app.route("/", reposRoutes());
   app.route("/", repoCommitsRoutes());
   app.route("/", repoDeploymentsRoutes());

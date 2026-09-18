@@ -2,10 +2,13 @@ import { appendRegistryEvent, getDeploymentEvents } from "../registry/index.js";
 import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
+import type { DeploymentCorrelationEvidence } from "./correlation.js";
 
 export const OPA_WRAPPER_FALLBACK_SUMMARY = "Automated fallback: opa wrapper wrote this partial registry marker after OpenCode exited without an agent completion marker.";
 
-export interface StartDeploymentOpts {
+export type DeploymentCorrelationOpts = DeploymentCorrelationEvidence;
+
+export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
   deploymentId: string;
   team: string;
   primer?: string;
@@ -46,6 +49,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     repo_root: opts.repoRoot,
     worktree_root: opts.worktreeRoot,
     repository_slot: opts.repositorySlot,
+    ...correlationEventFields(opts),
     mode: opts.mode,
     runtime: opts.runtime,
     binary: opts.binary,
@@ -75,7 +79,7 @@ export function emitPidEvent(opts: PidEventOpts): void {
   });
 }
 
-export interface CompletedEventOpts {
+export interface CompletedEventOpts extends DeploymentCorrelationOpts {
   deploymentId: string;
   team: string;
   status?: "success" | "partial" | "failed";
@@ -101,10 +105,11 @@ export function emitCompletedEvent(opts: CompletedEventOpts): void {
     rating: opts.rating,
     exit_code: opts.exitCode,
     fallback: opts.fallback,
+    ...correlationEventFields(opts),
   });
 }
 
-export interface CrashedEventOpts {
+export interface CrashedEventOpts extends DeploymentCorrelationOpts {
   deploymentId: string;
   team: string;
   error?: string;
@@ -122,7 +127,26 @@ export function emitCrashedEvent(opts: CrashedEventOpts): void {
     timestamp: nowUtc(),
     error: opts.error,
     exit_code: opts.exitCode,
+    ...correlationEventFields(opts),
   });
+}
+
+export function correlationEventFields(opts: DeploymentCorrelationOpts): Pick<import("../types.js").RegistryEvent,
+  "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
+  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
+> {
+  return {
+    parent_deployment_id: opts.parentDeploymentId,
+    builder_authority: opts.builderAuthority,
+    treehouse_path: opts.treehousePath,
+    treehouse_lease_id: opts.treehouseLeaseId,
+    treehouse_lease_holder: opts.treehouseLeaseHolder,
+    branch_state: opts.branchState,
+    branch_base_sha: opts.branchBaseSha,
+    branch_head_sha: opts.branchHeadSha,
+    ticket_slot_id: opts.ticketSlotId,
+    repository_permit: opts.repositoryPermit,
+  };
 }
 
 export interface AmendedEventOpts {

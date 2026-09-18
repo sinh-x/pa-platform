@@ -35,15 +35,31 @@ export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid
 type PiRepositoryLeaseHandoff = RepositoryLeaseHandoff & Required<Pick<RepositoryLeaseHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
 type PiRepositoryBorrowerHandoff = RepositoryBorrowerHandoff & Required<Pick<RepositoryBorrowerHandoff, "repositoryGitDir" | "repositoryGitCommonDir">>;
 
+export interface PiRegistryCorrelation {
+  parent_deployment_id?: string;
+  builder_authority: "orchestrator" | "parented-implement" | "standalone-implement";
+  treehouse_path: string;
+  treehouse_lease_id: string;
+  treehouse_lease_holder: string;
+  branch_state: "materialized";
+  /** Absent only when a legacy materialized linked branch has no historical base evidence. */
+  branch_base_sha?: string;
+  branch_head_sha: string;
+  ticket_slot_id: string;
+  repository_permit: 1 | 2 | 3 | 4;
+}
+
 export interface PiBackgroundConfig {
   schemaVersion: 1;
   ownershipToken: string;
   deploymentId: string;
   team: string;
   cwd: string;
+  repoKey?: string;
   repoRoot?: string;
   worktreeRoot?: string;
   repositorySlot?: "orchestrator" | "implement";
+  ticketId?: string;
   primerPath: string;
   logFile: string;
   sessionId: string;
@@ -54,6 +70,7 @@ export interface PiBackgroundConfig {
   trustedExtension?: string;
   timeoutMs?: number;
   repositoryHandoffPath?: string;
+  registryEvidence?: PiRegistryCorrelation;
   /** In-memory only after the runner consumes the separate protected handoff. */
   repositoryLease?: PiRepositoryLeaseHandoff;
   repositoryBorrower?: PiRepositoryBorrowerHandoff;
@@ -618,7 +635,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     deploymentId: input.opts.deployId,
     team: input.env["PA_TEAM"] || plan?.team || "unknown",
     cwd: input.cwd,
-    ...(plan ? { repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ...(plan.repositoryAdmission.slot ? { repositorySlot: plan.repositoryAdmission.slot } : {}) } : {}),
+    ...(plan ? { repoKey: plan.repoKey, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ...(plan.ticket ? { ticketId: plan.ticket } : {}), ...(plan.repositoryAdmission.slot ? { repositorySlot: plan.repositoryAdmission.slot } : {}) } : {}),
     primerPath: input.opts.primerPath,
     logFile: input.opts.logFile ?? resolve(deployDir, "pi.log"),
     sessionId: input.id,
@@ -629,6 +646,18 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
     ...(repositoryHandoff ? { repositoryHandoffPath: handoffPath } : {}),
+    ...(plan?.treehouse ? { registryEvidence: {
+      ...(plan.treehouse.parentDeploymentId ? { parent_deployment_id: plan.treehouse.parentDeploymentId } : {}),
+      builder_authority: plan.treehouse.authority,
+      treehouse_path: plan.treehouse.path,
+      treehouse_lease_id: plan.treehouse.leaseId,
+      treehouse_lease_holder: plan.treehouse.leaseHolder,
+      branch_state: plan.treehouse.branchState,
+      branch_base_sha: plan.treehouse.baseSha,
+      branch_head_sha: plan.treehouse.headSha,
+      ticket_slot_id: plan.treehouse.ticketSlotId,
+      repository_permit: plan.treehouse.repositoryPermit,
+    } } : {}),
   };
   try {
     if (repositoryHandoff) writePiRepositoryHandoff(handoffPath, repositoryHandoff);
@@ -738,11 +767,24 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
   const repositoryHandoffPath = value.repositoryHandoffPath;
   const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
-  const validRepositoryEvidence = (value.repoRoot === undefined || (typeof value.repoRoot === "string" && resolve(value.repoRoot) === value.repoRoot))
+  const validRepositoryEvidence = (value.repoKey === undefined || typeof value.repoKey === "string")
+    && (value.ticketId === undefined || typeof value.ticketId === "string")
+    && (value.repoRoot === undefined || (typeof value.repoRoot === "string" && resolve(value.repoRoot) === value.repoRoot))
     && (value.worktreeRoot === undefined || (typeof value.worktreeRoot === "string" && resolve(value.worktreeRoot) === value.worktreeRoot))
     && (value.repositorySlot === undefined || value.repositorySlot === "orchestrator" || value.repositorySlot === "implement")
     && (value.managed !== true || (typeof value.repoRoot === "string" && typeof value.worktreeRoot === "string" && value.cwd === value.worktreeRoot));
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validRepositoryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
+  const registry = value.registryEvidence as Partial<PiRegistryCorrelation> | undefined;
+  const validRegistryEvidence = registry === undefined || (
+    (registry.builder_authority === "orchestrator" || registry.builder_authority === "parented-implement" || registry.builder_authority === "standalone-implement")
+    && (registry.parent_deployment_id === undefined || typeof registry.parent_deployment_id === "string")
+    && typeof registry.treehouse_path === "string" && resolve(registry.treehouse_path) === registry.treehouse_path
+    && typeof registry.treehouse_lease_id === "string" && typeof registry.treehouse_lease_holder === "string"
+    && registry.branch_state === "materialized"
+    && (registry.branch_base_sha === undefined || (typeof registry.branch_base_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_base_sha)))
+    && typeof registry.branch_head_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_head_sha)
+    && typeof registry.ticket_slot_id === "string" && (registry.repository_permit === 1 || registry.repository_permit === 2 || registry.repository_permit === 3 || registry.repository_permit === 4)
+  );
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validRepositoryEvidence || !validRegistryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
@@ -777,11 +819,21 @@ function validPiRepositoryHandoff(value: unknown): value is PiRepositoryHandoff 
   const row = value as Record<string, unknown>;
   const lease = row["repositoryLease"] as Record<string, unknown> | undefined;
   const borrower = row["repositoryBorrower"] as Record<string, unknown> | undefined;
+  const ticketSlot = lease?.["ticketSlot"] as Record<string, unknown> | undefined;
+  const validTicketSlot = ticketSlot === undefined || (typeof ticketSlot === "object"
+    && typeof ticketSlot["canonicalRepoKey"] === "string"
+    && typeof ticketSlot["canonicalRepoRoot"] === "string"
+    && ticketSlot["canonicalRepoRoot"] === lease?.["canonicalRepoRoot"]
+    && typeof ticketSlot["ticket"] === "string"
+    && typeof ticketSlot["slotToken"] === "string"
+    && typeof ticketSlot["slotId"] === "string"
+    && (ticketSlot["repositoryPermit"] === 1 || ticketSlot["repositoryPermit"] === 2 || ticketSlot["repositoryPermit"] === 3 || ticketSlot["repositoryPermit"] === 4));
   const validLease = lease !== undefined && typeof lease === "object" && typeof lease["canonicalRepoRoot"] === "string" && typeof lease["ownershipToken"] === "string"
     && (lease["worktreeRoot"] === undefined || typeof lease["worktreeRoot"] === "string")
     && validPhysicalAbsoluteDirectory(lease["repositoryGitDir"])
     && validPhysicalAbsoluteDirectory(lease["repositoryGitCommonDir"])
-    && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement");
+    && (lease["slot"] === undefined || lease["slot"] === "orchestrator" || lease["slot"] === "implement")
+    && validTicketSlot;
   const approvedPaths = borrower?.["approvedMutationPaths"];
   const validApprovedPaths = approvedPaths === undefined || (Array.isArray(approvedPaths) && approvedPaths.length <= 512 && approvedPaths.every((path) => typeof path === "string" && path.length > 0 && path.length <= 1_024));
   const validBorrower = borrower !== undefined && typeof borrower === "object" && typeof borrower["canonicalRepoRoot"] === "string" && (borrower["worktreeRoot"] === undefined || typeof borrower["worktreeRoot"] === "string")

@@ -151,6 +151,15 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --agent-model <name>   Rejected; per-agent overrides are tracked by PAP-148");
   io.stdout(`  Defaults:              ${profile.defaultDescription}`);
   io.stdout("  Config:                deploy_modes[].provider and deploy_modes[].model must both be present or both absent");
+  if (binaryName === "ppa") {
+    io.stdout("");
+    io.stdout("Treehouse builder workflow:");
+    io.stdout("  Canonical builder/orchestrator acquires or reuses the matching lease; an operator-prepared launch omits --repo from the exact leased CWD.");
+    io.stdout("  Admission permits one live builder per repository/ticket and at most four live ticket builders per canonical repository.");
+    io.stdout("  A direct background builder/implement reuses its authenticated parent checkout; standalone implement must start from the free matching leased checkout with --repo omitted.");
+    io.stdout("  PA locks finalize automatically, but Treehouse return never does: require clean committed state, no live owner, exact identities, fresh interactive Sinh approval, a durable ticket comment, then one conditional non-force return.");
+    io.stdout("  PPA does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox.");
+  }
   io.stdout("");
   io.stdout("Rogue-one:");
   io.stdout(`  ${binaryName} deploy rogue-one activates the fixed bare profile; no bypass flag is used.`);

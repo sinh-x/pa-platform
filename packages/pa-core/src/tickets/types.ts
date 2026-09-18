@@ -17,10 +17,18 @@ export type TicketType = "feature" | "bug" | "task" | "review-request" | "work-r
 export type Estimate = "XS" | "S" | "M" | "L" | "XL";
 export type SubTicketStatus = "open" | "in-progress" | "done";
 
+export type LinkedBranchState = "planned" | "materialized";
+
 export interface LinkedBranch {
   repo: string;
   branch: string;
-  sha: string;
+  state: LinkedBranchState;
+  /** Immutable materialization/admission base evidence. Absent only for planned and legacy materialized records. */
+  baseSha?: string;
+  /** Mutable branch-tip evidence refreshed only from the registered Git repository. */
+  headSha?: string;
+  /** Backward-compatible alias for legacy consumers. New code should use headSha. */
+  sha?: string;
   linkedAt: string;
   linkedBy: string;
 }
@@ -114,7 +122,6 @@ export interface AddDocRefInput {
 export interface AddLinkedBranchInput {
   repo: string;
   branch: string;
-  sha?: string;
   linkedBy?: string;
 }
 
@@ -127,7 +134,7 @@ export interface AddLinkedCommitInput {
   linkedBy?: string;
 }
 
-export type UpdateTicketInput = Partial<Omit<Ticket, "id" | "project" | "createdAt" | "subTickets" | "nextSubTicketCounter">> & {
+export type UpdateTicketInput = Partial<Omit<Ticket, "id" | "project" | "createdAt" | "subTickets" | "nextSubTicketCounter" | "linkedBranches">> & {
   add_doc_ref?: AddDocRefInput;
   remove_doc_ref?: string;
   add_linked_branch?: AddLinkedBranchInput;

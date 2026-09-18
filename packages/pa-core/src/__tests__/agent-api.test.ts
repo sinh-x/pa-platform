@@ -508,11 +508,14 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     assert.equal((await missingHooks.app.request("/api/self-update", { method: "POST" })).status, 501);
     assert.equal((await missingHooks.app.request("/api/self-update/status")).status, 501);
 
-    const { app } = createAgentApiApp({ hooks: {
-      deploy: (request) => ({ status: "pending", team: request.team, mode: request.mode ?? null, deploymentId: "d-hook" }),
-      selfUpdate: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: [] }),
-      getSelfUpdateStatus: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] }),
-    } });
+    const { app } = createAgentApiApp({
+      hooks: {
+        deploy: (request) => ({ status: "pending", team: request.team, mode: request.mode ?? null, deploymentId: "d-hook" }),
+        selfUpdate: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: [] }),
+        getSelfUpdateStatus: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] }),
+      },
+      ticketMutationAuth: { operatorCredential: "operator-credential" },
+    });
     const deploy = await app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }) });
     assert.equal(deploy.status, 202);
     assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-hook" });
@@ -524,12 +527,12 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     assert.equal(failedDeploy.status, 202);
     assert.deepEqual(await failedDeploy.json(), { status: "failed", reason: "adapter unavailable", team: "builder", mode: "plan" });
 
-    const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deploymentId: "d-status", team: "builder", runtime: "opencode" }) });
+    const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer operator-credential" }, body: JSON.stringify({ deploymentId: "d-57a705", team: "builder", runtime: "opencode" }) });
     assert.equal(started.status, 200);
-    const status = await app.request("/api/deploy/status/d-status");
+    const status = await app.request("/api/deploy/status/d-57a705");
     assert.equal(status.status, 200);
-    assert.equal((await status.json() as { status: { deploy_id: string; status: string } }).status.deploy_id, "d-status");
-    assert.equal((await app.request("/api/deploy/events/d-status")).status, 200);
+    assert.equal((await status.json() as { status: { deploy_id: string; status: string } }).status.deploy_id, "d-57a705");
+    assert.equal((await app.request("/api/deploy/events/d-57a705")).status, 200);
   });
 });
 
@@ -1146,13 +1149,14 @@ test("agent API exposes timer parsing helpers", async () => {
   });
 });
 
-test("agent API PATCH ticket with add_linked_branch returns warning for non-conforming branch name", async () => {
+test("agent API PATCH ticket validates and projects planned/materialized linked-branch evidence", async () => {
   await withApiEnv(async (root) => {
     const repo = join(root, "repo");
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     writeFileSync(join(repo, "README.md"), "# Test\n");
     execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["branch", "develop"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["checkout", "-b", "my-random-name"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["checkout", "-b", "feature/PAP-001-fix-login"], { cwd: repo, stdio: "ignore" });
 
@@ -1174,10 +1178,9 @@ test("agent API PATCH ticket with add_linked_branch returns warning for non-conf
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ add_linked_branch: { repo: "pa-platform", branch: "my-random-name" } }),
     });
-    assert.equal(nonConforming.status, 200);
-    const nonConformingBody = await nonConforming.json() as { ticket: Record<string, unknown>; warning?: string };
-    assert.equal(typeof nonConformingBody.warning, "string");
-    assert.match(nonConformingBody.warning ?? "", /does not match/);
+    assert.equal(nonConforming.status, 400);
+    const nonConformingBody = await nonConforming.json() as { error: string };
+    assert.match(nonConformingBody.error, /Invalid ticket branch/);
 
     const conforming = await app.request(`/api/tickets/${ticketId}`, {
       method: "PATCH",
@@ -1185,8 +1188,29 @@ test("agent API PATCH ticket with add_linked_branch returns warning for non-conf
       body: JSON.stringify({ add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-fix-login" } }),
     });
     assert.equal(conforming.status, 200);
-    const conformingBody = await conforming.json() as { ticket: Record<string, unknown>; warning?: string };
-    assert.equal(conformingBody.warning, undefined);
+    const conformingBody = await conforming.json() as { ticket: { linkedBranches: Array<{ state: string; baseSha?: string; headSha?: string }> } };
+    assert.equal(conformingBody.ticket.linkedBranches[0]?.state, "materialized");
+    assert.match(conformingBody.ticket.linkedBranches[0]?.baseSha ?? "", /^[0-9a-f]{40}$/);
+    assert.match(conformingBody.ticket.linkedBranches[0]?.headSha ?? "", /^[0-9a-f]{40}$/);
+
+    const secondCreated = await app.request("/api/tickets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project: "pa-platform", title: "Planned branch API test", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }),
+    });
+    const secondId = (await secondCreated.json() as { ticket: { id: string } }).ticket.id;
+    const planned = await app.request(`/api/tickets/${secondId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-002-planned" } }),
+    });
+    assert.equal(planned.status, 200);
+    const plannedBody = await planned.json() as { ticket: { linkedBranches: Array<{ repo: string; branch: string; state: string; baseSha?: string; headSha?: string }> } };
+    assert.equal(plannedBody.ticket.linkedBranches[0]?.repo, "pa-platform");
+    assert.equal(plannedBody.ticket.linkedBranches[0]?.branch, "feature/PAP-002-planned");
+    assert.equal(plannedBody.ticket.linkedBranches[0]?.state, "planned");
+    assert.equal(plannedBody.ticket.linkedBranches[0]?.baseSha, undefined);
+    assert.equal(plannedBody.ticket.linkedBranches[0]?.headSha, undefined);
   });
 });
 

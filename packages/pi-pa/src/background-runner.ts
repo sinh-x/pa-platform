@@ -12,8 +12,11 @@ import {
   getDeployPaths,
   readProcessFingerprint,
   reconcileTerminalRegistryEvent,
+  refreshTicketLinkedBranchHead,
+  releaseRepositoryTicketSlot,
   transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
+  transferRepositoryTicketSlot,
   type RegistryEvent,
   type RepositoryGitSnapshot,
 } from "@pa-platform/pa-core";
@@ -56,7 +59,9 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let repositoryBorrower = config.repositoryBorrower;
   let repositoryLeaseTransferred = false;
   let repositoryBorrowerTransferred = false;
+  let repositoryTicketSlotTransferred = false;
   let terminalGitSnapshot: RepositoryGitSnapshot | undefined;
+  let terminalRegistryEvidence = config.registryEvidence;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
@@ -129,6 +134,11 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         });
         if (transfer.status !== "transferred") throw new Error(`runner-readiness: repository ownership transfer failed (${transfer.status})`);
         repositoryLeaseTransferred = true;
+        if (repositoryLease.ticketSlot) {
+          const slotTransfer = transferRepositoryTicketSlot({ ...repositoryLease.ticketSlot, nextProcessFingerprint: fingerprint });
+          if (slotTransfer.status !== "transferred") throw new Error(`runner-readiness: repository ticket-slot transfer failed (${slotTransfer.status})`);
+          repositoryTicketSlotTransferred = true;
+        }
       } else if (repositoryBorrower) {
         if (repositoryBorrower.deploymentId !== config.deploymentId) throw new Error("runner-readiness: repository borrower deployment identity mismatch");
         const transfer = transferRepositoryMutationBorrower({
@@ -193,6 +203,38 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         repositoryGitDir: authority.repositoryGitDir,
         repositoryGitCommonDir: authority.repositoryGitCommonDir,
       });
+      if (repositoryLease?.ticketSlot) {
+        const refreshed = refreshTicketLinkedBranchHead({
+          canonicalRepoKey: repositoryLease.ticketSlot.canonicalRepoKey,
+          canonicalRepoRoot: repositoryLease.canonicalRepoRoot,
+          worktreeRoot,
+          ticketId: repositoryLease.ticketSlot.ticket,
+        });
+        if (terminalRegistryEvidence) {
+          terminalRegistryEvidence = {
+            ...terminalRegistryEvidence,
+            branch_state: "materialized",
+            branch_base_sha: refreshed.baseSha,
+            branch_head_sha: refreshed.headSha!,
+          };
+          config.registryEvidence = terminalRegistryEvidence;
+        }
+      }
+      if (!repositoryLease?.ticketSlot && config.registryEvidence && config.repoKey && config.ticketId) {
+        const refreshed = refreshTicketLinkedBranchHead({
+          canonicalRepoKey: config.repoKey,
+          canonicalRepoRoot: authority.canonicalRepoRoot,
+          worktreeRoot,
+          ticketId: config.ticketId,
+        });
+        terminalRegistryEvidence = {
+          ...config.registryEvidence,
+          branch_state: "materialized",
+          branch_base_sha: refreshed.baseSha,
+          branch_head_sha: refreshed.headSha!,
+        };
+        config.registryEvidence = terminalRegistryEvidence;
+      }
     }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
     finalState = "finalized";
@@ -262,6 +304,12 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
             break;
         }
       }
+      if (repositoryTicketSlotTransferred && repositoryLease?.ticketSlot) {
+        const release = releaseRepositoryTicketSlot(repositoryLease.ticketSlot);
+        if (release.status !== "released" && release.status !== "absent") {
+          authorityFailure ??= `Condition: repository ticket concurrency finalization. Source: matching PA ticket slot. Reason: cleanup did not complete (${release.status}). Correction: preserve Treehouse lease and branch. Resume Action: reconcile only the matching slot token before another launch.`;
+        }
+      }
       if (authorityFailure) {
         finalState = "failed";
         const reason = bounded(authorityFailure, secrets, TERMINAL_DIAGNOSTIC_MAX);
@@ -299,6 +347,7 @@ function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, res
     summary: reason,
     log_file: config.logFile,
     exit_code: ok ? 0 : result.status && result.status !== 0 ? result.status : 1,
+    ...(config.registryEvidence ?? {}),
   }, secrets);
 }
 
@@ -312,6 +361,7 @@ function finalizeRunnerFailure(config: PiBackgroundConfig, deployDir: string, re
     error: reason,
     summary: reason,
     exit_code: 1,
+    ...(config.registryEvidence ?? {}),
   }, secrets);
 }
 

@@ -703,7 +703,7 @@ Manage tickets. Subcommands: `list`, `show`, `create`, `update`, `comment`, `att
 | `--doc-ref <type:path>` | doc ref | Add a doc_ref (optionally with `--doc-ref-primary`) |
 | `--doc-ref-primary` | — | Mark the added doc_ref as primary |
 | `--remove-doc-ref <path>` | path | Remove a doc_ref by path |
-| `--linked-branch <repo\|branch\|sha>` | pipe-sep | Add a linked branch |
+| `--linked-branch <repo\|branch>` | pipe-sep | Record planned intent or refresh authenticated materialized branch evidence |
 | `--remove-linked-branch <repo>` | repo | Remove a linked branch by repo |
 | `--linked-commit <repo\|sha\|msg\|author\|ts>` | pipe-sep | Add a linked commit |
 | `--remove-linked-commit <sha>` | sha | Remove a linked commit by sha |

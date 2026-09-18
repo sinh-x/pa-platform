@@ -7,9 +7,8 @@ import { TicketStore } from "../../tickets/store.js";
 import type { TicketMutationContext } from "../../tickets/store.js";
 import type { CreateTicketInput, TicketListFilters, UpdateTicketInput } from "../../tickets/types.js";
 import { validateAssignee, validateAuthor } from "../../tickets/validate.js";
-import { validateBranchName } from "../../tickets/git-validation.js";
 import { getDeploymentsByTicketId } from "../../registry/index.js";
-import { getBranchPattern, listRepos, loadRepoEntry, resolveProject } from "../../repos.js";
+import { listRepos, resolveProject } from "../../repos.js";
 
 const BOARD_DEFAULT_EXCLUDE_TAGS = ["backlog", "archived"];
 const BOARD_DEFAULT_EXCLUDE_TYPES: TicketListFilters["excludeTypes"] = ["fyi", "work-report"];
@@ -48,6 +47,9 @@ export function ticketRoutes(store = new TicketStore(), resolveMutationContext: 
       return c.json({ error: "Invalid JSON body", code: "BAD_REQUEST" }, 400);
     }
     const actor = body.actor ?? "api";
+    if (body.linkedBranches?.length) {
+      return c.json({ error: "Linked branches must be added through ticket update add_linked_branch after ticket creation", code: "BAD_REQUEST" }, 400);
+    }
     const { actor: _actor, team, ...input } = body;
     if (!input.assignee && team) input.assignee = team;
     if (!input.assignee) return c.json({ error: "assignee is required, team field is deprecated", code: "BAD_REQUEST" }, 400);
@@ -90,19 +92,7 @@ export function ticketRoutes(store = new TicketStore(), resolveMutationContext: 
     }
     try {
       const ticket = store.update(c.req.param("id"), input, actor, resolveMutationContext(c));
-      const result: Record<string, unknown> = { ticket };
-      if (input.add_linked_branch) {
-        const repoEntry = loadRepoEntry(input.add_linked_branch.repo);
-        if (repoEntry) {
-          const pattern = getBranchPattern(repoEntry);
-          if (!validateBranchName(input.add_linked_branch.branch, pattern)) {
-            result.warning = `Branch name '${input.add_linked_branch.branch}' does not match the configured pattern '${pattern}'`;
-          }
-        } else {
-          result.warning = `Repo key '${input.add_linked_branch.repo}' not found; branch-name validation skipped`;
-        }
-      }
-      return c.json(result);
+      return c.json({ ticket });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return c.json({ error: message, code: message.includes("not found") ? "NOT_FOUND" : "UPDATE_FAILED" }, message.includes("not found") ? 404 : 400);

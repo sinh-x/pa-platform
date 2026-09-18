@@ -935,6 +935,17 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     assert.match(help.stdout.join("\n"), /--dry-run/);
     assert.match(help.stdout.join("\n"), /--force/);
     assert.doesNotMatch(help.stdout.join("\n"), /--interactive|--direct/);
+    const ppaHelp = capture();
+    assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: ppaHelp.io }), 0);
+    const ppaText = ppaHelp.stdout.join("\n");
+    assert.match(ppaText, /Treehouse builder workflow/);
+    assert.match(ppaText, /operator-prepared launch omits --repo from the exact leased CWD/);
+    assert.match(ppaText, /one live builder per repository\/ticket and at most four live ticket builders/);
+    assert.match(ppaText, /direct background builder\/implement/);
+    assert.match(ppaText, /standalone implement must start from the free matching leased checkout with --repo omitted/);
+    assert.match(ppaText, /fresh interactive Sinh approval.*durable ticket comment.*conditional non-force return/);
+    assert.doesNotMatch(ppaText, /ppa worktree|worktree (?:create|list|show|remove|return|prune|destroy)/);
+    assert.match(ppaText, /does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox/);
 
     const missing = capture();
     assert.equal(await runCoreCommand(["deploy", "builder"], { io: missing.io }), 1);
@@ -2246,6 +2257,37 @@ test("ticket update --help shows usage and returns exit 0 without touching store
     assert.match(help.stdout.join("\n"), /--title <text>/);
     assert.match(help.stdout.join("\n"), /Examples:/);
     assert.equal(help.stderr.length, 0);
+  });
+});
+
+test("ticket --linked-branch stores planned intent, promotes the same entry, and projects evidence", async () => {
+  await withCliEnv(async (root) => {
+    const repo = join(root, "repo");
+    writeFileSync(join(repo, "README.md"), "# CLI branch test\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Branch lifecycle", "--type", "feature", "--priority", "high", "--estimate", "M", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+
+    const planned = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-cli"], { io: planned.io }), 0);
+    assert.equal(new TicketStore().get("PAP-001")?.linkedBranches[0]?.state, "planned");
+    assert.equal(execFileSync("git", ["branch", "--list", "feature/PAP-001-cli"], { cwd: repo, encoding: "utf-8" }).trim(), "");
+
+    execFileSync("git", ["branch", "feature/PAP-001-cli", "develop"], { cwd: repo, stdio: "ignore" });
+    const promoted = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-cli"], { io: promoted.io }), 0);
+    const materialized = new TicketStore().get("PAP-001")?.linkedBranches[0];
+    assert.equal(materialized?.state, "materialized");
+    assert.match(materialized?.baseSha ?? "", /^[0-9a-f]{40}$/);
+    assert.match(materialized?.headSha ?? "", /^[0-9a-f]{40}$/);
+
+    const show = capture();
+    assert.equal(await runCoreCommand(["ticket", "show", "PAP-001"], { io: show.io }), 0);
+    assert.match(show.stdout.join("\n"), /Linked branches: pa-platform\|feature\/PAP-001-cli \[materialized\] base=[0-9a-f]{40} head=[0-9a-f]{40}/);
+
+    const callerSha = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", `pa-platform|feature/PAP-001-cli|${"a".repeat(40)}`], { io: callerSha.io }), 1);
+    assert.match(callerSha.stderr.join("\n"), /Expected exactly: repo\|branch/);
   });
 });
 

@@ -2,11 +2,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, appendActivityEvent, assertRepositoryGitIdentity, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, normalizeRogueOneDeployRequest, reconcileTerminalRegistryEvent, registerRepositoryMutationBorrower, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendActivityEvent, assertRepositoryGitIdentity, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
+import { TreehouseClient } from "./treehouse.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -17,10 +18,14 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
   return { binary: "pi", args };
 };
 
+export interface PiDeployDependencies {
+  readonly treehouse?: TreehouseClient;
+}
+
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter()): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
-export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
+export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
@@ -47,10 +52,84 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const provider = runtimeConfig.provider;
   const model = runtimeConfig.model;
   const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
+  let activeTicketSlot: RepositoryTicketSlotHandoff | undefined;
+  let treehouseEvidence: TreehouseLaunchEvidence | undefined;
+  let planningCwd = process.cwd();
+  let planningRequest = request;
   let plan: ExecutionPlan;
   try {
+    const builderMode = !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
+      ? mode.id
+      : undefined;
+    if (builderMode === "orchestrator" || builderMode === "implement") {
+      const ticketId = request.ticket!;
+      const parent = builderMode === "implement" ? inheritedAttempt : undefined;
+      if (parent && request.background !== true) throw new Error(parentAdmissionDiagnostic("a parented implement launch must be direct background mode"));
+      const initialRepository = resolveRepoExecutionPath(request.repo, process.cwd(), { allowLinkedWorktreeCwd: request.repo === undefined });
+      const ticket = new TicketStore().get(ticketId);
+      if (!ticket) throw new Error(`Condition: Treehouse ticket checkout admission. Source: durable ticket store. Reason: ticket ${ticketId} does not exist. Correction: restore the exact ticket and linked-branch evidence. Resume Action: retry before Treehouse acquisition.`);
+      requireTicketLinkedBranch(ticket, initialRepository.repoKey);
+      const ownsTicketSlot = builderMode === "orchestrator" || !parent;
+      if (ownsTicketSlot) {
+        const slotAcquisition = acquireRepositoryTicketSlot({
+          canonicalRepoKey: initialRepository.repoKey,
+          canonicalRepoRoot: initialRepository.repoRoot,
+          ticket: ticketId,
+          deploymentId,
+          deploymentDirectory: deployDir,
+          force: request.force,
+        });
+        if (slotAcquisition.status === "rejected") throw new Error(slotAcquisition.diagnostic);
+        activeTicketSlot = {
+          canonicalRepoKey: initialRepository.repoKey,
+          canonicalRepoRoot: initialRepository.repoRoot,
+          ticket: ticketId,
+          slotToken: slotAcquisition.slot.slotToken,
+          slotId: slotAcquisition.slot.slotId,
+          repositoryPermit: slotAcquisition.slot.repositoryPermit,
+        };
+      }
+      const treehouse = dependencies.treehouse ?? new TreehouseClient();
+      if (builderMode === "implement" && (request.repo !== undefined || initialRepository.worktreeKind !== "linked" || initialRepository.worktreeRoot !== planningCwd)) {
+        throw new Error(parent ? parentAdmissionDiagnostic("the direct child was not launched from the parent's exact linked Treehouse CWD") : standaloneAdmissionDiagnostic("standalone implement must be launched from the authenticated linked Treehouse CWD; canonical root and explicit --repo inputs are forbidden"));
+      }
+      const lease = builderMode === "orchestrator" && initialRepository.worktreeKind !== "linked"
+        ? treehouse.acquireOrReuse(initialRepository.repoRoot, initialRepository.repoKey, ticketId)
+        : treehouse.authenticatePrepared(initialRepository.repoRoot, initialRepository.repoKey, ticketId, planningCwd);
+      const selectedRepository = resolveRepoExecutionPath(undefined, lease.path, { allowLinkedWorktreeCwd: true });
+      if (selectedRepository.repoKey !== initialRepository.repoKey || selectedRepository.repoRoot !== initialRepository.repoRoot || selectedRepository.worktreeRoot !== lease.path || selectedRepository.worktreeKind !== "linked") {
+        throw new Error("Condition: Treehouse ticket checkout admission. Source: registered physical Git identity. Reason: selected lease path does not authenticate as the exact linked worktree for the canonical repository. Correction: preserve the lease and reconcile path/top-level/Git-dir/common-dir/worktree membership. Resume Action: retry only with the sole matching physical checkout.");
+      }
+      const branchEvidence = builderMode === "orchestrator"
+        ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId })
+        : refreshTicketLinkedBranchHead({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId });
+      const parentSlot = parent ? authenticateParentTreehouse(parent, {
+        ticketId, repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot,
+        leaseId: lease.leaseId, leaseHolder: lease.leaseHolder, branch: branchEvidence.branch,
+        baseSha: branchEvidence.baseSha, headSha: branchEvidence.headSha!,
+      }) : undefined;
+      const slotId = activeTicketSlot?.slotId ?? parentSlot!.slotId;
+      const repositoryPermit = activeTicketSlot?.repositoryPermit ?? parentSlot!.repositoryPermit;
+      treehouseEvidence = Object.freeze({
+        authority: builderMode === "orchestrator" ? "orchestrator" : parent ? "parented-implement" : "standalone-implement",
+        ...(parent ? { parentDeploymentId: parent.parentDeploymentId } : {}),
+        ticket: ticketId,
+        path: lease.path,
+        leaseId: lease.leaseId,
+        leaseHolder: lease.leaseHolder,
+        branch: branchEvidence.branch,
+        branchState: "materialized",
+        ...(branchEvidence.baseSha ? { baseSha: branchEvidence.baseSha } : {}),
+        headSha: branchEvidence.headSha!,
+        ticketSlotId: slotId,
+        repositoryPermit,
+      });
+      planningCwd = lease.path;
+      const { repo: _explicitRepo, ...requestWithoutRepo } = request;
+      planningRequest = requestWithoutRepo;
+    }
     plan = resolveExecutionPlan({
-      request: { ...request, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      request: { ...planningRequest, ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
       teamConfig: team,
       mode,
       runtime: "pi",
@@ -60,10 +139,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       environment: requestedEnvironment,
       timeoutSeconds: timeout.timeout,
       trustedExtensionPath: resolve(dirname(fileURLToPath(import.meta.url)), "pi-extension/index.js"),
+      cwd: planningCwd,
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
+      ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
     });
   } catch (error) {
-    const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), requestedEnvironment, 2000);
+    let cleanupFailure: string | undefined;
+    if (activeTicketSlot) {
+      const cleanup = releaseRepositoryTicketSlot(activeTicketSlot);
+      if (cleanup.status === "released" || cleanup.status === "absent") activeTicketSlot = undefined;
+      else cleanupFailure = `matching ticket-slot cleanup failed (${cleanup.status})`;
+    }
+    const raw = `${error instanceof Error ? error.message : String(error)}${cleanupFailure ? `; ${cleanupFailure}` : ""}`;
+    const rawReason = boundedDiagnostic(raw, requestedEnvironment, 2000);
     const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), paths.activityLogPath);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
@@ -81,11 +169,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     toolReference = adapter.describeTools();
   } catch (error) {
-    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+    let detail = error instanceof Error ? error.message : String(error);
+    if (activeTicketSlot) {
+      const cleanup = releaseRepositoryTicketSlot(activeTicketSlot);
+      if (cleanup.status === "released" || cleanup.status === "absent") activeTicketSlot = undefined;
+      else detail += `; matching ticket-slot cleanup failed (${cleanup.status})`;
+    }
+    const reason = boundedDiagnostic(detail, env, 2000);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan): void => {
-    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     writeFileSync(primerPath, primer, "utf8");
   };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
@@ -102,9 +196,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath);
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
-  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string } | undefined;
+  let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string; ticketSlot?: RepositoryTicketSlotHandoff } | undefined;
+  let terminalBranchEvidence: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string } | undefined;
   let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
   const finalizeActiveRepositoryAuthority = async (): Promise<string | undefined> => {
+    const failures: string[] = [];
+    if (plan.treehouse && plan.ticket) {
+      try {
+        const refreshed = refreshTicketLinkedBranchHead({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ticketId: plan.ticket });
+        terminalBranchEvidence = { branchState: "materialized", ...(refreshed.baseSha ? { branchBaseSha: refreshed.baseSha } : {}), branchHeadSha: refreshed.headSha! };
+      } catch (error) {
+        failures.push(`ticket head refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const borrowed = activeRepositoryBorrower;
     if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
@@ -116,27 +220,26 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         deploymentId: borrowed.deploymentId,
       });
       switch (finalization.status) {
-        case "finalized":
-          activeRepositoryBorrower = undefined;
-          break;
+        case "finalized": activeRepositoryBorrower = undefined; break;
         case "scope-noncompliant":
           activeRepositoryBorrower = undefined;
-          return formatRepositoryBorrowerDiagnostic({ category: "approved-path-containment", reason: "the complete final Git state contains a path or branch outside Sinh's exact approved scope", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+          failures.push(formatRepositoryBorrowerDiagnostic({ category: "approved-path-containment", reason: "the complete final Git state contains a path or branch outside Sinh's exact approved scope", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
+          break;
         case "uncertain-live":
-          return formatRepositoryBorrowerDiagnostic({ category: "uncertain-live", reason: "borrower finalization was withheld because the transferred runner remains live or its death is unverifiable", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+          failures.push(formatRepositoryBorrowerDiagnostic({ category: "uncertain-live", reason: "borrower finalization was withheld because the transferred runner remains live or its death is unverifiable", canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
+          break;
         case "absent":
         case "invalid-evidence":
         case "token-mismatch":
-          return formatRepositoryBorrowerDiagnostic({ category: `finalization-${finalization.status}`, reason: `matching borrower finalization did not complete (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+          failures.push(formatRepositoryBorrowerDiagnostic({ category: `finalization-${finalization.status}`, reason: `matching borrower finalization did not complete (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
+          break;
       }
     }
     const owned = activeRepositoryLease;
     if (owned) {
       const finalization = await finalizeRepositoryMutationLease(owned);
       switch (finalization.status) {
-        case "released":
-          activeRepositoryLease = undefined;
-          break;
+        case "released": activeRepositoryLease = undefined; break;
         case "absent":
         case "invalid-evidence":
         case "token-mismatch":
@@ -144,10 +247,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         case "borrower-invalid":
         case "transferred":
         case "updated":
-          return formatRepositoryBorrowerDiagnostic({ category: `owner-finalization-${finalization.status}`, reason: finalization.diagnostic ?? `matching parent lease finalization did not release authority (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot });
+          failures.push(formatRepositoryBorrowerDiagnostic({ category: `owner-finalization-${finalization.status}`, reason: finalization.diagnostic ?? `matching parent lease finalization did not release authority (${finalization.status})`, canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot }));
+          break;
       }
     }
-    return undefined;
+    if (activeTicketSlot) {
+      const result = releaseRepositoryTicketSlot(activeTicketSlot);
+      if (result.status === "released" || result.status === "absent") activeTicketSlot = undefined;
+      else failures.push(`Condition: repository ticket concurrency finalization. Source: matching PA ticket slot. Reason: cleanup did not complete (${result.status}). Correction: preserve Treehouse lease and branch. Resume Action: reconcile only the matching slot token before another launch.`);
+    }
+    return failures.length > 0 ? boundedDiagnostic(failures.join("; "), env, 2000) : undefined;
   };
   const acceptRepositoryAuthorityHandoff = (metadata: Record<string, unknown> | undefined): void => {
     if (activeRepositoryBorrower) {
@@ -156,10 +265,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
     if (activeRepositoryLease) {
       if (metadata?.["repositoryLeaseTransferred"] !== true) throw new Error("runner-readiness: background supervisor did not authenticate repository ownership transfer");
+      if (activeRepositoryLease.ticketSlot) activeTicketSlot = undefined;
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     const containmentFailure = await finalizeActiveRepositoryAuthority();
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
@@ -167,8 +277,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const consistentExitCode = resolvedTerminalStatus === "failed" ? exitCode || 1 : exitCode;
     const timestamp = new Date().toISOString();
     const requested: RegistryEvent = kind === "completed"
-      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status: resolvedTerminalStatus, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode }
-      : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode };
+      ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp, status: resolvedTerminalStatus, summary: safeReason, ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), exit_code: consistentExitCode, ...registryCorrelation(plan, terminalBranchEvidence) }
+      : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode, ...registryCorrelation(plan, terminalBranchEvidence) };
     // Reconcile every terminal observation so a later causal failure can replace
     // success/partial while an existing failure remains sticky and exactly once.
     const authoritative = reconcileTerminalRegistryEvent(requested).event;
@@ -258,7 +368,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       });
       if (acquisition.status === "rejected") return completeFailure(acquisition.diagnostic);
       plan = withAuthoritativeRepositoryAdmission(plan, acquisition.lease.preLaunchGitSnapshot);
-      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir, ownershipToken: acquisition.lease.ownershipToken };
+      activeRepositoryLease = { canonicalRepoRoot: plan.repoRoot, ...(plan.worktreeRoot !== plan.repoRoot ? { worktreeRoot: plan.worktreeRoot, slot: plan.repositoryAdmission.slot } : {}), repositoryGitDir: plan.repositoryGitDir, repositoryGitCommonDir: plan.repositoryGitCommonDir, ownershipToken: acquisition.lease.ownershipToken, ...(activeTicketSlot ? { ticketSlot: activeTicketSlot } : {}) };
       // Keep the ownership capability in this trusted launcher closure only.
       // The Pi model and every tool/child environment authenticate nested direct
       // borrowing through the process-verified launcher lineage instead.
@@ -312,6 +422,12 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         }));
       }
     } else if (activeRepositoryLease) {
+      if (plan.treehouse && plan.ticket) {
+        const refreshed = refreshTicketLinkedBranchHead({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ticketId: plan.ticket });
+        if (refreshed.baseSha !== plan.treehouse.baseSha || refreshed.headSha !== plan.treehouse.headSha) {
+          throw new Error("Treehouse launch evidence drifted after immutable planning; PA ownership was finalized and no runtime was started");
+        }
+      }
       let stable = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         writePrimer(plan);
@@ -320,6 +436,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         if (repositoryGitSnapshotsEqual(expected, observed)) {
           stable = true;
           break;
+        }
+        if (plan.treehouse) {
+          throw new Error("Treehouse checkout branch, HEAD, or porcelain-v2 bytes changed after immutable planning; PA ownership was finalized and no runtime was started");
         }
         if (plan.repositoryAdmission.launchMode === "background" && observed.dirty && plan.repositoryKind === "primary") {
           throw new Error(formatDirtyBackgroundBuilderDiagnostic({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, team: team.name, mode: plan.mode, runtime: "pi", snapshot: observed, ...(plan.ticket ? { ticket: plan.ticket } : {}) }));
@@ -434,6 +553,70 @@ function inheritedAdmissionFailure(reason: string, canonicalRepoKey: string, can
     canonicalRepoKey,
     canonicalRepoRoot,
   });
+}
+
+function deploymentCorrelation(plan: ExecutionPlan): {
+  parentDeploymentId?: string; builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
+  treehousePath?: string; treehouseLeaseId?: string; treehouseLeaseHolder?: string; branchState?: "materialized";
+  branchBaseSha?: string; branchHeadSha?: string; ticketSlotId?: string; repositoryPermit?: 1 | 2 | 3 | 4;
+} {
+  const evidence = plan.treehouse;
+  return evidence ? {
+    ...(evidence.parentDeploymentId ? { parentDeploymentId: evidence.parentDeploymentId } : {}),
+    builderAuthority: evidence.authority, treehousePath: evidence.path, treehouseLeaseId: evidence.leaseId,
+    treehouseLeaseHolder: evidence.leaseHolder, branchState: evidence.branchState, branchBaseSha: evidence.baseSha,
+    branchHeadSha: evidence.headSha, ticketSlotId: evidence.ticketSlotId, repositoryPermit: evidence.repositoryPermit,
+  } : {};
+}
+
+function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string }): Pick<RegistryEvent,
+  "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
+  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
+> {
+  const evidence = plan.treehouse;
+  return evidence ? {
+    parent_deployment_id: evidence.parentDeploymentId, builder_authority: evidence.authority,
+    treehouse_path: evidence.path, treehouse_lease_id: evidence.leaseId, treehouse_lease_holder: evidence.leaseHolder,
+    branch_state: terminal?.branchState ?? evidence.branchState, branch_base_sha: terminal?.branchBaseSha ?? evidence.baseSha,
+    branch_head_sha: terminal?.branchHeadSha ?? evidence.headSha, ticket_slot_id: evidence.ticketSlotId,
+    repository_permit: evidence.repositoryPermit,
+  } : {};
+}
+
+function authenticateParentTreehouse(
+  parent: { parentDeploymentId: string; parentDeploymentDirectory: string },
+  expected: { ticketId: string; repoKey: string; repoRoot: string; worktreeRoot: string; leaseId: string; leaseHolder: string; branch: string; baseSha?: string; headSha: string },
+): { slotId: string; repositoryPermit: 1 | 2 | 3 | 4 } {
+  const status = queryDeploymentStatus(parent.parentDeploymentId);
+  const permitText = process.env["PA_REPOSITORY_PERMIT"] ?? "";
+  const permit = Number(permitText);
+  const slotId = process.env["PA_TICKET_SLOT"] ?? "";
+  const exact = status?.status === "running"
+    && status.team === "builder" && status.mode === "orchestrator" && status.ticket_id === expected.ticketId
+    && status.repo_root === expected.repoRoot && status.worktree_root === expected.worktreeRoot
+    && status.builder_authority === "orchestrator"
+    && status.treehouse_path === expected.worktreeRoot && status.treehouse_lease_id === expected.leaseId
+    && status.treehouse_lease_holder === expected.leaseHolder && status.branch_state === "materialized"
+    && status.branch_base_sha === expected.baseSha && status.branch_head_sha === expected.headSha
+    && status.ticket_slot_id === slotId && status.repository_permit === permit
+    && process.env["PA_TICKET_ID"] === expected.ticketId && process.env["PA_REPO"] === expected.repoRoot
+    && process.env["PA_WORKTREE_ROOT"] === expected.worktreeRoot && process.env["PA_TREEHOUSE_LEASE_ID"] === expected.leaseId
+    && process.env["PA_TREEHOUSE_LEASE_HOLDER"] === expected.leaseHolder
+    && process.env["PA_TICKET_SLOT"] === `pa:${expected.repoKey}:${expected.ticketId}`
+    && process.env["PA_REPOSITORY_PERMIT"] === String(permit)
+    && status.branch_head_sha === expected.headSha;
+  if (!exact || (permit !== 1 && permit !== 2 && permit !== 3 && permit !== 4)) {
+    throw new Error(parentAdmissionDiagnostic(`parent ${parent.parentDeploymentId} registry, Treehouse, ticket, branch, Git HEAD, slot, permit, or inherited environment evidence did not match exactly`));
+  }
+  return { slotId, repositoryPermit: permit };
+}
+
+function parentAdmissionDiagnostic(reason: string): string {
+  return `Condition: parented implement admission. Source: process-verified parent lease plus registry, Treehouse, ticket, branch, Git, slot, and permit evidence. Reason: ${reason}. Correction: preserve the parent checkout and reconcile the parent-addressed evidence without spawning Pi. Resume Action: the live orchestrator must retry one direct background implement after exact evidence agrees.`;
+}
+
+function standaloneAdmissionDiagnostic(reason: string): string {
+  return `Condition: standalone implement admission. Source: authenticated free Treehouse checkout and atomic repository permit. Reason: ${reason}. Correction: preserve the lease and enter the exact matching physical ticket checkout. Resume Action: retry only when no live ticket/worktree owner exists and a permit is available.`;
 }
 
 function inheritedParentContext(): { parentDeploymentId: string; parentDeploymentDirectory: string } | undefined {

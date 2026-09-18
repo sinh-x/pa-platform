@@ -4,6 +4,7 @@ import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
+import type { TreehouseLaunchEvidence } from "../deploy/plan.js";
 import type { ToolReference } from "../runtime-api/types.js";
 import { isRogueOneTeam, rogueOneAuditNotice, type DeploymentInvocationChannel } from "../deploy/rogue-one.js";
 
@@ -26,6 +27,7 @@ export interface GeneratePrimerOptions {
   extraInstructions?: string;
   repository?: PrimerRepositoryContext;
   repositoryAdmission?: RepositoryAdmissionEvidence;
+  treehouse?: TreehouseLaunchEvidence;
   toolReference?: ToolReference;
   rogueOne?: boolean;
   invocationChannel?: DeploymentInvocationChannel;
@@ -42,7 +44,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
   const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
-  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission);
+  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission, options.treehouse);
 
   const body = [
     `# PA Deployment Primer`,
@@ -135,6 +137,7 @@ function renderAdditionalInstructions(
   extraInstructions: string | undefined,
   repository: PrimerRepositoryContext | undefined,
   repositoryAdmission: RepositoryAdmissionEvidence | undefined,
+  treehouse: TreehouseLaunchEvidence | undefined,
 ): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
@@ -142,7 +145,8 @@ function renderAdditionalInstructions(
   const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
-  return ["## Additional Instructions", objective, repositoryEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  const treehouseEvidence = renderTreehouseLaunchEvidence(treehouse);
+  return ["## Additional Instructions", objective, repositoryEvidence, treehouseEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
@@ -153,6 +157,25 @@ function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmiss
     `- Slot: ${repositoryAdmission.slot ?? "implement"}`,
     `- Git: branch=${snapshot.branch}, head=${snapshot.head}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
     "- Recovery: preserve the recorded branch and files; on identity, slot, or snapshot drift, stop before spawn and retry only after the blocking evidence is reconciled.",
+  ].join("\n");
+}
+
+function renderTreehouseLaunchEvidence(treehouse: TreehouseLaunchEvidence | undefined): string | undefined {
+  if (!treehouse) return undefined;
+  return [
+    "### Immutable Treehouse Ticket Checkout Evidence",
+    `- Authority: ${treehouse.authority}${treehouse.parentDeploymentId ? `, parent=${treehouse.parentDeploymentId}` : ""}`,
+    `- Ticket: ${treehouse.ticket}`,
+    `- Path: ${treehouse.path}`,
+    `- Lease: id=${treehouse.leaseId}, holder=${treehouse.leaseHolder}`,
+    `- Branch: ${treehouse.branch}, state=${treehouse.branchState}, base=${treehouse.baseSha ?? "unknown"}, head=${treehouse.headSha}`,
+    `- Concurrency: ticket_slot=${treehouse.ticketSlotId}, repository_permit=${treehouse.repositoryPermit}`,
+    "- Automatic PA finalization: the matching ticket/worktree slot, repository permit, mutation lease, and borrower evidence finalize on verified terminal handling; the Treehouse lease and branch remain preserved.",
+    "### Explicit Treehouse Return Contract",
+    "Treehouse return is never automatic. Before one return attempt, prove there is no live PA owner and the checkout is clean with all work committed, then display and re-check the exact repository key/root, ticket, path, branch, full HEAD, lease ID, and lease holder shown above.",
+    "Ask Sinh interactively for fresh approval of those exact displayed identities. After approval, first persist a durable ticket comment recording the approval and identities; if that comment fails, do not invoke Treehouse.",
+    `Only after the comment succeeds, run exactly one conditional non-force command: \`treehouse return --if-lease-id ${treehouse.leaseId} --if-lease-holder ${treehouse.leaseHolder} ${treehouse.path}\``,
+    "Never add --force, merge, rebase, delete the branch, prune, destroy, or claim sandboxing/automatic cleanup. Missing approval, live ownership, dirty/uncommitted state, identity drift, comment failure, or nonzero return preserves the lease and must be reported as the blocker.",
   ].join("\n");
 }
 
@@ -794,6 +817,10 @@ export const PA_ENV_KEYS = [
   "PA_TICKET_ID",
   "PA_REPO",
   "PA_WORKTREE_ROOT",
+  "PA_TREEHOUSE_LEASE_ID",
+  "PA_TREEHOUSE_LEASE_HOLDER",
+  "PA_TICKET_SLOT",
+  "PA_REPOSITORY_PERMIT",
   "PA_PROVIDER",
   "PA_MODEL",
   "PA_TEAM_MODEL",

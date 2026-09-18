@@ -45,8 +45,8 @@ test("registry appends WAL-backed events and materializes deployment status", ()
   const previous = process.env["PA_REGISTRY_DB"];
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   try {
-    appendRegistryEvent({ deployment_id: "d-test", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T10:00:00Z", agents: ["team-manager"], runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200, repo: "/worktree", repo_root: "/primary", worktree_root: "/worktree", repository_slot: "implement" });
-    appendRegistryEvent({ deployment_id: "d-test", team: "builder", event: "completed", timestamp: "2026-04-26T10:01:00Z", status: "success", summary: "ok" });
+    appendRegistryEvent({ deployment_id: "d-test", team: "builder", mode: "implement", event: "started", timestamp: "2026-04-26T10:00:00Z", agents: ["team-manager"], runtime: "opencode", binary: "opa", effective_timeout_seconds: 1200, repo: "/worktree", repo_root: "/primary", worktree_root: "/worktree", repository_slot: "implement", parent_deployment_id: "d-a1b2c3", builder_authority: "parented-implement", treehouse_path: "/worktree", treehouse_lease_id: "lease-1", treehouse_lease_holder: "pa:registered:PAP-1", branch_state: "materialized", branch_base_sha: "a".repeat(40), branch_head_sha: "b".repeat(40), ticket_slot_id: "pa:registered:PAP-1", repository_permit: 2 });
+    appendRegistryEvent({ deployment_id: "d-test", team: "builder", event: "completed", timestamp: "2026-04-26T10:01:00Z", status: "success", summary: "ok", branch_state: "materialized", branch_base_sha: "a".repeat(40), branch_head_sha: "c".repeat(40) });
     const events = getDeploymentEvents("d-test");
     assert.equal(events.length, 2);
     assert.equal(events[0]?.effective_timeout_seconds, 1200);
@@ -56,6 +56,7 @@ test("registry appends WAL-backed events and materializes deployment status", ()
     assert.equal(status?.effective_timeout_seconds, 1200);
     assert.equal(status?.mode, "implement");
     assert.deepEqual({ repo: status?.repo, repoRoot: status?.repo_root, worktreeRoot: status?.worktree_root, slot: status?.repository_slot }, { repo: "/worktree", repoRoot: "/primary", worktreeRoot: "/worktree", slot: "implement" });
+    assert.deepEqual({ parent: status?.parent_deployment_id, authority: status?.builder_authority, path: status?.treehouse_path, lease: status?.treehouse_lease_id, holder: status?.treehouse_lease_holder, state: status?.branch_state, base: status?.branch_base_sha, head: status?.branch_head_sha, ticketSlot: status?.ticket_slot_id, permit: status?.repository_permit }, { parent: "d-a1b2c3", authority: "parented-implement", path: "/worktree", lease: "lease-1", holder: "pa:registered:PAP-1", state: "materialized", base: "a".repeat(40), head: "c".repeat(40), ticketSlot: "pa:registered:PAP-1", permit: 2 });
   } finally {
     closeDb();
     if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
@@ -247,7 +248,11 @@ test("registry migration preserves legacy deployments without timeout metadata",
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
     assert.equal(eventColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
     assert.equal(deploymentColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "12" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "13" });
+    for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
+      assert.equal(eventColumns.some((entry) => entry.name === column), true);
+      assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
+    }
 
     const status = queryDeploymentStatus("d-legacy");
     assert.equal(status?.status, "running");

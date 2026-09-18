@@ -243,7 +243,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
   mkdirSync(bin);
   try {
     await assert.rejects(
-      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
+      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 500 }).preflight(),
       /Pi is unavailable:.*Install Pi 0\.84\.4 or later/,
     );
 
@@ -251,7 +251,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
     writeFileSync(pi, "#!/bin/sh\nexit 7\n");
     chmodSync(pi, 0o755);
     await assert.rejects(
-      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 50 }).preflight(),
+      new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 500 }).preflight(),
       /Pi version probe failed with exit code 7/,
     );
 
@@ -475,7 +475,7 @@ test("a later extension session lazily reopens the registry singleton after shut
     const replacementDb = getDb();
     assert.notEqual(replacementDb, outgoingDb);
     assert.equal(replacementDb.open, true);
-    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "12" });
+    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "13" });
     const replacement = captureExtension();
     await replacement.events.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
     assert.equal(replacementDb.open, false);

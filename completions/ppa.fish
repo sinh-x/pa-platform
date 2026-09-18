@@ -509,7 +509,7 @@ complete -c ppa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subco
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref -d 'Add doc reference' -r
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l doc-ref-primary -d 'Make doc-ref primary'
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-doc-ref -d 'Remove doc reference' -r
-complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l linked-branch -d 'Link branch repo|branch|sha' -r
+complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l linked-branch -d 'Plan or authenticate branch repo|branch' -r
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l linked-commit -d 'Link commit repo|sha|message|author|timestamp' -r
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-branch -d 'Remove linked branch' -r
 complete -c ppa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l remove-linked-commit -d 'Remove linked commit' -r

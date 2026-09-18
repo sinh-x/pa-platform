@@ -87,7 +87,7 @@ function printTicketUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  --description <text>        New description");
   io.stdout("  --doc-ref <type:path>       Add a doc_ref (optionally --doc-ref-primary)");
   io.stdout("  --remove-doc-ref <path>      Remove a doc_ref by path");
-  io.stdout("  --linked-branch <repo|branch|sha> Add a linked branch");
+  io.stdout("  --linked-branch <repo|branch> Add planned intent or authenticated materialized evidence");
   io.stdout("  --remove-linked-branch <repo> Remove a linked branch by repo");
   io.stdout("  --linked-commit <repo|sha|msg|author|ts> Add a linked commit");
   io.stdout("  --remove-linked-commit <sha> Remove a linked commit by sha");
@@ -387,11 +387,11 @@ function availableProjectGuidance(): string {
   return available ? ` Available projects: ${available}` : "";
 }
 
-function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; archive?: boolean; warnings?: string[] } | { error: string } {
+function parseTicketUpdateArgs(argv: string[]): { input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string }; actor: string; archive?: boolean; warnings?: string[] } | { error: string } {
   const result = parseTicketUpdateFlagPairs(argv);
   if ("error" in result) return result;
   const values = result.values;
-  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string; sha?: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
+  const input: { status?: TicketStatus; assignee?: string; priority?: TicketPriority; tags?: string[]; blockedBy?: string[]; estimate?: Estimate; title?: string; summary?: string; description?: string; add_doc_ref?: { path: string; type?: string; primary?: boolean }; remove_doc_ref?: string; add_linked_branch?: { repo: string; branch: string }; remove_linked_branch?: string; add_linked_commit?: { repo: string; sha: string; message?: string; author?: string; timestamp?: string }; remove_linked_commit?: string } = {};
   if (values["--status"]) input.status = values["--status"] as TicketStatus;
   if (values["--assignee"]) input.assignee = values["--assignee"];
   if (values["--priority"]) input.priority = values["--priority"] as TicketPriority;
@@ -659,10 +659,10 @@ function parseDocRefFlag(value: string): { path: string; type?: string; primary?
   return { path: value };
 }
 
-function parseLinkedBranchFlag(value: string): { repo: string; branch: string; sha?: string } {
+function parseLinkedBranchFlag(value: string): { repo: string; branch: string } {
   const parts = value.split("|");
-  if (parts.length < 2) throw new Error(`Invalid --linked-branch format "${value}". Expected: repo|branch|sha`);
-  return { repo: parts[0]!, branch: parts.length > 2 ? parts.slice(1, -1).join("|") : parts.slice(1).join("|"), sha: parts.length > 2 ? parts.at(-1) : undefined };
+  if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error(`Invalid --linked-branch format "${value}". Expected exactly: repo|branch`);
+  return { repo: parts[0], branch: parts[1] };
 }
 
 function parseLinkedCommitFlag(value: string): { repo: string; sha: string; message?: string; author?: string; timestamp?: string } {

@@ -63,6 +63,9 @@ export class TicketStore {
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
     assertLifecycleOwnership(input.status, context);
+    if (Object.prototype.hasOwnProperty.call(input, "linkedBranches")) {
+      throw new Error("Direct linkedBranches replacement is not allowed. Correction: use add_linked_branch so repository and Git evidence are authenticated.");
+    }
     const current = this.get(id);
     if (!current) throw new Error(`Ticket not found: ${id}`);
     if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
@@ -278,7 +281,7 @@ export class TicketStore {
       tags: (raw["tags"] as string[] | undefined) ?? [],
       blockedBy: (raw["blockedBy"] as string[] | undefined) ?? [],
       doc_refs: normalizeDocRefs((raw["doc_refs"] as DocRef[] | undefined) ?? []),
-      linkedBranches: normalizeLinkedBranches((raw["linkedBranches"] as Ticket["linkedBranches"] | undefined) ?? []),
+      linkedBranches: normalizeLinkedBranches(Array.isArray(raw["linkedBranches"]) ? raw["linkedBranches"] : []),
       linkedCommits: normalizeLinkedCommits((raw["linkedCommits"] as Ticket["linkedCommits"] | undefined) ?? []),
       comments: normalizeComments((raw["comments"] as Comment[] | undefined) ?? []),
       subTickets: normalizeSubTickets((raw["subTickets"] as Ticket["subTickets"] | undefined) ?? []),
@@ -340,8 +343,30 @@ function normalizeSubTickets(subTickets: SubTicket[]): SubTicket[] {
   return subTickets.map((subTicket) => ({ ...subTicket, createdAt: normalizeTimestamp(subTicket.createdAt), updatedAt: normalizeTimestamp(subTicket.updatedAt) }));
 }
 
-function normalizeLinkedBranches(branches: LinkedBranch[]): LinkedBranch[] {
-  return branches.map((branch) => ({ ...branch, linkedAt: normalizeTimestamp(branch.linkedAt) }));
+function normalizeLinkedBranches(branches: unknown[]): LinkedBranch[] {
+  return branches.map((value) => {
+    const branch = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    const legacySha = nonEmptyString(branch["sha"]);
+    const headSha = nonEmptyString(branch["headSha"]) ?? legacySha;
+    const baseSha = nonEmptyString(branch["baseSha"]);
+    const explicitState = branch["state"];
+    const state = explicitState === "planned" || explicitState === "materialized"
+      ? explicitState
+      : headSha ? "materialized" : "planned";
+    return {
+      repo: String(branch["repo"] ?? ""),
+      branch: String(branch["branch"] ?? ""),
+      state,
+      ...(baseSha ? { baseSha } : {}),
+      ...(headSha ? { headSha, sha: headSha } : {}),
+      linkedAt: normalizeTimestamp(branch["linkedAt"]),
+      linkedBy: String(branch["linkedBy"] ?? "pa-core"),
+    };
+  });
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function normalizeLinkedCommits(commits: LinkedCommit[]): LinkedCommit[] {
@@ -382,10 +407,25 @@ function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBra
     if (linkedBranches.length !== before.length) appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
   }
   if (add) {
-    const newBranch = resolveLinkedBranch(add, actor);
-    const before = linkedBranches;
+    const resolvedBranch = resolveLinkedBranch(add, ticket, actor);
+    const repositoryBranches = linkedBranches.filter((branch) => branch.repo === resolvedBranch.repo);
+    const exactMatches = repositoryBranches.filter((branch) => branch.branch === resolvedBranch.branch);
+    if (repositoryBranches.length > exactMatches.length) {
+      throw new Error(`Ambiguous linked-branch evidence for ${id} in "${resolvedBranch.repo}". Correction: remove the other repository branch before linking "${resolvedBranch.branch}".`);
+    }
+    if (exactMatches.length > 1) {
+      throw new Error(`Duplicate linked-branch evidence for ${id}: found ${exactMatches.length} entries for "${resolvedBranch.repo}|${resolvedBranch.branch}". Correction: retain one entry before retrying.`);
+    }
+    const existing = exactMatches[0];
+    if (existing?.state === "planned" && resolvedBranch.state === "planned") {
+      throw new Error(`Duplicate planned linked branch for ${id}: "${resolvedBranch.repo}|${resolvedBranch.branch}" is already recorded. Correction: materialize the branch or keep the existing intent.`);
+    }
+    if (existing?.state === "materialized" && resolvedBranch.state === "planned") {
+      throw new Error(`Authenticated branch "${resolvedBranch.repo}|${resolvedBranch.branch}" disappeared after materialization. Correction: restore or explicitly reconcile the local branch; its materialized evidence was preserved.`);
+    }
+    const newBranch = mergeLinkedBranchEvidence(existing, resolvedBranch);
     linkedBranches = upsertLinkedBranch(linkedBranches, newBranch);
-    appendAudit(id, "branch_link_added", actor, { branch: [before.find((branch) => branch.repo === newBranch.repo && branch.branch === newBranch.branch) ?? null, newBranch] });
+    appendAudit(id, "branch_link_added", actor, { branch: [existing ?? null, newBranch] });
   }
   return linkedBranches === ticket.linkedBranches ? ticket : { ...ticket, linkedBranches };
 }
@@ -406,10 +446,23 @@ function applyLinkedCommitMutation(id: string, ticket: Ticket, add: AddLinkedCom
   return linkedCommits === ticket.linkedCommits ? ticket : { ...ticket, linkedCommits };
 }
 
+function mergeLinkedBranchEvidence(existing: LinkedBranch | undefined, resolved: LinkedBranch): LinkedBranch {
+  if (!existing) return resolved;
+  if (resolved.state !== "materialized" || !resolved.headSha) return existing;
+  const baseSha = existing.state === "materialized" ? existing.baseSha : resolved.baseSha;
+  const { baseSha: _resolvedBaseSha, ...resolvedWithoutBase } = resolved;
+  return {
+    ...resolvedWithoutBase,
+    ...(baseSha ? { baseSha } : {}),
+    linkedAt: existing.linkedAt,
+    linkedBy: existing.linkedBy,
+  };
+}
+
 function upsertLinkedBranch(branches: LinkedBranch[], next: LinkedBranch): LinkedBranch[] {
   const index = branches.findIndex((branch) => branch.repo === next.repo && branch.branch === next.branch);
   if (index < 0) return [...branches, next];
-  return branches.map((branch, i) => (i === index ? { ...branch, ...next } : branch));
+  return branches.map((branch, i) => (i === index ? next : branch));
 }
 
 function upsertLinkedCommit(commits: LinkedCommit[], next: LinkedCommit): LinkedCommit[] {

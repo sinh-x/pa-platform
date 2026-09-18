@@ -3,9 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    properPiExtensions = {
+      url = "github:sharaf-nassar/proper-pi-extensions/859feb321ec81d773beea379d28e21d0b7d0c8c0";
+      flake = false;
+    };
+    piVimMode = {
+      url = "github:pekochan069/pi-vimmode/52bd6ac5e905157ac46ec15c120b7d0cc61a62df";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, properPiExtensions, piVimMode }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
@@ -27,6 +35,26 @@
             "pi-vimmode" = requireBooleanOption "enablePiVimMode" enablePiVimMode;
             "proper-base" = requireBooleanOption "enableProperBase" enableProperBase;
           };
+          baseSource = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: _type:
+              let baseName = builtins.baseNameOf path;
+              in !(builtins.elem baseName [ "node_modules" "dist" ".git" "bundled-editor-factories.ts" ]);
+          };
+          # Git flakes do not materialize gitlink contents. Compose the exact
+          # reviewed commits into the build source so validation still checks
+          # entrypoints, manifests, licenses, and content digests from scratch.
+          composedSource = pkgs.runCommand "pa-platform-source-${packageJson.version}" {} ''
+            mkdir -p $out
+            cp -R ${baseSource}/. $out/
+            chmod -R u+w $out
+            rm -rf $out/packages/pi-pa/vendor/proper-pi-extensions $out/packages/pi-pa/vendor/pi-vimmode
+            mkdir -p $out/packages/pi-pa/vendor/proper-pi-extensions $out/packages/pi-pa/vendor/pi-vimmode
+            cp -R ${properPiExtensions}/. $out/packages/pi-pa/vendor/proper-pi-extensions/
+            cp -R ${piVimMode}/. $out/packages/pi-pa/vendor/pi-vimmode/
+            test -f $out/packages/pi-pa/vendor/proper-pi-extensions/proper-base/index.ts
+            test -f $out/packages/pi-pa/vendor/pi-vimmode/index.ts
+          '';
           runtimePath = pkgs.lib.makeBinPath (with pkgs; [
             bash
             bubblewrap
@@ -41,12 +69,7 @@
           pname = "pa-platform";
           version = packageJson.version;
 
-          src = pkgs.lib.cleanSourceWith {
-            src = ./.;
-            filter = path: _type:
-              let baseName = builtins.baseNameOf path;
-              in !(builtins.elem baseName [ "node_modules" "dist" ".git" "bundled-editor-factories.ts" ]);
-          };
+          src = composedSource;
 
           nativeBuildInputs = with pkgs; [
             nodejs_22

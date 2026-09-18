@@ -27,6 +27,117 @@ Pi provider/model precedence is explicit CLI flags, the selected flat mode pair 
 
 Print, JSON, and RPC execution loads the same extension and commands but does not install an editor, open an overlay, or wait for terminal input. `question` returns a typed `ui_unavailable` result outside TUI mode. PA tools, output bounds, tool-call guards, and terminal result handling remain active.
 
+## Treehouse-backed builder ticket checkouts
+
+PPA uses the pinned Treehouse v2.3.0 CLI as the checkout lifecycle manager while
+PA remains authoritative for ticket branch intent, repository identity, launch
+admission, concurrency, and deployment evidence. PPA intentionally has no
+worktree create/list/return/prune/destroy commands and does not merge, rebase,
+delete branches, clean checkouts, or claim filesystem sandboxing.
+
+### Prepare the ticket branch intent
+
+Record exactly one ticket branch before launch:
+
+```bash
+ppa ticket update PAP-189 --linked-branch 'pa-platform|feature/PAP-189-treehouse-workflow'
+```
+
+If the local branch is absent, this records `planned` intent without changing
+Git. If it exists, PPA records authenticated `materialized` evidence. The same
+ticket entry is promoted during checkout preparation; immutable `baseSha` and
+refreshable authenticated `headSha` remain the sole branch correlation record.
+Legacy linked branches and registry rows remain readable.
+
+### Launch paths
+
+For the canonical path, start the orchestrator from the registered repository
+and identify it explicitly:
+
+```bash
+cd /registered/canonical/repository
+ppa deploy builder --mode orchestrator --ticket PAP-189 --repo pa-platform
+```
+
+PPA atomically reserves the ticket and one of four repository permits before it
+calls Treehouse. It derives holder `pa:pa-platform:PAP-189`, reuses exactly one
+matching lease or runs bounded `treehouse get --lease --lease-holder ... --json`,
+authenticates the returned physical linked worktree, and materializes or selects
+the ticket branch there. Pi's CWD and `PA_WORKTREE_ROOT` are that checkout;
+`PA_REPO` remains the canonical root. Canonical branch, HEAD, and raw
+porcelain-v2 bytes must remain unchanged.
+
+An operator may instead prepare the lease with Treehouse v2.3.0, `cd` to its
+exact physical root, and omit `--repo`:
+
+```bash
+treehouse get --lease --lease-holder pa:pa-platform:PAP-189 --json
+cd /exact/path/reported/by/treehouse
+ppa deploy builder --mode orchestrator --ticket PAP-189
+```
+
+PPA never accepts an explicit worktree path. It requires one matching lease and
+checks path, lease ID, holder, Git top-level, Git dir/common dir, registered
+worktree membership, ticket branch, and HEAD before runtime preflight or spawn.
+Malformed, duplicate, unexpected, truncated, or over-1-MiB JSON fails closed;
+human output is not evidence. A branch/HEAD/status drift or partial failure
+starts no Pi worker, automatically finalizes only matching PA evidence, and
+preserves the Treehouse lease and branch for inspection. Diagnostics name the
+condition, source, reason, correction, and resume action and are bounded to
+2,000 characters.
+
+Only one live builder launch is allowed for a repository/ticket, with at most
+four distinct live ticket builders per canonical repository. Persistent inactive
+Treehouse leases do not consume those four PA permits. A direct parented
+`builder/implement` must be launched in background by its live orchestrator and
+must exactly match the parent's ticket, checkout, lease, branch, Git identity,
+head, slot, and permit. A standalone ticketed `builder/implement` is allowed
+only when launched from the matching free leased checkout, with `--repo`
+omitted and no live owner. Canonical-root, wrong-checkout, duplicate-ticket,
+fifth-ticket, or mismatched-parent attempts fail before Pi spawn. Requirements
+and non-builder modes retain their existing canonical/linked CWD behavior and do
+not enter this ticket-checkout acquisition flow.
+
+Verified success, failure, or crash handling refreshes authenticated `headSha`
+and finalizes PA ticket/worktree slots, permits, mutation leases, and borrowers.
+It never returns the Treehouse checkout.
+
+### Conditional return requires Sinh's fresh approval
+
+Return is a separate operator-approved action, never deploy cleanup. First prove
+there is no live PA owner, Git is clean and committed, and freshly display the
+exact repository key/root, ticket, physical path, branch, full HEAD, lease ID,
+and holder. Ask Sinh interactively for fresh approval of those exact values and
+persist that approval and all identities in a durable ticket comment. If the
+approval, comment, or any identity check is missing or changed, stop and retain
+the lease.
+
+Only after those gates may the agent make one non-force conditional attempt:
+
+```bash
+treehouse return --if-lease-id <exact-lease-id> --if-lease-holder <exact-holder> <exact-physical-path>
+```
+
+Never add `--force`, and never invoke return automatically. A nonzero result
+preserves the lease and is reported as a blocker; PPA provides no lifecycle
+command to retry, prune, or destroy it.
+
+### PAP-189 implementation evidence
+
+| Acceptance criterion | Disposable evidence |
+| --- | --- |
+| AC1 | `linked-branch-lifecycle.test.ts` and `treehouse-ticket-concurrency.test.ts`: planned promotion, immutable base/head, exact local develop, canonical byte snapshot. |
+| AC2 | `pi-treehouse.test.ts`: zero-lease acquire, sole-lease reuse, physical checkout plan/CWD/environment, branch materialization. |
+| AC3 | `pi-treehouse.test.ts`: operator-prepared authentication plus malformed, duplicate, path, parent, and pre-spawn drift rejection. |
+| AC4 | `treehouse-ticket-concurrency.test.ts` and `pi-treehouse.test.ts`: duplicate/fifth and concurrent cap, terminal/crash PA finalization with Treehouse lease retained. |
+| AC5 | `pi-treehouse.test.ts`: parented exact-match/mismatch and standalone linked-checkout/canonical-root admission. |
+| AC6 | `primer.test.ts`, `cli-core-command.test.ts`, and `pi-treehouse.test.ts`: fresh approval, durable comment, conditional non-force guidance, and no automatic return call. |
+| AC7 | `registry.test.ts`, `deploy-status.test.ts`, `agent-api.test.ts`, and existing PPA deploy suites: optional projections, pre-change migrations, requirements/non-builder, canonical, and linked-worktree regressions. |
+
+All named fixtures create temporary Git repositories, Treehouse responses, PA
+homes, ticket stores, and registry databases. They do not use or return a live
+Treehouse checkout.
+
 ## Bundled Editor Selection and Composition
 
 > **Breaking default:** both bundled editor plugins are disabled unless the Nix package is constructed with explicit options. Updating the flake input without opting in removes the former always-enabled editor behavior. Selection happens only while building the package; `ppa`, Pi, environment variables, and runtime configuration cannot enable a plugin in an already-built output.
