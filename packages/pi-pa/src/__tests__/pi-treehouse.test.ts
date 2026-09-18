@@ -173,7 +173,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-1")), false);
     assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
 
-    const parentDeploymentId = "d-parent-treehouse";
+    const parentDeploymentId = "d-acde12";
     const parentDir = join(root, "deployments", parentDeploymentId);
     mkdirSync(parentDir, { recursive: true });
     const parentSlotResult = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", deploymentId: parentDeploymentId, deploymentDirectory: parentDir });

@@ -118,6 +118,48 @@ test("all deployment mutation routes reject missing, wrong, and mismatched princ
   });
 });
 
+test("deployment mutation authentication precedes body reads and chunked bodies stop at the streaming limit", async () => {
+  await withApiEnv(async () => {
+    const app = securedApi();
+    let unauthenticatedPulls = 0;
+    const unauthenticatedBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        unauthenticatedPulls += 1;
+        controller.enqueue(new Uint8Array([0x20]));
+      },
+    });
+    const unauthenticatedRequest = new Request("http://localhost/api/deploy/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: unauthenticatedBody,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    assert.equal((await app.fetch(unauthenticatedRequest)).status, 401);
+    assert.ok(unauthenticatedPulls <= 1, `unauthenticated request body was consumed (${unauthenticatedPulls} pulls)`);
+
+    let cancelled = false;
+    const chunks = [new Uint8Array(700_000), new Uint8Array(400_000), new Uint8Array(1)];
+    const chunkedBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    });
+    const chunkedRequest = new Request("http://localhost/api/deploy/start", {
+      method: "POST",
+      headers: headers(OPERATOR_CREDENTIAL),
+      body: chunkedBody,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const response = await app.fetch(chunkedRequest);
+    assert.equal(response.status, 413);
+    assert.equal(cancelled, true, "oversized lengthless body is cancelled at the streaming limit");
+    assert.equal(queryDeploymentStatus("d-a1b2c3"), null);
+  });
+});
+
 test("deployment correlation validator rejects malformed, oversized, noncanonical, and contradictory evidence", async () => {
   await withApiEnv(async () => {
     const app = createAgentApiApp({ ticketMutationAuth: { operatorCredential: OPERATOR_CREDENTIAL } }).app;

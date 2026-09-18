@@ -191,13 +191,13 @@ async function handleMutation(
   mutate: (input: Record<string, unknown>, deploymentId: string) => Record<string, unknown>,
 ): Promise<Response> {
   try {
-    const input = await readBoundedJsonObject(context);
-    rejectUnknownFields(input, allowedFields);
-    const deploymentId = validateCanonicalDeploymentId(input["deploymentId"]);
     const principal = resolvePrincipal?.(context) ?? {};
     if (!principal.operator && !principal.deploymentId) {
       return context.json({ error: "Authenticated deployment-scoped or operator principal required", code: "UNAUTHORIZED" }, 401);
     }
+    const input = await readBoundedJsonObject(context);
+    rejectUnknownFields(input, allowedFields);
+    const deploymentId = validateCanonicalDeploymentId(input["deploymentId"]);
     if (!principal.operator && principal.deploymentId !== deploymentId) {
       return context.json({ error: "Deployment-scoped principal does not match request deploymentId", code: "FORBIDDEN" }, 403);
     }
@@ -215,8 +215,29 @@ async function readBoundedJsonObject(context: Context): Promise<Record<string, u
   if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > MAX_DEPLOYMENT_EVENT_BODY_BYTES)) {
     throw new DeploymentEventInputError(`Deployment event body must not exceed ${MAX_DEPLOYMENT_EVENT_BODY_BYTES} bytes`, 413);
   }
-  const bytes = new Uint8Array(await context.req.arrayBuffer());
-  if (bytes.byteLength > MAX_DEPLOYMENT_EVENT_BODY_BYTES) throw new DeploymentEventInputError(`Deployment event body must not exceed ${MAX_DEPLOYMENT_EVENT_BODY_BYTES} bytes`, 413);
+  const body = context.req.raw.body;
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  if (body) {
+    const reader = body.getReader();
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        byteLength += chunk.value.byteLength;
+        if (byteLength > MAX_DEPLOYMENT_EVENT_BODY_BYTES) {
+          try { await reader.cancel(); } catch { /* preserve the size-limit response */ }
+          throw new DeploymentEventInputError(`Deployment event body must not exceed ${MAX_DEPLOYMENT_EVENT_BODY_BYTES} bytes`, 413);
+        }
+        chunks.push(chunk.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   let value: unknown;
   try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
   catch { throw new DeploymentEventInputError("Deployment event body must be one valid UTF-8 JSON object"); }
