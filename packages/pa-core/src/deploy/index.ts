@@ -1,5 +1,6 @@
 export * from "./paths.js";
 export * from "./events.js";
+export * from "./correlation.js";
 export * from "./control.js";
 export * from "./plan.js";
 export * from "./task-snapshot.js";

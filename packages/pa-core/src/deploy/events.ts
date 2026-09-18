@@ -2,21 +2,11 @@ import { appendRegistryEvent, getDeploymentEvents } from "../registry/index.js";
 import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
+import type { DeploymentCorrelationEvidence } from "./correlation.js";
 
 export const OPA_WRAPPER_FALLBACK_SUMMARY = "Automated fallback: opa wrapper wrote this partial registry marker after OpenCode exited without an agent completion marker.";
 
-export interface DeploymentCorrelationOpts {
-  parentDeploymentId?: string;
-  builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
-  treehousePath?: string;
-  treehouseLeaseId?: string;
-  treehouseLeaseHolder?: string;
-  branchState?: "planned" | "materialized";
-  branchBaseSha?: string;
-  branchHeadSha?: string;
-  ticketSlotId?: string;
-  repositoryPermit?: 1 | 2 | 3 | 4;
-}
+export type DeploymentCorrelationOpts = DeploymentCorrelationEvidence;
 
 export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
   deploymentId: string;

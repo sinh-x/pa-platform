@@ -508,11 +508,14 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     assert.equal((await missingHooks.app.request("/api/self-update", { method: "POST" })).status, 501);
     assert.equal((await missingHooks.app.request("/api/self-update/status")).status, 501);
 
-    const { app } = createAgentApiApp({ hooks: {
-      deploy: (request) => ({ status: "pending", team: request.team, mode: request.mode ?? null, deploymentId: "d-hook" }),
-      selfUpdate: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: [] }),
-      getSelfUpdateStatus: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] }),
-    } });
+    const { app } = createAgentApiApp({
+      hooks: {
+        deploy: (request) => ({ status: "pending", team: request.team, mode: request.mode ?? null, deploymentId: "d-hook" }),
+        selfUpdate: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: [] }),
+        getSelfUpdateStatus: () => ({ status: "building", startedAt: "2026-04-26T00:00:00.000Z", completedAt: null, log: ["running"] }),
+      },
+      ticketMutationAuth: { operatorCredential: "operator-credential" },
+    });
     const deploy = await app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", mode: "plan", objective: "Ship route", repo: "pa-platform", ticket: "PAP-001", timeout: 120 }) });
     assert.equal(deploy.status, 202);
     assert.deepEqual(await deploy.json(), { team: "builder", mode: "plan", status: "pending", deployment_id: "d-hook" });
@@ -524,12 +527,12 @@ test("agent API exposes deploy control hooks and deployment status events", asyn
     assert.equal(failedDeploy.status, 202);
     assert.deepEqual(await failedDeploy.json(), { status: "failed", reason: "adapter unavailable", team: "builder", mode: "plan" });
 
-    const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deploymentId: "d-status", team: "builder", runtime: "opencode" }) });
+    const started = await app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer operator-credential" }, body: JSON.stringify({ deploymentId: "d-57a705", team: "builder", runtime: "opencode" }) });
     assert.equal(started.status, 200);
-    const status = await app.request("/api/deploy/status/d-status");
+    const status = await app.request("/api/deploy/status/d-57a705");
     assert.equal(status.status, 200);
-    assert.equal((await status.json() as { status: { deploy_id: string; status: string } }).status.deploy_id, "d-status");
-    assert.equal((await app.request("/api/deploy/events/d-status")).status, 200);
+    assert.equal((await status.json() as { status: { deploy_id: string; status: string } }).status.deploy_id, "d-57a705");
+    assert.equal((await app.request("/api/deploy/events/d-57a705")).status, 200);
   });
 });
 
