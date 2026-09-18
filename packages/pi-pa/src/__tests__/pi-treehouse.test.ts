@@ -6,10 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi } from "../deploy.js";
-import { deriveTreehouseLeaseHolder, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
+import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
-  return { status, stdout: Buffer.from(typeof stdout === "string" ? stdout : JSON.stringify(stdout)), stderr: Buffer.alloc(0) };
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(typeof stdout === "string" ? stdout : JSON.stringify(stdout));
+  return { status, stdout: bytes, stderr: Buffer.alloc(0) };
 }
 
 function git(args: string[], cwd: string): string { return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); }
@@ -43,12 +44,26 @@ test("Treehouse JSON boundary acquires on zero, reuses one, and rejects duplicat
   assert.equal(reuse.acquireOrReuse("/repo", "registered", "PAP-1").leaseId, "lease-1");
   assert.equal(getCalled, false);
 
-  const duplicate = new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease, path: "/tmp/treehouse/two", lease_id: "lease-2" }] }) });
-  assert.throws(() => duplicate.acquireOrReuse("/repo", "registered", "PAP-1"), /found 2 leases/);
-  const malformed = new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, path: "relative" }] }) });
-  assert.throws(() => malformed.status("/repo"), /absolute normalized path/);
-  const truncated = new TreehouseClient({ run: () => result('{"worktrees":[') });
-  assert.throws(() => truncated.status("/repo"), /not one valid UTF-8 JSON value/);
+  const rejected = [
+    new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease, path: "/tmp/treehouse/two", lease_id: "lease-2" }] }) }),
+    new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease }] }) }),
+    new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, path: "relative" }] }) }),
+    new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, leased: "yes" }] }) }),
+    new TreehouseClient({ run: () => result('{"worktrees":[') }),
+    new TreehouseClient({ run: () => result(Buffer.concat([Buffer.from('{"worktrees":[]}'), Buffer.from([0])])) }),
+    new TreehouseClient({ run: () => result(Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1, 0x20)) }),
+  ];
+  const patterns = [/found 2 leases/, /repeats path/, /absolute normalized path/, /unexpected type/, /not one valid UTF-8 JSON value/, /contains NUL bytes/, /exceeded 1048576 bytes/];
+  for (const [index, client] of rejected.entries()) {
+    assert.throws(() => client.acquireOrReuse("/repo", "registered", "PAP-1"), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, patterns[index]!);
+      assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(error.message.length <= 2_000);
+      return true;
+    });
+  }
+  assert.equal(calls.some((args) => args[0] === "return"), false, "PA never invokes Treehouse return automatically");
 });
 
 test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes only PA evidence", async () => {
@@ -171,6 +186,22 @@ test("ticketed orchestrator uses immutable Treehouse checkout plan and finalizes
     assert.equal(spawned?.executionPlan?.treehouse?.parentDeploymentId, parentDeploymentId);
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: worktree, ownershipToken: parentLease.lease.ownershipToken }).status, "released");
     assert.equal(releaseRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: parentSlotResult.slot.slotToken, slotId: parentSlotResult.slot.slotId, repositoryPermit: parentSlotResult.slot.repositoryPermit }).status, "released");
+    for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_WORKTREE_ROOT", "PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"]) {
+      const value = prior[key];
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+
+    process.chdir(repo);
+    spawned = undefined;
+    const beforeDriftSpawns = spawnCount;
+    const driftAdapter = { ...adapter, preflight: async () => { git(["commit", "--allow-empty", "-m", "fixture pre-spawn drift"], worktree); } };
+    const drifted = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-1", repo: "registered", timeout: 60 }, driftAdapter, undefined, { treehouse });
+    assert.equal(drifted.status, "failed");
+    assert.match(drifted.reason ?? "", /Treehouse launch evidence drifted|checkout branch, HEAD, or porcelain-v2 bytes changed/);
+    assert.equal(spawnCount, beforeDriftSpawns);
+    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-1")), false, "crash finalization releases only PA ticket evidence");
+    assert.equal(existsSync(repositoryMutationLeasePath(worktree, "orchestrator")), false, "crash finalization releases matching PA ownership");
+    assert.equal(leaseJson.lease_id, "lease-1", "Treehouse lease remains operator-owned after failure");
   } finally {
     process.chdir(priorCwd);
     closeDb();

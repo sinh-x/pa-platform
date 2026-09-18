@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryTicketSlot, releaseRepositoryTicketSlot, repositoryTicketSlotPath, type ProcessFingerprint } from "../deploy/index.js";
+import { acquireRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, type ProcessFingerprint } from "../deploy/index.js";
 import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
 
@@ -64,6 +64,76 @@ test("ticket slots reject duplicate and fifth live tickets in one repository tra
     assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
   } finally {
     for (const result of acquired) releaseRepositoryTicketSlot({ canonicalRepoKey: result.slot.canonicalRepoKey, canonicalRepoRoot: result.slot.canonicalRepoRoot, ticket: result.slot.ticket, slotToken: result.slot.slotToken, slotId: result.slot.slotId, repositoryPermit: result.slot.repositoryPermit });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ticket-slot reads reject malformed and oversized persisted evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-ticket-slot-invalid-"));
+  const repo = initializeRepo(root);
+  const path = repositoryTicketSlotPath(repo, "PAP-bad");
+  try {
+    for (const body of ["{not-json\n", "x".repeat(MAX_REPOSITORY_TICKET_SLOT_BYTES + 1)]) {
+      writeFileSync(path, body, { mode: 0o600 });
+      const result = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-new", deploymentId: "d-new", deploymentDirectory: join(root, "d-new") });
+      assert.equal(result.status, "rejected");
+      assert.equal(result.status === "rejected" ? result.reason : "", "invalid-evidence");
+      assert.ok(result.diagnostic.length <= 2_000);
+      rmSync(path);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent ticket-slot contenders atomically admit four distinct tickets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-ticket-slot-race-"));
+  const repo = initializeRepo(root);
+  const moduleUrl = new URL("../deploy/ticket-concurrency.ts", import.meta.url).href;
+  const script = `
+    const api = await import(process.env.PA_SLOT_MODULE_URL);
+    const result = api.acquireRepositoryTicketSlot({
+      canonicalRepoKey: "registered",
+      canonicalRepoRoot: process.env.PA_SLOT_REPO,
+      ticket: process.env.PA_SLOT_TICKET,
+      deploymentId: process.env.PA_SLOT_DEPLOYMENT,
+      deploymentDirectory: process.env.PA_SLOT_DEPLOYMENT_DIR,
+    });
+    process.stdout.write(JSON.stringify({ status: result.status, reason: result.reason, diagnostic: result.diagnostic }) + "\\n");
+    if (result.status === "acquired") setInterval(() => {}, 1_000);
+  `;
+  const children: ChildProcess[] = [];
+  try {
+    const attempts = Array.from({ length: 8 }, (_, index) => new Promise<{ status: string; reason?: string; diagnostic: string }>((resolveAttempt, rejectAttempt) => {
+      const number = index + 1;
+      const child = spawn(process.execPath, ["--import=tsx", "--input-type=module", "--eval", script], {
+        cwd: process.cwd(),
+        env: { ...process.env, PA_SLOT_MODULE_URL: moduleUrl, PA_SLOT_REPO: repo, PA_SLOT_TICKET: `PAP-${number}`, PA_SLOT_DEPLOYMENT: `d-race-${number}`, PA_SLOT_DEPLOYMENT_DIR: join(root, `d-race-${number}`) },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(child);
+      let stdout = "";
+      let stderr = "";
+      child.stdout!.setEncoding("utf8");
+      child.stderr!.setEncoding("utf8");
+      child.stderr!.on("data", (chunk: string) => { stderr += chunk; });
+      child.stdout!.on("data", (chunk: string) => {
+        stdout += chunk;
+        const newline = stdout.indexOf("\n");
+        if (newline >= 0) resolveAttempt(JSON.parse(stdout.slice(0, newline)) as { status: string; reason?: string; diagnostic: string });
+      });
+      child.once("error", rejectAttempt);
+      child.once("exit", (code) => { if (!stdout.includes("\n")) rejectAttempt(new Error(`contender exited ${code}: ${stderr}`)); });
+    }));
+    const results = await Promise.all(attempts);
+    assert.equal(results.filter((entry) => entry.status === "acquired").length, 4);
+    const rejected = results.filter((entry) => entry.status === "rejected");
+    assert.equal(rejected.length, 4);
+    assert.equal(rejected.every((entry) => entry.reason === "repository-capacity"), true);
+    assert.equal(results.every((entry) => entry.diagnostic.length <= 2_000), true);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
+    await Promise.all(children.map((child) => child.exitCode !== null ? Promise.resolve() : new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()))));
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -154,8 +154,9 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   if (binaryName === "ppa") {
     io.stdout("");
     io.stdout("Treehouse builder workflow:");
-    io.stdout("  Ticketed builder/orchestrator acquires or reuses the matching leased checkout.");
-    io.stdout("  A direct background builder/implement reuses its authenticated parent checkout; standalone implement must start from the free matching leased checkout.");
+    io.stdout("  Canonical builder/orchestrator acquires or reuses the matching lease; an operator-prepared launch omits --repo from the exact leased CWD.");
+    io.stdout("  Admission permits one live builder per repository/ticket and at most four live ticket builders per canonical repository.");
+    io.stdout("  A direct background builder/implement reuses its authenticated parent checkout; standalone implement must start from the free matching leased checkout with --repo omitted.");
     io.stdout("  PA locks finalize automatically, but Treehouse return never does: require clean committed state, no live owner, exact identities, fresh interactive Sinh approval, a durable ticket comment, then one conditional non-force return.");
     io.stdout("  PPA does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox.");
   }

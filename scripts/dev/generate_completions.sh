@@ -83,6 +83,7 @@ perl \
     s/Fish completions for pa-core/Fish completions for ppa (pi-pa adapter)/;
     s/__pa_core_/__ppa_/g;
     s/\bpa-core\b/ppa/g;
+    s/Link branch repo\|branch\|sha/Plan or authenticate branch repo|branch/;
     s/case --mode --objective --evaluate-deployment --repo --ticket --timeout/case --mode --objective --objective-file --evaluate-deployment --provider --model --team-model --repo --ticket --timeout --resume/;
     s/--mode --objective --evaluate-deployment --background --dry-run --repo --ticket --timeout/--mode --objective --objective-file --evaluate-deployment --list-modes --validate --provider --model --team-model --background --dry-run --repo --ticket --timeout --resume/;
     s/complete -c ppa -f -n __ppa_deploy_completing -l provider -d '\''Provider'\'' -r/complete -c ppa -f -n __ppa_deploy_completing -l provider -d '\''Pi provider override (openai\/openai-codex)'\'' -r -a '\''openai openai-codex'\''/;
