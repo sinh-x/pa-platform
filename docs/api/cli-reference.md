@@ -457,6 +457,8 @@ Display the project board with ticket columns. CWD-aware: defaults to the curren
 
 **Default exclude tags:** `backlog` and `archived` (unless `--all` or `--include-archived`). Ticket types `fyi` and `work-report` are always excluded from the board view.
 
+Within each status group, tickets are sorted by natural ascending ticket ID.
+
 **Color:** Enabled when stdout is a TTY and `NO_COLOR` is unset.
 
 **Examples:**

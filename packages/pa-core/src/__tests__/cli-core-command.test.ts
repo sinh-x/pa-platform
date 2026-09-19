@@ -1595,7 +1595,7 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    description: Test repo\n    prefix: PAP\n  personal:\n    path: ${personalRepo}\n    description: Personal repo\n    prefix: PA\n`);
     const store = new TicketStore();
-    store.create({
+    const coreTicket = store.create({
       project: "pa-platform",
       title: "Build core CLI",
       summary: "Summary",
@@ -1646,6 +1646,8 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
       doc_refs: [],
       comments: [],
     }, "test");
+    writeFileSync(join(root, "tickets", "natural-two.json"), JSON.stringify({ ...coreTicket, id: "PAP-2", title: "Natural order two", priority: "low" }));
+    writeFileSync(join(root, "tickets", "natural-ten.json"), JSON.stringify({ ...coreTicket, id: "PAP-10", title: "Natural order ten", priority: "critical" }));
 
     const previousCwd = process.cwd();
     try {
@@ -1654,8 +1656,15 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
       const cwdBoard = capture();
       assert.equal(await runCoreCommand(["board"], { io: cwdBoard.io }), 0);
       assert.match(cwdBoard.stdout.join("\n"), /Board: pa-platform/);
-      assert.match(cwdBoard.stdout.join("\n"), /Build core CLI/);
-      assert.doesNotMatch(cwdBoard.stdout.join("\n"), /Personal assistant ticket/);
+      const cwdBoardOutput = cwdBoard.stdout.join("\n");
+      assert.match(cwdBoardOutput, /Build core CLI/);
+      assert.doesNotMatch(cwdBoardOutput, /Personal assistant ticket/);
+      assert.ok(cwdBoardOutput.indexOf("Natural order two") < cwdBoardOutput.indexOf("Natural order ten"), "board command uses natural ticket-ID order instead of priority");
+
+      const teamDetail = capture();
+      assert.equal(await runCoreCommand(["teams", "builder"], { io: teamDetail.io }), 0);
+      const teamDetailOutput = teamDetail.stdout.join("\n");
+      assert.ok(teamDetailOutput.indexOf("Natural order two") < teamDetailOutput.indexOf("Natural order ten"), "team detail uses the shared board order");
 
       const allBoard = capture();
       assert.equal(await runCoreCommand(["board", "--all"], { io: allBoard.io }), 0);

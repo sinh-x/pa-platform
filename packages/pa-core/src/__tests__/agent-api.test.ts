@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { serve } from "@hono/node-server";
 import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
@@ -375,15 +376,17 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     mkdirSync(personalRepo, { recursive: true });
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${join(root, "repo")}\n    description: Test repo\n    prefix: PAP\n  personal:\n    path: ${personalRepo}\n    description: Personal repo\n    prefix: PA\n`);
     const store = new TicketStore();
-    store.create({ project: "pa-platform", title: "API visible", summary: "Summary", description: "", status: "implementing", priority: "high", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [{ type: "requirements", path: "agent-teams/requirements/artifacts/2026-04-27-api-visible.md", primary: true, addedAt: "2026-04-27T00:00:00.000Z", addedBy: "test" }], comments: [] }, "test");
+    const apiVisible = store.create({ project: "pa-platform", title: "API visible", summary: "Summary", description: "", status: "implementing", priority: "high", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [{ type: "requirements", path: "agent-teams/requirements/artifacts/2026-04-27-api-visible.md", primary: true, addedAt: "2026-04-27T00:00:00.000Z", addedBy: "test" }], comments: [] }, "test");
     store.create({ project: "pa-platform", title: "API backlog", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: ["backlog"], blockedBy: [], doc_refs: [], comments: [] }, "test");
     store.create({ project: "pa-platform", title: "API FYI", summary: "Summary", description: "", status: "idea", priority: "medium", type: "fyi", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
     store.create({ project: "personal", title: "API personal", summary: "Summary", description: "", status: "idea", priority: "low", type: "task", assignee: "sinh", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    writeFileSync(join(root, "tickets", "natural-two.json"), JSON.stringify({ ...apiVisible, id: "PAP-2", title: "API natural two", priority: "low", doc_refs: [] }));
+    writeFileSync(join(root, "tickets", "natural-ten.json"), JSON.stringify({ ...apiVisible, id: "PAP-10", title: "API natural ten", priority: "critical", doc_refs: [] }));
 
     const { app } = createAgentApiApp();
     const allResponse = await app.request("/api/board");
     assert.equal(allResponse.status, 200);
-    const allBoard = await allResponse.json() as { board: { project: string; total: number; columns: Array<{ tickets: Array<{ title: string; doc_refs: Array<{ title?: string }> }> }> } };
+    const allBoard = await allResponse.json() as { board: { project: string; total: number; columns: Array<{ tickets: Array<{ id: string; title: string; priority: string; doc_refs: Array<{ title?: string }> }> }> } };
     const allTitles = allBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title));
     assert.equal(allBoard.board.project, "all");
     assert.match(allTitles.join("\n"), /API visible/);
@@ -395,7 +398,8 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     assert.equal(prefixResponse.status, 200);
     const prefixBoard = await prefixResponse.json() as typeof allBoard;
     assert.equal(prefixBoard.board.project, "pa-platform");
-    assert.deepEqual(prefixBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title)), ["API visible"]);
+    assert.deepEqual(prefixBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.id)), ["PAP-001", "PAP-2", "PAP-10"]);
+    assert.deepEqual(prefixBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.priority)), ["high", "low", "critical"]);
 
     const canonicalResponse = await app.request("/api/board?project=pa-platform");
     assert.equal(canonicalResponse.status, 200);
@@ -405,13 +409,13 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     assert.equal(projectsResponse.status, 200);
     const projectsBody = await projectsResponse.json() as { projects: Array<{ key: string; activeTicketCount: number; active_ticket_count?: number }> };
     const paPlatformProject = projectsBody.projects.find((project) => project.key === "pa-platform");
-    assert.equal(paPlatformProject?.activeTicketCount, 2);
+    assert.equal(paPlatformProject?.activeTicketCount, 4);
     assert.equal(paPlatformProject?.active_ticket_count, undefined);
 
     const assigneeResponse = await app.request("/api/board?project=PAP&assignee=builder");
     assert.equal(assigneeResponse.status, 200);
     const assigneeBoard = await assigneeResponse.json() as typeof allBoard;
-    assert.deepEqual(assigneeBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.title)), ["API visible"]);
+    assert.deepEqual(assigneeBoard.board.columns.flatMap((column) => column.tickets.map((ticket) => ticket.id)), ["PAP-001", "PAP-2", "PAP-10"]);
 
     const emptyExclusionsResponse = await app.request("/api/board?excludeTags=&excludeTypes=");
     assert.equal(emptyExclusionsResponse.status, 200);
@@ -426,6 +430,45 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     assert.equal(unknownBody.code, "BOARD_FAILED");
     assert.match(unknownBody.error, /Unknown project "unknown"/);
     assert.match(unknownBody.error, /Valid project keys: pa-platform, personal/);
+  });
+});
+
+test("agent API board stays below the 500-ticket p95 response budget", async () => {
+  await withApiEnv(async (root) => {
+    const ticketsDir = join(root, "tickets");
+    mkdirSync(ticketsDir, { recursive: true });
+    for (let index = 1; index <= 500; index++) {
+      writeFileSync(join(ticketsDir, `performance-${index}.json`), JSON.stringify({
+        id: `PAP-${index}`,
+        project: "pa-platform",
+        title: `Performance ticket ${index}`,
+        status: "implementing",
+        priority: index % 2 === 0 ? "low" : "critical",
+        type: "task",
+        assignee: "builder/team-manager",
+        tags: [],
+        createdAt: "2026-09-17T00:00:00.000Z",
+        updatedAt: "2026-09-17T00:00:00.000Z",
+      }));
+    }
+
+    const { app } = createAgentApiApp();
+    assert.equal((await app.request("/api/board?project=PAP")).status, 200, "warm-up request succeeds");
+    const durations: number[] = [];
+    for (let request = 0; request < 20; request++) {
+      const startedAt = performance.now();
+      const response = await app.request("/api/board?project=PAP");
+      durations.push(performance.now() - startedAt);
+      assert.equal(response.status, 200);
+      const body = await response.json() as { board: { total: number; columns: Array<{ tickets: Array<{ id: string }> }> } };
+      assert.equal(body.board.total, 500);
+      if (request === 0) {
+        const ids = body.board.columns.find((column) => column.tickets.length > 0)!.tickets.map((ticket) => ticket.id);
+        assert.deepEqual(ids.slice(0, 3), ["PAP-1", "PAP-2", "PAP-3"]);
+        assert.deepEqual(ids.slice(8, 11), ["PAP-9", "PAP-10", "PAP-11"]);
+      }
+    }
+    assert.ok(p95(durations) < 500, `expected p95 below 500 ms, received ${p95(durations).toFixed(2)} ms`);
   });
 });
 
