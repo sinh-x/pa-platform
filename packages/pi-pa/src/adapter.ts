@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
-import { environmentSecrets, redactDiagnostic, SECRET_KEY, StreamingRedactor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -226,8 +225,7 @@ export class PiAdapter implements RuntimeAdapter {
     args.push(readFileSync(opts.primerPath, "utf8"));
     const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     const piEnv = piRegistryEnvironment(env);
-    const protectedAuthority = [opts.repositoryLease?.ownershipToken, opts.repositoryBorrower?.borrowerToken].filter((value): value is string => Boolean(value));
-    const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
+    const secrets = [...this.secretValues];
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
@@ -242,7 +240,7 @@ export class PiAdapter implements RuntimeAdapter {
     const cleanupUnverified = result.metadata?.["cleanupVerified"] === false;
     if (result.status !== 0 || result.spawnError || cleanupUnverified) {
       const exitCode = result.status === 0 ? 1 : result.status ?? 1;
-      const message = redactPiLog(tail(result.stderr || result.spawnError?.message || (cleanupUnverified ? "Pi cleanup failed: PTY child exit was not verified" : `pi exited with code ${exitCode}`), MAX_STDERR), secrets);
+      const message = tail(result.stderr || result.spawnError?.message || (cleanupUnverified ? "Pi cleanup failed: PTY child exit was not verified" : `pi exited with code ${exitCode}`), MAX_STDERR);
       return { sessionId: id, exitCode, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
     }
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
@@ -329,21 +327,20 @@ function parseSourcePiHostEvidence(output: string): PiNativeHostEvidence | undef
   return evidence as unknown as PiNativeHostEvidence;
 }
 
-function sourceNativeProbeError(message: string, env: NodeJS.ProcessEnv, secretValues: string[]): Error {
-  const safe = redactDiagnostic(message, environmentSecrets(env, secretValues)).replace(/^native-load:\s*/, "");
-  const diagnostic = `native-load: ${safe}`;
+function sourceNativeProbeError(message: string, _env: NodeJS.ProcessEnv, _secretValues: string[]): Error {
+  const diagnostic = `native-load: ${message.replace(/^native-load:\s*/, "")}`;
   return new Error(diagnostic.length > MAX_STDERR ? `${diagnostic.slice(0, MAX_STDERR - 3)}...` : diagnostic);
 }
 
 export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent {
-  const safe = deepRedact(raw, secrets) as Record<string, unknown>;
+  const safe = raw;
   const outerType = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase();
   const assistant = record(safe.assistantMessageEvent);
   const nestedType = String(assistant?.type ?? "").toLowerCase();
   const type = outerType === "message_update" && /^toolcall_(?:start|delta|end)$/.test(nestedType) ? nestedType : outerType;
   const kind: ActivityEvent["kind"] = type === "tool_execution_end" || type === "tool_result" || type === "tool_execution_result" ? "tool_result" : type === "tool_execution_start" || type === "tool_use" || type === "tool_call" || type.startsWith("toolcall_") ? "tool_use" : type.includes("error") ? "error" : type.includes("think") ? "thinking" : type.includes("tool") ? "tool_use" : "text";
-  const body = redact(extractText(type.startsWith("toolcall_") && assistant ? assistant : safe) || type, secrets);
+  const body = extractText(type.startsWith("toolcall_") && assistant ? assistant : safe) || type;
   const metadata = { ...allowMetadata(safe), ...toolCallMetadata(assistant) };
   const tool = typeof metadata.tool === "string" ? metadata.tool : metadata.toolName;
   if (typeof tool === "string") metadata.tool = tool;
@@ -377,7 +374,7 @@ class PiActivityProjector {
   }
 
   observe(raw: Record<string, unknown>): ActivityEvent[] {
-    const safe = deepRedact(raw, this.secrets) as Record<string, unknown>;
+    const safe = raw;
     const assistant = record(safe.assistantMessageEvent);
     const nestedType = String(assistant?.type ?? "").toLowerCase();
     const contentIndex = String(assistant?.contentIndex ?? "");
@@ -433,7 +430,7 @@ class PiActivityProjector {
   }
 
   private diagnostic(body: string): ActivityEvent[] {
-    const safeBody = redact(body, this.secrets).slice(0, MAX_BODY);
+    const safeBody = body.slice(0, MAX_BODY);
     if (this.diagnostics.has(safeBody)) return [];
     this.diagnostics.add(safeBody);
     return [createActivityEvent({ deployId: this.deployId, kind: "error", source: "pi", body: safeBody, partType: "protocol_diagnostic" })];
@@ -525,7 +522,7 @@ export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): {
   for (const event of events) inspector.observe(event);
   return { outcomes: inspector.outcomes(), diagnostic: inspector.diagnostic() };
 }
-function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: redact(line, secrets).slice(0, MAX_BODY) }); } }
+function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: line.slice(0, MAX_BODY) }); } }
 export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}): Promise<PiCommandResult> {
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
@@ -576,12 +573,12 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       if (settled || cleanupPending) return;
       try {
         if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
-        if (opts.logFile) writeLog(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8");
+        if (opts.logFile) writeLog(opts.logFile, stdout + stderr, "utf8");
         terminalError ||= protocol.diagnostic();
         settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(redact(stderr + text, secrets), MAX_STDERR); };
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(stderr + text, MAX_STDERR); };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
@@ -905,7 +902,7 @@ function withoutParentLeaseCapability(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
   delete safe[PI_PARENT_LEASE_CAPABILITY_ENV];
   return safe;
 }
-function boundedRunnerDiagnostic(error: unknown, secrets: string[]): string { return redact(tail(error instanceof Error ? error.message : String(error), MAX_STDERR), secrets); }
+function boundedRunnerDiagnostic(error: unknown, _secrets: string[]): string { return tail(error instanceof Error ? error.message : String(error), MAX_STDERR); }
 
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
 
@@ -930,7 +927,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const previousRaw = input.isTTY ? input.isRaw : undefined;
   const previousFlowing = input.readableFlowing;
   let inputFlowOwned = false;
-  const logRedactor = opts.logFile ? new StreamingRedactor(secrets, (safe) => appendLog(opts.logFile!, safe, "utf8"), (value) => redactPiLog(value, secrets), /thinking[_-]?signature|encrypted[_-]?content/i) : undefined;
+  const appendForegroundLog = opts.logFile ? (value: string): void => appendLog(opts.logFile!, value, "utf8") : undefined;
 
   return new Promise((resolveResult) => {
     const restoreTerminal = (): Error | undefined => {
@@ -957,7 +954,6 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const finishEvidence = (): void => {
       if (evidenceFinished) return;
       evidenceFinished = true;
-      logRedactor?.flush();
       if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
       const status = readPiTerminalStatus(deployDir);
       if (status) {
@@ -1099,8 +1095,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const onData = (chunk: string): void => {
       if (settled || cleanupPending) return;
       try {
-        const safeChunk = redact(chunk, secrets);
-        stdout = tail(stdout + safeChunk, MAX_CAPTURE); carry = tail(carry + safeChunk, MAX_CARRY); output.write(safeChunk); logRedactor?.push(safeChunk);
+        stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk); appendForegroundLog?.(chunk);
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
         for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
@@ -1118,21 +1113,12 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
 }
-function persistLine(line: string, path: string, deployId: string, secrets: string[], projector: PiActivityProjector): void { if (!line.trim()) return; const safe = redactJsonLine(line, secrets); mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${safe}\n`); for (const event of projector.observeLine(safe)) appendActivityEvent(event, getDeployPaths(deployId).activityLogPath); }
-function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); const safeLines = lines.map((line) => redactJsonLine(line, secrets)); writeFileSync(outputPath, safeLines.join("\n") + (stdout ? "\n" : ""), "utf8"); const projector = new PiActivityProjector(opts.deployId, secrets); for (const line of safeLines) for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(opts.deployId).activityLogPath); if (opts.logFile) writeFileSync(opts.logFile, redactPiLog(stdout + stderr, secrets), "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: redact(tail(terminalError, MAX_STDERR), secrets) } : {}; }
+function persistLine(line: string, path: string, deployId: string, _secrets: string[], projector: PiActivityProjector): void { if (!line.trim()) return; mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${line}\n`); for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(deployId).activityLogPath); }
+function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); writeFileSync(outputPath, lines.join("\n") + (stdout ? "\n" : ""), "utf8"); const projector = new PiActivityProjector(opts.deployId, secrets); for (const line of lines) for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(opts.deployId).activityLogPath); if (opts.logFile) writeFileSync(opts.logFile, stdout + stderr, "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: tail(terminalError, MAX_STDERR) } : {}; }
 function failure(message: string): SpawnResult { return { exitCode: 1, errorMessage: message }; }
-function redactJsonLine(line: string, secrets: string[]): string { try { return JSON.stringify(deepRedact(JSON.parse(line), secrets)); } catch { const match = SENSITIVE_REASONING_KEY.exec(line); SENSITIVE_REASONING_KEY.lastIndex = 0; return match ? `${redact(line.slice(0, match.index), secrets)}[REDACTED reasoning metadata]` : redact(line, secrets); } }
-function redactPiLog(value: string, secrets: string[]): string { return value.split("\n").map((line) => redactJsonLine(line, secrets)).join("\n"); }
-const redact = redactDiagnostic;
 function terminalErrorFromLine(line: string, secrets: string[]): string { try { return terminalErrorFromValue(JSON.parse(line) as Record<string, unknown>, secrets); } catch { return ""; } }
-function terminalErrorFromValue(value: Record<string, unknown>, secrets: string[]): string { const safe = deepRedact(value, secrets) as Record<string, unknown>; const stopReason = safe.stopReason ?? safe.stop_reason; const type = String(safe.type ?? safe.event ?? safe.kind ?? "").toLowerCase(); const hasError = typeof safe.error === "string" || typeof safe.errorMessage === "string" || typeof safe.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return redact(tail(extractText(safe) || String(safe.error ?? safe.errorMessage ?? stopReason), MAX_STDERR), secrets); }
+function terminalErrorFromValue(value: Record<string, unknown>, _secrets: string[]): string { const stopReason = value.stopReason ?? value.stop_reason; const type = String(value.type ?? value.event ?? value.kind ?? "").toLowerCase(); const hasError = typeof value.error === "string" || typeof value.errorMessage === "string" || typeof value.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return tail(extractText(value) || String(value.error ?? value.errorMessage ?? stopReason), MAX_STDERR); }
 function observeProtocolLine(inspector: PiToolProtocolInspector, line: string): void { try { const value = JSON.parse(line) as unknown; if (value && typeof value === "object" && !Array.isArray(value)) inspector.observe(value as Record<string, unknown>); } catch { /* Non-JSON terminal output is not Pi protocol evidence. */ } }
-const SENSITIVE_REASONING_KEY = /thinking[_-]?signature|encrypted[_-]?content/gi;
-const SENSITIVE_REASONING_FIELD = /^(?:thinking[_-]?signature|encrypted[_-]?content)$/i;
-function deepRedact(value: unknown, secrets: string[] = []): unknown { return deepRedactValue(value, [...secrets, ...sensitiveReasoningValues(value)]); }
-function deepRedactValue(value: unknown, secrets: string[]): unknown { if (typeof value === "string") return redact(value, secrets); if (Array.isArray(value)) return value.map((item) => deepRedactValue(item, secrets)); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([key]) => !SENSITIVE_REASONING_FIELD.test(key)).map(([key, item]) => SECRET_KEY.test(key) ? [key, "[REDACTED]"] : [key, deepRedactValue(item, secrets)])); return value; }
-function sensitiveReasoningValues(value: unknown): string[] { if (Array.isArray(value)) return value.flatMap(sensitiveReasoningValues); if (!value || typeof value !== "object") return []; return Object.entries(value).flatMap(([key, item]) => SENSITIVE_REASONING_FIELD.test(key) ? stringValues(item) : sensitiveReasoningValues(item)); }
-function stringValues(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(stringValues); if (value && typeof value === "object") return Object.values(value).flatMap(stringValues); return []; }
 function allowMetadata(raw: Record<string, unknown>): Record<string, unknown> { const metadata: Record<string, unknown> = {}; for (const key of ["type", "event", "kind", "timestamp", "role", "tool", "toolName", "toolCallId", "callId", "args", "isError", "partialResult", "assistantMessageEvent", "partType"]) if (raw[key] !== undefined) metadata[key] = raw[key]; return metadata; }
 function toolCallMetadata(assistant: Record<string, unknown> | undefined): Record<string, unknown> { if (!assistant) return {}; const type = String(assistant.type ?? ""); const partial = record(assistant.partial); const content = Array.isArray(partial?.content) ? partial.content : []; const call = type === "toolcall_end" ? record(assistant.toolCall) : type === "toolcall_start" ? content.map((item) => record(item)).find((item) => item?.type === "toolCall") : undefined; return { ...(assistant.contentIndex !== undefined ? { contentIndex: assistant.contentIndex } : {}), ...(call?.id !== undefined ? { toolCallId: call.id } : {}), ...(call?.name !== undefined ? { toolName: call.name } : {}), ...(call?.arguments !== undefined ? { args: call.arguments } : {}) }; }
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }

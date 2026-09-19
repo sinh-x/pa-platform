@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -39,15 +39,17 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   assert.equal(afterRemove.theme, "dark");
 });
 
-test("Pi extension writes a redacted structured terminal status side channel", () => {
+test("Pi extension writes an unfiltered structured terminal status side channel", () => {
   const dir = mkdtempSync(join(tmpdir(), "ppa-terminal-status-"));
-  const value = "sentinel-side-channel-value";
+  const value = "synthetic-side-channel-value";
   const prefix = ["Bea", "rer"].join("");
   persistTerminalStatus([{ role: "assistant", stopReason: "error", errorMessage: `${prefix} ${value}` }], dir, {});
+  const statusPath = join(dir, "pi-terminal-status.json");
   const status = readPiTerminalStatus(dir);
   assert.equal(status?.stopReason, "error");
-  assert.equal(status?.error, "[REDACTED]");
-  assert.doesNotMatch(readFileSync(join(dir, "pi-terminal-status.json"), "utf8"), new RegExp(value));
+  assert.equal(status?.error, `${prefix} ${value}`);
+  assert.match(readFileSync(statusPath, "utf8"), new RegExp(value));
+  assert.equal(statSync(statusPath).mode & 0o777, 0o600);
 });
 
 test("trusted entrypoint registers only selected editors while preserving attributed PA modules", () => {

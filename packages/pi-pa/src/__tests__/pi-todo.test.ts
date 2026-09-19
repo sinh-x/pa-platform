@@ -297,6 +297,7 @@ test("snapshot write failure is non-fatal, preserves prior evidence, and records
   const root = mkdtempSync(join(tmpdir(), "pi-todo-failure-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const deploymentId = "d-pi-failure";
+  const sentinel = "todo-snapshot-synthetic-value";
   const activityPath = join(root, "activity.jsonl");
   const path = deploymentTaskSnapshotPath(root);
   const prior = createDeploymentTaskSnapshot({
@@ -314,8 +315,8 @@ test("snapshot write failure is non-fatal, preserves prior evidence, and records
     registerTool(candidate: PiToolDefinition) { tool = candidate; },
   } as unknown as PiRuntime;
   createTodoModule({
-    env: { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: root, PA_ACTIVITY_LOG: activityPath },
-    writeSnapshot: () => { throw new Error(`injected failure ${"x".repeat(2_000)}`); },
+    env: { PA_DEPLOYMENT_ID: deploymentId, PA_DEPLOYMENT_DIR: root, PA_ACTIVITY_LOG: activityPath, PAP_214_TOKEN: sentinel },
+    writeSnapshot: () => { throw new Error(`injected failure ${sentinel} ${"x".repeat(2_000)}`); },
   })(runtime);
 
   assert.doesNotThrow(() => handlers.get("session_start")?.({}, { sessionManager: { getBranch: () => [] } }));
@@ -328,6 +329,7 @@ test("snapshot write failure is non-fatal, preserves prior evidence, and records
     assert.equal(diagnostic.kind, "error");
     assert.equal(diagnostic.partType, "task_snapshot_persistence");
     assert.match(diagnostic.body, /^Could not persist deployment task snapshot: injected failure/);
+    assert.match(diagnostic.body, new RegExp(sentinel));
     assert.ok(diagnostic.body.length <= 500);
   }
 });

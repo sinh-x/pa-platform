@@ -125,7 +125,7 @@ function nativeLoad(node: string, registryDb: string, addonPath: string): { stat
     timeout: 10_000,
   });
   const raw = `${result.stderr || result.error?.message || result.stdout || "native load failed"}`;
-  const diagnostic = `native-load: ${raw.replaceAll(loadFixture().syntheticSensitiveValue, "[REDACTED]")}`.slice(0, 2000);
+  const diagnostic = `native-load: ${raw}`.slice(0, 2000);
   return { status: result.status, diagnostic };
 }
 
@@ -322,8 +322,7 @@ test("execution updates remain raw evidence without duplicating canonical tool u
     );
     assert.ok(rawUpdates.every((event) => JSON.stringify(event).length <= 500));
     assert.match(rawText, /tool_execution_update/);
-    assert.match(rawText, /\[REDACTED\]/);
-    assert.doesNotMatch(rawText, new RegExp(fixture.syntheticSensitiveValue));
+    assert.match(rawText, new RegExp(fixture.syntheticSensitiveValue));
 
     const activity = readActivityEvents(join(deployDir, "activity.jsonl"));
     const uses = activity.filter((event) => event.kind === "tool_use");
@@ -457,17 +456,17 @@ test("live foreground Pi PID protects running status, wait, health, and sweep fr
   }
 });
 
-test("failure fixtures preserve causal categories while diagnostics stay bounded and redacted", () => {
+test("failure fixtures preserve causal categories and original content within existing bounds", () => {
   const fixture = loadFixture();
   for (const failure of fixture.failureCases) {
     const activity = normalizePiEvent({ type: "error", content: failure.diagnostic }, fixture.id, [fixture.syntheticSensitiveValue]);
-    const terminal = failure.diagnostic.replaceAll(fixture.syntheticSensitiveValue, "[REDACTED]").slice(0, 2000);
+    const terminal = failure.diagnostic.slice(0, 2000);
     assert.match(activity.body, new RegExp(`^${failure.category}`));
     assert.match(terminal, new RegExp(`^${failure.category}`));
     assert.ok(activity.body.length <= 500);
     assert.ok(terminal.length <= 2000);
-    assert.doesNotMatch(activity.body, new RegExp(fixture.syntheticSensitiveValue));
-    assert.doesNotMatch(terminal, new RegExp(fixture.syntheticSensitiveValue));
+    assert.match(activity.body, new RegExp(fixture.syntheticSensitiveValue));
+    assert.match(terminal, new RegExp(fixture.syntheticSensitiveValue));
   }
 });
 
