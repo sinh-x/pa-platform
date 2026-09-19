@@ -26,6 +26,41 @@ export interface TeamStatusSummary {
   total: number;
 }
 
+const NATURAL_TOKEN = /\d+|\D+/g;
+const DECIMAL_TOKEN = /^\d+$/;
+
+/** Compare ticket IDs without locale or numeric-range dependent behavior. */
+export function compareTicketIds(left: string, right: string): number {
+  if (left === right) return 0;
+
+  // Tokenizing the full ID compares ordinary prefixes alphabetically and every
+  // digit run numerically, including the terminal suffix of a standard ID.
+  const leftTokens = left.match(NATURAL_TOKEN) ?? [left];
+  const rightTokens = right.match(NATURAL_TOKEN) ?? [right];
+  const length = Math.min(leftTokens.length, rightTokens.length);
+  for (let index = 0; index < length; index++) {
+    const leftToken = leftTokens[index]!;
+    const rightToken = rightTokens[index]!;
+    const tokenOrder = DECIMAL_TOKEN.test(leftToken) && DECIMAL_TOKEN.test(rightToken)
+      ? compareDecimalStrings(leftToken, rightToken)
+      : compareRawText(leftToken, rightToken);
+    if (tokenOrder !== 0) return tokenOrder;
+  }
+  if (leftTokens.length !== rightTokens.length) return leftTokens.length < rightTokens.length ? -1 : 1;
+  return compareRawText(left, right);
+}
+
+function compareDecimalStrings(left: string, right: string): number {
+  const normalizedLeft = left.replace(/^0+(?=\d)/, "");
+  const normalizedRight = right.replace(/^0+(?=\d)/, "");
+  if (normalizedLeft.length !== normalizedRight.length) return normalizedLeft.length < normalizedRight.length ? -1 : 1;
+  return compareRawText(normalizedLeft, normalizedRight);
+}
+
+function compareRawText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function buildBoardView(project?: string, filters: Omit<TicketListFilters, "project" | "status" | "type" | "tags" | "search"> = {}): BoardView {
   const tickets = new TicketStore().list({ project, ...filters });
   const runningTicketIds = new Set(queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && deployment.ticket_id).map((deployment) => deployment.ticket_id!));
@@ -37,12 +72,11 @@ export function buildBoardView(project?: string, filters: Omit<TicketListFilters
     const assignee = ticket.assignee || "unassigned";
     assigneeCounts[assignee] = (assigneeCounts[assignee] ?? 0) + 1;
   }
-  const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 } as const;
   return {
     project: project ?? "all",
     columns: BOARD_COLUMNS.map((status) => {
       const columnTickets = grouped.get(status)!;
-      columnTickets.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+      columnTickets.sort((a, b) => compareTicketIds(a.id, b.id));
       return { status, tickets: columnTickets, count: columnTickets.length };
     }),
     total: tickets.length,

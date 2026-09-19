@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildFocusList, closeDb, deriveDocRefTitle, formatDocRefBadge, matchAssignee, parseDocRefValue, TicketStore, buildBoardView, computeSprintMetrics } from "../index.js";
+import { buildFocusList, closeDb, compareTicketIds, deriveDocRefTitle, formatDocRefBadge, matchAssignee, parseDocRefValue, TicketStore, buildBoardView, computeSprintMetrics } from "../index.js";
 
 function withTicketEnv(fn: (root: string, ticketsDir: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "pa-core-ticket-parity-"));
@@ -89,6 +89,56 @@ test("board, focus, and metrics build from TicketStore", () => {
     assert.equal(metrics.throughput, 1);
     assert.equal(metrics.velocityPoints, 2);
   });
+});
+
+test("board sorts every status group by deterministic natural ticket ID", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    mkdirSync(ticketsDir, { recursive: true });
+    const writeTicket = (file: string, id: string, status: "implementing" | "pending-approval", priority: "critical" | "high" | "medium" | "low") => {
+      writeFileSync(join(ticketsDir, `${file}.json`), JSON.stringify({
+        id,
+        project: id.startsWith("PA-") ? "personal" : "pa-platform",
+        title: id,
+        status,
+        priority,
+        type: "task",
+        assignee: "builder/team-manager",
+        tags: [],
+        createdAt: "2026-09-17T00:00:00.000Z",
+        updatedAt: "2026-09-17T00:00:00.000Z",
+      }));
+    };
+
+    writeTicket("standard-1", "PAP-10", "implementing", "critical");
+    writeTicket("standard-2", "PAP-2", "implementing", "low");
+    writeTicket("standard-3", "PAP-002", "implementing", "high");
+    writeTicket("standard-4", "PA-10", "implementing", "medium");
+    writeTicket("standard-5", "PA-2", "implementing", "medium");
+    writeTicket("fallback-1", "TASK-item10", "pending-approval", "high");
+    writeTicket("fallback-2", "TASK-item2", "pending-approval", "medium");
+    writeTicket("fallback-3", "TASK-item02", "pending-approval", "low");
+
+    const sequences = Array.from({ length: 10 }, () => buildBoardView().columns.map((column) => column.tickets.map((ticket) => ticket.id)));
+    assert.deepEqual(sequences.slice(1), Array(9).fill(sequences[0]), "10 consecutive builds return identical sequences");
+
+    const board = buildBoardView();
+    const implementing = board.columns.find((column) => column.status === "implementing")!;
+    assert.deepEqual(implementing.tickets.map((ticket) => ticket.id), ["PA-2", "PA-10", "PAP-002", "PAP-2", "PAP-10"]);
+    assert.deepEqual(implementing.tickets.slice(-2).map((ticket) => ticket.priority), ["low", "critical"], "priority metadata remains but cannot override ID order");
+
+    const pendingApproval = board.columns.find((column) => column.status === "pending-approval")!;
+    assert.deepEqual(pendingApproval.tickets.map((ticket) => ticket.id), ["TASK-item02", "TASK-item2", "TASK-item10"]);
+    assert.deepEqual(board.columns.map((column) => column.status), ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]);
+    assert.equal(board.total, 8);
+  });
+});
+
+test("ticket ID comparison handles arbitrary-size suffixes and raw-text ties", () => {
+  assert.equal(compareTicketIds("PAP-2", "PAP-10"), -1);
+  assert.equal(compareTicketIds("PAP-999999999999999999999999999999", "PAP-1000000000000000000000000000000"), -1);
+  assert.equal(compareTicketIds("PAP-002", "PAP-2"), -1);
+  assert.equal(compareTicketIds("TASK-item2", "TASK-item10"), -1);
+  assert.equal(compareTicketIds("TASK-item02", "TASK-item2"), -1);
 });
 
 test("tickets validate and store linked git branches and commits", () => {

@@ -319,6 +319,8 @@ Build a kanban-style board view grouped by status.
 
 `BoardView` includes `project`, `columns`, `total`, and `assigneeCounts`.
 
+Within each status group, tickets are sorted by natural ascending ticket ID.
+
 **Error codes:**
 
 | HTTP | Code | Condition |
