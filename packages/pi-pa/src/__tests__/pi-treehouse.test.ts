@@ -30,7 +30,7 @@ test("Treehouse JSON boundary acquires on zero, reuses one, and rejects duplicat
   const lease = { path: "/tmp/treehouse/one", leased: true, lease_id: "lease-1", lease_holder: "pa:registered:PAP-1", leased_at: "2026-09-17T00:00:00Z" };
   const acquire = new TreehouseClient({ run: (args) => {
     calls.push([...args]);
-    return args[0] === "status" ? result({ worktrees: [] }) : result(lease);
+    return args[0] === "status" ? result([]) : result(lease);
   } });
   assert.equal(deriveTreehouseLeaseHolder("registered", "PAP-1"), "pa:registered:PAP-1");
   assert.deepEqual(acquire.acquireOrReuse("/repo", "registered", "PAP-1"), { path: lease.path, leaseId: "lease-1", leaseHolder: "pa:registered:PAP-1", leasedAt: "2026-09-17T00:00:00Z" });
@@ -39,45 +39,43 @@ test("Treehouse JSON boundary acquires on zero, reuses one, and rejects duplicat
   let getCalled = false;
   const reuse = new TreehouseClient({ run: (args) => {
     if (args[0] === "get") getCalled = true;
-    return result({ worktrees: [lease] });
+    return result([lease]);
   } });
   assert.equal(reuse.acquireOrReuse("/repo", "registered", "PAP-1").leaseId, "lease-1");
   assert.equal(getCalled, false);
 
-  const absentFlagLeased = new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, leased: undefined }] }) });
+  const absentFlagLeased = new TreehouseClient({ run: () => result([{ ...lease, leased: undefined }]) });
   assert.equal(absentFlagLeased.status("/repo")[0]?.leased, true, "v2.3.0 status without the flag infers a lease only from complete metadata");
-  const absentFlagFree = new TreehouseClient({ run: () => result({ worktrees: [{ path: "/tmp/treehouse/free" }] }) });
+  const absentFlagFree = new TreehouseClient({ run: () => result([{ path: "/tmp/treehouse/free" }]) });
   assert.deepEqual(absentFlagFree.status("/repo"), [{ path: "/tmp/treehouse/free", leased: false }]);
-  for (const fixture of [
-    { ...lease, leased: false },
-    { ...lease, lease_holder: undefined },
-  ]) {
-    assert.throws(
-      () => new TreehouseClient({ run: () => result({ worktrees: [fixture] }) }).status("/repo"),
-      /declares leased=false while retaining lease metadata|leased entries require both lease_id and lease_holder/,
-    );
-  }
 
-  const rejected = [
-    new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease, path: "/tmp/treehouse/two", lease_id: "lease-2" }] }) }),
-    new TreehouseClient({ run: () => result({ worktrees: [lease, { ...lease }] }) }),
-    new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, path: "relative" }] }) }),
-    new TreehouseClient({ run: () => result({ worktrees: [{ ...lease, leased: "yes" }] }) }),
-    new TreehouseClient({ run: () => result('{"worktrees":[') }),
-    new TreehouseClient({ run: () => result(Buffer.concat([Buffer.from('{"worktrees":[]}'), Buffer.from([0])])) }),
-    new TreehouseClient({ run: () => result(Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1, 0x20)) }),
+  const rejected: Array<readonly [TreehouseClient, RegExp]> = [
+    [new TreehouseClient({ run: () => result([lease, { ...lease, path: "/tmp/treehouse/two", lease_id: "lease-2" }]) }), /found 2 leases/],
+    [new TreehouseClient({ run: () => result([lease, { ...lease }]) }), /repeats path/],
+    [new TreehouseClient({ run: () => result([lease, { ...lease, path: "/tmp/treehouse/two", lease_holder: "pa:registered:PAP-2" }]) }), /repeats lease ID/],
+    [new TreehouseClient({ run: () => result([{ ...lease, path: "relative" }]) }), /absolute normalized path/],
+    [new TreehouseClient({ run: () => result([{ ...lease, leased: "yes" }]) }), /unexpected type/],
+    [new TreehouseClient({ run: () => result([{ ...lease, unexpected: true }]) }), /unexpected field/],
+    [new TreehouseClient({ run: () => result([{ ...lease, leased: false }]) }), /declares leased=false while retaining lease metadata/],
+    [new TreehouseClient({ run: () => result([{ ...lease, lease_holder: undefined }]) }), /leased entries require both lease_id and lease_holder/],
+    [new TreehouseClient({ run: () => result({ worktrees: [lease] }) }), /one top-level array/],
+    [new TreehouseClient({ run: () => result(null) }), /one top-level array/],
+    [new TreehouseClient({ run: () => result([[lease]]) }), /status\[0\] is not an object/],
+    [new TreehouseClient({ run: () => result("[") }), /not one valid UTF-8 JSON value/],
+    [new TreehouseClient({ run: () => result(Buffer.from([0x5b, 0xc3, 0x28, 0x5d])) }), /not one valid UTF-8 JSON value/],
+    [new TreehouseClient({ run: () => result(Buffer.concat([Buffer.from("[]"), Buffer.from([0])])) }), /contains NUL bytes/],
+    [new TreehouseClient({ run: () => result(Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1, 0x20)) }), /exceeded 1048576 bytes/],
   ];
-  const patterns = [/found 2 leases/, /repeats path/, /absolute normalized path/, /unexpected type/, /not one valid UTF-8 JSON value/, /contains NUL bytes/, /exceeded 1048576 bytes/];
-  for (const [index, client] of rejected.entries()) {
+  for (const [client, pattern] of rejected) {
     assert.throws(() => client.acquireOrReuse("/repo", "registered", "PAP-1"), (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, patterns[index]!);
+      assert.match(error.message, pattern);
       assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
       assert.ok(error.message.length <= 2_000);
       return true;
     });
   }
-  assert.equal(calls.some((args) => args[0] === "return"), false, "PA never invokes Treehouse return automatically");
+  assert.equal(calls.some((args) => ["return", "prune", "destroy", "force"].includes(args[0] ?? "")), false, "PA never invokes destructive Treehouse lifecycle commands");
 });
 
 test("ticketed orchestrator admits legacy unknown-base evidence through immutable planning and terminal projection", async () => {
@@ -116,8 +114,8 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     resume(opts) { return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
   };
   const leaseJson = { path: worktree, leased: true, lease_id: "lease-1", lease_holder: "pa:registered:PAP-1", leased_at: "2026-09-17T00:00:00Z" };
-  const treehouse = new TreehouseClient({ run: () => result({ worktrees: [leaseJson] }) });
-  const malformedTreehouse = new TreehouseClient({ run: () => result({ worktrees: [{ ...leaseJson, path: "relative" }] }) });
+  const treehouse = new TreehouseClient({ run: () => result([leaseJson]) });
+  const malformedTreehouse = new TreehouseClient({ run: () => result([{ ...leaseJson, path: "relative" }]) });
   const canonicalBefore = Buffer.concat([Buffer.from(git(["branch", "--show-current"], repo)), Buffer.from(git(["rev-parse", "HEAD"], repo)), execFileSync("git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: repo })]);
   try {
     const rejected = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-1", repo: "registered", timeout: 60 }, adapter, undefined, { treehouse: malformedTreehouse });

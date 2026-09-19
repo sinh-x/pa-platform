@@ -50,10 +50,10 @@ export class TreehouseClient {
 
   status(canonicalRepoRoot: string): readonly TreehouseStatusEntry[] {
     const value = parseJson(this.invoke(["status", "--json"], canonicalRepoRoot), "status --json");
-    if (!isRecord(value) || !Array.isArray(value["worktrees"]) || Object.keys(value).some((key) => key !== "worktrees")) {
-      throw treehouseError("status JSON must be one object containing only a worktrees array", "reconcile the pinned Treehouse v2.3.0 executable and retry");
+    if (!Array.isArray(value)) {
+      throw treehouseError("status JSON must be one top-level array", "reconcile the pinned Treehouse v2.3.0 executable and retry");
     }
-    const entries = value["worktrees"].map((item, index) => parseStatusEntry(item, `worktrees[${index}]`));
+    const entries = value.map((item, index) => parseStatusEntry(item, `status[${index}]`));
     rejectDuplicates(entries);
     return Object.freeze(entries);
   }
