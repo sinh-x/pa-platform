@@ -112,17 +112,27 @@ function parseStatusEntry(value: unknown, label: string): TreehouseStatusEntry {
   if (value["owner_pid"] !== undefined && (!Number.isInteger(value["owner_pid"]) || Number(value["owner_pid"]) <= 0)) throw treehouseError(`${label}.owner_pid is malformed`, "repair malformed Treehouse status evidence");
   if (value["processes"] !== undefined && !Array.isArray(value["processes"])) throw treehouseError(`${label}.processes has an unexpected type`, "repair malformed Treehouse status evidence");
   const path = absolutePath(requiredField(value["path"], `${label}.path`), `${label}.path`);
-  const leaseId = optionalField(value["lease_id"], `${label}.lease_id`);
-  const leaseHolder = optionalField(value["lease_holder"], `${label}.lease_holder`);
+  const leaseId = optionalLeaseIdentityField(value["lease_id"], `${label}.lease_id`);
+  const leaseHolder = optionalLeaseIdentityField(value["lease_holder"], `${label}.lease_holder`);
   const leasedAt = optionalTimestamp(value["leased_at"], `${label}.leased_at`);
   const leaseFlag = value["leased"];
+  const status = value["status"];
+  const statusClaimsLease = status === "leased";
+  const statusClaimsFree = typeof status === "string" && status !== "leased";
   const hasLeaseMetadata = leaseId !== undefined || leaseHolder !== undefined || leasedAt !== undefined;
-  if (leaseFlag === false && hasLeaseMetadata) {
-    throw treehouseError(`${label} declares leased=false while retaining lease metadata`, "clear the stale lease fields or restore a truthful active lease before launch");
+  const hasCompleteIdentity = leaseId !== undefined && leaseHolder !== undefined;
+  if ((leaseFlag === false || statusClaimsFree) && hasLeaseMetadata) {
+    throw treehouseError(`${label} declares a non-leased state while retaining lease metadata`, "clear the stale lease fields or restore a truthful active lease before launch");
   }
-  const leased = leaseFlag === true || (leaseFlag === undefined && hasLeaseMetadata);
-  if (leased && (!leaseId || !leaseHolder)) {
+  if ((leaseFlag === false && statusClaimsLease) || (leaseFlag === true && statusClaimsFree)) {
+    throw treehouseError(`${label}.leased contradicts ${label}.status`, "repair contradictory Treehouse status evidence before launch");
+  }
+  const leased = leaseFlag === true || statusClaimsLease || (leaseFlag === undefined && status === undefined && hasLeaseMetadata);
+  if (leased && !hasCompleteIdentity) {
     throw treehouseError(`${label} has incomplete lease identity; leased entries require both lease_id and lease_holder`, "reconcile the Treehouse lease before launch");
+  }
+  if (!leased && (leaseId !== undefined || leaseHolder !== undefined)) {
+    throw treehouseError(`${label} has lease identity without a leased state`, "reconcile the Treehouse lease before launch");
   }
   return Object.freeze({ path, leased, ...(leaseId ? { leaseId } : {}), ...(leaseHolder ? { leaseHolder } : {}), ...(leasedAt ? { leasedAt } : {}) });
 }
@@ -178,6 +188,10 @@ function requiredField(value: unknown, label: string): string {
   return value;
 }
 function optionalField(value: unknown, label: string): string | undefined { return value === undefined || value === null ? undefined : requiredField(value, label); }
+function optionalLeaseIdentityField(value: unknown, label: string): string | undefined {
+  if (value === "") return undefined;
+  return optionalField(value, label);
+}
 function optionalTimestamp(value: unknown, label: string): string | undefined {
   const field = optionalField(value, label);
   if (field !== undefined && !Number.isFinite(Date.parse(field))) throw treehouseError(`${label} is not a valid timestamp`, "repair Treehouse JSON evidence before retrying");

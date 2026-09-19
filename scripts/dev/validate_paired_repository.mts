@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { classifyRepositoryAccess, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences } from "../../packages/pa-core/src/index.js";
+import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
   configRoot: string;
@@ -17,35 +17,75 @@ function git(root: string, args: string[]): string {
   }
 }
 
-function validateRepositoryContracts(configRoot: string): void {
+const planFirstRequirementsModes = ["analyze", "analyze-auto", "spike"] as const;
+
+function validatePlanFirstRequirementsContracts(configRoot: string): number {
+  const requirements = parseTeamYamlContent(readFileSync(resolve(configRoot, "teams", "requirements.yaml"), "utf8"));
+  const configuredModes = new Set(requirements.deploy_modes?.map((mode) => mode.id) ?? []);
+  const requiredCases = [
+    ["canonical ticket/base/branch plan", /record(?:s|ed|ing)?[\s\S]{0,1400}canonical `?repo_key`?\/?`?repo_root`?[\s\S]{0,1400}exact ticket[\s\S]{0,1400}approved full base SHA[\s\S]{0,1400}exact (?:linked |feature )?(?:feature )?branch[\s\S]{0,1400}`?planned`?[\s\S]{0,1400}`?create`?/iu],
+    ["no requirements-time checkout prerequisite", /(?:(?:requires? no|does not supply or require|must not require)[\s\S]{0,320}requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease|requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease[\s\S]{0,320}neither required nor accepted)/iu],
+    ["zero requirements lifecycle or branch action", /Requirements[\s\S]{0,480}(?:performs?|perform)[\s\S]{0,240}(?:no (?:Treehouse )?checkout lifecycle operation|no checkout acquire)[\s\S]{0,320}no branch action/iu],
+    ["builder-owned ordered materialization", /trusted PPA builder\/orchestrator launcher[\s\S]{0,640}reserve(?:s)?[^.\n]{0,160}capacity[\s\S]{0,640}acquire(?:s)? or reuse(?:s)?[\s\S]{0,320}authenticat(?:e|es)[\s\S]{0,5000}(?:ordinary-Git|branch materialization)[\s\S]{0,3600}(?:persist|durable)[\s\S]{0,1800}(?:implementation spawn|builder child\/runtime spawn|spawns? implementation)/iu],
+    ["one-lineage/four-ticket capacity", /one active builder lineage per repository\/ticket[\s\S]{0,240}(?:at most|max(?:imum)? of) four active ticket checkouts per canonical repository/iu],
+    ["operator-only return", /only Sinh\/operator[\s\S]{0,240}(?:return the checkout|approve checkout return|return of the Treehouse checkout)[\s\S]{0,240}explicit approval/iu],
+    ["adapter and runtime-authority boundaries", /(?=[\s\S]*OPA(?:\/OpenCode)?[\s\S]{0,160}CPA(?:\/Claude Code)?[\s\S]{0,240}no Treehouse (?:behavior )?claim)(?=[\s\S]*PAP-189 runtime)(?=[\s\S]*PAP-215)[\s\S]+/iu],
+  ] as const;
+  const prohibited = [
+    "Operator-Prepared Checkout Evidence:",
+    "For Pi/PPA with an authenticated operator-prepared ticket checkout, requirements must use the distinct authenticated worktree_root.",
+    "A builder-bound Pi/PPA handoff must carry authenticated worktree_root and operator-prepared checkout evidence before orchestrator dispatch.",
+    "Requirements must carry Treehouse lease, holder, ticket slot, and repository permit evidence before builder launch.",
+    "Sinh/operator must prepare and authenticate the checkout before requirements analysis.",
+  ] as const;
+
+  for (const mode of planFirstRequirementsModes) {
+    if (!configuredModes.has(mode)) throw new Error(`requirements/${mode}: plan-first mode is not configured`);
+    const primer = generatePrimer({
+      runtime: "pi",
+      teamConfig: requirements,
+      mode,
+      objective: `Validate plan-first requirements behavior for ${mode}.`,
+      repository: { repoKey: "pa-platform-config", repoRoot: configRoot },
+      resolveFile: (relativePath) => resolve(configRoot, relativePath),
+      skillsDir: resolve(configRoot, "skills", "global"),
+      templateVars: { DEPLOY_ID: `paired-${mode}`, TEAM_NAME: "requirements", TICKET_ID: "PAPC-024", TODAY: "2026-09-19" },
+    });
+    for (const [label, pattern] of requiredCases) {
+      if (!pattern.test(primer)) throw new Error(`requirements/${mode}: generated primer is missing plan-first contract: ${label}`);
+    }
+    for (const stale of prohibited) {
+      if (primer.includes(stale)) throw new Error(`requirements/${mode}: generated primer restores a requirements-time checkout prerequisite`);
+    }
+  }
+  return planFirstRequirementsModes.length;
+}
+
+function validateRepositoryContracts(configRoot: string): number {
   const orchestratorPath = resolve(configRoot, "teams", "builder", "modes", "orchestrator.md");
   const orchestrator = readFileSync(orchestratorPath, "utf8");
-  const branchOutcomes = [
-    "| Already on the exact ticket branch with zero status entries | Proceed. |",
-    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
-    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
-    "| Any dirty state | Preserve it; classify ticket relationship, propose preserve/wait/stop, and ask Sinh before Git or project-file mutation. |",
-    "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
-    "| On the release branch or any unrelated branch | Stop unchanged. |",
-    "| Detached HEAD | Stop unchanged. |",
-  ];
-  for (const outcome of branchOutcomes) {
-    if (!orchestrator.includes(outcome)) throw new Error(`Paired orchestrator is missing branch-gate outcome: ${outcome}`);
+  const ppaBranchContracts = [
+    ["plan-only requirements handoff", /approved requirements plan supplies only canonical `repo_key`\/`repo_root`[\s\S]{0,320}approved full base SHA[\s\S]{0,320}`planned` state[\s\S]{0,160}`create` action[\s\S]{0,320}does not supply or require a requirements-time builder checkout, worktree, or lease/iu],
+    ["builder-owned checkout acquisition", /trusted PPA launcher reserves capacity, acquires or reuses and authenticates the distinct Treehouse ticket checkout/iu],
+    ["planned create and materialized select", /Branch evidence is planned or materialized for the exact linked branch[\s\S]{0,480}ordinary Git[\s\S]{0,320}create the exact planned branch[\s\S]{0,320}select the exact materialized branch/iu],
+    ["one-lineage/four-ticket capacity", /one active builder lineage per repository\/ticket and at most four active ticket checkouts per canonical repository/iu],
+    ["mismatch rejection", /conflicting identity, ticket, branch state, base, branch, action, lineage, or capacity evidence rejects before project-file or branch mutation and before builder child\/runtime spawn/iu],
+    ["non-Pi branch boundary", /OPA\/OpenCode and CPA\/Claude Code[\s\S]{0,240}supported non-Treehouse seven-state branch behavior[\s\S]{0,320}no Treehouse claim/iu],
+  ] as const;
+  for (const [label, pattern] of ppaBranchContracts) {
+    if (!pattern.test(orchestrator)) throw new Error(`Paired orchestrator is missing PPA branch-gate contract: ${label}`);
   }
-  if (!orchestrator.includes("Use `opa branch create`")) throw new Error("Paired orchestrator must use the retained branch creation command");
-  if (!orchestrator.includes("a direct checkout only for the existing exact branch outcome")) throw new Error("Paired orchestrator must limit checkout to the existing exact ticket branch");
-  if (!orchestrator.includes("Every stop preserves observed state before project-file mutation or child launch")) throw new Error("Paired orchestrator must preserve state before mutation or child launch");
 
   const dirtyBorrowRequiredCases = [
     ["default rejection and narrow exception", /default dirty-background rejection remains fail-closed[\s\S]{0,240}only dirty-background exception/iu],
     ["authenticated direct implement lineage", /one runtime-authenticated direct `builder\/implement` child[\s\S]{0,240}process-verified, registry-running `builder\/orchestrator`/iu],
     ["complete classified path set", /complete NUL-safe porcelain-v2 path\/status metadata set[\s\S]{0,240}active-ticket work/iu],
-    ["approval identity and action bindings", /canonical repository key\/root, ticket, exact linked branch, full HEAD[\s\S]{0,320}exactly one delegated action[\s\S]{0,80}`commit` or `cleanup`/iu],
+    ["approval identity and action bindings", /canonical repository key\/root,(?: authenticated worktree root,)? ticket, exact linked branch, full HEAD[\s\S]{0,320}exactly one delegated action[\s\S]{0,80}`commit` or `cleanup`/iu],
     ["metadata-only hash boundary", /File contents are not part of the approval hash/iu],
     ["two unchanged rereads", /immediate pre-intent reread[\s\S]{0,160}mutex-serialized admission reread[\s\S]{0,240}(?:difference|change)[\s\S]{0,160}reject before spawn/iu],
     ["delegated scope and custody", /touch only the approved path set for the approved action[\s\S]{0,240}parent (?:must not|neither) mutate[\s\S]{0,160}sibling[\s\S]{0,160}child (?:must not|cannot) delegate/iu],
     ["parent accountability", /parent retains phase acceptance and commit\/cleanup accountability/iu],
-    ["matching idempotent finalization", /matching finalization[\s\S]{0,240}exact final Git snapshot[\s\S]{0,240}clears only matching[\s\S]{0,240}retains authority[\s\S]{0,240}releases[\s\S]{0,240}idempotent/iu],
+    ["matching idempotent finalization", /matching (?:PA authority )?finalization(?=[\s\S]{0,1600}(?:exact final (?:Git )?snapshot|publishes the exact final snapshot))(?=[\s\S]{0,1600}clears only matching)(?=[\s\S]{0,1600}retains authority|[\s\S]{0,1600}retains (?:a )?(?:matching )?(?:live )?parent)(?=[\s\S]{0,1600}releases?)(?=[\s\S]{0,1600}idempotent)/iu],
     ["protected evidence bounds", /one-use[\s\S]{0,160}(?:mode[- ]`0600`|mode `0600`)[\s\S]{0,160}(?:at most|max(?:imum)?)[- ]65,536 bytes[\s\S]{0,200}non-user-visible|non-user-visible[\s\S]{0,200}one-use[\s\S]{0,160}(?:mode[- ]`0600`|mode `0600`)[\s\S]{0,160}(?:at most|max(?:imum)?)[- ]65,536 bytes/iu],
     ["forbidden lineage and bypasses", /sibling[\s\S]{0,160}descendant[\s\S]{0,160}(?:unrelated builder|unrelated-builder)[\s\S]{0,240}(?:public|force)[\s\S]{0,240}bypass/iu],
     ["config-first pairing", /PAPC-017[\s\S]{0,240}PAP-191[\s\S]{0,240}merged `develop` SHA[\s\S]{0,240}(?:do not prove|does not prove|not runtime-admission success)/iu],
@@ -75,28 +115,45 @@ function validateRepositoryContracts(configRoot: string): void {
     "teams/builder/modes/worker.md",
     "skills/templates/builder-objective.md",
   ] as const;
-  const affirmativeClauses = [
-    ["requirements bypass", /Every `requirements\/\*` mode bypasses dirty-state inspection and repository-ownership admission, including while a live builder owns the same canonical repository/iu],
-    ["dirty foreground admission", /Foreground admission permits a dirty canonical checkout for every `builder\/\*` mode, including `builder\/orchestrator`/iu],
-    ["dirty foreground re-evaluation", /After a dirty foreground launch, re-evaluate the current branch, full HEAD, and complete staged, unstaged, and untracked status/iu],
-    ["dirty foreground intent question", /Classify whether each observed change belongs to the active ticket, propose one concrete preserve, wait, or stop action, and ask Sinh before any agent-initiated Git mutation or project-file mutation/iu],
-    ["dirty foreground re-read", /Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again/iu],
-    ["dirty background rejection", /Dirty background `builder\/\*` deployments reject before runtime spawn and leave no ownership evidence/iu],
-    ["verified-live ppa/opa ownership", /Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`/iu],
-    ["verified-live force boundary", /`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live (?:owner or borrower authority|ownership)/iu],
+  const universalAdmissionClauses = [
+    ["requirements read-only admission", /Every `requirements\/\*` mode (?:bypasses dirty-state inspection and repository-ownership admission, including while a live builder (?:owns the same canonical repository|lineage exists)|uses canonical `repo_root` as its read-only analysis root[\s\S]{0,320}(?:creates|create),? (?:borrows|borrow),? (?:transfers|transfer),? (?:modifies|modify),? or (?:removes|remove) no (?:repository lease or )?builder authority|retains its read-only status-and-ownership bypass[\s\S]{0,240}(?:creates|create),? (?:borrows|borrow),? (?:transfers|transfer),? (?:modifies|modify),? or (?:removes|remove) no repository lease)/iu],
+    ["one-lineage/four-ticket ownership", /one active builder lineage per (?:canonical )?repository\/ticket[\s\S]{0,240}at most four active ticket checkouts per canonical repository/iu],
+    ["verified-live force boundary", /(?:`--force` (?:recovery )?applies only to stale or malformed (?:ownership )?evidence and never overrides (?:a )?process-verified live (?:owner or borrower authority|ownership|parented family or standalone execution holder|holder)|`--force` never overrides a live holder)/iu],
+  ] as const;
+  const dirtyBuilderClauses = [
+    ["dirty foreground admission", /(?:Foreground admission permits (?:a dirty canonical checkout|dirty-state handling) for every `builder\/\*` mode, including `builder\/orchestrator`|Foreground dirty-state handling remains classify-propose-ask-reread|Foreground builders may launch dirty only under the classify\/propose\/ask\/re-read contract)/iu],
+    ["dirty foreground re-evaluation", /(?:After a dirty foreground launch|Foreground dirty-state handling[\s\S]{0,240})[\s\S]{0,240}re-evaluate (?:the current )?branch, full HEAD, and complete staged, unstaged, and untracked status/iu],
+    ["dirty foreground intent question", /(?:Classify whether each observed change belongs to the active ticket|classify every change)[\s\S]{0,160}propose (?:one concrete )?preserve, wait, or stop[\s\S]{0,160}ask Sinh before (?:any agent-initiated )?Git (?:mutation )?or project-file mutation/iu],
+    ["dirty foreground re-read", /(?:Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again|reread immediately before an approved action[\s\S]{0,160}changed state or scope requires a fresh decision)/iu],
+    ["dirty background rejection", /(?:Dirty background `builder\/\*` deployments reject before runtime spawn[\s\S]{0,320}(?:leave|leaves) no ownership evidence|default dirty-background rejection remains fail-closed)/iu],
+  ] as const;
+  const dirtyBuilderSurfaces = [
+    "docs/runtime-neutral-config.md",
+    "teams/builder.yaml",
+    "teams/builder/modes/implement.md",
+    "teams/builder/modes/orchestrator.md",
+    "skills/templates/builder-objective.md",
   ] as const;
   const retiredBlanketContract = /no per-mode repository access class|(?:leases|repository ownership).{0,160}not part of the active contract|repository admission.{0,120}(?:does not exist|is not part of the active contract)/is;
   for (const relativePath of contractSurfaces) {
     const content = readFileSync(resolve(configRoot, relativePath), "utf8");
-    for (const [label, pattern] of affirmativeClauses) {
+    for (const [label, pattern] of universalAdmissionClauses) {
       if (!pattern.test(content)) throw new Error(`${relativePath}: missing affirmative ${label} clause`);
     }
     if (retiredBlanketContract.test(content)) throw new Error(`${relativePath}: contains retired blanket no-admission/no-ownership semantics`);
   }
-  const runtimeNeutral = readFileSync(resolve(configRoot, "docs", "runtime-neutral-config.md"), "utf8");
-  if (!runtimeNeutral.includes("PA-managed worktrees") || !runtimeNeutral.includes("sandbox access classes")) {
-    throw new Error("Paired configuration must retain the no-worktree/no-sandbox orchestration contract");
+  for (const relativePath of dirtyBuilderSurfaces) {
+    const content = readFileSync(resolve(configRoot, relativePath), "utf8");
+    for (const [label, pattern] of dirtyBuilderClauses) {
+      if (!pattern.test(content)) throw new Error(`${relativePath}: missing affirmative ${label} clause`);
+    }
   }
+  const runtimeNeutral = readFileSync(resolve(configRoot, "docs", "runtime-neutral-config.md"), "utf8");
+  if (!/no requirements-time authenticated builder checkout, worktree, lease, holder, ticket slot, or repository permit is required/iu.test(runtimeNeutral)
+    || !/PAP-215 owns plan-first Treehouse[\s\S]{0,240}must pin the exact merged PAPC-024 `develop` SHA/iu.test(runtimeNeutral)) {
+    throw new Error("Paired configuration must retain the plan-first requirements/builder materialization boundary");
+  }
+  return validatePlanFirstRequirementsContracts(configRoot);
 }
 
 export function validatePairedRepository(options: PairedValidationOptions): string[] {
@@ -111,7 +168,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     const result = spawnSync("git", ["-C", configRoot, "merge-base", "--is-ancestor", expectedSha, "origin/develop"], { stdio: "ignore" });
     if (result.status !== 0) throw new Error(`pa-platform-config ${expectedSha} is not contained in origin/develop; merge the config prerequisite first`);
   }
-  validateRepositoryContracts(configRoot);
+  const planFirstPrimerCount = validateRepositoryContracts(configRoot);
 
   const teamFiles = readdirSync(resolve(configRoot, "teams"))
     .filter((name) => name.endsWith(".yaml") && name !== "example.yaml")
@@ -169,8 +226,10 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     `REQUIREMENTS_READ_ONLY=${requirementsReadOnlyCount}/11`,
     `OTHER_NON_LOCKING=${otherNonLockingCount}/42`,
     `REPOSITORY_ADMISSION_MATRIX=${modeCount}/59`,
-    "BRANCH_GATE=7/7",
-    "NO_WORKTREE_ORCHESTRATION=true",
+    "PPA_BRANCH_GATE=6/6",
+    `PLAN_FIRST_REQUIREMENTS_PRIMERS=${planFirstPrimerCount}/${planFirstRequirementsModes.length}`,
+    "REQUIREMENTS_TIME_CHECKOUT_PREREQUISITES=0",
+    "BUILDER_OWNED_TREEHOUSE_MATERIALIZATION=true",
     "DIRTY_DIRECT_BORROW_POLICY=6/6",
     "DIRTY_DIRECT_BORROWER_EXCEPTION=1/1",
     "GENERAL_DIRTY_BACKGROUND_REJECTION=true",

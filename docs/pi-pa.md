@@ -37,6 +37,16 @@ delete branches, clean checkouts, or claim filesystem sandboxing.
 
 ### Prepare the ticket branch intent
 
+Requirements analysis is plan-first. It runs read-only at the canonical repository
+root and records only the canonical repository key/root, exact ticket, approved
+full base SHA, exact feature branch, `planned` state, and `create` action. It does
+not require or accept a builder checkout, worktree, lease, holder, ticket slot,
+or repository permit, and it performs no Treehouse lifecycle or branch action.
+After approval, the trusted PPA builder/orchestrator launcher owns capacity
+reservation, checkout acquire-or-reuse and authentication, exact branch
+action, durable correlation, and implementation spawn. OPA/OpenCode and
+CPA/Claude Code retain non-Treehouse behavior and make no Treehouse claim.
+
 Record exactly one ticket branch before launch:
 
 ```bash
@@ -79,8 +89,12 @@ ppa deploy builder --mode orchestrator --ticket PAP-189
 PPA never accepts an explicit worktree path. It requires one matching lease and
 checks path, lease ID, holder, Git top-level, Git dir/common dir, registered
 worktree membership, ticket branch, and HEAD before runtime preflight or spawn.
-Malformed, duplicate, unexpected, truncated, or over-1-MiB JSON fails closed;
-human output is not evidence. A branch/HEAD/status drift or partial failure
+Treehouse v2.3.0 free status rows are valid when their non-`leased` status is
+paired with `lease_id: ""`, `lease_holder: ""`, and `leased_at: null`; PPA then
+makes exactly one bounded lease-acquisition call. Leased rows still require a
+complete non-empty lease ID and holder. Contradictory, malformed, duplicate,
+unexpected, truncated, or over-1-MiB JSON fails closed; human output is not
+evidence. A branch/HEAD/status drift or partial failure
 starts no Pi worker, automatically finalizes only matching PA evidence, and
 preserves the Treehouse lease and branch for inspection. Diagnostics name the
 condition, source, reason, correction, and resume action and are bounded to
@@ -137,6 +151,18 @@ command to retry, prune, or destroy it.
 All named fixtures create temporary Git repositories, Treehouse responses, PA
 homes, ticket stores, and registry databases. They do not use or return a live
 Treehouse checkout.
+
+### PAP-215 plan-first integration evidence
+
+PAP-215 pins merged `pa-platform-config/develop` commit
+`d82429b9f88efadba5ddafa1829e250f5731ad02`. Paired validation generates the
+`requirements/analyze`, `requirements/analyze-auto`, and `requirements/spike`
+primers and requires canonical ticket/base/branch planning, zero
+requirements-time checkout prerequisites, builder-owned materialization,
+one-lineage/four-ticket capacity, operator-only return, and non-Pi/runtime
+boundaries. A negative fixture restores a stale operator-prepared-checkout
+prerequisite and must be rejected. This paired evidence does not itself prove
+PAP-189 runtime enforcement or grant post-cap review authority.
 
 ## Bundled Editor Selection and Composition
 

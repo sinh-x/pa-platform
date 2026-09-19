@@ -25,16 +25,40 @@ const admissionContract = [
   "Classify whether each observed change belongs to the active ticket, propose one concrete preserve, wait, or stop action, and ask Sinh before any agent-initiated Git mutation or project-file mutation.",
   "Immediately before an approved action, re-read branch, HEAD, and status; if repository state or proposed scope changed, ask Sinh again.",
   "Dirty background `builder/*` deployments reject before runtime spawn and leave no ownership evidence.",
-  "Exactly one process-verified live builder may own an exact canonical repository across `ppa` and `opa`.",
+  "Admission permits one active builder lineage per canonical repository/ticket and at most four active ticket checkouts per canonical repository.",
   "`--force` recovery applies only to stale or malformed ownership evidence and never overrides process-verified live ownership.",
   "Execution remains direct: PA-managed worktrees and sandbox access classes are prohibited.",
   dirtyBorrowPolicy,
   "",
 ].join("\n");
 
+const planFirstRequirementsContract = [
+  "Requirements records canonical `repo_key`/`repo_root`, exact ticket, approved full base SHA, exact feature branch, `planned` state, and `create` action.",
+  "A requirements-time builder checkout, worktree, and lease are neither required nor accepted as a handoff prerequisite.",
+  "Requirements performs no Treehouse checkout lifecycle operation and no branch action.",
+  "The trusted PPA builder/orchestrator launcher reserves capacity, acquires or reuses and authenticates the checkout, performs ordinary-Git branch materialization, persists durable correlation evidence, and only then spawns implementation.",
+  "Admission permits one active builder lineage per repository/ticket and at most four active ticket checkouts per canonical repository.",
+  "Only Sinh/operator may return the checkout after explicit approval.",
+  "OPA/OpenCode and CPA/Claude Code make no Treehouse behavior claim. Config wording does not prove PAP-189 runtime enforcement; PAP-215 owns paired runtime enforcement.",
+  "",
+].join("\n");
+
+const ppaBranchContract = [
+  "For Pi/PPA, the approved requirements plan supplies only canonical `repo_key`/`repo_root`, exact ticket, approved full base SHA, exact linked branch, `planned` state, and `create` action. It does not supply or require a requirements-time builder checkout, worktree, or lease.",
+  "At builder/orchestrator launch, the trusted PPA launcher reserves capacity, acquires or reuses and authenticates the distinct Treehouse ticket checkout.",
+  "Branch evidence is planned or materialized for the exact linked branch. The orchestrator alone may use ordinary Git to create the exact planned branch from its approved base, or select the exact materialized branch.",
+  "Admission permits one active builder lineage per repository/ticket and at most four active ticket checkouts per canonical repository.",
+  "Any conflicting identity, ticket, branch state, base, branch, action, lineage, or capacity evidence rejects before project-file or branch mutation and before builder child/runtime spawn.",
+  "OPA/OpenCode and CPA/Claude Code retain supported non-Treehouse seven-state branch behavior and make no Treehouse claim.",
+  "",
+].join("\n");
+
+const planFirstRuntimeContract = "Every requirements mode uses canonical repo_root as its read-only analysis root; no requirements-time authenticated builder checkout, worktree, lease, holder, ticket slot, or repository permit is required. PAP-215 owns plan-first Treehouse runtime enforcement and must pin the exact merged PAPC-024 `develop` SHA.\n";
+
 const directBranchContract = [
   "# Orchestrator",
   admissionContract,
+  ppaBranchContract,
   "| Repository state | Outcome |",
   "|---|---|",
   "| Already on the exact ticket branch with zero status entries | Proceed. |",
@@ -54,6 +78,7 @@ function createFixture(): { root: string; sha: string } {
   const root = mkdtempSync(join(tmpdir(), "paired-config-"));
   mkdirSync(join(root, "teams", "builder", "modes"), { recursive: true });
   mkdirSync(join(root, "skills", "global"), { recursive: true });
+  mkdirSync(join(root, "skills", "requirements"), { recursive: true });
   mkdirSync(join(root, "skills", "templates"), { recursive: true });
   mkdirSync(join(root, "docs"));
   writeFileSync(join(root, "config.yaml"), "config_dir: .\n");
@@ -64,7 +89,10 @@ function createFixture(): { root: string; sha: string } {
   writeFileSync(join(root, "teams", "builder", "modes", "orchestrator.md"), directBranchContract);
   writeFileSync(join(root, "skills", "templates", "builder-objective.md"), `# Builder Objective\n${admissionContract}`);
   writeFileSync(join(root, "skills", "templates", "orchestration-report.md"), `# Orchestration Report\n${admissionContract}The report never records receipt IDs, approval references, tokens, digests, raw receipts, or process fingerprints.\n`);
-  writeFileSync(join(root, "docs", "runtime-neutral-config.md"), `# Runtime-Neutral Configuration\n${admissionContract}`);
+  writeFileSync(join(root, "docs", "runtime-neutral-config.md"), `# Runtime-Neutral Configuration\n${admissionContract}${planFirstRuntimeContract}`);
+  for (const mode of ["analyze", "analyze-auto", "spike"]) {
+    writeFileSync(join(root, "skills", "requirements", `${mode}-objective.md`), `# ${mode}\n${planFirstRequirementsContract}`);
+  }
   const teams = [
     ["builder", 6],
     ["requirements", 11],
@@ -78,9 +106,13 @@ function createFixture(): { root: string; sha: string } {
     ["sprint-master", 4],
   ] as const;
   for (const [teamName, count] of teams) {
-    const modes = Array.from({ length: count }, (_, modeIndex) => [
-      `  - id: mode-${modeIndex}`,
+    const modeIds = teamName === "requirements"
+      ? ["analyze", "analyze-auto", "spike", ...Array.from({ length: count - 3 }, (_, index) => `mode-${index}`)]
+      : Array.from({ length: count }, (_, index) => `mode-${index}`);
+    const modes = modeIds.map((modeId, modeIndex) => [
+      `  - id: ${modeId}`,
       `    label: Mode ${modeIndex}`,
+      ...(["analyze", "analyze-auto", "spike"].includes(modeId) ? [`    objective: skills/requirements/${modeId}-objective.md`] : []),
       "    provider: openai",
       "    model: openai/gpt-test",
     ].join("\n")).join("\n");
@@ -107,11 +139,27 @@ test("paired repository gate accepts the exact clean 10-team/59-mode checkout", 
     assert.ok(evidence.includes("REQUIREMENTS_READ_ONLY=11/11"));
     assert.ok(evidence.includes("OTHER_NON_LOCKING=42/42"));
     assert.ok(evidence.includes("REPOSITORY_ADMISSION_MATRIX=59/59"));
-    assert.ok(evidence.includes("BRANCH_GATE=7/7"));
-    assert.ok(evidence.includes("NO_WORKTREE_ORCHESTRATION=true"));
+    assert.ok(evidence.includes("PPA_BRANCH_GATE=6/6"));
+    assert.ok(evidence.includes("PLAN_FIRST_REQUIREMENTS_PRIMERS=3/3"));
+    assert.ok(evidence.includes("REQUIREMENTS_TIME_CHECKOUT_PREREQUISITES=0"));
+    assert.ok(evidence.includes("BUILDER_OWNED_TREEHOUSE_MATERIALIZATION=true"));
     assert.ok(evidence.includes("DIRTY_DIRECT_BORROW_POLICY=6/6"));
     assert.ok(evidence.includes("DIRTY_DIRECT_BORROWER_EXCEPTION=1/1"));
     assert.ok(evidence.includes("GENERAL_DIRTY_BACKGROUND_REJECTION=true"));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("paired repository gate rejects requirements-time checkout prerequisites", () => {
+  const fixture = createFixture();
+  try {
+    const path = join(fixture.root, "skills", "requirements", "analyze-objective.md");
+    writeFileSync(path, `${readFileSync(path, "utf8")}\nA builder-bound Pi/PPA handoff must carry authenticated worktree_root and operator-prepared checkout evidence before orchestrator dispatch.\n`);
+    git(fixture.root, "add", path);
+    git(fixture.root, "commit", "-qm", "restore stale checkout prerequisite");
+    const sha = git(fixture.root, "rev-parse", "HEAD");
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /restores a requirements-time checkout prerequisite/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -148,25 +196,25 @@ test("paired repository gate rejects incomplete direct branch contracts", () => 
   const fixture = createFixture();
   try {
     const path = join(fixture.root, "teams", "builder", "modes", "orchestrator.md");
-    writeFileSync(path, directBranchContract.replace("| Detached HEAD | Stop unchanged. |\n", ""));
+    writeFileSync(path, directBranchContract.replace("Branch evidence is planned or materialized for the exact linked branch.", "Branch evidence is unspecified."));
     git(fixture.root, "add", ".");
     git(fixture.root, "commit", "-qm", "incomplete branch gate");
     const sha = git(fixture.root, "rev-parse", "HEAD");
-    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing branch-gate outcome/);
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing PPA branch-gate contract/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("paired repository gate rejects removal of the no-worktree/no-sandbox contract", () => {
+test("paired repository gate rejects removal of the plan-first runtime boundary", () => {
   const fixture = createFixture();
   try {
     const path = join(fixture.root, "docs", "runtime-neutral-config.md");
-    writeFileSync(path, readFileSync(path, "utf8").replace("PA-managed worktrees and sandbox access classes", "managed checkout isolation"));
+    writeFileSync(path, readFileSync(path, "utf8").replace("no requirements-time authenticated builder checkout, worktree, lease, holder, ticket slot, or repository permit is required", "requirements must provide a prepared checkout and lease"));
     git(fixture.root, "add", ".");
-    git(fixture.root, "commit", "-qm", "remove no-worktree contract");
+    git(fixture.root, "commit", "-qm", "remove plan-first boundary");
     const sha = git(fixture.root, "rev-parse", "HEAD");
-    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /no-worktree\/no-sandbox/);
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /plan-first requirements\/builder materialization boundary/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -183,7 +231,7 @@ test("paired repository gate requires affirmative admission clauses rather than 
     git(fixture.root, "add", ".");
     git(fixture.root, "commit", "-qm", "negate requirements contract");
     const sha = git(fixture.root, "rev-parse", "HEAD");
-    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative requirements bypass clause/);
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: sha }), /missing affirmative requirements read-only admission clause/);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

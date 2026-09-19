@@ -37,43 +37,37 @@ test("builder orchestrator mode hard-fails without a ticket before startup", (t)
   assert.ok(noTicketRuleIndex >= 0 && startupIndex > noTicketRuleIndex);
 });
 
-test("builder orchestrator mode requires one exact registered repository identity", (t) => {
+test("builder orchestrator mode requires exact canonical and authenticated execution identities", (t) => {
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
-  assert.match(modeDoc, /`repo_key`: the resolved repository-registry key/);
-  assert.match(modeDoc, /`repo_root`: the exact configured project path/);
-  assert.match(modeDoc, /Every available identity source[\s\S]*must agree with the canonical pair and exact root/);
-  assert.match(modeDoc, /fails closed before project reads, mutations, or child\/runtime spawn/);
-  assert.match(modeDoc, /diagnostic no longer than 2,000 characters/);
+  assert.match(modeDoc, /`repo_key`: the registry-bound canonical repository key/);
+  assert.match(modeDoc, /`repo_root`: the canonical registry root/);
+  assert.match(modeDoc, /`worktree_root`: the distinct launch-time authenticated Treehouse ticket checkout/);
+  assert.match(modeDoc, /`PA_REPO`, runtime CWD, Git top-level[\s\S]{0,240}must equal authenticated `worktree_root`/);
+  assert.match(modeDoc, /unmatched checkout fails closed before project reads, project-file or branch mutation, and builder child\/runtime spawn/);
+  assert.match(modeDoc, /diagnostic is at most 2,000 JavaScript characters/);
 });
 
-test("builder orchestrator mode encodes all seven direct branch-gate outcomes", (t) => {
+test("builder orchestrator mode encodes PPA planned/materialized and non-Pi branch gates", (t) => {
   const modeDoc = readMode(t);
   if (!modeDoc) return;
-  const outcomes = [
-    "| Already on the exact ticket branch with zero status entries | Proceed. |",
-    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch is absent | Create the exact ticket branch from `develop`, then proceed. |",
-    "| On zero-entry `develop`, `develop` equals `origin/develop`, exact ticket branch exists | Check out the exact ticket branch, then proceed. |",
-    "| Any dirty state | Preserve it; classify ticket relationship, propose preserve/wait/stop, and ask Sinh before Git or project-file mutation. |",
-    "| `develop` is ahead, behind, or diverged from `origin/develop` | Stop unchanged. |",
-    "| On the release branch or any unrelated branch | Stop unchanged. |",
-    "| Detached HEAD | Stop unchanged. |",
-  ];
-  for (const outcome of outcomes) assert.ok(modeDoc.includes(outcome), `missing branch outcome: ${outcome}`);
 
-  assert.match(modeDoc, /Use `opa branch create`/);
-  assert.match(modeDoc, /a direct checkout only for the existing exact branch outcome/);
-  assert.match(modeDoc, /Every stop preserves observed state before project-file mutation or child launch/);
-  assert.match(modeDoc, /Never stash, reset, repair, relocate, or select a substitute checkout/);
+  assert.match(modeDoc, /Requirements supplies only the approved canonical\/ticket\/base\/branch plan/);
+  assert.match(modeDoc, /trusted PPA launcher reserves capacity and acquires or reuses and authenticates the ticket checkout/);
+  assert.match(modeDoc, /\| `planned` \|[\s\S]{0,480}action is `create`[\s\S]{0,320}ordinary Git to create the exact branch/);
+  assert.match(modeDoc, /\| `materialized` \|[\s\S]{0,480}action is `select`[\s\S]{0,320}ordinary Git to select that exact branch/);
+  assert.match(modeDoc, /Any mismatch, dirty state, duplicate lineage, or exhausted capacity[\s\S]{0,240}Reject before project-file mutation, branch mutation, and child\/runtime spawn/);
+  assert.match(modeDoc, /OPA\/OpenCode and CPA\/Claude Code only[\s\S]{0,240}supported non-Treehouse seven-state branch behavior/);
+  assert.match(modeDoc, /Never create\/select a substitute branch, relocate, stash, reset, repair, or perform checkout return/);
 });
 
-test("builder orchestrator mode passes stable direct-checkout context to report-only children", (t) => {
+test("builder orchestrator mode passes stable authenticated checkout context to report-only children", (t) => {
   const modeDoc = readMode(t);
   if (!modeDoc) return;
 
-  assert.match(modeDoc, /Every child receives the same `repo_key`, `repo_root`, ticket, exact feature branch/);
-  assert.match(modeDoc, /Launch against the registry key or exact root; never derive a child path from CWD/);
+  assert.match(modeDoc, /Every child receives the same canonical key\/root, authenticated worktree root, ticket, exact feature branch/);
+  assert.match(modeDoc, /Launch against the registry key with authenticated runtime evidence selecting `worktree_root`; never derive or substitute a child path from CWD/);
   assert.match(modeDoc, /--repo "<repo_key>"[\s\S]*--ticket <ticket_id>/);
   assert.match(modeDoc, /Implement children are report-only\.[^\n]*edit requirements checkboxes, change ticket status/);
 });
