@@ -388,6 +388,22 @@ test("generatePrimer live requirements config satisfies the versioned compatibil
     assert.match(primer, /Runtime: opencode/);
     assert.match(primer, /## Active Bulletins/);
     assert.doesNotMatch(primer, /<runtime-adapter>/);
+
+    const piPrimer = generatePrimer({
+      runtime: "pi",
+      teamConfig: requirements,
+      mode,
+      objective: `Plan-first compatibility check for ${mode}`,
+      resolveFile: resolveConfigFile,
+      skillsDir: configPath("skills", "global"),
+      templateVars: { TICKET_ID: "PAPC-024" },
+    });
+    assert.match(piPrimer, /canonical `?repo_key`?\/?`?repo_root`?[\s\S]{0,1400}exact ticket[\s\S]{0,1400}approved full base SHA[\s\S]{0,1400}`?planned`?[\s\S]{0,1400}`?create`?/i);
+    assert.match(piPrimer, /(?:(?:requires? no|must not require)[\s\S]{0,320}requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease|requirements-time[\s\S]{0,320}(?:builder )?(?:checkout|worktree)[\s\S]{0,240}lease[\s\S]{0,320}neither required nor accepted)/i);
+    assert.match(piPrimer, /trusted PPA builder\/orchestrator launcher[\s\S]{0,640}reserve(?:s)?[^.\n]{0,160}capacity[\s\S]{0,640}acquire(?:s)? or reuse(?:s)?[\s\S]{0,320}authenticat/i);
+    assert.match(piPrimer, /one active builder lineage per repository\/ticket[\s\S]{0,240}at most four active ticket checkouts per canonical repository/i);
+    assert.match(piPrimer, /only Sinh\/operator[\s\S]{0,240}return the checkout[\s\S]{0,240}explicit approval/i);
+    assert.doesNotMatch(piPrimer, /Operator-Prepared Checkout Evidence:|must carry authenticated worktree_root and operator-prepared checkout evidence before orchestrator dispatch/i);
   }
 });
 

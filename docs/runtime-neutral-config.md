@@ -128,6 +128,23 @@ admission. Runtime acceptance must pin its exact merged `develop` SHA and
 independently pass lifecycle, mismatch, and 50-contender gates; no unmerged
 candidate SHA is represented as merged proof.
 
+PPA requirements handoff is separately plan-first. Requirements runs at the
+canonical read-only root and records only repository key/root, exact ticket,
+approved full base SHA, exact feature branch, `planned` state, and `create`
+action. It has no requirements-time builder checkout/worktree/lease
+prerequisite and performs no checkout lifecycle or branch action. The trusted
+PPA builder/orchestrator launcher reserves one of four repository ticket
+permits, acquires or reuses and authenticates the distinct Treehouse checkout,
+performs only the matching ordinary-Git create/select action, persists
+correlation evidence, and then spawns implementation. One active lineage is
+allowed per repository/ticket; duplicate or fifth-ticket admission rejects
+before mutation or spawn. Matching PA finalization never returns the checkout;
+only Sinh/operator may approve that separate action. The paired gate pins
+merged PAPC-024 commit `d82429b9f88efadba5ddafa1829e250f5731ad02` and rejects
+primers that restore a requirements-time checkout prerequisite. Treehouse is
+Pi/PPA-only, and config evidence does not prove PAP-189 runtime enforcement or
+grant post-cap/fourth-cycle authority.
+
 Builder admission captures branch, HEAD, staged/unstaged/untracked counts, and a
 bounded porcelain summary without mutating Git. A dirty foreground builder may
 launch with that evidence and receives a mandatory intent/re-read contract before
