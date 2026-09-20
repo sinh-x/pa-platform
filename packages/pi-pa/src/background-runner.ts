@@ -34,7 +34,6 @@ import {
   type PiSupervisionOptions,
   type PiSupervisorOwnership,
 } from "./adapter.js";
-import { environmentSecrets, redactDiagnostic } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 
@@ -52,7 +51,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   const deployDir = dirname(config.primerPath);
   const ownershipPath = resolve(deployDir, PI_SUPERVISOR_FILE);
   const now = options.now ?? (() => new Date());
-  const secrets = environmentSecrets(process.env);
+  const secrets: string[] = [];
   let childPid: number | undefined;
   let ready = false;
   let repositoryLease = config.repositoryLease;
@@ -400,9 +399,8 @@ function categoryForRunnerError(error: unknown): string {
   return `runner-process: ${message}`;
 }
 
-function bounded(value: string, secrets: string[], max: number): string {
-  const safe = redactDiagnostic(value, secrets);
-  return safe.length > max ? `${safe.slice(0, Math.max(0, max - 3))}...` : safe;
+function bounded(value: string, _secrets: string[], max: number): string {
+  return value.length > max ? `${value.slice(0, Math.max(0, max - 3))}...` : value;
 }
 
 function isEntrypoint(): boolean {

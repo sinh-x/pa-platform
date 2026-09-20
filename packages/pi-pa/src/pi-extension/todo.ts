@@ -20,7 +20,6 @@ import {
   type DeploymentTaskStatus,
 } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
-import { environmentSecrets, redactDiagnostic } from "../diagnostics.js";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -288,10 +287,9 @@ export function boundTodoText(text: string): string {
   return `${truncated.content}\n...[truncated todo result: ${truncated.outputLines} of ${truncated.totalLines} lines, ${truncated.outputBytes} of ${truncated.totalBytes} bytes]`;
 }
 
-function boundedSnapshotDiagnostic(error: unknown, env: NodeJS.ProcessEnv): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const safe = redactDiagnostic(`Could not persist deployment task snapshot: ${message}`, environmentSecrets({ ...process.env, ...env }));
-  return safe.length > 500 ? `${safe.slice(0, 497)}...` : safe;
+function boundedSnapshotDiagnostic(error: unknown, _env: NodeJS.ProcessEnv): string {
+  const message = `Could not persist deployment task snapshot: ${error instanceof Error ? error.message : String(error)}`;
+  return message.length > 500 ? `${message.slice(0, 497)}...` : message;
 }
 
 function describeMutation(details: TodoDetails): string {

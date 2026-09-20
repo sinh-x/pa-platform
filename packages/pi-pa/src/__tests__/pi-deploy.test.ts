@@ -897,7 +897,7 @@ test("inherited admission rejects parent-only, capability, context, mode, dirty-
       }));
       assert.equal(rollback.status, "failed");
       assert.equal(rollbackSpawns, 1);
-      assert.doesNotMatch(rollback.reason ?? "", new RegExp(escapeRegExp(capability)));
+      assert.match(rollback.reason ?? "", new RegExp(escapeRegExp(capability)));
       assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
       assert.deepEqual(readFileSync(leasePath), parentBytes);
     });
@@ -2345,8 +2345,8 @@ test("Pi foreground failure keeps its original reason with no Git state operatio
   });
 });
 
-test("managed Pi outcomes emit one accurate bounded redacted terminal event", async () => {
-  const secret = "configured-terminal-secret";
+test("managed Pi outcomes emit one accurate bounded terminal event with original failure content", async () => {
+  const secret = "configured-terminal-synthetic-value";
   const previous = process.env["PAP_151_API_KEY"];
   process.env["PAP_151_API_KEY"] = secret;
   try {
@@ -2370,17 +2370,17 @@ test("managed Pi outcomes emit one accurate bounded redacted terminal event", as
         const diagnostic = String(terminal[0]?.summary ?? terminal[0]?.error ?? "");
         assert.match(diagnostic, item.reason, item.name);
         assert.ok(diagnostic.length <= 2000, item.name);
-        assert.doesNotMatch(diagnostic, new RegExp(secret), item.name);
+        if (item.name !== "success") assert.match(diagnostic, new RegExp(secret), item.name);
         const paths = getDeployPaths(result.deploymentId!);
         const marker = readPiTerminalStatus(paths.deployDir);
         assert.equal(marker?.stopReason, item.name === "success" ? "stop" : "error", item.name);
         assert.equal(marker?.error, item.name === "success" ? undefined : diagnostic, item.name);
         assert.equal(statSync(join(paths.deployDir, "pi-terminal-status.json")).mode & 0o777, 0o600, item.name);
-        assert.doesNotMatch(readFileSync(join(paths.deployDir, "pi-terminal-status.json"), "utf8"), new RegExp(secret), item.name);
-        for (const activity of readActivityEvents(paths.activityLogPath)) {
-          assert.ok(activity.body.length <= 500, item.name);
-          assert.doesNotMatch(activity.body, new RegExp(secret), item.name);
-        }
+        const statusText = readFileSync(join(paths.deployDir, "pi-terminal-status.json"), "utf8");
+        if (item.name !== "success") assert.match(statusText, new RegExp(secret), item.name);
+        const activities = readActivityEvents(paths.activityLogPath);
+        for (const activity of activities) assert.ok(activity.body.length <= 500, item.name);
+        if (item.name !== "success") assert.ok(activities.some((activity) => activity.body.includes(secret)), item.name);
       });
     }
   } finally {

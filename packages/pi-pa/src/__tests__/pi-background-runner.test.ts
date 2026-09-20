@@ -633,7 +633,7 @@ test("readiness timeout is causal and bounded config never persists inherited se
     const failed = await launcherFailure.spawn({ primerPath: primer, deployId: "d-launcher", mode: "background", sessionId: "launcher-session" });
     assert.equal(failed.exitCode, 1);
     assert.match(failed.errorMessage ?? "", /^runner-launcher: launcher fixture failed/);
-    assert.doesNotMatch(failed.errorMessage ?? "", new RegExp(secret));
+    assert.match(failed.errorMessage ?? "", new RegExp(secret));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

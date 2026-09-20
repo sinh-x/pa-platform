@@ -492,11 +492,15 @@ caller-owned stdin state is preserved. This ownership-aware restoration lets the
 wrapper exit naturally after child-exit evidence and cleanup even when its parent
 keeps the stdin writer open; PPA does not force termination with `process.exit()`.
 
-Log redaction carries bounded overlap across arbitrary PTY chunks, so callback
-boundaries cannot expose a split configured value, bearer value, or
-assignment-shaped credential. Redacted output is persisted in the deployment's
-`pi.log`, `pi-output.jsonl`, and activity timeline; activity error bodies are
-bounded to 2,000 characters.
+Pi-owned content filtering is disabled. Foreground output and Pi-originated
+`pi.log`, `pi-output.jsonl`, activity records, terminal-status sidecars, registry
+diagnostics, and failure paths preserve protected values, credential-shaped
+text, credential-named fields, and reasoning metadata such as signatures or
+encrypted content. Operators must therefore treat every Pi deployment artifact
+and rendered Pi stream as potentially sensitive. This behavior has no feature
+flag or automatic restoration; changing it requires a separate approved change.
+Existing output bounds, artifact retention, and access controls remain in force,
+and filtering owned by shared `pa-core` or other runtime adapters is unchanged.
 
 The trusted PA extension writes each terminal `agent_end` result to an atomic,
 permission-restricted `pi-terminal-status.json` side channel in the deployment
@@ -509,8 +513,9 @@ persistence remain observability paths; recognized activity is not a prerequisit
 for wrapper termination.
 
 PPA reports failure for a non-zero Pi process exit or `stopReason: "error"`, even
-if Pi exits with status 0. The redacted terminal error is retained as activity
-evidence. A normal terminal stop with exit status 0 remains successful.
+if Pi exits with status 0. The original terminal error is retained within the
+existing activity and diagnostic bounds. A normal terminal stop with exit status
+0 remains successful.
 
 Foreground failure paths use one exact-once cleanup state machine. Persistence
 and terminal relay errors, timeouts, and interrupts request termination, wait

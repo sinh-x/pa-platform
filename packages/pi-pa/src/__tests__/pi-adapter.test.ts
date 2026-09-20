@@ -345,8 +345,11 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
   }
 });
 
-test("normalizes additive, malformed, redacted, and bounded Pi events", () => {
-  const event = normalizePiEvent({ type: "tool_result", content: "token=secret-value", extra: true }, "d-aaaaaa"); assert.equal(event.kind, "tool_result"); assert.ok(event.body.length <= 500); assert.ok(!event.body.includes("secret-value"));
+test("normalizes additive, malformed, preserved, and bounded Pi events", () => {
+  const event = normalizePiEvent({ type: "tool_result", content: "token=synthetic-value", extra: true }, "d-aaaaaa");
+  assert.equal(event.kind, "tool_result");
+  assert.ok(event.body.length <= 500);
+  assert.equal(event.body, "token=synthetic-value");
 });
 
 test("canonical activity collapses lifecycle and duplicate events without unidentified rows", () => {
@@ -365,7 +368,7 @@ test("canonical activity collapses lifecycle and duplicate events without uniden
   assert.doesNotMatch(JSON.stringify(activity), new RegExp(sentinel));
 });
 
-test("split malformed oversized raw protocol stays causal, bounded, retained, and redacted", async () => {
+test("split malformed oversized raw protocol stays causal, bounded, and retained", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-malformed-activity-"));
   const deployId = "d-malformed-activity";
   const dir = join(root, "deployments", deployId);
@@ -392,7 +395,9 @@ test("split malformed oversized raw protocol stays causal, bounded, retained, an
     assert.equal(activity[0]?.kind, "error");
     assert.match(activity[0]?.body ?? "", /^malformed-protocol:/);
     assert.ok((activity[0]?.body.length ?? Infinity) <= 500);
-    for (const persisted of [raw, persistedActivity, JSON.stringify(activity)]) assert.doesNotMatch(persisted, new RegExp(sentinel));
+    assert.match(raw, new RegExp(sentinel));
+    assert.doesNotMatch(persistedActivity, new RegExp(sentinel));
+    assert.doesNotMatch(JSON.stringify(activity), new RegExp(sentinel));
   } finally {
     if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousHome;
@@ -444,7 +449,7 @@ test("normalizes nested Pi tool-call activity with exact identity and final argu
   assert.equal(execution.metadata?.["toolName"], "read");
 });
 
-test("persists sanitized streamed Pi output without reasoning signatures", async () => {
+test("persists streamed Pi output with configured values and reasoning signatures", async () => {
   const fixture = loadToolStreamFixtures().find((item) => item.id === "partial-read-complete")!;
   const root = mkdtempSync(join(tmpdir(), "pi-signature-"));
   const deployId = "d-signature";
@@ -463,7 +468,10 @@ test("persists sanitized streamed Pi output without reasoning signatures", async
     const adapter = new PiAdapter({ cwd: deployDir, versionProbe: () => "0.84.4", secretValues: [configured], supervision: { spawnProcess: (() => child as never) as typeof spawn } });
     const resultPromise = adapter.spawn({ primerPath: primer, deployId, mode: "dry-run", logFile });
     await nextTick();
-    const events = fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: { signature, encrypted_content: encrypted }, repeatedPayload: encrypted, diagnostic: configured } : event);
+    const events = [
+      ...fixture.events.map((event, index) => index === 0 ? { ...event, safeReasoning: "bounded useful reasoning", archivedSignature: signature, thinkingSignature: { signature, encrypted_content: encrypted }, repeatedPayload: encrypted, diagnostic: configured } : event),
+      { type: "message", content: `${configured} ${signature} ${encrypted}` },
+    ];
     child.stdout.emit("data", Buffer.from(events.map((event) => JSON.stringify(event)).join("\n") + "\n"));
     child.stderr.emit("data", Buffer.from(`useful stderr diagnostic ${configured}\n`));
     child.emit("close", 0);
@@ -472,10 +480,12 @@ test("persists sanitized streamed Pi output without reasoning signatures", async
     const output = readFileSync(join(deployDir, "pi-output.jsonl"), "utf8");
     const activity = readFileSync(join(deployDir, "activity.jsonl"), "utf8");
     const log = readFileSync(logFile, "utf8");
-    for (const persisted of [output, activity, log]) {
-      assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
-      assert.doesNotMatch(persisted, new RegExp([signature, encrypted, configured].join("|")));
+    for (const persisted of [output, log]) {
+      assert.match(persisted, /thinkingSignature/);
+      assert.match(persisted, /encrypted_content/);
+      for (const value of [signature, encrypted, configured]) assert.match(persisted, new RegExp(value));
     }
+    for (const value of [signature, encrypted, configured]) assert.match(activity, new RegExp(value));
     assert.match(output, /bounded useful reasoning/);
     assert.match(log, /useful stderr diagnostic/);
     const knownTools = activity.trim().split("\n").map((line) => JSON.parse(line) as { metadata?: Record<string, unknown> }).map((event) => event.metadata?.["tool"]).filter(Boolean);
@@ -487,7 +497,7 @@ test("persists sanitized streamed Pi output without reasoning signatures", async
   }
 });
 
-test("captured Pi logs fail safe on malformed reasoning metadata and preserve diagnostics", async () => {
+test("captured Pi logs preserve malformed reasoning metadata and diagnostics", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-captured-redact-"));
   const primer = join(dir, "primer.md");
   const logFile = join(dir, "pi.log");
@@ -502,12 +512,16 @@ test("captured Pi logs fail safe on malformed reasoning metadata and preserve di
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [configured], runCommand: () => ({ status: 0, stdout, stderr: `useful stderr ${configured}\n` }) });
   const result = await adapter.spawn({ primerPath: primer, deployId: "d-captured-redact", mode: "background", logFile });
   assert.equal(result.exitCode, 0);
-  for (const persisted of [readFileSync(logFile, "utf8"), readFileSync(join(dir, "pi-output.jsonl"), "utf8")]) {
+  const log = readFileSync(logFile, "utf8");
+  const output = readFileSync(join(dir, "pi-output.jsonl"), "utf8");
+  for (const persisted of [log, output]) {
     assert.match(persisted, /useful JSON diagnostic|useful malformed diagnostic/);
-    assert.doesNotMatch(persisted, /thinking[_-]?signature|encrypted[_-]?content/i);
-    assert.doesNotMatch(persisted, new RegExp([configured, encrypted].join("|")));
+    assert.match(persisted, /thinking[_-]?signature/);
+    assert.match(persisted, /encrypted[_-]?content/i);
+    assert.match(persisted, new RegExp(encrypted));
   }
-  assert.match(readFileSync(logFile, "utf8"), /useful stderr/);
+  assert.match(log, new RegExp(configured));
+  assert.match(log, /useful stderr/);
 });
 
 test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
@@ -562,7 +576,7 @@ test("managed Pi stream preserves a large d-851add read execution end across chu
   assert.equal(await run(fixture.events.filter((event) => event["type"] !== "tool_execution_end")), 1);
 });
 
-test("keeps PAP-151 fixtures sanitized and bounded", () => {
+test("keeps PAP-151 fixtures synthetic and bounded", () => {
   const path = fileURLToPath(new URL("fixtures/pap-151-tool-streams.jsonl", import.meta.url));
   const fixtureText = readFileSync(path, "utf8");
   assert.ok(Buffer.byteLength(fixtureText) <= 50 * 1024);
@@ -573,19 +587,25 @@ test("keeps PAP-151 fixtures sanitized and bounded", () => {
     assert.ok(String(outcome["terminalEvidence"]).length <= 2000);
     for (const event of fixture.events) assert.ok(normalizePiEvent(event, "d-bounds").body.length <= 500);
   }
-  const sentinel = "configured-sensitive-value";
-  const redacted = normalizePiEvent({ type: "tool_result", content: `safe ${sentinel}` }, "d-redaction", [sentinel]);
-  assert.match(redacted.body, /safe/);
-  assert.doesNotMatch(redacted.body, new RegExp(sentinel));
+  const sentinel = "configured-synthetic-value";
+  const preserved = normalizePiEvent({ type: "tool_result", content: `safe ${sentinel}` }, "d-preservation", [sentinel]);
+  assert.equal(preserved.body, `safe ${sentinel}`);
 });
 
-test("requires an exact supported Pi version and redacts nested array content", () => {
+test("requires an exact supported Pi version and preserves nested credential-named and reasoning fields", () => {
   assert.equal(meetsMinimum("pi 0.84.4"), true);
   assert.equal(meetsMinimum("0.84.4foo"), false);
   assert.equal(meetsMinimum("0.84.4-dev"), false);
-  const event = normalizePiEvent({ type: "message", content: [{ text: "hello" }, { authorization: "configured-secret", nested: [{ password: "pw" }] }] }, "d-aaaaaa", ["configured-secret"]);
-  assert.match(event.body, /hello/);
-  assert.doesNotMatch(event.body, /configured-secret|pw/);
+  const args = {
+    authorization: "configured-synthetic-value",
+    nested: [{ password: "synthetic-password" }],
+    thinkingSignature: "synthetic-signature",
+    encrypted_content: "synthetic-encrypted-content",
+  };
+  const event = normalizePiEvent({ type: "tool_execution_start", toolCallId: "call-preserved", toolName: "read", args }, "d-aaaaaa", ["configured-synthetic-value"]);
+  assert.equal(event.kind, "tool_use");
+  assert.equal(event.partType, "tool_execution_start");
+  assert.deepEqual(event.metadata?.["args"], args);
 });
 
 test("foreground Pi relays terminal input, output, resize, interrupt, and exit status", async () => {
@@ -1080,7 +1100,7 @@ test("foreground cleanup settles from process evidence without an onExit callbac
   assert.equal(input.isRaw, false);
 });
 
-test("foreground log redaction survives every chunk boundary", async () => {
+test("foreground output preservation survives every chunk boundary", async () => {
   const pty = new FakePiPty(); const input = new FakePiInput(); const output = new FakePiOutput();
   const dir = mkdtempSync(join(tmpdir(), "pi-stream-redact-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
   const configuredValue = "sentinel-configured-value"; const shapedValue = "sentinel-shaped-value"; const assignedValue = "sentinel-assigned-value";
@@ -1098,12 +1118,14 @@ test("foreground log redaction survives every chunk boundary", async () => {
   pty.emitExit(0);
   assert.equal((await resultPromise).exitCode, 0);
   const persisted = readFileSync(logFile, "utf8");
-  assert.doesNotMatch(persisted, /thinkingSignature|encrypted_content/i);
-  assert.doesNotMatch(persisted, new RegExp([configuredValue, shapedValue, assignedValue, reasoningValue].join("|")));
+  assert.match(persisted, /thinkingSignature/);
+  assert.match(persisted, /encrypted_content/i);
+  for (const value of [configuredValue, shapedValue, assignedValue, reasoningValue]) assert.match(persisted, new RegExp(value));
   assert.match(persisted, /useful foreground diagnostic/);
   assert.match(persisted, /useful malformed foreground/);
   assert.match(persisted, /useful oversized foreground/);
-  assert.match(persisted, /\*{20,}/);
+  const foreground = output.chunks.join("");
+  for (const value of [configuredValue, shapedValue, assignedValue, reasoningValue]) assert.match(foreground, new RegExp(value));
 });
 
 test("foreground persistence failure terminates, escalates, verifies exit, and restores raw mode", async () => {
@@ -1151,12 +1173,12 @@ test("foreground resistant timeout waits for verified exit and settles exactly o
   assert.equal(outcomes, 1);
 });
 
-test("terminal Pi error fails on exit 0 and redacts persisted diagnostics", async () => {
+test("terminal Pi error fails on exit 0 and preserves persisted diagnostics", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-semantic-")); const primer = join(dir, "primer.md"); const logFile = join(dir, "pi.log"); writeFileSync(primer, "work");
-  const secret = "sentinel-secret-value"; const event = JSON.stringify({ type: "agent_end", stopReason: "error", error: `authentication ${secret}` });
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [secret], runCommand: () => ({ status: 0, stdout: `${event}\n`, stderr: "" }) });
+  const sentinel = "sentinel-synthetic-value"; const event = JSON.stringify({ type: "agent_end", stopReason: "error", error: `authentication ${sentinel}` });
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", secretValues: [sentinel], runCommand: () => ({ status: 0, stdout: `${event}\n`, stderr: "" }) });
   const result = await adapter.spawn({ primerPath: primer, deployId: "d-semantic", mode: "background", logFile });
-  assert.equal(result.exitCode, 1); assert.match(result.errorMessage ?? "", /authentication/); assert.doesNotMatch(result.errorMessage ?? "", /sentinel-secret-value/); assert.doesNotMatch(readFileSync(logFile, "utf8"), /sentinel-secret-value/);
+  assert.equal(result.exitCode, 1); assert.match(result.errorMessage ?? "", new RegExp(`authentication ${sentinel}`)); assert.match(readFileSync(logFile, "utf8"), new RegExp(sentinel));
   const successful = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", runCommand: () => ({ status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop", message: "completed" })}\n`, stderr: "" }) });
   assert.equal((await successful.spawn({ primerPath: primer, deployId: "d-semantic-success", mode: "background" })).exitCode, 0);
 });
