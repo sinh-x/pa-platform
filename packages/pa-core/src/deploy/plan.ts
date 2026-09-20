@@ -45,7 +45,7 @@ export interface ExecutionPlan {
   readonly team: string;
   readonly mode: string;
   readonly repoKey: string;
-  /** Registered primary repository root and PA_REPO trust anchor. */
+  /** Registered primary repository root. Treehouse launches keep this separate from execution-scoped PA_REPO. */
   readonly repoRoot: string;
   /** Exact physical root selected for project and runtime operations. */
   readonly worktreeRoot: string;
@@ -201,7 +201,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     ]),
     environment: Object.freeze({
       ...options.environment,
-      PA_REPO: repository.repoRoot,
+      PA_REPO: options.treehouse ? repository.worktreeRoot : repository.repoRoot,
       PA_WORKTREE_ROOT: repository.worktreeRoot,
       ...(options.treehouse ? {
         PA_TREEHOUSE_LEASE_ID: options.treehouse.leaseId,

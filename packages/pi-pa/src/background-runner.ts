@@ -92,6 +92,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
 
   try {
     writePiSupervisorOwnership(ownershipPath, ownership("starting"));
+    assertTreehouseRuntimeEnvironment(config, process.env);
     if (config.repositoryHandoffPath) {
       try {
         if (config.repositoryHandoffPath !== resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE)) throw new Error("runner-readiness: repository handoff path mismatch");
@@ -318,6 +319,20 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     } finally {
       ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
     }
+  }
+}
+
+function assertTreehouseRuntimeEnvironment(config: PiBackgroundConfig, env: NodeJS.ProcessEnv): void {
+  if (!config.registryEvidence) return;
+  const worktreeRoot = config.worktreeRoot;
+  const exact = typeof config.repoRoot === "string"
+    && typeof worktreeRoot === "string"
+    && config.cwd === worktreeRoot
+    && config.registryEvidence.treehouse_path === worktreeRoot
+    && env["PA_REPO"] === worktreeRoot
+    && env["PA_WORKTREE_ROOT"] === worktreeRoot;
+  if (!exact) {
+    throw new Error("runner-readiness: Condition: Treehouse runtime repository identity. Source: protected background configuration, registry correlation, and inherited process environment. Reason: PA_REPO, PA_WORKTREE_ROOT, CWD, and authenticated Treehouse path do not agree exactly. Correction: preserve the checkout, lease, branch, slot, and permit; reconcile protected evidence without starting Pi. Resume Action: launch a fresh PPA builder only after the exact worktree identity agrees.");
   }
 }
 

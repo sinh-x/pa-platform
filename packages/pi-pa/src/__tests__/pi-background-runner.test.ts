@@ -117,6 +117,47 @@ test("persistent runner publishes active ownership before finalizing one natural
   });
 });
 
+test("Treehouse background runner rejects stale inherited repository environment before child spawn", async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const primary = join(root, "primary");
+    const worktree = join(root, "treehouse", "PAP-216");
+    config.managed = true;
+    config.repoKey = "pa-platform";
+    config.repoRoot = primary;
+    config.worktreeRoot = worktree;
+    config.cwd = worktree;
+    config.ticketId = "PAP-216";
+    config.repositorySlot = "orchestrator";
+    config.registryEvidence = {
+      builder_authority: "orchestrator",
+      treehouse_path: worktree,
+      treehouse_lease_id: "lease-216",
+      treehouse_lease_holder: "pa:pa-platform:PAP-216",
+      branch_state: "materialized",
+      branch_head_sha: "a".repeat(40),
+      ticket_slot_id: "pa:pa-platform:PAP-216",
+      repository_permit: 2,
+    };
+    const previousRepo = process.env["PA_REPO"];
+    const previousWorktree = process.env["PA_WORKTREE_ROOT"];
+    process.env["PA_REPO"] = primary;
+    process.env["PA_WORKTREE_ROOT"] = worktree;
+    let spawns = 0;
+    try {
+      await runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => { spawns += 1; return new RunnerChild() as never; }) as never } });
+    } finally {
+      restore("PA_REPO", previousRepo);
+      restore("PA_WORKTREE_ROOT", previousWorktree);
+    }
+    assert.equal(spawns, 0);
+    const final = readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE));
+    const diagnostic = final?.error ?? "";
+    assert.ok(diagnostic.length <= 2_000);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.match(diagnostic, new RegExp(field));
+    assert.equal(final?.state, "failed");
+  });
+});
+
 test("Pi background supervisor authenticates transfer before readiness and releases after terminal finalization", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");

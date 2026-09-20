@@ -73,9 +73,11 @@ PPA atomically reserves the ticket and one of four repository permits before it
 calls Treehouse. It derives holder `pa:pa-platform:PAP-189`, reuses exactly one
 matching lease or runs bounded `treehouse get --lease --lease-holder ... --json`,
 authenticates the returned physical linked worktree, and materializes or selects
-the ticket branch there. Pi's CWD and `PA_WORKTREE_ROOT` are that checkout;
-`PA_REPO` remains the canonical root. Canonical branch, HEAD, and raw
-porcelain-v2 bytes must remain unchanged.
+the ticket branch there. For this authenticated Treehouse builder flow only,
+Pi's CWD, `PA_REPO`, and `PA_WORKTREE_ROOT` are that exact checkout. Canonical
+identity remains separately available as immutable plan `repoRoot`, deployment
+and registry `repo_root`, and repository lease evidence. Canonical branch, HEAD,
+and raw porcelain-v2 bytes must remain unchanged.
 
 An operator may instead prepare the lease with Treehouse v2.3.0, `cd` to its
 exact physical root, and omit `--repo`:
@@ -89,6 +91,11 @@ ppa deploy builder --mode orchestrator --ticket PAP-189
 PPA never accepts an explicit worktree path. It requires one matching lease and
 checks path, lease ID, holder, Git top-level, Git dir/common dir, registered
 worktree membership, ticket branch, and HEAD before runtime preflight or spawn.
+The launcher and adapter also require Treehouse path, runtime CWD, `PA_REPO`,
+`PA_WORKTREE_ROOT`, protected background configuration, and parent registry
+execution path to agree exactly before Pi/native-host preflight or child spawn.
+Missing, canonical-root, relative, stale, or conflicting runtime path evidence
+fails closed while preserving the Treehouse checkout and branch.
 Treehouse v2.3.0 free status rows are valid when their non-`leased` status is
 paired with `lease_id: ""`, `lease_holder: ""`, and `leased_at: null`; PPA then
 makes exactly one bounded lease-acquisition call. Leased rows still require a
@@ -300,7 +307,8 @@ metadata, and exact membership in the registered primary checkout's physical
 registered primary repository. PA does not create, switch, move, prune, lock, unlock, or
 remove a worktree or branch.
 
-The two roots have deliberately different roles:
+Outside authenticated Treehouse ticket launches, the two roots retain their
+established deliberately different roles:
 
 - `repo_root` and `PA_REPO` identify the registered primary repository and remain
   the trust anchor.
@@ -320,7 +328,10 @@ Sibling worktrees have independent slots. Token-verified transfer, borrowing,
 and cleanup affect only the exact slot and worktree.
 
 Primers, environment, background configuration, registry start events, default
-status detail, and runtime spawn evidence carry both roots. `ppa status <id>`
+status detail, and runtime spawn evidence carry both roots. The Treehouse-backed
+builder flow documented above is the narrow exception: there `PA_REPO` is
+execution-scoped to `worktree_root`, while canonical identity remains
+`repo_root`; ordinary PAP-195 linked-worktree launches keep canonical `PA_REPO`. `ppa status <id>`
 shows `Repo Root`, a distinct `Worktree`, and `Repo Slot` when recorded. OPA,
 CPA, and DPA retain their prior repository behavior.
 

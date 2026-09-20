@@ -6,12 +6,14 @@ import test from "node:test";
 import { PA_PI_EXECUTION_MODE_ENV, captureRepositoryGitSnapshot, type RepositoryDirtyBorrowApproval, type RepositoryEvidenceInspection } from "@pa-platform/pa-core";
 import { createDirtyBorrowApprovalTool, isForegroundPiOrchestratorEnvironment } from "../pi-extension/dirty-borrow-approval.js";
 
-function fixture(): { root: string; parentDirectory: string; snapshot: ReturnType<typeof captureRepositoryGitSnapshot>; inspection: RepositoryEvidenceInspection } {
+function fixture(): { root: string; worktree: string; parentDirectory: string; snapshot: ReturnType<typeof captureRepositoryGitSnapshot>; inspection: RepositoryEvidenceInspection } {
   const root = mkdtempSync(join(tmpdir(), "pi-dirty-approval-"));
+  const worktree = join(root, "treehouse", "PAP-191");
   mkdirSync(join(root, ".git"));
+  mkdirSync(worktree, { recursive: true });
   const parentDirectory = join(root, "parent");
   const head = "a".repeat(40);
-  const captureSnapshot = (status: string) => captureRepositoryGitSnapshot(root, (args) => {
+  const captureSnapshot = (status: string) => captureRepositoryGitSnapshot(worktree, (args) => {
     if (args[0] === "symbolic-ref") return "feature/PAP-191-dirty-approval\n";
     if (args[0] === "rev-parse") return `${head}\n`;
     if (args[0] === "status") return status;
@@ -30,6 +32,7 @@ function fixture(): { root: string; parentDirectory: string; snapshot: ReturnTyp
       ownershipToken: "parent-secret",
       canonicalRepoKey: "pa-platform",
       canonicalRepoRoot: root,
+      worktreeRoot: worktree,
       deploymentId: "d-parent",
       deploymentDirectory: parentDirectory,
       runtime: "pi",
@@ -41,19 +44,33 @@ function fixture(): { root: string; parentDirectory: string; snapshot: ReturnTyp
       preLaunchGitSnapshot,
     },
   };
-  return { root, parentDirectory, snapshot, inspection };
+  return { root, worktree, parentDirectory, snapshot, inspection };
 }
 
-function environment(root: string, parentDirectory: string): NodeJS.ProcessEnv {
+function environment(root: string, worktree: string, parentDirectory: string): NodeJS.ProcessEnv {
   return {
     [PA_PI_EXECUTION_MODE_ENV]: "foreground",
     PA_TEAM: "builder",
     PA_MODE: "orchestrator",
     PA_DEPLOYMENT_ID: "d-parent",
     PA_DEPLOYMENT_DIR: parentDirectory,
-    PA_REPO: root,
+    PA_REPO: worktree,
+    PA_WORKTREE_ROOT: worktree,
     PA_TICKET_ID: "PAP-191",
   };
+}
+
+function deploymentStatus(root: string, worktree: string) {
+  return {
+    status: "running",
+    team: "builder",
+    mode: "orchestrator",
+    ticket_id: "PAP-191",
+    repo: worktree,
+    repo_root: root,
+    worktree_root: worktree,
+    treehouse_path: worktree,
+  } as never;
 }
 
 const approvedInput = {
@@ -67,7 +84,7 @@ const approvedInput = {
 test("approval tool exists only for the exact interactive foreground orchestrator environment", () => {
   const fixtureState = fixture();
   try {
-    const exact = environment(fixtureState.root, fixtureState.parentDirectory);
+    const exact = environment(fixtureState.root, fixtureState.worktree, fixtureState.parentDirectory);
     assert.equal(isForegroundPiOrchestratorEnvironment(exact), true);
     for (const patch of [
       { [PA_PI_EXECUTION_MODE_ENV]: "background" },
@@ -86,9 +103,10 @@ test("a clean-launch parent can explicitly approve one complete dirty current sn
   let published: RepositoryDirtyBorrowApproval | undefined;
   try {
     const tool = createDirtyBorrowApprovalTool({
-      env: environment(fixtureState.root, fixtureState.parentDirectory),
+      env: environment(fixtureState.root, fixtureState.worktree, fixtureState.parentDirectory),
       captureSnapshot: () => fixtureState.snapshot,
       inspectLease: () => fixtureState.inspection,
+      getDeploymentStatus: () => deploymentStatus(fixtureState.root, fixtureState.worktree),
       isDeploymentRunning: () => true,
       now: () => new Date("2026-09-12T01:00:00.000Z"),
       createToken: () => "protected-receipt-id",
@@ -107,6 +125,8 @@ test("a clean-launch parent can explicitly approve one complete dirty current sn
     assert.match(prompt, /\+ "planned\.ts"/);
     assert.ok(published);
     assert.equal(fixtureState.inspection.lease?.preLaunchGitSnapshot.statusRecordCount, 0);
+    assert.equal(published.canonicalRepoRoot, fixtureState.root);
+    assert.equal(published.worktreeRoot, fixtureState.worktree);
     assert.deepEqual(published.snapshot, fixtureState.snapshot);
     assert.equal(published.snapshot.statusRecordCount, 2);
     assert.equal(published.classifications.length, 2);
@@ -121,9 +141,10 @@ test("cancel, rejection, UI absence, and invalid classification create no receip
   try {
     let publications = 0;
     const make = () => createDirtyBorrowApprovalTool({
-      env: environment(fixtureState.root, fixtureState.parentDirectory),
+      env: environment(fixtureState.root, fixtureState.worktree, fixtureState.parentDirectory),
       captureSnapshot: () => fixtureState.snapshot,
       inspectLease: () => fixtureState.inspection,
+      getDeploymentStatus: () => deploymentStatus(fixtureState.root, fixtureState.worktree),
       isDeploymentRunning: () => true,
       publishApproval: () => { publications += 1; return "unused"; },
     });
@@ -133,6 +154,13 @@ test("cancel, rejection, UI absence, and invalid classification create no receip
     assert.equal(rejected.details.outcome, "rejected");
     const unavailable = await make().execute("call-print", approvedInput, undefined, undefined, { mode: "print", ui: { select: async () => "Approve preserve-and-continue" } });
     assert.equal(unavailable.details.outcome, "ui_unavailable");
+    const mismatched = await createDirtyBorrowApprovalTool({
+      env: { ...environment(fixtureState.root, fixtureState.worktree, fixtureState.parentDirectory), PA_REPO: fixtureState.root },
+      getDeploymentStatus: () => deploymentStatus(fixtureState.root, fixtureState.worktree),
+      publishApproval: () => { publications += 1; return "unused"; },
+    }).execute("call-mismatch", approvedInput, undefined, undefined, { mode: "tui", ui: { select: async () => "Approve preserve-and-continue" } });
+    assert.equal(mismatched.details.outcome, "validation_error");
+    assert.match(mismatched.details.error ?? "", /registry-bound Treehouse repository identity/);
     const partial = await make().execute("call-partial", { classifications: approvedInput.classifications.slice(0, 1), plannedNewPaths: [] }, undefined, undefined, { mode: "tui", ui: { select: async () => "Approve preserve-and-continue" } });
     assert.equal(partial.details.outcome, "validation_error");
     const globbed = await make().execute("call-glob", { ...approvedInput, plannedNewPaths: ["src/*.ts"] }, undefined, undefined, { mode: "tui", ui: { select: async () => "Approve preserve-and-continue" } });

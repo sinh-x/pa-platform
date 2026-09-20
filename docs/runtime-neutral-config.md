@@ -29,6 +29,16 @@ common-directory matches, and unrelated repositories remain rejected. OPA,
 CPA, and DPA do not gain this
 exception.
 
+Authenticated Treehouse ticket launches are a narrower Pi-only specialization.
+For those builder launches, runtime `PA_REPO`, `PA_WORKTREE_ROOT`,
+`repositoryCwd`, and the authenticated Treehouse path all equal the execution
+worktree. Canonical identity remains separate in immutable plan `repoRoot`,
+registry/deployment-context `repo_root`, and repository lease evidence. PPA
+rejects missing, canonical-root, relative, stale, or conflicting Treehouse path
+evidence before Pi/native-host preflight or runtime/child spawn. This does not
+change the canonical `PA_REPO` contract above for ordinary non-Treehouse linked
+worktrees or any non-Pi adapter.
+
 Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
 it bypasses Git status and repository-lease access even when the checkout is dirty
 or a builder owns the same canonical root. Every `builder/*` mode is
@@ -136,8 +146,12 @@ prerequisite and performs no checkout lifecycle or branch action. The trusted
 PPA builder/orchestrator launcher reserves one of four repository ticket
 permits, acquires or reuses and authenticates the distinct Treehouse checkout,
 performs only the matching ordinary-Git create/select action, persists
-correlation evidence, and then spawns implementation. One active lineage is
-allowed per repository/ticket; duplicate or fifth-ticket admission rejects
+correlation evidence, projects runtime `PA_REPO` and `PA_WORKTREE_ROOT` to that
+checkout while retaining canonical `repo_root`, and then spawns implementation.
+Parented children, dirty-borrow approval, and background runners authenticate the
+execution-scoped environment against registry and lease roots rather than
+inferring canonical identity from `PA_REPO`. One active lineage is allowed per
+repository/ticket; duplicate or fifth-ticket admission rejects
 before mutation or spawn. Matching PA finalization never returns the checkout;
 only Sinh/operator may approve that separate action. The paired gate pins
 merged PAPC-024 commit `d82429b9f88efadba5ddafa1829e250f5731ad02` and rejects

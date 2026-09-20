@@ -249,16 +249,30 @@ export class PiAdapter implements RuntimeAdapter {
   }
 }
 
-function assertPiExecutionRootAgreement(plan: SpawnOpts["executionPlan"], env: Record<string, string> | undefined): void {
+export function assertPiExecutionRootAgreement(plan: SpawnOpts["executionPlan"], env: Record<string, string> | undefined): void {
   if (!plan || (plan.repoRoot === undefined && plan.worktreeRoot === undefined && env?.["PA_REPO"] === undefined && env?.["PA_WORKTREE_ROOT"] === undefined)) return;
   const roots = [plan.repoRoot, plan.worktreeRoot, plan.repositoryCwd];
   if (roots.some((root) => !root || resolve(root) !== root) || plan.repositoryCwd !== plan.worktreeRoot) {
+    if (plan.treehouse) throw new Error(treehouseIdentityDiagnostic("the immutable execution plan does not identify one exact absolute Treehouse worktree"));
     throw new Error("repository-identity: Pi execution plan repositoryCwd must equal the exact absolute worktree root; no runtime was started");
+  }
+  if (plan.treehouse) {
+    const exact = plan.treehouse.path === plan.worktreeRoot
+      && plan.environment.PA_REPO === plan.worktreeRoot
+      && plan.environment.PA_WORKTREE_ROOT === plan.worktreeRoot
+      && env?.["PA_REPO"] === plan.worktreeRoot
+      && env?.["PA_WORKTREE_ROOT"] === plan.worktreeRoot;
+    if (!exact) throw new Error(treehouseIdentityDiagnostic("PA_REPO, PA_WORKTREE_ROOT, repositoryCwd, and authenticated Treehouse path do not agree exactly"));
+    return;
   }
   if ((env?.["PA_REPO"] !== undefined && env["PA_REPO"] !== plan.repoRoot)
     || (env?.["PA_WORKTREE_ROOT"] !== undefined && env["PA_WORKTREE_ROOT"] !== plan.worktreeRoot)) {
     throw new Error("repository-identity: Pi environment roots do not match the immutable execution plan; no runtime was started");
   }
+}
+
+function treehouseIdentityDiagnostic(reason: string): string {
+  return `Condition: Treehouse runtime repository identity. Source: immutable Pi execution plan and protected process environment. Reason: ${reason}. Correction: preserve the checkout, lease, branch, slot, and permit; reconcile all execution paths from authenticated Treehouse evidence. Resume Action: launch a fresh PPA builder only after the exact worktree identity agrees; no runtime was started.`;
 }
 
 function probeNativeRegistryFromCurrentBuild(env: NodeJS.ProcessEnv, secretValues: string[]): PiNativeHostEvidence | undefined {
@@ -775,6 +789,7 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
     (registry.builder_authority === "orchestrator" || registry.builder_authority === "parented-implement" || registry.builder_authority === "standalone-implement")
     && (registry.parent_deployment_id === undefined || typeof registry.parent_deployment_id === "string")
     && typeof registry.treehouse_path === "string" && resolve(registry.treehouse_path) === registry.treehouse_path
+    && registry.treehouse_path === value.worktreeRoot && value.cwd === value.worktreeRoot
     && typeof registry.treehouse_lease_id === "string" && typeof registry.treehouse_lease_holder === "string"
     && registry.branch_state === "materialized"
     && (registry.branch_base_sha === undefined || (typeof registry.branch_base_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_base_sha)))

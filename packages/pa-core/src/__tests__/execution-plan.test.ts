@@ -237,6 +237,49 @@ test("Pi plans authenticate omitted linked-worktree CWD while explicit and non-P
   }
 });
 
+test("authenticated Treehouse plans scope runtime repository environment to the worktree while retaining canonical identity", () => {
+  const fixture = createFixture("treehouse-env");
+  const teamConfig = team();
+  try {
+    withPlatformConfig(fixture.config, () => {
+      const head = git(["rev-parse", "HEAD"], fixture.linked);
+      const plan = resolveExecutionPlan({
+        request: { team: "builder", mode: "implement", ticket: "PAP-216" },
+        teamConfig,
+        mode: teamConfig.deploy_modes?.[0],
+        runtime: "pi",
+        deploymentId: "d-treehouse-env",
+        deploymentDir: join(fixture.root, "d-treehouse-env"),
+        activityLogPath: join(fixture.root, "d-treehouse-env", "activity.jsonl"),
+        environment: { PA_REPO: "/stale/canonical-assumption", PA_WORKTREE_ROOT: "/stale/worktree" },
+        timeoutSeconds: 60,
+        cwd: fixture.linked,
+        treehouse: {
+          authority: "standalone-implement",
+          ticket: "PAP-216",
+          path: fixture.linked,
+          leaseId: "lease-216",
+          leaseHolder: "pa:registered:PAP-216",
+          branch: "feature/treehouse-env",
+          branchState: "materialized",
+          baseSha: head,
+          headSha: head,
+          ticketSlotId: "pa:registered:PAP-216",
+          repositoryPermit: 2,
+        },
+      });
+      assert.equal(plan.repoRoot, fixture.repo);
+      assert.equal(plan.worktreeRoot, fixture.linked);
+      assert.equal(plan.repositoryCwd, fixture.linked);
+      assert.equal(plan.treehouse?.path, fixture.linked);
+      assert.equal(plan.environment.PA_REPO, fixture.linked);
+      assert.equal(plan.environment.PA_WORKTREE_ROOT, fixture.linked);
+    });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("a self-asserted parent deployment ID never changes child planning or grants borrowed ownership", () => {
   const fixture = createFixture("parent-id-alone");
   const teamConfig = team();

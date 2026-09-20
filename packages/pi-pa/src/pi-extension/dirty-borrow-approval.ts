@@ -40,6 +40,7 @@ export interface DirtyBorrowApprovalToolOptions {
   env?: NodeJS.ProcessEnv;
   captureSnapshot?: (root: string) => RepositoryGitSnapshot;
   inspectLease?: (root: string, worktreeRoot?: string) => RepositoryEvidenceInspection;
+  getDeploymentStatus?: typeof queryDeploymentStatus;
   isDeploymentRunning?: (deploymentId: string) => boolean;
   now?: () => Date;
   createToken?: () => string;
@@ -70,7 +71,8 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
   const env = options.env ?? process.env;
   const captureSnapshot = options.captureSnapshot ?? captureRepositoryGitSnapshot;
   const inspectLease = options.inspectLease ?? ((root: string, worktreeRoot?: string) => inspectRepositoryMutationLease(root, { getProcessFingerprint: readProcessFingerprint, worktreeRoot }));
-  const isDeploymentRunning = options.isDeploymentRunning ?? ((deploymentId: string) => queryDeploymentStatus(deploymentId)?.status === "running");
+  const getDeploymentStatus = options.getDeploymentStatus ?? queryDeploymentStatus;
+  const isDeploymentRunning = options.isDeploymentRunning ?? ((deploymentId: string) => getDeploymentStatus(deploymentId)?.status === "running");
   const now = options.now ?? (() => new Date());
   const createToken = options.createToken ?? randomUUID;
   const publishApproval = options.publishApproval ?? publishRepositoryDirtyBorrowApproval;
@@ -91,9 +93,22 @@ export function createDirtyBorrowApprovalTool(options: DirtyBorrowApprovalToolOp
       try {
         const parentDeploymentId = requiredEnv(env, "PA_DEPLOYMENT_ID");
         const parentDeploymentDirectory = requiredEnv(env, "PA_DEPLOYMENT_DIR");
-        const canonicalRepoRoot = requiredEnv(env, "PA_REPO");
-        const worktreeRoot = env["PA_WORKTREE_ROOT"]?.trim() || canonicalRepoRoot;
+        const executionRoot = requiredEnv(env, "PA_REPO");
+        const worktreeRoot = requiredEnv(env, "PA_WORKTREE_ROOT");
         const ticket = requiredEnv(env, "PA_TICKET_ID");
+        const deployment = getDeploymentStatus(parentDeploymentId);
+        const canonicalRepoRoot = deployment?.repo_root;
+        if (!canonicalRepoRoot
+          || deployment.status !== "running"
+          || deployment.team !== "builder"
+          || deployment.mode !== "orchestrator"
+          || deployment.ticket_id !== ticket
+          || deployment.repo !== worktreeRoot
+          || deployment.worktree_root !== worktreeRoot
+          || deployment.treehouse_path !== worktreeRoot
+          || executionRoot !== worktreeRoot) {
+          return result("validation_error", [], 0, "protected runtime environment does not match registry-bound Treehouse repository identity");
+        }
         const leaseInspection = inspectLease(canonicalRepoRoot, worktreeRoot);
         const lease = leaseInspection.lease;
         if (leaseInspection.state !== "live" || !lease || !leaseInspection.evidenceIdentity
@@ -154,8 +169,11 @@ export const registerDirtyBorrowApprovalModule: PiExtensionModule = (pi, lifecyc
   if (!isForegroundPiOrchestratorEnvironment()) return;
   const tool = createDirtyBorrowApprovalTool();
   pi.registerTool?.(tool);
-  const root = process.env["PA_REPO"]!;
-  const worktreeRoot = process.env["PA_WORKTREE_ROOT"]?.trim() || root;
+  const deploymentId = process.env["PA_DEPLOYMENT_ID"]!;
+  const status = queryDeploymentStatus(deploymentId);
+  const root = status?.repo_root;
+  const worktreeRoot = process.env["PA_WORKTREE_ROOT"]?.trim();
+  if (!root || !worktreeRoot || status?.repo !== worktreeRoot || process.env["PA_REPO"] !== worktreeRoot) return;
   const approvalPath = repositoryDirtyBorrowApprovalPath(process.env["PA_DEPLOYMENT_DIR"]!);
   lifecycle?.addShutdownStep(() => {
     try {
