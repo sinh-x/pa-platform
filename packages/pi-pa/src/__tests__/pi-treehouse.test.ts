@@ -14,6 +14,7 @@ function result(stdout: unknown, status = 0): TreehouseCommandResult {
 }
 
 function git(args: string[], cwd: string): string { return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); }
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 function initializeRepo(path: string): void {
   mkdirSync(path);
@@ -143,7 +144,7 @@ test("ticketed orchestrator acquires an exact free row and materializes the plan
     assert.equal(spawned?.executionPlan?.repoRoot, repo);
     assert.equal(spawned?.executionPlan?.worktreeRoot, worktree);
     assert.equal(spawned?.executionPlan?.repositoryCwd, worktree);
-    assert.equal(spawned?.executionPlan?.environment.PA_REPO, repo);
+    assert.equal(spawned?.executionPlan?.environment.PA_REPO, worktree);
     assert.equal(spawned?.executionPlan?.environment.PA_WORKTREE_ROOT, worktree);
     assert.equal(spawned?.executionPlan?.treehouse?.branch, "feature/PAP-1-work");
     assert.equal(spawned?.executionPlan?.treehouse?.baseSha, approvedBase);
@@ -218,7 +219,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.equal(plan.worktreeRoot, worktree);
     assert.equal(plan.repositoryCwd, worktree);
     assert.equal(plan.memoryDocumentRoot, worktree);
-    assert.equal(plan.environment.PA_REPO, repo);
+    assert.equal(plan.environment.PA_REPO, worktree);
     assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
     assert.equal(plan.environment.PA_TREEHOUSE_LEASE_ID, "lease-1");
     assert.equal(plan.treehouse?.leaseHolder, "pa:registered:PAP-1");
@@ -228,6 +229,10 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.equal(Object.isFrozen(plan.treehouse), true);
     const primer = readFileSync(spawned!.primerPath, "utf8");
     assert.match(primer, /Immutable Treehouse Ticket Checkout Evidence/);
+    assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(repo)}$`, "m"));
+    assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, new RegExp(`^repo: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(worktree)}$`, "m"));
     assert.match(primer, new RegExp(`state=materialized, base=unknown, head=${legacyHead}`));
     assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-1-work");
     const persistedAfterLaunch = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ baseSha?: string; headSha: string }> };
@@ -290,6 +295,11 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.ok((mismatchedChild.reason ?? "").length <= 2_000);
 
     process.env["PA_TREEHOUSE_LEASE_ID"] = "lease-1";
+    const canonicalRootChild = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-1", background: true, timeout: 60 }, adapter, undefined, { treehouse });
+    assert.equal(canonicalRootChild.status, "failed");
+    assert.match(canonicalRootChild.reason ?? "", /parented implement admission/);
+    assert.equal(spawnCount, beforeMismatchSpawns);
+    process.env["PA_REPO"] = worktree;
     const parentedChild = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-1", background: true, timeout: 60 }, adapter, undefined, { treehouse });
     assert.equal(parentedChild.status, "success", parentedChild.reason);
     assert.equal(spawned?.executionPlan?.treehouse?.authority, "parented-implement");

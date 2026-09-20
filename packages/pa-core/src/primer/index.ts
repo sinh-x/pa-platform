@@ -97,7 +97,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     ? demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.extraInstructions.trim(), options.runtime))
     : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(extra);
-  const context = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const context = repository ? applyCanonicalRepositoryEvidence(extra, repository, Boolean(options.treehouse)) : extra;
   const channel = options.invocationChannel ?? "cli";
   const body = [
     "# PA Deployment Primer",
@@ -141,7 +141,7 @@ function renderAdditionalInstructions(
 ): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
-  const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository, Boolean(treehouse)) : extra;
   const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
@@ -210,8 +210,9 @@ function renderApprovedBorrowerScope(repositoryAdmission: RepositoryAdmissionEvi
   ].join("\n");
 }
 
-function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext): string {
+function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext, treehouseExecution = false): string {
   const worktreeRoot = repository.worktreeRoot ?? repository.repoRoot;
+  const runtimeRepo = treehouseExecution ? worktreeRoot : repository.repoRoot;
   const evidence = `repo_key: ${repository.repoKey}\nrepo_root: ${repository.repoRoot}\nworktree_root: ${worktreeRoot}`;
   if (!extraInstructions) return `<deployment-context>\n${evidence}\n</deployment-context>`;
 
@@ -223,7 +224,7 @@ function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined,
     .replace(/^worktree_root:.*(?:\n|$)/gm, "")
     .replace(/^cwd:.*$/gm, `cwd: ${worktreeRoot}`)
     .replace(/^repo:.*$/gm, `repo: ${worktreeRoot}`)
-    .replace(/^  PA_REPO:.*$/gm, `  PA_REPO: ${repository.repoRoot}`)
+    .replace(/^  PA_REPO:.*$/gm, `  PA_REPO: ${runtimeRepo}`)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   const canonicalContext = `<deployment-context>\n${evidence}${normalizedContext ? `\n${normalizedContext}` : ""}\n</deployment-context>`;

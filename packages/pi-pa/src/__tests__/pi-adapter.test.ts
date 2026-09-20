@@ -274,6 +274,22 @@ test("managed Pi background configuration carries registered and linked-worktree
   const mismatchedConfig = join(dir, "mismatched-background.json");
   writeFileSync(mismatchedConfig, `${JSON.stringify({ ...observed, cwd: primary })}\n`);
   assert.throws(() => readPiBackgroundConfig(mismatchedConfig), /background configuration is malformed/);
+
+  const registryEvidence = {
+    builder_authority: "standalone-implement",
+    treehouse_path: worktree,
+    treehouse_lease_id: "lease-216",
+    treehouse_lease_holder: "pa:registered:PAP-216",
+    branch_state: "materialized",
+    branch_head_sha: "a".repeat(40),
+    ticket_slot_id: "pa:registered:PAP-216",
+    repository_permit: 2,
+  } as const;
+  const treehouseConfig = join(dir, "treehouse-background.json");
+  writeFileSync(treehouseConfig, `${JSON.stringify({ ...observed, registryEvidence })}\n`);
+  assert.equal(readPiBackgroundConfig(treehouseConfig).registryEvidence?.treehouse_path, worktree);
+  writeFileSync(treehouseConfig, `${JSON.stringify({ ...observed, registryEvidence: { ...registryEvidence, treehouse_path: primary } })}\n`);
+  assert.throws(() => readPiBackgroundConfig(treehouseConfig), /background configuration is malformed/);
 });
 
 test("managed Pi rejects root disagreement before preflight or background runner spawn", async () => {
@@ -307,6 +323,71 @@ test("managed Pi rejects root disagreement before preflight or background runner
   assert.match(result.errorMessage ?? "", /repositoryCwd must equal the exact absolute worktree root/);
   assert.equal(preflights, 0);
   assert.equal(launches, 0);
+});
+
+test("managed Pi enforces Treehouse execution environment parity before preflight or spawn", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-treehouse-root-parity-"));
+  const primary = join(dir, "primary");
+  const worktree = join(dir, "linked");
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  const plan = {
+    runtime: "pi",
+    team: "builder",
+    mode: "orchestrator",
+    repoKey: "registered",
+    repoRoot: primary,
+    worktreeRoot: worktree,
+    repositoryCwd: worktree,
+    repositoryAdmission: { slot: "orchestrator" },
+    environment: { PA_REPO: worktree, PA_WORKTREE_ROOT: worktree },
+    treehouse: {
+      authority: "orchestrator", ticket: "PAP-216", path: worktree, leaseId: "lease-216",
+      leaseHolder: "pa:registered:PAP-216", branch: "feature/PAP-216-checkout-env", branchState: "materialized",
+      headSha: "a".repeat(40), ticketSlotId: "pa:registered:PAP-216", repositoryPermit: 2,
+    },
+    skills: [],
+  } as never;
+
+  for (const env of [
+    { PA_REPO: primary, PA_WORKTREE_ROOT: worktree },
+    { PA_WORKTREE_ROOT: worktree },
+    { PA_REPO: "relative", PA_WORKTREE_ROOT: worktree },
+    { PA_REPO: join(dir, "other"), PA_WORKTREE_ROOT: worktree },
+    { PA_REPO: worktree, PA_WORKTREE_ROOT: primary },
+  ]) {
+    let preflights = 0;
+    let spawns = 0;
+    const adapter = new PiAdapter({
+      versionProbe: () => { preflights += 1; return "0.84.4"; },
+      nativeRegistryProbe: () => undefined,
+      runCommand: () => { spawns += 1; return { status: 0, stdout: "", stderr: "" }; },
+    });
+    const rejected = await adapter.spawn({ primerPath: primer, deployId: "d-treehouse-reject", mode: "foreground", env, executionPlan: plan });
+    assert.equal(rejected.exitCode, 1);
+    assert.equal(preflights, 0);
+    assert.equal(spawns, 0);
+    assert.ok((rejected.errorMessage ?? "").length <= 2_000);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.match(rejected.errorMessage ?? "", new RegExp(field));
+  }
+
+  let preflights = 0;
+  let spawns = 0;
+  const admitted = new PiAdapter({
+    versionProbe: () => { preflights += 1; return "0.84.4"; },
+    nativeRegistryProbe: () => undefined,
+    runCommand: (_args, options) => {
+      spawns += 1;
+      assert.equal(options.cwd, worktree);
+      assert.equal(options.env.PA_REPO, worktree);
+      assert.equal(options.env.PA_WORKTREE_ROOT, worktree);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  const accepted = await admitted.spawn({ primerPath: primer, deployId: "d-treehouse-accept", mode: "foreground", env: { PA_REPO: worktree, PA_WORKTREE_ROOT: worktree }, executionPlan: plan });
+  assert.equal(accepted.exitCode, 0);
+  assert.equal(preflights, 1);
+  assert.equal(spawns, 1);
 });
 
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {

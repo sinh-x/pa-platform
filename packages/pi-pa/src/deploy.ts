@@ -3,7 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendActivityEvent, assertRepositoryGitIdentity, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
-import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
@@ -142,6 +142,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
     });
+    assertPiExecutionRootAgreement(plan, plan.environment as Record<string, string>);
   } catch (error) {
     let cleanupFailure: string | undefined;
     if (activeTicketSlot) {
@@ -597,7 +598,7 @@ function authenticateParentTreehouse(
     && status.treehouse_lease_holder === expected.leaseHolder && status.branch_state === "materialized"
     && status.branch_base_sha === expected.baseSha && status.branch_head_sha === expected.headSha
     && status.ticket_slot_id === slotId && status.repository_permit === permit
-    && process.env["PA_TICKET_ID"] === expected.ticketId && process.env["PA_REPO"] === expected.repoRoot
+    && process.env["PA_TICKET_ID"] === expected.ticketId && process.env["PA_REPO"] === expected.worktreeRoot
     && process.env["PA_WORKTREE_ROOT"] === expected.worktreeRoot && process.env["PA_TREEHOUSE_LEASE_ID"] === expected.leaseId
     && process.env["PA_TREEHOUSE_LEASE_HOLDER"] === expected.leaseHolder
     && process.env["PA_TICKET_SLOT"] === `pa:${expected.repoKey}:${expected.ticketId}`

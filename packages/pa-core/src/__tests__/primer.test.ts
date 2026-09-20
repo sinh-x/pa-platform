@@ -1040,6 +1040,38 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
   assert.equal(primer.match(/^### Additional Instructions$/gm)?.length, 2);
 });
 
+test("generatePrimer renders Treehouse PA_REPO as the execution worktree while retaining canonical repo_root", () => {
+  const root = "/registered/project";
+  const worktree = "/treehouse/PAP-216";
+  const primer = generatePrimer({
+    runtime: "pi",
+    teamConfig: team,
+    mode: "plan",
+    repository: { repoKey: "registered", repoRoot: root, worktreeRoot: worktree },
+    treehouse: {
+      authority: "orchestrator", ticket: "PAP-216", path: worktree, leaseId: "lease-216",
+      leaseHolder: "pa:registered:PAP-216", branch: "feature/PAP-216-checkout-env", branchState: "materialized",
+      baseSha: "a".repeat(40), headSha: "b".repeat(40), ticketSlotId: "pa:registered:PAP-216", repositoryPermit: 2,
+    },
+    extraInstructions: [
+      "<deployment-context>",
+      "cwd: /wrong",
+      "repo: /wrong",
+      "pa_env_vars:",
+      "  PA_REPO: /registered/project",
+      "  PA_WORKTREE_ROOT: /treehouse/PAP-216",
+      "</deployment-context>",
+    ].join("\n"),
+  });
+  assert.match(primer, /^repo_root: \/registered\/project$/m);
+  assert.match(primer, /^worktree_root: \/treehouse\/PAP-216$/m);
+  assert.match(primer, /^cwd: \/treehouse\/PAP-216$/m);
+  assert.match(primer, /^repo: \/treehouse\/PAP-216$/m);
+  assert.match(primer, /^  PA_REPO: \/treehouse\/PAP-216$/m);
+  assert.match(primer, /^  PA_WORKTREE_ROOT: \/treehouse\/PAP-216$/m);
+  assert.doesNotMatch(primer, /^  PA_REPO: \/registered\/project$/m);
+});
+
 test("generatePrimer renders automatic PA finalization and Sinh-approved identity-fenced Treehouse return", () => {
   const primer = generatePrimer({
     runtime: "pi", teamConfig: team, mode: "plan", templateVars: { TICKET_ID: "PAP-189" },
