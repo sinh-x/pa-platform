@@ -180,6 +180,56 @@ test("ppa deploy preserves authenticated linked-worktree CWD while non-Pi adapte
   });
 });
 
+test("ppa parented explicit selectors preserve the authenticated linked-worktree handoff", async () => {
+  await withFixture("parented-selector", async (fixture) => {
+    const inheritedKeys = ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE"] as const;
+    const previous = Object.fromEntries(inheritedKeys.map((key) => [key, process.env[key]])) as Record<(typeof inheritedKeys)[number], string | undefined>;
+    Object.assign(process.env, {
+      PA_DEPLOYMENT_ID: "d-parent",
+      PA_DEPLOYMENT_DIR: join(fixture.root, "deployments", "d-parent"),
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+    });
+    process.chdir(fixture.worktree);
+    try {
+      for (const selector of ["registered", fixture.repo]) {
+        const captured = capture();
+        const seen: Array<{ request: DeployRequest; cwd: string }> = [];
+        const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--repo", selector], {
+          binaryName: "ppa",
+          io: captured.io,
+          hooks: { deploy: (request) => {
+            seen.push({ request, cwd: process.cwd() });
+            return { status: "pending", deploymentId: "d-child" };
+          } },
+        });
+        assert.equal(code, 0, captured.stderr.join("\n"));
+        assert.deepEqual(seen, [{ request: { team: "builder", mode: "implement", background: true, repo: fixture.repo, timeout: 2700 }, cwd: fixture.worktree }]);
+        assert.equal(process.cwd(), fixture.worktree);
+      }
+
+      let hookCalls = 0;
+      const rejected = capture();
+      assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--repo", "wrong-repository"], {
+        binaryName: "ppa",
+        io: rejected.io,
+        hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-forbidden" }; } },
+      }), 1);
+      const diagnostic = rejected.stderr.join("\n");
+      assert.equal(hookCalls, 0);
+      assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.match(diagnostic, /expected canonical_root=.*parent_worktree=/s);
+      assert.match(diagnostic, /observed selector_root=.*invocation_cwd=.*git_top_level=/s);
+      assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+    } finally {
+      for (const key of inheritedKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+});
+
 test("ppa and opa deploy help document force and the registered-path-only contract", async () => {
   const opa = capture();
   const ppa = capture();
@@ -194,7 +244,10 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   }
   assert.match(opa.stdout.join("\n"), /infer the exact configured root from CWD/i);
   assert.match(ppa.stdout.join("\n"), /infer an authenticated primary or linked worktree from CWD/i);
-  assert.match(ppa.stdout.join("\n"), /Explicit inputs always select the registered primary root/i);
+  assert.match(ppa.stdout.join("\n"), /live orchestrator may identify its direct background implement child by key or exact canonical root/i);
+  assert.match(ppa.stdout.join("\n"), /protected parent worktree remains the only runtime root/i);
+  assert.match(ppa.stdout.join("\n"), /there is no canonical-root execution mode/i);
+  assert.match(ppa.stdout.join("\n"), /standalone implement must start.*--repo omitted.*non-Pi adapter behavior is unchanged/i);
   assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
 });
 

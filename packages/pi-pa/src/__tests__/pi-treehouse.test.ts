@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
-import { deployWithPi } from "../deploy.js";
+import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { createPiHooks, deployWithPi } from "../deploy.js";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
@@ -201,7 +201,8 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     resume(opts) { return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
   };
   const leaseJson = { path: worktree, leased: true, lease_id: "lease-1", lease_holder: "pa:registered:PAP-1", leased_at: "2026-09-17T00:00:00Z" };
-  const treehouse = new TreehouseClient({ run: () => result([leaseJson]) });
+  const treehouseCalls: string[][] = [];
+  const treehouse = new TreehouseClient({ run: (args) => { treehouseCalls.push([...args]); return result([leaseJson]); } });
   const malformedTreehouse = new TreehouseClient({ run: () => result([{ ...leaseJson, path: "relative" }]) });
   const canonicalBefore = Buffer.concat([Buffer.from(git(["branch", "--show-current"], repo)), Buffer.from(git(["rev-parse", "HEAD"], repo)), execFileSync("git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: repo })]);
   try {
@@ -275,7 +276,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     const branch = linked.linkedBranches[0]!;
     appendRegistryEvent({
       deployment_id: parentDeploymentId, team: "builder", event: "started", timestamp: "2026-09-17T01:00:00Z", status: undefined,
-      ticket_id: "PAP-1", mode: "orchestrator", runtime: "pi", repo: worktree, repo_root: repo, worktree_root: worktree,
+      ticket_id: "PAP-1", mode: "orchestrator", runtime: "pi", binary: "ppa", repo: worktree, repo_root: repo, worktree_root: worktree,
       repository_slot: "orchestrator", builder_authority: "orchestrator", treehouse_path: worktree, treehouse_lease_id: "lease-1",
       treehouse_lease_holder: "pa:registered:PAP-1", branch_state: "materialized", branch_base_sha: branch.baseSha,
       branch_head_sha: branch.headSha, ticket_slot_id: parentSlotResult.slot.slotId, repository_permit: parentSlotResult.slot.repositoryPermit,
@@ -286,24 +287,89 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
       PA_TREEHOUSE_LEASE_HOLDER: "pa:registered:PAP-1", PA_TICKET_SLOT: parentSlotResult.slot.slotId,
       PA_REPOSITORY_PERMIT: String(parentSlotResult.slot.repositoryPermit),
     });
+    const parentLeasePath = repositoryMutationLeasePath(worktree, "orchestrator");
+    const parentSlotPath = repositoryTicketSlotPath(repo, "PAP-1");
+    const parentLeaseBytes = readFileSync(parentLeasePath);
+    const parentSlotBytes = readFileSync(parentSlotPath);
     spawned = undefined;
     const beforeMismatchSpawns = spawnCount;
-    const mismatchedChild = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-1", background: true, timeout: 60 }, adapter, undefined, { treehouse });
-    assert.equal(mismatchedChild.status, "failed");
-    assert.match(mismatchedChild.reason ?? "", /parented implement admission/);
+    const protectedMismatchStdout: string[] = [];
+    const protectedMismatchStderr: string[] = [];
+    const protectedMismatchCode = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "registered"], {
+      binaryName: "ppa",
+      io: { stdout: (line) => protectedMismatchStdout.push(line), stderr: (line) => protectedMismatchStderr.push(line) },
+      hooks: createPiHooks(adapter, { treehouse }),
+    });
+    const protectedDiagnostic = protectedMismatchStderr.join("\n");
+    assert.equal(protectedMismatchCode, 1);
+    assert.equal(protectedMismatchStdout.length, 0, "protected mismatch returns no child deployment ID");
     assert.equal(spawnCount, beforeMismatchSpawns);
-    assert.ok((mismatchedChild.reason ?? "").length <= 2_000);
+    assert.match(protectedDiagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    assert.match(protectedDiagnostic, /inherited parent repository environment|protected Treehouse lease evidence/);
+    assert.ok(protectedDiagnostic.length <= 2_000);
+    assert.doesNotMatch(protectedDiagnostic, /wrong-lease|lease-1/);
+    assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
+    assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
+    assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
 
     process.env["PA_TREEHOUSE_LEASE_ID"] = "lease-1";
-    const canonicalRootChild = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-1", background: true, timeout: 60 }, adapter, undefined, { treehouse });
-    assert.equal(canonicalRootChild.status, "failed");
-    assert.match(canonicalRootChild.reason ?? "", /parented implement admission/);
-    assert.equal(spawnCount, beforeMismatchSpawns);
     process.env["PA_REPO"] = worktree;
-    const parentedChild = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-1", background: true, timeout: 60 }, adapter, undefined, { treehouse });
-    assert.equal(parentedChild.status, "success", parentedChild.reason);
-    assert.equal(spawned?.executionPlan?.treehouse?.authority, "parented-implement");
-    assert.equal(spawned?.executionPlan?.treehouse?.parentDeploymentId, parentDeploymentId);
+    const childTreehouseOffset = treehouseCalls.length;
+    for (const selector of ["registered", repo]) {
+      spawned = undefined;
+      const beforeSpawns = spawnCount;
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", selector], {
+        binaryName: "ppa",
+        io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) },
+        hooks: createPiHooks(adapter, { treehouse }),
+      });
+      assert.equal(code, 0, stderr.join("\n"));
+      assert.equal(spawnCount, beforeSpawns + 1, `${selector}: exactly one child spawn`);
+      const plan = spawned?.executionPlan;
+      assert.equal(plan?.repoKey, "registered");
+      assert.equal(plan?.repoRoot, repo);
+      assert.equal(plan?.worktreeRoot, worktree);
+      assert.equal(plan?.repositoryCwd, worktree);
+      assert.equal(plan?.memoryDocumentRoot, worktree);
+      assert.equal(plan?.environment.PA_REPO, worktree);
+      assert.equal(plan?.environment.PA_WORKTREE_ROOT, worktree);
+      assert.equal(plan?.treehouse?.authority, "parented-implement");
+      assert.equal(plan?.treehouse?.parentDeploymentId, parentDeploymentId);
+      const childStatus = queryDeploymentStatus(spawned!.deployId);
+      assert.equal(childStatus?.repo, worktree);
+      assert.equal(childStatus?.repo_root, repo);
+      assert.equal(childStatus?.worktree_root, worktree);
+      assert.equal(childStatus?.status, "success");
+      assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes, `${selector}: parent lineage evidence remains byte-identical`);
+      assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes, `${selector}: parent capacity evidence remains byte-identical`);
+      assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
+      assert.match(stdout.join("\n"), /Deployment completed/);
+    }
+    assert.equal(treehouseCalls.slice(childTreehouseOffset).every((args) => args.join(" ") === "status --json"), true, "parented children only re-read Treehouse status and never acquire or return");
+
+    spawned = undefined;
+    const beforeSelectorMismatchSpawns = spawnCount;
+    const mismatchStdout: string[] = [];
+    const mismatchStderr: string[] = [];
+    const mismatchCode = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "wrong-repository"], {
+      binaryName: "ppa",
+      io: { stdout: (line) => mismatchStdout.push(line), stderr: (line) => mismatchStderr.push(line) },
+      hooks: createPiHooks(adapter, { treehouse }),
+    });
+    const selectorDiagnostic = mismatchStderr.join("\n");
+    assert.equal(mismatchCode, 1);
+    assert.equal(mismatchStdout.length, 0, "rejection returns no child deployment ID");
+    assert.equal(spawnCount, beforeSelectorMismatchSpawns);
+    assert.match(selectorDiagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    assert.match(selectorDiagnostic, /expected canonical_root=.*parent_worktree=/s);
+    assert.match(selectorDiagnostic, /observed selector_root=.*invocation_cwd=.*git_top_level=/s);
+    assert.ok(selectorDiagnostic.length <= 2_000);
+    assert.doesNotMatch(selectorDiagnostic, /lease-1/);
+    assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
+    assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
+    assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: worktree, ownershipToken: parentLease.lease.ownershipToken }).status, "released");
     assert.equal(releaseRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: parentSlotResult.slot.slotToken, slotId: parentSlotResult.slot.slotId, repositoryPermit: parentSlotResult.slot.repositoryPermit }).status, "released");
     for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_WORKTREE_ROOT", "PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"]) {

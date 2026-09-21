@@ -173,7 +173,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--objective <text>` | string | Inline objective override |
 | `--objective-file <path>` | file path | Read objective from a (guarded) local file |
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
-| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. Explicit PPA input always selects the primary root. |
+| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Standalone PPA explicit inputs and non-Pi behavior are unchanged. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
@@ -194,7 +194,18 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 PPA alone permits one authenticated exception: a process-verified,
 registry-running Pi `builder/orchestrator` owner may launch one direct background
 Pi `builder/implement` child for the exact same repository and ticket-linked
-feature branch. A clean child snapshot follows the existing path. A dirty child
+feature branch. The parent may pass either the registered repository key or the
+exact canonical root. Both forms identify canonical identity only; protected
+parent evidence selects the existing authenticated worktree. Child CWD,
+`PA_REPO`, `PA_WORKTREE_ROOT`, registry `repo`, execution root, and memory root
+remain the worktree, while plan/registry `repo_root` remains canonical. The
+child reuses checkout, lease, slot, permit, and lineage evidence with no second
+acquisition, branch action, capacity reservation, or lineage creation. Protected
+registry/process/Treehouse/ticket/Git/environment evidence is reread immediately
+before exactly one successful spawn. This exception provides no canonical-root
+execution mode.
+
+A clean child snapshot follows the existing path. A dirty child
 snapshot requires a consume-once receipt created only by the foreground parent
 through the trusted `pa_dirty_borrow_approval` Pi TUI tool. The tool displays the
 complete numbered porcelain-v2 path set, requires every current path to be
@@ -220,12 +231,16 @@ and releases only after no live borrower remains. A borrower that outlives an
 abnormal parent exit continues to block normal and forced acquisition until its
 process fingerprint becomes stale. Missing, malformed, insecure, stale,
 replayed, consumed, mismatched, or forbidden inherited context rejects before
-spawn; diagnostics redact private evidence, contain `Condition`, `Source`,
-`Reason`, `Correction`, and `Resume Action`, and are at most 2,000 JavaScript
-characters. Dirty registered-primary background builders still reject;
+spawn; wrong or ambiguous selectors do likewise. Diagnostics redact private
+evidence, contain `Condition`, `Source`, `Reason`, `Correction`, and
+`Resume Action`, include bounded expected/observed canonical/worktree/CWD/Git
+path evidence where applicable, and are at most 2,000 JavaScript characters.
+Standalone PPA `builder/implement` still requires omitted `--repo` from the exact
+free authenticated linked checkout; explicit key/path and canonical-root
+execution reject. Dirty registered-primary background builders still reject;
 authenticated linked-worktree PPA backgrounds use the linked-worktree policy
 above. OPA has exclusion awareness only—positive OPA, CPA, and Droid inheritance
-is outside this contract.
+is outside this contract, and their selector behavior is unchanged.
 
 Configuration evidence from the dedicated dirty-direct-borrower policy ticket
 does not itself prove runtime admission and must not be reported as a merged
