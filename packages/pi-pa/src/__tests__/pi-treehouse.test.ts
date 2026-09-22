@@ -316,6 +316,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
 
     process.env["PA_TREEHOUSE_LEASE_ID"] = "lease-1";
     process.env["PA_REPO"] = worktree;
+    let expectedParentLeaseBytes = parentLeaseBytes;
     const childTreehouseOffset = treehouseCalls.length;
     for (const selector of ["registered", repo]) {
       spawned = undefined;
@@ -345,7 +346,9 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
       assert.equal(childStatus?.repo_root, repo);
       assert.equal(childStatus?.worktree_root, worktree);
       assert.equal(childStatus?.status, "success");
-      assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes, `${selector}: parent lineage evidence remains byte-identical`);
+      const advancedParentLeaseBytes = readFileSync(parentLeasePath);
+      assert.notDeepEqual(advancedParentLeaseBytes, expectedParentLeaseBytes, `${selector}: successful child advances parent authority evidence`);
+      expectedParentLeaseBytes = advancedParentLeaseBytes;
       assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes, `${selector}: parent capacity evidence remains byte-identical`);
       assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
       assert.deepEqual(operations, { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 1 });
@@ -373,7 +376,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.match(selectorDiagnostic, /observed selector_root=.*invocation_cwd=.*git_top_level=/s);
     assert.ok(selectorDiagnostic.length <= 2_000);
     assert.doesNotMatch(selectorDiagnostic, /lease-1/);
-    assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
+    assert.deepEqual(readFileSync(parentLeasePath), expectedParentLeaseBytes);
     assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
     assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
 

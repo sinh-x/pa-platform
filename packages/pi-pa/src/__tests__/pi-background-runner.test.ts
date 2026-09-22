@@ -465,7 +465,7 @@ test("background orchestrator runner waits for child finalization before releasi
   });
 });
 
-test("borrowed runner transfers process identity, scrubs implementation env/config, and preserves parent lease bytes", async () => {
+test("borrowed runner transfers process identity, scrubs implementation env/config, and advances parent authority", async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const repo = join(root, "repo");
     mkdirSync(repo);
@@ -528,7 +528,8 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
       child.emit("close", 0);
       await running;
       assert.equal(inspectRepositoryMutationBorrower(repo).state, "absent");
-      assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+      assert.notDeepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes);
+      assert.equal(inspectRepositoryMutationLease(repo).lease?.authorityGitSnapshot?.head, captureRepositoryGitSnapshot(repo).head);
       assert.doesNotMatch(JSON.stringify(getDeploymentEvents(config.deploymentId)), new RegExp(capability));
       assert.doesNotMatch(JSON.stringify(readActivityEvents(join(deployDir, "activity.jsonl"))), new RegExp(capability));
 

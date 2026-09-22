@@ -141,6 +141,80 @@ export function validateRegistryEvent(event: RegistryEvent): void {
 export class DeploymentStartConflictError extends Error {}
 export class DeploymentCorrelationConflictError extends Error {}
 
+export interface AdvanceParentAuthoritySnapshotOptions {
+  parentDeploymentId: string;
+  childDeploymentId: string;
+  expectedBranchHeadSha: string;
+  branchState: "materialized";
+  branchHeadSha: string;
+  timestamp?: string;
+}
+
+/**
+ * Advances only the mutable branch snapshot projected for one running
+ * orchestrator after its exact direct child finalizes repository authority.
+ * The parent's started event remains immutable audit evidence.
+ */
+export function advanceParentAuthoritySnapshot(options: AdvanceParentAuthoritySnapshotOptions): void {
+  const db = getDb();
+  db.transaction(() => {
+    const parent = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(options.parentDeploymentId) as Record<string, unknown> | undefined;
+    const parentStart = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started' ORDER BY id LIMIT 1").get(options.parentDeploymentId) as Record<string, unknown> | undefined;
+    const childStart = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started' ORDER BY id LIMIT 1").get(options.childDeploymentId) as Record<string, unknown> | undefined;
+    const fail = (reason: string): never => {
+      throw new DeploymentCorrelationConflictError(correlationConflictDiagnostic(`parent authority snapshot advance rejected: ${reason}`));
+    };
+    if (!parent || !parentStart || !childStart) fail("parent projection, immutable parent start, or immutable child start is absent");
+    const exactParent = parent as Record<string, unknown>;
+    const exactParentStart = parentStart as Record<string, unknown>;
+    const exactChildStart = childStart as Record<string, unknown>;
+    if (exactParent["status"] !== "running"
+      || exactParentStart["team"] !== "builder" || exactParentStart["mode"] !== "orchestrator"
+      || exactParentStart["runtime"] !== "pi" || exactParentStart["binary"] !== "ppa"
+      || exactParentStart["builder_authority"] !== "orchestrator") {
+      fail("the parent is not the exact live PPA builder/orchestrator authority");
+    }
+    const matchingFields = [
+      "ticket_id", "repo", "repo_root", "worktree_root", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
+      "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit",
+    ] as const;
+    if (exactChildStart["team"] !== "builder" || exactChildStart["mode"] !== "implement"
+      || exactChildStart["runtime"] !== "pi" || exactChildStart["binary"] !== "ppa"
+      || exactChildStart["parent_deployment_id"] !== options.parentDeploymentId
+      || exactChildStart["builder_authority"] !== "parented-implement"
+      || exactChildStart["branch_head_sha"] !== options.expectedBranchHeadSha
+      || matchingFields.some((field) => exactChildStart[field] !== exactParent[field])) {
+      fail("the child immutable start is not the exact direct child of the current parent authority snapshot");
+    }
+    if (exactParent["branch_state"] !== "materialized"
+      || exactParent["branch_head_sha"] !== options.expectedBranchHeadSha) {
+      const existing = db.prepare("SELECT id FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND note = ? AND branch_head_sha = ? ORDER BY id LIMIT 1")
+        .get(options.parentDeploymentId, `direct-child-authority:${options.childDeploymentId}`, options.branchHeadSha);
+      if (exactParent["branch_state"] === "materialized" && exactParent["branch_head_sha"] === options.branchHeadSha && existing) return;
+      const priorAuthorityUpdate = db.prepare("SELECT id FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND note LIKE 'direct-child-authority:%' ORDER BY id LIMIT 1")
+        .get(options.parentDeploymentId);
+      const reconcilesInitialBranchTransition = exactParent["branch_state"] === "materialized"
+        && exactParent["branch_head_sha"] === exactParentStart["branch_head_sha"]
+        && priorAuthorityUpdate === undefined;
+      if (!reconcilesInitialBranchTransition) fail("the parent's current projected branch snapshot does not match the mutex-protected expected predecessor");
+    }
+    const event: RegistryEvent = {
+      deployment_id: options.parentDeploymentId,
+      team: "builder",
+      event: "updated",
+      timestamp: options.timestamp ?? new Date().toISOString(),
+      note: `direct-child-authority:${options.childDeploymentId}`,
+      branch_state: options.branchState,
+      branch_base_sha: typeof exactParent["branch_base_sha"] === "string" ? exactParent["branch_base_sha"] : undefined,
+      branch_head_sha: options.branchHeadSha,
+    };
+    validateRegistryEvent(event);
+    assertEventMatchesStartedIdentity(db, event);
+    insertRegistryEvent(db, event);
+    upsertDeployment(db, event);
+  }).immediate();
+}
+
 export function appendRegistryEvent(event: RegistryEvent): void {
   validateRegistryEvent(event);
   const db = getDb();
@@ -318,6 +392,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
     const completed = deploymentEvents.find((event) => event.event === "completed");
     const crashed = deploymentEvents.find((event) => event.event === "crashed");
     const pid = deploymentEvents.find((event) => event.event === "pid");
+    const currentBranch = [...deploymentEvents].reverse().find((event) => event.branch_state !== undefined || event.branch_base_sha !== undefined || event.branch_head_sha !== undefined);
     return {
       deploy_id: deployId,
       team: started?.team ?? deploymentEvents[0]?.team ?? "",
@@ -342,9 +417,9 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       treehouse_path: started?.treehouse_path,
       treehouse_lease_id: started?.treehouse_lease_id,
       treehouse_lease_holder: started?.treehouse_lease_holder,
-      branch_state: completed?.branch_state ?? crashed?.branch_state ?? started?.branch_state,
-      branch_base_sha: completed?.branch_base_sha ?? crashed?.branch_base_sha ?? started?.branch_base_sha,
-      branch_head_sha: completed?.branch_head_sha ?? crashed?.branch_head_sha ?? started?.branch_head_sha,
+      branch_state: currentBranch?.branch_state ?? started?.branch_state,
+      branch_base_sha: currentBranch?.branch_base_sha ?? started?.branch_base_sha,
+      branch_head_sha: currentBranch?.branch_head_sha ?? started?.branch_head_sha,
       ticket_slot_id: started?.ticket_slot_id,
       repository_permit: started?.repository_permit,
       mode: started?.mode,
@@ -411,6 +486,13 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     `).run(row);
   } else if (event.event === "pid") {
     db.prepare("UPDATE deployments SET pid = ? WHERE deployment_id = ?").run(event.pid ?? null, event.deployment_id);
+  } else if (event.event === "updated") {
+    db.prepare(`
+      UPDATE deployments SET branch_state = COALESCE(@branch_state, branch_state),
+        branch_base_sha = COALESCE(@branch_base_sha, branch_base_sha),
+        branch_head_sha = COALESCE(@branch_head_sha, branch_head_sha)
+      WHERE deployment_id = @deployment_id
+    `).run(row);
   } else if (event.event === "completed") {
     db.prepare(`
       UPDATE deployments SET status = @status, completed_at = @timestamp, summary = @summary,

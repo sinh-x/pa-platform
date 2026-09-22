@@ -2,6 +2,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  advanceParentAuthoritySnapshot,
   appendActivityEvent,
   assertRepositoryGitIdentity,
   captureRepositoryGitSnapshot,
@@ -60,6 +61,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let repositoryBorrowerTransferred = false;
   let repositoryTicketSlotTransferred = false;
   let terminalGitSnapshot: RepositoryGitSnapshot | undefined;
+  let advanceBorrowedParentAuthority = false;
   let terminalRegistryEvidence = config.registryEvidence;
   let finalState: PiSupervisorOwnership["state"] = "failed";
 
@@ -237,6 +239,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       }
     }
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
+    advanceBorrowedParentAuthority = terminal.status === "success";
     finalState = "finalized";
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
   } catch (error) {
@@ -263,7 +266,9 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           repositoryGitCommonDir: repositoryBorrower.repositoryGitCommonDir,
           borrowerToken: repositoryBorrower.borrowerToken,
           deploymentId: config.deploymentId,
+          advanceParentAuthority: advanceBorrowedParentAuthority,
           ...(terminalGitSnapshot ? { finalGitSnapshot: terminalGitSnapshot } : {}),
+          ...(config.registryEvidence?.builder_authority === "parented-implement" ? { dependencies: { publishParentAuthoritySnapshot: advanceParentAuthoritySnapshot } } : {}),
         });
         switch (finalization.status) {
           case "finalized":
