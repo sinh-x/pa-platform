@@ -170,7 +170,12 @@ export interface RepositoryMutationLease {
   readonly launchMode?: RepositoryAdmissionLaunchMode;
   readonly processFingerprint: ProcessFingerprint;
   readonly acquiredAt: string;
+  /** Immutable snapshot captured when the parent first acquired authority. */
   readonly preLaunchGitSnapshot: RepositoryGitSnapshot;
+  /** Mutable current authority advanced only by an exact branch transition or matching child finalization. */
+  readonly authorityGitSnapshot?: RepositoryGitSnapshot;
+  readonly authorityUpdatedAt?: string;
+  readonly authorityChildDeploymentId?: string;
   readonly ticket?: string;
   readonly repositoryGitDir?: string;
   readonly repositoryGitCommonDir?: string;
@@ -230,6 +235,15 @@ export interface RepositoryAdmissionDependencies {
   readonly getCurrentProcessFingerprint?: () => ProcessFingerprint | undefined;
   /** Test-only fault seam exercised after a transition lease replacement. */
   readonly afterParentSnapshotReplacement?: () => void;
+  /** Registry publication performed under the repository mutex after lease replacement. */
+  readonly publishParentAuthoritySnapshot?: (options: {
+    parentDeploymentId: string;
+    childDeploymentId: string;
+    expectedBranchHeadSha: string;
+    branchState: "materialized";
+    branchHeadSha: string;
+    timestamp: string;
+  }) => void;
 }
 
 interface ResolvedRepositoryAdmissionDependencies extends RepositoryAdmissionDependencies {
@@ -715,6 +729,7 @@ export function authenticateRepositoryMutationLease(options: {
   team: string;
   mode: string;
   ticket: string;
+  expectedGitSnapshot?: RepositoryGitSnapshot;
   processFingerprint?: ProcessFingerprint;
   expectedEvidenceIdentity?: string;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "isDeploymentRunning">;
@@ -738,6 +753,7 @@ export function authenticateRepositoryMutationLease(options: {
       || normalizedTeam(lease.team ?? "") !== normalizedTeam(options.team)
       || lease.mode !== options.mode
       || lease.ticket !== options.ticket
+      || (options.expectedGitSnapshot !== undefined && !repositoryGitSnapshotsEqual(lease.authorityGitSnapshot ?? lease.preLaunchGitSnapshot, options.expectedGitSnapshot))
       || (options.processFingerprint !== undefined && !fingerprintsEqual(lease.processFingerprint, options.processFingerprint))) {
       return { status: "rejected", reason: "identity-mismatch" };
     }
@@ -806,7 +822,8 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     if (!options.ticket.trim() || (lease.ticket !== undefined && lease.ticket !== options.ticket)) {
       return reject("child-context", "the child ticket must exactly match the parent ticket authority");
     }
-    const branchChangedSinceParentLaunch = options.branch !== lease.preLaunchGitSnapshot.branch;
+    const parentAuthoritySnapshot = lease.authorityGitSnapshot ?? lease.preLaunchGitSnapshot;
+    const branchChangedSinceParentLaunch = options.branch !== parentAuthoritySnapshot.branch;
     if (lease.branchTransitionPolicy && (!options.branchTransitionPolicy || !branchTransitionPoliciesEqual(lease.branchTransitionPolicy, options.branchTransitionPolicy))) {
       return reject("child-context", "the current ticket and repository branch policy does not match the immutable parent policy");
     }
@@ -829,6 +846,8 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     if (branchChangedSinceParentLaunch) {
       const transitionFailure = validateBranchTransition({ root, worktree, lease, options, gitSnapshot, runGit: dependencies.runGit });
       if (transitionFailure) return reject("branch-transition", transitionFailure);
+    } else if (!gitSnapshot.dirty && !repositoryGitSnapshotsEqual(parentAuthoritySnapshot, gitSnapshot)) {
+      return reject("parent-authority-snapshot", "the child launch snapshot does not match the live parent's current authority snapshot");
     }
 
     let approvedMutationPaths: readonly string[] | undefined;
@@ -868,6 +887,9 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       }
       if (options.expectedGitSnapshot && (!isGitSnapshot(options.expectedGitSnapshot) || !repositoryGitSnapshotsEqual(options.expectedGitSnapshot, gitSnapshot))) {
         return reject("launch-snapshot", "the consumed receipt attempt changed between immediate and mutex-held complete Git rereads");
+      }
+      if (!branchChangedSinceParentLaunch && gitSnapshot.head !== parentAuthoritySnapshot.head) {
+        return reject("parent-authority-snapshot", "the consumed dirty child snapshot does not descend from the live parent's current authority snapshot");
       }
       approvedMutationPaths = scope;
       dirtyApprovalReceiptId = approval.receiptId;
@@ -920,7 +942,8 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       if (branchChangedSinceParentLaunch) {
         const reconciledLease: RepositoryMutationLease = Object.freeze({
           ...lease,
-          preLaunchGitSnapshot: gitSnapshot,
+          authorityGitSnapshot: gitSnapshot,
+          authorityUpdatedAt: dependencies.now().toISOString(),
           branchTransitioned: true,
         });
         replaceLeaseAtomic(leasePath, reconciledLease, dependencies.createToken);
@@ -1284,6 +1307,8 @@ export function finalizeRepositoryMutationBorrower(options: {
   borrowerToken: string;
   deploymentId: string;
   finalGitSnapshot?: RepositoryGitSnapshot;
+  /** False when the child did not complete successfully; cleanup then preserves the prior parent snapshot. */
+  advanceParentAuthority?: boolean;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryBorrowerFinalizationResult {
   const { root, worktree, gitDir, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
@@ -1335,8 +1360,35 @@ export function finalizeRepositoryMutationBorrower(options: {
     let parentLease: "retained" | "released" | "absent" | "replacement-preserved";
     if (parentInspection.state === "absent") parentLease = "absent";
     else if (!parent || parent.deploymentId !== parsed.parentDeploymentId || parent.canonicalRepoRoot !== root || (parent.worktreeRoot ?? root) !== worktree || !fingerprintsEqual(parent.processFingerprint, parsed.parentProcessFingerprint)) parentLease = "replacement-preserved";
-    else if (parentInspection.state === "live" && dependencies.isDeploymentRunning(parent.deploymentId)) parentLease = "retained";
-    else {
+    else if (parentInspection.state === "live" && dependencies.isDeploymentRunning(parent.deploymentId)) {
+      const previousAuthority = parent.authorityGitSnapshot ?? parent.preLaunchGitSnapshot;
+      if (scopeCompliant && options.advanceParentAuthority !== false) {
+        if (previousAuthority.branch !== finalGitSnapshot.branch) return { status: "invalid-evidence" };
+        const parentBytes = readFileSync(leasePath);
+        const authorityUpdatedAt = dependencies.now().toISOString();
+        const advancedParent: RepositoryMutationLease = Object.freeze({
+          ...parent,
+          authorityGitSnapshot: finalGitSnapshot,
+          authorityUpdatedAt,
+          authorityChildDeploymentId: parsed.deploymentId,
+        });
+        try {
+          replaceLeaseAtomic(leasePath, advancedParent, dependencies.createToken);
+          dependencies.publishParentAuthoritySnapshot?.({
+            parentDeploymentId: parent.deploymentId,
+            childDeploymentId: parsed.deploymentId,
+            expectedBranchHeadSha: previousAuthority.head,
+            branchState: "materialized",
+            branchHeadSha: finalGitSnapshot.head,
+            timestamp: authorityUpdatedAt,
+          });
+        } catch {
+          replaceEvidenceBytesAtomic(leasePath, parentBytes, dependencies.createToken);
+          return { status: "invalid-evidence" };
+        }
+      }
+      parentLease = "retained";
+    } else {
       unlinkSync(leasePath);
       parentLease = "released";
     }
@@ -1749,6 +1801,10 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && isProcessFingerprint(row["processFingerprint"])
     && validTimestamp(row["acquiredAt"])
     && isGitSnapshot(row["preLaunchGitSnapshot"])
+    && (row["authorityGitSnapshot"] === undefined || isGitSnapshot(row["authorityGitSnapshot"]))
+    && (row["authorityUpdatedAt"] === undefined || validTimestamp(row["authorityUpdatedAt"]))
+    && ((row["authorityGitSnapshot"] === undefined) === (row["authorityUpdatedAt"] === undefined))
+    && (row["authorityChildDeploymentId"] === undefined || (row["authorityGitSnapshot"] !== undefined && boundedString(row["authorityChildDeploymentId"])))
     && (row["ticket"] === undefined || boundedString(row["ticket"]))
     && ((row["repositoryGitDir"] === undefined && row["repositoryGitCommonDir"] === undefined)
       || (boundedString(row["repositoryGitDir"]) && isAbsolute(row["repositoryGitDir"] as string)
@@ -2091,6 +2147,7 @@ function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies>
     isProcessAlive: overrides?.isProcessAlive ?? processIsAlive,
     getCurrentProcessFingerprint: overrides?.getCurrentProcessFingerprint ?? (() => readProcessFingerprint(process.pid)),
     afterParentSnapshotReplacement: overrides?.afterParentSnapshotReplacement,
+    publishParentAuthoritySnapshot: overrides?.publishParentAuthoritySnapshot,
   };
 }
 

@@ -669,7 +669,8 @@ test("transition reconciliation is all or nothing", () => {
         if (registration.status !== "registered") continue;
         const reconciled = inspectRepositoryMutationLease(fixture.root, deps).lease;
         assert.equal(reconciled?.branchTransitioned, true);
-        assert.equal(repositoryGitSnapshotsEqual(reconciled!.preLaunchGitSnapshot, current), true);
+        assert.equal(repositoryGitSnapshotsEqual(reconciled!.preLaunchGitSnapshot, initial), true);
+        assert.equal(repositoryGitSnapshotsEqual(reconciled!.authorityGitSnapshot!, current), true);
         assert.equal(repositoryGitSnapshotsEqual(registration.borrower.launchGitSnapshot, current), true);
         assert.notDeepEqual(readFileSync(parentPath), before);
         assert.equal(statSync(parentPath).mode & 0o777, 0o600);
@@ -1164,7 +1165,7 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
   }
 });
 
-test("matching borrower finalization publishes final Git state, preserves live parent bytes, and admits the next clean child", () => {
+test("matching borrower finalization advances live parent authority and admits the next clean child", () => {
   const root = fixture("borrow-finalization");
   const parent = fingerprint(45911);
   const firstProcess = fingerprint(45912);
@@ -1187,6 +1188,15 @@ test("matching borrower finalization publishes final Git state, preserves live p
     });
     assert.equal(first.status, "registered");
     if (first.status !== "registered") return;
+    const failedPublication = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
+      finalGitSnapshot: finalSnapshot,
+      dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => firstProcess, publishParentAuthoritySnapshot: () => { throw new Error("registry mismatch"); } },
+    });
+    assert.deepEqual(failedPublication, { status: "invalid-evidence" });
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes, "failed publication rolls back the parent authority snapshot");
+    assert.notEqual(inspectRepositoryMutationBorrower(root, liveFamily).state, "absent", "failed publication retains the blocking borrower");
+
     const finalized = finalizeRepositoryMutationBorrower({
       canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
       finalGitSnapshot: finalSnapshot, dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => firstProcess },
@@ -1196,8 +1206,19 @@ test("matching borrower finalization publishes final Git state, preserves live p
       canonicalRepoRoot: root, borrowerToken: first.borrower.borrowerToken, deploymentId: "d-first",
       finalGitSnapshot: finalSnapshot, dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => firstProcess },
     }), { status: "absent" });
-    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+    assert.notDeepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
+    assert.equal(inspectRepositoryMutationLease(root, liveFamily).lease?.preLaunchGitSnapshot.head, snapshot.head);
+    assert.equal(inspectRepositoryMutationLease(root, liveFamily).lease?.authorityGitSnapshot?.head, finalSnapshot.head);
     assert.equal(inspectRepositoryMutationBorrower(root, liveFamily).state, "absent");
+
+    const stale = registerRepositoryMutationBorrower({
+      capability: "finalize-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
+      deploymentId: "d-stale", deploymentDirectory: join(root, "stale"), runtime: "pi", team: "builder", mode: "implement",
+      launchMode: "background", ticket: "PAP-191", branch: snapshot.branch, timeoutSeconds: 60,
+      pid: secondProcess.pid, processFingerprint: secondProcess, gitSnapshot: snapshot, dependencies: liveFamily,
+    });
+    assert.equal(stale.status, "rejected");
+    if (stale.status === "rejected") assert.equal(stale.category, "parent-authority-snapshot");
 
     const second = registerRepositoryMutationBorrower({
       capability: "finalize-capability", canonicalRepoKey: "fixture", canonicalRepoRoot: root, parentDeploymentId: "d-parent",
