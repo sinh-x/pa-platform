@@ -22,7 +22,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { queryDeploymentStatus } from "../registry/index.js";
-import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 
@@ -699,6 +699,54 @@ export function inspectRepositoryMutationLease(
 ): RepositoryEvidenceInspection {
   const { root, leasePath, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, dependencies.slot ?? "orchestrator", dependencies.repositoryGitDir);
   return withMutationMutex(mutexPath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
+}
+
+export type RepositoryMutationLeaseAuthentication =
+  | { readonly status: "authenticated"; readonly evidenceIdentity: string; readonly processFingerprint: ProcessFingerprint }
+  | { readonly status: "rejected"; readonly reason: "absent" | "stale" | "malformed" | "oversized" | "root-conflicting" | "identity-mismatch" | "registry-not-running" | "replaced" };
+
+export function authenticateRepositoryMutationLease(options: {
+  canonicalRepoKey: string;
+  canonicalRepoRoot: string;
+  worktreeRoot: string;
+  deploymentId: string;
+  deploymentDirectory: string;
+  runtime: RuntimeName;
+  team: string;
+  mode: string;
+  ticket: string;
+  processFingerprint?: ProcessFingerprint;
+  expectedEvidenceIdentity?: string;
+  dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "isDeploymentRunning">;
+}): RepositoryMutationLeaseAuthentication {
+  const dependencies = {
+    getProcessFingerprint: options.dependencies?.getProcessFingerprint ?? readProcessFingerprint,
+    isDeploymentRunning: options.dependencies?.isDeploymentRunning ?? ((deploymentId: string) => queryDeploymentStatus(deploymentId)?.status === "running"),
+  };
+  const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
+  return withMutationMutex(mutexPath, () => {
+    const inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
+    if (inspection.state !== "live") return { status: "rejected", reason: inspection.state };
+    if (!inspection.lease || !inspection.evidenceIdentity) return { status: "rejected", reason: "malformed" };
+    const lease = inspection.lease;
+    if (lease.canonicalRepoKey !== options.canonicalRepoKey
+      || lease.canonicalRepoRoot !== root
+      || (lease.worktreeRoot ?? root) !== worktree
+      || lease.deploymentId !== options.deploymentId
+      || lease.deploymentDirectory !== options.deploymentDirectory
+      || lease.runtime !== options.runtime
+      || normalizedTeam(lease.team ?? "") !== normalizedTeam(options.team)
+      || lease.mode !== options.mode
+      || lease.ticket !== options.ticket
+      || (options.processFingerprint !== undefined && !fingerprintsEqual(lease.processFingerprint, options.processFingerprint))) {
+      return { status: "rejected", reason: "identity-mismatch" };
+    }
+    if (!dependencies.isDeploymentRunning(options.deploymentId)) return { status: "rejected", reason: "registry-not-running" };
+    if (options.expectedEvidenceIdentity !== undefined && !secureStringsEqual(inspection.evidenceIdentity, options.expectedEvidenceIdentity)) {
+      return { status: "rejected", reason: "replaced" };
+    }
+    return { status: "authenticated", evidenceIdentity: inspection.evidenceIdentity, processFingerprint: Object.freeze({ ...lease.processFingerprint }) };
+  });
 }
 
 export function inspectRepositoryMutationBorrower(
@@ -1521,12 +1569,16 @@ export function formatRepositoryBorrowerDiagnostic(input: {
           "for clean borrowing, retry only after the parent confirms no live sibling and a zero-entry Git snapshot",
         ];
   const roots = input.worktreeRoot && input.worktreeRoot !== input.canonicalRepoRoot
-    ? `repo_root=${boundedField(input.canonicalRepoRoot, 700)} worktree_root=${boundedField(input.worktreeRoot, 700)}`
-    : `root=${boundedField(input.canonicalRepoRoot, 700)}`;
+    ? `repo_root=${input.canonicalRepoRoot} worktree_root=${input.worktreeRoot}`
+    : `root=${input.canonicalRepoRoot}`;
   const slot = input.slot ? ` slot=${input.slot}` : "";
-  return boundDiagnostic(
-    `Condition: inherited repository admission ${boundedField(input.category, 120)}. Source: repository-admission borrower evidence for repo=${boundedField(input.canonicalRepoKey, 160)} ${roots}${slot}. Reason: ${boundedField(input.reason, 500)}. Correction: ${correction}. Resume Action: ${resumeAction}.`,
-  );
+  return formatBoundedFiveFieldDiagnostic({
+    condition: `inherited repository admission ${input.category}`,
+    source: `repository-admission borrower evidence for repo=${input.canonicalRepoKey} ${roots}${slot}`,
+    reason: input.reason,
+    correction,
+    resumeAction,
+  });
 }
 
 export function formatRepositoryAdmissionDiagnostic(input: {

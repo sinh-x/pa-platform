@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, type ProcessFingerprint } from "../deploy/index.js";
+import { acquireRepositoryTicketSlot, authenticateRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, type ProcessFingerprint } from "../deploy/index.js";
 import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
 
@@ -64,6 +64,48 @@ test("ticket slots reject duplicate and fifth live tickets in one repository tra
     assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
   } finally {
     for (const result of acquired) releaseRepositoryTicketSlot({ canonicalRepoKey: result.slot.canonicalRepoKey, canonicalRepoRoot: result.slot.canonicalRepoRoot, ticket: result.slot.ticket, slotToken: result.slot.slotToken, slotId: result.slot.slotId, repositoryPermit: result.slot.repositoryPermit });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("read-only ticket-slot authentication rejects absent, malformed, replaced, stale, and permit-drift evidence without exposing its token", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-ticket-slot-auth-"));
+  const repo = initializeRepo(root);
+  const fp = fingerprint(31_001);
+  const deploymentDirectory = join(root, "d-parent");
+  const getProcessFingerprint = (pid: number) => pid === fp.pid ? fp : undefined;
+  const acquired = acquireRepositoryTicketSlot({
+    canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", deploymentId: "d-parent", deploymentDirectory,
+    pid: fp.pid, processFingerprint: fp, dependencies: { getProcessFingerprint, createToken: () => "DISTINCTIVE-SLOT-TOKEN", now: () => new Date("2026-09-17T00:00:00.000Z") },
+  });
+  assert.equal(acquired.status, "acquired");
+  if (acquired.status !== "acquired") return;
+  const path = acquired.slotPath;
+  const options = {
+    canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", deploymentId: "d-parent", deploymentDirectory,
+    slotId: acquired.slot.slotId, repositoryPermit: acquired.slot.repositoryPermit, processFingerprint: fp,
+  } as const;
+  try {
+    const initial = authenticateRepositoryTicketSlot({ ...options, dependencies: { getProcessFingerprint } });
+    assert.equal(initial.status, "authenticated");
+    assert.doesNotMatch(JSON.stringify(initial), /DISTINCTIVE-SLOT-TOKEN/);
+    if (initial.status !== "authenticated") return;
+
+    writeFileSync(path, `${JSON.stringify({ ...acquired.slot, slotToken: "REPLACEMENT-TOKEN" })}\n`, { mode: 0o600 });
+    assert.deepEqual(authenticateRepositoryTicketSlot({ ...options, expectedEvidenceIdentity: initial.evidenceIdentity, dependencies: { getProcessFingerprint } }), { status: "rejected", reason: "replaced" });
+
+    writeFileSync(path, `${JSON.stringify({ ...acquired.slot, repositoryPermit: acquired.slot.repositoryPermit === 1 ? 2 : 1 })}\n`, { mode: 0o600 });
+    assert.deepEqual(authenticateRepositoryTicketSlot({ ...options, dependencies: { getProcessFingerprint } }), { status: "rejected", reason: "identity-mismatch" });
+
+    writeFileSync(path, `${JSON.stringify(acquired.slot)}\n`, { mode: 0o600 });
+    assert.deepEqual(authenticateRepositoryTicketSlot({ ...options, dependencies: { getProcessFingerprint: () => undefined } }), { status: "rejected", reason: "stale-process" });
+
+    writeFileSync(path, "{bad-json\n", { mode: 0o600 });
+    assert.deepEqual(authenticateRepositoryTicketSlot({ ...options, dependencies: { getProcessFingerprint } }), { status: "rejected", reason: "malformed" });
+
+    rmSync(path);
+    assert.deepEqual(authenticateRepositoryTicketSlot({ ...options, dependencies: { getProcessFingerprint } }), { status: "rejected", reason: "absent" });
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

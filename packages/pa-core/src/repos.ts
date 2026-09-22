@@ -43,6 +43,33 @@ export const DEFAULT_BRANCH_PATTERN = "feature/<ticket>-<topic>";
 export const MAX_REPOSITORY_DIAGNOSTIC_CHARS = 2000;
 const REGISTERED_PATH_RULE = "PA deployments use registered project paths only.";
 
+export function formatBoundedFiveFieldDiagnostic(input: {
+  condition: string;
+  source: string;
+  reason: string;
+  correction: string;
+  resumeAction: string;
+}, max = MAX_REPOSITORY_DIAGNOSTIC_CHARS): string {
+  const labels = ["Condition: ", "Source: ", "Reason: ", "Correction: ", "Resume Action: "] as const;
+  const separators = [". ", ". ", ". ", ". ", "."] as const;
+  const values = [input.condition, input.source, input.reason, input.correction, input.resumeAction]
+    .map((value) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?"));
+  const fixedLength = labels.reduce((total, label) => total + label.length, 0)
+    + separators.reduce((total, separator) => total + separator.length, 0);
+  const available = Math.max(values.length, max - fixedLength);
+  const weights = [2, 3, 8, 3, 3] as const;
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  const budgets = weights.map((weight) => Math.max(1, Math.floor((available * weight) / totalWeight)));
+  for (let remaining = available - budgets.reduce((total, budget) => total + budget, 0), index = 0; remaining > 0; remaining -= 1, index = (index + 1) % budgets.length) {
+    budgets[index]! += 1;
+  }
+  const bounded = values.map((value, index) => {
+    const budget = budgets[index]!;
+    return value.length <= budget ? value : budget <= 3 ? value.slice(0, budget) : `${value.slice(0, budget - 3)}...`;
+  });
+  return labels.map((label, index) => `${label}${bounded[index]}${separators[index]}`).join("");
+}
+
 export function getBranchPattern(repo: RepoEntry): string {
   return repo.featureBranchPattern ?? DEFAULT_BRANCH_PATTERN;
 }

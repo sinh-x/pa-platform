@@ -1,6 +1,6 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
-import { MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPath } from "../../repos.js";
+import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
@@ -313,14 +313,13 @@ function parentedSelectorDiagnostic(input: {
   gitTopLevel: string;
   selectorRoot: string;
 }): string {
-  const field = (value: string): string => {
-    const normalized = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
-    return normalized.length > 320 ? `${normalized.slice(0, 317)}...` : normalized;
-  };
-  const message = `Condition: parent-addressed PPA repository selector admission. Source: ${field(input.source)}. Reason: ${field(input.reason)}; expected canonical_root=${field(input.canonicalRoot)} parent_worktree=${field(input.parentWorktree)}; observed selector_root=${field(input.selectorRoot)} invocation_cwd=${field(input.invocationCwd)} git_top_level=${field(input.gitTopLevel)}. Correction: preserve the parent checkout and pass only its registered key or exact canonical root; do not pass a worktree or alternate path. Resume Action: the live orchestrator may retry one direct background implement only after protected parent and invocation evidence agree.`;
-  return message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS
-    ? message
-    : `${message.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS - 3)}...`;
+  return formatBoundedFiveFieldDiagnostic({
+    condition: "parent-addressed PPA repository selector admission",
+    source: input.source,
+    reason: `${input.reason}; expected canonical_root=${input.canonicalRoot} parent_worktree=${input.parentWorktree}; observed selector_root=${input.selectorRoot} invocation_cwd=${input.invocationCwd} git_top_level=${input.gitTopLevel}`,
+    correction: "preserve the parent checkout and pass only its registered key or exact canonical root; do not pass a worktree or alternate path",
+    resumeAction: "the live orchestrator may retry one direct background implement only after protected parent and invocation evidence agree",
+  });
 }
 
 export { STATUS_WAIT_OVERRIDE_ENV };

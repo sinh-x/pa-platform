@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
-import { createPiHooks, deployWithPi } from "../deploy.js";
+import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { createPiHooks, deployWithPi, type PiDeployDependencies } from "../deploy.js";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
@@ -171,14 +171,16 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
   const teams = join(root, "teams");
   const tickets = join(root, "tickets");
   const repo = join(root, "repo");
+  const otherRepo = join(root, "other-repo");
   const worktree = join(root, "leased");
   mkdirSync(config); mkdirSync(teams); mkdirSync(tickets);
   initializeRepo(repo);
+  initializeRepo(otherRepo);
   git(["worktree", "add", "--detach", worktree, "develop"], repo);
   const legacyHead = git(["rev-parse", "develop"], repo);
   git(["branch", "feature/PAP-1-work", legacyHead], repo);
   git(["checkout", "--no-guess", "feature/PAP-1-work"], worktree);
-  writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  registered:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n    feature_branch_pattern: feature/<ticket>-<topic>\n`);
+  writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  registered:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n    feature_branch_pattern: feature/<ticket>-<topic>\n  other:\n    path: ${otherRepo}\n    prefix: ALT\n`);
   writeFileSync(join(teams, "builder.yaml"), [
     "name: builder", "description: Builder", "objective: Build", "agents: []", "deploy_modes:",
     "  - id: orchestrator", "    label: Orchestrator", "    require_ticket: true",
@@ -318,12 +320,13 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     for (const selector of ["registered", repo]) {
       spawned = undefined;
       const beforeSpawns = spawnCount;
+      const operations = { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 };
       const stdout: string[] = [];
       const stderr: string[] = [];
       const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", selector], {
         binaryName: "ppa",
         io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) },
-        hooks: createPiHooks(adapter, { treehouse }),
+        hooks: createPiHooks(adapter, { treehouse, observeOperation: (operation) => { operations[operation] += 1; } }),
       });
       assert.equal(code, 0, stderr.join("\n"));
       assert.equal(spawnCount, beforeSpawns + 1, `${selector}: exactly one child spawn`);
@@ -345,6 +348,7 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
       assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes, `${selector}: parent lineage evidence remains byte-identical`);
       assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes, `${selector}: parent capacity evidence remains byte-identical`);
       assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
+      assert.deepEqual(operations, { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 1 });
       assert.match(stdout.join("\n"), /Deployment completed/);
     }
     assert.equal(treehouseCalls.slice(childTreehouseOffset).every((args) => args.join(" ") === "status --json"), true, "parented children only re-read Treehouse status and never acquire or return");
@@ -353,15 +357,17 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     const beforeSelectorMismatchSpawns = spawnCount;
     const mismatchStdout: string[] = [];
     const mismatchStderr: string[] = [];
-    const mismatchCode = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "wrong-repository"], {
+    const mismatchOperations = { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 };
+    const mismatchCode = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "other"], {
       binaryName: "ppa",
       io: { stdout: (line) => mismatchStdout.push(line), stderr: (line) => mismatchStderr.push(line) },
-      hooks: createPiHooks(adapter, { treehouse }),
+      hooks: createPiHooks(adapter, { treehouse, observeOperation: (operation) => { mismatchOperations[operation] += 1; } }),
     });
     const selectorDiagnostic = mismatchStderr.join("\n");
     assert.equal(mismatchCode, 1);
     assert.equal(mismatchStdout.length, 0, "rejection returns no child deployment ID");
     assert.equal(spawnCount, beforeSelectorMismatchSpawns);
+    assert.deepEqual(mismatchOperations, { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 });
     assert.match(selectorDiagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
     assert.match(selectorDiagnostic, /expected canonical_root=.*parent_worktree=/s);
     assert.match(selectorDiagnostic, /observed selector_root=.*invocation_cwd=.*git_top_level=/s);
@@ -370,6 +376,159 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
     assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
     assert.equal(existsSync(repositoryMutationLeasePath(worktree, "implement")), false);
+
+    const initialTreehouseSecret = "DISTINCTIVE-INITIAL-TREEHOUSE-SECRET";
+    const initialTreehouseFailure = new TreehouseClient({ run: () => ({ status: 1, stdout: Buffer.from(initialTreehouseSecret), stderr: Buffer.from(initialTreehouseSecret) }) });
+    const initialFailureOperations = { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 };
+    const initialFailureStderr: string[] = [];
+    const beforeInitialFailureSpawns = spawnCount;
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "registered"], {
+      binaryName: "ppa",
+      io: { stdout: () => {}, stderr: (line) => initialFailureStderr.push(line) },
+      hooks: createPiHooks(adapter, { treehouse: initialTreehouseFailure, observeOperation: (operation) => { initialFailureOperations[operation] += 1; } }),
+    }), 1);
+    const initialFailureDiagnostic = initialFailureStderr.join("\n");
+    assert.equal(spawnCount, beforeInitialFailureSpawns);
+    assert.deepEqual(initialFailureOperations, { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 });
+    assert.match(initialFailureDiagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    assert.match(initialFailureDiagnostic, /initial Treehouse checkout authentication/);
+    assert.doesNotMatch(initialFailureDiagnostic, new RegExp(initialTreehouseSecret));
+    assert.doesNotMatch(initialFailureDiagnostic, /lease-1|pa:registered:PAP-1/);
+    assert.equal(initialFailureDiagnostic.length <= 2_000, true);
+
+    type RaceSetup = {
+      preflight: () => void;
+      restore: () => void;
+      dependencies?: Pick<PiDeployDependencies, "getProcessFingerprint" | "queryParentDeploymentStatus">;
+      treehouse?: TreehouseClient;
+      protectedValue?: string;
+    };
+    const parentFingerprint = parentLease.lease.processFingerprint;
+    const raceCases: Array<{ name: string; setup: () => RaceSetup }> = [
+      {
+        name: "parent-termination",
+        setup: () => {
+          let drifted = false;
+          return {
+            preflight: () => { drifted = true; }, restore: () => {},
+            dependencies: { getProcessFingerprint: (pid) => drifted && pid === parentFingerprint.pid ? undefined : readProcessFingerprint(pid) },
+          };
+        },
+      },
+      {
+        name: "parent-process-replacement",
+        setup: () => {
+          let drifted = false;
+          return {
+            preflight: () => { drifted = true; }, restore: () => {},
+            dependencies: { getProcessFingerprint: (pid) => {
+              const observed = readProcessFingerprint(pid);
+              return drifted && observed && pid === parentFingerprint.pid ? { ...observed, startTimeTicks: `${observed.startTimeTicks}-replacement` } : observed;
+            } },
+          };
+        },
+      },
+      {
+        name: "durable-slot-removal",
+        setup: () => ({
+          preflight: () => { rmSync(parentSlotPath); },
+          restore: () => { writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 }); },
+        }),
+      },
+      {
+        name: "durable-slot-replacement",
+        setup: () => {
+          const slot = JSON.parse(parentSlotBytes.toString("utf8")) as Record<string, unknown>;
+          return {
+            preflight: () => { writeFileSync(parentSlotPath, `${JSON.stringify({ ...slot, slotToken: "DISTINCTIVE-REPLACEMENT-SLOT-TOKEN" })}\n`, { mode: 0o600 }); },
+            restore: () => { writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 }); },
+            protectedValue: "DISTINCTIVE-REPLACEMENT-SLOT-TOKEN",
+          };
+        },
+      },
+      {
+        name: "durable-permit-drift",
+        setup: () => {
+          const slot = JSON.parse(parentSlotBytes.toString("utf8")) as Record<string, unknown>;
+          const changedPermit = parentSlotResult.slot.repositoryPermit === 1 ? 2 : 1;
+          return {
+            preflight: () => { writeFileSync(parentSlotPath, `${JSON.stringify({ ...slot, repositoryPermit: changedPermit })}\n`, { mode: 0o600 }); },
+            restore: () => { writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 }); },
+          };
+        },
+      },
+      {
+        name: "registry-drift",
+        setup: () => {
+          let drifted = false;
+          return {
+            preflight: () => { drifted = true; }, restore: () => {},
+            dependencies: { queryParentDeploymentStatus: (id) => {
+              const status = queryDeploymentStatus(id);
+              return drifted && status ? { ...status, status: "failed" } : status;
+            } },
+          };
+        },
+      },
+      {
+        name: "environment-drift",
+        setup: () => {
+          const previous = process.env["PA_REPO"];
+          return {
+            preflight: () => { process.env["PA_REPO"] = `${"/long-parent-path".repeat(300)}\ncontrol`; },
+            restore: () => { if (previous === undefined) delete process.env["PA_REPO"]; else process.env["PA_REPO"] = previous; },
+          };
+        },
+      },
+      {
+        name: "treehouse-drift",
+        setup: () => {
+          let drifted = false;
+          const protectedValue = "DISTINCTIVE-TREEHOUSE-STDERR-SECRET";
+          const driftingTreehouse = new TreehouseClient({ run: () => drifted
+            ? { status: 1, stdout: Buffer.from(`{\"lease_id\":\"${protectedValue}\"}`), stderr: Buffer.from(protectedValue) }
+            : result([leaseJson]) });
+          return { preflight: () => { drifted = true; }, restore: () => {}, treehouse: driftingTreehouse, protectedValue };
+        },
+      },
+    ];
+    for (const race of raceCases) {
+      writeFileSync(parentLeasePath, parentLeaseBytes, { mode: 0o600 });
+      writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 });
+      const setup = race.setup();
+      const operations = { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 };
+      const beforeRaceSpawns = spawnCount;
+      const raceStdout: string[] = [];
+      const raceStderr: string[] = [];
+      try {
+        const raceAdapter = { ...adapter, preflight: async () => { setup.preflight(); } };
+        const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "registered"], {
+          binaryName: "ppa",
+          io: { stdout: (line) => raceStdout.push(line), stderr: (line) => raceStderr.push(line) },
+          hooks: createPiHooks(raceAdapter, {
+            treehouse: setup.treehouse ?? treehouse,
+            ...setup.dependencies,
+            observeOperation: (operation) => { operations[operation] += 1; },
+          }),
+        });
+        const diagnostic = raceStderr.join("\n");
+        assert.equal(code, 1, race.name);
+        assert.equal(raceStdout.length, 0, `${race.name}: no child deployment output`);
+        assert.equal(spawnCount, beforeRaceSpawns, `${race.name}: zero runtime spawn`);
+        assert.deepEqual(operations, { checkout: 0, branch: 0, slot: 0, permit: 0, lineage: 0, "runtime-spawn": 0 }, race.name);
+        assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s, race.name);
+        assert.equal(diagnostic.length <= 2_000, true, race.name);
+        assert.doesNotMatch(diagnostic, /[\u0000-\u001f\u007f-\u009f]/, race.name);
+        assert.doesNotMatch(diagnostic, /lease-1|pa:registered:PAP-1/, race.name);
+        if (setup.protectedValue) assert.doesNotMatch(diagnostic, new RegExp(escapeRegExp(setup.protectedValue)), race.name);
+        assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), false, `${race.name}: borrower finalized`);
+      } finally {
+        setup.restore();
+      }
+    }
+    writeFileSync(parentLeasePath, parentLeaseBytes, { mode: 0o600 });
+    writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 });
+
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: worktree, ownershipToken: parentLease.lease.ownershipToken }).status, "released");
     assert.equal(releaseRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: parentSlotResult.slot.slotToken, slotId: parentSlotResult.slot.slotId, repositoryPermit: parentSlotResult.slot.repositoryPermit }).status, "released");
     for (const key of ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_WORKTREE_ROOT", "PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"]) {
