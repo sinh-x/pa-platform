@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MAX_REPOSITORY_DIAGNOSTIC_CHARS, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
+import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
 
 const teamConfig: TeamConfig = {
   name: "builder",
@@ -33,6 +33,7 @@ interface Fixture {
   root: string;
   config: string;
   repo: string;
+  otherRepo: string;
   worktree: string;
 }
 
@@ -40,13 +41,15 @@ function createFixture(name: string): Fixture {
   const root = mkdtempSync(join(tmpdir(), `pa-core-deploy-cli-${name}-`));
   const config = join(root, "config");
   const repo = join(root, "repo");
+  const otherRepo = join(root, "other-repo");
   const worktree = join(root, "worktree");
   mkdirSync(config);
   initializeRepo(repo);
+  initializeRepo(otherRepo);
   git(["remote", "add", "origin", "git@github.com:owner/project.git"], repo);
   git(["worktree", "add", "-b", `feature/${name}`, worktree], repo);
-  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n    remote_url: git@github.com:owner/project.git\n`);
-  return { root, config, repo, worktree };
+  writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n    remote_url: git@github.com:owner/project.git\n  other:\n    path: ${otherRepo}\n`);
+  return { root, config, repo, otherRepo, worktree };
 }
 
 function capture() {
@@ -180,6 +183,72 @@ test("ppa deploy preserves authenticated linked-worktree CWD while non-Pi adapte
   });
 });
 
+test("ppa parented explicit selectors preserve the authenticated linked-worktree handoff", async () => {
+  await withFixture("parented-selector", async (fixture) => {
+    const inheritedKeys = ["PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_MAX_RUNTIME"] as const;
+    const previous = Object.fromEntries(inheritedKeys.map((key) => [key, process.env[key]])) as Record<(typeof inheritedKeys)[number], string | undefined>;
+    delete process.env["PA_MAX_RUNTIME"];
+    Object.assign(process.env, {
+      PA_DEPLOYMENT_ID: "d-parent",
+      PA_DEPLOYMENT_DIR: join(fixture.root, "deployments", "d-parent"),
+      PA_TEAM: "builder",
+      PA_MODE: "orchestrator",
+    });
+    process.chdir(fixture.worktree);
+    try {
+      for (const selector of ["registered", fixture.repo]) {
+        const captured = capture();
+        const seen: Array<{ request: DeployRequest; cwd: string }> = [];
+        const code = await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--repo", selector], {
+          binaryName: "ppa",
+          io: captured.io,
+          hooks: { deploy: (request) => {
+            seen.push({ request, cwd: process.cwd() });
+            return { status: "pending", deploymentId: "d-child" };
+          } },
+        });
+        assert.equal(code, 0, captured.stderr.join("\n"));
+        assert.deepEqual(seen, [{ request: { team: "builder", mode: "implement", background: true, repo: fixture.repo, timeout: DEFAULT_DEPLOY_TIMEOUT_SECONDS }, cwd: fixture.worktree }]);
+        assert.equal(process.cwd(), fixture.worktree);
+      }
+
+      let hookCalls = 0;
+      for (const selector of ["wrong-repository", "other", fixture.otherRepo]) {
+        const rejected = capture();
+        assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--repo", selector], {
+          binaryName: "ppa",
+          io: rejected.io,
+          hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-forbidden" }; } },
+        }), 1);
+        const diagnostic = rejected.stderr.join("\n");
+        assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.match(diagnostic, /expected canonical_root=.*parent_worktree=/s);
+        assert.match(diagnostic, /observed selector_root=.*invocation_cwd=.*git_top_level=/s);
+        assert.ok(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS);
+      }
+      assert.equal(hookCalls, 0);
+    } finally {
+      for (const key of inheritedKeys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+});
+
+test("five-field repository diagnostics reserve every field under hostile long values", () => {
+  const diagnostic = formatBoundedFiveFieldDiagnostic({
+    condition: `selector\n${"c".repeat(4_000)}`,
+    source: `registry\u0000${"s".repeat(4_000)}`,
+    reason: `paths=${"/very-long".repeat(1_000)}`,
+    correction: `preserve ${"x".repeat(4_000)}`,
+    resumeAction: `retry ${"y".repeat(4_000)}`,
+  });
+  assert.match(diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+  assert.equal(diagnostic.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS, true);
+  assert.doesNotMatch(diagnostic, /[\u0000-\u001f\u007f-\u009f]/);
+});
+
 test("ppa and opa deploy help document force and the registered-path-only contract", async () => {
   const opa = capture();
   const ppa = capture();
@@ -194,7 +263,10 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   }
   assert.match(opa.stdout.join("\n"), /infer the exact configured root from CWD/i);
   assert.match(ppa.stdout.join("\n"), /infer an authenticated primary or linked worktree from CWD/i);
-  assert.match(ppa.stdout.join("\n"), /Explicit inputs always select the registered primary root/i);
+  assert.match(ppa.stdout.join("\n"), /live orchestrator may identify its direct background implement child by key or exact canonical root/i);
+  assert.match(ppa.stdout.join("\n"), /protected parent worktree remains the only runtime root/i);
+  assert.match(ppa.stdout.join("\n"), /there is no canonical-root execution mode/i);
+  assert.match(ppa.stdout.join("\n"), /standalone implement must start.*--repo omitted.*non-Pi adapter behavior is unchanged/i);
   assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
 });
 

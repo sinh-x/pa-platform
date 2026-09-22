@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
 
 export const MAX_REPOSITORY_TICKET_SLOTS = 4;
@@ -50,6 +50,50 @@ export type RepositoryTicketSlotAcquisition =
 export type RepositoryTicketSlotMutationResult =
   | { readonly status: "transferred"; readonly slot: RepositoryTicketSlot }
   | { readonly status: "released" | "absent" | "token-mismatch" | "invalid-evidence" };
+
+export type RepositoryTicketSlotAuthentication =
+  | { readonly status: "authenticated"; readonly evidenceIdentity: string }
+  | { readonly status: "rejected"; readonly reason: "absent" | "malformed" | "oversized" | "insecure" | "stale-process" | "identity-mismatch" | "replaced" };
+
+export function authenticateRepositoryTicketSlot(options: {
+  canonicalRepoKey: string;
+  canonicalRepoRoot: string;
+  ticket: string;
+  deploymentId: string;
+  deploymentDirectory: string;
+  slotId: string;
+  repositoryPermit: 1 | 2 | 3 | 4;
+  processFingerprint: ProcessFingerprint;
+  expectedEvidenceIdentity?: string;
+  dependencies?: Pick<RepositoryTicketSlotDependencies, "getProcessFingerprint">;
+}): RepositoryTicketSlotAuthentication {
+  const root = physicalRoot(options.canonicalRepoRoot);
+  const dependencies = resolvedDependencies(options.dependencies);
+  return withTicketMutex(root, () => {
+    const path = repositoryTicketSlotPath(root, options.ticket);
+    if (!existsSync(path)) return { status: "rejected", reason: "absent" };
+    const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
+    if (inspected.state !== "live") {
+      return { status: "rejected", reason: inspected.state === "stale" ? "stale-process" : inspected.state };
+    }
+    const slot = inspected.slot;
+    if (slot.canonicalRepoKey !== options.canonicalRepoKey
+      || slot.canonicalRepoRoot !== root
+      || slot.ticket !== options.ticket
+      || slot.deploymentId !== options.deploymentId
+      || slot.deploymentDirectory !== options.deploymentDirectory
+      || slot.slotId !== options.slotId
+      || slot.repositoryPermit !== options.repositoryPermit
+      || !fingerprintsEqual(slot.processFingerprint, options.processFingerprint)) {
+      return { status: "rejected", reason: "identity-mismatch" };
+    }
+    const evidenceIdentity = slotEvidenceIdentity(slot);
+    if (options.expectedEvidenceIdentity !== undefined && !secureEqual(evidenceIdentity, options.expectedEvidenceIdentity)) {
+      return { status: "rejected", reason: "replaced" };
+    }
+    return { status: "authenticated", evidenceIdentity };
+  });
+}
 
 export function repositoryTicketSlotId(canonicalRepoKey: string, ticket: string): string {
   return `pa:${required(canonicalRepoKey, "repository key")}:${required(ticket, "ticket")}`;
@@ -326,9 +370,15 @@ function isFingerprint(value: unknown): value is ProcessFingerprint {
   return Number.isInteger(row["pid"]) && Number(row["pid"]) > 0 && bounded(row["startTimeTicks"]) && bounded(row["bootId"]);
 }
 function fingerprintsEqual(left: ProcessFingerprint, right: ProcessFingerprint | undefined): boolean { return Boolean(right && left.pid === right.pid && left.startTimeTicks === right.startTimeTicks && left.bootId === right.bootId); }
+function slotEvidenceIdentity(slot: RepositoryTicketSlot): string { return createHash("sha256").update(JSON.stringify(slot)).digest("hex"); }
 function secureEqual(left: string, right: string): boolean { return createHash("sha256").update(left).digest().equals(createHash("sha256").update(right).digest()); }
 function resolvedDependencies(overrides?: Partial<RepositoryTicketSlotDependencies>): RepositoryTicketSlotDependencies { return { getProcessFingerprint: overrides?.getProcessFingerprint ?? readProcessFingerprint, now: overrides?.now ?? (() => new Date()), createToken: overrides?.createToken ?? randomUUID }; }
 function ticketDiagnostic(options: { canonicalRepoKey: string; canonicalRepoRoot: string; ticket: string }, reason: string, resume: string): string {
-  const message = `Condition: repository ticket concurrency admission. Source: atomic ticket-slot/permit transaction for repo=${options.canonicalRepoKey} root=${options.canonicalRepoRoot} ticket=${options.ticket}. Reason: ${reason}. Correction: preserve Treehouse leases and repository state; reconcile only matching PA slot evidence. Resume Action: ${resume}.`;
-  return message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS ? message : `${message.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS - 3)}...`;
+  return formatBoundedFiveFieldDiagnostic({
+    condition: "repository ticket concurrency admission",
+    source: `atomic ticket-slot/permit transaction for repo=${options.canonicalRepoKey} root=${options.canonicalRepoRoot} ticket=${options.ticket}`,
+    reason,
+    correction: "preserve Treehouse leases and repository state; reconcile only matching PA slot evidence",
+    resumeAction: resume,
+  });
 }

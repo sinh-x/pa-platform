@@ -941,8 +941,12 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
     assert.match(ppaText, /Treehouse builder workflow/);
     assert.match(ppaText, /operator-prepared launch omits --repo from the exact leased CWD/);
     assert.match(ppaText, /one live builder per repository\/ticket and at most four live ticket builders/);
-    assert.match(ppaText, /direct background builder\/implement/);
-    assert.match(ppaText, /standalone implement must start from the free matching leased checkout with --repo omitted/);
+    assert.match(ppaText, /direct background builder\/implement.*registered key or exact canonical root/);
+    assert.match(ppaText, /protected parent worktree remains the only runtime root/);
+    assert.match(ppaText, /runtime CWD, PA_REPO, and PA_WORKTREE_ROOT remain the protected worktree/);
+    assert.match(ppaText, /there is no canonical-root execution mode/);
+    assert.match(ppaText, /standalone implement must start from the free matching leased checkout with --repo omitted/i);
+    assert.match(ppaText, /non-Pi adapter behavior is unchanged/);
     assert.match(ppaText, /fresh interactive Sinh approval.*durable ticket comment.*conditional non-force return/);
     assert.doesNotMatch(ppaText, /ppa worktree|worktree (?:create|list|show|remove|return|prune|destroy)/);
     assert.match(ppaText, /does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox/);

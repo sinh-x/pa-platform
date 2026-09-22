@@ -111,13 +111,30 @@ Only one live builder launch is allowed for a repository/ticket, with at most
 four distinct live ticket builders per canonical repository. Persistent inactive
 Treehouse leases do not consume those four PA permits. A direct parented
 `builder/implement` must be launched in background by its live orchestrator and
-must exactly match the parent's ticket, checkout, lease, branch, Git identity,
-head, slot, and permit. A standalone ticketed `builder/implement` is allowed
-only when launched from the matching free leased checkout, with `--repo`
-omitted and no live owner. Canonical-root, wrong-checkout, duplicate-ticket,
-fifth-ticket, or mismatched-parent attempts fail before Pi spawn. Requirements
-and non-builder modes retain their existing canonical/linked CWD behavior and do
-not enter this ticket-checkout acquisition flow.
+may use either `--repo <registered-key>` or `--repo <exact-canonical-root>` to
+identify the parent's canonical repository. Those values are identifiers only:
+protected live-parent evidence selects the existing authenticated worktree, and
+the child runtime CWD, `PA_REPO`, `PA_WORKTREE_ROOT`, registry `repo`, execution
+root, and memory root all remain that worktree. Registry/plan `repo_root` remains
+canonical. There is no canonical-root child execution mode.
+
+The parented child must exactly match the parent's ticket, checkout, lease,
+branch, Git identity and full HEAD, slot, permit, lineage, CWD, and protected
+environment. It reuses those values and performs no second checkout acquisition,
+branch selection/materialization, ticket-slot reservation, repository-permit
+reservation, or lineage creation. All protected sources are reread immediately
+before spawn. Wrong, ambiguous, linked-worktree, nested, symlinked, unrelated,
+or drifted selectors/evidence fail before child spawn with a redacted five-field
+diagnostic bounded to 2,000 characters.
+
+A standalone ticketed `builder/implement` remains allowed only when launched
+from the matching free leased checkout, with `--repo` omitted and no live owner;
+explicit keys, paths, and canonical-root execution still reject. OPA/OpenCode
+and CPA/Claude Code behavior is unchanged and makes no Treehouse claim.
+Canonical-root, wrong-checkout, duplicate-ticket, fifth-ticket, or
+mismatched-parent attempts fail before Pi spawn. Requirements and non-builder
+modes retain their existing canonical/linked CWD behavior and do not enter this
+ticket-checkout acquisition flow.
 
 Verified success, failure, or crash handling refreshes authenticated `headSha`
 and finalizes PA ticket/worktree slots, permits, mutation leases, and borrowers.
@@ -314,9 +331,13 @@ established deliberately different roles:
   the trust anchor.
 - `worktree_root`, `PA_WORKTREE_ROOT`, `repositoryCwd`, project and memory access,
   Git snapshots, and Pi process CWD identify the selected execution worktree.
-- Explicit `--repo <registered-key-or-primary-path>` always executes at the
-  primary root, even when invoked from a linked worktree. Explicit worktree paths
-  remain invalid.
+- Explicit `--repo <registered-key-or-primary-path>` ordinarily executes at the
+  primary root, even when invoked from a linked worktree. The sole exception is
+  the authenticated direct background PPA `builder/implement` path described
+  above: key or exact canonical root identifies the protected parent repository,
+  while execution remains exclusively in the parent's worktree. Explicit
+  worktree paths remain invalid, and this exception creates no canonical
+  execution mode.
 
 Authenticated linked worktrees may be dirty for foreground or background PPA
 launches. Admission records branch, full HEAD, and staged/unstaged/untracked

@@ -1,6 +1,6 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
-import { resolveRepoExecutionPath } from "../../repos.js";
+import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { CliIo } from "../utils.js";
@@ -132,7 +132,8 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --repo <key|path>   Registered repository key or exact configured path");
   if (binaryName === "ppa") {
     io.stdout("                      Omit to infer an authenticated primary or linked worktree from CWD");
-    io.stdout("                      Explicit inputs always select the registered primary root");
+    io.stdout("                      A live orchestrator may identify its direct background implement child by key or exact canonical root");
+    io.stdout("                      That parented identifier never selects execution: the protected parent worktree remains the only runtime root");
   } else {
     io.stdout("                      Omit to infer the exact configured root from CWD");
   }
@@ -156,7 +157,9 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
     io.stdout("Treehouse builder workflow:");
     io.stdout("  Canonical builder/orchestrator acquires or reuses the matching lease; an operator-prepared launch omits --repo from the exact leased CWD.");
     io.stdout("  Admission permits one live builder per repository/ticket and at most four live ticket builders per canonical repository.");
-    io.stdout("  A direct background builder/implement reuses its authenticated parent checkout; standalone implement must start from the free matching leased checkout with --repo omitted.");
+    io.stdout("  A direct background builder/implement may use the parent's registered key or exact canonical root and reuses only its authenticated parent checkout.");
+    io.stdout("  Parented runtime CWD, PA_REPO, and PA_WORKTREE_ROOT remain the protected worktree; there is no canonical-root execution mode.");
+    io.stdout("  Standalone implement must start from the free matching leased checkout with --repo omitted; non-Pi adapter behavior is unchanged.");
     io.stdout("  PA locks finalize automatically, but Treehouse return never does: require clean committed state, no live owner, exact identities, fresh interactive Sinh approval, a durable ticket comment, then one conditional non-force return.");
     io.stdout("  PPA does not merge, rebase, delete branches, force-return, prune, destroy, clean up Treehouse, or provide a filesystem sandbox.");
   }
@@ -201,23 +204,81 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     return 1;
   }
 
+  const originalCwd = process.cwd();
+  const parentedSelector = isParentedPpaImplementSelector(binaryName, resolved.request);
   let repository: ReturnType<typeof resolveRepoExecutionPath>;
+  let canonicalRepoRoot: string;
   try {
-    repository = resolveRepoExecutionPath(resolved.request.repo, process.cwd(), {
-      allowLinkedWorktreeCwd: binaryName === "ppa" && resolved.request.repo === undefined,
-    });
+    if (parentedSelector) {
+      let invocation: ReturnType<typeof resolveRepoExecutionPath>;
+      try {
+        invocation = resolveRepoExecutionPath(undefined, originalCwd, { allowLinkedWorktreeCwd: true });
+      } catch {
+        throw new Error(parentedSelectorDiagnostic({
+          source: "authenticated invocation CWD",
+          reason: "the invocation CWD did not authenticate as one registered physical linked worktree",
+          canonicalRoot: "unresolved",
+          parentWorktree: "unresolved",
+          invocationCwd: originalCwd,
+          gitTopLevel: "unresolved",
+          selectorRoot: "unresolved",
+        }));
+      }
+      if (invocation.worktreeKind !== "linked" || invocation.worktreeRoot !== originalCwd) {
+        throw new Error(parentedSelectorDiagnostic({
+          source: "authenticated invocation CWD",
+          reason: "the direct child must be invoked from the exact protected parent linked-worktree root",
+          canonicalRoot: invocation.repoRoot,
+          parentWorktree: invocation.worktreeRoot,
+          invocationCwd: originalCwd,
+          gitTopLevel: invocation.worktreeRoot,
+          selectorRoot: "unresolved",
+        }));
+      }
+      let selector: ReturnType<typeof resolveRepoExecutionPath>;
+      try {
+        selector = resolveRepoExecutionPath(resolved.request.repo, originalCwd);
+      } catch {
+        throw new Error(parentedSelectorDiagnostic({
+          source: "explicit --repo canonical selector",
+          reason: "the selector did not identify exactly one registered key or exact canonical repository root",
+          canonicalRoot: invocation.repoRoot,
+          parentWorktree: invocation.worktreeRoot,
+          invocationCwd: originalCwd,
+          gitTopLevel: invocation.worktreeRoot,
+          selectorRoot: "unresolved",
+        }));
+      }
+      if (selector.repoKey !== invocation.repoKey || selector.repoRoot !== invocation.repoRoot) {
+        throw new Error(parentedSelectorDiagnostic({
+          source: "explicit --repo canonical selector",
+          reason: "the selector identified a different canonical repository than the protected parent worktree",
+          canonicalRoot: invocation.repoRoot,
+          parentWorktree: invocation.worktreeRoot,
+          invocationCwd: originalCwd,
+          gitTopLevel: invocation.worktreeRoot,
+          selectorRoot: selector.repoRoot,
+        }));
+      }
+      repository = invocation;
+      canonicalRepoRoot = selector.repoRoot;
+    } else {
+      repository = resolveRepoExecutionPath(resolved.request.repo, originalCwd, {
+        allowLinkedWorktreeCwd: binaryName === "ppa" && resolved.request.repo === undefined,
+      });
+      canonicalRepoRoot = repository.repoRoot;
+    }
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
 
-  const originalCwd = process.cwd();
   let result: Awaited<ReturnType<NonNullable<CoreExecutionHooks["deploy"]>>>;
   try {
     process.chdir(repository.repositoryCwd);
     const adapterRequest = binaryName === "ppa" && resolved.request.repo === undefined
       ? resolved.request
-      : { ...resolved.request, repo: repository.repoRoot };
+      : { ...resolved.request, repo: canonicalRepoRoot };
     result = await hooks.deploy(adapterRequest, { stderr: io.stderr });
   } finally {
     process.chdir(originalCwd);
@@ -229,6 +290,36 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   const label = result.status === "success" ? "completed" : "pending";
   io.stdout(`Deployment ${label}: ${result.deploymentId ?? "(adapter-managed)"}`);
   return 0;
+}
+
+function isParentedPpaImplementSelector(binaryName: string, request: DeployRequest): boolean {
+  return binaryName === "ppa"
+    && request.team === "builder"
+    && request.mode === "implement"
+    && request.background === true
+    && request.repo !== undefined
+    && process.env["PA_TEAM"] === "builder"
+    && process.env["PA_MODE"] === "orchestrator"
+    && Boolean(process.env["PA_DEPLOYMENT_ID"])
+    && Boolean(process.env["PA_DEPLOYMENT_DIR"]);
+}
+
+function parentedSelectorDiagnostic(input: {
+  source: string;
+  reason: string;
+  canonicalRoot: string;
+  parentWorktree: string;
+  invocationCwd: string;
+  gitTopLevel: string;
+  selectorRoot: string;
+}): string {
+  return formatBoundedFiveFieldDiagnostic({
+    condition: "parent-addressed PPA repository selector admission",
+    source: input.source,
+    reason: `${input.reason}; expected canonical_root=${input.canonicalRoot} parent_worktree=${input.parentWorktree}; observed selector_root=${input.selectorRoot} invocation_cwd=${input.invocationCwd} git_top_level=${input.gitTopLevel}`,
+    correction: "preserve the parent checkout and pass only its registered key or exact canonical root; do not pass a worktree or alternate path",
+    resumeAction: "the live orchestrator may retry one direct background implement only after protected parent and invocation evidence agree",
+  });
 }
 
 export { STATUS_WAIT_OVERRIDE_ENV };
