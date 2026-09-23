@@ -97,7 +97,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     ? demoteAuthoritativeAdditionalInstructionsHeading(adaptContentForRuntime(options.extraInstructions.trim(), options.runtime))
     : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(extra);
-  const context = repository ? applyCanonicalRepositoryEvidence(extra, repository, Boolean(options.treehouse)) : extra;
+  const context = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
   const channel = options.invocationChannel ?? "cli";
   const body = [
     "# PA Deployment Primer",
@@ -141,12 +141,23 @@ function renderAdditionalInstructions(
 ): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
-  const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository, Boolean(treehouse)) : extra;
+  const contextualInstructions = repository ? applyCanonicalRepositoryEvidence(extra, repository) : extra;
+  const repositoryIdentity = renderRepositoryIdentityDomains(repository);
   const repositoryEvidence = renderRepositoryAdmissionEvidence(repositoryAdmission);
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
   const treehouseEvidence = renderTreehouseLaunchEvidence(treehouse);
-  return ["## Additional Instructions", objective, repositoryEvidence, treehouseEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  return ["## Additional Instructions", objective, repositoryIdentity, repositoryEvidence, treehouseEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+}
+
+function renderRepositoryIdentityDomains(repository: PrimerRepositoryContext | undefined): string | undefined {
+  if (!repository?.worktreeRoot || repository.worktreeRoot === repository.repoRoot) return undefined;
+  return [
+    "### Authoritative Repository Identity Domains",
+    `- Canonical identity: registry repo_key=${repository.repoKey} maps to repo_root=${repository.repoRoot}. Compare canonical registry/configuration evidence only with this pair.`,
+    `- Runtime identity: PA_REPO, PA_WORKTREE_ROOT, runtime CWD, Git top-level, project/memory root, and registry repo must equal authenticated worktree_root=${repository.worktreeRoot}.`,
+    "- Distinct canonical and runtime roots are valid and must not be compared as the same path. Reject crossed-domain, unregistered, or unauthenticated worktree evidence; never substitute an arbitrary checkout.",
+  ].join("\n");
 }
 
 function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmissionEvidence | undefined): string | undefined {
@@ -210,9 +221,9 @@ function renderApprovedBorrowerScope(repositoryAdmission: RepositoryAdmissionEvi
   ].join("\n");
 }
 
-function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext, treehouseExecution = false): string {
+function applyCanonicalRepositoryEvidence(extraInstructions: string | undefined, repository: PrimerRepositoryContext): string {
   const worktreeRoot = repository.worktreeRoot ?? repository.repoRoot;
-  const runtimeRepo = treehouseExecution ? worktreeRoot : repository.repoRoot;
+  const runtimeRepo = worktreeRoot;
   const evidence = `repo_key: ${repository.repoKey}\nrepo_root: ${repository.repoRoot}\nworktree_root: ${worktreeRoot}`;
   if (!extraInstructions) return `<deployment-context>\n${evidence}\n</deployment-context>`;
 

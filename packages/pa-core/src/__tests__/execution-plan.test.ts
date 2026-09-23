@@ -205,7 +205,8 @@ test("Pi plans authenticate omitted linked-worktree CWD while explicit and non-P
       assert.equal(plan.repositoryCwd, fixture.linked);
       assert.equal(plan.repositoryKind, "linked");
       assert.equal(plan.memoryDocumentRoot, fixture.linked);
-      assert.equal(plan.environment.PA_REPO, fixture.repo);
+      assert.equal(plan.environment.PA_REPO, fixture.linked);
+      assert.equal(plan.environment.PA_WORKTREE_ROOT, fixture.linked);
       assert.equal(plan.repositoryAdmission.gitSnapshot?.branch, "feature/linked-resolution");
 
       for (const resolvePlan of [

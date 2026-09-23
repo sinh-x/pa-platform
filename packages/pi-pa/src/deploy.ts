@@ -764,7 +764,11 @@ function authenticateParentDurableAuthority(
     team: "builder",
     mode: "orchestrator",
     ticket: expected.ticketId,
-    expectedGitSnapshot: captureRepositoryGitSnapshot(expected.worktreeRoot),
+    // Authenticate durable parent identity against its protected lease bytes here.
+    // The current worktree snapshot is authenticated separately by borrower
+    // registration, including exact one-use approval for an intentional dirty
+    // continuation; comparing it to the parent's prior clean authority snapshot
+    // here would reject that approved transition as an identity mismatch.
     ...(prior ? { processFingerprint: prior.processFingerprint, expectedEvidenceIdentity: prior.leaseEvidenceIdentity } : {}),
     dependencies: { getProcessFingerprint, isDeploymentRunning: (id) => queryStatus(id)?.status === "running" },
   });
