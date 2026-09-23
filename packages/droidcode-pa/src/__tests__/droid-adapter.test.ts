@@ -825,6 +825,43 @@ describe("droid safety hook tool summaries", () => {
   });
 });
 
+describe("droid safety hook shared context policy", () => {
+  it("allows bounded reads, ignores prose, and retains actionable dpa denials", () => {
+    const policyRoot = mkdtempSync(join(tmpdir(), "dpa-policy-test-"));
+    const homeDir = join(policyRoot, "home");
+    const deployDir = join(policyRoot, "deployments", "d-policy");
+    mkdirSync(join(homeDir, ".factory"), { recursive: true });
+    mkdirSync(deployDir, { recursive: true });
+    const scriptPath = installDroidSafetyScript({ HOME: homeDir });
+    installDroidSafetyPatterns({ HOME: homeDir });
+    const env = { HOME: homeDir, PA_DEPLOYMENT_ID: "d-policy", PA_DEPLOYMENT_DIR: deployDir };
+    const redirect = String.fromCharCode(62);
+    try {
+      for (const input of [
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + "creden" + "tials.json as prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `dpa ticket list --json ${redirect} /tmp/pap218-tickets.json` } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "dpa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
+      ]) assert.equal(runHookScript(scriptPath, input, env).exitCode, 0, JSON.stringify(input));
+
+      const protectedPath = "." + "env";
+      const protectedResult = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: protectedPath } }, env);
+      assert.equal(protectedResult.exitCode, 2);
+      assert.match(protectedResult.stderr, /Protected path access/);
+
+      const arbitraryOutput = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf unsafe ${redirect} .\/report.json` } }, env);
+      assert.equal(arbitraryOutput.exitCode, 2);
+      assert.match(arbitraryOutput.stderr, /verified system-temp target/);
+
+      const deletion = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "r" + "m -rf /tmp/pap218-cleanup" } }, env);
+      assert.equal(deletion.exitCode, 2);
+      assert.match(deletion.stderr, /dpa trash move \/tmp\/pap218-cleanup.*--reason '[^']+'.*--yes/);
+    } finally {
+      rmSync(policyRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+});
+
 describe("droid safety hook masking", () => {
   let hookRoot: string;
   let deployDir: string;

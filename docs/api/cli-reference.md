@@ -672,8 +672,11 @@ Manage tickets. Subcommands: `list`, `show`, `create`, `update`, `comment`, `att
 | `--search <text>` | text | Full-text search across title and summary |
 | `--tags <csv>` | csv | Comma-separated tags to match (ticket must include all) |
 | `--exclude-tags <csv>` | csv | Comma-separated tags to exclude |
+| `--all` | — | Include terminal, archived, and backlog tickets while retaining explicit filters |
 | `--archived` | — | Show only tickets tagged `archived` (composable) |
 | `--json` | — | Output as JSON |
+
+Without `--all` or `--archived`, ticket lists include only active, non-archived, non-backlog tickets. `--all` removes those default exclusions but still composes with explicit project, status, assignee, priority, type, tag, and search filters.
 
 ### ticket show
 
@@ -804,6 +807,7 @@ Marks a sub-ticket as `done`.
 **Examples:**
 ```bash
 opa ticket list --project pa-platform --status implementing
+opa ticket list --all --status done
 opa ticket show PAP-132
 opa ticket create --project pa --title "Fix bug" --type bug --priority high --estimate S --assignee sinh
 opa ticket update PAP-132 --status implementing --assignee builder/team-manager

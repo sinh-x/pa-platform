@@ -6,6 +6,8 @@ import { SAFETY_PATTERNS } from "../safety-rules.js";
 export const PA_DROID_SAFETY_SCRIPT = "pa-safety.js";
 export const PA_DROID_SAFETY_PATTERNS = "pa-safety-patterns.json";
 
+const PA_CORE_SAFETY_MODULE_URL = new URL("./safety-policy.js", import.meta.resolve("@pa-platform/pa-core")).href;
+
 interface HooksConfig {
   hooks?: {
     PreToolUse?: HookMatcherEntry[];
@@ -109,6 +111,7 @@ const DROID_SAFETY_SCRIPT_SOURCE = String.raw`#!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
+import * as paSafety from ${JSON.stringify(PA_CORE_SAFETY_MODULE_URL)};
 
 const STREAM_BODY_MAX_CHARS = 500;
 
@@ -193,6 +196,54 @@ function containsDestructiveCommand(command) {
     if (pattern.test(command)) return true;
   }
   return false;
+}
+
+function trashGuidance(target, executable) {
+  if (typeof paSafety.formatTrashMoveGuidance === "function") return paSafety.formatTrashMoveGuidance(target, executable);
+  return executable + " trash move " + target + " --reason 'Replace direct deletion denied by PA safety policy' --yes";
+}
+
+function legacySafetyDecision(input, executable) {
+  if (input.kind === "prose") return { allowed: true };
+  if (input.kind === "path") return isBlockedFilePath(input.value)
+    ? { allowed: false, reason: "Protected path access is not allowed: " + input.value, target: input.value }
+    : { allowed: true };
+  const command = input.value || "";
+  const deletion = /(?:^|[\s;&|()])(?:command\s+|sudo\s+)*(?:rm|rmdir|unlink|shred)\b(?:\s+-[^\s]+)*\s+("[^"]+"|'[^']+'|[^\s;&|()<>]+)/i.exec(command);
+  if (deletion) {
+    const target = deletion[1] || "<target>";
+    return { allowed: false, reason: "Direct deletion is not allowed for target " + target, target, guidance: trashGuidance(target, executable) };
+  }
+  if (/(?:^|[|;&])\s*(?:find\s+[^|;]*-delete|xargs\s+[^|;]*\brm)\b/.test(command)) {
+    return { allowed: false, reason: "Direct deletion is not allowed for target <target>", target: "<target>", guidance: trashGuidance("<target>", executable) };
+  }
+  const redirects = /(?:^|[^>])(?:\d*)>{1,2}\s*("[^"]+"|'[^']+'|[^\s;&|()]+)/g;
+  for (const match of command.matchAll(redirects)) {
+    const target = (match[1] || "").replace(/^['"]|['"]$/g, "");
+    if (target === "/dev/null" || target.startsWith("/tmp/") || target.startsWith("$TMPDIR/")) continue;
+    return { allowed: false, reason: "Output is allowed only for /dev/null or a verified system-temp target: " + target, target };
+  }
+  for (const token of command.replace(/[|;&()]/g, " ").split(/\s+/)) {
+    const value = token.replace(/^['"]|['"]$/g, "");
+    if (value && !value.includes("=") && isBlockedFilePath(value)) {
+      return { allowed: false, reason: "Protected path access is not allowed: " + value, target: value };
+    }
+  }
+  const withoutRedirects = command.replace(redirects, " ");
+  return containsDestructiveCommand(withoutRedirects)
+    ? { allowed: false, reason: "Destructive command detected by PA safety policy." }
+    : { allowed: true };
+}
+
+function evaluatePolicy(input, executable = "dpa") {
+  return typeof paSafety.evaluateSafetyPolicy === "function"
+    ? paSafety.evaluateSafetyPolicy(input, { trashExecutable: executable })
+    : legacySafetyDecision(input, executable);
+}
+
+function denyMessage(decision) {
+  return "BLOCKED: " + (decision.reason || "PA safety policy denied this operation.")
+    + (decision.guidance ? " Use " + decision.guidance + "." : "");
 }
 
 function maskSensitiveText(text) {
@@ -283,16 +334,20 @@ try {
   const env = process.env;
 
   if (hookEvent === "PreToolUse") {
-    // Block destructive commands
-    if (toolName === "Execute" && containsDestructiveCommand(toolInput.command)) {
-      console.error("BLOCKED: destructive command detected. Use dpa trash move instead of rm, or review the command for unsafe operations.");
-      process.exit(2);
+    if (toolName === "Execute") {
+      const decision = evaluatePolicy({ kind: "shell", value: toolInput.command || "" });
+      if (!decision.allowed) {
+        console.error(denyMessage(decision));
+        process.exit(2);
+      }
     }
-    // Block sensitive file access
-    const filePath = resolveFilePath(toolInput);
-    if (filePath && isBlockedFilePath(filePath)) {
-      console.error("BLOCKED: sensitive file access is not allowed: " + filePath);
-      process.exit(2);
+    if (["Read", "Edit", "Create", "Grep", "Glob"].includes(toolName)) {
+      const filePath = resolveFilePath(toolInput);
+      const decision = evaluatePolicy({ kind: "path", value: filePath });
+      if (!decision.allowed) {
+        console.error(denyMessage(decision));
+        process.exit(2);
+      }
     }
     // Log tool.before
     appendActivity(env, {

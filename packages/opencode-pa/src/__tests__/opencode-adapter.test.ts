@@ -1842,6 +1842,47 @@ test("pa safety activity plugin does not enforce guards outside PA deployments",
   }
 });
 
+test("pa safety activity plugin applies shared declared-context policy and opa guidance", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-policy-"));
+  const previous = {
+    activityLog: process.env.PA_ACTIVITY_LOG,
+    deploymentDir: process.env.PA_DEPLOYMENT_DIR,
+    deploymentId: process.env.PA_DEPLOYMENT_ID,
+    home: process.env.HOME,
+  };
+  try {
+    process.env.HOME = root;
+    process.env.PA_DEPLOYMENT_ID = "d-policy";
+    process.env.PA_DEPLOYMENT_DIR = join(root, "deployments", "d-policy");
+    process.env.PA_ACTIVITY_LOG = join(process.env.PA_DEPLOYMENT_DIR, "activity.jsonl");
+    const pluginPath = join(root, "pa-safety-policy.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(`${pathToFileURL(pluginPath).href}?policy=${Date.now()}`);
+    const plugin = await module.PaSafetyActivityPlugin();
+    const before = plugin["tool.execute.before"];
+    const redirect = String.fromCharCode(62);
+
+    await before({ tool: "question" }, { args: { question: "Discuss " + "creden" + "tials.json as prose" } });
+    await before({ tool: "bash" }, { args: { command: `opa ticket list --json ${redirect} /tmp/pap218-tickets.json` } });
+    await before({ tool: "bash" }, { args: { command: "opa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } });
+    await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
+
+    const protectedPath = "." + "env";
+    await assert.rejects(before({ tool: "read" }, { args: { filePath: protectedPath } }), /Protected path access/);
+    await assert.rejects(before({ tool: "bash" }, { args: { command: `printf unsafe ${redirect} .\/report.json` } }), /verified system-temp target/);
+    await assert.rejects(
+      before({ tool: "bash" }, { args: { command: "r" + "m -rf /tmp/pap218-cleanup" } }),
+      /opa trash move \/tmp\/pap218-cleanup.*--reason '[^']+'.*--yes/,
+    );
+  } finally {
+    restore("PA_ACTIVITY_LOG", previous.activityLog);
+    restore("PA_DEPLOYMENT_DIR", previous.deploymentDir);
+    restore("PA_DEPLOYMENT_ID", previous.deploymentId);
+    restore("HOME", previous.home);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("pa safety activity plugin masks bash activity without mutating execution args", async () => {
   const root = mkdtempSync(join(tmpdir(), "opa-plugin-mask-"));
   const originalActivityLog = process.env.PA_ACTIVITY_LOG;

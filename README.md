@@ -23,8 +23,11 @@ pa-core teams
 pa-core board --project pa-platform
 pa-core registry list
 pa-core ticket list --project pa-platform
+pa-core ticket list --all --status done
 pa-core status
 ```
+
+Ticket lists default to active, non-archived, non-backlog work. `--all` removes only those default exclusions, so explicit project, status, assignee, priority, type, tag, and search filters continue to compose.
 
 Deployment execution is adapter-hooked. Use `opa` for OpenCode runs, `cpa` for Claude Code runs, `dpa` for Droid runs, and `ppa` for Pi runs:
 

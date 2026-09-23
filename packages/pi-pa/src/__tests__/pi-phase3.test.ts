@@ -84,7 +84,7 @@ test("trusted entrypoint registers only selected editors while preserving attrib
   assert.deepEqual(shortcuts, ["alt+i", "alt+g"]);
 });
 
-test("Pi extension exposes only bounded typed PA tools and shared safety policy", async () => {
+test("Pi extension exposes bounded typed PA tools and native ticket read aliases", async () => {
   const tools = new Map(createPaTools().map((tool) => [tool.name, tool]));
   assert.deepEqual([...tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status"]);
   for (const [name, input] of [
@@ -101,13 +101,40 @@ test("Pi extension exposes only bounded typed PA tools and shared safety policy"
     assert.equal(result.content[0]?.type, "text");
     assert.equal(typeof result.content[0]?.text, "string");
   }
+
+  const ticket = tools.get("pa_ticket")!;
+  for (const action of ["read", "show", "list", "comment"]) assert.equal(Check(ticket.parameters, { action }), true, action);
+  for (const action of ["update", "delete", "other"]) assert.equal(Check(ticket.parameters, { action }), false, action);
+  const read = await ticket.execute("tool-call-read", { action: "read", id: "PAP-218" }, undefined, undefined, undefined);
+  const show = await ticket.execute("tool-call-show", { action: "show", id: "PAP-218" }, undefined, undefined, undefined);
+  assert.equal(read.content[0]?.text, show.content[0]?.text);
+  await assert.rejects(ticket.execute("tool-call-unknown", { action: "update" }, undefined, undefined, undefined), /Accepted actions: read, show, list, comment/);
   await assert.rejects(tools.get("pa_bulletin")!.execute("tool-call-error", { action: "other" }, undefined, undefined, undefined), /Only bulletin list is available/);
-  assert.equal(interceptToolCall({ name: "bash", input: { command: "rm -rf build" } }).allowed, false);
-  assert.equal(interceptToolCall({ name: "read", input: { path: ".env" } }).allowed, false);
-  assert.equal(interceptToolCall({ name: "question", input: { question: ".env", options: [] } }).allowed, false);
-  assert.equal(interceptToolCall({ name: "todo", input: { action: "add", text: ".env" } }).allowed, false);
-  assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);
   assert.match(boundJson({ output: "x".repeat(60_000) }), /truncated/);
+});
+
+test("Pi safety interception uses declared path and bounded shell contexts", () => {
+  const redirect = String.fromCharCode(62);
+  for (const call of [
+    { name: "question", input: { question: "Does credentials.json belong in this prose?", options: [] } },
+    { name: "todo", input: { action: "add", text: "Document ~/.ssh/id_ed25519 without opening it" } },
+    { name: "bash", input: { command: `ppa ticket list --project pa-platform --json ${redirect} /tmp/pap218-tickets.json` } },
+    { name: "bash", input: { command: "ppa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
+    { name: "bash", input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
+  ]) assert.equal(interceptToolCall(call).allowed, true, JSON.stringify(call));
+
+  for (const call of [
+    { name: "read", input: { path: ".env" } },
+    { name: "bash", input: { command: "cat ~/.ssh/id_ed25519" } },
+    { name: "bash", input: { command: `printf unsafe ${redirect} ./report.json` } },
+  ]) assert.equal(interceptToolCall(call).allowed, false, JSON.stringify(call));
+
+  const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });
+  assert.equal(deletion.allowed, false);
+  assert.match(deletion.reason ?? "", /ppa trash move \/tmp\/pap218-cleanup/);
+  assert.match(deletion.reason ?? "", /--reason '[^']+'/);
+  assert.match(deletion.reason ?? "", /--yes/);
+  assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);
 });
 
 test("PA JSON output is valid and bounded for ASCII, lines, and multibyte UTF-8", () => {

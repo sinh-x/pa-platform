@@ -1,6 +1,6 @@
 import { Type, type TSchema } from "typebox";
 import { BulletinStore, TicketStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
-import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
+import * as PaSafety from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
 import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
@@ -29,6 +29,14 @@ export const MAX_TOOL_BYTES = 50 * 1024;
 export const MAX_TOOL_LINES = 2000;
 
 export interface PiToolCall { name?: string; toolName?: string; input: Record<string, unknown> }
+export type PiTicketAction = "read" | "show" | "list" | "comment";
+export interface PiTicketToolInput extends Record<string, unknown> {
+  action: PiTicketAction;
+  id?: string;
+  author?: string;
+  content?: string;
+  search?: string;
+}
 export interface PiTextContent { type: "text"; text: string }
 export interface PiToolResult<TDetails extends Record<string, unknown> = Record<string, unknown>> { content: PiTextContent[]; details: TDetails }
 export interface PiToolTheme {
@@ -138,22 +146,33 @@ function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecy
 }
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
-  const name = call.name ?? call.toolName ?? "";
-  const values = flattenStrings(call.input);
-  if ((name === "bash" || name === "shell" || name === "execute") && values.some(isDestructiveCommand)) {
-    return { allowed: false, reason: "BLOCKED: destructive command detected by PA safety policy." };
+  const name = (call.name ?? call.toolName ?? "").toLowerCase();
+  if (name === "bash" || name === "shell" || name === "execute") {
+    const command = typeof call.input.command === "string" ? call.input.command : "";
+    const decision = evaluateAdapterSafety({ kind: "shell", value: command }, "ppa");
+    if (!decision.allowed) return blockedSafetyDecision(decision);
   }
-  if (values.some(isBlockedFilePath)) return { allowed: false, reason: "BLOCKED: sensitive file access is not allowed by PA safety policy." };
+  for (const filePath of declaredPathValues(call.input)) {
+    const decision = evaluateAdapterSafety({ kind: "path", value: filePath }, "ppa");
+    if (!decision.allowed) return blockedSafetyDecision(decision);
+  }
   return { allowed: true };
 }
 
 export function createPaTools(lifecycle?: PiSessionLifecycle): PiToolDefinition[] {
+  const ticket: PiToolDefinition = {
+    name: "pa_ticket", label: "PA Ticket", description: "Read, show, list, or comment on a PA ticket.",
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal("read"), Type.Literal("show"), Type.Literal("list"), Type.Literal("comment")]),
+      id: Type.Optional(Type.String()),
+      author: Type.Optional(Type.String()),
+      content: Type.Optional(Type.String()),
+      search: Type.Optional(Type.String()),
+    }),
+    execute: async (_toolCallId, input, _signal, _onUpdate, _context) => toolResult(() => ticketTool(input)),
+  };
   return [
-    {
-      name: "pa_ticket", label: "PA Ticket", description: "Read or comment on a PA ticket.",
-      parameters: Type.Object({ action: Type.String(), id: Type.Optional(Type.String()), author: Type.Optional(Type.String()), content: Type.Optional(Type.String()) }),
-      execute: async (_toolCallId, input, _signal, _onUpdate, _context) => toolResult(() => ticketTool(input)),
-    },
+    ticket,
     {
       name: "pa_bulletin", label: "PA Bulletin", description: "List active PA bulletins.",
       parameters: Type.Object({ action: Type.String() }),
@@ -230,11 +249,16 @@ export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: str
 
 function ticketTool(input: Record<string, unknown>): unknown {
   const store = new TicketStore();
-  const action = stringInput(input, "action");
-  if (action === "show") return store.get(stringInput(input, "id")) ?? { error: "Ticket not found" };
+  const action = ticketActionInput(input);
+  if (action === "read" || action === "show") return store.get(stringInput(input, "id")) ?? { error: "Ticket not found" };
   if (action === "list") return store.list({ search: typeof input.search === "string" ? input.search : undefined });
-  if (action === "comment") return store.comment(stringInput(input, "id"), stringInput(input, "author"), stringInput(input, "content"));
-  throw new Error("Unsupported ticket action.");
+  return store.comment(stringInput(input, "id"), stringInput(input, "author"), stringInput(input, "content"));
+}
+
+function ticketActionInput(input: Record<string, unknown>): PiTicketAction {
+  const action = stringInput(input, "action");
+  if (action === "read" || action === "show" || action === "list" || action === "comment") return action;
+  throw new Error(`Unsupported ticket action "${action}". Accepted actions: read, show, list, comment.`);
 }
 
 function registryTool(input: Record<string, unknown>): unknown {
@@ -275,7 +299,70 @@ export function boundJson(value: unknown): string {
   return result;
 }
 
+type AdapterSafetyInput = { kind: "prose" | "path" | "shell"; value: string };
+interface AdapterSafetyDecision { allowed: boolean; reason?: string; guidance?: string; target?: string }
+interface AdapterSafetyModule {
+  evaluateSafetyPolicy?: (input: AdapterSafetyInput, options?: { trashExecutable?: string; cwd?: string; env?: Pick<NodeJS.ProcessEnv, "TMPDIR"> }) => AdapterSafetyDecision;
+  isBlockedFilePath: (filePath: string) => boolean;
+  isDestructiveCommand: (command: string) => boolean;
+  formatTrashMoveGuidance?: (target: string, executable?: string) => string;
+}
+const ADAPTER_SAFETY = PaSafety as unknown as AdapterSafetyModule;
+const PATH_KEYS = new Set(["path", "filePath", "file_path"]);
+
+function evaluateAdapterSafety(input: AdapterSafetyInput, trashExecutable: string): AdapterSafetyDecision {
+  if (ADAPTER_SAFETY.evaluateSafetyPolicy) return ADAPTER_SAFETY.evaluateSafetyPolicy(input, { trashExecutable });
+  if (input.kind === "prose") return { allowed: true };
+  if (input.kind === "path") return ADAPTER_SAFETY.isBlockedFilePath(input.value)
+    ? { allowed: false, reason: `Protected path access is not allowed: ${input.value}`, target: input.value }
+    : { allowed: true };
+  return legacyShellDecision(input.value, trashExecutable);
+}
+
+function legacyShellDecision(command: string, trashExecutable: string): AdapterSafetyDecision {
+  const deletion = /(?:^|[\s;&|()])(?:command\s+|sudo\s+)*(?:rm|rmdir|unlink|shred)\b(?:\s+-[^\s]+)*\s+("[^"]+"|'[^']+'|[^\s;&|()<>]+)/i.exec(command);
+  if (deletion) {
+    const target = deletion[1] ?? "<target>";
+    const guidance = ADAPTER_SAFETY.formatTrashMoveGuidance?.(target, trashExecutable)
+      ?? `${trashExecutable} trash move ${target} --reason 'Replace direct deletion denied by PA safety policy' --yes`;
+    return { allowed: false, reason: `Direct deletion is not allowed for target ${target}`, guidance, target };
+  }
+  const redirect = /(?:^|[^>])(?:\d*)>{1,2}\s*("[^"]+"|'[^']+'|[^\s;&|()]+)/g;
+  for (const match of command.matchAll(redirect)) {
+    const target = stripShellQuotes(match[1] ?? "");
+    if (target === "/dev/null" || target.startsWith("/tmp/") || target.startsWith("$TMPDIR/")) continue;
+    return { allowed: false, reason: `Output is allowed only for /dev/null or a verified system-temp target: ${target}`, target };
+  }
+  for (const token of command.match(/"[^"]*"|'[^']*'|[^\s;&|()]+/g) ?? []) {
+    const value = stripShellQuotes(token);
+    if (value.includes(" ") || (!value.includes("/") && !value.startsWith(".") && !/\.(?:json|ya?ml|env|netrc|npmrc|pypirc)$/i.test(value))) continue;
+    if (ADAPTER_SAFETY.isBlockedFilePath(value)) return { allowed: false, reason: `Protected path access is not allowed: ${token}`, target: token };
+  }
+  const commandWithoutRedirects = command.replace(redirect, " ");
+  return ADAPTER_SAFETY.isDestructiveCommand(commandWithoutRedirects)
+    ? { allowed: false, reason: "Destructive command detected by PA safety policy." }
+    : { allowed: true };
+}
+
+function blockedSafetyDecision(decision: AdapterSafetyDecision): PiSafetyDecision {
+  const guidance = decision.guidance ? ` Use ${decision.guidance}.` : "";
+  return { allowed: false, reason: `BLOCKED: ${decision.reason ?? "PA safety policy denied this operation."}${guidance}` };
+}
+
+function declaredPathValues(input: Record<string, unknown>): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(input)) {
+    if (!PATH_KEYS.has(key)) continue;
+    if (typeof value === "string") values.push(value);
+    else if (Array.isArray(value)) values.push(...value.filter((item): item is string => typeof item === "string"));
+  }
+  return values;
+}
+
+function stripShellQuotes(value: string): string {
+  return ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) ? value.slice(1, -1) : value;
+}
+
 function stringInput(input: Record<string, unknown>, key: string): string { const value = input[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`${key} is required.`); return value; }
 function assistantText(value: unknown): string { if (typeof value === "string") return value; if (Array.isArray(value)) return value.map((item) => item && typeof item === "object" && "text" in item && typeof item.text === "string" ? item.text : "").filter(Boolean).join(" "); return ""; }
-function flattenStrings(value: unknown): string[] { if (typeof value === "string") return [value]; if (Array.isArray(value)) return value.flatMap(flattenStrings); if (value && typeof value === "object") return Object.values(value).flatMap(flattenStrings); return []; }
 function isHighSurrogate(value: number): boolean { return value >= 0xd800 && value <= 0xdbff; }

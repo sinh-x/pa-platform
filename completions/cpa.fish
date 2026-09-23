@@ -497,8 +497,9 @@ complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __cpa_completing_option_value --project' -a '(__cpa_projects)'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l all -d 'Include terminal, archived, and backlog tickets while retaining explicit filters'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l archived -d 'Only archived tickets'
-complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
+complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list show' -l json -d 'Output JSON'
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
 complete -c cpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
 complete -c cpa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __cpa_completing_option_value --blocked-by' -a '(__cpa_ticket_ids)'
