@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
+import { detectPiRedactionMatches, PiRedactionAudit, StreamingPiRedactionAuditor, type PiRedactionAuditRecord } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
 class FakePiChild extends EventEmitter {
@@ -81,6 +82,10 @@ function loadToolStreamFixtures(): ToolStreamFixture[] {
   return readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as ToolStreamFixture);
 }
 
+function readShadowAudit(deployDir: string): PiRedactionAuditRecord[] {
+  return readFileSync(join(deployDir, "pi-redaction-audit.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as PiRedactionAuditRecord);
+}
+
 function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
   if (fixture.source !== "d-b1fe88") {
     const inspected = inspectPiToolProtocol(fixture.events);
@@ -126,6 +131,147 @@ function replayToolStream(fixture: ToolStreamFixture): Record<string, unknown> {
   const status = fixture.source === "d-b1fe88" ? "executed" : malformed ? "malformed" : !ended ? "incomplete" : executionStarts === 1 && executionEnds === 1 ? "executed" : "completed";
   return { callId, toolName, deltas, ...(finalArguments !== undefined ? { arguments: finalArguments } : {}), status, executionStarts, executionEnds, terminalEvidence };
 }
+
+test("shadow detector evaluates all seven frozen rule families without transforming input", () => {
+  const fixture = {
+    configured: "synthetic-configured-value",
+    diagnostic: "token=synthetic-shaped-value",
+    authorization: "synthetic-keyed-value",
+    bearerText: "Bearer synthetic-bearer-value",
+    skText: "sk-synthetic-value",
+    thinking_signature: "synthetic-reasoning-value",
+    encrypted_content: "synthetic-encrypted-value",
+  };
+  const snapshot = structuredClone(fixture);
+  const matches = detectPiRedactionMatches(fixture, [fixture.configured]);
+  assert.deepEqual(new Set(matches.map((match) => match.ruleId)), new Set([
+    "configured-value",
+    "credential-shaped-text",
+    "credential-named-key",
+    "bearer",
+    "sk-value",
+    "reasoning-signature",
+    "encrypted-content",
+  ]));
+  assert.deepEqual(fixture, snapshot);
+  assert.ok(matches.every((match) => match.matchedText.length <= 2_000));
+});
+
+test("shadow detector follows reasoning-value propagation without transforming repeated payloads", () => {
+  const fixture = {
+    thinking_signature: "synthetic-repeated-reasoning-value",
+    repeatedPayload: "synthetic-repeated-reasoning-value synthetic-repeated-reasoning-value",
+    encrypted_content: "synthetic-repeated-encrypted-value",
+    archivedPayload: "synthetic-repeated-encrypted-value",
+  };
+  const snapshot = structuredClone(fixture);
+  const matches = detectPiRedactionMatches(fixture);
+  assert.equal(matches.filter((match) => match.ruleId === "reasoning-signature").length, 3);
+  assert.equal(matches.filter((match) => match.ruleId === "encrypted-content").length, 2);
+  assert.deepEqual(fixture, snapshot);
+});
+
+test("shadow audit is lazy, per occurrence, bounded, schema-versioned, and mode 0600", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-shadow-audit-"));
+  const audit = new PiRedactionAudit("d-shadow", dir, { now: () => new Date("2026-09-22T00:00:00.000Z") });
+  assert.equal(audit.observe("no-match", "ordinary synthetic text"), 0);
+  assert.equal(existsSync(audit.path), false);
+
+  assert.equal(audit.observe("surface-a", "synthetic-repeat synthetic-repeat", ["synthetic-repeat"]), 2);
+  assert.equal(statSync(audit.path).mode & 0o777, 0o600);
+  chmodSync(audit.path, 0o644);
+  assert.equal(audit.observe("surface-b", "synthetic-repeat", ["synthetic-repeat"]), 1);
+  assert.equal(statSync(audit.path).mode & 0o777, 0o600);
+
+  const records = readFileSync(audit.path, "utf8").trim().split("\n").map((line) => {
+    assert.ok(Buffer.byteLength(`${line}\n`) <= 16_384);
+    return JSON.parse(line) as PiRedactionAuditRecord;
+  });
+  assert.equal(records.length, 3);
+  assert.deepEqual(records.map((record) => record.surfaceId), ["surface-a", "surface-a", "surface-b"]);
+  assert.ok(records.every((record) => record.schemaVersion === 1 && record.timestamp === "2026-09-22T00:00:00.000Z" && record.deploymentId === "d-shadow"));
+
+  const oversized = new PiRedactionAudit("d-oversized", mkdtempSync(join(tmpdir(), "pi-shadow-oversized-")));
+  const longMatch = "x".repeat(3_000);
+  assert.equal(oversized.observe("bounded", longMatch, [longMatch]), 1);
+  const bounded = JSON.parse(readFileSync(oversized.path, "utf8")) as PiRedactionAuditRecord;
+  assert.equal(bounded.originalLength, 3_000);
+  assert.equal(bounded.matchedText.length, 2_000);
+  assert.equal(bounded.truncated, true);
+  assert.ok(Buffer.byteLength(readFileSync(oversized.path)) <= 16_384);
+});
+
+test("shadow stream observation survives every chunk boundary after original sink delivery", () => {
+  const source = "Bearer synthetic-boundary-value\n";
+  for (let boundary = 0; boundary <= source.length; boundary += 1) {
+    const events: string[] = [];
+    const delivered: string[] = [];
+    const audit = new PiRedactionAudit(`d-boundary-${boundary}`, mkdtempSync(join(tmpdir(), "pi-shadow-boundary-")), {
+      append: (_path, line) => { events.push("audit"); assert.ok(Buffer.byteLength(line) <= 16_384); },
+    });
+    const observer = new StreamingPiRedactionAuditor(audit, "terminal");
+    for (const chunk of [source.slice(0, boundary), source.slice(boundary)]) {
+      events.push("sink");
+      delivered.push(chunk);
+      observer.push(chunk);
+    }
+    observer.flush();
+    assert.equal(delivered.join(""), source);
+    assert.equal(events.filter((event) => event === "audit").length, 1, `boundary ${boundary}`);
+    assert.ok(events.indexOf("sink") < events.indexOf("audit"), `boundary ${boundary}`);
+  }
+});
+
+test("foreground adapter delivers the original terminal sink before shadow audit persistence", async () => {
+  const pty = new FakePiPty();
+  const input = new FakePiInput();
+  const dir = mkdtempSync(join(tmpdir(), "pi-shadow-ordering-"));
+  const primer = join(dir, "primer.md");
+  const auditPath = join(dir, "pi-redaction-audit.jsonl");
+  const chunks: string[] = [];
+  let auditExistedDuringSink = false;
+  writeFileSync(primer, "work");
+  const output = {
+    write(original: string): boolean {
+      auditExistedDuringSink ||= existsSync(auditPath);
+      chunks.push(original);
+      return true;
+    },
+  };
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
+  const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-shadow-ordering", mode: "foreground" });
+  await nextTick();
+  const source = "Bearer synthetic-ordering-value\n";
+  pty.emitData(source);
+  assert.equal(auditExistedDuringSink, false);
+  assert.equal(chunks.join(""), source);
+  assert.equal(existsSync(auditPath), true);
+  pty.emitExit(0);
+  assert.equal((await resultPromise).exitCode, 0);
+  const records = readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as PiRedactionAuditRecord);
+  assert.ok(records.some((record) => record.surfaceId === "terminal-output" && record.ruleId === "bearer"));
+});
+
+test("shadow audit failures preserve delivery and warn once without recursive detection", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-shadow-failure-"));
+  const warnings: string[] = [];
+  const delivered: string[] = [];
+  const audit = new PiRedactionAudit("d-shadow-failure", dir, {
+    append: () => { throw new Error("synthetic matched content must not escape through warnings"); },
+    warn: (warning) => warnings.push(warning),
+  });
+  const source = "Bearer synthetic-failure-value";
+  for (let occurrence = 0; occurrence < 2; occurrence += 1) {
+    delivered.push(source);
+    audit.observe("terminal", source);
+  }
+  assert.deepEqual(delivered, [source, source]);
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0]!.length <= 2_000);
+  assert.doesNotMatch(warnings[0]!, /synthetic-failure-value|matched content/);
+  assert.equal(detectPiRedactionMatches(warnings[0]).length, 0);
+  assert.equal(existsSync(audit.path), false);
+});
 
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
   assert.equal(meetsMinimum("0.80.8"), false); assert.equal(meetsMinimum("0.84.3"), false); assert.equal(meetsMinimum("0.84.4"), true); assert.equal(meetsMinimum("0.85.0"), true); assert.equal(meetsMinimum("not-a-version"), false);
@@ -572,6 +718,11 @@ test("persists streamed Pi output with configured values and reasoning signature
     const knownTools = activity.trim().split("\n").map((line) => JSON.parse(line) as { metadata?: Record<string, unknown> }).map((event) => event.metadata?.["tool"]).filter(Boolean);
     assert.ok(knownTools.length > 0);
     assert.ok(knownTools.every((tool) => tool === "read"));
+    const audit = readShadowAudit(deployDir);
+    assert.ok(["pi-output", "activity", "pi-log"].every((surface) => audit.some((record) => record.surfaceId === surface)));
+    assert.ok(audit.some((record) => record.ruleId === "configured-value" && record.matchedText === configured));
+    assert.ok(audit.some((record) => record.ruleId === "reasoning-signature"));
+    assert.ok(audit.some((record) => record.ruleId === "encrypted-content"));
   } finally {
     if (previousHome === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousHome;
@@ -603,6 +754,9 @@ test("captured Pi logs preserve malformed reasoning metadata and diagnostics", a
   }
   assert.match(log, new RegExp(configured));
   assert.match(log, /useful stderr/);
+  const audit = readShadowAudit(dir);
+  assert.ok(audit.some((record) => record.surfaceId === "pi-output" && record.ruleId === "reasoning-signature"));
+  assert.ok(audit.some((record) => record.surfaceId === "pi-log" && record.ruleId === "configured-value"));
 });
 
 test("managed Pi stream inspection accepts complete calls and controls malformed or incomplete calls", async () => {
@@ -1207,6 +1361,9 @@ test("foreground output preservation survives every chunk boundary", async () =>
   assert.match(persisted, /useful oversized foreground/);
   const foreground = output.chunks.join("");
   for (const value of [configuredValue, shapedValue, assignedValue, reasoningValue]) assert.match(foreground, new RegExp(value));
+  const audit = readShadowAudit(dir);
+  for (const surface of ["terminal-output", "pi-log", "pi-output", "activity"]) assert.ok(audit.some((record) => record.surfaceId === surface), surface);
+  for (const rule of ["configured-value", "credential-shaped-text", "reasoning-signature", "encrypted-content"] as const) assert.ok(audit.some((record) => record.ruleId === rule), rule);
 });
 
 test("foreground persistence failure terminates, escalates, verifies exit, and restores raw mode", async () => {
