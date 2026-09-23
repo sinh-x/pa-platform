@@ -1,6 +1,7 @@
 import { Type, type TSchema } from "typebox";
 import { BulletinStore, TicketStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
 import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
+import { auditPiValueFromEnvironment } from "../diagnostics.js";
 import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 import { registerQuestionModule } from "./question.js";
@@ -210,18 +211,21 @@ export default function registerPiPaExtension(pi: PiRuntime): void {
   registerPiSessionModules(pi, createPiSessionLifecycle());
 }
 
-export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, _env: NodeJS.ProcessEnv = process.env): void {
+export function persistTerminalStatus(messages: PiAgentMessage[], deployDir: string, env: NodeJS.ProcessEnv = process.env): void {
   const message = [...messages].reverse().find((candidate) => candidate.role === "assistant" && typeof candidate.stopReason === "string");
   if (!message?.stopReason) return;
   const diagnostic = message.stopReason === "error"
     ? (message.errorMessage || assistantText(message.content) || "Pi agent terminated with an error").slice(-2000)
     : undefined;
-  writePiTerminalStatus(deployDir, {
-    type: "agent_end",
+  const status = {
+    type: "agent_end" as const,
     stopReason: message.stopReason,
     ...(diagnostic ? { error: diagnostic } : {}),
     timestamp: new Date().toISOString(),
-  });
+  };
+  writePiTerminalStatus(deployDir, status);
+  auditPiValueFromEnvironment(env, "terminal-status", status);
+  if (diagnostic) auditPiValueFromEnvironment(env, "extension-diagnostic", diagnostic);
 }
 
 function ticketTool(input: Record<string, unknown>): unknown {

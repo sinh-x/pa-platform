@@ -43,13 +43,18 @@ test("Pi extension writes an unfiltered structured terminal status side channel"
   const dir = mkdtempSync(join(tmpdir(), "ppa-terminal-status-"));
   const value = "synthetic-side-channel-value";
   const prefix = ["Bea", "rer"].join("");
-  persistTerminalStatus([{ role: "assistant", stopReason: "error", errorMessage: `${prefix} ${value}` }], dir, {});
+  persistTerminalStatus([{ role: "assistant", stopReason: "error", errorMessage: `${prefix} ${value}` }], dir, { PA_DEPLOYMENT_ID: "d-extension-audit", PA_DEPLOYMENT_DIR: dir });
   const statusPath = join(dir, "pi-terminal-status.json");
   const status = readPiTerminalStatus(dir);
   assert.equal(status?.stopReason, "error");
   assert.equal(status?.error, `${prefix} ${value}`);
   assert.match(readFileSync(statusPath, "utf8"), new RegExp(value));
   assert.equal(statSync(statusPath).mode & 0o777, 0o600);
+  const auditPath = join(dir, "pi-redaction-audit.jsonl");
+  const audit = readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { surfaceId: string; ruleId: string });
+  assert.ok(audit.some((record) => record.surfaceId === "terminal-status" && record.ruleId === "bearer"));
+  assert.ok(audit.some((record) => record.surfaceId === "extension-diagnostic" && record.ruleId === "bearer"));
+  assert.equal(statSync(auditPath).mode & 0o777, 0o600);
 });
 
 test("trusted entrypoint registers only selected editors while preserving attributed PA modules", () => {

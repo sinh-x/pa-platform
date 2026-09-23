@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
+import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
@@ -38,17 +39,27 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+  const audit = new PiRedactionAudit(deploymentId, deployDir);
+  const observe = (surfaceId: string, value: unknown, configuredEnv: NodeJS.ProcessEnv = process.env): void => { audit.observe(surfaceId, value, environmentSecrets({ ...process.env, ...configuredEnv })); };
+  const appendActivity = (event: ReturnType<typeof createActivityEvent>, configuredEnv: NodeJS.ProcessEnv = process.env): void => {
+    appendActivityEvent(event, paths.activityLogPath);
+    observe("activity", event, configuredEnv);
+  };
   let runtimeConfig: ReturnType<typeof resolvePiRuntimeConfig>;
   try {
     runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
   } catch (error) {
     const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }), paths.activityLogPath);
+    appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }));
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, process.env, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
-    ensurePiTerminalStatus(deployDir, terminalStatus("failed", summary));
+    observe("registry-diagnostic", summary);
+    const status = terminalStatus("failed", summary);
+    ensurePiTerminalStatus(deployDir, status);
+    observe("terminal-status", status);
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    observe("deploy-diagnostic", reason);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const provider = runtimeConfig.provider;
@@ -229,11 +240,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const raw = `${error instanceof Error ? error.message : String(error)}${cleanupFailure ? `; ${cleanupFailure}` : ""}`;
     const rawReason = boundedDiagnostic(raw, requestedEnvironment, 2000);
     const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), paths.activityLogPath);
+    appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), requestedEnvironment);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
-    ensurePiTerminalStatus(deployDir, terminalStatus("failed", summary));
+    observe("registry-diagnostic", summary, requestedEnvironment);
+    const status = terminalStatus("failed", summary);
+    ensurePiTerminalStatus(deployDir, status);
+    observe("terminal-status", status, requestedEnvironment);
     ensureTerminalRegistryMarker({ deploymentId, team: team.name });
+    observe("deploy-diagnostic", reason, requestedEnvironment);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const env = { ...plan.environment, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<string, string>;
@@ -252,6 +267,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       else detail += `; matching ticket-slot cleanup failed (${cleanup.status})`;
     }
     const reason = boundedDiagnostic(detail, env, 2000);
+    observe("deploy-diagnostic", reason, env);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan): void => {
@@ -259,17 +275,18 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     writeFileSync(primerPath, primer, "utf8");
   };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
-  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics);
-  emitResolutionWarning({ warning: rogueModeDiagnostic }, deploymentId, paths.activityLogPath, diagnostics);
-  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), paths.activityLogPath);
-  if (plan.rogue_one) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: rogueOneAuditNotice(plan.invocation_channel!), metadata: { rogue_one: true, invocation_channel: plan.invocation_channel, team: plan.team, mode: plan.mode } }), paths.activityLogPath);
+  emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics, audit, env);
+  emitResolutionWarning({ warning: rogueModeDiagnostic }, deploymentId, paths.activityLogPath, diagnostics, audit, env);
+  appendActivity(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), env);
+  if (plan.rogue_one) appendActivity(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: rogueOneAuditNotice(plan.invocation_channel!), metadata: { rogue_one: true, invocation_channel: plan.invocation_channel, team: plan.team, mode: plan.mode } }), env);
   if (request.dryRun) {
     try { writePrimer(plan); }
     catch (error) {
       const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+      observe("deploy-diagnostic", reason, env);
       return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
     }
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), paths.activityLogPath);
+    appendActivity(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Dry-run primer generated for ${team.name} using ${provider}/${model}`, metadata: { provider, model } }), env);
     return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
   }
   let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string; ticketSlot?: RepositoryTicketSlotHandoff } | undefined;
@@ -358,24 +375,31 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // Reconcile every terminal observation so a later causal failure can replace
     // success/partial while an existing failure remains sticky and exactly once.
     const authoritative = reconcileTerminalRegistryEvent(requested).event;
+    observe("registry-diagnostic", authoritative, env);
     const outcome = registryTerminalOutcome(authoritative, env);
-    writePiTerminalStatus(deployDir, terminalStatus(outcome.status, outcome.reason, authoritative.timestamp));
+    const statusRecord = terminalStatus(outcome.status, outcome.reason, authoritative.timestamp);
+    writePiTerminalStatus(deployDir, statusRecord);
+    observe("terminal-status", statusRecord, env);
     if (!request.background) clearPiForegroundCompletion(deployDir);
     return { ...outcome, authorityFailure: containmentFailure !== undefined };
   };
   const completeFailure = async (reason: string, exitCode = 1) => {
     const boundedReason = boundedDiagnostic(reason, env, 2000);
     const safeReason = inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
+    appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
     const outcome = await writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
+    const resultReason = outcome.authorityFailure ? outcome.reason : safeReason;
+    observe("deploy-diagnostic", resultReason, env);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: resultReason };
   };
   const crashFailure = async (reason: string) => {
     const boundedReason = boundedDiagnostic(reason, env, 2000);
     const safeReason = inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), paths.activityLogPath);
+    appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
     const outcome = await writeTerminal("crashed", "failed", safeReason, 1);
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: outcome.authorityFailure ? outcome.reason : safeReason };
+    const resultReason = outcome.authorityFailure ? outcome.reason : safeReason;
+    observe("deploy-diagnostic", resultReason, env);
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: resultReason };
   };
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
@@ -558,7 +582,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         const ok = final.status === 0 && !terminalError;
         const failure = final.status !== 0 ? final.spawnError?.message ?? (final.stderr || `exit ${final.status}`) : terminalError;
         const reason = ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`;
-        if (!ok) appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), paths.activityLogPath);
+        if (!ok) appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, env, 500) }), env);
         await writeTerminal("completed", ok ? "success" : "failed", reason, ok ? 0 : final.status || 1, resolve(deployDir, "pi.log"));
       }).catch((error) => {
         void crashFailure(error instanceof Error ? error.message : String(error));
@@ -571,7 +595,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       acceptRepositoryAuthorityHandoff(result.metadata);
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
-    const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath);
+    const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath, audit);
     const outcome = request.background
       ? await writeTerminal("completed", "success", "ppa deploy completed", 0, result.logFile)
       : staged
@@ -588,10 +612,14 @@ async function adapterPreflight(adapter: RuntimeAdapter): Promise<void> {
   await pi.preflight?.();
 }
 
-function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics?: DeployDiagnostics): void {
+function emitResolutionWarning(config: { warning?: string }, deploymentId: string, activityLogPath: string, diagnostics: DeployDiagnostics | undefined, audit: PiRedactionAudit, env: NodeJS.ProcessEnv): void {
   if (!config.warning) return;
   if (diagnostics) diagnostics.stderr(config.warning); else process.stderr.write(`${config.warning}\n`);
-  appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: config.warning, metadata: { resolution: "fallback" } }), activityLogPath);
+  const secrets = environmentSecrets({ ...process.env, ...env });
+  audit.observe("deploy-diagnostic", config.warning, secrets);
+  const event = createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: config.warning, metadata: { resolution: "fallback" } });
+  appendActivityEvent(event, activityLogPath);
+  audit.observe("activity", event, secrets);
 }
 
 function boundedDiagnostic(value: string, _env: NodeJS.ProcessEnv, max: number): string {
@@ -602,14 +630,18 @@ function terminalStatus(status: "success" | "failed", reason: string, timestamp 
   return { type: "agent_end" as const, stopReason: status === "success" ? "stop" : "error", ...(status === "failed" ? { error: reason } : {}), timestamp };
 }
 
-function readStagedForegroundCompletion(deployDir: string, deploymentId: string, env: NodeJS.ProcessEnv, activityLogPath: string): PiForegroundCompletion | undefined {
+function readStagedForegroundCompletion(deployDir: string, deploymentId: string, env: NodeJS.ProcessEnv, activityLogPath: string, audit: PiRedactionAudit): PiForegroundCompletion | undefined {
   try {
     const completion = readPiForegroundCompletion(deployDir);
     if (completion && completion.deploymentId !== deploymentId) throw new Error("Pi foreground completion sidecar deployment does not match");
     return completion;
   } catch (error) {
     const diagnostic = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
-    appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(diagnostic, env, 500) }), activityLogPath);
+    const event = createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(diagnostic, env, 500) });
+    appendActivityEvent(event, activityLogPath);
+    const secrets = environmentSecrets({ ...process.env, ...env });
+    audit.observe("activity", event, secrets);
+    audit.observe("deploy-diagnostic", diagnostic, secrets);
     return undefined;
   }
 }

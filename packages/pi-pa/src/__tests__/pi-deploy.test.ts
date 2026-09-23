@@ -2380,7 +2380,14 @@ test("managed Pi outcomes emit one accurate bounded terminal event with original
         if (item.name !== "success") assert.match(statusText, new RegExp(secret), item.name);
         const activities = readActivityEvents(paths.activityLogPath);
         for (const activity of activities) assert.ok(activity.body.length <= 500, item.name);
-        if (item.name !== "success") assert.ok(activities.some((activity) => activity.body.includes(secret)), item.name);
+        if (item.name !== "success") {
+          assert.ok(activities.some((activity) => activity.body.includes(secret)), item.name);
+          const auditPath = join(paths.deployDir, "pi-redaction-audit.jsonl");
+          const audit = readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { surfaceId: string; ruleId: string });
+          for (const surface of ["activity", "registry-diagnostic", "terminal-status", "deploy-diagnostic"]) assert.ok(audit.some((record) => record.surfaceId === surface), `${item.name}:${surface}`);
+          assert.ok(audit.some((record) => record.ruleId === "configured-value"), item.name);
+          assert.equal(statSync(auditPath).mode & 0o777, 0o600, item.name);
+        }
       });
     }
   } finally {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -332,6 +332,11 @@ test("snapshot write failure is non-fatal, preserves prior evidence, and records
     assert.match(diagnostic.body, new RegExp(sentinel));
     assert.ok(diagnostic.body.length <= 500);
   }
+  const auditPath = join(root, "pi-redaction-audit.jsonl");
+  const audit = readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { surfaceId: string; ruleId: string });
+  assert.equal(audit.filter((record) => record.surfaceId === "activity" && record.ruleId === "configured-value").length, 2);
+  assert.equal(audit.filter((record) => record.surfaceId === "todo-diagnostic" && record.ruleId === "configured-value").length, 2);
+  assert.equal(statSync(auditPath).mode & 0o777, 0o600);
 });
 
 test("rejected tool mutations still return complete details and bounded text", async () => {

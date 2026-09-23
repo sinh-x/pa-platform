@@ -34,6 +34,7 @@ import {
   type PiSupervisionOptions,
   type PiSupervisorOwnership,
 } from "./adapter.js";
+import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 
@@ -51,7 +52,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   const deployDir = dirname(config.primerPath);
   const ownershipPath = resolve(deployDir, PI_SUPERVISOR_FILE);
   const now = options.now ?? (() => new Date());
-  const secrets: string[] = [];
+  const secrets = environmentSecrets(process.env);
+  const audit = new PiRedactionAudit(config.deploymentId, deployDir);
   let childPid: number | undefined;
   let ready = false;
   let repositoryLease = config.repositoryLease;
@@ -239,15 +241,20 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     const terminal = finalizeRunnerResult(config, deployDir, result, secrets, now());
     finalState = "finalized";
     writePiSupervisorOwnership(ownershipPath, ownership("finalized", { terminalEvent: terminal.event, terminalStatus: terminal.status }));
+    audit.observe("background-diagnostic", terminal.diagnostic, secrets);
   } catch (error) {
     terminateChild();
     const reason = bounded(categoryForRunnerError(error), secrets, TERMINAL_DIAGNOSTIC_MAX);
     try {
       const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
       writePiSupervisorOwnership(ownershipPath, ownership(finalState, { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
+      audit.observe("background-diagnostic", terminal.diagnostic, secrets);
     } catch (finalizationError) {
       const combined = bounded(`runner-persistence: ${reason}; ${categoryForRunnerError(finalizationError)}`, secrets, TERMINAL_DIAGNOSTIC_MAX);
-      try { writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: combined })); } catch { /* launcher/status retains the causal readiness failure */ }
+      try {
+        writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: combined }));
+        audit.observe("background-diagnostic", combined, secrets);
+      } catch { /* launcher/status retains the causal readiness failure */ }
     }
   } finally {
     process.removeListener("SIGTERM", onSigterm);
@@ -315,6 +322,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         const reason = bounded(authorityFailure, secrets, TERMINAL_DIAGNOSTIC_MAX);
         const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
         writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
+        audit.observe("background-diagnostic", terminal.diagnostic, secrets);
       }
     } finally {
       ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });
@@ -336,7 +344,7 @@ function assertTreehouseRuntimeEnvironment(config: PiBackgroundConfig, env: Node
   }
 }
 
-function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, result: PiCommandResult, secrets: string[], at: Date): { event: "completed" | "crashed"; status: "success" | "failed" } {
+function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, result: PiCommandResult, secrets: string[], at: Date): { event: "completed" | "crashed"; status: "success" | "failed"; diagnostic: string } {
   const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
   const ok = result.status === 0 && !terminalError;
   const failure = terminalError
@@ -349,10 +357,10 @@ function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, res
           ? result.spawnError.message
         : result.spawnError && /persist|write|rename|registry|database|sqlite/i.test(result.spawnError.message)
           ? `runner-persistence: ${result.spawnError.message}`
-          : `runner-process: ${result.spawnError?.message ?? (result.stderr || `Pi exited with code ${result.status}`)}`;
+          : `runner-process: ${result.stderr || result.spawnError?.message || `Pi exited with code ${result.status}`}`;
   const reason = bounded(ok ? "ppa deploy completed" : `ppa deploy failed: ${failure}`, secrets, TERMINAL_DIAGNOSTIC_MAX);
-  if (!ok) appendRunnerError(config.deploymentId, reason, secrets);
-  return reconcileRunnerTerminal(config, deployDir, {
+  if (!ok) appendRunnerError(config.deploymentId, deployDir, reason, secrets);
+  return { ...reconcileRunnerTerminal(config, deployDir, {
     deployment_id: config.deploymentId,
     team: config.team,
     event: "completed",
@@ -362,12 +370,12 @@ function finalizeRunnerResult(config: PiBackgroundConfig, deployDir: string, res
     log_file: config.logFile,
     exit_code: ok ? 0 : result.status && result.status !== 0 ? result.status : 1,
     ...(config.registryEvidence ?? {}),
-  }, secrets);
+  }, secrets), diagnostic: reason };
 }
 
-function finalizeRunnerFailure(config: PiBackgroundConfig, deployDir: string, reason: string, secrets: string[], at: Date): { event: "completed" | "crashed"; status: "success" | "failed" } {
-  appendRunnerError(config.deploymentId, reason, secrets);
-  return reconcileRunnerTerminal(config, deployDir, {
+function finalizeRunnerFailure(config: PiBackgroundConfig, deployDir: string, reason: string, secrets: string[], at: Date): { event: "completed" | "crashed"; status: "success" | "failed"; diagnostic: string } {
+  appendRunnerError(config.deploymentId, deployDir, reason, secrets);
+  return { ...reconcileRunnerTerminal(config, deployDir, {
     deployment_id: config.deploymentId,
     team: config.team,
     event: "crashed",
@@ -376,29 +384,36 @@ function finalizeRunnerFailure(config: PiBackgroundConfig, deployDir: string, re
     summary: reason,
     exit_code: 1,
     ...(config.registryEvidence ?? {}),
-  }, secrets);
+  }, secrets), diagnostic: reason };
 }
 
 function reconcileRunnerTerminal(config: PiBackgroundConfig, deployDir: string, requested: RegistryEvent, secrets: string[]): { event: "completed" | "crashed"; status: "success" | "failed" } {
   const authoritative = reconcileTerminalRegistryEvent(requested).event;
   const success = authoritative.event === "completed" && authoritative.status === "success";
   const reason = bounded(authoritative.event === "crashed" ? authoritative.error ?? "ppa agent crashed" : authoritative.summary ?? `ppa agent completed with status ${authoritative.status ?? "unknown"}`, secrets, TERMINAL_DIAGNOSTIC_MAX);
-  writePiTerminalStatus(deployDir, {
-    type: "agent_end",
+  const status = {
+    type: "agent_end" as const,
     stopReason: success ? "stop" : "error",
     ...(success ? {} : { error: reason }),
     timestamp: authoritative.timestamp,
-  });
+  };
+  writePiTerminalStatus(deployDir, status);
+  const audit = new PiRedactionAudit(config.deploymentId, deployDir);
+  audit.observe("registry-diagnostic", authoritative, secrets);
+  audit.observe("terminal-status", status, secrets);
   return { event: authoritative.event === "crashed" ? "crashed" : "completed", status: success ? "success" : "failed" };
 }
 
-function appendRunnerError(deploymentId: string, reason: string, secrets: string[]): void {
-  appendActivityEvent(createActivityEvent({
+function appendRunnerError(deploymentId: string, deployDir: string, reason: string, secrets: string[]): void {
+  const event = createActivityEvent({
     deployId: deploymentId,
     kind: "error",
     source: "pi",
     body: bounded(reason, secrets, ACTIVITY_DIAGNOSTIC_MAX),
-  }), getDeployPaths(deploymentId).activityLogPath);
+  });
+  appendActivityEvent(event, getDeployPaths(deploymentId).activityLogPath);
+  const audit = new PiRedactionAudit(deploymentId, deployDir);
+  audit.observe("activity", event, secrets);
 }
 
 function terminalTimestamp(deployDir: string, success: boolean, fallback: Date): string {
