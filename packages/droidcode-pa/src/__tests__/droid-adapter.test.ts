@@ -855,7 +855,7 @@ describe("droid safety hook shared context policy", () => {
 
       const deletion = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "r" + "m -rf /tmp/pap218-cleanup" } }, env);
       assert.equal(deletion.exitCode, 2);
-      assert.match(deletion.stderr, /dpa trash move \/tmp\/pap218-cleanup.*--reason '[^']+'.*--yes/);
+      assert.match(deletion.stderr, /dpa trash move '\/tmp\/pap218-cleanup'.*--reason '[^']+'.*--yes/);
     } finally {
       rmSync(policyRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }

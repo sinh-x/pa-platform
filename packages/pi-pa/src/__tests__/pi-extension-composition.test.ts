@@ -165,7 +165,7 @@ async function exerciseRepresentativeDefaults(
   const destructiveResults = await host.dispatch("tool_call", { toolName: "bash", input: { command: "rm -rf build" } }, context);
   const blocked = destructiveResults.find((result): result is { block: true; reason: string } => Boolean(result && typeof result === "object" && "block" in result));
   assert.ok(blocked);
-  assert.match(blocked.reason, /ppa trash move build/);
+  assert.match(blocked.reason, /ppa trash move 'build'/);
   assert.match(blocked.reason, /--reason '[^']+'/);
   assert.match(blocked.reason, /--yes/);
 }

@@ -131,7 +131,7 @@ test("Pi safety interception uses declared path and bounded shell contexts", () 
 
   const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });
   assert.equal(deletion.allowed, false);
-  assert.match(deletion.reason ?? "", /ppa trash move \/tmp\/pap218-cleanup/);
+  assert.match(deletion.reason ?? "", /ppa trash move '\/tmp\/pap218-cleanup'/);
   assert.match(deletion.reason ?? "", /--reason '[^']+'/);
   assert.match(deletion.reason ?? "", /--yes/);
   assert.equal(interceptToolCall({ name: "read", input: { path: "README.md" } }).allowed, true);

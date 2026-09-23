@@ -1872,7 +1872,7 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await assert.rejects(before({ tool: "bash" }, { args: { command: `printf unsafe ${redirect} .\/report.json` } }), /verified system-temp target/);
     await assert.rejects(
       before({ tool: "bash" }, { args: { command: "r" + "m -rf /tmp/pap218-cleanup" } }),
-      /opa trash move \/tmp\/pap218-cleanup.*--reason '[^']+'.*--yes/,
+      /opa trash move '\/tmp\/pap218-cleanup'.*--reason '[^']+'.*--yes/,
     );
   } finally {
     restore("PA_ACTIVITY_LOG", previous.activityLog);
