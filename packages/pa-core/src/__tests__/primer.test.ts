@@ -1031,7 +1031,11 @@ test("generatePrimer canonicalizes repository evidence inside the authoritative 
   assert.equal(primer.match(/^worktree_root: \/worktrees\/PAP-195$/gm)?.length, 1);
   assert.match(primer, /^cwd: \/worktrees\/PAP-195$/m);
   assert.match(primer, /^repo: \/worktrees\/PAP-195$/m);
-  assert.match(primer, /^  PA_REPO: \/registered\/project$/m);
+  assert.match(primer, /^  PA_REPO: \/worktrees\/PAP-195$/m);
+  assert.match(primer, /^### Authoritative Repository Identity Domains$/m);
+  assert.match(primer, /Canonical identity: registry repo_key=registered maps to repo_root=\/registered\/project/);
+  assert.match(primer, /Runtime identity: PA_REPO, PA_WORKTREE_ROOT, runtime CWD, Git top-level, project\/memory root, and registry repo must equal authenticated worktree_root=\/worktrees\/PAP-195/);
+  assert.match(primer, /Distinct canonical and runtime roots are valid and must not be compared as the same path/);
   assert.match(primer, /^### Repository Admission Evidence$/m);
   assert.match(primer, /^- Slot: implement$/m);
   assert.match(primer, /Git: branch=feature\/PAP-195-worktree, head=a{40}, staged=1, unstaged=2, untracked=3/);

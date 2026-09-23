@@ -123,6 +123,8 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     "deploy_modes:",
     "  - id: analyze",
     "    label: Analyze",
+    "  - id: review-auto",
+    "    label: Review Auto",
   ].join("\n") + "\n");
   const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const gitState = installGitStateRecorder(root);
@@ -1891,7 +1893,7 @@ test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root
       assert.equal(plan.repositoryCwd, worktree);
       assert.equal(plan.repositoryKind, "linked");
       assert.equal(plan.memoryDocumentRoot, worktree);
-      assert.equal(plan.environment.PA_REPO, primary);
+      assert.equal(plan.environment.PA_REPO, worktree);
       assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
       assert.equal(plan.repositoryAdmission.slot, "implement");
       assert.equal(plan.repositoryAdmission.gitSnapshot?.dirty, true);
@@ -1902,7 +1904,7 @@ test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root
       assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(primary)}$`, "m"));
       assert.match(primer, new RegExp(`^worktree_root: ${escapeRegExp(worktree)}$`, "m"));
       assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(worktree)}$`, "m"));
-      assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(primary)}$`, "m"));
+      assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(worktree)}$`, "m"));
       assert.match(primer, new RegExp(`^  PA_WORKTREE_ROOT: ${escapeRegExp(worktree)}$`, "m"));
       const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
       assert.deepEqual({ repo: started?.repo, repoRoot: started?.repo_root, worktreeRoot: started?.worktree_root, slot: started?.repository_slot }, { repo: worktree, repoRoot: primary, worktreeRoot: worktree, slot: "implement" });
@@ -1922,6 +1924,75 @@ test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root
     assert.deepEqual(readFileSync(join(worktree, "untracked.txt")), beforeUntracked);
     const lifecycleOperations = gitState.readOperations().filter((args) => /^(checkout|switch|branch|reset|clean|restore|stash)$/.test(args[0] ?? "") || (args[0] === "worktree" && args[1] !== "list"));
     assert.deepEqual(lifecycleOperations, []);
+  });
+});
+
+test("requirements/review-auto CWD inference keeps canonical and authenticated linked-worktree identities in separate domains", async () => {
+  await withPiEnv(async (root) => {
+    const primary = join(root, "repo");
+    const worktree = join(root, "linked-review-auto");
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-222-review-auto", worktree], { cwd: primary, stdio: "ignore" });
+    const nested = join(worktree, "nested");
+    mkdirSync(nested);
+    process.chdir(nested);
+
+    const observations: SpawnOpts[] = [];
+    const stderr: string[] = [];
+    const code = await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+      binaryName: "ppa",
+      io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
+      hooks: createPiHooks(stubAdapter({ onSpawn: (opts) => observations.push(opts) })),
+    });
+    assert.equal(code, 0, stderr.join("\n"));
+    assert.equal(observations.length, 1);
+    const opts = observations[0]!;
+    const plan = opts.executionPlan!;
+    assert.equal(plan.repoRoot, primary);
+    assert.equal(plan.worktreeRoot, worktree);
+    assert.equal(plan.repositoryCwd, worktree);
+    assert.equal(plan.memoryDocumentRoot, worktree);
+    assert.equal(plan.environment.PA_REPO, worktree);
+    assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
+    const started = getDeploymentEvents(opts.deployId).find((event) => event.event === "started");
+    assert.deepEqual(
+      { repo: started?.repo, repoRoot: started?.repo_root, worktreeRoot: started?.worktree_root },
+      { repo: worktree, repoRoot: primary, worktreeRoot: worktree },
+    );
+    const primer = readFileSync(opts.primerPath, "utf8");
+    assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(primary)}$`, "m"));
+    assert.match(primer, new RegExp(`^worktree_root: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, new RegExp(`^repo: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(worktree)}$`, "m"));
+    assert.match(primer, /Canonical identity: registry repo_key=pa-platform maps to repo_root=/);
+    assert.match(primer, /Runtime identity: PA_REPO, PA_WORKTREE_ROOT, runtime CWD, Git top-level, project\/memory root, and registry repo must equal authenticated worktree_root=/);
+    assert.match(primer, /Distinct canonical and runtime roots are valid and must not be compared as the same path/);
+
+    const untrustedPrimary = join(root, "untrusted-primary");
+    const untrustedWorktree = join(root, "untrusted-worktree");
+    initializeGitRepo(untrustedPrimary);
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-222-untrusted", untrustedWorktree], { cwd: untrustedPrimary, stdio: "ignore" });
+    process.chdir(untrustedWorktree);
+    let rejectedSpawns = 0;
+    const untrustedStderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+      binaryName: "ppa",
+      io: { stdout: () => {}, stderr: (line) => untrustedStderr.push(line) },
+      hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
+    }), 1);
+    assert.equal(rejectedSpawns, 0);
+    assert.match(untrustedStderr.join("\n"), /does not have a unique registered primary repository|does not resolve to an exact configured repository root/i);
+
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${untrustedPrimary}\n    description: Mismatched canonical identity\n    prefix: PAP\n`);
+    process.chdir(worktree);
+    const canonicalMismatchStderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+      binaryName: "ppa",
+      io: { stdout: () => {}, stderr: (line) => canonicalMismatchStderr.push(line) },
+      hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
+    }), 1);
+    assert.equal(rejectedSpawns, 0);
+    assert.match(canonicalMismatchStderr.join("\n"), /does not have a unique registered primary repository/i);
   });
 });
 

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, closeDb, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { createPiHooks, deployWithPi, type PiDeployDependencies } from "../deploy.js";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
@@ -165,7 +165,7 @@ test("ticketed orchestrator acquires an exact free row and materializes the plan
   }
 });
 
-test("ticketed orchestrator admits legacy unknown-base evidence through immutable planning and terminal projection", async () => {
+test("ticketed orchestrator retains dual-root identity through direct clean and approved-dirty continuations", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-treehouse-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -531,6 +531,48 @@ test("ticketed orchestrator admits legacy unknown-base evidence through immutabl
     }
     writeFileSync(parentLeasePath, parentLeaseBytes, { mode: 0o600 });
     writeFileSync(parentSlotPath, parentSlotBytes, { mode: 0o600 });
+
+    const approvedDirtyPath = join(worktree, "approved-dirty-continuation.txt");
+    writeFileSync(approvedDirtyPath, "approved continuation\n");
+    const dirtySnapshot = captureRepositoryGitSnapshot(worktree);
+    const dirtyInspection = inspectRepositoryMutationLease(repo, { getProcessFingerprint: readProcessFingerprint, worktreeRoot: worktree, slot: "orchestrator" });
+    assert.equal(dirtyInspection.state, "live");
+    assert.ok(dirtyInspection.lease && dirtyInspection.evidenceIdentity);
+    const dirtyApproval: RepositoryDirtyBorrowApproval = {
+      schemaVersion: 1,
+      receiptId: "pap-222-approved-dirty-receipt",
+      approvalReference: "pap-222-approved-dirty-continuation",
+      approvedAt: "2026-09-23T06:00:00.000Z",
+      action: "preserve-and-continue",
+      parentDeploymentId,
+      parentDeploymentDirectory: parentDir,
+      parentProcessFingerprint: dirtyInspection.lease!.processFingerprint,
+      parentLeaseEvidenceIdentity: dirtyInspection.evidenceIdentity!,
+      canonicalRepoKey: "registered",
+      canonicalRepoRoot: repo,
+      worktreeRoot: worktree,
+      ticket: "PAP-1",
+      branch: branch.branch,
+      snapshot: dirtySnapshot,
+      classifications: [{ path: "approved-dirty-continuation.txt", classification: "active-ticket-produced" }],
+      plannedNewPaths: [],
+    };
+    const dirtyApprovalPath = publishRepositoryDirtyBorrowApproval(dirtyApproval);
+    spawned = undefined;
+    const beforeDirtyContinuationSpawns = spawnCount;
+    const dirtyContinuationStderr: string[] = [];
+    assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "implement", "--background", "--ticket", "PAP-1", "--timeout", "60", "--repo", "registered"], {
+      binaryName: "ppa",
+      io: { stdout: () => {}, stderr: (line) => dirtyContinuationStderr.push(line) },
+      hooks: createPiHooks(adapter, { treehouse }),
+    }), 0, dirtyContinuationStderr.join("\n"));
+    assert.equal(spawnCount, beforeDirtyContinuationSpawns + 1);
+    assert.equal(spawned?.executionPlan?.repoRoot, repo);
+    assert.equal(spawned?.executionPlan?.worktreeRoot, worktree);
+    assert.equal(spawned?.executionPlan?.environment.PA_REPO, worktree);
+    assert.deepEqual(spawned?.executionPlan?.repositoryAdmission.approvedMutationPaths, ["approved-dirty-continuation.txt"]);
+    assert.equal(existsSync(dirtyApprovalPath), false, "approved dirty continuation consumes its exact one-use receipt");
+    assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), false, "approved dirty continuation finalizes matching borrower evidence");
 
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: worktree, ownershipToken: parentLease.lease.ownershipToken }).status, "released");
     assert.equal(releaseRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: parentSlotResult.slot.slotToken, slotId: parentSlotResult.slot.slotId, repositoryPermit: parentSlotResult.slot.repositoryPermit }).status, "released");

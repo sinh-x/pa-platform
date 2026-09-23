@@ -363,8 +363,8 @@ These keys are rendered into the `<deployment-context>` primer block by all four
 | `PA_TEAM` | Team name for the deployment |
 | `PA_MODE` | Deploy mode id |
 | `PA_TICKET_ID` | Associated ticket id (if any) |
-| `PA_REPO` | Repository path selected by the shared execution plan. Normally the registered primary root; for authenticated PPA Treehouse ticket builders only, the exact execution worktree. |
-| `PA_WORKTREE_ROOT` | Exact physical execution worktree. Equals `PA_REPO` for authenticated Treehouse ticket builders; canonical identity remains in deployment `repo_root` and immutable plan/lease evidence. |
+| `PA_REPO` | Exact runtime repository path selected by the shared execution plan. For authenticated PPA linked-worktree launches this is `worktree_root`; canonical identity remains in deployment `repo_root` and immutable plan/lease evidence. |
+| `PA_WORKTREE_ROOT` | Exact physical execution worktree. Equals `PA_REPO` for authenticated PPA linked-worktree launches. |
 | `PA_PROVIDER` | Model provider (if any) |
 | `PA_MODEL` | Agent model (if any) |
 | `PA_TEAM_MODEL` | Team-level model (if any) |

@@ -20,24 +20,25 @@ may execute in that existing
 worktree when its physical root appears in the primary checkout's exact
 `git worktree list`, its physical Git common directory maps to exactly one
 registered primary repository, and its `.git` forward/reverse metadata is consistent.
-`repo_root` and `PA_REPO` remain the registered primary trust anchor;
-`worktree_root`, `PA_WORKTREE_ROOT`, `repositoryCwd`, memory/project access, Git
-snapshots, and Pi process CWD use the linked worktree. Explicit `--repo` key or
+`repo_root` remains the registered primary trust anchor; `worktree_root`,
+`PA_REPO`, `PA_WORKTREE_ROOT`, `repositoryCwd`, memory/project access, Git
+snapshots, registry `repo`, and Pi process CWD use the authenticated linked
+worktree. Canonical evidence is compared only with the registered key/root pair;
+runtime evidence is compared only with `worktree_root`. Explicit `--repo` key or
 primary-path input still selects the primary root. Symlink aliases, malformed or
 forged metadata, independent clones, stale worktree entries, ambiguous
 common-directory matches, and unrelated repositories remain rejected. OPA,
 CPA, and DPA do not gain this
 exception.
 
-Authenticated Treehouse ticket launches are a narrower Pi-only specialization.
-For those builder launches, runtime `PA_REPO`, `PA_WORKTREE_ROOT`,
-`repositoryCwd`, and the authenticated Treehouse path all equal the execution
-worktree. Canonical identity remains separate in immutable plan `repoRoot`,
-registry/deployment-context `repo_root`, and repository lease evidence. PPA
-rejects missing, canonical-root, relative, stale, or conflicting Treehouse path
-evidence before Pi/native-host preflight or runtime/child spawn. This does not
-change the canonical `PA_REPO` contract above for ordinary non-Treehouse linked
-worktrees or any non-Pi adapter.
+Authenticated Treehouse ticket launches add lease, ticket, branch, lineage,
+slot, and permit evidence to that Pi-only linked-worktree identity contract.
+Runtime `PA_REPO`, `PA_WORKTREE_ROOT`, `repositoryCwd`, and the authenticated
+Treehouse path all equal the execution worktree. Canonical identity remains
+separate in immutable plan `repoRoot`, registry/deployment-context `repo_root`,
+and repository lease evidence. PPA rejects missing, canonical-root, relative,
+stale, or conflicting Treehouse path evidence before Pi/native-host preflight
+or runtime/child spawn. Non-Pi adapters do not gain linked-worktree admission.
 
 Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
 it bypasses Git status and repository-lease access even when the checkout is dirty

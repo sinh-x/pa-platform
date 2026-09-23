@@ -324,13 +324,17 @@ metadata, and exact membership in the registered primary checkout's physical
 registered primary repository. PA does not create, switch, move, prune, lock, unlock, or
 remove a worktree or branch.
 
-Outside authenticated Treehouse ticket launches, the two roots retain their
-established deliberately different roles:
+For every authenticated linked-worktree launch, the two roots retain deliberately
+different identity domains:
 
-- `repo_root` and `PA_REPO` identify the registered primary repository and remain
-  the trust anchor.
-- `worktree_root`, `PA_WORKTREE_ROOT`, `repositoryCwd`, project and memory access,
-  Git snapshots, and Pi process CWD identify the selected execution worktree.
+- `repo_root` identifies the registered primary repository and remains the
+  canonical trust anchor.
+- `worktree_root`, `PA_REPO`, `PA_WORKTREE_ROOT`, `repositoryCwd`, registry
+  `repo`, project and memory access, Git snapshots, and Pi process CWD identify
+  the selected execution worktree.
+- Canonical registry/configuration evidence is compared only with the registered
+  key/root pair. Runtime evidence is compared only with authenticated
+  `worktree_root`; the two roots are not required to be the same path.
 - Explicit `--repo <registered-key-or-primary-path>` ordinarily executes at the
   primary root, even when invoked from a linked worktree. The sole exception is
   the authenticated direct background PPA `builder/implement` path described
@@ -349,11 +353,10 @@ Sibling worktrees have independent slots. Token-verified transfer, borrowing,
 and cleanup affect only the exact slot and worktree.
 
 Primers, environment, background configuration, registry start events, default
-status detail, and runtime spawn evidence carry both roots. The Treehouse-backed
-builder flow documented above is the narrow exception: there `PA_REPO` is
+status detail, and runtime spawn evidence carry both roots. `PA_REPO` is
 execution-scoped to `worktree_root`, while canonical identity remains
-`repo_root`; ordinary PAP-195 linked-worktree launches keep canonical `PA_REPO`. `ppa status <id>`
-shows `Repo Root`, a distinct `Worktree`, and `Repo Slot` when recorded. OPA,
+`repo_root`. `ppa status <id>` shows `Repo Root`, a distinct `Worktree`, and
+`Repo Slot` when recorded. OPA,
 CPA, and DPA retain their prior repository behavior.
 
 ## Orchestrator Branch Reconciliation

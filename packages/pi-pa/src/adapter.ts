@@ -265,7 +265,7 @@ export function assertPiExecutionRootAgreement(plan: SpawnOpts["executionPlan"],
     if (!exact) throw new Error(treehouseIdentityDiagnostic("PA_REPO, PA_WORKTREE_ROOT, repositoryCwd, and authenticated Treehouse path do not agree exactly"));
     return;
   }
-  if ((env?.["PA_REPO"] !== undefined && env["PA_REPO"] !== plan.repoRoot)
+  if ((env?.["PA_REPO"] !== undefined && env["PA_REPO"] !== plan.worktreeRoot)
     || (env?.["PA_WORKTREE_ROOT"] !== undefined && env["PA_WORKTREE_ROOT"] !== plan.worktreeRoot)) {
     throw new Error("repository-identity: Pi environment roots do not match the immutable execution plan; no runtime was started");
   }
