@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -199,6 +199,86 @@ test("shadow audit is lazy, per occurrence, bounded, schema-versioned, and mode 
   assert.equal(bounded.matchedText.length, 2_000);
   assert.equal(bounded.truncated, true);
   assert.ok(Buffer.byteLength(readFileSync(oversized.path)) <= 16_384);
+});
+
+test("shadow audit rejects links, special files, and replacement targets without modifying them", () => {
+  const cases = ["symlink", "hard-link", "fifo", "directory"] as const;
+  for (const kind of cases) {
+    const dir = mkdtempSync(join(tmpdir(), `pi-shadow-${kind}-`));
+    const audit = new PiRedactionAudit(`d-${kind}`, dir, { warn: () => {} });
+    const externalDir = mkdtempSync(join(tmpdir(), `pi-shadow-${kind}-external-`));
+    const external = join(externalDir, "external-target");
+    writeFileSync(external, "external-content", { mode: 0o640 });
+    if (kind === "symlink") symlinkSync(external, audit.path);
+    else if (kind === "hard-link") linkSync(external, audit.path);
+    else if (kind === "fifo") execFileSync("mkfifo", [audit.path]);
+    else mkdirSync(audit.path);
+
+    assert.equal(audit.observe("terminal", "Bearer rejected-target"), 1);
+    assert.equal(readFileSync(external, "utf8"), "external-content", kind);
+    assert.equal(statSync(external).mode & 0o777, 0o640, kind);
+    if (kind !== "symlink" && kind !== "hard-link") assert.equal(statSync(audit.path).isFile(), false, kind);
+  }
+
+  for (const kind of ["file", "symlink", "hard-link"] as const) {
+    const replacementDir = mkdtempSync(join(tmpdir(), `pi-shadow-replacement-${kind}-`));
+    const replacementAudit = new PiRedactionAudit(`d-replacement-${kind}`, replacementDir, { warn: () => {} });
+    assert.equal(replacementAudit.observe("terminal", "Bearer first-record"), 1);
+    const displaced = join(replacementDir, "displaced-audit");
+    renameSync(replacementAudit.path, displaced);
+    const externalDir = mkdtempSync(join(tmpdir(), `pi-shadow-replacement-${kind}-external-`));
+    const external = join(externalDir, "external-target");
+    writeFileSync(external, "replacement-content", { mode: 0o640 });
+    if (kind === "file") writeFileSync(replacementAudit.path, "replacement-content", { mode: 0o640 });
+    else if (kind === "symlink") symlinkSync(external, replacementAudit.path);
+    else linkSync(external, replacementAudit.path);
+
+    assert.equal(replacementAudit.observe("terminal", "Bearer rejected-replacement"), 1);
+    assert.equal(readFileSync(kind === "file" ? replacementAudit.path : external, "utf8"), "replacement-content", kind);
+    assert.equal(statSync(kind === "file" ? replacementAudit.path : external).mode & 0o777, 0o640, kind);
+    assert.match(readFileSync(displaced, "utf8"), /first-record/, kind);
+    assert.doesNotMatch(readFileSync(displaced, "utf8"), /rejected-replacement/, kind);
+  }
+});
+
+test("newline-free multi-megabyte shadow observation is delivery-equivalent and bounded", () => {
+  const appended: PiRedactionAuditRecord[] = [];
+  const audit = new PiRedactionAudit("d-bounded-stream", mkdtempSync(join(tmpdir(), "pi-shadow-bounded-")), {
+    append: (_path, line) => appended.push(JSON.parse(line) as PiRedactionAuditRecord),
+  });
+  const configured = "configured-stream-value";
+  const longValue = "v".repeat(2_500);
+  const source = [
+    "x".repeat(2 * 1024 * 1024),
+    ` ${configured} `,
+    `to${"ken"} : ${longValue} `,
+    "Bearer stream-bearer-value ",
+    "sk-stream-value ",
+    "thinking_signature=stream-reasoning-value ",
+    "encrypted_content='stream encrypted value' ",
+    `{"author${"ization"}":"stream-keyed-value"} `,
+    "y".repeat(1024 * 1024),
+  ].join("");
+  const delivered: string[] = [];
+  const observer = new StreamingPiRedactionAuditor(audit, "terminal-output", [configured]);
+  for (let offset = 0, width = 1; offset < source.length; width = width % 4093 + 1) {
+    const chunk = source.slice(offset, offset + width);
+    delivered.push(chunk);
+    observer.push(chunk);
+    assert.ok(observer.bufferedCharacterCount <= 20_000, `retained ${observer.bufferedCharacterCount} characters`);
+    offset += chunk.length;
+  }
+  observer.flush();
+
+  assert.equal(delivered.join(""), source);
+  assert.equal(observer.bufferedCharacterCount, 0);
+  for (const ruleId of ["configured-value", "credential-shaped-text", "credential-named-key", "bearer", "sk-value", "reasoning-signature", "encrypted-content"] as const) {
+    assert.equal(appended.filter((record) => record.ruleId === ruleId).length, 1, ruleId);
+  }
+  const oversized = appended.find((record) => record.ruleId === "credential-shaped-text")!;
+  assert.equal(oversized.originalLength, 8 + longValue.length);
+  assert.equal(oversized.matchedText.length, 2_000);
+  assert.equal(oversized.truncated, true);
 });
 
 test("shadow stream observation survives every chunk boundary after original sink delivery", () => {

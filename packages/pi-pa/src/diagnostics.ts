@@ -1,4 +1,4 @@
-import { closeSync, fchmodSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
@@ -6,8 +6,10 @@ export const SECRET_KEY = /token|secret|password|api[_-]?key|authorization/i;
 const MAX_MATCHED_TEXT = 2_000;
 const MAX_RECORD_BYTES = 16_384;
 const MAX_IDENTIFIER = 256;
+const MAX_STREAM_LINE = 8_192;
 const AUDIT_FILE = "pi-redaction-audit.jsonl";
 const warnedAuditSinks = new Set<string>();
+const auditSinkIdentities = new Map<string, { dev: number; ino: number }>();
 
 export type PiRedactionRuleId =
   | "configured-value"
@@ -110,6 +112,10 @@ export class PiRedactionAudit {
     return matches.length;
   }
 
+  recordMatch(surfaceId: string, match: PiRedactionMatch): void {
+    this.persist(surfaceId, match);
+  }
+
   private persist(surfaceId: string, match: PiRedactionMatch): void {
     try {
       const record = boundedAuditRecord({
@@ -148,27 +154,262 @@ export function auditPiValueFromEnvironment(
 
 /** Collects arbitrary chunks while leaving delivery timing and bytes to the caller. */
 export class StreamingPiRedactionAuditor {
-  private carry = "";
+  private line = "";
+  private incremental = false;
+  private readonly matchers: IncrementalRuleMatcher[];
 
   constructor(
     private readonly audit: PiRedactionAudit,
     private readonly surfaceId: string,
     private readonly configured: readonly string[] = [],
-  ) {}
+  ) {
+    const emit = (match: PiRedactionMatch): void => this.audit.recordMatch(this.surfaceId, match);
+    const shapedKeys = ["to" + "ken", "se" + "cret", "pass" + "word", "api_key", "api-key", "apikey", "author" + "ization"];
+    this.matchers = [
+      ...configured.filter(Boolean).map((value) => new LiteralStreamMatcher(value, emit)),
+      new TokenRuleStreamMatcher("credential-shaped-text", shapedKeys, "credential", emit),
+      new TokenRuleStreamMatcher("bearer", ["bearer"], "bearer", emit),
+      new TokenRuleStreamMatcher("sk-value", ["sk-"], "sk", emit),
+      new TokenRuleStreamMatcher("reasoning-signature", ["thinking_signature", "thinking-signature", "thinkingsignature"], "reasoning", emit),
+      new TokenRuleStreamMatcher("encrypted-content", ["encrypted_content", "encrypted-content", "encryptedcontent"], "reasoning", emit),
+      new TokenRuleStreamMatcher("credential-named-key", shapedKeys.map((key) => `"${key}"`), "json", emit),
+    ];
+  }
+
+  /** Number of characters retained by the auditor, excluding caller-owned input chunks. */
+  get bufferedCharacterCount(): number {
+    return this.line.length + this.matchers.reduce((total, matcher) => total + matcher.bufferedCharacterCount, 0);
+  }
 
   push(chunk: string): void {
-    if (!chunk) return;
-    this.carry += chunk;
-    const lines = this.carry.split("\n");
-    this.carry = lines.pop() ?? "";
-    for (const line of lines) this.audit.observe(this.surfaceId, `${line}\n`, this.configured);
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf("\n", offset);
+      const end = newline < 0 ? chunk.length : newline;
+      this.pushLinePart(chunk.slice(offset, end));
+      if (newline < 0) return;
+      if (this.incremental) {
+        this.pushIncremental("\n");
+        for (const matcher of this.matchers) matcher.flush();
+        this.resetIncremental();
+      } else {
+        this.audit.observe(this.surfaceId, `${this.line}\n`, this.configured);
+        this.line = "";
+      }
+      offset = newline + 1;
+    }
   }
 
   flush(): void {
-    if (this.carry) this.audit.observe(this.surfaceId, this.carry, this.configured);
-    this.carry = "";
+    if (this.incremental) {
+      for (const matcher of this.matchers) matcher.flush();
+      this.resetIncremental();
+    } else if (this.line) {
+      this.audit.observe(this.surfaceId, this.line, this.configured);
+      this.line = "";
+    }
+  }
+
+  private pushLinePart(part: string): void {
+    if (!part) return;
+    if (this.incremental) {
+      this.pushIncremental(part);
+      return;
+    }
+    const available = MAX_STREAM_LINE - this.line.length;
+    if (part.length <= available) {
+      this.line += part;
+      return;
+    }
+    this.incremental = true;
+    this.pushIncremental(this.line);
+    this.line = "";
+    this.pushIncremental(part);
+  }
+
+  private pushIncremental(value: string): void {
+    for (const matcher of this.matchers) matcher.push(value);
+  }
+
+  private resetIncremental(): void {
+    for (const matcher of this.matchers) matcher.reset();
+    this.incremental = false;
+    this.line = "";
   }
 }
+
+interface IncrementalRuleMatcher {
+  readonly bufferedCharacterCount: number;
+  push(value: string): void;
+  flush(): void;
+  reset(): void;
+}
+
+class MatchCapture {
+  private text = "";
+  private length = 0;
+
+  get bufferedCharacterCount(): number { return this.text.length; }
+
+  append(value: string): void {
+    this.length += value.length;
+    if (this.text.length < MAX_MATCHED_TEXT) this.text += value.slice(0, MAX_MATCHED_TEXT - this.text.length);
+  }
+
+  match(ruleId: PiRedactionRuleId): PiRedactionMatch {
+    return { ruleId, matchedText: this.text, originalLength: this.length, truncated: this.length > MAX_MATCHED_TEXT };
+  }
+}
+
+class LiteralStreamMatcher implements IncrementalRuleMatcher {
+  private tail = "";
+
+  constructor(private readonly literal: string, private readonly emit: (match: PiRedactionMatch) => void) {}
+
+  get bufferedCharacterCount(): number { return this.tail.length; }
+
+  push(value: string): void {
+    for (const character of value) {
+      this.tail += character;
+      while (this.tail && !this.literal.startsWith(this.tail)) this.tail = this.tail.slice(1);
+      if (this.tail === this.literal) {
+        this.emit(toMatch("configured-value", this.literal));
+        this.tail = "";
+      }
+    }
+  }
+
+  flush(): void { this.tail = ""; }
+  reset(): void { this.tail = ""; }
+}
+
+type TokenRuleKind = "credential" | "bearer" | "sk" | "reasoning" | "json";
+type TokenRuleState = "prefix" | "after-key" | "spacing" | "after-delimiter" | "value" | "quoted-value";
+
+class TokenRuleStreamMatcher implements IncrementalRuleMatcher {
+  private candidate = "";
+  private state: TokenRuleState = "prefix";
+  private capture: MatchCapture | undefined;
+  private quote = "";
+  private escaped = false;
+
+  constructor(
+    private readonly ruleId: PiRedactionRuleId,
+    private readonly keywords: readonly string[],
+    private readonly kind: TokenRuleKind,
+    private readonly emit: (match: PiRedactionMatch) => void,
+  ) {}
+
+  get bufferedCharacterCount(): number {
+    return this.candidate.length + (this.capture?.bufferedCharacterCount ?? 0);
+  }
+
+  push(value: string): void {
+    for (const character of value) this.consume(character);
+  }
+
+  flush(): void {
+    if (this.capture && (this.state === "value" || this.state === "quoted-value")) this.finish();
+    this.reset();
+  }
+
+  reset(): void {
+    this.candidate = "";
+    this.state = "prefix";
+    this.capture = undefined;
+    this.quote = "";
+    this.escaped = false;
+  }
+
+  private consume(character: string): void {
+    let reprocess = true;
+    while (reprocess) {
+      reprocess = false;
+      if (this.state === "prefix") {
+        this.consumePrefix(character);
+      } else if (this.state === "after-key") {
+        if (this.kind === "sk") {
+          if (isWordOrHyphen(character)) { this.capture!.append(character); this.state = "value"; }
+          else { this.abandon(); reprocess = true; }
+        } else if (this.kind === "bearer") {
+          if (isWhitespace(character)) { this.capture!.append(character); this.state = "spacing"; }
+          else { this.abandon(); reprocess = true; }
+        } else if (this.kind === "credential" || this.kind === "json") {
+          if (isWhitespace(character)) { this.capture!.append(character); this.state = "spacing"; }
+          else if (character === ":" || (this.kind === "credential" && character === "=")) { this.capture!.append(character); this.state = "after-delimiter"; }
+          else { this.abandon(); reprocess = true; }
+        } else if (character === "\"" || character === "'") {
+          this.capture!.append(character);
+          this.state = "spacing";
+        } else {
+          this.state = "spacing";
+          reprocess = true;
+        }
+      } else if (this.state === "spacing") {
+        if (this.kind === "reasoning" || this.kind === "json") {
+          if (isWhitespace(character)) this.capture!.append(character);
+          else if (character === ":" || (this.kind === "reasoning" && character === "=")) { this.capture!.append(character); this.state = "after-delimiter"; }
+          else { this.abandon(); reprocess = true; }
+        } else if (isWhitespace(character)) {
+          this.capture!.append(character);
+        } else if (this.kind === "credential" && (character === ":" || character === "=")) {
+          this.capture!.append(character);
+          this.state = "after-delimiter";
+        } else {
+          this.capture!.append(character);
+          this.state = "value";
+        }
+      } else if (this.state === "after-delimiter") {
+        if (isWhitespace(character)) this.capture!.append(character);
+        else if ((this.kind === "reasoning" || this.kind === "json") && (character === "\"" || character === "'")) {
+          this.capture!.append(character);
+          this.quote = character;
+          this.state = "quoted-value";
+        } else {
+          this.capture!.append(character);
+          this.state = "value";
+        }
+      } else if (this.state === "value") {
+        const continues = this.kind === "sk" ? isWordOrHyphen(character) : !isWhitespace(character);
+        if (continues) this.capture!.append(character);
+        else { this.finish(); reprocess = true; }
+      } else if (this.state === "quoted-value") {
+        this.capture!.append(character);
+        if (this.escaped) this.escaped = false;
+        else if (character === "\\") this.escaped = true;
+        else if (character === this.quote) this.finish();
+      }
+    }
+  }
+
+  private consumePrefix(character: string): void {
+    this.candidate += character;
+    while (this.candidate && !this.keywords.some((keyword) => keyword.startsWith(this.candidate.toLowerCase()))) this.candidate = this.candidate.slice(1);
+    if (!this.keywords.includes(this.candidate.toLowerCase())) return;
+    this.capture = new MatchCapture();
+    this.capture.append(this.candidate);
+    this.candidate = "";
+    this.state = "after-key";
+  }
+
+  private finish(): void {
+    if (this.capture) this.emit(this.capture.match(this.ruleId));
+    this.capture = undefined;
+    this.state = "prefix";
+    this.quote = "";
+    this.escaped = false;
+  }
+
+  private abandon(): void {
+    this.capture = undefined;
+    this.state = "prefix";
+    this.quote = "";
+    this.escaped = false;
+  }
+}
+
+function isWhitespace(value: string): boolean { return /\s/u.test(value); }
+function isWordOrHyphen(value: string): boolean { return /[\w-]/u.test(value); }
 
 /** Streams Pi output unchanged across arbitrary callback boundaries. */
 export class StreamingRedactor {
@@ -310,12 +551,61 @@ function boundedIdentifier(value: string): string {
 }
 
 function appendAuditLine(path: string, line: string): void {
-  const descriptor = openSync(path, "a", 0o600);
+  const descriptor = openAuditDescriptor(path);
   try {
+    const identity = validateAuditDescriptor(path, descriptor);
+    auditSinkIdentities.set(path, identity);
     fchmodSync(descriptor, 0o600);
+    validateAuditDescriptor(path, descriptor, true);
     writeFileSync(descriptor, line, { encoding: "utf8" });
-    fchmodSync(descriptor, 0o600);
+    validateAuditDescriptor(path, descriptor, true);
   } finally {
     closeSync(descriptor);
   }
+}
+
+function openAuditDescriptor(path: string): number {
+  const expected = auditSinkIdentities.get(path);
+  if (expected) {
+    let pathStat;
+    try { pathStat = lstatSync(path); }
+    catch { throw new Error("audit path disappeared after first append"); }
+    if (pathStat.dev !== expected.dev || pathStat.ino !== expected.ino) throw new Error("audit path identity changed after first append");
+  }
+  const noFollow = fsConstants.O_NOFOLLOW;
+  if (typeof noFollow !== "number") throw new Error("no-follow audit append is unavailable");
+  const common = fsConstants.O_WRONLY | fsConstants.O_APPEND | noFollow | fsConstants.O_NONBLOCK;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return openSync(path, common | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        if (code === "ENOENT") continue;
+        throw error;
+      }
+    }
+    const pathStat = lstatSync(path);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1) throw new Error("audit path is not a single-link regular file");
+    try {
+      return openSync(path, common);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  throw new Error("audit path changed during open");
+}
+
+function validateAuditDescriptor(path: string, descriptor: number, requireMode = false): { dev: number; ino: number } {
+  const descriptorStat = fstatSync(descriptor);
+  if (!descriptorStat.isFile() || descriptorStat.nlink !== 1) throw new Error("audit descriptor is not a single-link regular file");
+  if (requireMode && (descriptorStat.mode & 0o777) !== 0o600) throw new Error("audit descriptor mode is not 0600");
+  const pathStat = lstatSync(path);
+  if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.dev !== descriptorStat.dev || pathStat.ino !== descriptorStat.ino) {
+    throw new Error("audit path was replaced during append");
+  }
+  const expected = auditSinkIdentities.get(path);
+  if (expected && (expected.dev !== descriptorStat.dev || expected.ino !== descriptorStat.ino)) throw new Error("audit descriptor identity changed after first append");
+  return { dev: descriptorStat.dev, ino: descriptorStat.ino };
 }
