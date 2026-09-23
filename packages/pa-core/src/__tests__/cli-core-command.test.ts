@@ -1866,6 +1866,120 @@ test("runCoreCommand exposes ticket and bulletin commands", async () => {
   });
 });
 
+test("ticket list defaults to active tickets and --all composes every explicit filter without duplicate IDs", async () => {
+  await withCliEnv(async (root) => {
+    const ticketsDir = join(root, "tickets");
+    mkdirSync(ticketsDir, { recursive: true });
+    const fixtures = [
+      { id: "PAP-001", project: "pa-platform", title: "Needle active", summary: "Alpha", status: "implementing", priority: "high", type: "feature", assignee: "builder/team-manager", tags: ["target", "green"] },
+      { id: "PAP-002", project: "pa-platform", title: "Archived target", summary: "Beta", status: "done", priority: "low", type: "bug", assignee: "sinh", tags: ["archived", "target", "red"] },
+      { id: "PAP-003", project: "pa-platform", title: "Backlog target", summary: "Gamma", status: "pending-implementation", priority: "medium", type: "task", assignee: "builder/reviewer", tags: ["backlog", "target"] },
+      { id: "PAP-004", project: "pa-platform", title: "Terminal target", summary: "Delta", status: "done", priority: "critical", type: "work-report", assignee: "requirements/analyst", tags: ["target"] },
+      { id: "OTH-001", project: "other", title: "Other active", summary: "Epsilon", status: "idea", priority: "high", type: "question", assignee: "builder/analyst", tags: ["blue"] },
+    ] as const;
+    fixtures.forEach((fixture, index) => writeFileSync(join(ticketsDir, `${fixture.id}.json`), JSON.stringify({
+      ...fixture,
+      createdAt: `2026-09-22T00:00:0${index}.000Z`,
+      updatedAt: `2026-09-22T00:00:0${index}.000Z`,
+    })));
+    writeFileSync(join(ticketsDir, "legacy-alias.json"), JSON.stringify({ _alias: true, movedTo: "PAP-001" }));
+
+    const listJson = async (...args: string[]): Promise<Array<{ id: string }>> => {
+      const captured = capture();
+      assert.equal(await runCoreCommand(["ticket", "list", ...args, "--json"], { io: captured.io }), 0);
+      assert.deepEqual(captured.stderr, []);
+      const tickets = JSON.parse(captured.stdout.join("\n")) as Array<{ id: string }>;
+      assert.equal(new Set(tickets.map((ticket) => ticket.id)).size, tickets.length, `duplicate IDs for ${args.join(" ") || "defaults"}`);
+      return tickets;
+    };
+    const ids = (tickets: Array<{ id: string }>): string[] => tickets.map((ticket) => ticket.id).sort();
+
+    assert.deepEqual(ids(await listJson()), ["OTH-001", "PAP-001"]);
+    assert.deepEqual(ids(await listJson("--status", "done")), ["PAP-004"], "explicit status replaces only the active-status default");
+    assert.deepEqual(ids(await listJson("--all")), ["OTH-001", "PAP-001", "PAP-002", "PAP-003", "PAP-004"]);
+
+    const composedCases: Array<{ args: string[]; expected: string[] }> = [
+      { args: ["--project", "other"], expected: ["OTH-001"] },
+      { args: ["--status", "done"], expected: ["PAP-002", "PAP-004"] },
+      { args: ["--assignee", "builder"], expected: ["OTH-001", "PAP-001", "PAP-003"] },
+      { args: ["--priority", "low"], expected: ["PAP-002"] },
+      { args: ["--type", "question"], expected: ["OTH-001"] },
+      { args: ["--tags", "red"], expected: ["PAP-002"] },
+      { args: ["--exclude-tags", "target"], expected: ["OTH-001"] },
+      { args: ["--search", "Needle"], expected: ["PAP-001"] },
+      { args: ["--archived", "--tags", "target"], expected: ["PAP-002"] },
+    ];
+    for (const scenario of composedCases) {
+      assert.deepEqual(ids(await listJson("--all", ...scenario.args)), scenario.expected, scenario.args.join(" "));
+    }
+  });
+});
+
+test("ticket help flags win before validation for every subcommand", async () => {
+  await withCliEnv(async () => {
+    const cases: Array<{ command: string[]; usage: RegExp }> = [
+      { command: ["list"], usage: /Usage: ticket list/ },
+      { command: ["show"], usage: /Usage: ticket show/ },
+      { command: ["create"], usage: /Usage: ticket create/ },
+      { command: ["update"], usage: /Usage: ticket update/ },
+      { command: ["comment"], usage: /Usage: ticket comment/ },
+      { command: ["attach"], usage: /Usage: ticket attach/ },
+      { command: ["move"], usage: /Usage: ticket move/ },
+      { command: ["delete"], usage: /Usage: ticket delete/ },
+      { command: ["archive"], usage: /Usage: ticket archive/ },
+      { command: ["unarchive"], usage: /Usage: ticket unarchive/ },
+      { command: ["check-refs"], usage: /Usage: ticket check-refs/ },
+      { command: ["subticket"], usage: /Usage: ticket subticket <subcommand>/ },
+      { command: ["subticket", "create"], usage: /Usage: ticket subticket create/ },
+      { command: ["subticket", "list"], usage: /Usage: ticket subticket list/ },
+      { command: ["subticket", "update"], usage: /Usage: ticket subticket update/ },
+      { command: ["subticket", "complete"], usage: /Usage: ticket subticket complete/ },
+    ];
+
+    for (const flag of ["--help", "-h"]) {
+      for (const scenario of cases) {
+        const captured = capture();
+        assert.equal(await runCoreCommand(["ticket", ...scenario.command, flag], { io: captured.io }), 0, `${scenario.command.join(" ")} ${flag}`);
+        assert.match(captured.stdout.join("\n"), scenario.usage);
+        assert.deepEqual(captured.stderr, []);
+      }
+    }
+
+    const helpAfterIncompleteFlag = capture();
+    assert.equal(await runCoreCommand(["ticket", "comment", "PAP-404", "--author", "--help"], { io: helpAfterIncompleteFlag.io }), 0);
+    assert.match(helpAfterIncompleteFlag.stdout.join("\n"), /Usage: ticket comment/);
+    assert.deepEqual(helpAfterIncompleteFlag.stderr, []);
+  });
+});
+
+test("concurrent ticket comments remain serialized while show and list remain read-only", async () => {
+  await withCliEnv(async () => {
+    const store = new TicketStore();
+    const ticket = store.create({ project: "pa-platform", title: "Serialization target", summary: "Summary", description: "", status: "implementing", priority: "high", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const beforeReads = store.get(ticket.id);
+    const auditBeforeReads = store.readAudit();
+
+    const show = capture();
+    const list = capture();
+    assert.deepEqual(await Promise.all([
+      runCoreCommand(["ticket", "show", ticket.id], { io: show.io }),
+      runCoreCommand(["ticket", "list", "--all", "--search", ticket.id], { io: list.io }),
+    ]), [0, 0]);
+    assert.deepEqual(store.get(ticket.id), beforeReads);
+    assert.deepEqual(store.readAudit(), auditBeforeReads);
+
+    const first = capture();
+    const second = capture();
+    assert.deepEqual(await Promise.all([
+      runCoreCommand(["ticket", "comment", ticket.id, "--author", "first", "--content", "First serialized comment"], { io: first.io }),
+      runCoreCommand(["ticket", "comment", ticket.id, "--author", "second", "--content", "Second serialized comment"], { io: second.io }),
+    ]), [0, 0]);
+    const afterComments = store.get(ticket.id)!;
+    assert.deepEqual(afterComments.comments.map((comment) => comment.content), ["First serialized comment", "Second serialized comment"]);
+    assert.equal(store.readAudit().filter((entry) => entry.action === "commented").length, 2);
+  });
+});
+
 test("runCoreCommand infers ticket project from CWD", async () => {
   await withCliEnv(async (root) => {
     const repo = join(root, "repo");
