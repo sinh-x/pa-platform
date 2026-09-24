@@ -143,6 +143,7 @@ for variant in "${variant_names[@]}"; do
   done
   for artifact in \
     "$package_root/package.json" \
+    "$package_root/dist/diagnostics.js" \
     "$package_root/dist/pi-extension/index.js" \
     "$package_root/dist/pi-extension/vendor/provenance.json" \
     "$package_root/THIRD_PARTY_NOTICES.md" \
@@ -154,6 +155,28 @@ for variant in "${variant_names[@]}"; do
     "$store_output/share/fish/vendor_completions.d/ppa.fish"; do
     test -f "$artifact"
   done
+
+  audit_dir="$smoke_root/$variant-shadow-audit"
+  mkdir -m 700 "$audit_dir"
+  PACKAGE_ROOT="$package_root" AUDIT_DIR="$audit_dir" VARIANT="$variant" \
+    "$store_output/bin/pa-platform-node" --input-type=module --eval '
+      const { existsSync, readFileSync, statSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const diagnostics = await import(join(process.env.PACKAGE_ROOT, "dist/diagnostics.js"));
+      const audit = new diagnostics.PiRedactionAudit(`d-nix-${process.env.VARIANT}`, process.env.AUDIT_DIR);
+      const path = join(process.env.AUDIT_DIR, "pi-redaction-audit.jsonl");
+      if (audit.observe("installed-no-match", "ordinary installed text") !== 0 || existsSync(path)) process.exit(1);
+      const keyed = { authorization: "synthetic-installed-keyed-value" };
+      const before = structuredClone(keyed);
+      if (audit.observe("installed-create", keyed) !== 1 || JSON.stringify(keyed) !== JSON.stringify(before)) process.exit(1);
+      if (!existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) process.exit(1);
+      const bearer = "Bearer synthetic-installed-bearer-value";
+      if (diagnostics.redactDiagnostic(bearer) !== bearer || audit.observe("installed-append", bearer) !== 1) process.exit(1);
+      if ((statSync(path).mode & 0o777) !== 0o600) process.exit(1);
+      const records = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
+      if (records.length !== 2 || records[0].schemaVersion !== 1 || records[0].surfaceId !== "installed-create" || records[0].ruleId !== "credential-named-key") process.exit(1);
+      if (records[1].schemaVersion !== 1 || records[1].surfaceId !== "installed-append" || records[1].ruleId !== "bearer") process.exit(1);
+    '
 
   PACKAGE_ROOT="$package_root" EXPECTED_VIM="$expected_vim" EXPECTED_PROPER="$expected_proper" \
     "$store_output/bin/pa-platform-node" --input-type=module --eval '

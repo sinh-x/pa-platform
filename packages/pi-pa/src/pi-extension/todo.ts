@@ -20,6 +20,7 @@ import {
   type DeploymentTaskStatus,
 } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
+import { auditPiValueFromEnvironment } from "../diagnostics.js";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
@@ -264,13 +265,16 @@ export function createTodoSnapshotPublisher(store: TodoStore, options: TodoModul
       const diagnostic = boundedSnapshotDiagnostic(error, env);
       try {
         const activityPath = env["PA_ACTIVITY_LOG"]?.trim() || resolve(deploymentDir, "activity.jsonl");
-        (options.appendActivity ?? appendActivityEvent)(createActivityEvent({
+        const event = createActivityEvent({
           deployId: deploymentId,
           kind: "error",
           source: "pi",
           body: diagnostic,
           partType: "task_snapshot_persistence",
-        }), activityPath);
+        });
+        (options.appendActivity ?? appendActivityEvent)(event, activityPath);
+        auditPiValueFromEnvironment(env, "activity", event);
+        auditPiValueFromEnvironment(env, "todo-diagnostic", diagnostic);
       } catch {
         // Snapshot evidence is best-effort and must never terminate the session.
       }

@@ -592,7 +592,7 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
 
 test("runner failure replaces premature agent success once and keeps process category bounded", async () => {
   await withRunnerEnv(async (_root, deployDir, config) => {
-    const secret = "runner-sensitive-sentinel";
+    const secret = "token=synthetic-runner-value";
     const child = new RunnerChild();
     appendRegistryEvent({ deployment_id: config.deploymentId, team: config.team, event: "completed", timestamp: "2026-08-29T00:00:01.000Z", status: "success", summary: "agent claimed success", exit_code: 0 });
     const running = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => child as never) as never } });
@@ -610,6 +610,11 @@ test("runner failure replaces premature agent success once and keeps process cat
     assert.ok((terminal[0]?.summary ?? "").length <= 2000);
     assert.equal(readPiTerminalStatus(deployDir)?.stopReason, "error");
     assert.equal(readPiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE))?.terminalStatus, "failed");
+    const audit = readFileSync(join(deployDir, "pi-redaction-audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { surfaceId: string; ruleId: string });
+    for (const surface of ["pi-log", "activity", "background-diagnostic", "registry-diagnostic", "terminal-status"]) assert.ok(audit.some((record) => record.surfaceId === surface), surface);
+    assert.equal(audit.filter((record) => record.surfaceId === "background-diagnostic").length, 1);
+    assert.ok(audit.every((record) => record.ruleId === "credential-shaped-text"));
+    assert.equal(statSync(join(deployDir, "pi-redaction-audit.jsonl")).mode & 0o777, 0o600);
   });
 });
 

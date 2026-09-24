@@ -300,13 +300,16 @@ test("wrong ABI or V8 symbol diagnostics are bounded and preserve original conte
   writeFileSync(join(bin, "node"), `#!/bin/sh\nprintf '%s\\n' 'undefined symbol: _ZN2v8Synthetic ${secret} ${"x".repeat(3000)}' >&2\nexit 1\n`);
   for (const path of [join(bin, "pi"), join(bin, ".pi-wrapped"), join(bin, "node")]) chmodSync(path, 0o755);
   try {
+    const env = {
+      PATH: bin,
+      PA_DEPLOYMENT_ID: "d-native-audit",
+      PA_DEPLOYMENT_DIR: root,
+      [PI_REGISTRY_ADDON_ENV]: addon,
+      [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
+      PAP_156_NATIVE_TOKEN: secret,
+    };
     assert.throws(
-      () => probePiNativeRegistryAddon({
-        PATH: bin,
-        [PI_REGISTRY_ADDON_ENV]: addon,
-        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
-        PAP_156_NATIVE_TOKEN: secret,
-      }),
+      () => probePiNativeRegistryAddon(env),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /^native-load: undefined symbol:/);
@@ -315,6 +318,8 @@ test("wrong ABI or V8 symbol diagnostics are bounded and preserve original conte
         return true;
       },
     );
+    const audit = readFileSync(join(root, "pi-redaction-audit.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { surfaceId: string; ruleId: string; matchedText: string });
+    assert.ok(audit.some((record) => record.surfaceId === "native-host-diagnostic" && record.ruleId === "configured-value" && record.matchedText === secret));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

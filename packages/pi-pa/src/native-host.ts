@@ -2,6 +2,7 @@ import { constants, accessSync, existsSync, readFileSync, realpathSync } from "n
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { auditPiValueFromEnvironment } from "./diagnostics.js";
 
 export const PI_REGISTRY_ADDON_ENV = "PA_PI_SQLITE_NATIVE_BINDING";
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
@@ -140,9 +141,12 @@ function readBoundedWrapper(path: string): string {
   return body.toString("utf8");
 }
 
-function nativeLoadError(message: string, _env: NodeJS.ProcessEnv, _secretValues: string[]): Error {
+function nativeLoadError(message: string, env: NodeJS.ProcessEnv, secretValues: string[]): Error {
   const diagnostic = `native-load: ${message.replace(/^native-load:\s*/, "")}`;
-  return new Error(diagnostic.length > HOST_DIAGNOSTIC_MAX ? `${diagnostic.slice(0, HOST_DIAGNOSTIC_MAX - 3)}...` : diagnostic);
+  const bounded = diagnostic.length > HOST_DIAGNOSTIC_MAX ? `${diagnostic.slice(0, HOST_DIAGNOSTIC_MAX - 3)}...` : diagnostic;
+  const error = new Error(bounded);
+  auditPiValueFromEnvironment(env, "native-host-diagnostic", bounded, secretValues);
+  return error;
 }
 
 function parseJsonLine<T>(output: string, failure: string): T {

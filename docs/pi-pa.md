@@ -534,8 +534,31 @@ text, credential-named fields, and reasoning metadata such as signatures or
 encrypted content. Operators must therefore treat every Pi deployment artifact
 and rendered Pi stream as potentially sensitive. This behavior has no feature
 flag or automatic restoration; changing it requires a separate approved change.
-Existing output bounds, artifact retention, and access controls remain in force,
-and filtering owned by shared `pa-core` or other runtime adapters is unchanged.
+Existing numeric sink bounds remain unchanged: normalized activity bodies are at
+most 500 characters, and terminal and failure diagnostics are at most 2,000
+characters. Artifact retention and access controls remain in force, and
+filtering owned by shared `pa-core` or other runtime adapters is unchanged.
+
+Pi runs the detector rules removed from the output path in shadow mode. Every
+configured-value, credential-shaped text, credential-named key, bearer, `sk-`
+value, reasoning-signature, and encrypted-content match is appended once per
+observed Pi surface occurrence to
+`$PA_DEPLOYMENT_DIR/pi-redaction-audit.jsonl`. Each schema-version-1 record
+contains `schemaVersion`, ISO `timestamp`, `deploymentId`, `surfaceId`, stable
+`ruleId`, `originalLength`, `matchedText`, and `truncated`. `matchedText` is
+limited to 2,000 JavaScript string characters and each UTF-8 JSONL record is at
+most 16,384 bytes. The file is created lazily on the first match and remains mode
+`0600` after creation and every append; a zero-match deployment creates no file.
+Because records intentionally retain the matched text, operators must protect
+this audit with the same care as all other Pi artifacts. The original sink
+receives its content before audit persistence. Audit creation or append failure
+emits at most one non-sensitive warning of at most 2,000 characters per failing
+deployment-local sink, and never changes output, blocks the session, or feeds the
+warning back through detection. The audit covers
+Pi terminal output, logs, structured output, activity, terminal sidecars,
+deploy/background/native-host diagnostics, extension diagnostics, and todo
+persistence diagnostics. It does not alter non-Pi runtimes or shared `pa-core`
+policy.
 
 The trusted PA extension writes each terminal `agent_end` result to an atomic,
 permission-restricted `pi-terminal-status.json` side channel in the deployment

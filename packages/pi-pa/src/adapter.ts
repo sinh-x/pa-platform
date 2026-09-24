@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
@@ -206,9 +207,23 @@ export class PiAdapter implements RuntimeAdapter {
   allocateSessionId(): string { return this.sessionIdFactory(); }
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
+    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    const protectedAuthority = [opts.repositoryLease?.ownershipToken, opts.repositoryBorrower?.borrowerToken].filter((value): value is string => Boolean(value));
+    const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
+    const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));
     try { assertPiExecutionRootAgreement(plan, opts.env); }
-    catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
-    try { await this.preflight(); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const result = failure(message);
+      audit.observe("adapter-diagnostic", message, secrets);
+      return result;
+    }
+    try { await this.preflight(); } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const result = failure(message);
+      audit.observe("native-host-diagnostic", message, secrets);
+      return result;
+    }
     finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
     const interactive = opts.mode === "foreground";
@@ -223,9 +238,7 @@ export class PiAdapter implements RuntimeAdapter {
       if (plan.trustedExtension) args.push("--extension", plan.trustedExtension);
     }
     args.push(readFileSync(opts.primerPath, "utf8"));
-    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
     const piEnv = piRegistryEnvironment(env);
-    const secrets = [...this.secretValues];
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
@@ -235,16 +248,22 @@ export class PiAdapter implements RuntimeAdapter {
           ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision })
           : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision);
     if (this.runCommand && !interactive) {
-      result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets) };
+      result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets, audit) };
     }
     const cleanupUnverified = result.metadata?.["cleanupVerified"] === false;
     if (result.status !== 0 || result.spawnError || cleanupUnverified) {
       const exitCode = result.status === 0 ? 1 : result.status ?? 1;
       const message = tail(result.stderr || result.spawnError?.message || (cleanupUnverified ? "Pi cleanup failed: PTY child exit was not verified" : `pi exited with code ${exitCode}`), MAX_STDERR);
-      return { sessionId: id, exitCode, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+      const failureResult = { sessionId: id, exitCode, logFile: opts.logFile, errorMessage: message, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+      audit.observe("adapter-diagnostic", message, secrets);
+      return failureResult;
     }
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
-    if (terminalError) return { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+    if (terminalError) {
+      const failureResult = { sessionId: id, exitCode: 1, logFile: opts.logFile, errorMessage: terminalError, metadata: { ...(result.metadata ?? {}), sessionId: id } };
+      audit.observe("adapter-diagnostic", terminalError, secrets);
+      return failureResult;
+    }
     return { sessionId: id, exitCode: 0, logFile: opts.logFile, metadata: { ...(result.metadata ?? {}), sessionId: id } };
   }
 }
@@ -341,9 +360,12 @@ function parseSourcePiHostEvidence(output: string): PiNativeHostEvidence | undef
   return evidence as unknown as PiNativeHostEvidence;
 }
 
-function sourceNativeProbeError(message: string, _env: NodeJS.ProcessEnv, _secretValues: string[]): Error {
+function sourceNativeProbeError(message: string, env: NodeJS.ProcessEnv, secretValues: string[]): Error {
   const diagnostic = `native-load: ${message.replace(/^native-load:\s*/, "")}`;
-  return new Error(diagnostic.length > MAX_STDERR ? `${diagnostic.slice(0, MAX_STDERR - 3)}...` : diagnostic);
+  const bounded = diagnostic.length > MAX_STDERR ? `${diagnostic.slice(0, MAX_STDERR - 3)}...` : diagnostic;
+  const error = new Error(bounded);
+  auditPiValueFromEnvironment(env, "native-host-diagnostic", bounded, secretValues);
+  return error;
 }
 
 export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
@@ -545,7 +567,8 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const groupGone = supervision.processGroupGone ?? ((pid: number) => processGroupGone(pid));
   const injectedPersist = supervision.persistLine;
   const projector = new PiActivityProjector(opts.deployId, secrets);
-  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector);
+  const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));
+  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector, audit);
   const writeLog = supervision.writeLog ?? writeFileSync;
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
@@ -587,7 +610,11 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       if (settled || cleanupPending) return;
       try {
         if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
-        if (opts.logFile) writeLog(opts.logFile, stdout + stderr, "utf8");
+        if (opts.logFile) {
+          const log = stdout + stderr;
+          writeLog(opts.logFile, log, "utf8");
+          audit.observe("pi-log", log, secrets);
+        }
         terminalError ||= protocol.diagnostic();
         settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
@@ -930,7 +957,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const outputPath = resolve(deployDir, "pi-output.jsonl");
   const injectedPersist = supervision.persistLine;
   const projector = new PiActivityProjector(opts.deployId, secrets);
-  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector);
+  const audit = new PiRedactionAudit(opts.deployId, deployDir);
+  const persist = (line: string, path: string): void => injectedPersist ? injectedPersist(line, path, opts.deployId, secrets) : persistLine(line, path, opts.deployId, secrets, projector, audit);
   const appendLog = supervision.appendLog ?? appendFileSync;
   const now = supervision.now ?? Date.now;
   const interruptNow = supervision.interruptNow ?? (() => performance.now());
@@ -943,6 +971,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const previousFlowing = input.readableFlowing;
   let inputFlowOwned = false;
   const appendForegroundLog = opts.logFile ? (value: string): void => appendLog(opts.logFile!, value, "utf8") : undefined;
+  const terminalAudit = new StreamingPiRedactionAuditor(audit, "terminal-output", secrets);
+  const logAudit = opts.logFile ? new StreamingPiRedactionAuditor(audit, "pi-log", secrets) : undefined;
 
   return new Promise((resolveResult) => {
     const restoreTerminal = (): Error | undefined => {
@@ -970,11 +1000,14 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (evidenceFinished) return;
       evidenceFinished = true;
       if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
+      terminalAudit.flush();
+      logAudit?.flush();
       const status = readPiTerminalStatus(deployDir);
       if (status) {
         const record = status as unknown as Record<string, unknown>;
         terminalError ||= terminalErrorFromValue(record, secrets);
         persist(JSON.stringify(status), outputPath);
+        audit.observe("terminal-status", status, secrets);
       }
     };
     const finishCleanup = (): void => {
@@ -1110,7 +1143,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const onData = (chunk: string): void => {
       if (settled || cleanupPending) return;
       try {
-        stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY); output.write(chunk); appendForegroundLog?.(chunk);
+        stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY);
+        deliverToPiSinkThenObserve(chunk, (original) => { output.write(original); appendForegroundLog?.(original); }, (original) => { terminalAudit.push(original); logAudit?.push(original); });
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
         for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
@@ -1128,8 +1162,41 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
 }
-function persistLine(line: string, path: string, deployId: string, _secrets: string[], projector: PiActivityProjector): void { if (!line.trim()) return; mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${line}\n`); for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(deployId).activityLogPath); }
-function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[]): Record<string, unknown> { const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl"); mkdirSync(dirname(outputPath), { recursive: true }); const lines = stdout.split("\n").filter(Boolean); writeFileSync(outputPath, lines.join("\n") + (stdout ? "\n" : ""), "utf8"); const projector = new PiActivityProjector(opts.deployId, secrets); for (const line of lines) for (const event of projector.observeLine(line)) appendActivityEvent(event, getDeployPaths(opts.deployId).activityLogPath); if (opts.logFile) writeFileSync(opts.logFile, stdout + stderr, "utf8"); const protocol = new PiToolProtocolInspector(); for (const line of lines) observeProtocolLine(protocol, line); const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic(); return terminalError ? { terminalError: tail(terminalError, MAX_STDERR) } : {}; }
+function deliverToPiSinkThenObserve(value: string, sink: (original: string) => void, observe: (original: string) => void): void {
+  sink(value);
+  try { observe(value); } catch { /* The audit observer is never a delivery or lifecycle gate. */ }
+}
+function persistLine(line: string, path: string, deployId: string, secrets: string[], projector: PiActivityProjector, audit: PiRedactionAudit): void {
+  if (!line.trim()) return;
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${line}\n`);
+  audit.observe("pi-output", line, secrets);
+  for (const event of projector.observeLine(line)) {
+    appendActivityEvent(event, getDeployPaths(deployId).activityLogPath);
+    audit.observe("activity", event, secrets);
+  }
+}
+function persistOutput(opts: SpawnOpts, stdout: string, stderr: string, secrets: string[], audit: PiRedactionAudit): Record<string, unknown> {
+  const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const lines = stdout.split("\n").filter(Boolean);
+  writeFileSync(outputPath, lines.join("\n") + (stdout ? "\n" : ""), "utf8");
+  for (const line of lines) audit.observe("pi-output", line, secrets);
+  const projector = new PiActivityProjector(opts.deployId, secrets);
+  for (const line of lines) for (const event of projector.observeLine(line)) {
+    appendActivityEvent(event, getDeployPaths(opts.deployId).activityLogPath);
+    audit.observe("activity", event, secrets);
+  }
+  if (opts.logFile) {
+    const log = stdout + stderr;
+    writeFileSync(opts.logFile, log, "utf8");
+    audit.observe("pi-log", log, secrets);
+  }
+  const protocol = new PiToolProtocolInspector();
+  for (const line of lines) observeProtocolLine(protocol, line);
+  const terminalError = lines.map((line) => terminalErrorFromLine(line, secrets)).find(Boolean) || protocol.diagnostic();
+  return terminalError ? { terminalError: tail(terminalError, MAX_STDERR) } : {};
+}
 function failure(message: string): SpawnResult { return { exitCode: 1, errorMessage: message }; }
 function terminalErrorFromLine(line: string, secrets: string[]): string { try { return terminalErrorFromValue(JSON.parse(line) as Record<string, unknown>, secrets); } catch { return ""; } }
 function terminalErrorFromValue(value: Record<string, unknown>, _secrets: string[]): string { const stopReason = value.stopReason ?? value.stop_reason; const type = String(value.type ?? value.event ?? value.kind ?? "").toLowerCase(); const hasError = typeof value.error === "string" || typeof value.errorMessage === "string" || typeof value.error_message === "string"; if (stopReason !== "error" && !(hasError && /agent_end|turn_end|session_end|terminal|complete|stop/.test(type))) return ""; return tail(extractText(value) || String(value.error ?? value.errorMessage ?? stopReason), MAX_STDERR); }
