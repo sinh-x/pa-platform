@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -836,6 +836,13 @@ describe("droid safety hook shared context policy", () => {
     installDroidSafetyPatterns({ HOME: homeDir });
     const env = { HOME: homeDir, PA_DEPLOYMENT_ID: "d-policy", PA_DEPLOYMENT_DIR: deployDir };
     const redirect = String.fromCharCode(62);
+    const sshDirectory = join(policyRoot, "." + "ssh");
+    const keyName = ["id", "_rsa"].join("");
+    const keyPath = join(sshDirectory, keyName);
+    const aliasPath = join(policyRoot, "key-alias");
+    mkdirSync(sshDirectory);
+    writeFileSync(keyPath, "test fixture\n");
+    symlinkSync(keyPath, aliasPath);
     try {
       for (const input of [
         { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + "creden" + "tials.json as prose" } },
@@ -843,6 +850,7 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "dpa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
       ]) assert.equal(runHookScript(scriptPath, input, env).exitCode, 0, JSON.stringify(input));
 
       for (const command of [
@@ -851,6 +859,11 @@ describe("droid safety hook shared context policy", () => {
         "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
         `printf unsafe 2${redirect}1`,
         `printf unsafe 1${redirect}2`,
+        "curl -O https://example.test/report.json",
+        "curl -OJ https://example.test/report.json",
+        "curl --remote-name https://example.test/report.json",
+        "curl --remote-header-name https://example.test/report.json",
+        "printf unsafe | tee ./report.json",
       ]) {
         const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
         assert.equal(denied.exitCode, 2, command);
@@ -858,9 +871,16 @@ describe("droid safety hook shared context policy", () => {
       }
 
       const protectedPath = "." + "env";
-      const protectedResult = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: protectedPath } }, env);
-      assert.equal(protectedResult.exitCode, 2);
-      assert.match(protectedResult.stderr, /Protected path access/);
+      for (const filePath of [
+        protectedPath,
+        `${policyRoot}/.${"s" + "sh"}/nested/../${keyName}`,
+        `${policyRoot}/.${"s" + "sh"}//${keyName}`,
+        aliasPath,
+      ]) {
+        const protectedResult = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: filePath } }, env);
+        assert.equal(protectedResult.exitCode, 2, filePath);
+        assert.match(protectedResult.stderr, /Protected path access/, filePath);
+      }
 
       const arbitraryOutput = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf unsafe ${redirect} .\/report.json` } }, env);
       assert.equal(arbitraryOutput.exitCode, 2);

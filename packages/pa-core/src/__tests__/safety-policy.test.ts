@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   classifyOutputTarget,
@@ -319,6 +319,27 @@ test("context declarations keep ordinary prose separate from path operands", () 
   assert.equal(classifyShellCommand(proseScript).allowed, true);
 });
 
+test("protected path aliases are normalized and existing read symlinks are canonicalized", (t) => {
+  const root = mkdtempSync("/tmp/pap218-protected-alias-");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sshDirectory = join(root, ".ssh");
+  const keyPath = join(sshDirectory, "id_rsa");
+  const aliasPath = join(root, "key-alias");
+  mkdirSync(sshDirectory);
+  writeFileSync(keyPath, "test fixture\n");
+  symlinkSync(keyPath, aliasPath);
+
+  for (const protectedPath of [
+    `${root}/.ssh//id_rsa`,
+    `${root}/.ssh/keys/../id_rsa`,
+    aliasPath,
+  ]) {
+    assert.equal(isBlockedFilePath(protectedPath), true, protectedPath);
+    assert.equal(classifyPathOperand(protectedPath).code, "protected-path", protectedPath);
+    assertDenied(`cat ${protectedPath}`, "protected-path");
+  }
+});
+
 test("context-aware shell classification admits null-sink and verified temp output", (t) => {
   const customTmp = mkdtempSync(join(process.cwd(), ".pap218-tmp-"));
   t.after(() => rmSync(customTmp, { recursive: true, force: true }));
@@ -361,6 +382,29 @@ test("protected, arbitrary, traversal, and ambiguous output remains denied with 
   assert.equal(classifyOutputTarget("$TMPDIR/file", { env: {} }).code, "ambiguous-output");
   assert.equal(classifyOutputTarget("$TMPDIR/file", { env: { TMPDIR: "relative/tmp" } }).code, "ambiguous-output");
   assert.equal(classifyOutputTarget("$TMPDIR/file", { env: { TMPDIR: "/does-not-exist-pap218" } }).allowed, false);
+});
+
+test("curl remote-name modes fail closed and tee targets use output policy", () => {
+  for (const command of [
+    "curl -O https://example.test/report.json",
+    "curl -OJ https://example.test/report.json",
+    "curl --remote-name https://example.test/report.json",
+    "curl --remote-header-name https://example.test/report.json",
+  ]) assertDenied(command, "ambiguous-output");
+
+  for (const command of [
+    "printf ok | tee ./report.json",
+    "printf ok | tee -a /var/log/pap218-output.log",
+  ]) assertDenied(command, "arbitrary-output");
+
+  for (const command of [
+    "printf ok | tee /tmp/pap218-tee-output.log",
+    "printf ok | tee /dev/null",
+  ]) {
+    const decision = classifyShellCommand(command);
+    assert.equal(decision.allowed, true, command);
+    assert.equal(decision.effect, "write", command);
+  }
 });
 
 test("verified temp output rejects symlink escape while allowing an in-root symlink", (t) => {

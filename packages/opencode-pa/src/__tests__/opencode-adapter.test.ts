@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1861,12 +1861,20 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     const plugin = await module.PaSafetyActivityPlugin();
     const before = plugin["tool.execute.before"];
     const redirect = String.fromCharCode(62);
+    const sshDirectory = join(root, "." + "ssh");
+    const keyName = ["id", "_rsa"].join("");
+    const keyPath = join(sshDirectory, keyName);
+    const aliasPath = join(root, "key-alias");
+    mkdirSync(sshDirectory);
+    writeFileSync(keyPath, "test fixture\n");
+    symlinkSync(keyPath, aliasPath);
 
     await before({ tool: "question" }, { args: { question: "Discuss " + "creden" + "tials.json as prose" } });
     await before({ tool: "bash" }, { args: { command: `opa ticket list --json ${redirect} /tmp/pap218-tickets.json` } });
     await before({ tool: "bash" }, { args: { command: "opa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } });
     await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
     await before({ tool: "bash" }, { args: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } });
+    await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
 
     for (const command of [
       "/bin/" + "r" + "m /tmp/pap218-qualified-delete",
@@ -1874,10 +1882,20 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
       "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
       `printf unsafe 2${redirect}1`,
       `printf unsafe 1${redirect}2`,
+      "curl -O https://example.test/report.json",
+      "curl -OJ https://example.test/report.json",
+      "curl --remote-name https://example.test/report.json",
+      "curl --remote-header-name https://example.test/report.json",
+      "printf unsafe | tee ./report.json",
     ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /BLOCKED/);
 
     const protectedPath = "." + "env";
-    await assert.rejects(before({ tool: "read" }, { args: { filePath: protectedPath } }), /Protected path access/);
+    for (const filePath of [
+      protectedPath,
+      `${root}/.${"s" + "sh"}/nested/../${keyName}`,
+      `${root}/.${"s" + "sh"}//${keyName}`,
+      aliasPath,
+    ]) await assert.rejects(before({ tool: "read" }, { args: { filePath } }), /Protected path access/);
     await assert.rejects(before({ tool: "bash" }, { args: { command: `printf unsafe ${redirect} .\/report.json` } }), /verified system-temp target/);
     await assert.rejects(
       before({ tool: "bash" }, { args: { command: "r" + "m -rf /tmp/pap218-cleanup" } }),

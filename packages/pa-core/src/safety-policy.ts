@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, normalize, relative, resolve } from "node:path";
 
 export interface SafetyPatterns {
   destructiveCommands: string[];
@@ -31,7 +31,7 @@ export function isDestructiveCommand(command: string): boolean {
 }
 
 export function isBlockedFilePath(filePath: string): boolean {
-  return matches(filePath, PA_SAFETY_PATTERNS.blockedFilePatterns);
+  return findBlockedPathAlias(filePath) !== undefined;
 }
 
 const QUOTED_MARKUP = /<\/?[A-Za-z][A-Za-z0-9:_-]*>/g;
@@ -150,13 +150,13 @@ interface TempRoot {
 /** Evaluate a value according to its declared semantic context. */
 export function evaluateSafetyPolicy(input: SafetyPolicyInput, options: SafetyPolicyOptions = {}): SafetyDecision {
   if (input.kind === "prose") return ALLOWED;
-  if (input.kind === "path") return classifyPathOperand(input.value);
+  if (input.kind === "path") return classifyPathOperand(input.value, options);
   return classifyShellCommand(input.value, options);
 }
 
 /** Classify a value already identified as a path-bearing field or operand. */
-export function classifyPathOperand(filePath: string): SafetyDecision {
-  if (!filePath || !isBlockedFilePath(filePath)) return { ...ALLOWED, effect: "read" };
+export function classifyPathOperand(filePath: string, options: SafetyPolicyOptions = {}): SafetyDecision {
+  if (!filePath || !findBlockedPathAlias(filePath, options.cwd)) return { ...ALLOWED, effect: "read" };
   return deny("protected-path", "read", `Protected path access is not allowed: ${filePath}`, filePath);
 }
 
@@ -176,12 +176,12 @@ export function classifyShellCommand(command: string, options: SafetyPolicyOptio
       return deny("destructive-command", "write", "Force-pushing is not allowed by PA safety policy.");
     }
 
-    const protectedPath = findProtectedShellPath(source);
+    const protectedPath = findProtectedShellPath(source, options.cwd);
     if (protectedPath) {
       return deny("protected-path", "read", `Protected path access is not allowed: ${protectedPath}`, protectedPath);
     }
 
-    for (const output of [...scanRedirects(source), ...scanCurlOutputs(source)]) {
+    for (const output of [...scanRedirects(source), ...scanCurlOutputs(source), ...scanTeeOutputs(source)]) {
       if (output.descriptor) continue;
       hasOutput = true;
       if (!output.target) {
@@ -296,12 +296,34 @@ function extractOtherDeletionTarget(source: string): string | undefined {
   return /(?:^|[;&|]\s*)find\s+("[^"]+"|'[^']+'|[^\s;&|]+)/i.exec(source)?.[1];
 }
 
-function findProtectedShellPath(source: string): string | undefined {
+function findProtectedShellPath(source: string, cwd?: string): string | undefined {
   for (const word of tokenizeShell(source)) {
     if (word.operator || !looksLikePathOperand(word.value)) continue;
-    if (isBlockedFilePath(word.value)) return word.raw;
+    if (findBlockedPathAlias(word.value, cwd)) return word.raw;
   }
   return undefined;
+}
+
+function findBlockedPathAlias(filePath: string, cwd = process.cwd()): string | undefined {
+  const lexical = normalizeLexicalPath(filePath);
+  if (matches(lexical, PA_SAFETY_PATTERNS.blockedFilePatterns)) return lexical;
+  if (!lexical || lexical.includes("\0") || DYNAMIC_TARGET.test(lexical)) return undefined;
+
+  try {
+    const absolute = isAbsolute(lexical) ? lexical : resolve(cwd, lexical);
+    const canonical = normalizeLexicalPath(realpathSync(absolute));
+    return matches(canonical, PA_SAFETY_PATTERNS.blockedFilePatterns) ? canonical : undefined;
+  } catch {
+    // Only existing readable targets can be canonicalized. The normalized lexical
+    // spelling above remains authoritative for absent or inaccessible targets.
+    return undefined;
+  }
+}
+
+function normalizeLexicalPath(filePath: string): string {
+  if (!filePath) return "";
+  const separators = filePath.replace(/[\\/]+/g, "/");
+  return normalize(separators).replace(/\\/g, "/");
 }
 
 function looksLikePathOperand(value: string): boolean {
@@ -361,7 +383,35 @@ function scanCurlOutputs(source: string): OutputOperand[] {
       } else if (word.value.startsWith("--output=")) {
         const target = word.value.slice("--output=".length);
         outputs.push({ target: target || undefined, rawTarget: word.raw, descriptor: false });
+      } else if (
+        word.value === "--remote-name"
+        || word.value === "--remote-header-name"
+        || word.value === "--remote-name-all"
+        || /^-[^-]*[OJ]/.test(word.value)
+      ) {
+        // Remote-derived names cannot be verified against an allowed output root.
+        outputs.push({ rawTarget: word.raw, descriptor: false });
       }
+    }
+  }
+  return outputs;
+}
+
+function scanTeeOutputs(source: string): OutputOperand[] {
+  const words = tokenizeShell(source);
+  const outputs: OutputOperand[] = [];
+  for (let index = 0; index < words.length; index += 1) {
+    if (words[index]?.operator || basename(words[index]?.value ?? "") !== "tee") continue;
+    let options = true;
+    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+      const word = words[cursor];
+      if (!word || word.operator) continue;
+      if (options && word.value === "--") {
+        options = false;
+        continue;
+      }
+      if (options && word.value.startsWith("-") && word.value !== "-") continue;
+      if (word.value !== "-") outputs.push({ target: word.value, rawTarget: word.raw, descriptor: false });
     }
   }
   return outputs;
