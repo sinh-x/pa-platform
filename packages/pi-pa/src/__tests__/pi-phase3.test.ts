@@ -131,6 +131,9 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "bash", input: { command: "ppa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
     { name: "bash", input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
     { name: "bash", input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
+    { name: "question", input: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose", options: [] } },
+    { name: "bash", input: { command: "curl -o/tmp/pap218-pi-attached.json https://example.test/report.json" } },
+    { name: "bash", input: { command: "curl -so /tmp/pap218-pi-cluster.json https://example.test/report.json" } },
     { name: "bash", input: { command: "printf ok | tee /tmp/pap218-pi-tee.log" } },
   ]) assert.equal(interceptToolCall(call).allowed, true, JSON.stringify(call));
 
@@ -140,6 +143,10 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "read", input: { path: `${protectedRoot}/.${"s" + "sh"}//${keyName}` } },
     { name: "read", input: { path: aliasPath } },
     { name: "bash", input: { command: "cat ~/.ssh/id_ed25519" } },
+    { name: "bash", input: { command: "cat " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "curl -o/var/log/report.json https://example.test/report.json" } },
+    { name: "bash", input: { command: "curl -so /var/log/report.json https://example.test/report.json" } },
+    { name: "bash", input: { command: "curl -so" } },
     { name: "bash", input: { command: "curl -O https://example.test/report.json" } },
     { name: "bash", input: { command: "curl -OJ https://example.test/report.json" } },
     { name: "bash", input: { command: "curl --remote-name https://example.test/report.json" } },

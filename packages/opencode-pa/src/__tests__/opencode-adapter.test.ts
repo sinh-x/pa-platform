@@ -1874,6 +1874,9 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await before({ tool: "bash" }, { args: { command: "opa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } });
     await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
     await before({ tool: "bash" }, { args: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } });
+    await before({ tool: "question" }, { args: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } });
+    await before({ tool: "bash" }, { args: { command: "curl -o/tmp/pap218-opa-attached.json https://example.test/report.json" } });
+    await before({ tool: "bash" }, { args: { command: "curl -so /tmp/pap218-opa-cluster.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
 
     for (const command of [
@@ -1882,6 +1885,10 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
       "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
       `printf unsafe 2${redirect}1`,
       `printf unsafe 1${redirect}2`,
+      "cat " + ["cred", "entials"].join(""),
+      "curl -o/var/log/report.json https://example.test/report.json",
+      "curl -so /var/log/report.json https://example.test/report.json",
+      "curl -so",
       "curl -O https://example.test/report.json",
       "curl -OJ https://example.test/report.json",
       "curl --remote-name https://example.test/report.json",

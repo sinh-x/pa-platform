@@ -317,6 +317,20 @@ test("context declarations keep ordinary prose separate from path operands", () 
     "PY",
   ].join("\n");
   assert.equal(classifyShellCommand(proseScript).allowed, true);
+  assert.equal(classifyShellCommand(`printf '%s\\n' '${protectedToken}'`).allowed, true);
+});
+
+test("bounded shell path operands deny bare extensionless protected basenames", () => {
+  for (const command of [
+    `cat ${protectedToken}`,
+    `cat -- '${protectedToken}'`,
+    `/bin/tac ${protectedToken}`,
+  ]) assertDenied(command, "protected-path");
+
+  for (const command of [
+    `echo ${protectedToken}`,
+    `printf '%s\\n' '${protectedToken}'`,
+  ]) assert.equal(classifyShellCommand(command).allowed, true, command);
 });
 
 test("protected path aliases are normalized and existing read symlinks are canonicalized", (t) => {
@@ -384,25 +398,32 @@ test("protected, arbitrary, traversal, and ambiguous output remains denied with 
   assert.equal(classifyOutputTarget("$TMPDIR/file", { env: { TMPDIR: "/does-not-exist-pap218" } }).allowed, false);
 });
 
-test("curl remote-name modes fail closed and tee targets use output policy", () => {
+test("curl output forms fail closed or use verified-output policy", () => {
   for (const command of [
     "curl -O https://example.test/report.json",
     "curl -OJ https://example.test/report.json",
     "curl --remote-name https://example.test/report.json",
     "curl --remote-header-name https://example.test/report.json",
+    "curl -so",
+    "curl -!o/tmp/pap218-ambiguous.json https://example.test/report.json",
   ]) assertDenied(command, "ambiguous-output");
 
   for (const command of [
+    "curl -o/var/log/report.json https://example.test/report.json",
+    "curl -so /var/log/report.json https://example.test/report.json",
     "printf ok | tee ./report.json",
     "printf ok | tee -a /var/log/pap218-output.log",
   ]) assertDenied(command, "arbitrary-output");
 
   for (const command of [
+    "curl -o/tmp/pap218-attached-output.json https://example.test/report.json",
+    "curl -so /tmp/pap218-cluster-output.json https://example.test/report.json",
+    "curl -so/tmp/pap218-cluster-attached-output.json https://example.test/report.json",
     "printf ok | tee /tmp/pap218-tee-output.log",
     "printf ok | tee /dev/null",
   ]) {
     const decision = classifyShellCommand(command);
-    assert.equal(decision.allowed, true, command);
+    assert.equal(decision.allowed, true, `${command}: ${decision.reason ?? "allowed"}`);
     assert.equal(decision.effect, "write", command);
   }
 });

@@ -850,6 +850,9 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "dpa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -o/tmp/pap218-dpa-attached.json https://example.test/report.json" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -so /tmp/pap218-dpa-cluster.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
       ]) assert.equal(runHookScript(scriptPath, input, env).exitCode, 0, JSON.stringify(input));
 
@@ -859,6 +862,10 @@ describe("droid safety hook shared context policy", () => {
         "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
         `printf unsafe 2${redirect}1`,
         `printf unsafe 1${redirect}2`,
+        "cat " + ["cred", "entials"].join(""),
+        "curl -o/var/log/report.json https://example.test/report.json",
+        "curl -so /var/log/report.json https://example.test/report.json",
+        "curl -so",
         "curl -O https://example.test/report.json",
         "curl -OJ https://example.test/report.json",
         "curl --remote-name https://example.test/report.json",

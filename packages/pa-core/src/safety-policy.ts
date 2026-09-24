@@ -296,12 +296,42 @@ function extractOtherDeletionTarget(source: string): string | undefined {
   return /(?:^|[;&|]\s*)find\s+("[^"]+"|'[^']+'|[^\s;&|]+)/i.exec(source)?.[1];
 }
 
+const BARE_PATH_OPERAND_COMMANDS = new Set(["cat", "tac"]);
+
 function findProtectedShellPath(source: string, cwd?: string): string | undefined {
-  for (const word of tokenizeShell(source)) {
+  const words = tokenizeShell(source);
+  for (const word of words) {
     if (word.operator || !looksLikePathOperand(word.value)) continue;
     if (findBlockedPathAlias(word.value, cwd)) return word.raw;
   }
+
+  // Bare extensionless names are paths only in this bounded command grammar.
+  // Do not apply protected basename patterns to arbitrary shell arguments,
+  // which may be prose, format strings, or program source.
+  for (let index = 0; index < words.length; index += 1) {
+    const command = words[index];
+    if (!command || command.operator || !isShellCommandStart(words, index)) continue;
+    if (!BARE_PATH_OPERAND_COMMANDS.has(basename(command.value))) continue;
+
+    let options = true;
+    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+      const operand = words[cursor];
+      if (!operand || operand.operator) continue;
+      if (options && operand.value === "--") {
+        options = false;
+        continue;
+      }
+      if (options && operand.value.startsWith("-") && operand.value !== "-") continue;
+      if (findBlockedPathAlias(operand.value, cwd)) return operand.raw;
+    }
+  }
   return undefined;
+}
+
+function isShellCommandStart(words: ShellWord[], index: number): boolean {
+  if (index === 0) return true;
+  const previous = words[index - 1];
+  return Boolean(previous?.operator && /^(?:;|\||&&|\()$/.test(previous.value));
 }
 
 function findBlockedPathAlias(filePath: string, cwd = process.cwd()): string | undefined {
@@ -366,6 +396,9 @@ function scanRedirects(source: string): OutputOperand[] {
   return outputs;
 }
 
+const CURL_SHORT_FLAGS_WITHOUT_ARGUMENT = new Set("#012346:BafgGhiIklLMnNpqRsSvVZ".split(""));
+const CURL_SHORT_FLAGS_WITH_ARGUMENT = new Set("AbcCdeDEFHIKmPQrtTUuwWxXyYz".split(""));
+
 function scanCurlOutputs(source: string): OutputOperand[] {
   const words = tokenizeShell(source);
   const outputs: OutputOperand[] = [];
@@ -374,7 +407,7 @@ function scanCurlOutputs(source: string): OutputOperand[] {
     for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
       const word = words[cursor];
       if (!word || word.operator) continue;
-      if (word.value === "-o" || word.value === "--output") {
+      if (word.value === "--output") {
         const target = words[cursor + 1];
         outputs.push(target && !target.operator
           ? { target: target.value, rawTarget: target.raw, descriptor: false }
@@ -383,11 +416,14 @@ function scanCurlOutputs(source: string): OutputOperand[] {
       } else if (word.value.startsWith("--output=")) {
         const target = word.value.slice("--output=".length);
         outputs.push({ target: target || undefined, rawTarget: word.raw, descriptor: false });
+      } else if (/^-[^-]/.test(word.value)) {
+        const shortOutput = scanCurlShortOutput(words, cursor);
+        if (shortOutput.output) outputs.push(shortOutput.output);
+        if (shortOutput.consumesNext) cursor += 1;
       } else if (
         word.value === "--remote-name"
         || word.value === "--remote-header-name"
         || word.value === "--remote-name-all"
-        || /^-[^-]*[OJ]/.test(word.value)
       ) {
         // Remote-derived names cannot be verified against an allowed output root.
         outputs.push({ rawTarget: word.raw, descriptor: false });
@@ -395,6 +431,40 @@ function scanCurlOutputs(source: string): OutputOperand[] {
     }
   }
   return outputs;
+}
+
+function scanCurlShortOutput(words: ShellWord[], index: number): { output?: OutputOperand; consumesNext: boolean } {
+  const word = words[index];
+  if (!word || !/^-[^-]/.test(word.value)) return { consumesNext: false };
+
+  for (let cursor = 1; cursor < word.value.length; cursor += 1) {
+    const option = word.value[cursor] ?? "";
+    if (option === "o") {
+      const attachedTarget = word.value.slice(cursor + 1);
+      if (attachedTarget) {
+        return { output: { target: attachedTarget, rawTarget: word.raw, descriptor: false }, consumesNext: false };
+      }
+      const target = words[index + 1];
+      return {
+        output: target && !target.operator
+          ? { target: target.value, rawTarget: target.raw, descriptor: false }
+          : { descriptor: false },
+        consumesNext: Boolean(target && !target.operator),
+      };
+    }
+    if (option === "O" || option === "J") {
+      // Remote-derived names cannot be verified against an allowed output root.
+      return { output: { rawTarget: word.raw, descriptor: false }, consumesNext: false };
+    }
+    if (CURL_SHORT_FLAGS_WITHOUT_ARGUMENT.has(option)) continue;
+    if (CURL_SHORT_FLAGS_WITH_ARGUMENT.has(option)) return { consumesNext: false };
+    // An unknown cluster containing a later output option is ambiguous and must fail closed.
+    if (/[oOJ]/.test(word.value.slice(cursor + 1))) {
+      return { output: { rawTarget: word.raw, descriptor: false }, consumesNext: false };
+    }
+    return { consumesNext: false };
+  }
+  return { consumesNext: false };
 }
 
 function scanTeeOutputs(source: string): OutputOperand[] {
