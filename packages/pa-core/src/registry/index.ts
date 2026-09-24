@@ -1,9 +1,11 @@
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb } from "./db.js";
-import type { DeploymentStatus, EvaluatorResult, Rating, RegistryEvent } from "../types.js";
+import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, TicketAssociatedRegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js";
+import { formatBoundedFiveFieldDiagnostic, loadReposYaml } from "../repos.js";
+import { TicketStore } from "../tickets/store.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
@@ -141,6 +143,130 @@ export function validateRegistryEvent(event: RegistryEvent): void {
 export class DeploymentStartConflictError extends Error {}
 export class DeploymentCorrelationConflictError extends Error {}
 
+export type TicketAssociationErrorCode =
+  | "deployment-not-found"
+  | "deployment-not-running"
+  | "repository-identity-missing"
+  | "repository-unregistered"
+  | "ticket-not-found"
+  | "ticket-project-mismatch"
+  | "stale-expectation"
+  | "protected-builder-replacement"
+  | "invalid-actor"
+  | "invalid-reason";
+
+export class TicketAssociationError extends Error {
+  constructor(readonly code: TicketAssociationErrorCode, message: string) {
+    super(message);
+    this.name = "TicketAssociationError";
+  }
+}
+
+/**
+ * Atomically compare-and-set the current ticket projection for one running
+ * deployment. Immutable start evidence is only read; association history is
+ * appended as one structured event in the same immediate transaction.
+ */
+export function associateDeploymentTicket(input: AssociateDeploymentTicketInput): AssociateDeploymentTicketResult {
+  const actor = validatedAssociationText(input.actor, 128, "actor", "invalid-actor");
+  const reason = validatedAssociationText(input.reason, 1_000, "reason", "invalid-reason");
+  const requestedTicketId = input.ticketId.trim();
+  if (requestedTicketId.length === 0) {
+    throw associationError("ticket-not-found", "deployment ticket association rejected", "target ticket validation", "the requested ticket ID is empty", "provide the ID of an existing ticket", "retry with a same-project ticket ID");
+  }
+  if (input.expectedTicketId !== null && (typeof input.expectedTicketId !== "string" || input.expectedTicketId.length === 0)) {
+    throw associationError("stale-expectation", "deployment ticket association rejected", "compare-and-set validation", "the expected ticket must be semantic none or an exact non-empty current ticket ID", "reread the current deployment ticket projection", "retry with null for no ticket or the exact current ticket ID");
+  }
+
+  const db = getDb();
+  return db.transaction(() => {
+    const projection = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(input.deploymentId) as Record<string, unknown> | undefined;
+    const start = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started' ORDER BY id LIMIT 1").get(input.deploymentId) as Record<string, unknown> | undefined;
+    if (!projection || !start) {
+      throw associationError("deployment-not-found", "deployment ticket association rejected", "registry deployment lookup", "the deployment projection or immutable start event does not exist", "provide an existing deployment ID with complete registry evidence", "reread the registry and retry for that deployment");
+    }
+    if (projection["status"] !== "running") {
+      throw associationError("deployment-not-running", "deployment ticket association rejected", "registry deployment projection", "only a running deployment can change its current ticket association", "preserve terminal deployment history and select a running deployment", "retry only while the target deployment is running");
+    }
+
+    const repoRoot = typeof start["repo_root"] === "string" && start["repo_root"].length > 0 ? start["repo_root"] : undefined;
+    if (!repoRoot || projection["repo_root"] !== repoRoot) {
+      throw associationError("repository-identity-missing", "deployment repository association rejected", "immutable start and current registry projection", "registered canonical repository identity is missing or inconsistent", "restore matching canonical repo_root evidence without rewriting launch history", "retry after registry identity evidence is reconciled");
+    }
+    let repositoryMatches: Array<[string, { path: string }]>;
+    try {
+      repositoryMatches = Object.entries(loadReposYaml()).filter((entry): entry is [string, { path: string }] => entry[1].path === repoRoot);
+    } catch {
+      repositoryMatches = [];
+    }
+    if (repositoryMatches.length !== 1) {
+      throw associationError("repository-unregistered", "deployment repository association rejected", "canonical repository registry", "the deployment repo_root does not resolve to exactly one registered project", "register one canonical project for the immutable repo_root", "retry after canonical repository registration is unambiguous");
+    }
+    const projectKey = repositoryMatches[0]![0];
+    const ticket = new TicketStore().get(requestedTicketId);
+    if (!ticket) {
+      throw associationError("ticket-not-found", "deployment ticket association rejected", "ticket store lookup", "the requested ticket does not exist", "provide an existing ticket ID", "retry with a ticket in the deployment project");
+    }
+    if (ticket.project !== projectKey) {
+      throw associationError("ticket-project-mismatch", "deployment repository association rejected", "canonical repository and ticket project validation", "the requested ticket belongs to a different canonical project", "select a ticket whose project resolves to the deployment repo_root", "retry with a same-project ticket");
+    }
+
+    const previousTicketId = typeof projection["ticket_id"] === "string" && projection["ticket_id"].length > 0 ? projection["ticket_id"] : null;
+    if (input.expectedTicketId !== previousTicketId) {
+      throw associationError("stale-expectation", "deployment ticket association rejected", "atomic compare-and-set validation", "the expected ticket does not equal the current projected ticket", "reread the current ticket projection", "retry with null for no current ticket or the exact current ticket ID");
+    }
+    if (previousTicketId === requestedTicketId) {
+      return { deploymentId: input.deploymentId, previousTicketId, requestedTicketId, currentTicketId: previousTicketId, actor, reason, writeOccurred: false };
+    }
+    if (previousTicketId !== null && hasProtectedBuilderLaunchEvidence(start)) {
+      throw associationError("protected-builder-replacement", "protected builder ticket replacement rejected", "immutable deployment start evidence", "an already-ticketed deployment has builder, Treehouse, ticket-slot, repository-permit, or parent-lineage evidence", "preserve the launch ticket and start a separately admitted builder lineage for different ticket work", "resume the existing ticket or launch a correctly ticketed deployment");
+    }
+
+    const event: TicketAssociatedRegistryEvent = {
+      deployment_id: input.deploymentId,
+      team: String(start["team"]),
+      event: "ticket-associated",
+      timestamp: input.timestamp ?? new Date().toISOString(),
+      previous_ticket_id: previousTicketId,
+      ticket_id: requestedTicketId,
+      actor,
+      reason,
+    };
+    validateRegistryEvent(event);
+    assertEventMatchesStartedIdentity(db, event);
+    insertRegistryEvent(db, event);
+    const update = previousTicketId === null
+      ? db.prepare("UPDATE deployments SET ticket_id = ? WHERE deployment_id = ? AND status = 'running' AND ticket_id IS NULL").run(requestedTicketId, input.deploymentId)
+      : db.prepare("UPDATE deployments SET ticket_id = ? WHERE deployment_id = ? AND status = 'running' AND ticket_id = ?").run(requestedTicketId, input.deploymentId, previousTicketId);
+    if (update.changes !== 1) {
+      throw associationError("stale-expectation", "deployment ticket association rejected", "atomic projection compare-and-set", "the current ticket projection changed before persistence", "reread the current deployment ticket", "retry with the exact current ticket expectation");
+    }
+    const current = db.prepare("SELECT ticket_id FROM deployments WHERE deployment_id = ?").get(input.deploymentId) as { ticket_id?: unknown } | undefined;
+    if (current?.ticket_id !== requestedTicketId) throw new Error("Ticket association projection verification failed");
+    return { deploymentId: input.deploymentId, previousTicketId, requestedTicketId, currentTicketId: requestedTicketId, actor, reason, writeOccurred: true };
+  }).immediate();
+}
+
+function validatedAssociationText(value: string, maxChars: number, field: "actor" | "reason", code: "invalid-actor" | "invalid-reason"): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (normalized.length < 1 || normalized.length > maxChars) {
+    throw associationError(code, "deployment ticket association rejected", `${field} validation`, `${field} must contain 1-${maxChars} UTF-16 code units after trimming and is never truncated`, `provide a bounded non-empty ${field}`, `retry with a valid ${field}`);
+  }
+  return normalized;
+}
+
+function hasProtectedBuilderLaunchEvidence(start: Record<string, unknown>): boolean {
+  return (start["team"] === "builder" && (start["mode"] === "orchestrator" || start["mode"] === "implement"))
+    || start["repository_slot"] === "orchestrator" || start["repository_slot"] === "implement"
+    || start["builder_authority"] != null || start["parent_deployment_id"] != null
+    || start["treehouse_path"] != null || start["treehouse_lease_id"] != null || start["treehouse_lease_holder"] != null
+    || start["ticket_slot_id"] != null || start["repository_permit"] != null;
+}
+
+function associationError(code: TicketAssociationErrorCode, condition: string, source: string, reason: string, correction: string, resumeAction: string): TicketAssociationError {
+  return new TicketAssociationError(code, formatBoundedFiveFieldDiagnostic({ condition, source, reason, correction, resumeAction }));
+}
+
 export interface AdvanceParentAuthoritySnapshotOptions {
   parentDeploymentId: string;
   childDeploymentId: string;
@@ -216,6 +342,7 @@ export function advanceParentAuthoritySnapshot(options: AdvanceParentAuthoritySn
 }
 
 export function appendRegistryEvent(event: RegistryEvent): void {
+  if (event.event === "ticket-associated") throw new Error("Use associateDeploymentTicket for ticket-associated events");
   validateRegistryEvent(event);
   const db = getDb();
   if (event.event === "started") {
@@ -303,13 +430,13 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
   db.prepare(`
     INSERT INTO registry_events (
       deployment_id, team, event, timestamp, pid, status, summary, log_file,
-      primer, agents, models, error, exit_code, ticket_id, provider, rating,
+      primer, agents, models, error, exit_code, ticket_id, previous_ticket_id, actor, reason, provider, rating,
       objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
       treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
       mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel
     ) VALUES (
       @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
-      @primer, @agents, @models, @error, @exit_code, @ticket_id, @provider, @rating,
+      @primer, @agents, @models, @error, @exit_code, @ticket_id, @previous_ticket_id, @actor, @reason, @provider, @rating,
       @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
       @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
       @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel
@@ -393,6 +520,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
     const crashed = deploymentEvents.find((event) => event.event === "crashed");
     const pid = deploymentEvents.find((event) => event.event === "pid");
     const currentBranch = [...deploymentEvents].reverse().find((event) => event.branch_state !== undefined || event.branch_base_sha !== undefined || event.branch_head_sha !== undefined);
+    const currentTicket = [...deploymentEvents].reverse().find((event) => event.event === "ticket-associated");
     return {
       deploy_id: deployId,
       team: started?.team ?? deploymentEvents[0]?.team ?? "",
@@ -404,7 +532,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       summary: completed?.summary,
       log_file: completed?.log_file ?? started?.log_file,
       primer: started?.primer,
-      ticket_id: started?.ticket_id,
+      ticket_id: currentTicket?.ticket_id ?? started?.ticket_id,
       objective: started?.objective,
       models: started?.models,
       provider: started?.provider,
@@ -613,6 +741,9 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     error: event.error ?? null,
     exit_code: event.exit_code ?? null,
     ticket_id: event.ticket_id ?? null,
+    previous_ticket_id: event.previous_ticket_id ?? null,
+    actor: event.actor ?? null,
+    reason: event.reason ?? null,
     provider: event.provider ?? null,
     rating: event.rating ? JSON.stringify(event.rating) : null,
     objective: event.objective ?? null,
@@ -658,6 +789,11 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
     error: optionalString(row["error"]),
     exit_code: optionalNumber(row["exit_code"]),
     ticket_id: optionalString(row["ticket_id"]),
+    ...(row["event"] === "ticket-associated" ? {
+      previous_ticket_id: optionalString(row["previous_ticket_id"]) ?? null,
+      actor: optionalString(row["actor"]),
+      reason: optionalString(row["reason"]),
+    } : {}),
     provider: optionalString(row["provider"]),
     rating: parseJson<RegistryEvent["rating"]>(row["rating"]),
     objective: optionalString(row["objective"]),

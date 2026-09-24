@@ -115,7 +115,7 @@ export interface EvaluatorResult {
 export interface RegistryEvent {
   deployment_id: string;
   team: string;
-  event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated";
+  event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated" | "ticket-associated";
   timestamp: string;
   note?: string;
   pid?: number;
@@ -128,6 +128,9 @@ export interface RegistryEvent {
   error?: string;
   exit_code?: number;
   ticket_id?: string;
+  previous_ticket_id?: string | null;
+  actor?: string;
+  reason?: string;
   provider?: string;
   rating?: Rating;
   objective?: string;
@@ -153,6 +156,33 @@ export interface RegistryEvent {
   effective_timeout_seconds?: number;
   rogue_one?: boolean;
   invocation_channel?: DeploymentInvocationChannel;
+}
+
+export type TicketAssociatedRegistryEvent = RegistryEvent & {
+  event: "ticket-associated";
+  previous_ticket_id: string | null;
+  ticket_id: string;
+  actor: string;
+  reason: string;
+};
+
+export interface AssociateDeploymentTicketInput {
+  deploymentId: string;
+  ticketId: string;
+  expectedTicketId: string | null;
+  actor: string;
+  reason: string;
+  timestamp?: string;
+}
+
+export interface AssociateDeploymentTicketResult {
+  deploymentId: string;
+  previousTicketId: string | null;
+  requestedTicketId: string;
+  currentTicketId: string;
+  actor: string;
+  reason: string;
+  writeOccurred: boolean;
 }
 
 export interface DeploymentStatus {

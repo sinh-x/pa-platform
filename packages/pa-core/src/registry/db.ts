@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -69,6 +69,9 @@ function migrate(db: Database.Database): void {
       error TEXT,
       exit_code INTEGER,
       ticket_id TEXT,
+      previous_ticket_id TEXT,
+      actor TEXT,
+      reason TEXT,
       provider TEXT,
       rating TEXT,
       objective TEXT,
@@ -172,6 +175,9 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_health_timestamp ON health_snapshots(timestamp);
   `);
 
+  addColumn(db, "registry_events", "previous_ticket_id", "TEXT");
+  addColumn(db, "registry_events", "actor", "TEXT");
+  addColumn(db, "registry_events", "reason", "TEXT");
   addColumn(db, "registry_events", "fallback", "INTEGER DEFAULT 0");
   addColumn(db, "registry_events", "resumed_from_deployment_id", "TEXT");
   addColumn(db, "registry_events", "note", "TEXT");
