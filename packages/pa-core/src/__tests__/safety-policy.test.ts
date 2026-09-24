@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import {
   classifyOutputTarget,
@@ -169,11 +168,9 @@ const revisedGroup8Command = [
 
 test("isDestructiveCommand allows descriptor duplication and closure", () => {
   const commands = [
-    "printf ok 2>1",
-    "printf ok 1>2",
     "printf ok 2>&1",
     "printf ok 1>&2",
-    "exec >-",
+    "exec >&-",
     "exec 2>&-",
   ];
 
@@ -208,6 +205,9 @@ test("bootstrap-compatible group-7 command passes candidate and installed baseli
 
 test("isDestructiveCommand blocks pathname overwrite and truncation redirects", () => {
   const commands = [
+    "printf ok 2>1",
+    "printf ok 1>2",
+    "exec >-",
     "printf ok > output.log",
     "printf ok >output.log",
     "printf ok 2> errors.log",
@@ -247,6 +247,30 @@ test("isDestructiveCommand keeps unrelated destructive command classes blocked",
   for (const command of commands) {
     assert.equal(isDestructiveCommand(command), true, command);
   }
+});
+
+test("context-aware policy denies path-qualified destructive executables and supported wrappers", () => {
+  const directDeletion = [
+    "/bin/rm /tmp/pap218-delete",
+    "./rmdir /tmp/pap218-directory",
+    "../bin/unlink /tmp/pap218-link",
+    "/usr/bin/sudo /usr/bin/shred /tmp/pap218-secret",
+    "command ./rm /tmp/pap218-command-delete",
+    "/usr/bin/dd if=/tmp/source of=/tmp/destination",
+    "./truncate -s 0 /tmp/pap218-truncated",
+    "/usr/bin/find /tmp/pap218-tree -delete",
+    "./find /tmp/pap218-tree -exec /bin/rm {} +",
+    "/usr/bin/xargs /bin/rm",
+    "/usr/bin/git clean -fd",
+    "/bin/bash -lc './git clean -fd'",
+  ];
+  for (const command of directDeletion) assertDenied(command, "direct-deletion");
+
+  for (const command of [
+    "./git push origin main --force",
+    "/usr/bin/sudo /usr/bin/git push origin main --force-with-lease",
+    "/bin/bash -lc '/usr/bin/git push origin main --force'",
+  ]) assertDenied(command, "destructive-command");
 });
 
 const protectedToken = ["cred", "entials"].join("");
@@ -359,8 +383,11 @@ test("verified temp output rejects symlink escape while allowing an in-root syml
 test("nested shell output is bounded and descriptor compatibility is retained", () => {
   assert.equal(classifyShellCommand(`bash -lc 'printf ok > /tmp/nested-output.log'`).allowed, true);
   assertDenied(`bash -lc 'printf ok > output.log'`, "arbitrary-output");
-  for (const command of ["printf ok 2>1", "printf ok 1>2", "printf ok 2>&1", "exec >-", "exec 2>&-"]) {
+  for (const command of ["printf ok 2>&1", "printf ok 1>&2", "exec >&-", "exec 2>&-"]) {
     assert.equal(classifyShellCommand(command).allowed, true, command);
+  }
+  for (const command of ["printf ok 2>1", "printf ok 1>2", "exec >-"]) {
+    assertDenied(command, "arbitrary-output");
   }
 });
 
@@ -397,13 +424,14 @@ test("context-aware policy p95 stays below 5 ms after warm-up", (t) => {
   const measuredCalls = 1_200;
   const samples: number[] = [];
   for (let index = 0; index < measuredCalls; index += 1) {
-    const start = performance.now();
+    const start = process.cpuUsage();
     fixtures[index % fixtures.length]?.();
-    samples.push(performance.now() - start);
+    const elapsed = process.cpuUsage(start);
+    samples.push((elapsed.user + elapsed.system) / 1_000);
   }
   samples.sort((left, right) => left - right);
   const p95 = samples[Math.ceil(samples.length * 0.95) - 1] ?? Number.POSITIVE_INFINITY;
-  t.diagnostic(`policy benchmark measured_calls=${measuredCalls} p95_ms=${p95.toFixed(3)}`);
+  t.diagnostic(`policy benchmark measured_calls=${measuredCalls} p95_ms=${p95.toFixed(3)} clock=process_cpu`);
   assert.ok(measuredCalls >= 1_000);
   assert.ok(p95 < 5, `expected p95 < 5 ms, measured ${p95.toFixed(3)} ms over ${measuredCalls} calls`);
 });

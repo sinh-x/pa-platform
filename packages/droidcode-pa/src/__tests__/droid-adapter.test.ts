@@ -842,7 +842,20 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `dpa ticket list --json ${redirect} /tmp/pap218-tickets.json` } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "dpa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
       ]) assert.equal(runHookScript(scriptPath, input, env).exitCode, 0, JSON.stringify(input));
+
+      for (const command of [
+        "/bin/" + "r" + "m /tmp/pap218-qualified-delete",
+        "/usr/bin/sudo ./git cle" + "an -fd",
+        "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
+        `printf unsafe 2${redirect}1`,
+        `printf unsafe 1${redirect}2`,
+      ]) {
+        const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+        assert.equal(denied.exitCode, 2, command);
+        assert.match(denied.stderr, /BLOCKED/, command);
+      }
 
       const protectedPath = "." + "env";
       const protectedResult = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: protectedPath } }, env);

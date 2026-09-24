@@ -14,8 +14,8 @@ export const PA_SAFETY_PATTERNS: SafetyPatterns = {
     String.raw`\bgit\s+clean\b.*-f`, String.raw`\bgit\s+push\b.*--force`,
     // Block pathname overwrite/truncation while allowing descriptor duplication and closure.
     String.raw`(?:^|[^>])(?:\d*)>(?:>|[:|])\s*\S`,
-    String.raw`(?:^|[^\d>])\d+>\s*(?!(?:&(?:\d+|-)|\d+|-)(?:$|[\s;&|()]))\S`,
-    String.raw`(?:^|[^\d>])>\s*(?!(?:&(?:\d+|-)|-)(?:$|[\s;&|()]))\S`,
+    String.raw`(?:^|[^\d>])\d+>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S`,
+    String.raw`(?:^|[^\d>])>\s*(?!&(?:\d+|-)(?:$|[\s;&|()]))\S`,
   ],
   blockedFilePatterns: [
     String.raw`(^|[\\/])\.env(\.|$)`, String.raw`(^|[\\/])\.ssh[\\/]id_`, String.raw`credentials`,
@@ -113,16 +113,20 @@ export interface SafetyPolicyOptions {
 }
 
 const ALLOWED: SafetyDecision = { allowed: true, code: "allowed", effect: "none" };
-const BASIC_DELETE_COMMAND = /(?:^|[\s;&|()'"])(?:command\s+|sudo\s+)*(rm|rmdir|unlink|shred)\b/gi;
+const COMMAND_BOUNDARY = String.raw`(?:^|[\s;&|()'"])`;
+const EXECUTABLE_QUALIFIER = String.raw`(?:[^\s;&|()'"]*[\\/])?`;
+const SUPPORTED_WRAPPERS = String.raw`(?:(?:[^\s;&|()'"]*[\\/])?(?:command|sudo)\s+)*`;
+const qualifiedCommand = (command: string): string => `${COMMAND_BOUNDARY}${SUPPORTED_WRAPPERS}${EXECUTABLE_QUALIFIER}${command}`;
+const BASIC_DELETE_COMMAND = new RegExp(`${qualifiedCommand("(rm|rmdir|unlink|shred)")}\\b`, "gi");
 const OTHER_DELETE_COMMANDS = [
-  /(?:^|[\s;&|()])dd(?:\s|$)/i,
-  /(?:^|[\s;&|()])truncate(?:\s|$)/i,
-  /(?:^|[\s;&|()])find\b[^\n;]*\s-delete(?:\s|$)/i,
-  /(?:^|[\s;&|()])find\b[^\n;]*\s-exec\b[^\n;]*\brm\b/i,
-  /(?:^|[\s;&|()])xargs\b[^\n;]*\brm\b/i,
-  /(?:^|[\s;&|()])git\s+clean\b[^\n;]*-[A-Za-z]*f/i,
+  new RegExp(`${qualifiedCommand("dd")}(?:\\s|$)`, "i"),
+  new RegExp(`${qualifiedCommand("truncate")}(?:\\s|$)`, "i"),
+  new RegExp(`${qualifiedCommand("find")}\\b[^\\n;]*\\s-delete(?:\\s|$)`, "i"),
+  new RegExp(`${qualifiedCommand("find")}\\b[^\\n;]*\\s-exec\\b[^\\n;]*${EXECUTABLE_QUALIFIER}rm\\b`, "i"),
+  new RegExp(`${qualifiedCommand("xargs")}\\b[^\\n;]*${EXECUTABLE_QUALIFIER}rm\\b`, "i"),
+  new RegExp(`${qualifiedCommand("git")}\\s+clean\\b[^\\n;]*-[A-Za-z]*f`, "i"),
 ];
-const FORCE_PUSH = /(?:^|[\s;&|()])git\s+push\b[^\n;]*--force(?:-with-lease)?\b/i;
+const FORCE_PUSH = new RegExp(`${qualifiedCommand("git")}\\s+push\\b[^\\n;]*--force(?:-with-lease)?\\b`, "i");
 const DYNAMIC_TARGET = /[$`*?\[\]{}]/;
 
 interface ShellWord {
@@ -333,12 +337,7 @@ function scanRedirects(source: string): OutputOperand[] {
     }
     while (/\s/.test(source[cursor] ?? "")) cursor += 1;
     const operand = readShellOperand(source, cursor);
-    let descriptorOwner = index - 1;
-    while (descriptorOwner >= 0 && /\d/.test(source[descriptorOwner] ?? "")) descriptorOwner -= 1;
-    const hasDescriptorPrefix = descriptorOwner < index - 1
-      && (descriptorOwner < 0 || /[\s;&|()]/.test(source[descriptorOwner] ?? ""));
-    const descriptor = (descriptorPrefix || hasDescriptorPrefix || operand.target === "-")
-      && /^(?:\d+|-)$/.test(operand.target ?? "");
+    const descriptor = descriptorPrefix && /^(?:\d+|-)$/.test(operand.target ?? "");
     outputs.push({ ...operand, descriptor });
     if (operand.end !== undefined) index = Math.max(index, operand.end - 1);
   }

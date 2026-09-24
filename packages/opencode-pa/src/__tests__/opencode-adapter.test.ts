@@ -1866,6 +1866,15 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await before({ tool: "bash" }, { args: { command: `opa ticket list --json ${redirect} /tmp/pap218-tickets.json` } });
     await before({ tool: "bash" }, { args: { command: "opa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } });
     await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
+    await before({ tool: "bash" }, { args: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } });
+
+    for (const command of [
+      "/bin/" + "r" + "m /tmp/pap218-qualified-delete",
+      "/usr/bin/sudo ./git cle" + "an -fd",
+      "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
+      `printf unsafe 2${redirect}1`,
+      `printf unsafe 1${redirect}2`,
+    ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /BLOCKED/);
 
     const protectedPath = "." + "env";
     await assert.rejects(before({ tool: "read" }, { args: { filePath: protectedPath } }), /Protected path access/);

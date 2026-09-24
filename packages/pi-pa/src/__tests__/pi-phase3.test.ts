@@ -121,12 +121,18 @@ test("Pi safety interception uses declared path and bounded shell contexts", () 
     { name: "bash", input: { command: `ppa ticket list --project pa-platform --json ${redirect} /tmp/pap218-tickets.json` } },
     { name: "bash", input: { command: "ppa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
     { name: "bash", input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
+    { name: "bash", input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
   ]) assert.equal(interceptToolCall(call).allowed, true, JSON.stringify(call));
 
   for (const call of [
     { name: "read", input: { path: ".env" } },
     { name: "bash", input: { command: "cat ~/.ssh/id_ed25519" } },
     { name: "bash", input: { command: `printf unsafe ${redirect} ./report.json` } },
+    { name: "bash", input: { command: "/bin/" + "r" + "m /tmp/pap218-qualified-delete" } },
+    { name: "bash", input: { command: "/usr/bin/sudo ./git cle" + "an -fd" } },
+    { name: "bash", input: { command: "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'" } },
+    { name: "bash", input: { command: `printf unsafe 2${redirect}1` } },
+    { name: "bash", input: { command: `printf unsafe 1${redirect}2` } },
   ]) assert.equal(interceptToolCall(call).allowed, false, JSON.stringify(call));
 
   const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });
