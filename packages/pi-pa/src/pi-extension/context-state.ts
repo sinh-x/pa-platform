@@ -15,6 +15,7 @@ import type { TodoDetails, TodoTask } from "./todo.js";
 const execFileAsync = promisify(execFile);
 export const CONTEXT_REFRESH_INTERVAL_MS = 2_000;
 export const CONTEXT_LOOKUP_DEADLINE_MS = 500;
+export const PA_CANONICAL_REPO_ROOT_ENV = "PA_REPO_ROOT";
 
 export interface GitContext {
   available: boolean;
@@ -268,7 +269,10 @@ function modelContext(model: ContextRefreshInput["model"], env: NodeJS.ProcessEn
 }
 
 function repositoryContext(cwd: string, env: NodeJS.ProcessEnv): RepositoryContext {
-  return { cwd, identity: nonEmpty(env["PA_REPO"]) ?? (basename(cwd) || cwd) };
+  return {
+    cwd,
+    identity: nonEmpty(env[PA_CANONICAL_REPO_ROOT_ENV]) ?? nonEmpty(env["PA_REPO"]) ?? (basename(cwd) || cwd),
+  };
 }
 
 function todoContext(details: TodoDetails | undefined): TodoContext {

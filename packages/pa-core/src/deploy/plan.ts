@@ -40,6 +40,8 @@ export interface TreehouseLaunchEvidence {
   readonly repositoryPermit: 1 | 2 | 3 | 4;
 }
 
+export type ExecutionPlanEnvironmentKey = PaEnvKey | "PA_REPO_ROOT";
+
 export interface ExecutionPlan {
   readonly runtime: RuntimeName;
   readonly team: string;
@@ -64,7 +66,7 @@ export interface ExecutionPlan {
   readonly userObjectiveOverride?: string;
   readonly skills: readonly ExecutionPlanSkill[];
   readonly memoryDocuments: readonly string[];
-  readonly environment: Readonly<Partial<Record<PaEnvKey, string>>>;
+  readonly environment: Readonly<Partial<Record<ExecutionPlanEnvironmentKey, string>>>;
   readonly timeoutSeconds: number;
   readonly provider?: string;
   readonly model?: string;
@@ -203,6 +205,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       ...options.environment,
       PA_REPO: repository.worktreeRoot,
       PA_WORKTREE_ROOT: repository.worktreeRoot,
+      PA_REPO_ROOT: repository.repoRoot,
       ...(options.treehouse ? {
         PA_TREEHOUSE_LEASE_ID: options.treehouse.leaseId,
         PA_TREEHOUSE_LEASE_HOLDER: options.treehouse.leaseHolder,

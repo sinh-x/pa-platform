@@ -327,7 +327,8 @@ test("two same-root plans independently reach the injected spawn seam without ow
     const spawned: string[] = [];
     const injectedSpawn = async (plan: ExecutionPlan): Promise<void> => {
       assert.equal(plan.repoRoot, fixture.repo);
-      assert.deepEqual(Object.keys(plan.environment).sort(), ["PA_REPO", "PA_WORKTREE_ROOT"]);
+      assert.equal(plan.environment.PA_REPO_ROOT, fixture.repo);
+      assert.deepEqual(Object.keys(plan.environment).sort(), ["PA_REPO", "PA_REPO_ROOT", "PA_WORKTREE_ROOT"]);
       spawned.push(plan.lifecycle.deploymentId);
     };
 

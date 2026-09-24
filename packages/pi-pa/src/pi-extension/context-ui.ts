@@ -23,6 +23,7 @@ import {
 
 export const CONTEXT_STATUS_ID = "pa-context";
 export const CONTEXT_MIN_WIDTH = 120;
+export const CONTEXT_WIDTH_PERCENT = 68;
 
 export interface ContextUiModuleOptions {
   collector?: ContextCollectorDependencies;
@@ -77,8 +78,8 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       {
         overlay: true,
         overlayOptions: {
-          anchor: "right-center",
-          width: "34%",
+          anchor: "top-right",
+          width: `${CONTEXT_WIDTH_PERCENT}%`,
           minWidth: 42,
           maxHeight: "90%",
           margin: { right: 1 },
