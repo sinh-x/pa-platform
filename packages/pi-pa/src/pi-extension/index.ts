@@ -1,9 +1,10 @@
 import { Type, type TSchema } from "typebox";
 import { BulletinStore, TicketStore, closeDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses } from "@pa-platform/pa-core";
-import * as PaSafety from "@pa-platform/pa-core";
+import { isBlockedFilePath, isDestructiveCommand } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment } from "../diagnostics.js";
 import { configurePiRegistryBinding } from "../native-host.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
+import * as PaSafety from "@pa-platform/pa-core";
 import { registerQuestionModule } from "./question.js";
 import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
@@ -307,7 +308,7 @@ interface AdapterSafetyModule {
   isDestructiveCommand: (command: string) => boolean;
   formatTrashMoveGuidance?: (target: string, executable?: string) => string;
 }
-const ADAPTER_SAFETY = PaSafety as unknown as AdapterSafetyModule;
+const ADAPTER_SAFETY = { ...PaSafety, isBlockedFilePath, isDestructiveCommand } as unknown as AdapterSafetyModule;
 const PATH_KEYS = new Set(["path", "filePath", "file_path"]);
 
 function evaluateAdapterSafety(input: AdapterSafetyInput, trashExecutable: string): AdapterSafetyDecision {
