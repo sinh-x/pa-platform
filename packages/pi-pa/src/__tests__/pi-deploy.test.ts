@@ -1895,6 +1895,8 @@ test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root
       assert.equal(plan.memoryDocumentRoot, worktree);
       assert.equal(plan.environment.PA_REPO, worktree);
       assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
+      assert.equal(plan.environment.PA_REPO_ROOT, primary);
+      assert.equal(opts.env.PA_REPO_ROOT, primary);
       assert.equal(plan.repositoryAdmission.slot, "implement");
       assert.equal(plan.repositoryAdmission.gitSnapshot?.dirty, true);
       assert.equal(opts.repositoryLease?.canonicalRepoRoot, primary);
@@ -1953,6 +1955,8 @@ test("requirements/review-auto CWD inference keeps canonical and authenticated l
     assert.equal(plan.memoryDocumentRoot, worktree);
     assert.equal(plan.environment.PA_REPO, worktree);
     assert.equal(plan.environment.PA_WORKTREE_ROOT, worktree);
+    assert.equal(plan.environment.PA_REPO_ROOT, primary);
+    assert.equal(opts.env.PA_REPO_ROOT, primary);
     const started = getDeploymentEvents(opts.deployId).find((event) => event.event === "started");
     assert.deepEqual(
       { repo: started?.repo, repoRoot: started?.repo_root, worktreeRoot: started?.worktree_root },

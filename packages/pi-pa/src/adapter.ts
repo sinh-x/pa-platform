@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { spawn as spawnPty, type IPty } from "node-pty";
-import { appendActivityEvent, createActivityEvent, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
+import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
@@ -269,29 +269,58 @@ export class PiAdapter implements RuntimeAdapter {
 }
 
 export function assertPiExecutionRootAgreement(plan: SpawnOpts["executionPlan"], env: Record<string, string> | undefined): void {
-  if (!plan || (plan.repoRoot === undefined && plan.worktreeRoot === undefined && env?.["PA_REPO"] === undefined && env?.["PA_WORKTREE_ROOT"] === undefined)) return;
+  if (!plan) return;
+  const plannedEnvironment = plan.environment ?? {};
+  if (plan.repoRoot === undefined && plan.worktreeRoot === undefined
+    && plannedEnvironment.PA_REPO === undefined && plannedEnvironment.PA_WORKTREE_ROOT === undefined && plannedEnvironment.PA_REPO_ROOT === undefined
+    && env?.["PA_REPO"] === undefined && env?.["PA_WORKTREE_ROOT"] === undefined && env?.["PA_REPO_ROOT"] === undefined) return;
   const roots = [plan.repoRoot, plan.worktreeRoot, plan.repositoryCwd];
   if (roots.some((root) => !root || resolve(root) !== root) || plan.repositoryCwd !== plan.worktreeRoot) {
-    if (plan.treehouse) throw new Error(treehouseIdentityDiagnostic("the immutable execution plan does not identify one exact absolute Treehouse worktree"));
-    throw new Error("repository-identity: Pi execution plan repositoryCwd must equal the exact absolute worktree root; no runtime was started");
+    throw new Error(piExecutionRootDiagnostic(
+      plan.treehouse ? "Treehouse runtime repository identity" : "Pi execution root agreement",
+      plan.treehouse
+        ? "the immutable execution plan does not identify one exact absolute Treehouse worktree"
+        : "the immutable execution plan repositoryCwd must equal its exact absolute worktreeRoot",
+      Boolean(plan.treehouse),
+    ));
   }
+  const plannedExecutionRoots = [plannedEnvironment.PA_REPO, plannedEnvironment.PA_WORKTREE_ROOT];
+  const runtimeExecutionRoots = [env?.["PA_REPO"], env?.["PA_WORKTREE_ROOT"]];
+  const executionRootsAgree = [...plannedExecutionRoots, ...runtimeExecutionRoots]
+    .every((root) => root === undefined || root === plan.worktreeRoot);
+  const canonicalRootsAgree = [plannedEnvironment.PA_REPO_ROOT, env?.["PA_REPO_ROOT"]]
+    .every((root) => root === undefined || root === plan.repoRoot);
   if (plan.treehouse) {
     const exact = plan.treehouse.path === plan.worktreeRoot
-      && plan.environment.PA_REPO === plan.worktreeRoot
-      && plan.environment.PA_WORKTREE_ROOT === plan.worktreeRoot
-      && env?.["PA_REPO"] === plan.worktreeRoot
-      && env?.["PA_WORKTREE_ROOT"] === plan.worktreeRoot;
-    if (!exact) throw new Error(treehouseIdentityDiagnostic("PA_REPO, PA_WORKTREE_ROOT, repositoryCwd, and authenticated Treehouse path do not agree exactly"));
+      && plannedExecutionRoots.every((root) => root === plan.worktreeRoot)
+      && runtimeExecutionRoots.every((root) => root === plan.worktreeRoot)
+      && canonicalRootsAgree;
+    if (!exact) throw new Error(piExecutionRootDiagnostic(
+      "Treehouse runtime repository identity",
+      "canonical repository evidence, PA_REPO, PA_WORKTREE_ROOT, repositoryCwd, and authenticated Treehouse path do not agree in their respective identity domains",
+      true,
+    ));
     return;
   }
-  if ((env?.["PA_REPO"] !== undefined && env["PA_REPO"] !== plan.worktreeRoot)
-    || (env?.["PA_WORKTREE_ROOT"] !== undefined && env["PA_WORKTREE_ROOT"] !== plan.worktreeRoot)) {
-    throw new Error("repository-identity: Pi environment roots do not match the immutable execution plan; no runtime was started");
+  if (!executionRootsAgree || !canonicalRootsAgree) {
+    throw new Error(piExecutionRootDiagnostic(
+      "Pi execution root agreement",
+      "canonical repository evidence or execution-root environment evidence does not match the immutable execution plan",
+      false,
+    ));
   }
 }
 
-function treehouseIdentityDiagnostic(reason: string): string {
-  return `Condition: Treehouse runtime repository identity. Source: immutable Pi execution plan and protected process environment. Reason: ${reason}. Correction: preserve the checkout, lease, branch, slot, and permit; reconcile all execution paths from authenticated Treehouse evidence. Resume Action: launch a fresh PPA builder only after the exact worktree identity agrees; no runtime was started.`;
+function piExecutionRootDiagnostic(condition: string, reason: string, treehouse: boolean): string {
+  return formatBoundedFiveFieldDiagnostic({
+    condition,
+    source: "immutable Pi execution plan and protected process environment",
+    reason,
+    correction: treehouse
+      ? "preserve the checkout, lease, branch, slot, and permit; reconcile canonical identity separately from all authenticated worktree execution paths"
+      : "reconcile canonical repository identity separately from repositoryCwd, PA_REPO, and PA_WORKTREE_ROOT before Pi preflight",
+    resumeAction: "launch a fresh managed PPA session only after the exact identity-domain evidence agrees; no runtime was started",
+  });
 }
 
 function probeNativeRegistryFromCurrentBuild(env: NodeJS.ProcessEnv, secretValues: string[]): PiNativeHostEvidence | undefined {
