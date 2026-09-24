@@ -13,6 +13,8 @@ import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
+import { collectContext, initialContextSnapshot } from "../pi-extension/context-state.js";
+import { collectGitContext, gitContextStatePath } from "../pi-extension/git-context-state.js";
 import { PI_FOREGROUND_COMPLETION_FILE, readPiForegroundCompletion, readPiTerminalStatus, writePiForegroundCompletion, writePiTerminalStatus } from "../terminal-status.js";
 import { assertBuilderExclusiveRepositoryAdmission, installGitStateRecorder, type GitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
@@ -1929,6 +1931,110 @@ test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root
   });
 });
 
+test("one fresh linked-worktree launch keeps every Pi and Git execution CWD equal while canonical identity stays separate", async () => {
+  await withPiEnv(async (root, gitState) => {
+    const canonicalRoot = join(root, "repo");
+    const worktreeRoot = join(root, "linked-pap-221-cross-layer");
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", "feature/PAP-221-cross-layer", worktreeRoot], { cwd: canonicalRoot, stdio: "ignore" });
+    process.chdir(worktreeRoot);
+
+    let spawnOptions: SpawnOpts | undefined;
+    let processCwd = "";
+    let toolCwd = "";
+    let processGitTopLevel = "";
+    let piContextCwd = "";
+    let contextToolCwd = "";
+    let altIRepository = "";
+    let altIPath = "";
+    let altGGitTopLevel = "";
+    let altGStatePath = "";
+    const adapter = new class extends PiAdapter {
+      override spawn(opts: SpawnOpts): Promise<SpawnResult> {
+        spawnOptions = opts;
+        return super.spawn(opts);
+      }
+    }({
+      cwd: join(root, "adapter-local-cwd-must-not-win"),
+      versionProbe: () => "0.84.4",
+      nativeRegistryProbe: () => undefined,
+      runCommand: async (_args, options) => {
+        const childEvidence = JSON.parse(execFileSync(process.execPath, [
+          "--input-type=module",
+          "--eval",
+          [
+            'import { execFileSync } from "node:child_process";',
+            'const toolCwd = execFileSync(process.execPath, ["--input-type=module", "--eval", "process.stdout.write(process.cwd())"], { encoding: "utf8" });',
+            'const gitTopLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();',
+            "process.stdout.write(JSON.stringify({ processCwd: process.cwd(), toolCwd, gitTopLevel }));",
+          ].join(" "),
+        ], { cwd: options.cwd, env: options.env, encoding: "utf8" })) as { processCwd: string; toolCwd: string; gitTopLevel: string };
+        processCwd = childEvidence.processCwd;
+        toolCwd = childEvidence.toolCwd;
+        processGitTopLevel = childEvidence.gitTopLevel;
+
+        const piContext = { cwd: processCwd };
+        piContextCwd = piContext.cwd;
+        const initial = initialContextSnapshot(piContext, { env: options.env, now: () => 1 });
+        const context = await collectContext(initial, piContext, {
+          env: options.env,
+          now: () => 2,
+          gitLookup: async (cwd) => {
+            contextToolCwd = cwd;
+            return { available: true, branch: "feature/PAP-221-cross-layer", dirty: false };
+          },
+          deploymentLookup: async () => "running",
+        });
+        altIRepository = context.repository.identity;
+        altIPath = context.repository.cwd;
+
+        const gitContext = await collectGitContext(undefined, { cwd: piContext.cwd });
+        assert.equal(gitContext.status, "ready");
+        if (gitContext.status === "ready") {
+          altGGitTopLevel = gitContext.snapshot.repositoryRoot;
+          altGStatePath = gitContextStatePath(gitContext.snapshot.repositoryRoot);
+        }
+        return { status: 0, stdout: `${JSON.stringify({ type: "agent_end", stopReason: "stop" })}\n`, stderr: "" };
+      },
+    });
+
+    const result = await deployWithPi({ team: "builder", mode: "implement", ticket: "PAP-221" }, adapter);
+    assert.equal(result.status, "success", result.reason);
+    assert.ok(spawnOptions?.executionPlan);
+    const plan = spawnOptions.executionPlan;
+    const started = getDeploymentEvents(result.deploymentId!).find((event) => event.event === "started");
+    const executionRoots = {
+      selectedWorktreeRoot: plan.worktreeRoot,
+      repositoryCwd: plan.repositoryCwd,
+      environmentRepo: plan.environment.PA_REPO,
+      environmentWorktreeRoot: plan.environment.PA_WORKTREE_ROOT,
+      runtimeEnvironmentRepo: spawnOptions.env.PA_REPO,
+      runtimeEnvironmentWorktreeRoot: spawnOptions.env.PA_WORKTREE_ROOT,
+      processCwd,
+      piContextCwd,
+      toolCwd,
+      contextToolCwd,
+      processGitTopLevel,
+      altGGitTopLevel,
+      memoryRoot: plan.memoryDocumentRoot,
+      registryRepo: started?.repo,
+      registryWorktreeRoot: started?.worktree_root,
+    };
+    assert.deepEqual(new Set(Object.values(executionRoots)), new Set([worktreeRoot]));
+    assert.ok(Object.values(executionRoots).every((value) => value === worktreeRoot));
+
+    assert.equal(plan.repoRoot, canonicalRoot);
+    assert.equal(plan.environment.PA_REPO_ROOT, canonicalRoot);
+    assert.equal(spawnOptions.env.PA_REPO_ROOT, canonicalRoot);
+    assert.equal(started?.repo_root, canonicalRoot);
+    assert.equal(altIRepository, canonicalRoot);
+    assert.equal(altIPath, worktreeRoot);
+    assert.notEqual(canonicalRoot, worktreeRoot);
+    assert.equal(altGStatePath, join(worktreeRoot, ".pi", "pa-git-context.json"));
+    assert.notEqual(altGStatePath, join(canonicalRoot, ".pi", "pa-git-context.json"));
+    assert.deepEqual(gitState.readOperations(), [["worktree", "list", "--porcelain", "-z"]]);
+  });
+});
+
 test("requirements/review-auto CWD inference keeps canonical and authenticated linked-worktree identities in separate domains", async () => {
   await withPiEnv(async (root) => {
     const primary = join(root, "repo");
@@ -2123,9 +2229,12 @@ test("PPA key and exact-path builder requests consume one canonical builder-excl
       assert.equal(Object.isFrozen(observation.plan), true);
       assert.equal(observation.plan.repoKey, "pa-platform");
       assert.equal(observation.plan.repoRoot, repo);
+      assert.equal(observation.plan.worktreeRoot, repo);
       assert.equal(observation.plan.repositoryCwd, repo);
       assert.equal(observation.plan.memoryDocumentRoot, repo);
       assert.equal(observation.plan.environment.PA_REPO, repo);
+      assert.equal(observation.plan.environment.PA_WORKTREE_ROOT, repo);
+      assert.equal(observation.plan.environment.PA_REPO_ROOT, repo);
       assert.equal(observation.plan.userObjectiveOverride, undefined);
       assertBuilderExclusiveRepositoryAdmission(observation.plan, observation.primer);
       assert.equal(observation.plan.repositoryAdmission.launchMode, "background");
