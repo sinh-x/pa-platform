@@ -94,8 +94,8 @@ test("board, focus, and metrics build from TicketStore", () => {
 test("board sorts every status group by deterministic natural ticket ID", () => {
   withTicketEnv((_root, ticketsDir) => {
     mkdirSync(ticketsDir, { recursive: true });
-    const writeTicket = (file: string, id: string, status: "implementing" | "pending-approval", priority: "critical" | "high" | "medium" | "low") => {
-      writeFileSync(join(ticketsDir, `${file}.json`), JSON.stringify({
+    const writeTicket = (id: string, status: "implementing" | "pending-approval", priority: "critical" | "high" | "medium" | "low") => {
+      writeFileSync(join(ticketsDir, `${id}.json`), JSON.stringify({
         id,
         project: id.startsWith("PA-") ? "personal" : "pa-platform",
         title: id,
@@ -109,14 +109,14 @@ test("board sorts every status group by deterministic natural ticket ID", () => 
       }));
     };
 
-    writeTicket("standard-1", "PAP-10", "implementing", "critical");
-    writeTicket("standard-2", "PAP-2", "implementing", "low");
-    writeTicket("standard-3", "PAP-002", "implementing", "high");
-    writeTicket("standard-4", "PA-10", "implementing", "medium");
-    writeTicket("standard-5", "PA-2", "implementing", "medium");
-    writeTicket("fallback-1", "TASK-item10", "pending-approval", "high");
-    writeTicket("fallback-2", "TASK-item2", "pending-approval", "medium");
-    writeTicket("fallback-3", "TASK-item02", "pending-approval", "low");
+    writeTicket("PAP-10", "implementing", "critical");
+    writeTicket("PAP-2", "implementing", "low");
+    writeTicket("PAP-002", "implementing", "high");
+    writeTicket("PA-10", "implementing", "medium");
+    writeTicket("PA-2", "implementing", "medium");
+    writeTicket("TASK-10", "pending-approval", "high");
+    writeTicket("TASK-2", "pending-approval", "medium");
+    writeTicket("TASK-002", "pending-approval", "low");
 
     const sequences = Array.from({ length: 10 }, () => buildBoardView().columns.map((column) => column.tickets.map((ticket) => ticket.id)));
     assert.deepEqual(sequences.slice(1), Array(9).fill(sequences[0]), "10 consecutive builds return identical sequences");
@@ -127,7 +127,7 @@ test("board sorts every status group by deterministic natural ticket ID", () => 
     assert.deepEqual(implementing.tickets.slice(-2).map((ticket) => ticket.priority), ["low", "critical"], "priority metadata remains but cannot override ID order");
 
     const pendingApproval = board.columns.find((column) => column.status === "pending-approval")!;
-    assert.deepEqual(pendingApproval.tickets.map((ticket) => ticket.id), ["TASK-item02", "TASK-item2", "TASK-item10"]);
+    assert.deepEqual(pendingApproval.tickets.map((ticket) => ticket.id), ["TASK-002", "TASK-2", "TASK-10"]);
     assert.deepEqual(board.columns.map((column) => column.status), ["idea", "requirement-review", "pending-approval", "pending-implementation", "implementing", "review-uat", "done", "rejected", "cancelled"]);
     assert.equal(board.total, 8);
   });

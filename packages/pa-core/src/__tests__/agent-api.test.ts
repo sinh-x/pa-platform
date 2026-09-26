@@ -380,8 +380,8 @@ test("agent API board resolves projects, applies legacy filters, and includes do
     store.create({ project: "pa-platform", title: "API backlog", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: ["backlog"], blockedBy: [], doc_refs: [], comments: [] }, "test");
     store.create({ project: "pa-platform", title: "API FYI", summary: "Summary", description: "", status: "idea", priority: "medium", type: "fyi", assignee: "builder/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
     store.create({ project: "personal", title: "API personal", summary: "Summary", description: "", status: "idea", priority: "low", type: "task", assignee: "sinh", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
-    writeFileSync(join(root, "tickets", "natural-two.json"), JSON.stringify({ ...apiVisible, id: "PAP-2", title: "API natural two", priority: "low", doc_refs: [] }));
-    writeFileSync(join(root, "tickets", "natural-ten.json"), JSON.stringify({ ...apiVisible, id: "PAP-10", title: "API natural ten", priority: "critical", doc_refs: [] }));
+    writeFileSync(join(root, "tickets", "PAP-2.json"), JSON.stringify({ ...apiVisible, id: "PAP-2", title: "API natural two", priority: "low", doc_refs: [] }));
+    writeFileSync(join(root, "tickets", "PAP-10.json"), JSON.stringify({ ...apiVisible, id: "PAP-10", title: "API natural ten", priority: "critical", doc_refs: [] }));
 
     const { app } = createAgentApiApp();
     const allResponse = await app.request("/api/board");
@@ -438,7 +438,7 @@ test("agent API board stays below the 500-ticket p95 response budget", async () 
     const ticketsDir = join(root, "tickets");
     mkdirSync(ticketsDir, { recursive: true });
     for (let index = 1; index <= 500; index++) {
-      writeFileSync(join(ticketsDir, `performance-${index}.json`), JSON.stringify({
+      writeFileSync(join(ticketsDir, `PAP-${index}.json`), JSON.stringify({
         id: `PAP-${index}`,
         project: "pa-platform",
         title: `Performance ticket ${index}`,
@@ -616,6 +616,8 @@ test("agent API deployment ticket association rejects malformed, unauthorized, a
     const current = store.create({ project: "pa-platform", title: "Current ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
     const replacement = store.create({ project: "pa-platform", title: "Replacement ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
     const crossProject = store.create({ project: "other", title: "Cross-project ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    writeFileSync(join(root, "outside.json"), "{outside-malformed-json");
+    writeFileSync(join(root, "tickets", "PAP-900.json"), JSON.stringify({ _alias: true, movedTo: "../outside" }));
     const canonicalRoot = join(root, "repo");
     const started = (deploymentId: string, fields: { team?: string; mode?: string; ticket_id?: string } = {}) => appendRegistryEvent({ deployment_id: deploymentId, team: fields.team ?? "requirements", mode: fields.mode ?? "analyze", event: "started", timestamp: "2026-09-24T00:00:00.000Z", repo_root: canonicalRoot, ...(fields.ticket_id ? { ticket_id: fields.ticket_id } : {}) });
     started("d-api-self");
@@ -624,6 +626,7 @@ test("agent API deployment ticket association rejects malformed, unauthorized, a
     appendRegistryEvent({ deployment_id: "d-api-terminal", team: "requirements", event: "completed", timestamp: "2026-09-24T00:01:00.000Z", status: "success" });
     started("d-api-unknown-ticket");
     started("d-api-cross-project");
+    started("d-api-invalid-ticket");
     started("d-api-stale", { ticket_id: current.id });
     started("d-api-protected", { team: "builder", mode: "implement", ticket_id: current.id });
     const api = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-self", credential: "agent-credential", operatorCredential: "operator-credential" } });
@@ -639,6 +642,12 @@ test("agent API deployment ticket association rejects malformed, unauthorized, a
       { name: "unknown deployment", target: "d-api-missing", headers: operatorHeaders, body: JSON.stringify(validAttach), status: 404, reason: "deployment-not-found" },
       { name: "terminal deployment", target: "d-api-terminal", headers: operatorHeaders, body: JSON.stringify(validAttach), status: 409, reason: "deployment-not-running" },
       { name: "unknown ticket", target: "d-api-unknown-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "PAP-9999" }), status: 404, reason: "ticket-not-found" },
+      { name: "traversal ticket", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "../outside" }), status: 400, reason: "invalid-ticket-id" },
+      { name: "absolute ticket", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "/absolute/outside" }), status: 400, reason: "invalid-ticket-id" },
+      { name: "separator ticket", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "PAP/001" }), status: 400, reason: "invalid-ticket-id" },
+      { name: "encoded traversal ticket", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "%2e%2e%2foutside" }), status: 400, reason: "invalid-ticket-id" },
+      { name: "decoded traversal expectation", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, expectedTicketId: "../outside" }), status: 400, reason: "invalid-ticket-id" },
+      { name: "alias escape ticket", target: "d-api-invalid-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "PAP-900" }), status: 404, reason: "ticket-not-found" },
       { name: "cross-project ticket", target: "d-api-cross-project", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: crossProject.id }), status: 409, reason: "ticket-project-mismatch" },
       { name: "stale expectation", target: "d-api-stale", headers: operatorHeaders, body: JSON.stringify({ ticketId: replacement.id, expectedTicketId: null, reason: "stale" }), status: 409, reason: "stale-expectation" },
       { name: "protected builder replacement", target: "d-api-protected", headers: operatorHeaders, body: JSON.stringify({ ticketId: replacement.id, expectedTicketId: current.id, reason: "replace" }), status: 409, reason: "protected-builder-replacement" },
@@ -659,6 +668,9 @@ test("agent API deployment ticket association rejects malformed, unauthorized, a
       if (entry.name === "missing authentication") unauthorizedBody = responseBody;
       if (entry.name === "invalid authentication") assert.deepEqual(responseBody, unauthorizedBody);
       if (entry.status === 401 || entry.status === 403) assert.equal(responseBody.error.includes(entry.target), false, entry.name);
+      if (entry.reason === "invalid-ticket-id" || entry.name === "alias escape ticket") {
+        assert.doesNotMatch(responseBody.error, /outside-malformed-json|Unexpected token|absolute\/outside/, entry.name);
+      }
       assert.deepEqual(getDeploymentEvents(entry.target), beforeEvents, entry.name);
       assert.equal(queryDeploymentStatus(entry.target)?.ticket_id, beforeTicket, entry.name);
     }

@@ -6,6 +6,7 @@ import { parseTimestamp } from "../time.js";
 import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js";
 import { formatBoundedFiveFieldDiagnostic, loadReposYaml } from "../repos.js";
 import { TicketStore } from "../tickets/store.js";
+import { isCanonicalTicketId } from "../tickets/validate.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
@@ -148,6 +149,7 @@ export type TicketAssociationErrorCode =
   | "deployment-not-running"
   | "repository-identity-missing"
   | "repository-unregistered"
+  | "invalid-ticket-id"
   | "ticket-not-found"
   | "ticket-project-mismatch"
   | "stale-expectation"
@@ -170,12 +172,12 @@ export class TicketAssociationError extends Error {
 export function associateDeploymentTicket(input: AssociateDeploymentTicketInput): AssociateDeploymentTicketResult {
   const actor = validatedAssociationText(input.actor, 128, "actor", "invalid-actor");
   const reason = validatedAssociationText(input.reason, 1_000, "reason", "invalid-reason");
-  const requestedTicketId = input.ticketId.trim();
-  if (requestedTicketId.length === 0) {
-    throw associationError("ticket-not-found", "deployment ticket association rejected", "target ticket validation", "the requested ticket ID is empty", "provide the ID of an existing ticket", "retry with a same-project ticket ID");
+  if (!isCanonicalTicketId(input.ticketId)) {
+    throw associationError("invalid-ticket-id", "deployment ticket association rejected", "canonical target ticket validation", "the requested ticket ID is not canonical", "provide an uppercase project prefix, hyphen, and numeric sequence within 64 characters", "retry with a canonical same-project ticket ID");
   }
-  if (input.expectedTicketId !== null && (typeof input.expectedTicketId !== "string" || input.expectedTicketId.length === 0)) {
-    throw associationError("stale-expectation", "deployment ticket association rejected", "compare-and-set validation", "the expected ticket must be semantic none or an exact non-empty current ticket ID", "reread the current deployment ticket projection", "retry with null for no ticket or the exact current ticket ID");
+  const requestedTicketId = input.ticketId;
+  if (input.expectedTicketId !== null && !isCanonicalTicketId(input.expectedTicketId)) {
+    throw associationError("invalid-ticket-id", "deployment ticket association rejected", "canonical expected ticket validation", "the expected ticket ID is not canonical", "use null for no current ticket or provide the exact canonical current ticket ID", "reread the current projection and retry with canonical compare-and-set evidence");
   }
 
   const db = getDb();
@@ -203,7 +205,12 @@ export function associateDeploymentTicket(input: AssociateDeploymentTicketInput)
       throw associationError("repository-unregistered", "deployment repository association rejected", "canonical repository registry", "the deployment repo_root does not resolve to exactly one registered project", "register one canonical project for the immutable repo_root", "retry after canonical repository registration is unambiguous");
     }
     const projectKey = repositoryMatches[0]![0];
-    const ticket = new TicketStore().get(requestedTicketId);
+    let ticket: ReturnType<TicketStore["get"]>;
+    try {
+      ticket = new TicketStore().get(requestedTicketId);
+    } catch {
+      throw associationError("ticket-not-found", "deployment ticket association rejected", "ticket store lookup", "the requested ticket is unavailable or invalid", "provide an existing canonical ticket with valid store data", "retry with a ticket in the deployment project");
+    }
     if (!ticket) {
       throw associationError("ticket-not-found", "deployment ticket association rejected", "ticket store lookup", "the requested ticket does not exist", "provide an existing ticket ID", "retry with a ticket in the deployment project");
     }

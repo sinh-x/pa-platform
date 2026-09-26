@@ -915,6 +915,8 @@ test("registry ticket association CLI verifies projection and current-ticket con
     mkdirSync(ticketsDir, { recursive: true });
     for (const id of ["PAP-001", "PAP-002"]) writeFileSync(join(ticketsDir, `${id}.json`), JSON.stringify({ id, project: "pa-platform", title: id }));
     writeFileSync(join(ticketsDir, "OTH-001.json"), JSON.stringify({ id: "OTH-001", project: "other", title: "OTH-001" }));
+    writeFileSync(join(ticketsDir, "PAP-900.json"), JSON.stringify({ _alias: true, movedTo: "../outside" }));
+    writeFileSync(join(root, "outside.json"), "{outside-malformed-json");
 
     const deployId = "d-cli-associate";
     const primerDir = join(root, "deployments", deployId);
@@ -1001,6 +1003,26 @@ test("registry ticket association CLI verifies projection and current-ticket con
       assert.equal(getDeploymentEvents(deployId).length, 3);
       assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
     }
+
+    for (const args of [
+      ["--ticket", "../outside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "traversal"],
+      ["--ticket", "/absolute/outside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "absolute"],
+      ["--ticket", "PAP/001", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "separator"],
+      ["--ticket", "%2e%2e%2foutside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "encoded traversal"],
+      ["--ticket", "PAP-001", "--expected-ticket", "../outside", "--actor", "operator", "--reason", "unsafe expectation"],
+    ]) {
+      const rejected = capture();
+      assert.equal(await runCoreCommand(["registry", "update", deployId, ...args], { io: rejected.io }), 1);
+      assert.match(rejected.stderr.join("\n"), /ticket ID is not canonical/);
+      assert.doesNotMatch(rejected.stderr.join("\n"), /outside-malformed-json|Unexpected token/);
+      assert.equal(getDeploymentEvents(deployId).length, 3);
+      assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
+    }
+    const aliasEscape = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-900", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "alias escape"], { io: aliasEscape.io }), 1);
+    assert.match(aliasEscape.stderr.join("\n"), /requested ticket does not exist/);
+    assert.equal(getDeploymentEvents(deployId).length, 3);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
 
     appendRegistryEvent({ deployment_id: "d-cli-protected", team: "builder", mode: "implement", event: "started", timestamp: "2026-09-24T00:03:00Z", repo_root: join(root, "repo"), ticket_id: "PAP-001" });
     const protectedReplacement = capture();
@@ -1763,8 +1785,8 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
       doc_refs: [],
       comments: [],
     }, "test");
-    writeFileSync(join(root, "tickets", "natural-two.json"), JSON.stringify({ ...coreTicket, id: "PAP-2", title: "Natural order two", priority: "low" }));
-    writeFileSync(join(root, "tickets", "natural-ten.json"), JSON.stringify({ ...coreTicket, id: "PAP-10", title: "Natural order ten", priority: "critical" }));
+    writeFileSync(join(root, "tickets", "PAP-2.json"), JSON.stringify({ ...coreTicket, id: "PAP-2", title: "Natural order two", priority: "low" }));
+    writeFileSync(join(root, "tickets", "PAP-10.json"), JSON.stringify({ ...coreTicket, id: "PAP-10", title: "Natural order ten", priority: "critical" }));
 
     const previousCwd = process.cwd();
     try {

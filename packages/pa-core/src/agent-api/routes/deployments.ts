@@ -116,7 +116,7 @@ export function deploymentsRoutes(resolvePrincipal?: DeploymentTicketPrincipalRe
 const DEPLOYMENT_TICKET_FIELDS = new Set(["ticketId", "expectedTicketId", "reason"]);
 
 function associationErrorStatus(error: TicketAssociationError): 400 | 404 | 409 {
-  if (error.code === "invalid-actor" || error.code === "invalid-reason") return 400;
+  if (error.code === "invalid-actor" || error.code === "invalid-reason" || error.code === "invalid-ticket-id") return 400;
   if (error.code === "deployment-not-found" || error.code === "ticket-not-found") return 404;
   return 409;
 }

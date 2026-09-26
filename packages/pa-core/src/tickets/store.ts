@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
 import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
-import { matchAssignee } from "./validate.js";
+import { isCanonicalTicketId, matchAssignee } from "./validate.js";
 import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
@@ -54,11 +54,7 @@ export class TicketStore {
   }
 
   get(id: string): Ticket | undefined {
-    const path = this.ticketPath(id);
-    if (!existsSync(path)) return undefined;
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    if (raw["_alias"] === true && typeof raw["movedTo"] === "string") return this.get(raw["movedTo"]);
-    return this.normalizeTicket(raw);
+    return this.readTicket(id, new Set<string>());
   }
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
@@ -248,7 +244,38 @@ export class TicketStore {
   }
 
   private ticketPath(id: string): string {
-    return resolve(this.dir, `${id}.json`);
+    if (!isCanonicalTicketId(id)) throw new Error("Ticket ID must be canonical");
+    const directory = resolve(this.dir);
+    const path = resolve(directory, `${id}.json`);
+    if (dirname(path) !== directory) throw new Error("Ticket path must remain inside the ticket store");
+    return path;
+  }
+
+  private readTicket(id: string, visited: Set<string>): Ticket | undefined {
+    if (!isCanonicalTicketId(id) || visited.has(id)) return undefined;
+    visited.add(id);
+    const path = this.ticketPath(id);
+    let descriptor: number;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") return undefined;
+      throw error;
+    }
+    let contents: string;
+    try {
+      if (!fstatSync(descriptor).isFile()) return undefined;
+      contents = readFileSync(descriptor, "utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+    const raw = JSON.parse(contents) as Record<string, unknown>;
+    if (raw["_alias"] === true) {
+      return isCanonicalTicketId(raw["movedTo"]) ? this.readTicket(raw["movedTo"], visited) : undefined;
+    }
+    if (raw["id"] !== id) return undefined;
+    return this.normalizeTicket(raw);
   }
 
   private counterPath(): string {

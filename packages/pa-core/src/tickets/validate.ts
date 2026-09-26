@@ -6,6 +6,12 @@ import { getTeamsDir } from "../paths.js";
 // Ported from PA tickets/validate.ts at frozen PA source on 2026-04-26.
 
 const BARE_NAME_WHITELIST = ["sinh"];
+export const MAX_TICKET_ID_CHARS = 64;
+export const CANONICAL_TICKET_ID_PATTERN = /^[A-Z][A-Z0-9]*-\d+$/;
+
+export function isCanonicalTicketId(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_TICKET_ID_CHARS && CANONICAL_TICKET_ID_PATTERN.test(value);
+}
 
 export function getValidTeamNames(teamsDir = getTeamsDir()): Set<string> {
   const names = new Set<string>();

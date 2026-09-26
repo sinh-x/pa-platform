@@ -13,6 +13,7 @@ import {
   type DeploymentCorrelationEvidence,
 } from "../../deploy/index.js";
 import type { RuntimeName } from "../../types.js";
+import { isCanonicalTicketId } from "../../tickets/validate.js";
 
 export const MAX_DEPLOYMENT_EVENT_BODY_BYTES = 1024 * 1024;
 const MAX_PATH_CHARS = 4_096;
@@ -271,7 +272,7 @@ function requiredTeam(value: unknown): string {
 
 function optionalTicketId(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || !/^[A-Z][A-Z0-9]*-\d+$/.test(value) || value.length > 64) throw new DeploymentEventInputError("ticketId must be canonical");
+  if (!isCanonicalTicketId(value)) throw new DeploymentEventInputError("ticketId must be canonical");
   return value;
 }
 

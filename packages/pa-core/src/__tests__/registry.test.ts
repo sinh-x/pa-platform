@@ -1,15 +1,16 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, TicketAssociationError, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 interface AssociationFixture {
   root: string;
   canonicalRoot: string;
   otherRoot: string;
+  ticketsDir: string;
   writeTicket: (id: string, project?: string) => void;
 }
 
@@ -35,7 +36,7 @@ function withAssociationFixture(run: (fixture: AssociationFixture) => void): voi
   try {
     for (const id of ["PAP-001", "PAP-002", "PAP-003"]) writeTicket(id);
     writeTicket("OTH-001", "other");
-    run({ root, canonicalRoot, otherRoot, writeTicket });
+    run({ root, canonicalRoot, otherRoot, ticketsDir, writeTicket });
   } finally {
     closeDb();
     if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
@@ -196,6 +197,58 @@ test("ticket association trims bounded audit text and rejects invalid limits wit
     const result = associateDeploymentTicket({ deploymentId: "d-association-limits", ticketId: "PAP-001", expectedTicketId: null, actor: ` ${"a".repeat(128)} `, reason: ` ${"r".repeat(1_000)} ` });
     assert.equal(result.actor.length, 128);
     assert.equal(result.reason.length, 1_000);
+  });
+});
+
+test("ticket association and ticket store reject non-canonical paths, unsafe aliases, symlinks, and loaded ID mismatches without writes", () => {
+  withAssociationFixture(({ root, canonicalRoot, ticketsDir }) => {
+    const store = new TicketStore(ticketsDir);
+    const malformedOutsidePath = join(root, "usage", "outside.json");
+    writeFileSync(malformedOutsidePath, "{outside-malformed-json");
+    const outsideTicketPath = join(root, "outside-ticket.json");
+    writeFileSync(outsideTicketPath, JSON.stringify({ id: "PAP-904", project: "pa-platform", title: "Outside" }));
+    symlinkSync(outsideTicketPath, join(ticketsDir, "PAP-904.json"));
+    writeFileSync(join(ticketsDir, "PAP-900.json"), JSON.stringify({ _alias: true, movedTo: "../outside" }));
+    writeFileSync(join(ticketsDir, "PAP-901.json"), JSON.stringify({ id: "PAP-001", project: "pa-platform", title: "Mismatched" }));
+    writeFileSync(join(ticketsDir, "PAP-902.json"), JSON.stringify({ _alias: true, movedTo: "PAP-001" }));
+    writeFileSync(join(ticketsDir, "PAP-903.json"), JSON.stringify({ _alias: true, movedTo: "PAP-903" }));
+
+    for (const id of ["../outside", "..\\outside", "/absolute/outside", "PAP/001", "PAP-1.json", "%2e%2e%2foutside", "..%2Foutside", "%252e%252e%252foutside"]) {
+      assert.equal(store.get(id), undefined, id);
+    }
+    assert.equal(store.get("PAP-900"), undefined, "non-canonical alias target is rejected before lookup");
+    assert.equal(store.get("PAP-901"), undefined, "loaded ticket ID must match its canonical filename");
+    assert.equal(store.get("PAP-903"), undefined, "alias cycles are rejected");
+    assert.equal(store.get("PAP-904"), undefined, "ticket symlinks are not followed");
+    assert.equal(store.get("PAP-902")?.id, "PAP-001", "canonical aliases remain supported");
+
+    const deploymentId = "d-association-paths";
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    const invalidTargets = [
+      "", " PAP-001", "PAP-001 ", "pap-001", "../outside", "..\\outside", "/absolute/outside", "PAP/001",
+      "PAP-../001", "PAP-1.json", "%2e%2e%2foutside", "..%2Foutside", "%252e%252e%252foutside", "A".repeat(65),
+    ];
+    for (const ticketId of invalidTargets) {
+      const error = expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId, expectedTicketId: null, actor: "operator", reason: "reject unsafe target" }), "invalid-ticket-id");
+      assert.doesNotMatch(error.message, /outside-malformed-json|Unexpected token|absolute\/outside/);
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, ticketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, ticketId);
+    }
+    for (const ticketId of ["PAP-900", "PAP-901", "PAP-903", "PAP-904"]) {
+      expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId, expectedTicketId: null, actor: "operator", reason: "reject invalid store entry" }), "ticket-not-found");
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, ticketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, ticketId);
+    }
+    for (const expectedTicketId of ["../outside", "%2e%2e%2foutside", "PAP/001", " PAP-001"] as const) {
+      expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId: "PAP-001", expectedTicketId, actor: "operator", reason: "reject unsafe expectation" }), "invalid-ticket-id");
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, expectedTicketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, expectedTicketId);
+    }
+
+    const validAlias = associateDeploymentTicket({ deploymentId, ticketId: "PAP-902", expectedTicketId: null, actor: "operator", reason: "preserve canonical alias" });
+    assert.equal(validAlias.currentTicketId, "PAP-902");
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "ticket-associated").length, 1);
+    assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, "PAP-902");
   });
 });
 
