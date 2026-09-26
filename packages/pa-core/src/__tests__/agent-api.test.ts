@@ -1236,6 +1236,15 @@ test("agent API PATCH ticket validates and projects planned/materialized linked-
     assert.match(conformingBody.ticket.linkedBranches[0]?.baseSha ?? "", /^[0-9a-f]{40}$/);
     assert.match(conformingBody.ticket.linkedBranches[0]?.headSha ?? "", /^[0-9a-f]{40}$/);
 
+    const exactRemoval = await app.request(`/api/tickets/${ticketId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ remove_linked_branch: "pa-platform:feature/PAP-001-fix-login" }),
+    });
+    assert.equal(exactRemoval.status, 200);
+    assert.deepEqual((await exactRemoval.json() as { ticket: { linkedBranches: unknown[] } }).ticket.linkedBranches, []);
+    assert.deepEqual(new TicketStore().get(ticketId)?.linkedBranches, []);
+
     const secondCreated = await app.request("/api/tickets", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1254,6 +1263,25 @@ test("agent API PATCH ticket validates and projects planned/materialized linked-
     assert.equal(plannedBody.ticket.linkedBranches[0]?.state, "planned");
     assert.equal(plannedBody.ticket.linkedBranches[0]?.baseSha, undefined);
     assert.equal(plannedBody.ticket.linkedBranches[0]?.headSha, undefined);
+
+    const bareRemoval = await app.request(`/api/tickets/${secondId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ remove_linked_branch: "pa-platform" }),
+    });
+    assert.equal(bareRemoval.status, 200);
+    assert.deepEqual((await bareRemoval.json() as { ticket: { linkedBranches: unknown[] } }).ticket.linkedBranches, []);
+    const removalAuditCount = new TicketStore().readAudit().filter((entry) => entry.action === "branch_link_removed").length;
+    assert.equal(removalAuditCount, 2);
+
+    const absentRemoval = await app.request(`/api/tickets/${secondId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ remove_linked_branch: "pa-platform" }),
+    });
+    assert.equal(absentRemoval.status, 200);
+    assert.deepEqual((await absentRemoval.json() as { ticket: { linkedBranches: unknown[] } }).ticket.linkedBranches, []);
+    assert.equal(new TicketStore().readAudit().filter((entry) => entry.action === "branch_link_removed").length, removalAuditCount);
   });
 });
 
