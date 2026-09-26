@@ -2403,6 +2403,7 @@ test("ticket update --help shows usage and returns exit 0 without touching store
     assert.equal(await runCoreCommand(["ticket", "update", "--help"], { io: help.io }), 0);
     assert.match(help.stdout.join("\n"), /Usage: ticket update <id> \[options\]/);
     assert.match(help.stdout.join("\n"), /--title <text>/);
+    assert.match(help.stdout.join("\n"), /--remove-linked-branch <selector> Remove by bare repo or exact repo:branch selector/);
     assert.match(help.stdout.join("\n"), /Examples:/);
     assert.equal(help.stderr.length, 0);
   });
@@ -2436,6 +2437,57 @@ test("ticket --linked-branch stores planned intent, promotes the same entry, and
     const callerSha = capture();
     assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", `pa-platform|feature/PAP-001-cli|${"a".repeat(40)}`], { io: callerSha.io }), 1);
     assert.match(callerSha.stderr.join("\n"), /Expected exactly: repo\|branch/);
+  });
+});
+
+test("ticket update verifies bare linked-branch removal and idempotent absence before success", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Branch removal", "--type", "feature", "--priority", "high", "--estimate", "M", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-remove"], { io: capture().io }), 0);
+
+    const removed = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--remove-linked-branch", "pa-platform"], { io: removed.io }), 0);
+    assert.match(removed.stdout.join("\n"), /Updated PAP-001/);
+    assert.deepEqual(removed.stderr, []);
+    assert.deepEqual(new TicketStore().get("PAP-001")?.linkedBranches, []);
+    const removalAudits = new TicketStore().readAudit().filter((entry) => entry.action === "branch_link_removed");
+    assert.equal(removalAudits.length, 1);
+
+    const absent = capture();
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--remove-linked-branch", "pa-platform"], { io: absent.io }), 0);
+    assert.match(absent.stdout.join("\n"), /Updated PAP-001/);
+    assert.deepEqual(new TicketStore().get("PAP-001")?.linkedBranches, []);
+    assert.equal(new TicketStore().readAudit().filter((entry) => entry.action === "branch_link_removed").length, removalAudits.length);
+  });
+});
+
+test("ticket update returns nonzero without success or linked audits when disk readback mismatches", async () => {
+  await withCliEnv(async () => {
+    assert.equal(await runCoreCommand(["ticket", "create", "--project", "pa-platform", "--title", "Branch rollback", "--type", "feature", "--priority", "high", "--estimate", "M", "--assignee", "builder/team-manager", "--summary", "Summary"], { io: capture().io }), 0);
+    assert.equal(await runCoreCommand(["ticket", "update", "PAP-001", "--linked-branch", "pa-platform|feature/PAP-001-rollback"], { io: capture().io }), 0);
+    const store = new TicketStore();
+    const before = store.get("PAP-001")!;
+    const auditBefore = store.readAudit();
+    const originalGet = TicketStore.prototype.get;
+    let getCalls = 0;
+    TicketStore.prototype.get = function(id: string) {
+      getCalls += 1;
+      return getCalls === 2 ? before : originalGet.call(this, id);
+    };
+
+    const mismatch = capture();
+    try {
+      assert.notEqual(await runCoreCommand(["ticket", "update", "PAP-001", "--remove-linked-branch", "pa-platform"], { io: mismatch.io }), 0);
+    } finally {
+      TicketStore.prototype.get = originalGet;
+    }
+
+    assert.deepEqual(mismatch.stdout, []);
+    const diagnostic = mismatch.stderr.join("\n");
+    assert.ok(diagnostic.length <= 2000);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.match(diagnostic, new RegExp(field));
+    assert.deepEqual(new TicketStore().get("PAP-001"), before);
+    assert.deepEqual(new TicketStore().readAudit(), auditBefore);
   });
 });
 

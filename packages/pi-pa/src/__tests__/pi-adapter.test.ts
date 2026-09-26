@@ -518,37 +518,56 @@ test("managed Pi background configuration carries registered and linked-worktree
   assert.throws(() => readPiBackgroundConfig(treehouseConfig), /background configuration is malformed/);
 });
 
-test("managed Pi rejects root disagreement before preflight or background runner spawn", async () => {
+test("managed Pi bounds every generic root disagreement and rejects before preflight or spawn", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-root-mismatch-"));
   const primary = join(dir, "primary");
   const worktree = join(dir, "linked");
   const primer = join(dir, "primer.md");
   writeFileSync(primer, "work");
-  let preflights = 0;
-  let launches = 0;
-  const adapter = new PiAdapter({
-    versionProbe: () => { preflights += 1; return "0.84.4"; },
-    supervision: { launchBackgroundRunner: (() => { launches += 1; return new FakePiChild() as never; }) },
-  });
-  const result = await adapter.spawn({
-    primerPath: primer,
-    deployId: "d-root-mismatch",
-    mode: "background",
-    executionPlan: {
-      runtime: "pi",
-      team: "builder",
-      mode: "implement",
-      repoRoot: primary,
-      worktreeRoot: worktree,
-      repositoryCwd: primary,
-      repositoryAdmission: { slot: "implement" },
-      skills: [],
-    } as never,
-  });
-  assert.equal(result.exitCode, 1);
-  assert.match(result.errorMessage ?? "", /repositoryCwd must equal the exact absolute worktree root/);
-  assert.equal(preflights, 0);
-  assert.equal(launches, 0);
+  const basePlan = {
+    runtime: "pi",
+    team: "builder",
+    mode: "implement",
+    repoRoot: primary,
+    worktreeRoot: worktree,
+    repositoryCwd: worktree,
+    repositoryAdmission: { slot: "implement" },
+    environment: { PA_REPO: worktree, PA_WORKTREE_ROOT: worktree, PA_REPO_ROOT: primary },
+    skills: [],
+  } as const;
+  const cases = [
+    { name: "repositoryCwd", plan: { ...basePlan, repositoryCwd: primary } },
+    { name: "planned PA_REPO", plan: { ...basePlan, environment: { ...basePlan.environment, PA_REPO: primary } } },
+    { name: "planned PA_WORKTREE_ROOT", plan: { ...basePlan, environment: { ...basePlan.environment, PA_WORKTREE_ROOT: primary } } },
+    { name: "planned canonical root", plan: { ...basePlan, environment: { ...basePlan.environment, PA_REPO_ROOT: worktree } } },
+    { name: "runtime PA_REPO", plan: basePlan, env: { PA_REPO: primary } },
+    { name: "runtime PA_WORKTREE_ROOT", plan: basePlan, env: { PA_WORKTREE_ROOT: primary } },
+    { name: "runtime canonical root", plan: basePlan, env: { PA_REPO_ROOT: worktree } },
+  ];
+
+  for (const fixture of cases) {
+    let preflights = 0;
+    let launches = 0;
+    const adapter = new PiAdapter({
+      versionProbe: () => { preflights += 1; return "0.84.4"; },
+      supervision: { launchBackgroundRunner: (() => { launches += 1; return new FakePiChild() as never; }) },
+    });
+    const result = await adapter.spawn({
+      primerPath: primer,
+      deployId: `d-root-mismatch-${fixture.name}`,
+      mode: "background",
+      ...(fixture.env ? { env: fixture.env } : {}),
+      executionPlan: fixture.plan as never,
+    });
+    const diagnostic = result.errorMessage ?? "";
+    assert.equal(result.exitCode, 1, fixture.name);
+    assert.ok(diagnostic.length <= 2_000, fixture.name);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) {
+      assert.match(diagnostic, new RegExp(field), `${fixture.name}: ${field}`);
+    }
+    assert.equal(preflights, 0, fixture.name);
+    assert.equal(launches, 0, fixture.name);
+  }
 });
 
 test("managed Pi enforces Treehouse execution environment parity before preflight or spawn", async () => {

@@ -88,7 +88,7 @@ function printTicketUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  --doc-ref <type:path>       Add a doc_ref (optionally --doc-ref-primary)");
   io.stdout("  --remove-doc-ref <path>      Remove a doc_ref by path");
   io.stdout("  --linked-branch <repo|branch> Add planned intent or authenticated materialized evidence");
-  io.stdout("  --remove-linked-branch <repo> Remove a linked branch by repo");
+  io.stdout("  --remove-linked-branch <selector> Remove by bare repo or exact repo:branch selector");
   io.stdout("  --linked-commit <repo|sha|msg|author|ts> Add a linked commit");
   io.stdout("  --remove-linked-commit <sha> Remove a linked commit by sha");
   io.stdout("  --archive                   Archive the ticket (adds \"archived\" tag; ticket must be in a terminal status)");
@@ -231,6 +231,8 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
         return printError(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`, io);
       }
     }
+    // TicketStore.update returns only after its disk-backed get verifies the complete
+    // mutation; a mismatch is rolled back there before this command can print success.
     const ticket = store.update(id, parsed.input, parsed.actor);
     if (parsed.archive) {
       try {

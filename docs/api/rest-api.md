@@ -216,7 +216,7 @@ Fetch a single ticket with related deployments. Supports HTML rendering of markd
 
 ### 6. PATCH /api/tickets/:id
 
-Update ticket fields. Supports adding a linked branch (with optional branch-name validation warning).
+Update ticket fields, including transactional linked-branch addition, removal, or replacement.
 
 **Query parameters:** none
 **Path parameters:** `:id` — ticket id
@@ -233,14 +233,16 @@ Update ticket fields. Supports adding a linked branch (with optional branch-name
 | `tags` | string[] | no | |
 | `blockedBy` | string[] | no | |
 | `doc_refs` | object[] | no | |
-| `add_linked_branch` | `{ repo: string, branch: string, sha?: string, linkedBy?: string }` | no | Triggers branch-name pattern validation; a `warning` field is added to the response when validation fails or the repo is unknown |
-| `remove_linked_branch` | string | no | `"<repo>:<branch>"` to remove |
+| `add_linked_branch` | `{ repo: string, branch: string, linkedBy?: string }` | no | Records planned intent when the branch is absent or authenticated materialized evidence when it exists |
+| `remove_linked_branch` | string | no | Bare `"<repo>"` removes its single normalized record; exact `"<repo>:<branch>"` removes only that record |
 | `add_linked_commit` | `{ repo: string, sha: string, message?: string, author?: string, timestamp?: string, linkedBy?: string }` | no | Appends to `linkedCommits` |
 | `remove_linked_commit` | string | no | SHA to remove from `linkedCommits` |
 | `add_doc_ref` | `{ type?: string, path: string, primary?: boolean, addedBy?: string }` | no | Appends to `doc_refs` |
 | `remove_doc_ref` | string | no | Path to remove from `doc_refs` |
 | `linkedCommits` | `LinkedCommit[]` | no | Direct replacement (camelCase); mutation helpers above are preferred |
 | `actor` | string | no | Audit actor; defaults to `"api"` |
+
+Bare-repository removal applies to planned and materialized records, is idempotent when the repository is absent, and rejects ambiguous same-repository duplicates without persistence. An exact `repo:branch` selector remains supported for compatibility. A request may remove by bare repository and add a replacement branch for that repository atomically. The shared ticket store verifies the complete candidate with a disk-backed read before returning success; validation or readback failure restores the prior ticket and emits no linked-branch mutation audit.
 
 **Response schema (200):**
 

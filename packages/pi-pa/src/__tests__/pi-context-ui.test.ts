@@ -5,6 +5,7 @@ import { deploymentTaskStatusMarker, type AssociateDeploymentTicketInput } from 
 import {
   CONTEXT_LOOKUP_DEADLINE_MS,
   CONTEXT_REFRESH_INTERVAL_MS,
+  PA_CANONICAL_REPO_ROOT_ENV,
   ContextRefreshLimiter,
   collectContext,
   initialContextSnapshot,
@@ -13,6 +14,7 @@ import {
 } from "../pi-extension/context-state.js";
 import {
   CONTEXT_MIN_WIDTH,
+  CONTEXT_WIDTH_PERCENT,
   ContextSidebarComponent,
   formatCompactContext,
   formatContextLines,
@@ -111,6 +113,36 @@ test("registry projection replaces the displayed current ticket without mutating
   assert.equal(env.PA_TICKET_ID, "PAP-OLD");
   assert.match(formatContextLines(snapshot).join("\n"), /Current ticket: PAP-NEW \(registry\)/);
   assert.match(formatContextLines(snapshot).join("\n"), /Launch ticket \(environment\): PAP-OLD/);
+});
+
+test("managed Alt+I separates canonical repository identity from worktree Path and Git", async () => {
+  const canonicalRoot = "/registered/pa-platform";
+  const worktreeRoot = "/treehouse/PAP-221/pa-platform";
+  const env = {
+    PA_DEPLOYMENT_ID: "d-worktree",
+    PA_REPO: worktreeRoot,
+    PA_WORKTREE_ROOT: worktreeRoot,
+    [PA_CANONICAL_REPO_ROOT_ENV]: canonicalRoot,
+  };
+  let gitLookupCwd = "";
+  const initial = initialContextSnapshot({ cwd: worktreeRoot }, { env, now: () => 1 });
+  const snapshot = await collectContext(initial, { cwd: worktreeRoot }, {
+    env,
+    now: () => 2,
+    gitLookup: async (cwd) => {
+      gitLookupCwd = cwd;
+      return { available: true, branch: "feature/PAP-221-worktree", dirty: true };
+    },
+    deploymentLookup: async () => "running",
+  });
+
+  assert.equal(snapshot.repository.identity, canonicalRoot);
+  assert.equal(snapshot.repository.cwd, worktreeRoot);
+  assert.equal(gitLookupCwd, worktreeRoot);
+  const lines = formatContextLines(snapshot);
+  assert.ok(lines.includes(`Repository: ${canonicalRoot}`));
+  assert.ok(lines.includes(`Path: ${worktreeRoot}`));
+  assert.ok(lines.includes("Git: feature/PAP-221-worktree (dirty)"));
 });
 
 test("500 ms lookup deadline abandons late values and retains stale prior data", async () => {
@@ -473,7 +505,7 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
   let focused = 0;
   let unfocused = 0;
   let hiddenPermanently = 0;
-  let overlayOptions: { anchor?: string; visible?: (width: number, height: number) => boolean } | undefined;
+  let overlayOptions: { anchor?: string; width?: number | string; minWidth?: number; margin?: number | { right?: number }; visible?: (width: number, height: number) => boolean } | undefined;
   const statuses: Array<string | undefined> = [];
 
   registerContextUiModuleWithOptions({
@@ -516,9 +548,14 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   command?.("", context);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(overlayOptions?.anchor, "right-center");
+  assert.equal(overlayOptions?.anchor, "top-right");
+  assert.equal(CONTEXT_WIDTH_PERCENT, 34 * 2);
+  assert.equal(overlayOptions?.width, `${CONTEXT_WIDTH_PERCENT}%`);
+  assert.equal(overlayOptions?.minWidth, 42);
+  assert.deepEqual(overlayOptions?.margin, { right: 1 });
   assert.equal(overlayOptions?.visible?.(CONTEXT_MIN_WIDTH - 1, 40), false);
   assert.equal(overlayOptions?.visible?.(CONTEXT_MIN_WIDTH, 40), true);
+  assert.ok(statuses.at(-1)?.includes("PA:unavailable"), "narrow terminals retain the compact status fallback");
   assert.equal(focused, 1);
 
   shortcut?.(context);
