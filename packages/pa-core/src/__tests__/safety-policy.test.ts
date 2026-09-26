@@ -320,16 +320,26 @@ test("context declarations keep ordinary prose separate from path operands", () 
   assert.equal(classifyShellCommand(`printf '%s\\n' '${protectedToken}'`).allowed, true);
 });
 
-test("bounded shell path operands deny bare extensionless protected basenames", () => {
+test("bounded shell path operands resolve wrappers and approved leading assignments", () => {
   for (const command of [
     `cat ${protectedToken}`,
     `cat -- '${protectedToken}'`,
     `/bin/tac ${protectedToken}`,
+    `command cat ${protectedToken}`,
+    `/usr/bin/command -- /bin/tac '${protectedToken}'`,
+    `sudo cat ${protectedToken}`,
+    `sudo -u root tac ${protectedToken}`,
+    `LC_ALL=C command sudo MODE=read cat ${protectedToken}`,
+    `sudo --unsupported cat ${protectedToken}`,
   ]) assertDenied(command, "protected-path");
 
   for (const command of [
     `echo ${protectedToken}`,
     `printf '%s\\n' '${protectedToken}'`,
+    `command printf '%s\\n' '${protectedToken}'`,
+    `sudo printf '%s\\n' '${protectedToken}'`,
+    `LABEL=${protectedToken} command printf '%s\\n' '${protectedToken}'`,
+    `sudo -u root printf '%s\\n' '${protectedToken}'`,
   ]) assert.equal(classifyShellCommand(command).allowed, true, command);
 });
 

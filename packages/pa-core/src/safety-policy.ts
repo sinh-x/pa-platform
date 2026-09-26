@@ -297,6 +297,23 @@ function extractOtherDeletionTarget(source: string): string | undefined {
 }
 
 const BARE_PATH_OPERAND_COMMANDS = new Set(["cat", "tac"]);
+const SHELL_COMMAND_WRAPPERS = new Set(["command", "sudo"]);
+const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
+const SUDO_FLAGS_WITHOUT_ARGUMENT = new Set([
+  "-A", "-b", "-E", "-H", "-K", "-k", "-n", "-P", "-S", "-V",
+  "--askpass", "--background", "--edit", "--help", "--login", "--non-interactive",
+  "--preserve-env", "--remove-timestamp", "--reset-timestamp", "--stdin", "--validate", "--version",
+]);
+const SUDO_FLAGS_WITH_ARGUMENT = new Set([
+  "-a", "-C", "-c", "-D", "-g", "-h", "-p", "-R", "-r", "-t", "-T", "-U", "-u",
+  "--auth-type", "--chdir", "--chroot", "--close-from", "--command-timeout", "--group", "--host",
+  "--prompt", "--role", "--type", "--user", "--other-user",
+]);
+
+interface BoundedCommandResolution {
+  commandIndex?: number;
+  ambiguousIndex?: number;
+}
 
 function findProtectedShellPath(source: string, cwd?: string): string | undefined {
   const words = tokenizeShell(source);
@@ -306,24 +323,118 @@ function findProtectedShellPath(source: string, cwd?: string): string | undefine
   }
 
   // Bare extensionless names are paths only in this bounded command grammar.
-  // Do not apply protected basename patterns to arbitrary shell arguments,
-  // which may be prose, format strings, or program source.
+  // Resolve approved leading assignments and wrappers before selecting the
+  // effective command, without classifying ordinary arguments to other commands.
   for (let index = 0; index < words.length; index += 1) {
-    const command = words[index];
-    if (!command || command.operator || !isShellCommandStart(words, index)) continue;
-    if (!BARE_PATH_OPERAND_COMMANDS.has(basename(command.value))) continue;
+    const word = words[index];
+    if (!word || word.operator || !isShellCommandStart(words, index)) continue;
+    const resolution = resolveBoundedCommand(words, index);
+    if (resolution.commandIndex !== undefined) {
+      const blocked = findProtectedBoundedOperand(words, resolution.commandIndex, cwd);
+      if (blocked) return blocked;
+    } else if (resolution.ambiguousIndex !== undefined) {
+      // Once a supported wrapper is present, an unsupported option sequence that
+      // still exposes cat/tac plus a protected operand is security-relevant and
+      // fails closed. Unrelated wrapper arguments remain ordinary arguments.
+      for (let cursor = resolution.ambiguousIndex; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+        const candidate = words[cursor];
+        if (!candidate?.operator && BARE_PATH_OPERAND_COMMANDS.has(basename(candidate.value))) {
+          const blocked = findProtectedBoundedOperand(words, cursor, cwd);
+          if (blocked) return blocked;
+        }
+      }
+    }
+  }
+  return undefined;
+}
 
-    let options = true;
-    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
-      const operand = words[cursor];
-      if (!operand || operand.operator) continue;
-      if (options && operand.value === "--") {
-        options = false;
+function resolveBoundedCommand(words: ShellWord[], start: number): BoundedCommandResolution {
+  let cursor = skipLeadingAssignments(words, start);
+
+  while (cursor < words.length && !isCommandBoundary(words[cursor])) {
+    const word = words[cursor];
+    if (!word || word.operator || !SHELL_COMMAND_WRAPPERS.has(basename(word.value))) break;
+    const wrapper = basename(word.value);
+    cursor += 1;
+
+    if (wrapper === "command") {
+      while (cursor < words.length && !words[cursor]?.operator) {
+        const option = words[cursor]?.value;
+        if (option === "--") {
+          cursor += 1;
+          break;
+        }
+        if (option === "-p") {
+          cursor += 1;
+          continue;
+        }
+        if (option === "-v" || option === "-V") return {};
+        if (option?.startsWith("-")) return { ambiguousIndex: cursor };
+        break;
+      }
+    } else {
+      const parsed = skipSudoOptions(words, cursor);
+      if (parsed.ambiguous) return { ambiguousIndex: cursor };
+      cursor = parsed.cursor;
+    }
+
+    cursor = skipLeadingAssignments(words, cursor);
+  }
+
+  const command = words[cursor];
+  if (command && !command.operator && BARE_PATH_OPERAND_COMMANDS.has(basename(command.value))) {
+    return { commandIndex: cursor };
+  }
+  return {};
+}
+
+function skipLeadingAssignments(words: ShellWord[], start: number): number {
+  let cursor = start;
+  while (cursor < words.length) {
+    const word = words[cursor];
+    if (!word || word.operator || !LEADING_ASSIGNMENT.test(word.value)) break;
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function skipSudoOptions(words: ShellWord[], start: number): { cursor: number; ambiguous: boolean } {
+  let cursor = start;
+  while (cursor < words.length && !words[cursor]?.operator) {
+    const option = words[cursor]?.value ?? "";
+    if (option === "--") return { cursor: cursor + 1, ambiguous: false };
+    if (!option.startsWith("-") || option === "-") return { cursor, ambiguous: false };
+    if (SUDO_FLAGS_WITHOUT_ARGUMENT.has(option) || /^-[AbEHKknPSV]+$/.test(option)) {
+      cursor += 1;
+      continue;
+    }
+    const longName = option.includes("=") ? option.slice(0, option.indexOf("=")) : option;
+    if (SUDO_FLAGS_WITH_ARGUMENT.has(longName)) {
+      if (option.includes("=") || /^-[aCcDghpRrtTUu].+/.test(option)) {
+        cursor += 1;
         continue;
       }
-      if (options && operand.value.startsWith("-") && operand.value !== "-") continue;
-      if (findBlockedPathAlias(operand.value, cwd)) return operand.raw;
+      const argument = words[cursor + 1];
+      if (!argument || argument.operator) return { cursor, ambiguous: true };
+      cursor += 2;
+      continue;
     }
+    return { cursor, ambiguous: true };
+  }
+  return { cursor, ambiguous: false };
+}
+
+function findProtectedBoundedOperand(words: ShellWord[], commandIndex: number, cwd?: string): string | undefined {
+  let options = true;
+  for (let cursor = commandIndex + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+    const operand = words[cursor];
+    if (!operand || operand.operator) continue;
+    if (options && operand.value === "--") {
+      options = false;
+      continue;
+    }
+    if (options && operand.value.startsWith("-") && operand.value !== "-") continue;
+    if (findBlockedPathAlias(operand.value, cwd)) return operand.raw;
   }
   return undefined;
 }

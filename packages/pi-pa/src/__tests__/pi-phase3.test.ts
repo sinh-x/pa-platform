@@ -132,6 +132,8 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "bash", input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
     { name: "bash", input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
     { name: "question", input: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose", options: [] } },
+    { name: "bash", input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
     { name: "bash", input: { command: "curl -o/tmp/pap218-pi-attached.json https://example.test/report.json" } },
     { name: "bash", input: { command: "curl -so /tmp/pap218-pi-cluster.json https://example.test/report.json" } },
     { name: "bash", input: { command: "printf ok | tee /tmp/pap218-pi-tee.log" } },
@@ -159,6 +161,15 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "bash", input: { command: `printf unsafe 2${redirect}1` } },
     { name: "bash", input: { command: `printf unsafe 1${redirect}2` } },
   ]) assert.equal(interceptToolCall(call).allowed, false, JSON.stringify(call));
+
+  for (const command of [
+    "command cat " + ["cred", "entials"].join(""),
+    "sudo tac " + ["cred", "entials"].join(""),
+  ]) {
+    const wrapped = interceptToolCall({ name: "bash", input: { command } });
+    assert.equal(wrapped.allowed, false, command);
+    assert.match(wrapped.reason ?? "", /Protected path access/, command);
+  }
 
   const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });
   assert.equal(deletion.allowed, false);
