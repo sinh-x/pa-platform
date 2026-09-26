@@ -1,11 +1,11 @@
 import { isAbsolute, resolve } from "node:path";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { isCanonicalTicketId } from "../tickets/validate.js";
 
 export const MAX_DEPLOYMENT_CORRELATION_PATH_CHARS = 4_096;
 export const MAX_DEPLOYMENT_CORRELATION_ID_CHARS = 256;
 export const DEPLOYMENT_ID_PATTERN = /^d-[0-9a-f]{6}$/;
 const TREEHOUSE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
-const TICKET_ID_PATTERN = /^[A-Z][A-Z0-9]*-\d+$/;
 const HOLDER_PATTERN = /^pa:([A-Za-z0-9][A-Za-z0-9._-]*):([A-Z][A-Z0-9]*-\d+)$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
@@ -66,7 +66,7 @@ export function validateDeploymentCorrelationEvidence(
     }
     const ticketId = context.ticketId;
     if (ticketId !== undefined) {
-      if (typeof ticketId !== "string" || !TICKET_ID_PATTERN.test(ticketId)) fail("ticketId is not canonical");
+      if (!isCanonicalTicketId(ticketId)) fail("ticketId is not canonical");
       if (!treehouseLeaseHolder.endsWith(`:${ticketId}`)) fail("Treehouse holder/slot does not match ticketId");
     }
     if (context.requireWorktreeMatch) {

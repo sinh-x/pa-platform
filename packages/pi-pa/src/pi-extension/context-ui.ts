@@ -7,11 +7,12 @@
  */
 
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { deploymentTaskStatusMarker } from "@pa-platform/pa-core";
+import { associateDeploymentTicket, deploymentTaskStatusMarker } from "@pa-platform/pa-core";
 import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
 import type { TodoDetails } from "./todo.js";
 import {
+  CONTEXT_REFRESH_INTERVAL_MS,
   ContextRefreshLimiter,
   collectContext,
   initialContextSnapshot,
@@ -29,6 +30,9 @@ export interface ContextUiModuleOptions {
   collector?: ContextCollectorDependencies;
   limiter?: ContextRefreshLimiter;
   lifecycle?: PiSessionLifecycle;
+  associateTicket?: typeof associateDeploymentTicket;
+  setInterval?: typeof setInterval;
+  clearInterval?: typeof clearInterval;
 }
 
 export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionModule>[0], options: ContextUiModuleOptions = {}): void {
@@ -38,8 +42,10 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   let sidebar: ContextSidebarComponent | undefined;
   let overlayHandle: OverlayHandle | undefined;
   let overlayHidden = true;
+  let periodicRefreshTimer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
   const limiter = options.limiter ?? new ContextRefreshLimiter();
+  const associateTicket = options.associateTicket ?? associateDeploymentTicket;
 
   const publish = () => {
     if (!currentContext?.hasUI) return;
@@ -48,6 +54,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   };
 
   const requestRefresh = (patch: Partial<ContextRefreshInput> = {}) => {
+    if (disposed) return;
     refreshInput = {
       ...refreshInput,
       ...patch,
@@ -58,6 +65,19 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       snapshot = await collectContext(snapshot, refreshInput, options.collector);
       publish();
     });
+  };
+
+  const stopPeriodicRefresh = () => {
+    if (periodicRefreshTimer === undefined) return;
+    (options.clearInterval ?? clearInterval)(periodicRefreshTimer);
+    periodicRefreshTimer = undefined;
+  };
+
+  const startPeriodicRefresh = () => {
+    stopPeriodicRefresh();
+    if (disposed || !snapshot.deployment.id) return;
+    periodicRefreshTimer = (options.setInterval ?? setInterval)(requestRefresh, CONTEXT_REFRESH_INTERVAL_MS);
+    periodicRefreshTimer.unref?.();
   };
 
   const setOverlayVisible = (visible: boolean) => {
@@ -96,7 +116,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   const toggle = (rawContext: unknown) => {
     const context = rawContext as ExtensionContext;
     if (context.mode !== "tui") {
-      if (context.hasUI) context.ui.notify("PA context sidebar requires TUI mode.", "warning");
+      context.ui.notify("PA context sidebar requires TUI mode.", "warning");
       return;
     }
     currentContext = context;
@@ -107,9 +127,105 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     setOverlayVisible(overlayHidden);
   };
 
+  const associateContextTicket = async (targetTicket: string, context: ExtensionContext): Promise<void> => {
+    if (context.mode !== "tui") {
+      context.ui.notify("PA ticket interaction is unavailable outside TUI mode.", "warning");
+      return;
+    }
+    currentContext = context;
+    refreshInput = {
+      ...refreshInput,
+      cwd: context.cwd,
+      model: context.model ? { provider: context.model.provider, id: context.model.id } : refreshInput.model,
+    };
+    if (!snapshot.deployment.id) {
+      context.ui.notify("PA ticket interaction requires a managed deployment.", "warning");
+      return;
+    }
+
+    snapshot = await collectContext(snapshot, refreshInput, options.collector);
+    publish();
+    if (!snapshot.deployment.projectionAvailable) {
+      context.ui.notify("PA ticket interaction is unavailable because the registry projection could not be read.", "warning");
+      return;
+    }
+    if (snapshot.deployment.stale) {
+      context.ui.notify("PA ticket interaction is unavailable while the registry projection is stale.", "warning");
+      return;
+    }
+
+    const currentTicket = snapshot.deployment.ticket;
+    const currentLabel = currentTicket ?? "none";
+    const reason = await context.ui.input(
+      `Associate deployment ticket\nCurrent: ${currentLabel}\nTarget: ${targetTicket}`,
+      "Required reason (1-1000 characters)",
+    );
+    if (reason === undefined) {
+      context.ui.notify("PA ticket association cancelled; no changes were written.", "info");
+      return;
+    }
+    if (reason.trim().length === 0) {
+      context.ui.notify("PA ticket association requires a non-empty reason; no changes were written.", "warning");
+      return;
+    }
+    if (currentTicket && currentTicket !== targetTicket) {
+      const confirmed = await context.ui.confirm(
+        "Replace current deployment ticket?",
+        `Current: ${currentTicket}\nTarget: ${targetTicket}\nReason: ${reason.trim()}`,
+      );
+      if (!confirmed) {
+        context.ui.notify("PA ticket association cancelled; no changes were written.", "info");
+        return;
+      }
+    }
+
+    try {
+      const operation = () => associateTicket({
+        deploymentId: snapshot.deployment.id!,
+        ticketId: targetTicket,
+        expectedTicketId: currentTicket ?? null,
+        actor: deploymentActor(snapshot),
+        reason,
+      });
+      const result = options.lifecycle
+        ? await options.lifecycle.trackRegistryAccess(operation)
+        : operation();
+      snapshot = {
+        ...snapshot,
+        deployment: {
+          ...snapshot.deployment,
+          ticket: result.currentTicketId,
+          projectionAvailable: true,
+          stale: false,
+        },
+        stale: snapshot.git.stale,
+      };
+      publish();
+      context.ui.notify(
+        `PA current ticket: ${result.currentTicketId} (previous: ${result.previousTicketId ?? "none"}; ${result.writeOccurred ? "association written" : "already current"}).`,
+        "info",
+      );
+    } catch (error) {
+      context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
   pi.registerCommand?.("pa-context", {
-    description: "Toggle the PA context sidebar",
-    handler: (_args, context) => toggle(context),
+    description: "Toggle PA context or associate a ticket with: /pa-context ticket <ticket-id>",
+    handler: async (args, rawContext) => {
+      const trimmed = args.trim();
+      if (!trimmed) {
+        toggle(rawContext);
+        return;
+      }
+      const parts = trimmed.split(/\s+/);
+      const context = rawContext as ExtensionContext;
+      if (parts.length !== 2 || parts[0] !== "ticket" || !parts[1]) {
+        context.ui.notify("Usage: /pa-context ticket <ticket-id>", "warning");
+        return;
+      }
+      await associateContextTicket(parts[1], context);
+    },
   });
   pi.registerShortcut?.("alt+i", {
     description: "Toggle the PA context sidebar",
@@ -128,6 +244,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     snapshot = initialContextSnapshot(refreshInput, options.collector);
     publish();
     requestRefresh();
+    startPeriodicRefresh();
   });
 
   pi.on?.("model_select", (rawEvent, rawContext) => {
@@ -155,6 +272,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   const cleanup = async () => {
     if (disposed) return;
     disposed = true;
+    stopPeriodicRefresh();
     const settlement = limiter.dispose();
     try {
       currentContext?.ui.setStatus(CONTEXT_STATUS_ID, undefined);
@@ -198,7 +316,8 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
     ? [
         `Deployment: ${snapshot.deployment.id ?? "unavailable"}${snapshot.deployment.stale ? " (stale)" : ""}`,
         `Team / mode: ${snapshot.deployment.team ?? "unavailable"} / ${snapshot.deployment.mode ?? "unavailable"}`,
-        `Ticket: ${snapshot.deployment.ticket ?? "unavailable"}`,
+        `Current ticket: ${snapshot.deployment.ticket ?? "none"}${snapshot.deployment.projectionAvailable ? " (registry)" : " (launch fallback)"}`,
+        `Launch ticket (environment): ${snapshot.deployment.launchTicket ?? "none"}`,
         `Deployment status: ${snapshot.deployment.status ?? "unavailable"}`,
       ]
     : ["Deployment: unavailable"];
@@ -263,6 +382,11 @@ export class ContextSidebarComponent {
     this.invalidate();
     this.tui.requestRender();
   }
+}
+
+function deploymentActor(snapshot: PaContextSnapshot): string {
+  const identity = [snapshot.deployment.team, snapshot.deployment.mode].filter(Boolean).join("/");
+  return identity || `pi/${snapshot.deployment.id ?? "session"}`;
 }
 
 function isTodoDetails(value: unknown): value is TodoDetails {

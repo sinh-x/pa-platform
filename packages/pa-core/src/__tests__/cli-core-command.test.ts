@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, repositoryMutationLeasePath, runCoreCommand, TicketStore } from "../index.js";
+import { PA_PI_EXECUTION_MODE_ENV, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, compactActivityTail, getDeploymentEvents, getDeploymentsByTicketId, getDeployPaths, getPlatformHomeDir, getServePidFilePath, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, repositoryMutationLeasePath, runCoreCommand, TicketStore } from "../index.js";
 
 const CONFIG_ROOT = process.env["PA_PHASE5_CONFIG_ROOT"];
 
@@ -906,6 +906,141 @@ test("runCoreCommand exposes registry update, search, analytics, clean, and swee
   });
 });
 
+test("registry ticket association CLI verifies projection and current-ticket consumers", async () => {
+  await withCliEnv(async (root) => {
+    const otherRepo = join(root, "other-repo");
+    mkdirSync(otherRepo, { recursive: true });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${join(root, "repo")}\n    description: Test repo\n    prefix: PAP\n  other:\n    path: ${otherRepo}\n    description: Other repo\n    prefix: OTH\n`);
+    const ticketsDir = join(root, "tickets");
+    mkdirSync(ticketsDir, { recursive: true });
+    for (const id of ["PAP-001", "PAP-002"]) writeFileSync(join(ticketsDir, `${id}.json`), JSON.stringify({ id, project: "pa-platform", title: id }));
+    writeFileSync(join(ticketsDir, "OTH-001.json"), JSON.stringify({ id: "OTH-001", project: "other", title: "OTH-001" }));
+    writeFileSync(join(ticketsDir, "PAP-900.json"), JSON.stringify({ _alias: true, movedTo: "../outside" }));
+    writeFileSync(join(root, "outside.json"), "{outside-malformed-json");
+
+    const deployId = "d-cli-associate";
+    const primerDir = join(root, "deployments", deployId);
+    const primerPath = join(primerDir, "primer.md");
+    mkdirSync(primerDir, { recursive: true });
+    writeFileSync(primerPath, "immutable primer bytes\n");
+    appendRegistryEvent({ deployment_id: deployId, team: "requirements", mode: "analyze", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: join(root, "repo"), primer: `deployments/${deployId}/primer.md` });
+    const immutableStart = getDeploymentEvents(deployId)[0];
+    const immutablePrimer = readFileSync(primerPath);
+
+    const mixed = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-001", "--expected-ticket", "none", "--actor", "operator", "--reason", "attach", "--summary", "mixed"], { binaryName: "ppa", io: mixed.io }), 1);
+    assert.match(mixed.stderr.join("\n"), /cannot be mixed/);
+    assert.equal(getDeploymentEvents(deployId).length, 1);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, undefined);
+
+    const incomplete = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-001", "--expected-ticket", "none"], { binaryName: "opa", io: incomplete.io }), 1);
+    assert.match(incomplete.stderr.join("\n"), /requires --ticket, --expected-ticket, --actor, and --reason/);
+    assert.equal(getDeploymentEvents(deployId).length, 1);
+
+    const attach = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-001", "--expected-ticket", "none", "--actor", "  cli-operator  ", "--reason", "  ticket established  "], { binaryName: "cpa", io: attach.io }), 0);
+    const attachOutput = attach.stdout.join("\n");
+    assert.match(attachOutput, /Ticket association verified: d-cli-associate/);
+    assert.match(attachOutput, /Previous ticket: none/);
+    assert.match(attachOutput, /Requested ticket: PAP-001/);
+    assert.match(attachOutput, /Current ticket: PAP-001/);
+    assert.match(attachOutput, /Actor: cli-operator/);
+    assert.match(attachOutput, /Reason: ticket established/);
+    assert.match(attachOutput, /Write occurred: yes/);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-001");
+    assert.deepEqual(getDeploymentEvents(deployId)[0], immutableStart);
+    assert.deepEqual(readFileSync(primerPath), immutablePrimer);
+    const attachedEvent = getDeploymentEvents(deployId)[1];
+    assert.deepEqual({ event: attachedEvent?.event, previous: attachedEvent?.previous_ticket_id, ticket: attachedEvent?.ticket_id, actor: attachedEvent?.actor, reason: attachedEvent?.reason }, {
+      event: "ticket-associated", previous: null, ticket: "PAP-001", actor: "cli-operator", reason: "ticket established",
+    });
+
+    const attachedShow = capture();
+    assert.equal(await runCoreCommand(["registry", "show", deployId], { io: attachedShow.io }), 0);
+    assert.match(attachedShow.stdout.join("\n"), /Launch Ticket: none/);
+    assert.match(attachedShow.stdout.join("\n"), /Current Ticket: PAP-001/);
+
+    const stale = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-002", "--expected-ticket", "none", "--actor", "operator", "--reason", "stale"], { binaryName: "dpa", io: stale.io }), 1);
+    assert.match(stale.stderr.join("\n"), /stale|expected ticket does not equal/i);
+    assert.equal(getDeploymentEvents(deployId).length, 2);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-001");
+
+    const replace = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-002", "--expected-ticket", "PAP-001", "--actor", "operator", "--reason", "correct ticket"], { binaryName: "pa-core", io: replace.io }), 0);
+    assert.match(replace.stdout.join("\n"), /Previous ticket: PAP-001/);
+    assert.match(replace.stdout.join("\n"), /Requested ticket: PAP-002/);
+    assert.match(replace.stdout.join("\n"), /Current ticket: PAP-002/);
+    assert.equal(getDeploymentEvents(deployId).filter((event) => event.event === "ticket-associated").length, 2);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
+    assert.deepEqual(getDeploymentEvents(deployId)[0], immutableStart);
+    assert.deepEqual(readFileSync(primerPath), immutablePrimer);
+
+    const oldTicketList = capture();
+    assert.equal(await runCoreCommand(["registry", "list", "--ticket", "PAP-001"], { io: oldTicketList.io }), 0);
+    assert.doesNotMatch(oldTicketList.stdout.join("\n"), /d-cli-associate/);
+    const currentTicketList = capture();
+    assert.equal(await runCoreCommand(["registry", "list", "--ticket", "PAP-002"], { io: currentTicketList.io }), 0);
+    assert.match(currentTicketList.stdout.join("\n"), /CURRENT TICKET/);
+    assert.match(currentTicketList.stdout.join("\n"), /d-cli-associate[\s\S]*PAP-002/);
+    assert.deepEqual(getDeploymentsByTicketId("PAP-001").map((deployment) => deployment.deploy_id), []);
+    assert.deepEqual(getDeploymentsByTicketId("PAP-002").map((deployment) => deployment.deploy_id), [deployId]);
+
+    const replacedShow = capture();
+    assert.equal(await runCoreCommand(["registry", "show", deployId, "--json"], { io: replacedShow.io }), 0);
+    const shown = JSON.parse(replacedShow.stdout.join("\n")) as { ticket_id: string; launch_ticket_id: null; current_ticket_id: string };
+    assert.deepEqual({ ticket: shown.ticket_id, launch: shown.launch_ticket_id, current: shown.current_ticket_id }, { ticket: "PAP-002", launch: null, current: "PAP-002" });
+
+    for (const args of [
+      ["--ticket", "PAP-002", "--expected-ticket", "PAP-002", "--actor", "a".repeat(129), "--reason", "too long actor"],
+      ["--ticket", "PAP-002", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "r".repeat(1_001)],
+      ["--ticket", "PAP-999", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "unknown ticket"],
+      ["--ticket", "OTH-001", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "cross-project ticket"],
+    ]) {
+      const rejected = capture();
+      assert.equal(await runCoreCommand(["registry", "update", deployId, ...args], { io: rejected.io }), 1);
+      assert.equal(getDeploymentEvents(deployId).length, 3);
+      assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
+    }
+
+    for (const args of [
+      ["--ticket", "../outside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "traversal"],
+      ["--ticket", "/absolute/outside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "absolute"],
+      ["--ticket", "PAP/001", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "separator"],
+      ["--ticket", "%2e%2e%2foutside", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "encoded traversal"],
+      ["--ticket", "PAP-001", "--expected-ticket", "../outside", "--actor", "operator", "--reason", "unsafe expectation"],
+    ]) {
+      const rejected = capture();
+      assert.equal(await runCoreCommand(["registry", "update", deployId, ...args], { io: rejected.io }), 1);
+      assert.match(rejected.stderr.join("\n"), /ticket ID is not canonical/);
+      assert.doesNotMatch(rejected.stderr.join("\n"), /outside-malformed-json|Unexpected token/);
+      assert.equal(getDeploymentEvents(deployId).length, 3);
+      assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
+    }
+    const aliasEscape = capture();
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-900", "--expected-ticket", "PAP-002", "--actor", "operator", "--reason", "alias escape"], { io: aliasEscape.io }), 1);
+    assert.match(aliasEscape.stderr.join("\n"), /requested ticket does not exist/);
+    assert.equal(getDeploymentEvents(deployId).length, 3);
+    assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-002");
+
+    appendRegistryEvent({ deployment_id: "d-cli-protected", team: "builder", mode: "implement", event: "started", timestamp: "2026-09-24T00:03:00Z", repo_root: join(root, "repo"), ticket_id: "PAP-001" });
+    const protectedReplacement = capture();
+    assert.equal(await runCoreCommand(["registry", "update", "d-cli-protected", "--ticket", "PAP-002", "--expected-ticket", "PAP-001", "--actor", "operator", "--reason", "replace protected"], { io: protectedReplacement.io }), 1);
+    assert.match(protectedReplacement.stderr.join("\n"), /protected builder ticket replacement rejected/);
+    assert.equal(getDeploymentEvents("d-cli-protected").length, 1);
+    assert.equal(queryDeploymentStatus("d-cli-protected")?.ticket_id, "PAP-001");
+
+    appendRegistryEvent({ deployment_id: "d-cli-terminal", team: "requirements", event: "started", timestamp: "2026-09-24T00:04:00Z", repo_root: join(root, "repo") });
+    appendRegistryEvent({ deployment_id: "d-cli-terminal", team: "requirements", event: "completed", timestamp: "2026-09-24T00:05:00Z", status: "success" });
+    const terminal = capture();
+    assert.equal(await runCoreCommand(["registry", "update", "d-cli-terminal", "--ticket", "PAP-001", "--expected-ticket", "none", "--actor", "operator", "--reason", "late"], { io: terminal.io }), 1);
+    assert.match(terminal.stderr.join("\n"), /only a running deployment/);
+    assert.equal(getDeploymentEvents("d-cli-terminal").length, 2);
+    assert.equal(queryDeploymentStatus("d-cli-terminal")?.ticket_id, undefined);
+  });
+});
+
 test("runCoreCommand exposes identity-checked repository inspect and quarantine", async () => {
   await withCliEnv(async (root) => {
     const leasePath = repositoryMutationLeasePath(join(root, "repo"));
@@ -1650,8 +1785,8 @@ test("runCoreCommand scopes board by CWD, aliases, all-project, and assignee", a
       doc_refs: [],
       comments: [],
     }, "test");
-    writeFileSync(join(root, "tickets", "natural-two.json"), JSON.stringify({ ...coreTicket, id: "PAP-2", title: "Natural order two", priority: "low" }));
-    writeFileSync(join(root, "tickets", "natural-ten.json"), JSON.stringify({ ...coreTicket, id: "PAP-10", title: "Natural order ten", priority: "critical" }));
+    writeFileSync(join(root, "tickets", "PAP-2.json"), JSON.stringify({ ...coreTicket, id: "PAP-2", title: "Natural order two", priority: "low" }));
+    writeFileSync(join(root, "tickets", "PAP-10.json"), JSON.stringify({ ...coreTicket, id: "PAP-10", title: "Natural order ten", priority: "critical" }));
 
     const previousCwd = process.cwd();
     try {

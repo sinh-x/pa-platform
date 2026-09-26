@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
 import { nowUtc, parseTimestamp } from "../time.js";
 import { resolveLinkedBranch, resolveLinkedCommit } from "./git-validation.js";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "./types.js";
-import { matchAssignee } from "./validate.js";
+import { isCanonicalTicketId, matchAssignee } from "./validate.js";
 import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
@@ -75,7 +75,7 @@ export class TicketStore {
   }
 
   get(id: string): Ticket | undefined {
-    return this.readTicket(id);
+    return this.readTicket(id, new Set<string>());
   }
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
@@ -314,16 +314,39 @@ export class TicketStore {
     return readFileSync(path, "utf-8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as AuditEntry);
   }
 
-  private readTicket(id: string): Ticket | undefined {
-    const path = this.ticketPath(id);
-    if (!existsSync(path)) return undefined;
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    if (raw["_alias"] === true && typeof raw["movedTo"] === "string") return this.readTicket(raw["movedTo"]);
-    return this.normalizeTicket(raw);
+  private ticketPath(id: string): string {
+    if (!isCanonicalTicketId(id)) throw new Error("Ticket ID must be canonical");
+    const directory = resolve(this.dir);
+    const path = resolve(directory, `${id}.json`);
+    if (dirname(path) !== directory) throw new Error("Ticket path must remain inside the ticket store");
+    return path;
   }
 
-  private ticketPath(id: string): string {
-    return resolve(this.dir, `${id}.json`);
+  private readTicket(id: string, visited: Set<string>): Ticket | undefined {
+    if (!isCanonicalTicketId(id) || visited.has(id)) return undefined;
+    visited.add(id);
+    const path = this.ticketPath(id);
+    let descriptor: number;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") return undefined;
+      throw error;
+    }
+    let contents: string;
+    try {
+      if (!fstatSync(descriptor).isFile()) return undefined;
+      contents = readFileSync(descriptor, "utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+    const raw = JSON.parse(contents) as Record<string, unknown>;
+    if (raw["_alias"] === true) {
+      return isCanonicalTicketId(raw["movedTo"]) ? this.readTicket(raw["movedTo"], visited) : undefined;
+    }
+    if (raw["id"] !== id) return undefined;
+    return this.normalizeTicket(raw);
   }
 
   private counterPath(): string {

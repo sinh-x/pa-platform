@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -51,7 +51,8 @@ function openRegistryDatabase(dbPath: string, nativeBinding = process.env[REGIST
 }
 
 function migrate(db: Database.Database): void {
-  db.exec(`
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS registry_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +70,9 @@ function migrate(db: Database.Database): void {
       error TEXT,
       exit_code INTEGER,
       ticket_id TEXT,
+      previous_ticket_id TEXT,
+      actor TEXT,
+      reason TEXT,
       provider TEXT,
       rating TEXT,
       objective TEXT,
@@ -172,32 +176,79 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_health_timestamp ON health_snapshots(timestamp);
   `);
 
-  addColumn(db, "registry_events", "fallback", "INTEGER DEFAULT 0");
-  addColumn(db, "registry_events", "resumed_from_deployment_id", "TEXT");
-  addColumn(db, "registry_events", "note", "TEXT");
-  addColumn(db, "registry_events", "runtime", "TEXT");
-  addColumn(db, "registry_events", "binary", "TEXT");
-  addColumn(db, "registry_events", "effective_timeout_seconds", "INTEGER");
-  addColumn(db, "registry_events", "mode", "TEXT");
-  addColumn(db, "registry_events", "repo_root", "TEXT");
-  addColumn(db, "registry_events", "worktree_root", "TEXT");
-  addColumn(db, "registry_events", "repository_slot", "TEXT");
-  addCorrelationColumns(db, "registry_events");
-  addColumn(db, "registry_events", "rogue_one", "INTEGER DEFAULT 0");
-  addColumn(db, "registry_events", "invocation_channel", "TEXT");
-  addColumn(db, "deployments", "fallback", "INTEGER DEFAULT 0");
-  addColumn(db, "deployments", "resumed_from_deployment_id", "TEXT");
-  addColumn(db, "deployments", "runtime", "TEXT");
-  addColumn(db, "deployments", "binary", "TEXT");
-  addColumn(db, "deployments", "effective_timeout_seconds", "INTEGER");
-  addColumn(db, "deployments", "mode", "TEXT");
-  addColumn(db, "deployments", "repo_root", "TEXT");
-  addColumn(db, "deployments", "worktree_root", "TEXT");
-  addColumn(db, "deployments", "repository_slot", "TEXT");
-  addCorrelationColumns(db, "deployments");
-  addColumn(db, "deployments", "rogue_one", "INTEGER DEFAULT 0");
-  addColumn(db, "deployments", "invocation_channel", "TEXT");
-  db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
+    addColumn(db, "registry_events", "previous_ticket_id", "TEXT");
+    addColumn(db, "registry_events", "actor", "TEXT");
+    addColumn(db, "registry_events", "reason", "TEXT");
+    addColumn(db, "registry_events", "fallback", "INTEGER DEFAULT 0");
+    addColumn(db, "registry_events", "resumed_from_deployment_id", "TEXT");
+    addColumn(db, "registry_events", "note", "TEXT");
+    addColumn(db, "registry_events", "runtime", "TEXT");
+    addColumn(db, "registry_events", "binary", "TEXT");
+    addColumn(db, "registry_events", "effective_timeout_seconds", "INTEGER");
+    addColumn(db, "registry_events", "mode", "TEXT");
+    addColumn(db, "registry_events", "repo_root", "TEXT");
+    addColumn(db, "registry_events", "worktree_root", "TEXT");
+    addColumn(db, "registry_events", "repository_slot", "TEXT");
+    addCorrelationColumns(db, "registry_events");
+    addColumn(db, "registry_events", "rogue_one", "INTEGER DEFAULT 0");
+    addColumn(db, "registry_events", "invocation_channel", "TEXT");
+    addColumn(db, "deployments", "fallback", "INTEGER DEFAULT 0");
+    addColumn(db, "deployments", "resumed_from_deployment_id", "TEXT");
+    addColumn(db, "deployments", "runtime", "TEXT");
+    addColumn(db, "deployments", "binary", "TEXT");
+    addColumn(db, "deployments", "effective_timeout_seconds", "INTEGER");
+    addColumn(db, "deployments", "mode", "TEXT");
+    addColumn(db, "deployments", "repo_root", "TEXT");
+    addColumn(db, "deployments", "worktree_root", "TEXT");
+    addColumn(db, "deployments", "repository_slot", "TEXT");
+    addCorrelationColumns(db, "deployments");
+    addColumn(db, "deployments", "rogue_one", "INTEGER DEFAULT 0");
+    addColumn(db, "deployments", "invocation_channel", "TEXT");
+    rebuildClosedRegistryEventConstraint(db);
+    db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
+  }).immediate();
+}
+
+/**
+ * Schema v13 used a closed event CHECK that predates ticket association. Rebuild
+ * only databases that still carry that constraint, preserving every column,
+ * row id, user-defined index, and trigger from the installed schema.
+ */
+function rebuildClosedRegistryEventConstraint(db: Database.Database): void {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registry_events'").get() as { sql?: string } | undefined;
+  const sql = table?.sql;
+  const closedEventCheck = /\s+CHECK\s*\(\s*event\s+IN\s*\([^)]*\)\s*\)/i;
+  if (!sql || !closedEventCheck.test(sql) || /ticket-associated/i.test(sql)) return;
+
+  const replacementTable = "registry_events_schema_v14";
+  const createReplacement = sql
+    .replace(
+      /^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"registry_events"|`registry_events`|\[registry_events\]|registry_events)/i,
+      `$1${replacementTable}`,
+    )
+    .replace(closedEventCheck, "");
+  if (createReplacement === sql || !new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${replacementTable}\\b`, "i").test(createReplacement)) {
+    throw new Error("Unable to expand the registry_events event constraint");
+  }
+
+  const schemaObjects = db.prepare(`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = 'registry_events' AND type IN ('index', 'trigger') AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all() as Array<{ type: "index" | "trigger"; name: string; sql: string }>;
+  const columns = (db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>).map((entry) => entry.name);
+  const columnList = columns.map(quoteIdentifier).join(", ");
+
+  db.exec(createReplacement);
+  db.exec(`INSERT INTO ${quoteIdentifier(replacementTable)} (${columnList}) SELECT ${columnList} FROM registry_events`);
+  db.exec("DROP TABLE registry_events");
+  db.exec(`ALTER TABLE ${quoteIdentifier(replacementTable)} RENAME TO registry_events`);
+  for (const object of schemaObjects) db.exec(object.sql);
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function addCorrelationColumns(db: Database.Database, table: string): void {

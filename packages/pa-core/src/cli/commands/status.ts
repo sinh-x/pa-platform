@@ -617,7 +617,9 @@ export async function runStatusCommand(argv: string[], io: Required<CliIo>, now:
     if (opts.report) return showDeploymentReport(opts.deployId, io);
     if (opts.artifacts) return showDeploymentArtifacts(opts.deployId, io);
     if (opts.activity) return showDeploymentActivity(opts.deployId, io, opts.verbose);
-    const detail = formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length);
+    const events = getDeploymentEvents(deployment.deploy_id);
+    const launchTicketId = events.find((event) => event.event === "started")?.ticket_id ?? null;
+    const detail = formatRegistryShow(deployment, events.length, launchTicketId);
     io.stdout(deployment.runtime === "pi" ? `${detail}\n\n${formatPiDeploymentTaskEvidence(deployment.deploy_id)}` : detail);
     return 0;
   }

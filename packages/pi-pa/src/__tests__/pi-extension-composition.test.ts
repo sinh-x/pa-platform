@@ -302,6 +302,10 @@ test("print and JSON hosts load the composition without opening TUI-only compone
       assert.equal(context.ui.terminalInputHandlers.size, 0, `${mode}: no terminal input handler`);
       assert.ok(host.commands.has("vimmode"));
       assert.ok(host.commands.has("clear"));
+      const contextCommand = host.commands.get("pa-context");
+      assert.ok(contextCommand);
+      await contextCommand.handler("ticket PAP-225", context);
+      assert.deepEqual(context.ui.notifications.at(-1), ["PA ticket interaction is unavailable outside TUI mode.", "warning"]);
       assert.deepEqual([...host.tools.keys()], ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"]);
       const safety = await host.dispatch("tool_call", { toolName: "bash", input: { command: "rm -rf build" } }, context);
       assert.ok(safety.some((result) => Boolean(result && typeof result === "object" && "block" in result)));

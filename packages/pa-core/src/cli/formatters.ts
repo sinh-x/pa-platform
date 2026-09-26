@@ -1,7 +1,7 @@
 import type { Bulletin } from "../bulletins/index.js";
 import type { RepoEntry } from "../repos.js";
 import type { TeamConfigSummary } from "../teams/index.js";
-import type { DeploymentStatus } from "../types.js";
+import type { AssociateDeploymentTicketResult, DeploymentStatus } from "../types.js";
 import type { BoardView, Ticket } from "../tickets/index.js";
 import type { TrashEntry } from "../trash/index.js";
 import { formatLocal, formatLocalShort } from "../time.js";
@@ -99,13 +99,13 @@ export function formatTrashShow(entry: TrashEntry): string {
 
 export function formatRegistryList(deployments: DeploymentStatus[]): string {
   return renderLines([
-    `${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"STARTED".padEnd(26)} ${"ENDED".padEnd(26)} SUMMARY`,
-    `${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"-------------------------".padEnd(26)} ${"-------------------------".padEnd(26)} -------`,
-    ...deployments.map((deployment) => `${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${shortTs(deployment.started_at).padEnd(26)} ${(deployment.completed_at ? shortTs(deployment.completed_at) : "-").padEnd(26)} ${truncate(deployment.summary ?? "", 50)}`),
+    `${"DEPLOY-ID".padEnd(12)} ${"TEAM".padEnd(22)} ${"STATUS".padEnd(10)} ${"CURRENT TICKET".padEnd(16)} ${"STARTED".padEnd(26)} ${"ENDED".padEnd(26)} SUMMARY`,
+    `${"-----------".padEnd(12)} ${"---------------------".padEnd(22)} ${"---------".padEnd(10)} ${"---------------".padEnd(16)} ${"-------------------------".padEnd(26)} ${"-------------------------".padEnd(26)} -------`,
+    ...deployments.map((deployment) => `${deployment.deploy_id.padEnd(12)} ${deployment.team.padEnd(22)} ${deployment.status.padEnd(10)} ${(deployment.ticket_id ?? "-").padEnd(16)} ${shortTs(deployment.started_at).padEnd(26)} ${(deployment.completed_at ? shortTs(deployment.completed_at) : "-").padEnd(26)} ${truncate(deployment.summary ?? "", 50)}`),
   ]);
 }
 
-export function formatRegistryShow(deployment: DeploymentStatus, eventCount: number): string {
+export function formatRegistryShow(deployment: DeploymentStatus, eventCount: number, launchTicketId?: string | null): string {
   const teamIdentity = deployment.mode ? `${deployment.team}/${deployment.mode}` : deployment.team;
   const lines = [`Deployment: ${deployment.deploy_id}`, `  Team:     ${teamIdentity}`, `  Status:   ${deployment.status}`, `  Started:  ${shortTs(deployment.started_at)}`];
   if (deployment.completed_at) lines.push(`  Ended:    ${shortTs(deployment.completed_at)}`);
@@ -125,10 +125,24 @@ export function formatRegistryShow(deployment: DeploymentStatus, eventCount: num
   if (deployment.branch_state) lines.push(`  Branch:    ${deployment.branch_state} base=${deployment.branch_base_sha ?? "unknown"} head=${deployment.branch_head_sha ?? "unknown"}`);
   if (deployment.ticket_slot_id) lines.push(`  Ticket Slot: ${deployment.ticket_slot_id}`);
   if (deployment.repository_permit !== undefined) lines.push(`  Repo Permit: ${deployment.repository_permit}`);
+  lines.push(`  Launch Ticket: ${launchTicketId ?? "none"}`);
+  lines.push(`  Current Ticket: ${deployment.ticket_id ?? "none"}`);
   if (deployment.pid !== undefined) lines.push(`  PID:      ${deployment.pid}`);
   if (deployment.summary) lines.push(`  Summary:  ${deployment.summary}`);
   lines.push(`  Events:   ${eventCount}`);
   return renderLines(lines);
+}
+
+export function formatTicketAssociationResult(result: AssociateDeploymentTicketResult): string {
+  return renderLines([
+    `Ticket association verified: ${result.deploymentId}`,
+    `  Previous ticket: ${result.previousTicketId ?? "none"}`,
+    `  Requested ticket: ${result.requestedTicketId}`,
+    `  Current ticket: ${result.currentTicketId}`,
+    `  Actor: ${result.actor}`,
+    `  Reason: ${result.reason}`,
+    `  Write occurred: ${result.writeOccurred ? "yes" : "no"}`,
+  ]);
 }
 
 export function formatTeamList(rows: TeamStatusRow[]): string {

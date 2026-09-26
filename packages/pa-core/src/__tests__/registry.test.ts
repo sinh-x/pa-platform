@@ -1,10 +1,65 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, appendEvaluatorResult, appendRegistryEvent, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+
+interface AssociationFixture {
+  root: string;
+  canonicalRoot: string;
+  otherRoot: string;
+  ticketsDir: string;
+  writeTicket: (id: string, project?: string) => void;
+}
+
+function withAssociationFixture(run: (fixture: AssociationFixture) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-ticket-association-"));
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousUsage = process.env["PA_AI_USAGE_HOME"];
+  const canonicalRoot = "/canonical/pa-platform";
+  const otherRoot = "/canonical/other";
+  const configDir = join(root, "config");
+  const ticketsDir = join(root, "usage", "tickets");
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(ticketsDir, { recursive: true });
+  writeFileSync(join(configDir, "config.yaml"), `repos:\n  pa-platform:\n    path: ${canonicalRoot}\n    prefix: PAP\n  other:\n    path: ${otherRoot}\n    prefix: OTH\n`);
+  closeDb();
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["PA_PLATFORM_CONFIG"] = configDir;
+  process.env["PA_AI_USAGE_HOME"] = join(root, "usage");
+  const writeTicket = (id: string, project = "pa-platform"): void => {
+    writeFileSync(join(ticketsDir, `${id}.json`), JSON.stringify({ id, project, title: id }));
+  };
+  try {
+    for (const id of ["PAP-001", "PAP-002", "PAP-003"]) writeTicket(id);
+    writeTicket("OTH-001", "other");
+    run({ root, canonicalRoot, otherRoot, ticketsDir, writeTicket });
+  } finally {
+    closeDb();
+    if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previousRegistry;
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousUsage;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function expectAssociationError(fn: () => unknown, code: TicketAssociationError["code"]): TicketAssociationError {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof TicketAssociationError);
+  assert.equal(caught.code, code);
+  return caught;
+}
 
 test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and strictly validated", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-pi-completion-"));
@@ -38,6 +93,221 @@ test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and stri
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("ticket association atomically attaches, replaces, audits, projects, and preserves start evidence", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    appendRegistryEvent({ deployment_id: "d-associate", team: "requirements", mode: "analyze", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot, primer: "immutable-primer" });
+    const immutableStart = getDeploymentEvents("d-associate")[0];
+
+    const attached = associateDeploymentTicket({ deploymentId: "d-associate", ticketId: "PAP-001", expectedTicketId: null, actor: "  operator  ", reason: "  ticket established  ", timestamp: "2026-09-24T00:01:00Z" });
+    assert.deepEqual(attached, { deploymentId: "d-associate", previousTicketId: null, requestedTicketId: "PAP-001", currentTicketId: "PAP-001", actor: "operator", reason: "ticket established", writeOccurred: true });
+    assert.equal(queryDeploymentStatus("d-associate")?.ticket_id, "PAP-001");
+    assert.deepEqual(getDeploymentEvents("d-associate")[0], immutableStart);
+    assert.deepEqual(getDeploymentEvents("d-associate")[1], {
+      deployment_id: "d-associate",
+      team: "requirements",
+      event: "ticket-associated",
+      timestamp: "2026-09-24T00:01:00.000Z",
+      pid: undefined,
+      status: null,
+      summary: undefined,
+      log_file: undefined,
+      primer: undefined,
+      agents: undefined,
+      models: undefined,
+      error: undefined,
+      exit_code: undefined,
+      ticket_id: "PAP-001",
+      previous_ticket_id: null,
+      actor: "operator",
+      reason: "ticket established",
+      provider: undefined,
+      rating: undefined,
+      objective: undefined,
+      repo: undefined,
+      repo_root: undefined,
+      worktree_root: undefined,
+      repository_slot: undefined,
+      mode: undefined,
+      fallback: false,
+      resumed_from_deployment_id: undefined,
+      note: undefined,
+      runtime: null,
+      binary: undefined,
+      effective_timeout_seconds: undefined,
+      rogue_one: false,
+      invocation_channel: null,
+      parent_deployment_id: undefined,
+      builder_authority: undefined,
+      treehouse_path: undefined,
+      treehouse_lease_id: undefined,
+      treehouse_lease_holder: undefined,
+      branch_state: undefined,
+      branch_base_sha: undefined,
+      branch_head_sha: undefined,
+      ticket_slot_id: undefined,
+      repository_permit: undefined,
+    });
+
+    const replaced = associateDeploymentTicket({ deploymentId: "d-associate", ticketId: "PAP-002", expectedTicketId: "PAP-001", actor: "operator", reason: "correct association" });
+    assert.deepEqual({ previous: replaced.previousTicketId, requested: replaced.requestedTicketId, current: replaced.currentTicketId, wrote: replaced.writeOccurred }, { previous: "PAP-001", requested: "PAP-002", current: "PAP-002", wrote: true });
+    assert.equal(getDeploymentEvents("d-associate").filter((event) => event.event === "ticket-associated").length, 2);
+    assert.equal(queryDeploymentStatus("d-associate")?.ticket_id, "PAP-002");
+
+    const unchanged = associateDeploymentTicket({ deploymentId: "d-associate", ticketId: "PAP-002", expectedTicketId: "PAP-002", actor: "operator", reason: "verify idempotence" });
+    assert.equal(unchanged.writeOccurred, false);
+    assert.equal(getDeploymentEvents("d-associate").length, 3);
+    assert.throws(() => appendRegistryEvent({ deployment_id: "d-associate", team: "requirements", event: "ticket-associated", timestamp: "2026-09-24T00:02:00Z", ticket_id: "PAP-003", previous_ticket_id: "PAP-002", actor: "bypass", reason: "bypass" }), /associateDeploymentTicket/);
+  });
+});
+
+test("ticket association rolls back its audit event when projection persistence fails", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    appendRegistryEvent({ deployment_id: "d-association-rollback", team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    getDb().exec("CREATE TRIGGER reject_ticket_projection BEFORE UPDATE OF ticket_id ON deployments BEGIN SELECT RAISE(ABORT, 'ticket projection failed'); END");
+    assert.throws(() => associateDeploymentTicket({ deploymentId: "d-association-rollback", ticketId: "PAP-001", expectedTicketId: null, actor: "operator", reason: "attach" }), /ticket projection failed/);
+    assert.equal(getDeploymentEvents("d-association-rollback").length, 1);
+    assert.equal(queryDeploymentStatus("d-association-rollback")?.ticket_id, undefined);
+  });
+});
+
+test("ticket association compare-and-set rejects a stale racing replacement with zero writes", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    appendRegistryEvent({ deployment_id: "d-association-race", team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot, ticket_id: "PAP-001" });
+    associateDeploymentTicket({ deploymentId: "d-association-race", ticketId: "PAP-002", expectedTicketId: "PAP-001", actor: "caller-one", reason: "first correction" });
+    expectAssociationError(() => associateDeploymentTicket({ deploymentId: "d-association-race", ticketId: "PAP-003", expectedTicketId: "PAP-001", actor: "caller-two", reason: "stale correction" }), "stale-expectation");
+    assert.equal(queryDeploymentStatus("d-association-race")?.ticket_id, "PAP-002");
+    assert.equal(getDeploymentEvents("d-association-race").filter((event) => event.event === "ticket-associated").length, 1);
+  });
+});
+
+test("ticket association trims bounded audit text and rejects invalid limits without writes", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    appendRegistryEvent({ deployment_id: "d-association-limits", team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    for (const [actor, reason, code] of [
+      ["   ", "valid", "invalid-actor"],
+      ["a".repeat(129), "valid", "invalid-actor"],
+      ["valid", "   ", "invalid-reason"],
+      ["valid", "r".repeat(1_001), "invalid-reason"],
+    ] as const) {
+      expectAssociationError(() => associateDeploymentTicket({ deploymentId: "d-association-limits", ticketId: "PAP-001", expectedTicketId: null, actor, reason }), code);
+    }
+    assert.equal(getDeploymentEvents("d-association-limits").length, 1);
+    const result = associateDeploymentTicket({ deploymentId: "d-association-limits", ticketId: "PAP-001", expectedTicketId: null, actor: ` ${"a".repeat(128)} `, reason: ` ${"r".repeat(1_000)} ` });
+    assert.equal(result.actor.length, 128);
+    assert.equal(result.reason.length, 1_000);
+  });
+});
+
+test("ticket association and ticket store reject non-canonical paths, unsafe aliases, symlinks, and loaded ID mismatches without writes", () => {
+  withAssociationFixture(({ root, canonicalRoot, ticketsDir }) => {
+    const store = new TicketStore(ticketsDir);
+    const malformedOutsidePath = join(root, "usage", "outside.json");
+    writeFileSync(malformedOutsidePath, "{outside-malformed-json");
+    const outsideTicketPath = join(root, "outside-ticket.json");
+    writeFileSync(outsideTicketPath, JSON.stringify({ id: "PAP-904", project: "pa-platform", title: "Outside" }));
+    symlinkSync(outsideTicketPath, join(ticketsDir, "PAP-904.json"));
+    writeFileSync(join(ticketsDir, "PAP-900.json"), JSON.stringify({ _alias: true, movedTo: "../outside" }));
+    writeFileSync(join(ticketsDir, "PAP-901.json"), JSON.stringify({ id: "PAP-001", project: "pa-platform", title: "Mismatched" }));
+    writeFileSync(join(ticketsDir, "PAP-902.json"), JSON.stringify({ _alias: true, movedTo: "PAP-001" }));
+    writeFileSync(join(ticketsDir, "PAP-903.json"), JSON.stringify({ _alias: true, movedTo: "PAP-903" }));
+
+    for (const id of ["../outside", "..\\outside", "/absolute/outside", "PAP/001", "PAP-1.json", "%2e%2e%2foutside", "..%2Foutside", "%252e%252e%252foutside"]) {
+      assert.equal(store.get(id), undefined, id);
+    }
+    assert.equal(store.get("PAP-900"), undefined, "non-canonical alias target is rejected before lookup");
+    assert.equal(store.get("PAP-901"), undefined, "loaded ticket ID must match its canonical filename");
+    assert.equal(store.get("PAP-903"), undefined, "alias cycles are rejected");
+    assert.equal(store.get("PAP-904"), undefined, "ticket symlinks are not followed");
+    assert.equal(store.get("PAP-902")?.id, "PAP-001", "canonical aliases remain supported");
+
+    const deploymentId = "d-association-paths";
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    const invalidTargets = [
+      "", " PAP-001", "PAP-001 ", "pap-001", "../outside", "..\\outside", "/absolute/outside", "PAP/001",
+      "PAP-../001", "PAP-1.json", "%2e%2e%2foutside", "..%2Foutside", "%252e%252e%252foutside", "A".repeat(65),
+    ];
+    for (const ticketId of invalidTargets) {
+      const error = expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId, expectedTicketId: null, actor: "operator", reason: "reject unsafe target" }), "invalid-ticket-id");
+      assert.doesNotMatch(error.message, /outside-malformed-json|Unexpected token|absolute\/outside/);
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, ticketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, ticketId);
+    }
+    for (const ticketId of ["PAP-900", "PAP-901", "PAP-903", "PAP-904"]) {
+      expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId, expectedTicketId: null, actor: "operator", reason: "reject invalid store entry" }), "ticket-not-found");
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, ticketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, ticketId);
+    }
+    for (const expectedTicketId of ["../outside", "%2e%2e%2foutside", "PAP/001", " PAP-001"] as const) {
+      expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId: "PAP-001", expectedTicketId, actor: "operator", reason: "reject unsafe expectation" }), "invalid-ticket-id");
+      assert.equal(getDeploymentEvents(deploymentId).length, 1, expectedTicketId);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, undefined, expectedTicketId);
+    }
+
+    const validAlias = associateDeploymentTicket({ deploymentId, ticketId: "PAP-902", expectedTicketId: null, actor: "operator", reason: "preserve canonical alias" });
+    assert.equal(validAlias.currentTicketId, "PAP-902");
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "ticket-associated").length, 1);
+    assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, "PAP-902");
+  });
+});
+
+test("ticket association rejects missing deployment, identity, unregistered, unknown, cross-project, and terminal targets atomically", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    expectAssociationError(() => associateDeploymentTicket({ deploymentId: "d-missing", ticketId: "PAP-001", expectedTicketId: null, actor: "operator", reason: "attach" }), "deployment-not-found");
+    assert.equal(getDeploymentEvents("d-missing").length, 0);
+    const cases = [
+      { id: "d-no-identity", start: {}, ticket: "PAP-001", code: "repository-identity-missing" },
+      { id: "d-unregistered", start: { repo_root: "/canonical/unregistered" }, ticket: "PAP-001", code: "repository-unregistered" },
+      { id: "d-unknown-ticket", start: { repo_root: canonicalRoot }, ticket: "PAP-999", code: "ticket-not-found" },
+      { id: "d-cross-project", start: { repo_root: canonicalRoot }, ticket: "OTH-001", code: "ticket-project-mismatch" },
+    ] as const;
+    for (const entry of cases) {
+      appendRegistryEvent({ deployment_id: entry.id, team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", ...entry.start });
+      const error = expectAssociationError(() => associateDeploymentTicket({ deploymentId: entry.id, ticketId: entry.ticket, expectedTicketId: null, actor: "operator", reason: "attach" }), entry.code);
+      assert.ok(error.message.length <= 2_000);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.match(error.message, new RegExp(label));
+      assert.equal(getDeploymentEvents(entry.id).length, 1);
+      assert.equal(queryDeploymentStatus(entry.id)?.ticket_id, undefined);
+    }
+
+    appendRegistryEvent({ deployment_id: "d-terminal-association", team: "requirements", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    appendRegistryEvent({ deployment_id: "d-terminal-association", team: "requirements", event: "completed", timestamp: "2026-09-24T00:01:00Z", status: "success" });
+    expectAssociationError(() => associateDeploymentTicket({ deploymentId: "d-terminal-association", ticketId: "PAP-001", expectedTicketId: null, actor: "operator", reason: "late attach" }), "deployment-not-running");
+    assert.equal(getDeploymentEvents("d-terminal-association").length, 2);
+    assert.equal(queryDeploymentStatus("d-terminal-association")?.ticket_id, undefined);
+  });
+});
+
+test("ticket association permits builder attachment but rejects replacement for every protected evidence category", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    appendRegistryEvent({ deployment_id: "d-builder-attach", team: "builder", mode: "implement", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot });
+    assert.equal(associateDeploymentTicket({ deploymentId: "d-builder-attach", ticketId: "PAP-001", expectedTicketId: null, actor: "operator", reason: "late ticket" }).writeOccurred, true);
+    const attachedReplacementError = expectAssociationError(() => associateDeploymentTicket({ deploymentId: "d-builder-attach", ticketId: "PAP-002", expectedTicketId: "PAP-001", actor: "operator", reason: "replace" }), "protected-builder-replacement");
+    assert.ok(attachedReplacementError.message.length <= 2_000);
+
+    const cases: Array<{ name: string; team?: string; mode?: string; column?: string; value?: string | number }> = [
+      { name: "builder-orchestrator", team: "builder", mode: "orchestrator" },
+      { name: "builder-implement", team: "builder", mode: "implement" },
+      { name: "repository-slot", column: "repository_slot", value: "implement" },
+      { name: "builder-authority", column: "builder_authority", value: "orchestrator" },
+      { name: "treehouse-path", column: "treehouse_path", value: "/treehouse/worktree" },
+      { name: "treehouse-lease", column: "treehouse_lease_id", value: "lease-1" },
+      { name: "ticket-slot", column: "ticket_slot_id", value: "pa:pa-platform:PAP-001" },
+      { name: "repository-permit", column: "repository_permit", value: 1 },
+      { name: "parent-lineage", column: "parent_deployment_id", value: "d-parent" },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const deploymentId = `d-protected-${index}`;
+      appendRegistryEvent({ deployment_id: deploymentId, team: entry.team ?? "requirements", mode: entry.mode ?? "analyze", event: "started", timestamp: "2026-09-24T00:00:00Z", repo_root: canonicalRoot, ticket_id: "PAP-001" });
+      if (entry.column) getDb().prepare(`UPDATE registry_events SET ${entry.column} = ? WHERE deployment_id = ? AND event = 'started'`).run(entry.value, deploymentId);
+      const error = expectAssociationError(() => associateDeploymentTicket({ deploymentId, ticketId: "PAP-002", expectedTicketId: "PAP-001", actor: "operator", reason: `replace ${entry.name}` }), "protected-builder-replacement");
+      assert.ok(error.message.length <= 2_000);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.match(error.message, new RegExp(label));
+      assert.equal(getDeploymentEvents(deploymentId).length, 1);
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, "PAP-001");
+    }
+  });
 });
 
 test("registry appends WAL-backed events and materializes deployment status", () => {
@@ -178,19 +448,29 @@ test("terminal reconciliation collapses conflicting history to the failed repres
   }
 });
 
-test("registry migration preserves legacy deployments without timeout metadata", () => {
+test("registry schema-v13 migration expands the production event constraint without losing evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-legacy-"));
   const dbPath = join(root, "registry.db");
-  const previous = process.env["PA_REGISTRY_DB"];
+  const canonicalRoot = "/canonical/pa-platform";
+  const configDir = join(root, "config");
+  const ticketsDir = join(root, "usage", "tickets");
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousUsage = process.env["PA_AI_USAGE_HOME"];
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(ticketsDir, { recursive: true });
+  writeFileSync(join(configDir, "config.yaml"), `repos:\n  pa-platform:\n    path: ${canonicalRoot}\n    prefix: PAP\n`);
+  writeFileSync(join(ticketsDir, "PAP-001.json"), JSON.stringify({ id: "PAP-001", project: "pa-platform", title: "Legacy association" }));
+
   const legacyDb = new Database(dbPath);
   legacyDb.exec(`
     CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO _meta (key, value) VALUES ('schema_version', '7');
+    INSERT INTO _meta (key, value) VALUES ('schema_version', '13');
     CREATE TABLE registry_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       deployment_id TEXT NOT NULL,
       team TEXT NOT NULL,
-      event TEXT NOT NULL,
+      event TEXT NOT NULL CHECK (event IN ('started', 'pid', 'completed', 'crashed', 'amended', 'updated')),
       timestamp TEXT NOT NULL,
       pid INTEGER,
       status TEXT,
@@ -206,12 +486,32 @@ test("registry migration preserves legacy deployments without timeout metadata",
       rating TEXT,
       objective TEXT,
       repo TEXT,
+      repo_root TEXT,
+      worktree_root TEXT,
+      repository_slot TEXT,
+      parent_deployment_id TEXT,
+      builder_authority TEXT,
+      treehouse_path TEXT,
+      treehouse_lease_id TEXT,
+      treehouse_lease_holder TEXT,
+      branch_state TEXT,
+      branch_base_sha TEXT,
+      branch_head_sha TEXT,
+      ticket_slot_id TEXT,
+      repository_permit INTEGER,
+      mode TEXT,
       fallback INTEGER DEFAULT 0,
       resumed_from_deployment_id TEXT,
       note TEXT,
       runtime TEXT,
-      binary TEXT
+      binary TEXT,
+      effective_timeout_seconds INTEGER,
+      rogue_one INTEGER DEFAULT 0,
+      invocation_channel TEXT
     );
+    CREATE INDEX idx_events_deployment_id ON registry_events(deployment_id);
+    CREATE INDEX idx_events_timestamp ON registry_events(timestamp);
+    CREATE INDEX idx_events_team_timestamp ON registry_events(team, timestamp);
     CREATE TABLE deployments (
       deployment_id TEXT PRIMARY KEY,
       team TEXT NOT NULL,
@@ -227,6 +527,20 @@ test("registry migration preserves legacy deployments without timeout metadata",
       ticket_id TEXT,
       objective TEXT,
       repo TEXT,
+      repo_root TEXT,
+      worktree_root TEXT,
+      repository_slot TEXT,
+      parent_deployment_id TEXT,
+      builder_authority TEXT,
+      treehouse_path TEXT,
+      treehouse_lease_id TEXT,
+      treehouse_lease_holder TEXT,
+      branch_state TEXT,
+      branch_base_sha TEXT,
+      branch_head_sha TEXT,
+      ticket_slot_id TEXT,
+      repository_permit INTEGER,
+      mode TEXT,
       provider TEXT,
       error TEXT,
       exit_code INTEGER,
@@ -234,34 +548,84 @@ test("registry migration preserves legacy deployments without timeout metadata",
       fallback INTEGER DEFAULT 0,
       resumed_from_deployment_id TEXT,
       runtime TEXT,
-      binary TEXT
+      binary TEXT,
+      effective_timeout_seconds INTEGER,
+      rogue_one INTEGER DEFAULT 0,
+      invocation_channel TEXT
     );
-    INSERT INTO deployments (deployment_id, team, status, started_at, runtime, binary)
-    VALUES ('d-legacy', 'builder', 'running', '2026-04-26T10:00:00Z', 'opencode', 'opa');
+    INSERT INTO registry_events (id, deployment_id, team, event, timestamp, summary, primer, objective, repo_root, mode, runtime, binary)
+    VALUES (7, 'd-legacy', 'requirements', 'started', '2026-04-26T10:00:00Z', 'legacy start', 'immutable primer', 'legacy objective', '${canonicalRoot}', 'analyze', 'opencode', 'opa');
+    INSERT INTO registry_events (id, deployment_id, team, event, timestamp, summary, note)
+    VALUES (11, 'd-legacy', 'requirements', 'updated', '2026-04-26T10:01:00Z', 'legacy update', 'preserved note');
+    INSERT INTO deployments (deployment_id, team, status, started_at, summary, primer, objective, repo_root, mode, runtime, binary)
+    VALUES ('d-legacy', 'requirements', 'running', '2026-04-26T10:00:00Z', 'legacy projection', 'immutable primer', 'legacy objective', '${canonicalRoot}', 'analyze', 'opencode', 'opa');
   `);
   legacyDb.close();
 
+  closeDb();
   process.env["PA_REGISTRY_DB"] = dbPath;
+  process.env["PA_PLATFORM_CONFIG"] = configDir;
+  process.env["PA_AI_USAGE_HOME"] = join(root, "usage");
   try {
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.equal(eventColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.equal(deploymentColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "13" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "14" });
+    for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
     for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
       assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
     }
+    const eventTableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registry_events'").get() as { sql: string }).sql;
+    assert.doesNotMatch(eventTableSql, /CHECK\s*\(\s*event\s+IN/i);
+    assert.deepEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'registry_events' ORDER BY name").all(),
+      [{ name: "idx_events_deployment_id" }, { name: "idx_events_team_timestamp" }, { name: "idx_events_timestamp" }],
+    );
+    assert.deepEqual(
+      db.prepare("SELECT id, event, timestamp, summary, primer, note FROM registry_events WHERE deployment_id = 'd-legacy' ORDER BY id").all(),
+      [
+        { id: 7, event: "started", timestamp: "2026-04-26T10:00:00Z", summary: "legacy start", primer: "immutable primer", note: null },
+        { id: 11, event: "updated", timestamp: "2026-04-26T10:01:00Z", summary: "legacy update", primer: null, note: "preserved note" },
+      ],
+    );
 
+    const result = associateDeploymentTicket({
+      deploymentId: "d-legacy",
+      ticketId: "PAP-001",
+      expectedTicketId: null,
+      actor: "migration-test",
+      reason: "prove constrained schema migration",
+      timestamp: "2026-04-26T10:02:00Z",
+    });
+    assert.deepEqual(result, {
+      deploymentId: "d-legacy",
+      previousTicketId: null,
+      requestedTicketId: "PAP-001",
+      currentTicketId: "PAP-001",
+      actor: "migration-test",
+      reason: "prove constrained schema migration",
+      writeOccurred: true,
+    });
+    assert.deepEqual(
+      db.prepare("SELECT id, event, timestamp, previous_ticket_id, ticket_id, actor, reason FROM registry_events WHERE deployment_id = 'd-legacy' AND event = 'ticket-associated'").all(),
+      [{ id: 12, event: "ticket-associated", timestamp: "2026-04-26T10:02:00.000Z", previous_ticket_id: null, ticket_id: "PAP-001", actor: "migration-test", reason: "prove constrained schema migration" }],
+    );
     const status = queryDeploymentStatus("d-legacy");
+    assert.equal(status?.ticket_id, "PAP-001");
     assert.equal(status?.status, "running");
+    assert.equal(status?.summary, "legacy projection");
+    assert.equal(status?.primer, "immutable primer");
     assert.equal(status?.runtime, "opencode");
-    assert.equal(status?.effective_timeout_seconds, undefined);
+    assert.equal(getDeploymentEvents("d-legacy").length, 3);
   } finally {
     closeDb();
-    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
-    else process.env["PA_REGISTRY_DB"] = previous;
+    if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previousRegistry;
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousUsage;
     rmSync(root, { recursive: true, force: true });
   }
 });

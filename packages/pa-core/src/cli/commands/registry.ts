@@ -1,14 +1,14 @@
 import { resolve } from "node:path";
 import { getDeployPaths } from "../../deploy/paths.js";
-import { PA_PI_EXECUTION_MODE_ENV, appendRegistryEvent, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, writePiForegroundCompletion } from "../../registry/index.js";
+import { PA_PI_EXECUTION_MODE_ENV, appendRegistryEvent, associateDeploymentTicket, getDb, getDeploymentEvents, queryDeploymentStatus, queryDeploymentStatuses, writePiForegroundCompletion } from "../../registry/index.js";
 import { nowUtc, parseTimestamp } from "../../time.js";
 import type { DeploymentStatus } from "../../types.js";
-import { formatRegistryList, formatRegistryShow } from "../formatters.js";
+import { formatRegistryList, formatRegistryShow, formatTicketAssociationResult } from "../formatters.js";
 import type { CliIo } from "../utils.js";
 import { consumeJsonFlag, groupBy, isDeploymentStatus, isProcessAlive, parseLimitOnly, parseRatingOptions, printError } from "../utils.js";
 
-function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string; json?: boolean } | { error: string } {
-  const opts: { team?: string; status?: DeploymentStatus["status"]; limit?: number; since?: string; json?: boolean } = {};
+function parseRegistryListArgs(argv: string[]): { team?: string; status?: DeploymentStatus["status"]; ticket?: string; limit?: number; since?: string; json?: boolean } | { error: string } {
+  const opts: { team?: string; status?: DeploymentStatus["status"]; ticket?: string; limit?: number; since?: string; json?: boolean } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--json") opts.json = true;
@@ -22,6 +22,11 @@ function parseRegistryListArgs(argv: string[]): { team?: string; status?: Deploy
       if (!value || value.startsWith("-")) return { error: "--status requires a value" };
       if (!isDeploymentStatus(value)) return { error: `Invalid status '${value}'. Must be one of: running, success, partial, failed, crashed, dead, unknown` };
       opts.status = value as DeploymentStatus["status"];
+      i += 1;
+    } else if (arg === "--ticket") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) return { error: "--ticket requires a value" };
+      opts.ticket = value;
       i += 1;
     } else if (arg === "--since") {
       const value = argv[i + 1];
@@ -49,12 +54,14 @@ function printRegistryListHelp(io: Required<CliIo>): void {
   io.stdout("  --json              Output as JSON");
   io.stdout("  --team <name>       Filter by team");
   io.stdout("  --status <status>   Filter by status (running, success, partial, failed, crashed, dead, unknown)");
+  io.stdout("  --ticket <id>       Filter by projected current ticket");
   io.stdout("  --since <date>      Filter by start date (ISO 8601)");
   io.stdout("  --limit <n>         Limit results (default: 20)");
   io.stdout("");
   io.stdout("Examples:");
   io.stdout("  registry list");
   io.stdout("  registry list --team builder --status running");
+  io.stdout("  registry list --ticket PAP-225");
   io.stdout("  registry list --limit 5 --json");
 }
 
@@ -91,7 +98,7 @@ function printRegistryCompleteHelp(io: Required<CliIo>): void {
 function printRegistryUpdateHelp(io: Required<CliIo>): void {
   io.stdout("Usage: registry update <deploy-id> [options]");
   io.stdout("");
-  io.stdout("Update a deployment record with new status or metadata.");
+  io.stdout("Update deployment metadata or atomically associate its projected current ticket.");
   io.stdout("");
   io.stdout("Options:");
   io.stdout("  --status <status>   Update status (success, partial, failed)");
@@ -99,10 +106,17 @@ function printRegistryUpdateHelp(io: Required<CliIo>): void {
   io.stdout("  --log-file <path>   Update log file path");
   io.stdout("  --note <text>       Add a note");
   io.stdout("  --rating-* <n>      Rating values (--rating-overall, --rating-productivity, etc.)");
+  io.stdout("  --ticket <id>       Associate this existing same-project ticket");
+  io.stdout("  --expected-ticket <id|none> Compare-and-set expected current ticket");
+  io.stdout("  --actor <name>      Required association audit actor (1-128 characters)");
+  io.stdout("  --reason <text>     Required association reason (1-1000 characters)");
+  io.stdout("");
+  io.stdout("Ticket association flags must be supplied together and cannot be mixed with metadata fields.");
   io.stdout("");
   io.stdout("Examples:");
   io.stdout("  registry update d-abc123 --status success --summary \"Completed\"");
   io.stdout("  registry update d-abc123 --note \"Follow-up needed\"");
+  io.stdout("  registry update d-abc123 --ticket PAP-225 --expected-ticket none --actor sinh --reason \"Ticket established\"");
 }
 
 function printRegistrySearchHelp(io: Required<CliIo>): void {
@@ -281,19 +295,37 @@ function runRegistryUpdate(argv: string[], io: Required<CliIo>, deprecatedAlias:
   }
   const [deployId, ...rest] = argv;
   if (!deployId) return printError("registry update requires deploy-id", io);
+  const parsed = parseRegistryUpdateArgs(rest);
+  if ("error" in parsed) return printError(parsed.error, io);
+  if (parsed.kind === "association") {
+    if (deprecatedAlias) return printError("registry amend does not support ticket association; use registry update", io);
+    const result = associateDeploymentTicket({
+      deploymentId: deployId,
+      ticketId: parsed.ticket,
+      expectedTicketId: parsed.expectedTicket,
+      actor: parsed.actor,
+      reason: parsed.reason,
+    });
+    io.stdout(formatTicketAssociationResult(result));
+    return 0;
+  }
   const events = getDeploymentEvents(deployId);
   const started = events.find((event) => event.event === "started");
   if (!started) return printError(`Deployment not found: ${deployId}`, io);
-  const parsed = parseRegistryUpdateArgs(rest);
-  if ("error" in parsed) return printError(parsed.error, io);
   if (deprecatedAlias) io.stderr("Warning: `pa registry amend` is deprecated. Use `pa registry update` instead.");
   appendRegistryEvent({ deployment_id: deployId, team: started.team, event: "updated", timestamp: nowUtc(), status: parsed.status, summary: parsed.summary, log_file: parsed.logFile, rating: parsed.rating, note: parsed.note });
   io.stdout(`${deprecatedAlias ? "Amended" : "Updated"}: ${deployId} - ${parsed.summary ?? parsed.note ?? "update recorded"}`);
   return 0;
 }
 
-function parseRegistryUpdateArgs(argv: string[]): { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; note?: string; rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number } } | { error: string } {
+type RegistryUpdateArgs =
+  | { kind: "association"; ticket: string; expectedTicket: string | null; actor: string; reason: string }
+  | { kind: "metadata"; status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; note?: string; rating?: { source: "agent" | "system" | "user"; overall: number; productivity?: number; quality?: number; efficiency?: number; insight?: number } };
+
+function parseRegistryUpdateArgs(argv: string[]): RegistryUpdateArgs | { error: string } {
   const opts: { status?: "success" | "partial" | "failed"; summary?: string; logFile?: string; note?: string } = {};
+  const association: { ticket?: string; expectedTicket?: string | null; actor?: string; reason?: string } = {};
+  const associationFlags = new Set<string>();
   const ratingValues: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -309,6 +341,15 @@ function parseRegistryUpdateArgs(argv: string[]): { status?: "success" | "partia
       else if (arg === "--log-file") opts.logFile = value;
       else opts.note = value;
       i += 1;
+    } else if (arg === "--ticket" || arg === "--expected-ticket" || arg === "--actor" || arg === "--reason") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) return { error: `${arg} requires a value` };
+      associationFlags.add(arg);
+      if (arg === "--ticket") association.ticket = value;
+      else if (arg === "--expected-ticket") association.expectedTicket = value === "none" ? null : value;
+      else if (arg === "--actor") association.actor = value;
+      else association.reason = value;
+      i += 1;
     } else if (arg.startsWith("--rating-")) {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
@@ -318,8 +359,16 @@ function parseRegistryUpdateArgs(argv: string[]): { status?: "success" | "partia
   }
   const rating = parseRatingOptions(ratingValues);
   if ("error" in rating) return rating;
-  if (!opts.status && !opts.summary && !opts.logFile && !opts.note && !rating.rating) return { error: "At least one field is required. Use --summary, --status, --log-file, --rating-*, or --note." };
-  return { ...opts, rating: rating.rating };
+  const metadataRequested = Boolean(opts.status || opts.summary || opts.logFile || opts.note || rating.rating);
+  if (associationFlags.size > 0) {
+    if (metadataRequested) return { error: "Ticket association flags cannot be mixed with status, summary, log-file, note, or rating updates." };
+    const requiredFlags = ["--ticket", "--expected-ticket", "--actor", "--reason"];
+    const missing = requiredFlags.filter((flag) => !associationFlags.has(flag));
+    if (missing.length > 0) return { error: `Ticket association requires --ticket, --expected-ticket, --actor, and --reason (missing: ${missing.join(", ")}).` };
+    return { kind: "association", ticket: association.ticket!, expectedTicket: association.expectedTicket!, actor: association.actor!, reason: association.reason! };
+  }
+  if (!metadataRequested) return { error: "At least one field is required. Use --summary, --status, --log-file, --rating-*, --note, or all ticket association flags." };
+  return { kind: "metadata", ...opts, rating: rating.rating };
 }
 
 function runRegistrySearch(argv: string[], io: Required<CliIo>): number {
@@ -502,6 +551,7 @@ export function runRegistryCommand(argv: string[], io: Required<CliIo>): number 
     let deployments = queryDeploymentStatuses();
     if (opts.team) deployments = deployments.filter((deployment) => deployment.team === opts.team);
     if (opts.status) deployments = deployments.filter((deployment) => deployment.status === opts.status);
+    if (opts.ticket) deployments = deployments.filter((deployment) => deployment.ticket_id === opts.ticket);
     if (opts.since) deployments = deployments.filter((deployment) => deployment.started_at >= opts.since!);
     const rows = deployments.slice(0, opts.limit ?? 20);
     io.stdout(opts.json ? JSON.stringify(rows, null, 2) : formatRegistryList(rows));
@@ -524,7 +574,11 @@ export function runRegistryCommand(argv: string[], io: Required<CliIo>): number 
     }
     const json = consumeJsonFlag(rest.slice(1));
     if ("error" in json) return printError(json.error, io);
-    io.stdout(json.json ? JSON.stringify(deployment, null, 2) : formatRegistryShow(deployment, getDeploymentEvents(deployment.deploy_id).length));
+    const events = getDeploymentEvents(deployment.deploy_id);
+    const launchTicketId = events.find((event) => event.event === "started")?.ticket_id ?? null;
+    io.stdout(json.json
+      ? JSON.stringify({ ...deployment, launch_ticket_id: launchTicketId, current_ticket_id: deployment.ticket_id ?? null }, null, 2)
+      : formatRegistryShow(deployment, events.length, launchTicketId));
     return 0;
   }
   if (subcommand === "complete") return runRegistryComplete(rest, io);
