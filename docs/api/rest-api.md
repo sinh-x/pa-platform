@@ -1,11 +1,11 @@
 # REST API Reference
 
-Complete reference for all 68 REST endpoints exposed by the pa-platform Agent API. Endpoints are grouped by domain. Each entry documents the HTTP method, path, query parameters, request body schema (where applicable), response schema, and error codes.
+Complete reference for all 69 REST endpoints exposed by the pa-platform Agent API. Endpoints are grouped by domain. Each entry documents the HTTP method, path, query parameters, request body schema (where applicable), response schema, and error codes.
 
 > **Source of truth:** `packages/pa-core/src/agent-api/routes/`
 > **Base URL:** `http://127.0.0.1:9848`
 > **Content-Type:** `application/json` (unless noted otherwise — e.g. SSE streams, image responses, multipart uploads)
-> **Last updated:** 2026-08-13
+> **Last updated:** 2026-09-26
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ Complete reference for all 68 REST endpoints exposed by the pa-platform Agent AP
 - [Repos — Branches & Commits (2)](#repos--branches--commits)
 - [Repos — Git Extension (3)](#repos--git-extension)
 - [Repos — Deployments (1)](#repos--deployments)
-- [Deployments (3)](#deployments)
+- [Deployments (4)](#deployments)
 - [Deploy Routing (1)](#deploy-routing)
 - [Deploy Control (3)](#deploy-control)
 - [Deploy Status (7)](#deploy-status)
@@ -1118,7 +1118,56 @@ Fetch deployment detail including primer path, error, exit code, rating, and eva
 
 **Source:** `packages/pa-core/src/agent-api/routes/deployments.ts:42`
 
-### 33. GET /api/deployments/:id/activity
+### 33. PATCH /api/deployments/:id/ticket
+
+Atomically attach or compare-and-set replace the current ticket association of a running deployment. The route uses the shared `associateDeploymentTicket` operation, so repository identity, ticket existence/project matching, exact expectation, running status, and protected-builder replacement rules are identical to CLI callers. It never rewrites the immutable start event or primer.
+
+**Path parameters:** `:id` — deployment id (matches `^[a-zA-Z0-9-]+$`)
+**Query parameters:** none
+**Authentication:** `Authorization: Bearer <credential>` is required. A deployment-scoped credential may target only its own authenticated deployment. An operator credential may target any named deployment and must not include `X-PA-Deployment-ID`. Credential comparison uses the Agent API's timing-safe mutation-principal authentication. `X-PA-Deployment-ID`, when supplied by an agent, must match its configured deployment identity.
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | Existing ticket in the deployment's canonical project |
+| `expectedTicketId` | string \| null | yes | Exact current ticket id; `null` is valid only for a ticketless attach |
+| `reason` | string | yes | Trimmed by the shared operation; 1–1,000 UTF-16 code units, never truncated |
+
+The request cannot provide an audit actor. The route derives `actor` as the authenticated deployment id for an agent principal or `operator` for an operator principal.
+
+**Response schema (200):**
+
+```json
+{
+  "deploymentId": "d-123456",
+  "previousTicketId": null,
+  "requestedTicketId": "PAP-225",
+  "currentTicketId": "PAP-225",
+  "actor": "d-123456",
+  "reason": "ticket established",
+  "writeOccurred": true
+}
+```
+
+A successful state change appends exactly one structured `ticket-associated` event and updates the current-ticket projection in the same transaction. An idempotent request with matching expected/requested ticket returns `writeOccurred: false` and appends no event. Deployment detail/list and ticket-filter consumers expose the projected current ticket.
+
+**Error codes:**
+
+| HTTP | Code | Condition |
+|------|------|-----------|
+| 400 | `BAD_REQUEST` | Invalid deployment id, JSON, body shape, field type, or caller-supplied field such as `actor` |
+| 400 | `ASSOCIATION_REJECTED` | Shared actor/reason validation rejected the mutation |
+| 401 | `UNAUTHORIZED` | Missing or invalid deployment/operator credential |
+| 403 | `FORBIDDEN` | Authenticated deployment-scoped principal targeted another deployment |
+| 404 | `ASSOCIATION_REJECTED` | Deployment or target ticket does not exist |
+| 409 | `ASSOCIATION_REJECTED` | Terminal deployment, repository/project conflict, stale expectation, or protected-builder replacement |
+
+Association rejection responses include a stable `reason` matching the shared domain error code. Authentication and self-scope checks run before body parsing or domain lookup, so missing, invalid, and cross-target callers receive no ticket-association details. Every rejected request writes zero association events and leaves the projection unchanged.
+
+**Source:** `packages/pa-core/src/agent-api/routes/deployments.ts`
+
+### 34. GET /api/deployments/:id/activity
 
 Return activity events for a deployment. Prefers structured activity logs; falls back to registry events when no activity log exists.
 
@@ -1154,7 +1203,7 @@ Event names (phone-format): `thinking`, `tool_use_detail`, `task_failed`, `text`
 
 ## Deploy Routing
 
-### 34. GET /api/deploy-routing
+### 35. GET /api/deploy-routing
 
 Return deploy routing metadata: available teams with their phone-visible deploy modes, default provider/model, and the list of configured repos.
 
@@ -1187,7 +1236,7 @@ Modes where `phone_visible === false` or `mode_type === "interactive"` are exclu
 
 ## Deploy Control
 
-### 35. POST /api/deploy
+### 36. POST /api/deploy
 
 Trigger a deployment. Returns `202` on accepted/failed per the phone contract (never `500`).
 
@@ -1259,7 +1308,7 @@ curl -X POST http://127.0.0.1:9848/api/deploy \
   -d '{"team":"builder","mode":"implement","background":true}'
 ```
 
-### 36. POST /api/self-update
+### 37. POST /api/self-update
 
 Trigger a self-update of the running adapter. Requires the adapter to provide a `selfUpdate` hook.
 
@@ -1275,7 +1324,7 @@ Trigger a self-update of the running adapter. Requires the adapter to provide a 
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-control.ts:33`
 
-### 37. GET /api/self-update/status
+### 38. GET /api/self-update/status
 
 Return the current self-update status. Requires the adapter to provide a `getSelfUpdateStatus` hook.
 
@@ -1295,7 +1344,7 @@ Return the current self-update status. Requires the adapter to provide a `getSel
 
 ## Deploy Status
 
-### 38. GET /api/deploy/status/:id
+### 39. GET /api/deploy/status/:id
 
 Query the status of a deployment.
 
@@ -1316,7 +1365,7 @@ Query the status of a deployment.
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:56`
 
-### 39. GET /api/deploy/events/:id
+### 40. GET /api/deploy/events/:id
 
 Return the raw registry event log for a deployment.
 
@@ -1333,7 +1382,7 @@ Return the raw registry event log for a deployment.
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:64`
 
-### 40. POST /api/deploy/start
+### 41. POST /api/deploy/start
 
 Emit a `started` registry event for a deployment. Used by adapter CLIs to record deployment start.
 
@@ -1369,7 +1418,7 @@ Emit a `started` registry event for a deployment. Used by adapter CLIs to record
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:71`
 
-### 41. POST /api/deploy/pid
+### 42. POST /api/deploy/pid
 
 Emit a `pid` registry event associating a PID with a deployment.
 
@@ -1396,7 +1445,7 @@ Emit a `pid` registry event associating a PID with a deployment.
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:94`
 
-### 42. POST /api/deploy/complete
+### 43. POST /api/deploy/complete
 
 Emit a `completed` registry event.
 
@@ -1427,7 +1476,7 @@ Emit a `completed` registry event.
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:104`
 
-### 43. POST /api/deploy/crash
+### 44. POST /api/deploy/crash
 
 Emit a `crashed` registry event.
 
@@ -1455,7 +1504,7 @@ Emit a `crashed` registry event.
 
 **Source:** `packages/pa-core/src/agent-api/routes/deploy-status.ts:122`
 
-### 44. POST /api/deploy/amend
+### 45. POST /api/deploy/amend
 
 Emit an `amended` registry event to update a completed deployment's status/summary.
 
@@ -1488,7 +1537,7 @@ Emit an `amended` registry event to update a completed deployment's status/summa
 
 ## Timers
 
-### 45. GET /api/timers
+### 46. GET /api/timers
 
 List systemd timers (output of `systemctl list-timers` parsed by `listSystemdTimers`).
 
@@ -1508,7 +1557,7 @@ List systemd timers (output of `systemctl list-timers` parsed by `listSystemdTim
 
 ## Actions & Inbox
 
-### 46. GET /api/inbox
+### 47. GET /api/inbox
 
 List inbox items (markdown files in `sinh-inputs/inbox`) with type counts.
 
@@ -1529,7 +1578,7 @@ List inbox items (markdown files in `sinh-inputs/inbox`) with type counts.
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:20`
 
-### 47. POST /api/inbox/:id/action
+### 48. POST /api/inbox/:id/action
 
 Perform an action on an inbox item. Moves the file to the appropriate folder and optionally annotates feedback.
 
@@ -1568,7 +1617,7 @@ Perform an action on an inbox item. Moves the file to the appropriate folder and
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:27`
 
-### 48. POST /api/sinh-inputs/:folder/:filename/action
+### 49. POST /api/sinh-inputs/:folder/:filename/action
 
 Perform an action on a sinh-inputs item in `approved`, `rejected`, `deferred`, `done`, or `ideas` folders.
 
@@ -1601,7 +1650,7 @@ Perform an action on a sinh-inputs item in `approved`, `rejected`, `deferred`, `
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:57`
 
-### 49. POST /api/ideas
+### 50. POST /api/ideas
 
 Create a new idea ticket from a title and optional fields.
 
@@ -1637,7 +1686,7 @@ Create a new idea ticket from a title and optional fields.
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:90`
 
-### 50. PATCH /api/tickets/:id/comments/:commentId
+### 51. PATCH /api/tickets/:id/comments/:commentId
 
 Edit a comment's content.
 
@@ -1666,7 +1715,7 @@ Edit a comment's content.
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:119`
 
-### 51. DELETE /api/tickets/:id/comments/:commentId
+### 52. DELETE /api/tickets/:id/comments/:commentId
 
 Delete a comment.
 
@@ -1689,7 +1738,7 @@ Delete a comment.
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:133`
 
-### 52. POST /api/tickets/:id/attachments
+### 53. POST /api/tickets/:id/attachments
 
 Attach an existing sandbox-relative path to a ticket.
 
@@ -1719,7 +1768,7 @@ Attach an existing sandbox-relative path to a ticket.
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:143`
 
-### 53. POST /api/tickets/:id/attachments/upload
+### 54. POST /api/tickets/:id/attachments/upload
 
 Upload an image file (multipart form) and attach it to a ticket. Stored under `attachments/<ticketId>/<timestamp>-<sanitized-name>`.
 
@@ -1745,7 +1794,7 @@ Upload an image file (multipart form) and attach it to a ticket. Stored under `a
 
 **Source:** `packages/pa-core/src/agent-api/routes/actions.ts:158`
 
-### 54. POST /api/tickets/:id/move
+### 55. POST /api/tickets/:id/move
 
 Move a ticket to a different project.
 
@@ -1780,7 +1829,7 @@ Move a ticket to a different project.
 
 ## Skills
 
-### 55. GET /api/skills
+### 56. GET /api/skills
 
 Return the full skill registry report: inventory, scanned roots, validation issues, and OpenCode visibility metadata.
 
@@ -1796,7 +1845,7 @@ Return the full skill registry report: inventory, scanned roots, validation issu
 
 ## Knowledge
 
-### 56. GET /api/knowledge-boundaries
+### 57. GET /api/knowledge-boundaries
 
 List knowledge boundaries (item types and their storage locations).
 
@@ -1812,7 +1861,7 @@ List knowledge boundaries (item types and their storage locations).
 
 **Source:** `packages/pa-core/src/agent-api/routes/knowledge.ts:6`
 
-### 57. GET /api/improvement-candidates
+### 58. GET /api/improvement-candidates
 
 List improvement candidates aggregated from session logs and other sources.
 
@@ -1834,7 +1883,7 @@ List improvement candidates aggregated from session logs and other sources.
 
 All dashboard endpoints are **read-only** and include a `readOnly: true` flag in their response. Limits: deployments 200, tickets 500, skills 250, improvement candidates 500.
 
-### 58. GET /api/dashboard/overview
+### 59. GET /api/dashboard/overview
 
 Return aggregate counts for the dashboard.
 
@@ -1855,7 +1904,7 @@ Return aggregate counts for the dashboard.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:18`
 
-### 59. GET /api/dashboard/views/deployments
+### 60. GET /api/dashboard/views/deployments
 
 Return up to 200 deployment status records.
 
@@ -1871,7 +1920,7 @@ Return up to 200 deployment status records.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:43`
 
-### 60. GET /api/dashboard/views/tickets
+### 61. GET /api/dashboard/views/tickets
 
 Return up to 500 tickets.
 
@@ -1887,7 +1936,7 @@ Return up to 500 tickets.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:48`
 
-### 61. GET /api/dashboard/views/skills
+### 62. GET /api/dashboard/views/skills
 
 Return up to 250 skill inventory entries plus scan metadata.
 
@@ -1909,7 +1958,7 @@ Return up to 250 skill inventory entries plus scan metadata.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:53`
 
-### 62. GET /api/dashboard/views/knowledge-memory
+### 63. GET /api/dashboard/views/knowledge-memory
 
 Return knowledge boundaries.
 
@@ -1925,7 +1974,7 @@ Return knowledge boundaries.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:64`
 
-### 63. GET /api/dashboard/views/improvement-candidates
+### 64. GET /api/dashboard/views/improvement-candidates
 
 Return up to 500 improvement candidates.
 
@@ -1941,7 +1990,7 @@ Return up to 500 improvement candidates.
 
 **Source:** `packages/pa-core/src/agent-api/routes/dashboard.ts:69`
 
-### 64. GET /api/dashboard/views/opencode-integration
+### 65. GET /api/dashboard/views/opencode-integration
 
 Return OpenCode integration metadata: runtime owner, deployment contexts (filtered to `opencode`/`opa`), memory-doc sources, skill injection info, and OpenCode-safe validation warnings.
 
@@ -1968,7 +2017,7 @@ Return OpenCode integration metadata: runtime owner, deployment contexts (filter
 
 ## Sessions
 
-### 65. GET /api/sessions
+### 66. GET /api/sessions
 
 List all active sessions registered with the `SessionManager`.
 
@@ -1986,7 +2035,7 @@ List all active sessions registered with the `SessionManager`.
 
 **Source:** `packages/pa-core/src/agent-api/routes/sessions.ts:20`
 
-### 66. POST /api/sessions
+### 67. POST /api/sessions
 
 Register a deploy session (used by `opa deploy` CLI).
 
@@ -2013,7 +2062,7 @@ Register a deploy session (used by `opa deploy` CLI).
 
 **Source:** `packages/pa-core/src/agent-api/routes/sessions.ts:28`
 
-### 67. POST /api/sessions/:id/stop
+### 68. POST /api/sessions/:id/stop
 
 Terminate a session by id.
 
@@ -2034,7 +2083,7 @@ Terminate a session by id.
 
 **Source:** `packages/pa-core/src/agent-api/routes/sessions.ts:54`
 
-### 68. GET /api/sessions/:id/stream
+### 69. GET /api/sessions/:id/stream
 
 SSE stream of a session's events (read-only). Deploy sessions return `404` with a distinct message because they have no child process to stream.
 
@@ -2070,7 +2119,7 @@ SSE stream of a session's events (read-only). Deploy sessions return `404` with 
 | Repos — Branches & Commits | 2 | `GET /api/repos/:key/branches`, `GET /api/repos/:key/commits` |
 | Repos — Git Extension | 3 | `GET /api/repos/:key/diff`, `/branches/remote`, `/compare` |
 | Repos — Deployments | 1 | `GET /api/repos/:key/deployments` |
-| Deployments | 3 | `GET /api/deployments`, `GET /api/deployments/:id`, `GET /api/deployments/:id/activity` |
+| Deployments | 4 | `GET /api/deployments`, `GET /api/deployments/:id`, `PATCH /api/deployments/:id/ticket`, `GET /api/deployments/:id/activity` |
 | Deploy Routing | 1 | `GET /api/deploy-routing` |
 | Deploy Control | 3 | `POST /api/deploy`, `POST /api/self-update`, `GET /api/self-update/status` |
 | Deploy Status | 7 | `GET /api/deploy/status/:id`, `GET /api/deploy/events/:id`, `POST /api/deploy/start`, `/pid`, `/complete`, `/crash`, `/amend` |
@@ -2080,6 +2129,6 @@ SSE stream of a session's events (read-only). Deploy sessions return `404` with 
 | Knowledge | 2 | `GET /api/knowledge-boundaries`, `GET /api/improvement-candidates` |
 | Dashboard | 7 | `GET /api/dashboard/overview`, `/views/deployments`, `/views/tickets`, `/views/skills`, `/views/knowledge-memory`, `/views/improvement-candidates`, `/views/opencode-integration` |
 | Sessions | 4 | `GET /api/sessions`, `POST /api/sessions`, `POST /api/sessions/:id/stop`, `GET /api/sessions/:id/stream` |
-| **Total** | **68** | |
+| **Total** | **69** | |
 
-All 68 endpoints are derived from `packages/pa-core/src/agent-api/routes/` and the `GET /api/health` route defined in `packages/pa-core/src/agent-api/index.ts`. The `GET /dashboard` HTML page is intentionally excluded — it is a server-rendered HTML view, not a JSON REST endpoint.
+All 69 endpoints are derived from `packages/pa-core/src/agent-api/routes/` and the `GET /api/health` route defined in `packages/pa-core/src/agent-api/index.ts`. The `GET /dashboard` HTML page is intentionally excluded — it is a server-rendered HTML view, not a JSON REST endpoint.

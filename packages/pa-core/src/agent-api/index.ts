@@ -227,7 +227,7 @@ export function createAgentApiApp(opts: AgentApiOptions = {}): AgentApiInstance 
       return claimedDeploymentId === undefined && credentialsMatch(token, mutationAuth.operatorCredential);
     },
   }));
-  app.route("/", deploymentsRoutes());
+  app.route("/", deploymentsRoutes((c) => authenticateMutationPrincipal(c, mutationAuth)));
   app.route("/", deployRoutingRoutes());
   app.route("/", deployStatusRoutes((c) => authenticateMutationPrincipal(c, mutationAuth)));
   app.route("/", reposRoutes());

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { serve } from "@hono/node-server";
-import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, hub, startWatchers, TicketStore, WsHub } from "../index.js";
+import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, BulletinStore, closeDb, createActivityEvent, createAgentApiApp, getDeploymentEvents, hub, queryDeploymentStatus, startWatchers, TicketStore, WsHub } from "../index.js";
 import type { DeployRequest, WsClient, WsEvent } from "../index.js";
 import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
 
@@ -539,6 +539,130 @@ test("agent API exposes deployment lists, detail, and activity", async () => {
 
     assert.equal((await app.request("/api/deployments?since=not-a-date")).status, 400);
     assert.equal((await app.request("/api/deployments/d_bad")).status, 400);
+  });
+});
+
+test("agent API associates deployment tickets for self agents and named operator targets", async () => {
+  await withApiEnv(async (root) => {
+    const store = new TicketStore();
+    const first = store.create({ project: "pa-platform", title: "First association", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const second = store.create({ project: "pa-platform", title: "Corrected association", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const deploymentId = "d-api-associate";
+    const primerDir = join(root, "deployments", deploymentId);
+    const primerPath = join(primerDir, "primer.md");
+    mkdirSync(primerDir, { recursive: true });
+    writeFileSync(primerPath, "immutable primer bytes\n");
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "analyze", event: "started", timestamp: "2026-09-24T00:00:00.000Z", repo_root: join(root, "repo"), primer: `deployments/${deploymentId}/primer.md` });
+    const immutableStart = getDeploymentEvents(deploymentId)[0];
+    const immutablePrimer = readFileSync(primerPath, "utf8");
+    const api = createAgentApiApp({ ticketMutationAuth: { deploymentId, credential: "agent-credential", operatorCredential: "operator-credential" } });
+
+    const attached = await api.app.request(`/api/deployments/${deploymentId}/ticket`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", Authorization: "Bearer agent-credential", "X-PA-Deployment-ID": deploymentId },
+      body: JSON.stringify({ ticketId: first.id, expectedTicketId: null, reason: "  ticket established  " }),
+    });
+    assert.equal(attached.status, 200);
+    assert.deepEqual(await attached.json(), {
+      deploymentId,
+      previousTicketId: null,
+      requestedTicketId: first.id,
+      currentTicketId: first.id,
+      actor: deploymentId,
+      reason: "ticket established",
+      writeOccurred: true,
+    });
+    assert.deepEqual(getDeploymentEvents(deploymentId)[0], immutableStart);
+    assert.equal(readFileSync(primerPath, "utf8"), immutablePrimer);
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "ticket-associated").length, 1);
+    assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, first.id);
+
+    const detail = await api.app.request(`/api/deployments/${deploymentId}`);
+    assert.equal((await detail.json() as { ticket_id?: string }).ticket_id, first.id);
+    const firstList = await api.app.request(`/api/deployments?all=true&ticket_id=${first.id}`);
+    assert.deepEqual((await firstList.json() as { deployments: Array<{ deploy_id: string }> }).deployments.map((deployment) => deployment.deploy_id), [deploymentId]);
+
+    const replaced = await api.app.request(`/api/deployments/${deploymentId}/ticket`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", Authorization: "Bearer operator-credential" },
+      body: JSON.stringify({ ticketId: second.id, expectedTicketId: first.id, reason: "correct association" }),
+    });
+    assert.equal(replaced.status, 200);
+    assert.deepEqual(await replaced.json(), {
+      deploymentId,
+      previousTicketId: first.id,
+      requestedTicketId: second.id,
+      currentTicketId: second.id,
+      actor: "operator",
+      reason: "correct association",
+      writeOccurred: true,
+    });
+    assert.equal(getDeploymentEvents(deploymentId).filter((event) => event.event === "ticket-associated").length, 2);
+    assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, second.id);
+    assert.equal((await (await api.app.request(`/api/deployments?all=true&ticket_id=${first.id}`)).json() as { total: number }).total, 0);
+    assert.equal((await (await api.app.request(`/api/deployments?all=true&ticket_id=${second.id}`)).json() as { total: number }).total, 1);
+    assert.deepEqual(getDeploymentEvents(deploymentId)[0], immutableStart);
+    assert.equal(readFileSync(primerPath, "utf8"), immutablePrimer);
+    api.cleanup();
+  });
+});
+
+test("agent API deployment ticket association rejects malformed, unauthorized, and invalid domain mutations without writes", async () => {
+  await withApiEnv(async (root) => {
+    const otherRepo = join(root, "other-repo");
+    mkdirSync(otherRepo, { recursive: true });
+    writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${join(root, "repo")}\n    description: Test repo\n    prefix: PAP\n  other:\n    path: ${otherRepo}\n    description: Other repo\n    prefix: OTH\n`);
+    const store = new TicketStore();
+    const current = store.create({ project: "pa-platform", title: "Current ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const replacement = store.create({ project: "pa-platform", title: "Replacement ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const crossProject = store.create({ project: "other", title: "Cross-project ticket", summary: "Summary", description: "", status: "idea", priority: "medium", type: "task", assignee: "requirements/team-manager", estimate: "S", from: "", to: "", tags: [], blockedBy: [], doc_refs: [], comments: [] }, "test");
+    const canonicalRoot = join(root, "repo");
+    const started = (deploymentId: string, fields: { team?: string; mode?: string; ticket_id?: string } = {}) => appendRegistryEvent({ deployment_id: deploymentId, team: fields.team ?? "requirements", mode: fields.mode ?? "analyze", event: "started", timestamp: "2026-09-24T00:00:00.000Z", repo_root: canonicalRoot, ...(fields.ticket_id ? { ticket_id: fields.ticket_id } : {}) });
+    started("d-api-self");
+    started("d-api-other");
+    started("d-api-terminal");
+    appendRegistryEvent({ deployment_id: "d-api-terminal", team: "requirements", event: "completed", timestamp: "2026-09-24T00:01:00.000Z", status: "success" });
+    started("d-api-unknown-ticket");
+    started("d-api-cross-project");
+    started("d-api-stale", { ticket_id: current.id });
+    started("d-api-protected", { team: "builder", mode: "implement", ticket_id: current.id });
+    const api = createAgentApiApp({ ticketMutationAuth: { deploymentId: "d-api-self", credential: "agent-credential", operatorCredential: "operator-credential" } });
+    const agentHeaders = { "content-type": "application/json", Authorization: "Bearer agent-credential", "X-PA-Deployment-ID": "d-api-self" };
+    const operatorHeaders = { "content-type": "application/json", Authorization: "Bearer operator-credential" };
+    const validAttach = { ticketId: current.id, expectedTicketId: null, reason: "attach" };
+    const cases: Array<{ name: string; target: string; headers: Record<string, string>; body: string; status: number; reason?: string }> = [
+      { name: "missing authentication", target: "d-api-self", headers: { "content-type": "application/json" }, body: JSON.stringify(validAttach), status: 401 },
+      { name: "invalid authentication", target: "d-api-self", headers: { "content-type": "application/json", Authorization: "Bearer wrong-credential" }, body: JSON.stringify(validAttach), status: 401 },
+      { name: "self mismatch", target: "d-api-other", headers: agentHeaders, body: JSON.stringify(validAttach), status: 403 },
+      { name: "invalid JSON", target: "d-api-self", headers: agentHeaders, body: "{", status: 400 },
+      { name: "caller supplied actor", target: "d-api-self", headers: agentHeaders, body: JSON.stringify({ ...validAttach, actor: "spoofed" }), status: 400 },
+      { name: "unknown deployment", target: "d-api-missing", headers: operatorHeaders, body: JSON.stringify(validAttach), status: 404, reason: "deployment-not-found" },
+      { name: "terminal deployment", target: "d-api-terminal", headers: operatorHeaders, body: JSON.stringify(validAttach), status: 409, reason: "deployment-not-running" },
+      { name: "unknown ticket", target: "d-api-unknown-ticket", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: "PAP-9999" }), status: 404, reason: "ticket-not-found" },
+      { name: "cross-project ticket", target: "d-api-cross-project", headers: operatorHeaders, body: JSON.stringify({ ...validAttach, ticketId: crossProject.id }), status: 409, reason: "ticket-project-mismatch" },
+      { name: "stale expectation", target: "d-api-stale", headers: operatorHeaders, body: JSON.stringify({ ticketId: replacement.id, expectedTicketId: null, reason: "stale" }), status: 409, reason: "stale-expectation" },
+      { name: "protected builder replacement", target: "d-api-protected", headers: operatorHeaders, body: JSON.stringify({ ticketId: replacement.id, expectedTicketId: current.id, reason: "replace" }), status: 409, reason: "protected-builder-replacement" },
+    ];
+
+    let unauthorizedBody: unknown;
+    for (const entry of cases) {
+      const beforeEvents = getDeploymentEvents(entry.target);
+      const beforeTicket = queryDeploymentStatus(entry.target)?.ticket_id;
+      const response = await api.app.request(`/api/deployments/${entry.target}/ticket`, { method: "PATCH", headers: entry.headers, body: entry.body });
+      assert.equal(response.status, entry.status, entry.name);
+      const responseBody = await response.json() as { error: string; code: string; reason?: string };
+      assert.ok(responseBody.error.length <= 2_000, entry.name);
+      if (entry.reason) {
+        assert.equal(responseBody.code, "ASSOCIATION_REJECTED", entry.name);
+        assert.equal(responseBody.reason, entry.reason, entry.name);
+      }
+      if (entry.name === "missing authentication") unauthorizedBody = responseBody;
+      if (entry.name === "invalid authentication") assert.deepEqual(responseBody, unauthorizedBody);
+      if (entry.status === 401 || entry.status === 403) assert.equal(responseBody.error.includes(entry.target), false, entry.name);
+      assert.deepEqual(getDeploymentEvents(entry.target), beforeEvents, entry.name);
+      assert.equal(queryDeploymentStatus(entry.target)?.ticket_id, beforeTicket, entry.name);
+    }
+    api.cleanup();
   });
 });
 

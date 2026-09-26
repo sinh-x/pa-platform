@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { getDeploymentDir } from "../../paths.js";
-import { computeDeploymentStatuses, getDeploymentEvents, getDeploymentsByTicketId, queryEvaluatorResultsByTargetDeployment, readRegistry } from "../../registry/index.js";
+import { associateDeploymentTicket, computeDeploymentStatuses, getDeploymentEvents, getDeploymentsByTicketId, queryEvaluatorResultsByTargetDeployment, readRegistry, TicketAssociationError } from "../../registry/index.js";
 import type { EvaluatorResult } from "../../types.js";
 import { readDeploymentActivity } from "../../activity/index.js";
 import { nowUtc } from "../../time.js";
@@ -25,7 +25,14 @@ export function get48HoursAgoISO(now = new Date()): string {
   return nowUtc(then);
 }
 
-export function deploymentsRoutes(): Hono {
+export interface DeploymentTicketMutationPrincipal {
+  deploymentId?: string;
+  operator?: boolean;
+}
+
+export type DeploymentTicketPrincipalResolver = (context: Context) => DeploymentTicketMutationPrincipal;
+
+export function deploymentsRoutes(resolvePrincipal?: DeploymentTicketPrincipalResolver): Hono {
   const app = new Hono();
 
   app.get("/api/deployments", (c) => {
@@ -47,6 +54,53 @@ export function deploymentsRoutes(): Hono {
     return c.json(deploymentDetail(id, events));
   });
 
+  app.patch("/api/deployments/:id/ticket", async (c) => {
+    const id = c.req.param("id");
+    if (!isValidDeploymentId(id)) return c.json({ error: "Invalid deployment id", code: "BAD_REQUEST" }, 400);
+    const principal = resolvePrincipal?.(c) ?? {};
+    if (!principal.operator && !principal.deploymentId) {
+      return c.json({ error: "Authenticated deployment-scoped or operator principal required", code: "UNAUTHORIZED" }, 401);
+    }
+    if (!principal.operator && principal.deploymentId !== id) {
+      return c.json({ error: "Deployment-scoped principal may only mutate its own ticket association", code: "FORBIDDEN" }, 403);
+    }
+
+    let body: unknown;
+    try { body = await c.req.json(); }
+    catch { return c.json({ error: "Invalid JSON body", code: "BAD_REQUEST" }, 400); }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ error: "Request body must be a JSON object", code: "BAD_REQUEST" }, 400);
+    }
+    const input = body as Record<string, unknown>;
+    if (Object.keys(input).some((field) => !DEPLOYMENT_TICKET_FIELDS.has(field))) {
+      return c.json({ error: "Request body supports only ticketId, expectedTicketId, and reason", code: "BAD_REQUEST" }, 400);
+    }
+    if (typeof input["ticketId"] !== "string") {
+      return c.json({ error: "ticketId must be a string", code: "BAD_REQUEST" }, 400);
+    }
+    if (input["expectedTicketId"] !== null && typeof input["expectedTicketId"] !== "string") {
+      return c.json({ error: "expectedTicketId must be a string or null", code: "BAD_REQUEST" }, 400);
+    }
+    if (typeof input["reason"] !== "string") {
+      return c.json({ error: "reason must be a string", code: "BAD_REQUEST" }, 400);
+    }
+
+    try {
+      return c.json(associateDeploymentTicket({
+        deploymentId: id,
+        ticketId: input["ticketId"],
+        expectedTicketId: input["expectedTicketId"],
+        actor: principal.operator ? "operator" : principal.deploymentId!,
+        reason: input["reason"],
+      }));
+    } catch (error) {
+      if (error instanceof TicketAssociationError) {
+        return c.json({ error: error.message, code: "ASSOCIATION_REJECTED", reason: error.code }, associationErrorStatus(error));
+      }
+      throw error;
+    }
+  });
+
   app.get("/api/deployments/:id/activity", (c) => {
     const id = c.req.param("id");
     if (!isValidDeploymentId(id)) return c.json({ error: "Invalid deployment id", code: "BAD_REQUEST" }, 400);
@@ -57,6 +111,14 @@ export function deploymentsRoutes(): Hono {
   });
 
   return app;
+}
+
+const DEPLOYMENT_TICKET_FIELDS = new Set(["ticketId", "expectedTicketId", "reason"]);
+
+function associationErrorStatus(error: TicketAssociationError): 400 | 404 | 409 {
+  if (error.code === "invalid-actor" || error.code === "invalid-reason") return 400;
+  if (error.code === "deployment-not-found" || error.code === "ticket-not-found") return 404;
+  return 409;
 }
 
 function isValidDeploymentId(id: string): boolean {
