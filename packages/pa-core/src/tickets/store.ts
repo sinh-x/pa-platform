@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
@@ -11,6 +13,9 @@ import { queryDeploymentStatus } from "../registry/index.js";
 import type { AddDocRefInput, AddLinkedBranchInput, AddLinkedCommitInput, AuditEntry, Comment, CounterStore, CreateTicketInput, DocRef, LinkedBranch, LinkedCommit, SubTicket, Ticket, TicketListFilters, TicketStatus, UpdateTicketInput } from "./types.js";
 
 const VALID_STATUSES = new Set<TicketStatus>([...ACTIVE_STATUSES, ...TERMINAL_STATUSES]);
+const TICKET_TRANSACTION_MUTEX_FILE = ".ticket-store-transaction.lock";
+const TICKET_TRANSACTION_MUTEX_TIMEOUT_MS = 5_000;
+const TICKET_TRANSACTION_MUTEX_POLL_MS = 25;
 
 export interface TicketMutationContext {
   team?: string;
@@ -55,11 +60,7 @@ export class TicketStore {
   }
 
   get(id: string): Ticket | undefined {
-    const path = this.ticketPath(id);
-    if (!existsSync(path)) return undefined;
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    if (raw["_alias"] === true && typeof raw["movedTo"] === "string") return this.get(raw["movedTo"]);
-    return this.normalizeTicket(raw);
+    return this.readTicket(id);
   }
 
   update(id: string, input: UpdateTicketInput, actor = "pa-core", context = this.context): Ticket {
@@ -97,34 +98,41 @@ export class TicketStore {
     next = this.normalizeTicket(next as unknown as Record<string, unknown>);
 
     const changes = diffTicket(current, next);
-    const auditSnapshot = this.readAuditSnapshot();
-    let persisted: Ticket;
-    try {
-      this.writeTicket(next);
-      const readback = this.get(id);
-      if (!readback || !ticketsEqual(readback, next)) {
-        throw new Error("the disk-backed ticket did not equal the validated candidate");
+    return withTicketTransactionMutex(this.dir, () => {
+      const transactionCurrent = this.readTicket(id);
+      if (!transactionCurrent || !ticketsEqual(transactionCurrent, current)) {
+        throw new Error(ticketConcurrencyDiagnostic(id, removeLinkedBranch));
       }
-      persisted = readback;
-      this.appendAudits([
-        ...linkedAuditIntents,
-        { ticketId: id, action: "updated", actor, changes },
-      ]);
-    } catch (error) {
-      let restored = false;
+
+      const auditSnapshot = this.readAuditSnapshot();
+      let persisted: Ticket;
       try {
-        this.writeTicket(current);
-        this.restoreAuditSnapshot(auditSnapshot);
-        const restorationReadback = this.get(id);
-        restored = restorationReadback !== undefined
-          && ticketsEqual(restorationReadback, current)
-          && this.readAuditSnapshot() === auditSnapshot;
-      } catch {
-        restored = false;
+        this.writeTicket(next);
+        const readback = this.get(id);
+        if (!readback || !ticketsEqual(readback, next)) {
+          throw new Error("the disk-backed ticket did not equal the validated candidate");
+        }
+        persisted = readback;
+        this.appendAudits([
+          ...linkedAuditIntents,
+          { ticketId: id, action: "updated", actor, changes },
+        ]);
+      } catch (error) {
+        let restored = false;
+        try {
+          this.writeTicket(current);
+          this.restoreAuditSnapshot(auditSnapshot);
+          const restorationReadback = this.get(id);
+          restored = restorationReadback !== undefined
+            && ticketsEqual(restorationReadback, current)
+            && this.readAuditSnapshot() === auditSnapshot;
+        } catch {
+          restored = false;
+        }
+        throw new Error(linkedBranchPostconditionDiagnostic(id, removeLinkedBranch, error, restored));
       }
-      throw new Error(linkedBranchPostconditionDiagnostic(id, removeLinkedBranch, error, restored));
-    }
-    return persisted;
+      return persisted;
+    });
   }
 
   comment(id: string, author: string, content: string): Comment {
@@ -278,6 +286,14 @@ export class TicketStore {
     return readFileSync(path, "utf-8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as AuditEntry);
   }
 
+  private readTicket(id: string): Ticket | undefined {
+    const path = this.ticketPath(id);
+    if (!existsSync(path)) return undefined;
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    if (raw["_alias"] === true && typeof raw["movedTo"] === "string") return this.readTicket(raw["movedTo"]);
+    return this.normalizeTicket(raw);
+  }
+
   private ticketPath(id: string): string {
     return resolve(this.dir, `${id}.json`);
   }
@@ -361,6 +377,43 @@ export class TicketStore {
       return;
     }
     writeFileSync(path, snapshot);
+  }
+}
+
+function withTicketTransactionMutex<T>(dir: string, operation: () => T): T {
+  const mutexPath = resolve(dir, TICKET_TRANSACTION_MUTEX_FILE);
+  const descriptor = openSync(mutexPath, "a", 0o600);
+  closeSync(descriptor);
+  chmodSync(mutexPath, 0o600);
+
+  const signalDirectory = mkdtempSync(join(tmpdir(), "pa-ticket-transaction-"));
+  const readyPath = join(signalDirectory, "ready");
+  const donePath = join(signalDirectory, "done");
+  const script = "trap 'rm -f -- \"$1\"; : > \"$2\"' EXIT; : > \"$1\"; IFS= read -r _";
+  const holder = spawn("flock", ["--exclusive", "--wait", String(TICKET_TRANSACTION_MUTEX_TIMEOUT_MS / 1000), mutexPath, "/bin/sh", "-c", script, "pa-ticket-transaction", readyPath, donePath], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  holder.on("error", () => { /* handshake timeout reports helper startup failure */ });
+  holder.stdin.on("error", () => { /* handshake timeout reports helper failure */ });
+  try {
+    waitForTicketTransactionPath(readyPath, "acquire");
+    return operation();
+  } finally {
+    holder.stdin.end("release\n");
+    try {
+      waitForTicketTransactionPath(donePath, "release");
+    } catch {
+      holder.kill("SIGKILL");
+    }
+    rmSync(signalDirectory, { recursive: true, force: true });
+  }
+}
+
+function waitForTicketTransactionPath(path: string, action: string): void {
+  const deadline = Date.now() + TICKET_TRANSACTION_MUTEX_TIMEOUT_MS;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`ticket-store: could not ${action} transaction mutex within ${TICKET_TRANSACTION_MUTEX_TIMEOUT_MS}ms`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TICKET_TRANSACTION_MUTEX_POLL_MS);
   }
 }
 
@@ -556,6 +609,16 @@ function linkedBranchAmbiguityDiagnostic(ticketId: string, selector: string, cou
     reason: `Bare repository selector matched ${count} normalized records; removal is ambiguous.`,
     correction: "Retain one repository record or use an exact repo:branch selector.",
     resumeAction: "Retry only after the ticket has one unambiguous match or with the intended exact selector.",
+  });
+}
+
+function ticketConcurrencyDiagnostic(ticketId: string, selector: string | undefined): string {
+  return boundedFiveFieldDiagnostic({
+    condition: "Ticket update rejected before persistence.",
+    source: `TicketStore.update ticket ${boundedDiagnosticValue(ticketId)}${selector ? ` selector ${boundedDiagnosticValue(selector)}` : ""}.`,
+    reason: "The disk-backed ticket changed after this writer's snapshot; a concurrent committed update was preserved.",
+    correction: "Re-read the current ticket and reconcile the requested mutation with the committed state.",
+    resumeAction: "Retry the complete update from a fresh disk-backed ticket snapshot.",
   });
 }
 

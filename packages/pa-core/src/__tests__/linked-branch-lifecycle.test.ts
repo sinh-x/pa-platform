@@ -258,6 +258,47 @@ test("replacement validation and readback failures restore prior state without m
   });
 });
 
+test("two writers preserve the concurrent commit and all audits when the first writer's transaction readback fails", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const ticket = createTicket(store);
+    const otherTicket = createTicket(store);
+    store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-old" } }, "planner");
+    const writerA = new TicketStore(tickets, { privileged: true });
+    const writerB = new TicketStore(tickets, { privileged: true });
+    const originalGet = writerA.get.bind(writerA);
+    let committedByB: Ticket | undefined;
+    let auditAfterB: ReturnType<TicketStore["readAudit"]> | undefined;
+    let firstSnapshot = true;
+
+    writerA.get = (id: string): Ticket | undefined => {
+      const snapshot = originalGet(id);
+      if (firstSnapshot) {
+        firstSnapshot = false;
+        committedByB = writerB.update(ticket.id, { title: "Writer B committed title" }, "writer-b");
+        writerB.update(otherTicket.id, { summary: "Writer B shared audit entry" }, "writer-b");
+        auditAfterB = writerB.readAudit();
+      }
+      return snapshot;
+    };
+
+    assert.throws(
+      () => writerA.update(ticket.id, {
+        remove_linked_branch: "pa-platform",
+        add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-writer-a" },
+      }, "writer-a"),
+      (error: unknown) => assertBoundedFiveFieldDiagnostic(error, /changed after this writer's snapshot/),
+    );
+
+    assert.ok(committedByB);
+    assert.ok(auditAfterB);
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(ticket.id), committedByB);
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).readAudit(), auditAfterB);
+    assert.deepEqual(committedByB.linkedBranches.map((branch) => branch.branch), ["feature/PAP-001-old"]);
+    assert.equal(auditAfterB.some((entry) => entry.actor === "writer-a"), false);
+    assert.equal(auditAfterB.filter((entry) => entry.actor === "writer-b" && entry.action === "updated").length, 2);
+  });
+});
+
 test("admission foundation rejects missing, ambiguous, invalid-pattern, and cross-project evidence with bounded diagnostics", () => {
   withLinkedBranchEnv(({ store }) => {
     const ticket = createTicket(store);
