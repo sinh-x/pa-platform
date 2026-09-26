@@ -564,6 +564,7 @@ Manage the deployment registry. Subcommands: `list`, `show`, `complete`, `update
 | `--json` | — | Output as JSON |
 | `--team <name>` | team | Filter by team |
 | `--status <status>` | status | Filter by status: `running`, `success`, `partial`, `failed`, `crashed`, `dead`, `unknown` |
+| `--ticket <id>` | ticket ID | Filter by the projected current ticket association |
 | `--since <date>` | ISO 8601 | Filter by start date |
 | `--limit <n>` | positive int | Limit results (default 20) |
 
@@ -571,7 +572,7 @@ Manage the deployment registry. Subcommands: `list`, `show`, `complete`, `update
 
 **Usage:** `registry show <deploy-id> [--json]`
 
-Shows details and event count for a deployment. `--json` outputs the deployment record as JSON.
+Shows details and event count for a deployment. Text output labels the immutable launch ticket and projected current ticket separately. `--json` outputs the deployment record plus `launch_ticket_id` and `current_ticket_id`; `ticket_id` remains the projected current association.
 
 ### registry complete
 
@@ -593,7 +594,7 @@ Writes a `completed` registry event with a final status.
 
 **Usage:** `registry update <deploy-id> [options]`
 
-Appends an `updated` registry event. `amend` is a deprecated alias (prints a warning). Requires at least one field.
+Appends an `updated` registry event for metadata, or atomically compares and sets the projected current ticket through the shared association operation. `amend` is a deprecated metadata-only alias (prints a warning). Requires at least one metadata field or all four association flags.
 
 | Flag | Value | Description |
 |------|-------|-------------|
@@ -602,6 +603,12 @@ Appends an `updated` registry event. `amend` is a deprecated alias (prints a war
 | `--log-file <path>` | path | Update log file path |
 | `--note <text>` | string | Add a note |
 | `--rating-* <n>` | 0–5 | Rating values (same set as `complete`) |
+| `--ticket <id>` | ticket ID | Existing same-project ticket to associate |
+| `--expected-ticket <id\|none>` | ticket ID or literal `none` | Required compare-and-set expectation; use `none` only for a ticketless deployment |
+| `--actor <name>` | 1–128 UTF-16 code units after trimming | Required audit actor |
+| `--reason <text>` | 1–1,000 UTF-16 code units after trimming | Required audit reason |
+
+The four association flags must be supplied together and cannot be mixed with status, summary, log-file, note, or rating updates. A successful attach or correction prints verified previous, requested, and current ticket values plus the normalized actor/reason and whether a write occurred. Rejected operations append no association event and do not change the projection.
 
 ### registry search
 
@@ -642,10 +649,12 @@ Resolve orphaned `running` deployments with no live PID by writing fallback `com
 **Examples:**
 ```bash
 opa registry list --team builder --status running
+opa registry list --ticket PAP-225
 opa registry show d-abc123 --json
 opa registry complete d-abc123 --status success --summary "Done"
 opa registry complete d-abc123 --status partial --fallback
 opa registry update d-abc123 --note "Follow-up needed"
+opa registry update d-abc123 --ticket PAP-225 --expected-ticket none --actor sinh --reason "Ticket established"
 opa registry search failed --limit 10
 opa registry analytics --view ratings
 opa registry clean --threshold 12 --mark-dead

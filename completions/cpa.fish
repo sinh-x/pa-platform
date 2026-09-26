@@ -459,6 +459,7 @@ complete -c cpa -n '__fish_seen_subcommand_from registry; and not __fish_seen_su
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from show complete update amend' -a '(__cpa_deployments)' -d 'Deployment ID'
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l team -d 'Filter by team' -r -a '(__cpa_teams)'
 complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l status -d 'Filter by status' -r -a 'running success partial failed crashed dead unknown'
+complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l ticket -d 'Filter by projected current ticket' -r -a '(__cpa_ticket_ids)'
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l since -d 'Filter since date' -r
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list search' -l limit -d 'Limit results' -r
 complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete update' -l status -d 'Completion status' -r -a 'success partial failed'
@@ -472,6 +473,10 @@ complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcom
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete update' -l rating-insight -d 'Insight rating 0-5' -r
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete' -l fallback -d 'Fallback completion marker'
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l note -d 'Free-text update note' -r
+complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l ticket -d 'Associate same-project ticket' -r -a '(__cpa_ticket_ids)'
+complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l expected-ticket -d 'Expected current ticket or none' -r -a 'none (__cpa_ticket_ids)'
+complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l actor -d 'Ticket association audit actor' -r
+complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l reason -d 'Ticket association reason' -r
 complete -c cpa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l view -d 'Analytics view' -r -a 'daily teams ratings'
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l team -d 'Filter by team' -r -a '(__cpa_teams)'
 complete -c cpa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l since -d 'Filter since date' -r

@@ -460,6 +460,7 @@ complete -c opa -n '__fish_seen_subcommand_from registry; and not __fish_seen_su
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from show complete update amend' -a '(__opa_deployments)' -d 'Deployment ID'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l team -d 'Filter by team' -r -a '(__opa_teams)'
 complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l status -d 'Filter by status' -r -a 'running success partial failed crashed dead unknown'
+complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l ticket -d 'Filter by projected current ticket' -r -a '(__opa_ticket_ids)'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list' -l since -d 'Filter since date' -r
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from list search' -l limit -d 'Limit results' -r
 complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete update' -l status -d 'Completion status' -r -a 'success partial failed'
@@ -473,6 +474,10 @@ complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcom
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete update' -l rating-insight -d 'Insight rating 0-5' -r
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from complete' -l fallback -d 'Fallback completion marker'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l note -d 'Free-text update note' -r
+complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l ticket -d 'Associate same-project ticket' -r -a '(__opa_ticket_ids)'
+complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l expected-ticket -d 'Expected current ticket or none' -r -a 'none (__opa_ticket_ids)'
+complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l actor -d 'Ticket association audit actor' -r
+complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from update' -l reason -d 'Ticket association reason' -r
 complete -c opa -f -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l view -d 'Analytics view' -r -a 'daily teams ratings'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l team -d 'Filter by team' -r -a '(__opa_teams)'
 complete -c opa -n '__fish_seen_subcommand_from registry; and __fish_seen_subcommand_from analytics' -l since -d 'Filter since date' -r

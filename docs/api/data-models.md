@@ -395,7 +395,7 @@ A single event in a deployment's lifecycle, appended to the `registry_events` ta
 interface RegistryEvent {
   deployment_id: string;
   team: string;
-  event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated";
+  event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated" | "ticket-associated";
   timestamp: string;
   note?: string;
   pid?: number;
@@ -408,6 +408,9 @@ interface RegistryEvent {
   error?: string;
   exit_code?: number;
   ticket_id?: string;
+  previous_ticket_id?: string | null;
+  actor?: string;
+  reason?: string;
   provider?: string;
   rating?: Rating;
   objective?: string;
@@ -427,7 +430,7 @@ interface RegistryEvent {
 |-------|------|----------|-------------|
 | `deployment_id` | `string` | yes | The deployment id (e.g. `d-443e6d`). |
 | `team` | `string` | yes | Team name (e.g. `builder`). |
-| `event` | `string` | yes | Event kind: `started`, `pid`, `completed`, `crashed`, `amended`, `updated`. |
+| `event` | `string` | yes | Event kind: `started`, `pid`, `completed`, `crashed`, `amended`, `updated`, `ticket-associated`. |
 | `timestamp` | `string` | yes | ISO 8601 timestamp of the event. |
 | `note` | `string` | no | Free-text note (used by `amended`/`updated` events). |
 | `pid` | `number` | no | Process id (sent with the `pid` event). |
@@ -439,7 +442,10 @@ interface RegistryEvent {
 | `models` | `Record<string, string>` | no | Map of agent → model. |
 | `error` | `string` | no | Error message (sent with `crashed`). |
 | `exit_code` | `number` | no | Process exit code. |
-| `ticket_id` | `string` | no | Associated ticket id. |
+| `ticket_id` | `string` | no | Launch ticket on `started`; requested new ticket on `ticket-associated`. |
+| `previous_ticket_id` | `string \| null` | no | Structured prior ticket on `ticket-associated`; `null` records a ticketless attach. |
+| `actor` | `string` | no | Trimmed 1–128-code-unit association actor on `ticket-associated`. |
+| `reason` | `string` | no | Trimmed 1–1,000-code-unit association reason on `ticket-associated`. |
 | `provider` | `string` | no | Model provider used. |
 | `rating` | [`Rating`](#rating) | no | Session rating (agent/system/user). |
 | `objective` | `string` | no | Deployment objective text. |
@@ -453,9 +459,36 @@ interface RegistryEvent {
 | `rogue_one` | `boolean` | no | True only for an explicitly selected rogue-one bare deployment. |
 | `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel; never contains caller credentials or identity values. |
 
+### Ticket association input and result
+
+`associateDeploymentTicket` atomically appends one structured event and updates the deployment projection. A no-op request for the already-current ticket returns `writeOccurred: false` without appending an event. Validation failures leave both history and projection unchanged.
+
+```typescript
+interface AssociateDeploymentTicketInput {
+  deploymentId: string;
+  ticketId: string;
+  expectedTicketId: string | null;
+  actor: string;
+  reason: string;
+  timestamp?: string;
+}
+
+interface AssociateDeploymentTicketResult {
+  deploymentId: string;
+  previousTicketId: string | null;
+  requestedTicketId: string;
+  currentTicketId: string;
+  actor: string;
+  reason: string;
+  writeOccurred: boolean;
+}
+```
+
+`expectedTicketId: null` represents CLI literal `--expected-ticket none`. Non-null expectations must exactly match the projected current ticket. Association never rewrites the original `started` event, primer, or process-start environment.
+
 ### `DeploymentStatus`
 
-The computed status of a deployment, aggregated from its `RegistryEvent` sequence. Stored in the `deployments` table.
+The computed current status of a deployment, materialized in the `deployments` table. Its `ticket_id` is the projected current association; the immutable launch ticket remains on the original `started` event.
 
 ```typescript
 interface DeploymentStatus {
@@ -497,7 +530,7 @@ interface DeploymentStatus {
 | `summary` | `string` | no | Completion summary. |
 | `log_file` | `string` | no | Session log file path. |
 | `primer` | `string` | no | Primer file path. |
-| `ticket_id` | `string` | no | Associated ticket id. |
+| `ticket_id` | `string` | no | Projected current ticket association; it may differ from the immutable launch ticket in the `started` event. |
 | `objective` | `string` | no | Deployment objective text. |
 | `models` | `Record<string, string>` | no | Agent → model map. |
 | `provider` | `string` | no | Model provider. |
