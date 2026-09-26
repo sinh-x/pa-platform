@@ -331,6 +331,9 @@ test("bounded shell path operands resolve wrappers and approved leading assignme
     `sudo -u root tac ${protectedToken}`,
     `LC_ALL=C command sudo MODE=read cat ${protectedToken}`,
     `sudo --unsupported cat ${protectedToken}`,
+    `false || command cat ${protectedToken}`,
+    `true & sudo tac ${protectedToken}`,
+    `printf done\ncommand cat ${protectedToken}`,
   ]) assertDenied(command, "protected-path");
 
   for (const command of [
@@ -340,6 +343,9 @@ test("bounded shell path operands resolve wrappers and approved leading assignme
     `sudo printf '%s\\n' '${protectedToken}'`,
     `LABEL=${protectedToken} command printf '%s\\n' '${protectedToken}'`,
     `sudo -u root printf '%s\\n' '${protectedToken}'`,
+    `cat README.md || command printf '%s\\n' '${protectedToken}'`,
+    `cat README.md & sudo printf '%s\\n' '${protectedToken}'`,
+    `cat README.md\ncommand printf '%s\\n' '${protectedToken}'`,
   ]) assert.equal(classifyShellCommand(command).allowed, true, command);
 });
 

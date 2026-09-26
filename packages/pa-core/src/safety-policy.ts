@@ -336,7 +336,7 @@ function findProtectedShellPath(source: string, cwd?: string): string | undefine
       // Once a supported wrapper is present, an unsupported option sequence that
       // still exposes cat/tac plus a protected operand is security-relevant and
       // fails closed. Unrelated wrapper arguments remain ordinary arguments.
-      for (let cursor = resolution.ambiguousIndex; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+      for (let cursor = resolution.ambiguousIndex; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
         const candidate = words[cursor];
         if (!candidate?.operator && BARE_PATH_OPERAND_COMMANDS.has(basename(candidate.value))) {
           const blocked = findProtectedBoundedOperand(words, cursor, cwd);
@@ -351,7 +351,7 @@ function findProtectedShellPath(source: string, cwd?: string): string | undefine
 function resolveBoundedCommand(words: ShellWord[], start: number): BoundedCommandResolution {
   let cursor = skipLeadingAssignments(words, start);
 
-  while (cursor < words.length && !isCommandBoundary(words[cursor])) {
+  while (cursor < words.length && !isShellCommandBoundary(words[cursor])) {
     const word = words[cursor];
     if (!word || word.operator || !SHELL_COMMAND_WRAPPERS.has(basename(word.value))) break;
     const wrapper = basename(word.value);
@@ -426,7 +426,7 @@ function skipSudoOptions(words: ShellWord[], start: number): { cursor: number; a
 
 function findProtectedBoundedOperand(words: ShellWord[], commandIndex: number, cwd?: string): string | undefined {
   let options = true;
-  for (let cursor = commandIndex + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+  for (let cursor = commandIndex + 1; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
     const operand = words[cursor];
     if (!operand || operand.operator) continue;
     if (options && operand.value === "--") {
@@ -440,9 +440,7 @@ function findProtectedBoundedOperand(words: ShellWord[], commandIndex: number, c
 }
 
 function isShellCommandStart(words: ShellWord[], index: number): boolean {
-  if (index === 0) return true;
-  const previous = words[index - 1];
-  return Boolean(previous?.operator && /^(?:;|\||&&|\()$/.test(previous.value));
+  return index === 0 || isShellCommandBoundary(words[index - 1]);
 }
 
 function findBlockedPathAlias(filePath: string, cwd = process.cwd()): string | undefined {
@@ -515,7 +513,7 @@ function scanCurlOutputs(source: string): OutputOperand[] {
   const outputs: OutputOperand[] = [];
   for (let index = 0; index < words.length; index += 1) {
     if (words[index]?.operator || basename(words[index]?.value ?? "") !== "curl") continue;
-    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+    for (let cursor = index + 1; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
       const word = words[cursor];
       if (!word || word.operator) continue;
       if (word.value === "--output") {
@@ -584,7 +582,7 @@ function scanTeeOutputs(source: string): OutputOperand[] {
   for (let index = 0; index < words.length; index += 1) {
     if (words[index]?.operator || basename(words[index]?.value ?? "") !== "tee") continue;
     let options = true;
-    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+    for (let cursor = index + 1; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
       const word = words[cursor];
       if (!word || word.operator) continue;
       if (options && word.value === "--") {
@@ -598,8 +596,10 @@ function scanTeeOutputs(source: string): OutputOperand[] {
   return outputs;
 }
 
-function isCommandBoundary(word: ShellWord | undefined): boolean {
-  return Boolean(word?.operator && /^(?:;|\||&&)$/.test(word.value));
+const SHELL_COMMAND_BOUNDARIES = new Set([";", "|", "||", "&&", "&", "\n", "(", ")"]);
+
+function isShellCommandBoundary(word: ShellWord | undefined): boolean {
+  return Boolean(word?.operator && SHELL_COMMAND_BOUNDARIES.has(word.value));
 }
 
 function readShellOperand(source: string, start: number): OutputOperand {
@@ -625,6 +625,11 @@ function tokenizeShell(source: string): ShellWord[] {
   const words: ShellWord[] = [];
   let index = 0;
   while (index < source.length) {
+    if (source[index] === "\n") {
+      words.push({ raw: "\n", value: "\n", operator: true });
+      index += 1;
+      continue;
+    }
     if (/\s/.test(source[index] ?? "")) {
       index += 1;
       continue;
@@ -680,7 +685,7 @@ function collectShellSources(command: string, depth = 0): string[] {
   for (let index = 0; index < words.length - 2; index += 1) {
     const shell = words[index];
     if (shell.operator || !/^(?:(?:ba|da|z)?sh)$/.test(basename(shell.value))) continue;
-    for (let cursor = index + 1; cursor < words.length && !isCommandBoundary(words[cursor]); cursor += 1) {
+    for (let cursor = index + 1; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
       if (!words[cursor].operator && /^-[A-Za-z]*c[A-Za-z]*$/.test(words[cursor].value)) {
         const payload = words[cursor + 1];
         if (payload && !payload.operator) sources.push(...collectShellSources(payload.value, depth + 1));

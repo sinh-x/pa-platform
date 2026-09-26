@@ -1877,6 +1877,9 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await before({ tool: "question" }, { args: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } });
     await before({ tool: "bash" }, { args: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "curl -o/tmp/pap218-opa-attached.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "curl -so /tmp/pap218-opa-cluster.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
@@ -1901,6 +1904,9 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     for (const command of [
       "command cat " + ["cred", "entials"].join(""),
       "sudo tac " + ["cred", "entials"].join(""),
+      "false || command cat " + ["cred", "entials"].join(""),
+      "true & sudo tac " + ["cred", "entials"].join(""),
+      "printf done\ncommand cat " + ["cred", "entials"].join(""),
     ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/);
 
     const protectedPath = "." + "env";

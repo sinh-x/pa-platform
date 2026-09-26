@@ -134,6 +134,9 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "question", input: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose", options: [] } },
     { name: "bash", input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
+    { name: "bash", input: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "curl -o/tmp/pap218-pi-attached.json https://example.test/report.json" } },
     { name: "bash", input: { command: "curl -so /tmp/pap218-pi-cluster.json https://example.test/report.json" } },
     { name: "bash", input: { command: "printf ok | tee /tmp/pap218-pi-tee.log" } },
@@ -165,6 +168,9 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
   for (const command of [
     "command cat " + ["cred", "entials"].join(""),
     "sudo tac " + ["cred", "entials"].join(""),
+    "false || command cat " + ["cred", "entials"].join(""),
+    "true & sudo tac " + ["cred", "entials"].join(""),
+    "printf done\ncommand cat " + ["cred", "entials"].join(""),
   ]) {
     const wrapped = interceptToolCall({ name: "bash", input: { command } });
     assert.equal(wrapped.allowed, false, command);

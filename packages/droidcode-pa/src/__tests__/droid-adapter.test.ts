@@ -853,6 +853,9 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -o/tmp/pap218-dpa-attached.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -so /tmp/pap218-dpa-cluster.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
@@ -882,6 +885,9 @@ describe("droid safety hook shared context policy", () => {
       for (const command of [
         "command cat " + ["cred", "entials"].join(""),
         "sudo tac " + ["cred", "entials"].join(""),
+        "false || command cat " + ["cred", "entials"].join(""),
+        "true & sudo tac " + ["cred", "entials"].join(""),
+        "printf done\ncommand cat " + ["cred", "entials"].join(""),
       ]) {
         const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
         assert.equal(denied.exitCode, 2, command);
