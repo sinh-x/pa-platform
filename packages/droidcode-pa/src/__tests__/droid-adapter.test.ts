@@ -851,11 +851,16 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
         { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Explain env cat " + ["cred", "entials"].join("") + " as prose" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md || env LABEL=ok printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -o/tmp/pap218-dpa-attached.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -so /tmp/pap218-dpa-cluster.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
@@ -892,6 +897,14 @@ describe("droid safety hook shared context policy", () => {
         const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
         assert.equal(denied.exitCode, 2, command);
         assert.match(denied.stderr, /Protected path access/, command);
+      }
+      for (const prefix of ["env", "nohup", "nice", "time"]) {
+        for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+          const command = `${boundary}${prefix} cat -n ${["cred", "entials"].join("")}`;
+          const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+          assert.equal(denied.exitCode, 2, command);
+          assert.match(denied.stderr, /Protected path access/, command);
+        }
       }
 
       const protectedPath = "." + "env";

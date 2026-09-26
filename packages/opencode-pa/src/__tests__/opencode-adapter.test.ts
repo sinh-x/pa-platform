@@ -1875,11 +1875,16 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
     await before({ tool: "bash" }, { args: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } });
     await before({ tool: "question" }, { args: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } });
+    await before({ tool: "question" }, { args: { question: "Explain env cat " + ["cred", "entials"].join("") + " as prose" } });
     await before({ tool: "bash" }, { args: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } });
     await before({ tool: "bash" }, { args: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md || env LABEL=ok printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "curl -o/tmp/pap218-opa-attached.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "curl -so /tmp/pap218-opa-cluster.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
@@ -1908,6 +1913,12 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
       "true & sudo tac " + ["cred", "entials"].join(""),
       "printf done\ncommand cat " + ["cred", "entials"].join(""),
     ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/);
+    for (const prefix of ["env", "nohup", "nice", "time"]) {
+      for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+        const command = `${boundary}${prefix} cat -n ${["cred", "entials"].join("")}`;
+        await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/, command);
+      }
+    }
 
     const protectedPath = "." + "env";
     for (const filePath of [

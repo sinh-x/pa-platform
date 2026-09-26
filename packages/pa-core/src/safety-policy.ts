@@ -298,7 +298,10 @@ function extractOtherDeletionTarget(source: string): string | undefined {
 
 const BARE_PATH_OPERAND_COMMANDS = new Set(["cat", "tac"]);
 const SHELL_COMMAND_WRAPPERS = new Set(["command", "sudo"]);
+const TRANSPARENT_COMMAND_PREFIXES = new Set(["env", "nohup", "nice"]);
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
+const ENV_FLAGS_WITHOUT_ARGUMENT = new Set(["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"]);
+const ENV_FLAGS_WITH_ARGUMENT = new Set(["-u", "-C", "--unset", "--chdir"]);
 const SUDO_FLAGS_WITHOUT_ARGUMENT = new Set([
   "-A", "-b", "-E", "-H", "-K", "-k", "-n", "-P", "-S", "-V",
   "--askpass", "--background", "--edit", "--help", "--login", "--non-interactive",
@@ -333,16 +336,11 @@ function findProtectedShellPath(source: string, cwd?: string): string | undefine
       const blocked = findProtectedBoundedOperand(words, resolution.commandIndex, cwd);
       if (blocked) return blocked;
     } else if (resolution.ambiguousIndex !== undefined) {
-      // Once a supported wrapper is present, an unsupported option sequence that
-      // still exposes cat/tac plus a protected operand is security-relevant and
-      // fails closed. Unrelated wrapper arguments remain ordinary arguments.
-      for (let cursor = resolution.ambiguousIndex; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
-        const candidate = words[cursor];
-        if (!candidate?.operator && BARE_PATH_OPERAND_COMMANDS.has(basename(candidate.value))) {
-          const blocked = findProtectedBoundedOperand(words, cursor, cwd);
-          if (blocked) return blocked;
-        }
-      }
+      // Once a supported wrapper or transparent prefix is present, an unsupported
+      // option sequence that can still expose cat/tac plus a protected operand is
+      // security-relevant and fails closed. Unrelated arguments remain ordinary.
+      const blocked = findProtectedAmbiguousOperand(words, resolution.ambiguousIndex, cwd);
+      if (blocked) return blocked;
     }
   }
   return undefined;
@@ -353,11 +351,12 @@ function resolveBoundedCommand(words: ShellWord[], start: number): BoundedComman
 
   while (cursor < words.length && !isShellCommandBoundary(words[cursor])) {
     const word = words[cursor];
-    if (!word || word.operator || !SHELL_COMMAND_WRAPPERS.has(basename(word.value))) break;
-    const wrapper = basename(word.value);
+    if (!word || word.operator) break;
+    const prefix = boundedCommandPrefix(word);
+    if (!prefix) break;
     cursor += 1;
 
-    if (wrapper === "command") {
+    if (prefix === "command") {
       while (cursor < words.length && !words[cursor]?.operator) {
         const option = words[cursor]?.value;
         if (option === "--") {
@@ -372,8 +371,13 @@ function resolveBoundedCommand(words: ShellWord[], start: number): BoundedComman
         if (option?.startsWith("-")) return { ambiguousIndex: cursor };
         break;
       }
-    } else {
+    } else if (prefix === "sudo") {
       const parsed = skipSudoOptions(words, cursor);
+      if (parsed.ambiguous) return { ambiguousIndex: cursor };
+      cursor = parsed.cursor;
+    } else {
+      const parsed = skipTransparentPrefixOptions(words, cursor, prefix);
+      if (parsed.terminal) return {};
       if (parsed.ambiguous) return { ambiguousIndex: cursor };
       cursor = parsed.cursor;
     }
@@ -386,6 +390,68 @@ function resolveBoundedCommand(words: ShellWord[], start: number): BoundedComman
     return { commandIndex: cursor };
   }
   return {};
+}
+
+function boundedCommandPrefix(word: ShellWord): string | undefined {
+  const name = basename(word.value);
+  if (SHELL_COMMAND_WRAPPERS.has(name) || TRANSPARENT_COMMAND_PREFIXES.has(name)) return name;
+  // `time` is approved only as the shell keyword, not as a path-qualified external executable.
+  return word.value === "time" ? "time" : undefined;
+}
+
+function skipTransparentPrefixOptions(
+  words: ShellWord[],
+  start: number,
+  prefix: string,
+): { cursor: number; ambiguous: boolean; terminal?: boolean } {
+  let cursor = start;
+  while (cursor < words.length && !words[cursor]?.operator) {
+    const option = words[cursor]?.value ?? "";
+    if (option === "--") return { cursor: cursor + 1, ambiguous: false };
+
+    if (prefix === "env") {
+      if (option === "--help" || option === "--version") return { cursor, ambiguous: false, terminal: true };
+      if (ENV_FLAGS_WITHOUT_ARGUMENT.has(option)) {
+        cursor += 1;
+        continue;
+      }
+      const longName = option.includes("=") ? option.slice(0, option.indexOf("=")) : option;
+      if (ENV_FLAGS_WITH_ARGUMENT.has(longName)) {
+        if (option.includes("=")) {
+          if (option.slice(option.indexOf("=") + 1)) {
+            cursor += 1;
+            continue;
+          }
+          return { cursor, ambiguous: true };
+        }
+        const argument = words[cursor + 1];
+        if (!argument || argument.operator) return { cursor, ambiguous: true };
+        cursor += 2;
+        continue;
+      }
+    } else if (prefix === "nohup") {
+      if (option === "--help" || option === "--version") return { cursor, ambiguous: false, terminal: true };
+    } else if (prefix === "nice") {
+      if (option === "--help" || option === "--version") return { cursor, ambiguous: false, terminal: true };
+      if (/^-[0-9]+$/.test(option) || /^--adjustment=.+$/.test(option)) {
+        cursor += 1;
+        continue;
+      }
+      if (option === "-n" || option === "--adjustment") {
+        const argument = words[cursor + 1];
+        if (!argument || argument.operator) return { cursor, ambiguous: true };
+        cursor += 2;
+        continue;
+      }
+    } else if (prefix === "time" && option === "-p") {
+      cursor += 1;
+      continue;
+    }
+
+    if (option.startsWith("-") && option !== "-") return { cursor, ambiguous: true };
+    return { cursor, ambiguous: false };
+  }
+  return { cursor, ambiguous: false };
 }
 
 function skipLeadingAssignments(words: ShellWord[], start: number): number {
@@ -422,6 +488,30 @@ function skipSudoOptions(words: ShellWord[], start: number): { cursor: number; a
     return { cursor, ambiguous: true };
   }
   return { cursor, ambiguous: false };
+}
+
+function findProtectedAmbiguousOperand(words: ShellWord[], start: number, cwd?: string): string | undefined {
+  for (let cursor = start; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
+    const candidate = words[cursor];
+    if (!candidate || candidate.operator) continue;
+    if (BARE_PATH_OPERAND_COMMANDS.has(basename(candidate.value))) {
+      const blocked = findProtectedBoundedOperand(words, cursor, cwd);
+      if (blocked) return blocked;
+    }
+
+    const embedded = candidate.value.startsWith("--split-string=")
+      ? candidate.value.slice("--split-string=".length)
+      : candidate.value.startsWith("-S") && candidate.value.length > 2
+        ? candidate.value.slice(2)
+        : candidate.value;
+    const nested = tokenizeShell(embedded);
+    const resolution = resolveBoundedCommand(nested, 0);
+    if (resolution.commandIndex !== undefined) {
+      const blocked = findProtectedBoundedOperand(nested, resolution.commandIndex, cwd);
+      if (blocked) return candidate.raw;
+    }
+  }
+  return undefined;
 }
 
 function findProtectedBoundedOperand(words: ShellWord[], commandIndex: number, cwd?: string): string | undefined {

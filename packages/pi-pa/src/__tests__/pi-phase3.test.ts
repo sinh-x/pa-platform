@@ -132,11 +132,16 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "bash", input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
     { name: "bash", input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
     { name: "question", input: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose", options: [] } },
+    { name: "question", input: { question: "Explain env cat " + ["cred", "entials"].join("") + " as prose", options: [] } },
     { name: "bash", input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
     { name: "bash", input: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "cat README.md || env LABEL=ok printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "curl -o/tmp/pap218-pi-attached.json https://example.test/report.json" } },
     { name: "bash", input: { command: "curl -so /tmp/pap218-pi-cluster.json https://example.test/report.json" } },
     { name: "bash", input: { command: "printf ok | tee /tmp/pap218-pi-tee.log" } },
@@ -175,6 +180,14 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     const wrapped = interceptToolCall({ name: "bash", input: { command } });
     assert.equal(wrapped.allowed, false, command);
     assert.match(wrapped.reason ?? "", /Protected path access/, command);
+  }
+  for (const prefix of ["env", "nohup", "nice", "time"]) {
+    for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+      const command = `${boundary}${prefix} cat -n ${["cred", "entials"].join("")}`;
+      const wrapped = interceptToolCall({ name: "bash", input: { command } });
+      assert.equal(wrapped.allowed, false, command);
+      assert.match(wrapped.reason ?? "", /Protected path access/, command);
+    }
   }
 
   const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });

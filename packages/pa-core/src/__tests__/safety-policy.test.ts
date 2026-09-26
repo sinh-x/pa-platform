@@ -336,6 +336,21 @@ test("bounded shell path operands resolve wrappers and approved leading assignme
     `printf done\ncommand cat ${protectedToken}`,
   ]) assertDenied(command, "protected-path");
 
+  for (const prefix of ["env", "nohup", "nice", "time"]) {
+    for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+      assertDenied(`${boundary}${prefix} cat -n ${protectedToken}`, "protected-path");
+    }
+  }
+  for (const command of [
+    `env -i MODE=read nohup nice -n 5 time -p command cat ${protectedToken}`,
+    `env --unsupported cat ${protectedToken}`,
+    `env -S 'cat ${protectedToken}'`,
+    `env --split-string='tac ${protectedToken}'`,
+    `nohup --unsupported tac ${protectedToken}`,
+    `nice --unknown cat ${protectedToken}`,
+    `time --verbose tac ${protectedToken}`,
+  ]) assertDenied(command, "protected-path");
+
   for (const command of [
     `echo ${protectedToken}`,
     `printf '%s\\n' '${protectedToken}'`,
@@ -346,7 +361,17 @@ test("bounded shell path operands resolve wrappers and approved leading assignme
     `cat README.md || command printf '%s\\n' '${protectedToken}'`,
     `cat README.md & sudo printf '%s\\n' '${protectedToken}'`,
     `cat README.md\ncommand printf '%s\\n' '${protectedToken}'`,
+    `cat README.md || env LABEL=${protectedToken} printf '%s\\n' '${protectedToken}'`,
+    `cat README.md & nohup printf '%s\\n' '${protectedToken}'`,
+    `cat README.md\nnice -n 5 printf '%s\\n' '${protectedToken}'`,
+    `time -p printf '%s\\n' '${protectedToken}'`,
+    `env --unsupported printf '%s\\n' '${protectedToken}'`,
   ]) assert.equal(classifyShellCommand(command).allowed, true, command);
+
+  assert.equal(evaluateSafetyPolicy({
+    kind: "prose",
+    value: `Examples such as env, nohup, nice, or time before cat ${protectedToken} are ordinary prose.`,
+  }).allowed, true);
 });
 
 test("protected path aliases are normalized and existing read symlinks are canonicalized", (t) => {
