@@ -163,7 +163,11 @@ async function exerciseRepresentativeDefaults(
   const commitResults = await host.dispatch("tool_call", { toolName: "bash", input: { command: "git commit -F /tmp/message" } }, context);
   assert.ok(commitResults.some((result) => Boolean(result && typeof result === "object" && "block" in result)));
   const destructiveResults = await host.dispatch("tool_call", { toolName: "bash", input: { command: "rm -rf build" } }, context);
-  assert.ok(destructiveResults.some((result) => Boolean(result && typeof result === "object" && "block" in result)));
+  const blocked = destructiveResults.find((result): result is { block: true; reason: string } => Boolean(result && typeof result === "object" && "block" in result));
+  assert.ok(blocked);
+  assert.match(blocked.reason, /ppa trash move 'build'/);
+  assert.match(blocked.reason, /--reason '[^']+'/);
+  assert.match(blocked.reason, /--yes/);
 }
 
 test("4/4 editor selections preserve non-editor modules and register no unselected behavior", async () => {
