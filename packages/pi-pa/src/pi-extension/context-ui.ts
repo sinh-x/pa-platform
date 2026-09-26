@@ -12,6 +12,7 @@ import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, typ
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
 import type { TodoDetails } from "./todo.js";
 import {
+  CONTEXT_REFRESH_INTERVAL_MS,
   ContextRefreshLimiter,
   collectContext,
   initialContextSnapshot,
@@ -29,6 +30,8 @@ export interface ContextUiModuleOptions {
   limiter?: ContextRefreshLimiter;
   lifecycle?: PiSessionLifecycle;
   associateTicket?: typeof associateDeploymentTicket;
+  setInterval?: typeof setInterval;
+  clearInterval?: typeof clearInterval;
 }
 
 export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionModule>[0], options: ContextUiModuleOptions = {}): void {
@@ -38,6 +41,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   let sidebar: ContextSidebarComponent | undefined;
   let overlayHandle: OverlayHandle | undefined;
   let overlayHidden = true;
+  let periodicRefreshTimer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
   const limiter = options.limiter ?? new ContextRefreshLimiter();
   const associateTicket = options.associateTicket ?? associateDeploymentTicket;
@@ -49,6 +53,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   };
 
   const requestRefresh = (patch: Partial<ContextRefreshInput> = {}) => {
+    if (disposed) return;
     refreshInput = {
       ...refreshInput,
       ...patch,
@@ -59,6 +64,19 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       snapshot = await collectContext(snapshot, refreshInput, options.collector);
       publish();
     });
+  };
+
+  const stopPeriodicRefresh = () => {
+    if (periodicRefreshTimer === undefined) return;
+    (options.clearInterval ?? clearInterval)(periodicRefreshTimer);
+    periodicRefreshTimer = undefined;
+  };
+
+  const startPeriodicRefresh = () => {
+    stopPeriodicRefresh();
+    if (disposed || !snapshot.deployment.id) return;
+    periodicRefreshTimer = (options.setInterval ?? setInterval)(requestRefresh, CONTEXT_REFRESH_INTERVAL_MS);
+    periodicRefreshTimer.unref?.();
   };
 
   const setOverlayVisible = (visible: boolean) => {
@@ -225,6 +243,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
     snapshot = initialContextSnapshot(refreshInput, options.collector);
     publish();
     requestRefresh();
+    startPeriodicRefresh();
   });
 
   pi.on?.("model_select", (rawEvent, rawContext) => {
@@ -252,6 +271,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
   const cleanup = async () => {
     if (disposed) return;
     disposed = true;
+    stopPeriodicRefresh();
     const settlement = limiter.dispose();
     try {
       currentContext?.ui.setStatus(CONTEXT_STATUS_ID, undefined);

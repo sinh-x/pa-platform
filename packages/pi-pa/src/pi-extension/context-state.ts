@@ -182,6 +182,7 @@ export class ContextRefreshLimiter {
   private pending: (() => void | Promise<void>) | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly inFlight = new Set<Promise<void>>();
+  private running = false;
   private disposed = false;
 
   constructor(
@@ -194,17 +195,7 @@ export class ContextRefreshLimiter {
   request(refresh: () => void | Promise<void>): void {
     if (this.disposed) return;
     this.pending = refresh;
-    const elapsed = this.lastRunAt === undefined ? this.intervalMs : this.now() - this.lastRunAt;
-    if (elapsed >= this.intervalMs) {
-      this.runPending();
-      return;
-    }
-    if (this.timer === undefined) {
-      this.timer = this.setTimer(() => {
-        this.timer = undefined;
-        this.runPending();
-      }, this.intervalMs - elapsed);
-    }
+    this.schedulePending();
   }
 
   async dispose(): Promise<void> {
@@ -215,20 +206,48 @@ export class ContextRefreshLimiter {
     await Promise.allSettled([...this.inFlight]);
   }
 
-  private runPending(): void {
+  private schedulePending(): void {
     if (this.disposed || !this.pending) return;
+    const elapsed = this.lastRunAt === undefined ? this.intervalMs : this.now() - this.lastRunAt;
+    if (!this.running && elapsed >= this.intervalMs) {
+      if (this.timer !== undefined) this.clearTimer(this.timer);
+      this.timer = undefined;
+      this.runPending();
+      return;
+    }
+    if (this.timer === undefined && elapsed < this.intervalMs) {
+      this.timer = this.setTimer(() => {
+        this.timer = undefined;
+        this.schedulePending();
+      }, this.intervalMs - elapsed);
+      this.timer.unref?.();
+    }
+  }
+
+  private runPending(): void {
+    if (this.disposed || this.running || !this.pending) return;
     const refresh = this.pending;
     this.pending = undefined;
     this.lastRunAt = this.now();
+    this.running = true;
     let result: void | Promise<void>;
     try {
       result = refresh();
     } catch (error) {
       result = Promise.reject(error);
     }
+    if (result === undefined) {
+      this.running = false;
+      this.schedulePending();
+      return;
+    }
     const tracked = Promise.resolve(result).then(() => undefined, () => undefined);
     this.inFlight.add(tracked);
-    void tracked.finally(() => this.inFlight.delete(tracked));
+    void tracked.finally(() => {
+      this.inFlight.delete(tracked);
+      this.running = false;
+      this.schedulePending();
+    });
   }
 }
 

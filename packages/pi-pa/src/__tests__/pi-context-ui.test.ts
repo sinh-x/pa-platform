@@ -162,6 +162,7 @@ test("refresh limiter coalesces bursts to at most one refresh per 2,000 ms and d
   assert.equal(scheduledDelay, 2_000);
   now = 2_000;
   scheduled?.();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(runs, [0, 2_000]);
 
   limiter.request(() => { runs.push(now); });
@@ -190,6 +191,129 @@ test("refresh limiter stops new scheduling and awaits an active context refresh"
   release?.();
   await disposal;
   assert.deepEqual(order, ["refresh-start", "refresh-settled", "disposed"]);
+});
+
+test("refresh limiter never overlaps and runs the latest coalesced request after settlement", async () => {
+  let now = 0;
+  let release: (() => void) | undefined;
+  const order: string[] = [];
+  const limiter = new ContextRefreshLimiter(CONTEXT_REFRESH_INTERVAL_MS, () => now);
+  limiter.request(async () => {
+    order.push("first-start");
+    await new Promise<void>((resolve) => { release = resolve; });
+    order.push("first-end");
+  });
+  now = CONTEXT_REFRESH_INTERVAL_MS;
+  limiter.request(() => { order.push("superseded"); });
+  limiter.request(() => { order.push("latest"); });
+  assert.deepEqual(order, ["first-start"]);
+
+  release?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["first-start", "first-end", "latest"]);
+  await limiter.dispose();
+});
+
+test("idle periodic refresh publishes an external ticket within 2,500 ms and lifecycle cleanup owns one timer", async () => {
+  const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let shutdownStep: ((event: unknown, context: unknown) => unknown) | undefined;
+  let periodicCallback: (() => void) | undefined;
+  let intervalDelay: number | undefined;
+  let intervalCreates = 0;
+  let intervalClears = 0;
+  let intervalUnrefs = 0;
+  let lookupCalls = 0;
+  let projectedTicket = "PAP-OLD";
+  let sidebar: ContextSidebarComponent | undefined;
+  let sidebarRenders = 0;
+  const statuses: Array<string | undefined> = [];
+  const intervalHandle = { unref: () => { intervalUnrefs++; } } as unknown as ReturnType<typeof setInterval>;
+  const fakeSetInterval = ((callback: () => void, delay: number) => {
+    intervalCreates++;
+    periodicCallback = callback;
+    intervalDelay = delay;
+    return intervalHandle;
+  }) as unknown as typeof setInterval;
+  const fakeClearInterval = ((handle: ReturnType<typeof setInterval>) => {
+    assert.equal(handle, intervalHandle);
+    intervalClears++;
+  }) as typeof clearInterval;
+  const lifecycle = {
+    addShutdownStep(step: (event: unknown, context: unknown) => unknown) { shutdownStep = step; },
+    async trackRegistryAccess<T>(access: () => T | Promise<T>): Promise<T> { return await access(); },
+    async shutdown(): Promise<void> {},
+  };
+
+  registerContextUiModuleWithOptions({
+    on: ((name: string, handler: (event: unknown, context: unknown) => unknown) => events.set(name, handler)) as never,
+    registerCommand: (_name, options) => { command = options.handler; },
+  }, {
+    lifecycle,
+    limiter: new ContextRefreshLimiter(0),
+    setInterval: fakeSetInterval,
+    clearInterval: fakeClearInterval,
+    collector: {
+      env: { PA_DEPLOYMENT_ID: "d-idle", PA_TEAM: "requirements", PA_MODE: "analyze", PA_TICKET_ID: "PAP-LAUNCH" },
+      gitLookup: async () => ({ available: false }),
+      deploymentLookup: async () => {
+        lookupCalls++;
+        return { status: "running", ticket: projectedTicket };
+      },
+    },
+  });
+
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    sessionManager: { getBranch: () => [] },
+    ui: {
+      setStatus: (_id: string, value: string | undefined) => statuses.push(value),
+      notify() {},
+      custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: () => void) => ContextSidebarComponent, options: { onHandle: (handle: unknown) => void }) => {
+        sidebar = factory(
+          { requestRender: () => { sidebarRenders++; } },
+          { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+          {},
+          () => {},
+        );
+        options.onHandle({ setHidden() {}, focus() {}, unfocus() {}, hide() {} });
+      },
+    },
+  };
+
+  events.get("session_start")?.({}, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(statuses.at(-1) ?? "", /PAP-OLD/);
+  assert.equal(intervalDelay, CONTEXT_REFRESH_INTERVAL_MS);
+  assert.equal(intervalDelay! + CONTEXT_LOOKUP_DEADLINE_MS, 2_500);
+  assert.equal(intervalCreates, 1);
+  assert.equal(intervalUnrefs, 1);
+
+  events.get("session_start")?.({ reason: "reload" }, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(intervalCreates, 2);
+  assert.equal(intervalClears, 1, "session reload replaces rather than duplicates the owned timer");
+  command?.("", context);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  projectedTicket = "PAP-EXTERNAL";
+  periodicCallback?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(statuses.at(-1) ?? "", /PAP-EXTERNAL/);
+  assert.match(sidebar?.render(120).join("\n") ?? "", /Current ticket: PAP-EXTERNAL \(registry\)/);
+  assert.ok(sidebarRenders > 0);
+
+  const callsBeforeCleanup = lookupCalls;
+  await shutdownStep?.({ type: "session_shutdown", reason: "quit" }, context);
+  assert.equal(intervalClears, 2);
+  assert.equal(statuses.at(-1), undefined);
+  projectedTicket = "PAP-AFTER-SHUTDOWN";
+  periodicCallback?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookupCalls, callsBeforeCleanup);
+  assert.doesNotMatch(statuses.filter((value): value is string => typeof value === "string").at(-1) ?? "", /PAP-AFTER-SHUTDOWN/);
 });
 
 test("compact and expanded rendering expose required context within supplied width", () => {

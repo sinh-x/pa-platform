@@ -395,10 +395,20 @@ test("terminal reconciliation collapses conflicting history to the failed repres
   }
 });
 
-test("registry schema-v13 migration additively preserves prior events and projections", () => {
+test("registry schema-v13 migration expands the production event constraint without losing evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-legacy-"));
   const dbPath = join(root, "registry.db");
-  const previous = process.env["PA_REGISTRY_DB"];
+  const canonicalRoot = "/canonical/pa-platform";
+  const configDir = join(root, "config");
+  const ticketsDir = join(root, "usage", "tickets");
+  const previousRegistry = process.env["PA_REGISTRY_DB"];
+  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousUsage = process.env["PA_AI_USAGE_HOME"];
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(ticketsDir, { recursive: true });
+  writeFileSync(join(configDir, "config.yaml"), `repos:\n  pa-platform:\n    path: ${canonicalRoot}\n    prefix: PAP\n`);
+  writeFileSync(join(ticketsDir, "PAP-001.json"), JSON.stringify({ id: "PAP-001", project: "pa-platform", title: "Legacy association" }));
+
   const legacyDb = new Database(dbPath);
   legacyDb.exec(`
     CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -407,7 +417,7 @@ test("registry schema-v13 migration additively preserves prior events and projec
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       deployment_id TEXT NOT NULL,
       team TEXT NOT NULL,
-      event TEXT NOT NULL,
+      event TEXT NOT NULL CHECK (event IN ('started', 'pid', 'completed', 'crashed', 'amended', 'updated')),
       timestamp TEXT NOT NULL,
       pid INTEGER,
       status TEXT,
@@ -446,6 +456,9 @@ test("registry schema-v13 migration additively preserves prior events and projec
       rogue_one INTEGER DEFAULT 0,
       invocation_channel TEXT
     );
+    CREATE INDEX idx_events_deployment_id ON registry_events(deployment_id);
+    CREATE INDEX idx_events_timestamp ON registry_events(timestamp);
+    CREATE INDEX idx_events_team_timestamp ON registry_events(team, timestamp);
     CREATE TABLE deployments (
       deployment_id TEXT PRIMARY KEY,
       team TEXT NOT NULL,
@@ -487,37 +500,79 @@ test("registry schema-v13 migration additively preserves prior events and projec
       rogue_one INTEGER DEFAULT 0,
       invocation_channel TEXT
     );
-    INSERT INTO registry_events (deployment_id, team, event, timestamp, runtime, binary)
-    VALUES ('d-legacy', 'builder', 'started', '2026-04-26T10:00:00Z', 'opencode', 'opa');
-    INSERT INTO deployments (deployment_id, team, status, started_at, runtime, binary)
-    VALUES ('d-legacy', 'builder', 'running', '2026-04-26T10:00:00Z', 'opencode', 'opa');
+    INSERT INTO registry_events (id, deployment_id, team, event, timestamp, summary, primer, objective, repo_root, mode, runtime, binary)
+    VALUES (7, 'd-legacy', 'requirements', 'started', '2026-04-26T10:00:00Z', 'legacy start', 'immutable primer', 'legacy objective', '${canonicalRoot}', 'analyze', 'opencode', 'opa');
+    INSERT INTO registry_events (id, deployment_id, team, event, timestamp, summary, note)
+    VALUES (11, 'd-legacy', 'requirements', 'updated', '2026-04-26T10:01:00Z', 'legacy update', 'preserved note');
+    INSERT INTO deployments (deployment_id, team, status, started_at, summary, primer, objective, repo_root, mode, runtime, binary)
+    VALUES ('d-legacy', 'requirements', 'running', '2026-04-26T10:00:00Z', 'legacy projection', 'immutable primer', 'legacy objective', '${canonicalRoot}', 'analyze', 'opencode', 'opa');
   `);
   legacyDb.close();
 
+  closeDb();
   process.env["PA_REGISTRY_DB"] = dbPath;
+  process.env["PA_PLATFORM_CONFIG"] = configDir;
+  process.env["PA_AI_USAGE_HOME"] = join(root, "usage");
   try {
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.equal(eventColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
-    assert.equal(deploymentColumns.some((entry) => entry.name === "effective_timeout_seconds"), true);
     assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "14" });
     for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
     for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
       assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
     }
+    const eventTableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registry_events'").get() as { sql: string }).sql;
+    assert.doesNotMatch(eventTableSql, /CHECK\s*\(\s*event\s+IN/i);
+    assert.deepEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'registry_events' ORDER BY name").all(),
+      [{ name: "idx_events_deployment_id" }, { name: "idx_events_team_timestamp" }, { name: "idx_events_timestamp" }],
+    );
+    assert.deepEqual(
+      db.prepare("SELECT id, event, timestamp, summary, primer, note FROM registry_events WHERE deployment_id = 'd-legacy' ORDER BY id").all(),
+      [
+        { id: 7, event: "started", timestamp: "2026-04-26T10:00:00Z", summary: "legacy start", primer: "immutable primer", note: null },
+        { id: 11, event: "updated", timestamp: "2026-04-26T10:01:00Z", summary: "legacy update", primer: null, note: "preserved note" },
+      ],
+    );
 
+    const result = associateDeploymentTicket({
+      deploymentId: "d-legacy",
+      ticketId: "PAP-001",
+      expectedTicketId: null,
+      actor: "migration-test",
+      reason: "prove constrained schema migration",
+      timestamp: "2026-04-26T10:02:00Z",
+    });
+    assert.deepEqual(result, {
+      deploymentId: "d-legacy",
+      previousTicketId: null,
+      requestedTicketId: "PAP-001",
+      currentTicketId: "PAP-001",
+      actor: "migration-test",
+      reason: "prove constrained schema migration",
+      writeOccurred: true,
+    });
+    assert.deepEqual(
+      db.prepare("SELECT id, event, timestamp, previous_ticket_id, ticket_id, actor, reason FROM registry_events WHERE deployment_id = 'd-legacy' AND event = 'ticket-associated'").all(),
+      [{ id: 12, event: "ticket-associated", timestamp: "2026-04-26T10:02:00.000Z", previous_ticket_id: null, ticket_id: "PAP-001", actor: "migration-test", reason: "prove constrained schema migration" }],
+    );
     const status = queryDeploymentStatus("d-legacy");
-    assert.equal(getDeploymentEvents("d-legacy").length, 1);
-    assert.equal(getDeploymentEvents("d-legacy")[0]?.event, "started");
+    assert.equal(status?.ticket_id, "PAP-001");
     assert.equal(status?.status, "running");
+    assert.equal(status?.summary, "legacy projection");
+    assert.equal(status?.primer, "immutable primer");
     assert.equal(status?.runtime, "opencode");
-    assert.equal(status?.effective_timeout_seconds, undefined);
+    assert.equal(getDeploymentEvents("d-legacy").length, 3);
   } finally {
     closeDb();
-    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
-    else process.env["PA_REGISTRY_DB"] = previous;
+    if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previousRegistry;
+    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
+    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousUsage;
     rmSync(root, { recursive: true, force: true });
   }
 });
