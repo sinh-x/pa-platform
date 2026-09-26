@@ -182,9 +182,17 @@ test("tickets validate and store linked git branches and commits", () => {
     assert.equal(linked.linkedCommits[0]?.sha, sha);
     assert.equal(linked.linkedCommits[0]?.message, "initial");
 
+    const removalAuditsBefore = store.readAudit().filter((entry) => entry.action === "branch_link_removed").length;
     const unlinked = store.update(ticket.id, { remove_linked_branch: "pa-platform:feature/PAP-001-test", remove_linked_commit: sha }, "test");
     assert.equal(unlinked.linkedBranches.length, 0);
     assert.equal(unlinked.linkedCommits.length, 0);
+    assert.equal(unlinked.title, ticket.title);
+    assert.equal(store.readAudit().filter((entry) => entry.action === "branch_link_removed").length, removalAuditsBefore + 1);
+
+    const absentExact = store.update(ticket.id, { remove_linked_branch: "pa-platform:feature/PAP-001-test" }, "test");
+    assert.deepEqual(absentExact.linkedBranches, []);
+    assert.deepEqual(new TicketStore(ticketsDir, { privileged: true }).get(ticket.id)?.linkedBranches, []);
+    assert.equal(store.readAudit().filter((entry) => entry.action === "branch_link_removed").length, removalAuditsBefore + 1);
   });
 });
 

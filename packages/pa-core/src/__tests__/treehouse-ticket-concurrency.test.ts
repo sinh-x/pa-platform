@@ -180,7 +180,7 @@ test("concurrent ticket-slot contenders atomically admit four distinct tickets",
   }
 });
 
-test("planned ticket branch materializes once at exact local develop and preserves canonical bytes", () => {
+test("sparse planned ticket branch materializes once at exact local develop and preserves canonical bytes", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-ticket-materialize-"));
   const config = join(root, "config");
   const tickets = join(root, "tickets");
@@ -194,6 +194,9 @@ test("planned ticket branch materializes once at exact local develop and preserv
   writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({
     id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", state: "planned", linkedAt: "2026-09-17T00:00:00.000Z", linkedBy: "test" }],
   }));
+  const sparseBefore = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(sparseBefore, "createdAt"), false);
+  assert.equal(Object.hasOwn(sparseBefore, "updatedAt"), false);
   const previous = process.env["PA_PLATFORM_CONFIG"];
   process.env["PA_PLATFORM_CONFIG"] = config;
   try {

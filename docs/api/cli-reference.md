@@ -721,11 +721,13 @@ Manage tickets. Subcommands: `list`, `show`, `create`, `update`, `comment`, `att
 | `--doc-ref-primary` | — | Mark the added doc_ref as primary |
 | `--remove-doc-ref <path>` | path | Remove a doc_ref by path |
 | `--linked-branch <repo\|branch>` | pipe-sep | Record planned intent or refresh authenticated materialized branch evidence |
-| `--remove-linked-branch <repo>` | repo | Remove a linked branch by repo |
+| `--remove-linked-branch <selector>` | selector | Remove by bare repository key (`repo`) or exact selector (`repo:branch`) |
 | `--linked-commit <repo\|sha\|msg\|author\|ts>` | pipe-sep | Add a linked commit |
 | `--remove-linked-commit <sha>` | sha | Remove a linked commit by sha |
 | `--archive` | — | Archive the ticket (requires terminal status) |
 | `--actor <name>` | actor | Actor name for history |
+
+A bare `--remove-linked-branch repo` selector removes the repository's single normalized planned or materialized record. It is idempotent when no record exists and fails without mutation when multiple records make the selector ambiguous. Use `repo:branch` to preserve exact-record selection. Removal may be combined with `--linked-branch repo|branch` for an atomic replacement. The command reports success only after the shared ticket store verifies a disk-backed read; a readback mismatch restores the prior ticket and emits no linked-branch mutation audit.
 
 ### ticket comment
 
