@@ -56,6 +56,16 @@ function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function assertBoundedFiveFieldDiagnostic(error: unknown, pattern: RegExp): boolean {
+  assert.ok(error instanceof Error);
+  assert.match(error.message, pattern);
+  assert.ok(error.message.length <= 2000, `diagnostic has ${error.message.length} JavaScript characters`);
+  for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) {
+    assert.match(error.message, new RegExp(field));
+  }
+  return true;
+}
+
 test("absent exact-ticket branch is stored as planned without Git mutation", () => {
   withLinkedBranchEnv(({ repo, store }) => {
     const ticket = createTicket(store);
@@ -129,6 +139,122 @@ test("legacy sha records normalize to materialized head evidence without inventi
     assert.equal(migrated.title, ticket.title);
     assert.equal(migrated.linkedBranches[0]?.baseSha, undefined);
     assert.equal(requireTicketLinkedBranch(migrated, "pa-platform").headSha, legacySha);
+  });
+});
+
+test("bare repository removal persists for planned, materialized, and legacy-normalized records", () => {
+  withLinkedBranchEnv(({ repo, tickets, store }) => {
+    const plannedTicket = createTicket(store);
+    store.update(plannedTicket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-planned" } }, "planner");
+    store.update(plannedTicket.id, { remove_linked_branch: "pa-platform" }, "remover");
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(plannedTicket.id)?.linkedBranches, []);
+    assert.equal(store.readAudit().filter((entry) => entry.ticket_id === plannedTicket.id && entry.action === "branch_link_removed").length, 1);
+
+    const materializedTicket = createTicket(store);
+    execFileSync("git", ["branch", "feature/PAP-002-materialized", "develop"], { cwd: repo, stdio: "ignore" });
+    const materialized = store.update(materializedTicket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-002-materialized" } }, "materializer").linkedBranches[0]!;
+    assert.ok(materialized.baseSha);
+    assert.ok(materialized.headSha);
+    assert.ok(materialized.sha);
+    store.update(materializedTicket.id, { remove_linked_branch: "pa-platform" }, "remover");
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(materializedTicket.id)?.linkedBranches, []);
+
+    const legacyTicket = createTicket(store);
+    const legacyPath = join(tickets, `${legacyTicket.id}.json`);
+    const legacyRaw = JSON.parse(readFileSync(legacyPath, "utf-8")) as Record<string, unknown>;
+    legacyRaw["linkedBranches"] = [{ repo: "pa-platform", branch: "feature/PAP-003-legacy", sha: "a".repeat(40), linkedAt: legacyTicket.createdAt, linkedBy: "legacy" }];
+    writeFileSync(legacyPath, JSON.stringify(legacyRaw, null, 2));
+    store.update(legacyTicket.id, { remove_linked_branch: "pa-platform" }, "remover");
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(legacyTicket.id)?.linkedBranches, []);
+  });
+});
+
+test("bare repository absence is disk-verified and emits no removal audit", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const ticket = createTicket(store);
+    const removalAuditsBefore = store.readAudit().filter((entry) => entry.action === "branch_link_removed").length;
+
+    const updated = store.update(ticket.id, { remove_linked_branch: "pa-platform" }, "remover");
+
+    assert.deepEqual(updated.linkedBranches, []);
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(ticket.id)?.linkedBranches, []);
+    assert.equal(store.readAudit().filter((entry) => entry.action === "branch_link_removed").length, removalAuditsBefore);
+  });
+});
+
+test("ambiguous bare repository removal rejects before persistence with bounded diagnostic", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const ticket = createTicket(store);
+    const path = join(tickets, `${ticket.id}.json`);
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    raw["linkedBranches"] = [
+      { repo: "pa-platform", branch: "feature/PAP-001-one", state: "planned", linkedAt: ticket.createdAt, linkedBy: "test" },
+      { repo: "pa-platform", branch: "feature/PAP-001-two", state: "planned", linkedAt: ticket.createdAt, linkedBy: "test" },
+    ];
+    writeFileSync(path, JSON.stringify(raw, null, 2));
+    const ticketBefore = readFileSync(path, "utf-8");
+    const auditBefore = store.readAudit();
+
+    assert.throws(
+      () => store.update(ticket.id, { remove_linked_branch: "pa-platform" }, "remover"),
+      (error: unknown) => assertBoundedFiveFieldDiagnostic(error, /matched 2 normalized records/),
+    );
+    assert.equal(readFileSync(path, "utf-8"), ticketBefore);
+    assert.deepEqual(store.readAudit(), auditBefore);
+  });
+});
+
+test("bare removal and replacement persist atomically with truthful audits", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const ticket = createTicket(store);
+    store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-old" } }, "planner");
+    const before = store.get(ticket.id)!;
+    const auditBefore = store.readAudit();
+
+    const replaced = store.update(ticket.id, {
+      remove_linked_branch: "pa-platform",
+      add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-replacement" },
+    }, "replacer");
+
+    assert.deepEqual(replaced.linkedBranches.map((branch) => branch.branch), ["feature/PAP-001-replacement"]);
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(ticket.id)?.linkedBranches, replaced.linkedBranches);
+    const { linkedBranches: _beforeBranches, updatedAt: _beforeUpdatedAt, ...beforeUnrelated } = before;
+    const { linkedBranches: _afterBranches, updatedAt: _afterUpdatedAt, ...afterUnrelated } = replaced;
+    assert.deepEqual(afterUnrelated, beforeUnrelated);
+    const mutationAudits = store.readAudit().slice(auditBefore.length).filter((entry) => entry.action === "branch_link_removed" || entry.action === "branch_link_added");
+    assert.deepEqual(mutationAudits.map((entry) => entry.action), ["branch_link_removed", "branch_link_added"]);
+  });
+});
+
+test("replacement validation and readback failures restore prior state without mutation audits", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const ticket = createTicket(store);
+    store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-old" } }, "planner");
+    const before = store.get(ticket.id)!;
+    const auditBefore = store.readAudit();
+
+    assert.throws(() => store.update(ticket.id, {
+      remove_linked_branch: "pa-platform",
+      add_linked_branch: { repo: "other", branch: "feature/PAP-001-invalid" },
+    }, "replacer"), /Cross-project linked branch rejected/);
+    assert.deepEqual(store.get(ticket.id), before);
+    assert.deepEqual(store.readAudit(), auditBefore);
+
+    const originalGet = store.get.bind(store);
+    let getCalls = 0;
+    store.get = (id: string): Ticket | undefined => {
+      getCalls += 1;
+      return getCalls === 2 ? before : originalGet(id);
+    };
+    assert.throws(
+      () => store.update(ticket.id, {
+        remove_linked_branch: "pa-platform",
+        add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-replacement" },
+      }, "replacer"),
+      (error: unknown) => assertBoundedFiveFieldDiagnostic(error, /postcondition failed/),
+    );
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(ticket.id), before);
+    assert.deepEqual(store.readAudit(), auditBefore);
   });
 });
 

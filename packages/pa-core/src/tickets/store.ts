@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { getTicketsDir } from "../paths.js";
 import { resolveProject } from "../repos.js";
 import { nowUtc, parseTimestamp } from "../time.js";
@@ -82,18 +83,48 @@ export class TicketStore {
       remove_linked_commit: removeLinkedCommit,
       ...rest
     } = input;
+    const linkedAuditIntents: AuditIntent[] = [];
+    const collectLinkedAudit: AuditAppender = (ticketId, action, auditActor, changes) => {
+      linkedAuditIntents.push({ ticketId, action, actor: auditActor, changes });
+    };
     let next: Ticket = { ...current, ...rest, updatedAt: nowUtc() };
     if (input.status && TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = next.resolvedAt ?? next.updatedAt;
     if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
     if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
     if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
-    next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, this.appendAudit.bind(this));
-    next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, this.appendAudit.bind(this));
+    next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, collectLinkedAudit);
+    next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, collectLinkedAudit);
+    next = this.normalizeTicket(next as unknown as Record<string, unknown>);
 
     const changes = diffTicket(current, next);
-    this.writeTicket(next);
-    this.appendAudit(id, "updated", actor, changes);
-    return next;
+    const auditSnapshot = this.readAuditSnapshot();
+    let persisted: Ticket;
+    try {
+      this.writeTicket(next);
+      const readback = this.get(id);
+      if (!readback || !ticketsEqual(readback, next)) {
+        throw new Error("the disk-backed ticket did not equal the validated candidate");
+      }
+      persisted = readback;
+      this.appendAudits([
+        ...linkedAuditIntents,
+        { ticketId: id, action: "updated", actor, changes },
+      ]);
+    } catch (error) {
+      let restored = false;
+      try {
+        this.writeTicket(current);
+        this.restoreAuditSnapshot(auditSnapshot);
+        const restorationReadback = this.get(id);
+        restored = restorationReadback !== undefined
+          && ticketsEqual(restorationReadback, current)
+          && this.readAuditSnapshot() === auditSnapshot;
+      } catch {
+        restored = false;
+      }
+      throw new Error(linkedBranchPostconditionDiagnostic(id, removeLinkedBranch, error, restored));
+    }
+    return persisted;
   }
 
   comment(id: string, author: string, content: string): Comment {
@@ -303,8 +334,33 @@ export class TicketStore {
   }
 
   private appendAudit(ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]): void {
-    const entry: AuditEntry = { ticket_id: ticketId, action, actor, timestamp: nowUtc(), changes };
-    writeFileSync(resolve(this.dir, "audit.jsonl"), `${JSON.stringify(entry)}\n`, { flag: "a" });
+    this.appendAudits([{ ticketId, action, actor, changes }]);
+  }
+
+  private appendAudits(intents: AuditIntent[]): void {
+    if (intents.length === 0) return;
+    const entries = intents.map((intent): AuditEntry => ({
+      ticket_id: intent.ticketId,
+      action: intent.action,
+      actor: intent.actor,
+      timestamp: nowUtc(),
+      changes: intent.changes,
+    }));
+    writeFileSync(resolve(this.dir, "audit.jsonl"), `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "a" });
+  }
+
+  private readAuditSnapshot(): string | undefined {
+    const path = resolve(this.dir, "audit.jsonl");
+    return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+  }
+
+  private restoreAuditSnapshot(snapshot: string | undefined): void {
+    const path = resolve(this.dir, "audit.jsonl");
+    if (snapshot === undefined) {
+      if (existsSync(path)) unlinkSync(path);
+      return;
+    }
+    writeFileSync(path, snapshot);
   }
 }
 
@@ -399,12 +455,25 @@ function diffTicket(before: Ticket, after: Ticket): Record<string, [unknown, unk
 
 type AuditAppender = (ticketId: string, action: AuditEntry["action"], actor: string, changes: AuditEntry["changes"]) => void;
 
+type AuditIntent = {
+  ticketId: string;
+  action: AuditEntry["action"];
+  actor: string;
+  changes: AuditEntry["changes"];
+};
+
 function applyLinkedBranchMutation(id: string, ticket: Ticket, add: AddLinkedBranchInput | undefined, remove: string | undefined, actor: string, appendAudit: AuditAppender): Ticket {
   let linkedBranches = ticket.linkedBranches;
   if (remove) {
-    const before = linkedBranches;
-    linkedBranches = linkedBranches.filter((branch) => `${branch.repo}:${branch.branch}` !== remove);
-    if (linkedBranches.length !== before.length) appendAudit(id, "branch_link_removed", actor, { branch: [remove, null] });
+    const matches = linkedBranchSelectorMatches(linkedBranches, remove);
+    if (!remove.includes(":") && matches.length > 1) {
+      throw new Error(linkedBranchAmbiguityDiagnostic(id, remove, matches.length));
+    }
+    if (matches.length > 0) {
+      const matched = new Set(matches);
+      linkedBranches = linkedBranches.filter((branch) => !matched.has(branch));
+      appendAudit(id, "branch_link_removed", actor, { branch: [matches.length === 1 ? matches[0] : matches, null] });
+    }
   }
   if (add) {
     const resolvedBranch = resolveLinkedBranch(add, ticket, actor);
@@ -469,4 +538,50 @@ function upsertLinkedCommit(commits: LinkedCommit[], next: LinkedCommit): Linked
   const index = commits.findIndex((commit) => commit.sha === next.sha);
   if (index < 0) return [...commits, next];
   return commits.map((commit, i) => (i === index ? { ...commit, ...next } : commit));
+}
+
+function linkedBranchSelectorMatches(branches: LinkedBranch[], selector: string): LinkedBranch[] {
+  if (!selector.includes(":")) return branches.filter((branch) => branch.repo === selector);
+  return branches.filter((branch) => `${branch.repo}:${branch.branch}` === selector);
+}
+
+function ticketsEqual(left: Ticket, right: Ticket): boolean {
+  return isDeepStrictEqual(left, right);
+}
+
+function linkedBranchAmbiguityDiagnostic(ticketId: string, selector: string, count: number): string {
+  return boundedFiveFieldDiagnostic({
+    condition: "Linked-branch removal rejected before persistence.",
+    source: `TicketStore.update ticket ${boundedDiagnosticValue(ticketId)} selector ${boundedDiagnosticValue(selector)}.`,
+    reason: `Bare repository selector matched ${count} normalized records; removal is ambiguous.`,
+    correction: "Retain one repository record or use an exact repo:branch selector.",
+    resumeAction: "Retry only after the ticket has one unambiguous match or with the intended exact selector.",
+  });
+}
+
+function linkedBranchPostconditionDiagnostic(ticketId: string, selector: string | undefined, cause: unknown, restored: boolean): string {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  return boundedFiveFieldDiagnostic({
+    condition: "Ticket update postcondition failed.",
+    source: `TicketStore.update ticket ${boundedDiagnosticValue(ticketId)}${selector ? ` selector ${boundedDiagnosticValue(selector)}` : ""}.`,
+    reason: `${boundedDiagnosticValue(reason)} Prior normalized snapshot ${restored ? "was restored and verified" : "could not be restored and verified"}.`,
+    correction: "Reconcile disk-backed ticket storage and preserve the prior snapshot before retrying.",
+    resumeAction: "Retry the complete update only after readback and restoration storage are healthy.",
+  });
+}
+
+function boundedDiagnosticValue(value: string): string {
+  const limit = 320;
+  return value.length <= limit ? JSON.stringify(value) : `${JSON.stringify(value.slice(0, limit))}…`;
+}
+
+function boundedFiveFieldDiagnostic(fields: { condition: string; source: string; reason: string; correction: string; resumeAction: string }): string {
+  const diagnostic = [
+    `Condition: ${fields.condition}`,
+    `Source: ${fields.source}`,
+    `Reason: ${fields.reason}`,
+    `Correction: ${fields.correction}`,
+    `Resume Action: ${fields.resumeAction}`,
+  ].join("\n");
+  return diagnostic.slice(0, 2000);
 }
