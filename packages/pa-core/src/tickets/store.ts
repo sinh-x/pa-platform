@@ -31,6 +31,7 @@ export interface TicketMutationPrincipal {
 export class TicketStore {
   private readonly dir: string;
   private readonly context: TicketMutationContext;
+  private transactionDepth = 0;
 
   constructor(dir = getTicketsDir(), context: TicketMutationContext = {}) {
     this.dir = dir;
@@ -38,25 +39,39 @@ export class TicketStore {
     mkdirSync(this.dir, { recursive: true });
   }
 
+  private withTransaction<T>(operation: () => T): T {
+    if (this.transactionDepth > 0) return operation();
+    return withTicketTransactionMutex(this.dir, () => {
+      this.transactionDepth += 1;
+      try {
+        return operation();
+      } finally {
+        this.transactionDepth -= 1;
+      }
+    });
+  }
+
   create(input: CreateTicketInput, actor = "pa-core"): Ticket {
     const { key, prefix } = resolveProject(input.project);
-    const id = this.allocateId(prefix);
-    const now = nowUtc();
-    const ticket = this.normalizeTicket({
-      ...input,
-      id,
-      project: key,
-      createdAt: now,
-      updatedAt: now,
-      resolvedAt: input.resolvedAt ?? null,
-      subTickets: [],
-      nextSubTicketCounter: 0,
-      linkedBranches: input.linkedBranches ?? [],
-      linkedCommits: input.linkedCommits ?? [],
+    return this.withTransaction(() => {
+      const id = this.allocateId(prefix);
+      const now = nowUtc();
+      const ticket = this.normalizeTicket({
+        ...input,
+        id,
+        project: key,
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: input.resolvedAt ?? null,
+        subTickets: [],
+        nextSubTicketCounter: 0,
+        linkedBranches: input.linkedBranches ?? [],
+        linkedCommits: input.linkedCommits ?? [],
+      });
+      this.writeTicket(ticket);
+      this.appendAudit(id, "created", actor, { status: ["", ticket.status], assignee: ["", ticket.assignee] });
+      return ticket;
     });
-    this.writeTicket(ticket);
-    this.appendAudit(id, "created", actor, { status: ["", ticket.status], assignee: ["", ticket.assignee] });
-    return ticket;
   }
 
   get(id: string): Ticket | undefined {
@@ -68,42 +83,37 @@ export class TicketStore {
     if (Object.prototype.hasOwnProperty.call(input, "linkedBranches")) {
       throw new Error("Direct linkedBranches replacement is not allowed. Correction: use add_linked_branch so repository and Git evidence are authenticated.");
     }
-    const current = this.get(id);
-    if (!current) throw new Error(`Ticket not found: ${id}`);
-    if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
-    if (input.status === "done" && current.subTickets.some((sub) => sub.status !== "done")) {
-      throw new Error(`Cannot mark ${id} as done while sub-tickets are open`);
-    }
-
-    const {
-      add_doc_ref: addDocRef,
-      remove_doc_ref: removeDocRef,
-      add_linked_branch: addLinkedBranch,
-      remove_linked_branch: removeLinkedBranch,
-      add_linked_commit: addLinkedCommit,
-      remove_linked_commit: removeLinkedCommit,
-      ...rest
-    } = input;
-    const linkedAuditIntents: AuditIntent[] = [];
-    const collectLinkedAudit: AuditAppender = (ticketId, action, auditActor, changes) => {
-      linkedAuditIntents.push({ ticketId, action, actor: auditActor, changes });
-    };
-    let next: Ticket = { ...current, ...rest, updatedAt: nowUtc() };
-    if (input.status && TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = next.resolvedAt ?? next.updatedAt;
-    if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
-    if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
-    if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
-    next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, collectLinkedAudit);
-    next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, collectLinkedAudit);
-    next = this.normalizeTicket(next as unknown as Record<string, unknown>);
-
-    const changes = diffTicket(current, next);
-    return withTicketTransactionMutex(this.dir, () => {
-      const transactionCurrent = this.readTicket(id);
-      if (!transactionCurrent || !ticketsEqual(transactionCurrent, current)) {
-        throw new Error(ticketConcurrencyDiagnostic(id, removeLinkedBranch));
+    return this.withTransaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error(`Ticket not found: ${id}`);
+      if (input.status !== undefined && !VALID_STATUSES.has(input.status)) throw new Error(`Invalid status: ${input.status}`);
+      if (input.status === "done" && current.subTickets.some((sub) => sub.status !== "done")) {
+        throw new Error(`Cannot mark ${id} as done while sub-tickets are open`);
       }
 
+      const {
+        add_doc_ref: addDocRef,
+        remove_doc_ref: removeDocRef,
+        add_linked_branch: addLinkedBranch,
+        remove_linked_branch: removeLinkedBranch,
+        add_linked_commit: addLinkedCommit,
+        remove_linked_commit: removeLinkedCommit,
+        ...rest
+      } = input;
+      const linkedAuditIntents: AuditIntent[] = [];
+      const collectLinkedAudit: AuditAppender = (ticketId, action, auditActor, changes) => {
+        linkedAuditIntents.push({ ticketId, action, actor: auditActor, changes });
+      };
+      let next: Ticket = { ...current, ...rest, updatedAt: nowUtc() };
+      if (input.status && TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = next.resolvedAt ?? next.updatedAt;
+      if (input.status && !TERMINAL_STATUSES.includes(input.status)) next.resolvedAt = null;
+      if (addDocRef) next = { ...next, doc_refs: this.addDocRef(next.doc_refs, addDocRef, actor, next.updatedAt) };
+      if (removeDocRef) next = { ...next, doc_refs: next.doc_refs.filter((ref) => ref.path !== removeDocRef) };
+      next = applyLinkedBranchMutation(id, next, addLinkedBranch, removeLinkedBranch, actor, collectLinkedAudit);
+      next = applyLinkedCommitMutation(id, next, addLinkedCommit, removeLinkedCommit, actor, collectLinkedAudit);
+      next = this.normalizeTicket(next as unknown as Record<string, unknown>);
+
+      const changes = diffTicket(current, next);
       const auditSnapshot = this.readAuditSnapshot();
       let persisted: Ticket;
       try {
@@ -136,38 +146,44 @@ export class TicketStore {
   }
 
   comment(id: string, author: string, content: string): Comment {
-    const ticket = this.get(id);
-    if (!ticket) throw new Error(`Ticket not found: ${id}`);
-    const now = nowUtc();
-    const comment: Comment = { id: `c-${now.replace(/[^0-9]/g, "")}`, author, content, timestamp: now };
-    this.writeTicket({ ...ticket, comments: [...ticket.comments, comment], updatedAt: now });
-    this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
-    return comment;
+    return this.withTransaction(() => {
+      const ticket = this.get(id);
+      if (!ticket) throw new Error(`Ticket not found: ${id}`);
+      const now = nowUtc();
+      const comment: Comment = { id: `c-${now.replace(/[^0-9]/g, "")}`, author, content, timestamp: now };
+      this.writeTicket({ ...ticket, comments: [...ticket.comments, comment], updatedAt: now });
+      this.appendAudit(id, "commented", author, { comments: [ticket.comments.length, ticket.comments.length + 1] });
+      return comment;
+    });
   }
 
   editComment(id: string, commentId: string, content: string, actor = "pa-core"): { ticket: Ticket; comment: Comment } {
-    const ticket = this.get(id);
-    if (!ticket) throw new Error(`Ticket not found: ${id}`);
-    const index = ticket.comments.findIndex((comment) => comment.id === commentId);
-    if (index < 0) throw new Error(`Comment not found: ${commentId}`);
-    const now = nowUtc();
-    const comment: Comment = { ...ticket.comments[index]!, content, editedAt: now };
-    const comments = ticket.comments.map((existing, existingIndex) => existingIndex === index ? comment : existing);
-    const next = { ...ticket, comments, updatedAt: now };
-    this.writeTicket(next);
-    this.appendAudit(id, "updated", actor, { comment: [ticket.comments[index], comment] });
-    return { ticket: next, comment };
+    return this.withTransaction(() => {
+      const ticket = this.get(id);
+      if (!ticket) throw new Error(`Ticket not found: ${id}`);
+      const index = ticket.comments.findIndex((comment) => comment.id === commentId);
+      if (index < 0) throw new Error(`Comment not found: ${commentId}`);
+      const now = nowUtc();
+      const comment: Comment = { ...ticket.comments[index]!, content, editedAt: now };
+      const comments = ticket.comments.map((existing, existingIndex) => existingIndex === index ? comment : existing);
+      const next = { ...ticket, comments, updatedAt: now };
+      this.writeTicket(next);
+      this.appendAudit(id, "updated", actor, { comment: [ticket.comments[index], comment] });
+      return { ticket: next, comment };
+    });
   }
 
   deleteComment(id: string, commentId: string, actor = "pa-core"): Ticket {
-    const ticket = this.get(id);
-    if (!ticket) throw new Error(`Ticket not found: ${id}`);
-    const comments = ticket.comments.filter((comment) => comment.id !== commentId);
-    if (comments.length === ticket.comments.length) throw new Error(`Comment not found: ${commentId}`);
-    const next = { ...ticket, comments, updatedAt: nowUtc() };
-    this.writeTicket(next);
-    this.appendAudit(id, "updated", actor, { comments: [ticket.comments.length, comments.length] });
-    return next;
+    return this.withTransaction(() => {
+      const ticket = this.get(id);
+      if (!ticket) throw new Error(`Ticket not found: ${id}`);
+      const comments = ticket.comments.filter((comment) => comment.id !== commentId);
+      if (comments.length === ticket.comments.length) throw new Error(`Comment not found: ${commentId}`);
+      const next = { ...ticket, comments, updatedAt: nowUtc() };
+      this.writeTicket(next);
+      this.appendAudit(id, "updated", actor, { comments: [ticket.comments.length, comments.length] });
+      return next;
+    });
   }
 
   attach(id: string, path: string, actor = "pa-core"): Ticket {
@@ -175,81 +191,93 @@ export class TicketStore {
   }
 
   move(id: string, project: string, actor = "pa-core"): Ticket {
-    const current = this.get(id);
-    if (!current) throw new Error(`Ticket not found: ${id}`);
     const { key, prefix } = resolveProject(project);
-    const newId = this.allocateId(prefix);
-    const now = nowUtc();
-    const moved = this.normalizeTicket({ ...current, id: newId, project: key, updatedAt: now });
-    this.writeTicket(moved);
-    writeFileSync(this.ticketPath(id), JSON.stringify({ _alias: true, movedTo: newId, movedAt: now, movedBy: actor }, null, 2));
-    this.appendAudit(id, "updated", actor, { movedTo: [id, newId] });
-    this.appendAudit(newId, "created", actor, { movedFrom: [id, newId] });
-    return moved;
+    return this.withTransaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error(`Ticket not found: ${id}`);
+      const newId = this.allocateId(prefix);
+      const now = nowUtc();
+      const moved = this.normalizeTicket({ ...current, id: newId, project: key, updatedAt: now });
+      this.writeTicket(moved);
+      writeFileSync(this.ticketPath(id), JSON.stringify({ _alias: true, movedTo: newId, movedAt: now, movedBy: actor }, null, 2));
+      this.appendAudit(id, "updated", actor, { movedTo: [id, newId] });
+      this.appendAudit(newId, "created", actor, { movedFrom: [id, newId] });
+      return moved;
+    });
   }
 
   delete(id: string, actor = "pa-core", hard = false, context = this.context): void {
-    const ticket = this.get(id);
-    if (!ticket) throw new Error(`Ticket not found: ${id}`);
     assertLifecycleOwnership("cancelled", context);
-    if (hard) {
-      unlinkSync(this.ticketPath(id));
-      this.appendAudit(id, "deleted", actor, { hard: [false, true] });
-      return;
-    }
-    this.update(id, { status: "cancelled" }, actor, context);
-    this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
+    this.withTransaction(() => {
+      const ticket = this.get(id);
+      if (!ticket) throw new Error(`Ticket not found: ${id}`);
+      if (hard) {
+        unlinkSync(this.ticketPath(id));
+        this.appendAudit(id, "deleted", actor, { hard: [false, true] });
+        return;
+      }
+      this.update(id, { status: "cancelled" }, actor, context);
+      this.appendAudit(id, "deleted", actor, { status: [ticket.status, "cancelled"] });
+    });
   }
 
   archive(id: string, actor = "pa-core"): Ticket {
-    const current = this.get(id);
-    if (!current) throw new Error(`Ticket not found: ${id}`);
-    if (!TERMINAL_STATUSES.includes(current.status)) {
-      throw new Error(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`);
-    }
-    if (current.tags.includes("archived")) return current;
-    const now = nowUtc();
-    const next: Ticket = { ...current, tags: [...current.tags, "archived"], updatedAt: now };
-    this.writeTicket(next);
-    this.appendAudit(id, "archived", actor, { tags: [current.tags, next.tags] });
-    return next;
+    return this.withTransaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error(`Ticket not found: ${id}`);
+      if (!TERMINAL_STATUSES.includes(current.status)) {
+        throw new Error(`Cannot archive ${id}: status is '${current.status}'. Only terminal-status tickets (${TERMINAL_STATUSES.join(", ")}) can be archived.`);
+      }
+      if (current.tags.includes("archived")) return current;
+      const now = nowUtc();
+      const next: Ticket = { ...current, tags: [...current.tags, "archived"], updatedAt: now };
+      this.writeTicket(next);
+      this.appendAudit(id, "archived", actor, { tags: [current.tags, next.tags] });
+      return next;
+    });
   }
 
   unarchive(id: string, actor = "pa-core"): Ticket {
-    const current = this.get(id);
-    if (!current) throw new Error(`Ticket not found: ${id}`);
-    if (!current.tags.includes("archived")) return current;
-    const now = nowUtc();
-    const next: Ticket = { ...current, tags: current.tags.filter((tag) => tag !== "archived"), updatedAt: now };
-    this.writeTicket(next);
-    this.appendAudit(id, "unarchived", actor, { tags: [current.tags, next.tags] });
-    return next;
+    return this.withTransaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error(`Ticket not found: ${id}`);
+      if (!current.tags.includes("archived")) return current;
+      const now = nowUtc();
+      const next: Ticket = { ...current, tags: current.tags.filter((tag) => tag !== "archived"), updatedAt: now };
+      this.writeTicket(next);
+      this.appendAudit(id, "unarchived", actor, { tags: [current.tags, next.tags] });
+      return next;
+    });
   }
 
   addSubTicket(parentId: string, input: Pick<SubTicket, "title" | "summary" | "assignee" | "priority" | "estimate">, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
-    const ticket = this.get(parentId);
-    if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
-    const now = nowUtc();
-    const nextCounter = ticket.nextSubTicketCounter + 1;
-    const subTicket: SubTicket = { id: `${ticket.id}-ST-${nextCounter}`, title: input.title, summary: input.summary, assignee: input.assignee, priority: input.priority, estimate: input.estimate, status: "open", createdAt: now, updatedAt: now };
-    const next = { ...ticket, subTickets: [...ticket.subTickets, subTicket], nextSubTicketCounter: nextCounter, updatedAt: now };
-    this.writeTicket(next);
-    this.appendAudit(parentId, "updated", actor, { subTickets: [ticket.subTickets.length, next.subTickets.length] });
-    return { ticket: next, subTicket };
+    return this.withTransaction(() => {
+      const ticket = this.get(parentId);
+      if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
+      const now = nowUtc();
+      const nextCounter = ticket.nextSubTicketCounter + 1;
+      const subTicket: SubTicket = { id: `${ticket.id}-ST-${nextCounter}`, title: input.title, summary: input.summary, assignee: input.assignee, priority: input.priority, estimate: input.estimate, status: "open", createdAt: now, updatedAt: now };
+      const next = { ...ticket, subTickets: [...ticket.subTickets, subTicket], nextSubTicketCounter: nextCounter, updatedAt: now };
+      this.writeTicket(next);
+      this.appendAudit(parentId, "updated", actor, { subTickets: [ticket.subTickets.length, next.subTickets.length] });
+      return { ticket: next, subTicket };
+    });
   }
 
   updateSubTicket(parentId: string, subTicketId: string, input: Partial<Pick<SubTicket, "title" | "summary" | "status" | "assignee" | "priority" | "estimate">>, actor = "pa-core"): { ticket: Ticket; subTicket: SubTicket } {
-    const ticket = this.get(parentId);
-    if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
-    const index = ticket.subTickets.findIndex((sub) => sub.id === subTicketId);
-    if (index < 0) throw new Error(`Sub-ticket not found: ${subTicketId}`);
-    const now = nowUtc();
-    const subTicket = { ...ticket.subTickets[index]!, ...input, updatedAt: now };
-    const subTickets = ticket.subTickets.map((sub, i) => (i === index ? subTicket : sub));
-    const next = { ...ticket, subTickets, updatedAt: now };
-    this.writeTicket(next);
-    this.appendAudit(parentId, "updated", actor, { subTicket: [ticket.subTickets[index], subTicket] });
-    return { ticket: next, subTicket };
+    return this.withTransaction(() => {
+      const ticket = this.get(parentId);
+      if (!ticket) throw new Error(`Ticket not found: ${parentId}`);
+      const index = ticket.subTickets.findIndex((sub) => sub.id === subTicketId);
+      if (index < 0) throw new Error(`Sub-ticket not found: ${subTicketId}`);
+      const now = nowUtc();
+      const subTicket = { ...ticket.subTickets[index]!, ...input, updatedAt: now };
+      const subTickets = ticket.subTickets.map((sub, i) => (i === index ? subTicket : sub));
+      const next = { ...ticket, subTickets, updatedAt: now };
+      this.writeTicket(next);
+      this.appendAudit(parentId, "updated", actor, { subTicket: [ticket.subTickets[index], subTicket] });
+      return { ticket: next, subTicket };
+    });
   }
 
   listSubTickets(parentId: string): SubTicket[] {
@@ -609,16 +637,6 @@ function linkedBranchAmbiguityDiagnostic(ticketId: string, selector: string, cou
     reason: `Bare repository selector matched ${count} normalized records; removal is ambiguous.`,
     correction: "Retain one repository record or use an exact repo:branch selector.",
     resumeAction: "Retry only after the ticket has one unambiguous match or with the intended exact selector.",
-  });
-}
-
-function ticketConcurrencyDiagnostic(ticketId: string, selector: string | undefined): string {
-  return boundedFiveFieldDiagnostic({
-    condition: "Ticket update rejected before persistence.",
-    source: `TicketStore.update ticket ${boundedDiagnosticValue(ticketId)}${selector ? ` selector ${boundedDiagnosticValue(selector)}` : ""}.`,
-    reason: "The disk-backed ticket changed after this writer's snapshot; a concurrent committed update was preserved.",
-    correction: "Re-read the current ticket and reconcile the requested mutation with the committed state.",
-    resumeAction: "Retry the complete update from a fresh disk-backed ticket snapshot.",
   });
 }
 

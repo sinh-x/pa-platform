@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,6 +54,14 @@ function createTicket(store: TicketStore): Ticket {
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+function waitForPath(path: string, label: string): void {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
 }
 
 function assertBoundedFiveFieldDiagnostic(error: unknown, pattern: RegExp): boolean {
@@ -139,6 +147,26 @@ test("legacy sha records normalize to materialized head evidence without inventi
     assert.equal(migrated.title, ticket.title);
     assert.equal(migrated.linkedBranches[0]?.baseSha, undefined);
     assert.equal(requireTicketLinkedBranch(migrated, "pa-platform").headSha, legacySha);
+  });
+});
+
+test("sparse legacy ticket updates from one authoritative normalized snapshot", () => {
+  withLinkedBranchEnv(({ tickets, store }) => {
+    const path = join(tickets, "PAP-999.json");
+    writeFileSync(path, JSON.stringify({
+      id: "PAP-999",
+      project: "pa-platform",
+      title: "Sparse legacy ticket",
+      linkedBranches: [{ repo: "pa-platform", branch: "feature/PAP-999-planned", state: "planned" }],
+    }));
+
+    const updated = store.update("PAP-999", { summary: "Updated from sparse state" }, "updater");
+
+    assert.equal(updated.summary, "Updated from sparse state");
+    assert.ok(updated.createdAt);
+    assert.ok(updated.updatedAt);
+    assert.ok(updated.linkedBranches[0]?.linkedAt);
+    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get("PAP-999"), updated);
   });
 });
 
@@ -258,27 +286,49 @@ test("replacement validation and readback failures restore prior state without m
   });
 });
 
-test("two writers preserve the concurrent commit and all audits when the first writer's transaction readback fails", () => {
-  withLinkedBranchEnv(({ tickets, store }) => {
+test("comment writer interleaving with failed update readback retains ticket and shared audit state", () => {
+  withLinkedBranchEnv(({ root, tickets, store }) => {
     const ticket = createTicket(store);
-    const otherTicket = createTicket(store);
     store.update(ticket.id, { add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-old" } }, "planner");
+    const before = store.get(ticket.id)!;
+    const auditBefore = store.readAudit();
     const writerA = new TicketStore(tickets, { privileged: true });
-    const writerB = new TicketStore(tickets, { privileged: true });
     const originalGet = writerA.get.bind(writerA);
-    let committedByB: Ticket | undefined;
-    let auditAfterB: ReturnType<TicketStore["readAudit"]> | undefined;
-    let firstSnapshot = true;
+    const readyPath = join(root, "comment-writer-ready");
+    const donePath = join(root, "comment-writer-done");
+    const storeModuleUrl = new URL("../tickets/store.ts", import.meta.url).href;
+    let getCalls = 0;
 
     writerA.get = (id: string): Ticket | undefined => {
-      const snapshot = originalGet(id);
-      if (firstSnapshot) {
-        firstSnapshot = false;
-        committedByB = writerB.update(ticket.id, { title: "Writer B committed title" }, "writer-b");
-        writerB.update(otherTicket.id, { summary: "Writer B shared audit entry" }, "writer-b");
-        auditAfterB = writerB.readAudit();
+      getCalls += 1;
+      if (getCalls === 2) {
+        const script = `
+          const { writeFileSync } = await import("node:fs");
+          const { TicketStore } = await import(process.env.PA_STORE_MODULE_URL);
+          writeFileSync(process.env.PA_READY_PATH, "ready");
+          try {
+            new TicketStore(process.env.PA_TICKETS_DIR, { privileged: true }).comment(process.env.PA_TICKET_ID, "writer-b", "Concurrent retained comment");
+            writeFileSync(process.env.PA_DONE_PATH, "ok");
+          } catch (error) {
+            writeFileSync(process.env.PA_DONE_PATH, \`error: \${error instanceof Error ? error.message : String(error)}\`);
+          }
+        `;
+        spawn(process.execPath, ["--import=tsx", "--input-type=module", "--eval", script], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PA_STORE_MODULE_URL: storeModuleUrl,
+            PA_TICKETS_DIR: tickets,
+            PA_TICKET_ID: ticket.id,
+            PA_READY_PATH: readyPath,
+            PA_DONE_PATH: donePath,
+          },
+          stdio: "ignore",
+        });
+        waitForPath(readyPath, "comment writer to reach the transaction boundary");
+        return before;
       }
-      return snapshot;
+      return originalGet(id);
     };
 
     assert.throws(
@@ -286,16 +336,18 @@ test("two writers preserve the concurrent commit and all audits when the first w
         remove_linked_branch: "pa-platform",
         add_linked_branch: { repo: "pa-platform", branch: "feature/PAP-001-writer-a" },
       }, "writer-a"),
-      (error: unknown) => assertBoundedFiveFieldDiagnostic(error, /changed after this writer's snapshot/),
+      (error: unknown) => assertBoundedFiveFieldDiagnostic(error, /postcondition failed/),
     );
+    waitForPath(donePath, "comment writer to commit after rollback");
+    assert.equal(readFileSync(donePath, "utf-8"), "ok");
 
-    assert.ok(committedByB);
-    assert.ok(auditAfterB);
-    assert.deepEqual(new TicketStore(tickets, { privileged: true }).get(ticket.id), committedByB);
-    assert.deepEqual(new TicketStore(tickets, { privileged: true }).readAudit(), auditAfterB);
-    assert.deepEqual(committedByB.linkedBranches.map((branch) => branch.branch), ["feature/PAP-001-old"]);
-    assert.equal(auditAfterB.some((entry) => entry.actor === "writer-a"), false);
-    assert.equal(auditAfterB.filter((entry) => entry.actor === "writer-b" && entry.action === "updated").length, 2);
+    const persisted = new TicketStore(tickets, { privileged: true }).get(ticket.id)!;
+    const auditAfter = new TicketStore(tickets, { privileged: true }).readAudit();
+    assert.deepEqual(persisted.linkedBranches.map((branch) => branch.branch), ["feature/PAP-001-old"]);
+    assert.equal(persisted.comments.at(-1)?.content, "Concurrent retained comment");
+    assert.deepEqual(auditAfter.slice(0, auditBefore.length), auditBefore);
+    assert.equal(auditAfter.some((entry) => entry.actor === "writer-a"), false);
+    assert.equal(auditAfter.filter((entry) => entry.actor === "writer-b" && entry.action === "commented").length, 1);
   });
 });
 
