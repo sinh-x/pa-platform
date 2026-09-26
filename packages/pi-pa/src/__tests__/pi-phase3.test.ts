@@ -142,6 +142,8 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
     { name: "bash", input: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } },
     { name: "bash", input: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "/usr/bin/time printf '%s\\n' " + ["cred", "entials"].join("") } },
+    { name: "bash", input: { command: "env -S 'sh -c \"printf %s " + ["cred", "entials"].join("") + "\"'" } },
     { name: "bash", input: { command: "curl -o/tmp/pap218-pi-attached.json https://example.test/report.json" } },
     { name: "bash", input: { command: "curl -so /tmp/pap218-pi-cluster.json https://example.test/report.json" } },
     { name: "bash", input: { command: "printf ok | tee /tmp/pap218-pi-tee.log" } },
@@ -188,6 +190,19 @@ test("Pi safety interception uses declared path and bounded shell contexts", (t)
       assert.equal(wrapped.allowed, false, command);
       assert.match(wrapped.reason ?? "", /Protected path access/, command);
     }
+  }
+  for (const command of [
+    "/usr/bin/time cat " + ["cred", "entials"].join(""),
+    "command /run/current-system/sw/bin/time tac " + ["cred", "entials"].join(""),
+    "false || /usr/bin/time -p command cat " + ["cred", "entials"].join(""),
+    "env -S 'env -S \"cat " + ["cred", "entials"].join("") + "\"'",
+    "env --split-string='env --split-string=\"tac " + ["cred", "entials"].join("") + "\"'",
+    "env -S 'sh -c \"cat " + ["cred", "entials"].join("") + "\"'",
+    "env --split-string='bash -c \"tac " + ["cred", "entials"].join("") + "\"'",
+  ]) {
+    const wrapped = interceptToolCall({ name: "bash", input: { command } });
+    assert.equal(wrapped.allowed, false, command);
+    assert.match(wrapped.reason ?? "", /Protected path access/, command);
   }
 
   const deletion = interceptToolCall({ name: "bash", input: { command: "rm -rf /tmp/pap218-cleanup" } });

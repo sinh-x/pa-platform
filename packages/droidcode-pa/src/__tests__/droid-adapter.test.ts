@@ -861,6 +861,8 @@ describe("droid safety hook shared context policy", () => {
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "/usr/bin/time printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "env -S 'sh -c \"printf %s " + ["cred", "entials"].join("") + "\"'" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -o/tmp/pap218-dpa-attached.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -so /tmp/pap218-dpa-cluster.json https://example.test/report.json" } },
         { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
@@ -905,6 +907,19 @@ describe("droid safety hook shared context policy", () => {
           assert.equal(denied.exitCode, 2, command);
           assert.match(denied.stderr, /Protected path access/, command);
         }
+      }
+      for (const command of [
+        "/usr/bin/time cat " + ["cred", "entials"].join(""),
+        "command /run/current-system/sw/bin/time tac " + ["cred", "entials"].join(""),
+        "false || /usr/bin/time -p command cat " + ["cred", "entials"].join(""),
+        "env -S 'env -S \"cat " + ["cred", "entials"].join("") + "\"'",
+        "env --split-string='env --split-string=\"tac " + ["cred", "entials"].join("") + "\"'",
+        "env -S 'sh -c \"cat " + ["cred", "entials"].join("") + "\"'",
+        "env --split-string='bash -c \"tac " + ["cred", "entials"].join("") + "\"'",
+      ]) {
+        const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+        assert.equal(denied.exitCode, 2, command);
+        assert.match(denied.stderr, /Protected path access/, command);
       }
 
       const protectedPath = "." + "env";

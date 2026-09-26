@@ -1885,6 +1885,8 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
     await before({ tool: "bash" }, { args: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } });
     await before({ tool: "bash" }, { args: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "/usr/bin/time printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "env -S 'sh -c \"printf %s " + ["cred", "entials"].join("") + "\"'" } });
     await before({ tool: "bash" }, { args: { command: "curl -o/tmp/pap218-opa-attached.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "curl -so /tmp/pap218-opa-cluster.json https://example.test/report.json" } });
     await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
@@ -1919,6 +1921,15 @@ test("pa safety activity plugin applies shared declared-context policy and opa g
         await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/, command);
       }
     }
+    for (const command of [
+      "/usr/bin/time cat " + ["cred", "entials"].join(""),
+      "command /run/current-system/sw/bin/time tac " + ["cred", "entials"].join(""),
+      "false || /usr/bin/time -p command cat " + ["cred", "entials"].join(""),
+      "env -S 'env -S \"cat " + ["cred", "entials"].join("") + "\"'",
+      "env --split-string='env --split-string=\"tac " + ["cred", "entials"].join("") + "\"'",
+      "env -S 'sh -c \"cat " + ["cred", "entials"].join("") + "\"'",
+      "env --split-string='bash -c \"tac " + ["cred", "entials"].join("") + "\"'",
+    ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/, command);
 
     const protectedPath = "." + "env";
     for (const filePath of [

@@ -374,6 +374,37 @@ test("bounded shell path operands resolve wrappers and approved leading assignme
   }).allowed, true);
 });
 
+test("path-qualified external time and recursive split-string payloads stay bounded", () => {
+  for (const command of [
+    `/usr/bin/time cat ${protectedToken}`,
+    `command /run/current-system/sw/bin/time tac ${protectedToken}`,
+    `false || /usr/bin/time -p command cat ${protectedToken}`,
+    `true & env /usr/bin/time tac ${protectedToken}`,
+    `printf done\nsudo /usr/bin/time --verbose cat ${protectedToken}`,
+  ]) assertDenied(command, "protected-path");
+
+  for (const command of [
+    `env -S 'env -S "cat ${protectedToken}"'`,
+    `env --split-string='env --split-string="tac ${protectedToken}"'`,
+    `env -S 'env --unsupported cat ${protectedToken}'`,
+    `env -S 'sh -c "cat ${protectedToken}"'`,
+    `env --split-string='bash -c "tac ${protectedToken}"'`,
+  ]) assertDenied(command, "protected-path");
+
+  const quote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+  let beyondDepthLimit = `cat ${protectedToken}`;
+  for (let depth = 0; depth < 6; depth += 1) {
+    beyondDepthLimit = `env --split-string=${quote(beyondDepthLimit)}`;
+  }
+  assertDenied(beyondDepthLimit, "protected-path");
+
+  for (const command of [
+    `/usr/bin/time printf '%s\\n' ${protectedToken}`,
+    `env -S 'env -S "printf %s ${protectedToken}"'`,
+    `env --split-string='sh -c "printf %s ${protectedToken}"'`,
+  ]) assert.equal(classifyShellCommand(command).allowed, true, command);
+});
+
 test("protected path aliases are normalized and existing read symlinks are canonicalized", (t) => {
   const root = mkdtempSync("/tmp/pap218-protected-alias-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -523,6 +554,7 @@ test("context-aware policy p95 stays below 5 ms after warm-up", (t) => {
     () => classifyShellCommand(confirmedHealthCheck),
     () => classifyShellCommand(d3PythonCounterPipeline),
     () => evaluateSafetyPolicy({ kind: "prose", value: `ordinary ${protectedToken} prose` }),
+    () => classifyShellCommand(`env -S 'sh -c "cat ${protectedToken}"'`),
     () => classifyShellCommand("rm /tmp/pap218-delete-me", { trashExecutable: "ppa" }),
   ];
   for (let index = 0; index < 250; index += 1) fixtures[index % fixtures.length]?.();

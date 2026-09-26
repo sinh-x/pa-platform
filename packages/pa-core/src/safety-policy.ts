@@ -299,6 +299,7 @@ function extractOtherDeletionTarget(source: string): string | undefined {
 const BARE_PATH_OPERAND_COMMANDS = new Set(["cat", "tac"]);
 const SHELL_COMMAND_WRAPPERS = new Set(["command", "sudo"]);
 const TRANSPARENT_COMMAND_PREFIXES = new Set(["env", "nohup", "nice"]);
+const MAX_NESTED_COMMAND_DEPTH = 4;
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const ENV_FLAGS_WITHOUT_ARGUMENT = new Set(["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"]);
 const ENV_FLAGS_WITH_ARGUMENT = new Set(["-u", "-C", "--unset", "--chdir"]);
@@ -318,12 +319,17 @@ interface BoundedCommandResolution {
   ambiguousIndex?: number;
 }
 
-function findProtectedShellPath(source: string, cwd?: string): string | undefined {
+function findProtectedShellPath(source: string, cwd?: string, depth = 0): string | undefined {
   const words = tokenizeShell(source);
   for (const word of words) {
     if (word.operator || !looksLikePathOperand(word.value)) continue;
     if (findBlockedPathAlias(word.value, cwd)) return word.raw;
   }
+
+  // Embedded execution is deliberately bounded. At the boundary, deny any
+  // protected token in the already-recognized payload rather than allowing a
+  // deeper transparent-prefix chain to escape inspection.
+  if (depth >= MAX_NESTED_COMMAND_DEPTH) return findProtectedFailClosedOperand(words, cwd);
 
   // Bare extensionless names are paths only in this bounded command grammar.
   // Resolve approved leading assignments and wrappers before selecting the
@@ -339,9 +345,13 @@ function findProtectedShellPath(source: string, cwd?: string): string | undefine
       // Once a supported wrapper or transparent prefix is present, an unsupported
       // option sequence that can still expose cat/tac plus a protected operand is
       // security-relevant and fails closed. Unrelated arguments remain ordinary.
-      const blocked = findProtectedAmbiguousOperand(words, resolution.ambiguousIndex, cwd);
+      const blocked = findProtectedAmbiguousOperand(words, resolution.ambiguousIndex, cwd, depth);
       if (blocked) return blocked;
     }
+  }
+
+  for (const payload of shellCommandPayloads(words)) {
+    if (findProtectedShellPath(payload.value, cwd, depth + 1)) return payload.raw;
   }
   return undefined;
 }
@@ -395,8 +405,10 @@ function resolveBoundedCommand(words: ShellWord[], start: number): BoundedComman
 function boundedCommandPrefix(word: ShellWord): string | undefined {
   const name = basename(word.value);
   if (SHELL_COMMAND_WRAPPERS.has(name) || TRANSPARENT_COMMAND_PREFIXES.has(name)) return name;
-  // `time` is approved only as the shell keyword, not as a path-qualified external executable.
-  return word.value === "time" ? "time" : undefined;
+  // Both the shell keyword and a path-qualified external time execute the next
+  // command. They share the same deny-only bounded option grammar, so accepting
+  // the external basename does not broaden the shell keyword's allowed options.
+  return name === "time" ? "time" : undefined;
 }
 
 function skipTransparentPrefixOptions(
@@ -490,7 +502,12 @@ function skipSudoOptions(words: ShellWord[], start: number): { cursor: number; a
   return { cursor, ambiguous: false };
 }
 
-function findProtectedAmbiguousOperand(words: ShellWord[], start: number, cwd?: string): string | undefined {
+function findProtectedAmbiguousOperand(
+  words: ShellWord[],
+  start: number,
+  cwd: string | undefined,
+  depth: number,
+): string | undefined {
   for (let cursor = start; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
     const candidate = words[cursor];
     if (!candidate || candidate.operator) continue;
@@ -504,14 +521,32 @@ function findProtectedAmbiguousOperand(words: ShellWord[], start: number, cwd?: 
       : candidate.value.startsWith("-S") && candidate.value.length > 2
         ? candidate.value.slice(2)
         : candidate.value;
-    const nested = tokenizeShell(embedded);
-    const resolution = resolveBoundedCommand(nested, 0);
-    if (resolution.commandIndex !== undefined) {
-      const blocked = findProtectedBoundedOperand(nested, resolution.commandIndex, cwd);
-      if (blocked) return candidate.raw;
-    }
+    if (findProtectedShellPath(embedded, cwd, depth + 1)) return candidate.raw;
   }
   return undefined;
+}
+
+function findProtectedFailClosedOperand(words: ShellWord[], cwd?: string): string | undefined {
+  for (const word of words) {
+    if (!word.operator && findBlockedPathAlias(word.value, cwd)) return word.raw;
+  }
+  return undefined;
+}
+
+function shellCommandPayloads(words: ShellWord[]): ShellWord[] {
+  const payloads: ShellWord[] = [];
+  for (let index = 0; index < words.length - 2; index += 1) {
+    const shell = words[index];
+    if (!shell || shell.operator || !/^(?:(?:ba|da|z)?sh)$/.test(basename(shell.value))) continue;
+    for (let cursor = index + 1; cursor < words.length && !isShellCommandBoundary(words[cursor]); cursor += 1) {
+      const option = words[cursor];
+      if (!option || option.operator || !/^-[A-Za-z]*c[A-Za-z]*$/.test(option.value)) continue;
+      const payload = words[cursor + 1];
+      if (payload && !payload.operator) payloads.push(payload);
+      break;
+    }
+  }
+  return payloads;
 }
 
 function findProtectedBoundedOperand(words: ShellWord[], commandIndex: number, cwd?: string): string | undefined {
