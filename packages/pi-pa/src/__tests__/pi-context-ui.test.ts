@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { deploymentTaskStatusMarker } from "@pa-platform/pa-core";
+import { deploymentTaskStatusMarker, type AssociateDeploymentTicketInput } from "@pa-platform/pa-core";
 import {
   CONTEXT_LOOKUP_DEADLINE_MS,
   CONTEXT_REFRESH_INTERVAL_MS,
@@ -31,7 +31,7 @@ const TODO: TodoDetails = {
 
 function managedSnapshot(): PaContextSnapshot {
   return {
-    deployment: { available: true, id: "d-test", team: "builder", mode: "worker", ticket: "PAP-145", status: "running", stale: false },
+    deployment: { available: true, id: "d-test", team: "builder", mode: "worker", ticket: "PAP-145", launchTicket: "PAP-145", status: "running", projectionAvailable: true, stale: false },
     model: { provider: "openai-codex", model: "gpt-5.4" },
     repository: { cwd: "/repo/pa-platform", identity: "pa-platform" },
     git: { available: true, branch: "feature/PAP-145", dirty: true, stale: false },
@@ -74,7 +74,7 @@ test("managed context reads PA identity and deployment status", async () => {
     env,
     now: () => 2,
     gitLookup: async () => ({ available: true, branch: "feature/PAP-145", dirty: true }),
-    deploymentLookup: async () => "running",
+    deploymentLookup: async () => ({ status: "running", ticket: "PAP-145" }),
   });
   assert.deepEqual(snapshot.deployment, {
     available: true,
@@ -82,11 +82,35 @@ test("managed context reads PA identity and deployment status", async () => {
     team: "builder",
     mode: "worker",
     ticket: "PAP-145",
+    launchTicket: "PAP-145",
     status: "running",
+    projectionAvailable: true,
     stale: false,
   });
   assert.match(formatCompactContext(snapshot), /d-test\/builder\/worker\/PAP-145/);
   assert.match(formatCompactContext(snapshot), /git:feature\/PAP-145\*/);
+});
+
+test("registry projection replaces the displayed current ticket without mutating launch evidence", async () => {
+  const env = {
+    PA_DEPLOYMENT_ID: "d-external",
+    PA_TEAM: "requirements",
+    PA_MODE: "analyze",
+    PA_TICKET_ID: "PAP-OLD",
+  };
+  const initial = initialContextSnapshot({ cwd: "/repo" }, { env, now: () => 1 });
+  const snapshot = await collectContext(initial, { cwd: "/repo" }, {
+    env,
+    now: () => 2,
+    gitLookup: async () => ({ available: false }),
+    deploymentLookup: async () => ({ status: "running", ticket: "PAP-NEW" }),
+  });
+  assert.equal(snapshot.deployment.ticket, "PAP-NEW");
+  assert.equal(snapshot.deployment.launchTicket, "PAP-OLD");
+  assert.equal(snapshot.deployment.projectionAvailable, true);
+  assert.equal(env.PA_TICKET_ID, "PAP-OLD");
+  assert.match(formatContextLines(snapshot).join("\n"), /Current ticket: PAP-NEW \(registry\)/);
+  assert.match(formatContextLines(snapshot).join("\n"), /Launch ticket \(environment\): PAP-OLD/);
 });
 
 test("500 ms lookup deadline abandons late values and retains stale prior data", async () => {
@@ -101,6 +125,9 @@ test("500 ms lookup deadline abandons late values and retains stale prior data",
   assert.equal(snapshot.git.branch, prior.git.branch);
   assert.equal(snapshot.git.stale, true);
   assert.equal(snapshot.deployment.status, "running");
+  assert.equal(snapshot.deployment.ticket, "PAP-145");
+  assert.equal(snapshot.deployment.launchTicket, "PAP-145");
+  assert.equal(snapshot.deployment.projectionAvailable, true);
   assert.equal(snapshot.deployment.stale, true);
   assert.equal(snapshot.stale, true);
   assert.match(formatContextLines(snapshot).join("\n"), /stale/);
@@ -209,6 +236,109 @@ test("Alt+I task rows retain all four lifecycle markers from the shared core map
     "✓ #3 completed",
     "− #4 cancelled",
   ]);
+});
+
+test("ticket command attaches and explicitly confirms replacement using the exact projected ticket", async () => {
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let projectedTicket: string | undefined;
+  const inputs: AssociateDeploymentTicketInput[] = [];
+  const inputTitles: string[] = [];
+  const confirmations: Array<[string, string]> = [];
+  const notifications: Array<[string, string | undefined]> = [];
+  registerContextUiModuleWithOptions({
+    registerCommand: (_name, options) => { command = options.handler; },
+  }, {
+    limiter: new ContextRefreshLimiter(0),
+    collector: {
+      env: { PA_DEPLOYMENT_ID: "d-ticket", PA_TEAM: "requirements", PA_MODE: "analyze" },
+      gitLookup: async () => ({ available: false }),
+      deploymentLookup: async () => ({ status: "running", ticket: projectedTicket }),
+    },
+    associateTicket: (input) => {
+      inputs.push(input);
+      const previousTicketId = projectedTicket ?? null;
+      projectedTicket = input.ticketId;
+      return {
+        deploymentId: input.deploymentId,
+        previousTicketId,
+        requestedTicketId: input.ticketId,
+        currentTicketId: input.ticketId,
+        actor: input.actor.trim(),
+        reason: input.reason.trim(),
+        writeOccurred: previousTicketId !== input.ticketId,
+      };
+    },
+  });
+  const reasons = ["  ticket established  ", "replace after review"];
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    sessionManager: { getBranch: () => [] },
+    ui: {
+      input: async (title: string) => { inputTitles.push(title); return reasons.shift(); },
+      confirm: async (title: string, message: string) => { confirmations.push([title, message]); return true; },
+      notify: (message: string, level?: string) => { notifications.push([message, level]); },
+      setStatus() {},
+    },
+  };
+
+  await command?.("ticket PAP-001", context);
+  assert.equal(inputs[0]?.expectedTicketId, null);
+  assert.equal(inputs[0]?.actor, "requirements/analyze");
+  assert.equal(inputs[0]?.reason, "  ticket established  ");
+  assert.match(inputTitles[0] ?? "", /Current: none\nTarget: PAP-001/);
+  assert.equal(confirmations.length, 0, "ticketless attach does not require replacement confirmation");
+
+  await command?.("ticket PAP-002", context);
+  assert.equal(inputs[1]?.expectedTicketId, "PAP-001");
+  assert.match(inputTitles[1] ?? "", /Current: PAP-001\nTarget: PAP-002/);
+  assert.match(confirmations[0]?.[1] ?? "", /Current: PAP-001\nTarget: PAP-002/);
+  assert.match(notifications.at(-1)?.[0] ?? "", /PA current ticket: PAP-002 .*association written/);
+});
+
+test("ticket command cancellation, prompt close, and non-TUI use perform no association", async () => {
+  let command: ((args: string, context: unknown) => unknown) | undefined;
+  let associationCalls = 0;
+  const notifications: string[] = [];
+  let reason: string | undefined;
+  registerContextUiModuleWithOptions({
+    registerCommand: (_name, options) => { command = options.handler; },
+  }, {
+    limiter: new ContextRefreshLimiter(0),
+    collector: {
+      env: { PA_DEPLOYMENT_ID: "d-ticket", PA_TEAM: "requirements", PA_MODE: "analyze", PA_TICKET_ID: "PAP-LAUNCH" },
+      gitLookup: async () => ({ available: false }),
+      deploymentLookup: async () => ({ status: "running", ticket: "PAP-CURRENT" }),
+    },
+    associateTicket: (input) => {
+      associationCalls += 1;
+      return { deploymentId: input.deploymentId, previousTicketId: "PAP-CURRENT", requestedTicketId: input.ticketId, currentTicketId: input.ticketId, actor: input.actor, reason: input.reason, writeOccurred: true };
+    },
+  });
+  const context = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/repo",
+    sessionManager: { getBranch: () => [] },
+    ui: {
+      input: async () => reason,
+      confirm: async () => false,
+      notify: (message: string) => { notifications.push(message); },
+      setStatus() {},
+    },
+  };
+
+  await command?.("ticket PAP-NEW", context);
+  reason = "   ";
+  await command?.("ticket PAP-NEW", context);
+  reason = "replacement declined";
+  await command?.("ticket PAP-NEW", context);
+  await command?.("ticket PAP-NEW", { ...context, mode: "print", hasUI: false });
+  assert.equal(associationCalls, 0);
+  assert.ok(notifications.some((message) => /cancelled; no changes were written/.test(message)));
+  assert.ok(notifications.some((message) => /requires a non-empty reason/.test(message)));
+  assert.equal(notifications.at(-1), "PA ticket interaction is unavailable outside TUI mode.");
 });
 
 test("command and Alt+I toggle the same initially hidden responsive right overlay", async () => {

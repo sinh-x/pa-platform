@@ -9,6 +9,7 @@ import {
   appendRegistryEvent,
   closeDb,
   getDb,
+  getDeploymentEvents,
   queryDeploymentStatus,
   readPiForegroundCompletion,
   runCoreCommand,
@@ -61,19 +62,26 @@ function isLinuxMusl(): boolean {
 type ShutdownReason = "reload" | "new" | "resume" | "fork" | "quit";
 type EventHandler = (event: unknown, context: unknown) => unknown;
 
-function captureExtension(): { events: Map<string, EventHandler>; registrations: Map<string, number>; tools: Map<string, PiToolDefinition> } {
+function captureExtension(): {
+  events: Map<string, EventHandler>;
+  registrations: Map<string, number>;
+  tools: Map<string, PiToolDefinition>;
+  commands: Map<string, { description: string; handler: (args: string, context: unknown) => unknown }>;
+} {
   const events = new Map<string, EventHandler>();
   const registrations = new Map<string, number>();
   const tools = new Map<string, PiToolDefinition>();
+  const commands = new Map<string, { description: string; handler: (args: string, context: unknown) => unknown }>();
   const pi: PiRuntime = {
     on: ((event: string, handler: EventHandler): void => {
       events.set(event, handler);
       registrations.set(event, (registrations.get(event) ?? 0) + 1);
     }) as NonNullable<PiRuntime["on"]>,
     registerTool: (tool) => { tools.set(tool.name, tool); },
+    registerCommand: (name, command) => { commands.set(name, command); },
   };
   registerPiPaExtension(pi);
-  return { events, registrations, tools };
+  return { events, registrations, tools, commands };
 }
 
 test("trusted dirty-borrow approval tool registers only in the exact foreground orchestrator host", () => {
@@ -470,6 +478,74 @@ test("foreground registry completion permits another turn and registry read befo
   });
 });
 
+test("Pi ticket command uses the native registry projection and preserves launch evidence", async () => {
+  await withRegistryFixture("pap-225-pi-ticket-", async (root) => {
+    const deploymentId = "d-pap-225-pi";
+    const canonicalRoot = join(root, "repo");
+    const configDir = join(root, "config");
+    const usageDir = join(root, "usage");
+    mkdirSync(canonicalRoot, { recursive: true });
+    mkdirSync(configDir, { recursive: true });
+    mkdirSync(join(usageDir, "tickets"), { recursive: true });
+    writeFileSync(join(configDir, "config.yaml"), `repos:\n  pa-platform:\n    path: ${canonicalRoot}\n    prefix: PAP\n`);
+    writeFileSync(join(usageDir, "tickets", "PAP-225.json"), JSON.stringify({ id: "PAP-225", project: "pa-platform", title: "Pi association" }));
+    const keys = ["PA_PLATFORM_CONFIG", "PA_AI_USAGE_HOME", "PA_DEPLOYMENT_ID", "PA_TEAM", "PA_MODE", "PA_TICKET_ID"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+    process.env["PA_PLATFORM_CONFIG"] = configDir;
+    process.env["PA_AI_USAGE_HOME"] = usageDir;
+    process.env["PA_DEPLOYMENT_ID"] = deploymentId;
+    process.env["PA_TEAM"] = "requirements";
+    process.env["PA_MODE"] = "analyze";
+    delete process.env["PA_TICKET_ID"];
+    try {
+      appendRegistryEvent({
+        deployment_id: deploymentId,
+        team: "requirements",
+        mode: "analyze",
+        event: "started",
+        timestamp: "2026-09-26T00:00:00.000Z",
+        repo_root: canonicalRoot,
+        primer: "immutable-primer",
+        runtime: "pi",
+        binary: "ppa",
+      });
+      const immutableStart = getDeploymentEvents(deploymentId)[0];
+      const { commands } = captureExtension();
+      const prompts: string[] = [];
+      const notifications: string[] = [];
+      let confirms = 0;
+      const context = {
+        mode: "tui",
+        hasUI: true,
+        cwd: canonicalRoot,
+        sessionManager: { getBranch: () => [] },
+        ui: {
+          input: async (title: string) => { prompts.push(title); return "ticket established in Pi"; },
+          confirm: async () => { confirms += 1; return true; },
+          notify: (message: string) => { notifications.push(message); },
+          setStatus() {},
+        },
+      };
+      const command = commands.get("pa-context");
+      assert.ok(command);
+      await command.handler("ticket PAP-225", context);
+
+      assert.equal(queryDeploymentStatus(deploymentId)?.ticket_id, "PAP-225");
+      assert.equal(process.env["PA_TICKET_ID"], undefined);
+      assert.equal(confirms, 0, "ticketless attachment does not use replacement confirmation");
+      assert.match(prompts[0] ?? "", /Current: none\nTarget: PAP-225/);
+      assert.match(notifications.at(-1) ?? "", /PA current ticket: PAP-225/);
+      const events = getDeploymentEvents(deploymentId);
+      assert.equal(events.filter((event) => event.event === "ticket-associated").length, 1);
+      assert.deepEqual(events[0], immutableStart);
+      assert.equal(events[1]?.actor, "requirements/analyze");
+      assert.equal(events[1]?.reason, "ticket established in Pi");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) restoreEnv(key, value);
+    }
+  });
+});
+
 test("a later extension session lazily reopens the registry singleton after shutdown", async () => {
   await withRegistryFixture("pap-167-close-reopen-", async () => {
     const first = captureExtension();
@@ -480,7 +556,7 @@ test("a later extension session lazily reopens the registry singleton after shut
     const replacementDb = getDb();
     assert.notEqual(replacementDb, outgoingDb);
     assert.equal(replacementDb.open, true);
-    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "13" });
+    assert.deepEqual(replacementDb.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "14" });
     const replacement = captureExtension();
     await replacement.events.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
     assert.equal(replacementDb.open, false);
@@ -539,8 +615,8 @@ test("source adapter preflight resolves generated editor imports in an npm-style
       env: {
         ...process.env,
         PATH: bin,
-        [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
-        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
+        [PI_REGISTRY_ADDON_ENV]: "",
+        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "0",
       },
       versionProbe: () => "0.84.4",
     }).preflight());

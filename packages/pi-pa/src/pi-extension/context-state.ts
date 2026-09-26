@@ -28,9 +28,18 @@ export interface DeploymentContext {
   id?: string;
   team?: string;
   mode?: string;
+  /** Current ticket, preferring the mutable registry projection when available. */
   ticket?: string;
+  /** Immutable process-start ticket evidence. */
+  launchTicket?: string;
   status?: string;
+  projectionAvailable: boolean;
   stale: boolean;
+}
+
+export interface DeploymentProjection {
+  status?: string;
+  ticket?: string;
 }
 
 export interface ModelContext {
@@ -70,7 +79,7 @@ export interface ContextCollectorDependencies {
   env?: NodeJS.ProcessEnv;
   now?: () => number;
   gitLookup?: (cwd: string) => Promise<Omit<GitContext, "stale">>;
-  deploymentLookup?: (id: string) => Promise<string | undefined>;
+  deploymentLookup?: (id: string) => Promise<DeploymentProjection | undefined>;
   deadlineMs?: number;
   setTimer?: typeof setTimeout;
   clearTimer?: typeof clearTimeout;
@@ -101,28 +110,38 @@ export async function collectContext(
   const timers = { setTimer: dependencies.setTimer ?? setTimeout, clearTimer: dependencies.clearTimer ?? clearTimeout };
   const deployment = deploymentFromEnvironment(env);
 
-  const gitResult = await withDeadline(
-    () => (dependencies.gitLookup ?? lookupGit)(input.cwd),
-    deadlineMs,
-    timers,
-  );
+  const [gitResult, deploymentResult] = await Promise.all([
+    withDeadline(
+      () => (dependencies.gitLookup ?? lookupGit)(input.cwd),
+      deadlineMs,
+      timers,
+    ),
+    deployment.id
+      ? withDeadline(
+          () => (dependencies.deploymentLookup ?? lookupDeployment)(deployment.id!),
+          deadlineMs,
+          timers,
+        )
+      : Promise.resolve(undefined),
+  ]);
   const git: GitContext = gitResult.ok
     ? { ...gitResult.value, stale: false }
     : gitResult.timedOut && previous.git.available
       ? { ...previous.git, stale: true }
       : { available: false, stale: gitResult.timedOut };
 
-  if (deployment.id) {
-    const deploymentResult = await withDeadline(
-      () => (dependencies.deploymentLookup ?? lookupDeployment)(deployment.id!),
-      deadlineMs,
-      timers,
-    );
-    if (deploymentResult.ok) deployment.status = deploymentResult.value;
-    else if (deploymentResult.timedOut) {
-      deployment.status = previous.deployment.id === deployment.id ? previous.deployment.status : undefined;
-      deployment.stale = true;
+  if (deploymentResult?.ok && deploymentResult.value) {
+    deployment.status = deploymentResult.value.status;
+    deployment.ticket = deploymentResult.value.ticket;
+    deployment.projectionAvailable = true;
+  } else if (deploymentResult?.timedOut) {
+    if (previous.deployment.id === deployment.id) {
+      deployment.status = previous.deployment.status;
+      deployment.ticket = previous.deployment.ticket;
+      deployment.launchTicket = previous.deployment.launchTicket;
+      deployment.projectionAvailable = previous.deployment.projectionAvailable;
     }
+    deployment.stale = true;
   }
 
   return {
@@ -242,20 +261,27 @@ async function lookupGit(cwd: string): Promise<Omit<GitContext, "stale">> {
   }
 }
 
-async function lookupDeployment(id: string): Promise<string | undefined> {
-  const value = queryDeploymentStatus(id) as { status?: unknown } | undefined;
-  return typeof value?.status === "string" ? value.status : undefined;
+async function lookupDeployment(id: string): Promise<DeploymentProjection | undefined> {
+  const value = queryDeploymentStatus(id);
+  if (!value) return undefined;
+  return {
+    status: value.status,
+    ticket: nonEmpty(value.ticket_id),
+  };
 }
 
 function deploymentFromEnvironment(env: NodeJS.ProcessEnv): DeploymentContext {
   const id = nonEmpty(env["PA_DEPLOYMENT_ID"]);
-  if (!id) return { available: false, stale: false };
+  if (!id) return { available: false, projectionAvailable: false, stale: false };
+  const launchTicket = nonEmpty(env["PA_TICKET_ID"]);
   return {
     available: true,
     id,
     team: nonEmpty(env["PA_TEAM"]),
     mode: nonEmpty(env["PA_MODE"]),
-    ticket: nonEmpty(env["PA_TICKET_ID"]),
+    ticket: launchTicket,
+    launchTicket,
+    projectionAvailable: false,
     stale: false,
   };
 }
