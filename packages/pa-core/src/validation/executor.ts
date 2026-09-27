@@ -5,6 +5,7 @@ import {
   lstat,
   mkdir,
   open,
+  readFile,
   realpath,
   rename,
   stat,
@@ -49,6 +50,7 @@ export interface ValidationEvent {
 export type ValidationCommandStatus =
   | "pending"
   | "passed"
+  | "executor_crash"
   | "failed"
   | "signal"
   | "timeout"
@@ -59,7 +61,7 @@ export type ValidationCommandStatus =
   | "persistence_failure"
   | "skipped";
 
-export type ValidationLedgerResult = "passed" | "failed";
+export type ValidationLedgerResult = "passed" | "failed" | "executor_crash";
 
 export interface ValidationLogEvidence {
   path: string;
@@ -119,6 +121,7 @@ export interface ValidationExecutorOptions {
   statePath?: string;
   emit?: (event: ValidationEvent) => void | Promise<void>;
   now?: () => Date;
+  abortSignal?: AbortSignal;
   terminationGraceMs?: number;
   terminationVerifyMs?: number;
 }
@@ -131,13 +134,19 @@ export interface ValidationExecutionResult {
   events: ValidationEvent[];
 }
 
+export interface ValidationCrashRecoveryResult {
+  ledger: ValidationLedger;
+  ledgerPath: string;
+  recovered: boolean;
+}
+
 interface StreamCapture {
   evidence?: ValidationLogEvidence;
   error?: Error;
 }
 
 interface StopState {
-  status: "timeout" | "output_limit" | "logging_failure";
+  status: "timeout" | "output_limit" | "logging_failure" | "executor_crash";
   reason: string;
   cleanup?: Promise<CleanupResult>;
 }
@@ -221,6 +230,7 @@ export async function executeValidationHandoff(
   let failed = false;
   for (let index = 0; index < handoff.manifest.commands.length; index += 1) {
     if (failed) break;
+    if (options.abortSignal?.aborted) throw new Error("validation executor interrupted by Pi supervisor");
     const spec = handoff.manifest.commands[index]!;
     const entry = commands[index]!;
     await emit({
@@ -231,6 +241,11 @@ export async function executeValidationHandoff(
     });
     const commandStart = now();
     entry.startedAt = commandStart.toISOString();
+    await atomicWriteJson(statePath, {
+      ...ledgerBase,
+      phase: "running",
+      commands,
+    });
     try {
       await executeCommand(spec, entry, index, options.evidenceRoot, handoff.manifest.environment, options);
     } catch (error) {
@@ -265,6 +280,7 @@ export async function executeValidationHandoff(
       status: entry.status,
       durationMs: entry.durationMs,
     });
+    if (entry.status === "executor_crash") throw new Error("validation executor interrupted by Pi supervisor");
   }
 
   const result: ValidationLedgerResult = failed ? "failed" : "passed";
@@ -283,6 +299,58 @@ export async function executeValidationHandoff(
   }
   await emit({ ...eventOf("manifest_finish", manifestSha256, now), status: ledger.result });
   return { admitted: true, ledger, ledgerPath: options.ledgerPath, events };
+}
+
+export async function finalizeValidationExecutorCrash(
+  input: unknown,
+  options: ValidationExecutorOptions,
+): Promise<ValidationCrashRecoveryResult> {
+  const handoff = parseValidationHandoff(input);
+  assertValidationAuthority(handoff, options.authority);
+  const evidenceRoot = resolve(options.evidenceRoot);
+  const ledgerPath = resolve(options.ledgerPath);
+  const statePath = resolve(options.statePath ?? `${options.ledgerPath}.state`);
+  if (!isAbsolute(options.evidenceRoot) || !isAbsolute(options.ledgerPath)) {
+    reject("executor.recovery.paths", "evidenceRoot and ledgerPath must be absolute");
+  }
+  assertWithin(evidenceRoot, ledgerPath, "executor.recovery.ledgerPath");
+  assertWithin(evidenceRoot, statePath, "executor.recovery.statePath");
+
+  const existing = await readRecoveryRecord(ledgerPath);
+  if (existing) {
+    const ledger = validationLedgerFromRecord(existing, handoff);
+    return { ledger, ledgerPath, recovered: false };
+  }
+
+  const state = await readRecoveryRecord(statePath);
+  const commands = state
+    ? validationCommandsFromState(state, handoff)
+    : handoff.manifest.commands.map(pendingEntry);
+  const interrupted = commands.find((entry) => entry.status === "pending" && entry.startedAt !== undefined);
+  if (interrupted) {
+    interrupted.status = "executor_crash";
+    interrupted.finishedAt = (options.now ?? (() => new Date()))().toISOString();
+    interrupted.reason = "Pi validation supervisor interrupted before command completion";
+  }
+  markAllSkipped(commands, "not started after validation executor interruption");
+
+  const now = options.now ?? (() => new Date());
+  const base = {
+    schemaVersion: VALIDATION_LEDGER_SCHEMA_VERSION,
+    manifestSchemaVersion: handoff.manifest.schemaVersion,
+    manifestSha256: handoff.manifestSha256,
+    ticketId: handoff.manifest.ticketId,
+    branch: handoff.manifest.branch,
+    featureSha: handoff.manifest.featureSha,
+    matrix: handoff.manifest.matrix,
+    repository: handoff.manifest.repository,
+    shell: FIXED_SHELL,
+    startedAt: state && typeof state["startedAt"] === "string" ? state["startedAt"] : now().toISOString(),
+  } as const;
+  const ledger = terminalLedger(base, commands, now, "executor_crash");
+  await atomicWriteJson(statePath, { ...ledger, phase: "terminal" });
+  await atomicWriteJson(ledgerPath, ledger);
+  return { ledger, ledgerPath, recovered: true };
 }
 
 async function preflightFilesystem(handoff: ValidationHandoff, options: ValidationExecutorOptions): Promise<void> {
@@ -399,6 +467,9 @@ async function executeCommand(
     () => requestStop("timeout", `exceeded timeoutSeconds=${spec.timeoutSeconds}`),
     spec.timeoutSeconds * 1_000,
   );
+  const onAbort = (): void => requestStop("executor_crash", "Pi validation supervisor interrupted execution");
+  options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  if (options.abortSignal?.aborted) onAbort();
 
   const stdoutCapture = captureStream(child.stdout, stdoutHandle, stdoutPath, (count) => {
     outputBytes += count;
@@ -411,6 +482,7 @@ async function executeCommand(
 
   const outcome = await waitForChild(child);
   clearTimeout(timer);
+  options.abortSignal?.removeEventListener("abort", onAbort);
   const [stdout, stderr] = await Promise.all([stdoutCapture, stderrCapture]);
   entry.stdout = stdout.evidence;
   entry.stderr = stderr.evidence;
@@ -622,6 +694,71 @@ function assertWithin(root: string, target: string, source: string): void {
   const child = relative(root, resolve(target));
   if (child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child))) return;
   reject(source, `must stay inside approved root ${root}`);
+}
+
+async function readRecoveryRecord(path: string): Promise<Record<string, unknown> | undefined> {
+  let file;
+  try {
+    file = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || (file.mode & 0o777) !== 0o600) {
+    reject("executor.recovery.evidence", "must be one mode-0600 regular file without aliases");
+  }
+  const value = JSON.parse(await readFile(path, "utf8")) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    reject("executor.recovery.evidence", "is malformed");
+  }
+  return value as Record<string, unknown>;
+}
+
+function validationLedgerFromRecord(record: Record<string, unknown>, handoff: ValidationHandoff): ValidationLedger {
+  if (record["schemaVersion"] !== VALIDATION_LEDGER_SCHEMA_VERSION
+    || record["result"] !== "passed" && record["result"] !== "failed" && record["result"] !== "executor_crash"
+    || typeof record["finishedAt"] !== "string") {
+    reject("executor.recovery.ledger", "is not a complete terminal validation ledger");
+  }
+  const commands = validationCommandsFromState(record, handoff);
+  return { ...record, commands } as unknown as ValidationLedger;
+}
+
+function validationCommandsFromState(record: Record<string, unknown>, handoff: ValidationHandoff): ValidationCommandLedgerEntry[] {
+  if (record["schemaVersion"] !== VALIDATION_LEDGER_SCHEMA_VERSION
+    || record["manifestSchemaVersion"] !== handoff.manifest.schemaVersion
+    || record["manifestSha256"] !== handoff.manifestSha256
+    || record["ticketId"] !== handoff.manifest.ticketId
+    || record["branch"] !== handoff.manifest.branch
+    || record["featureSha"] !== handoff.manifest.featureSha
+    || record["shell"] !== FIXED_SHELL
+    || JSON.stringify(record["matrix"]) !== JSON.stringify(handoff.manifest.matrix)
+    || JSON.stringify(record["repository"]) !== JSON.stringify(handoff.manifest.repository)
+    || typeof record["startedAt"] !== "string") {
+    reject("executor.recovery.state", "does not match the admitted manifest");
+  }
+  const rawCommands = record["commands"];
+  if (!Array.isArray(rawCommands) || rawCommands.length !== handoff.manifest.commands.length) {
+    reject("executor.recovery.state.commands", "does not match the admitted manifest");
+  }
+  const statuses = new Set<ValidationCommandStatus>([
+    "pending", "passed", "executor_crash", "failed", "signal", "timeout", "output_limit",
+    "artifact_failure", "logging_failure", "cleanup_failure", "persistence_failure", "skipped",
+  ]);
+  return rawCommands.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      reject(`executor.recovery.state.commands[${index}]`, "is malformed");
+    }
+    const entry = raw as Record<string, unknown>;
+    const spec = handoff.manifest.commands[index]!;
+    if (entry["index"] !== index || entry["id"] !== spec.id || entry["command"] !== spec.command
+      || entry["cwd"] !== spec.cwd || entry["timeoutSeconds"] !== spec.timeoutSeconds
+      || entry["maxOutputBytes"] !== spec.maxOutputBytes || !statuses.has(entry["status"] as ValidationCommandStatus)
+      || !Array.isArray(entry["terminationSignals"]) || !Array.isArray(entry["artifacts"])) {
+      reject(`executor.recovery.state.commands[${index}]`, "does not match the admitted manifest");
+    }
+    return entry as unknown as ValidationCommandLedgerEntry;
+  });
 }
 
 function pendingEntry(spec: ValidationCommandSpec, index: number): ValidationCommandLedgerEntry {

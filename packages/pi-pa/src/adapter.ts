@@ -10,6 +10,13 @@ import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, Stre
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
+import {
+  PI_VALIDATION_HANDOFF_FILE,
+  piReviewerValidationPrompt,
+  writePiProtectedValidationLaunch,
+  type PiProtectedValidationLaunch,
+  type PiReviewerValidationContext,
+} from "./validation-supervisor.js";
 
 const MAX_BODY = 500;
 const MAX_STDERR = 2000;
@@ -70,6 +77,7 @@ export interface PiBackgroundConfig {
   trustedExtension?: string;
   timeoutMs?: number;
   repositoryHandoffPath?: string;
+  validationHandoffPath?: string;
   registryEvidence?: PiRegistryCorrelation;
   /** In-memory only after the runner consumes the separate protected handoff. */
   repositoryLease?: PiRepositoryLeaseHandoff;
@@ -114,6 +122,8 @@ export interface PiAdapterOptions {
   sessionIdFactory?: () => string;
   secretValues?: string[];
   supervision?: PiSupervisionOptions;
+  /** Trusted launcher-only validation handoff; never serialized into the public background config. */
+  protectedValidationLaunch?: PiProtectedValidationLaunch;
 }
 
 export interface PiSupervisionOptions {
@@ -159,6 +169,7 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly sessionIdFactory: () => string;
   private readonly secretValues: string[];
   private readonly supervision: PiSupervisionOptions;
+  private readonly protectedValidationLaunch?: PiProtectedValidationLaunch;
 
   constructor(options: PiAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd(); this.env = withoutParentLeaseCapability(options.env ?? process.env);
@@ -169,6 +180,7 @@ export class PiAdapter implements RuntimeAdapter {
     this.sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.secretValues = [...(options.secretValues ?? [])];
     this.supervision = options.supervision ?? {};
+    this.protectedValidationLaunch = options.protectedValidationLaunch;
   }
 
   spawn(opts: SpawnOpts): Promise<SpawnResult> { return this.run(opts); }
@@ -245,7 +257,7 @@ export class PiAdapter implements RuntimeAdapter {
       : interactive
         ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision)
         : opts.mode === "background"
-          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision })
+          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision, protectedValidationLaunch: this.protectedValidationLaunch })
           : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision);
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets, audit) };
@@ -679,6 +691,7 @@ interface BackgroundLaunchInput {
   provider?: string;
   secrets: string[];
   supervision: PiSupervisionOptions;
+  protectedValidationLaunch?: PiProtectedValidationLaunch;
 }
 
 async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<PiCommandResult> {
@@ -686,6 +699,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   const configPath = resolve(deployDir, PI_BACKGROUND_CONFIG_FILE);
   const ownershipPath = resolve(deployDir, PI_SUPERVISOR_FILE);
   const handoffPath = resolve(deployDir, PI_REPOSITORY_HANDOFF_FILE);
+  const validationHandoffPath = resolve(deployDir, PI_VALIDATION_HANDOFF_FILE);
   const ownershipToken = randomUUID();
   const plan = input.opts.executionPlan;
   if ((input.opts.repositoryLease || input.opts.repositoryBorrower) && !plan) {
@@ -713,6 +727,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     ...(plan?.trustedExtension ? { trustedExtension: plan.trustedExtension } : {}),
     ...(input.opts.timeoutMs ? { timeoutMs: input.opts.timeoutMs } : {}),
     ...(repositoryHandoff ? { repositoryHandoffPath: handoffPath } : {}),
+    ...(input.protectedValidationLaunch ? { validationHandoffPath } : {}),
     ...(plan?.treehouse ? { registryEvidence: {
       ...(plan.treehouse.parentDeploymentId ? { parent_deployment_id: plan.treehouse.parentDeploymentId } : {}),
       builder_authority: plan.treehouse.authority,
@@ -728,9 +743,14 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   };
   try {
     if (repositoryHandoff) writePiRepositoryHandoff(handoffPath, repositoryHandoff);
+    if (input.protectedValidationLaunch) {
+      if (input.protectedValidationLaunch.deploymentId !== input.opts.deployId) throw new Error("Pi validation handoff deployment identity mismatch");
+      writePiProtectedValidationLaunch(validationHandoffPath, input.protectedValidationLaunch);
+    }
     writePiBackgroundConfig(configPath, config);
   } catch (error) {
     safeUnlink(handoffPath);
+    safeUnlink(validationHandoffPath);
     return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
   }
 
@@ -744,6 +764,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   } catch (error) {
     safeUnlink(configPath);
     safeUnlink(handoffPath);
+    safeUnlink(validationHandoffPath);
     return { status: null, stdout: "", stderr: "", spawnError: new Error(`runner-launcher: ${boundedRunnerDiagnostic(error, input.secrets)}`), metadata: { sessionId: input.id } };
   }
 
@@ -764,7 +785,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
       break;
     }
     if (ownership?.deploymentId === input.opts.deployId && ownership.ownershipToken === ownershipToken) {
-      if (ownership.ready && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized") && (!repositoryHandoff || !existsSync(handoffPath))) break;
+      if (ownership.ready && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized") && (!repositoryHandoff || !existsSync(handoffPath)) && (!input.protectedValidationLaunch || !existsSync(validationHandoffPath))) break;
       if (ownership.state === "failed") {
         launchError = new Error(ownership.error ?? "Pi background supervisor failed before readiness");
         break;
@@ -778,11 +799,12 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     && ownership.ownershipToken === ownershipToken
     && ownership.ready
     && (!repositoryHandoff || !existsSync(handoffPath))
+    && (!input.protectedValidationLaunch || !existsSync(validationHandoffPath))
     && (ownership.state === "active" || ownership.state === "finalizing" || ownership.state === "finalized");
   if (!ready) {
     const cleanup = await terminateRunner(runner.pid, input.supervision, now, wait, readinessStartedAt + PROCESS_TREE_TIMEOUT);
     let configCleanupError: string | undefined;
-    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); }
+    try { safeUnlinkOwnedBackgroundConfig(configPath, ownershipToken); safeUnlink(handoffPath); safeUnlink(validationHandoffPath); }
     catch (error) { configCleanupError = `config cleanup failed: ${boundedRunnerDiagnostic(error, input.secrets)}`; }
     const baseReason = launchError ? boundedRunnerDiagnostic(launchError, input.secrets) : `ownership was not established within ${timeoutMs}ms`;
     const reason = [baseReason, cleanup.diagnostic, configCleanupError].filter(Boolean).join("; ");
@@ -806,7 +828,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   };
 }
 
-export function buildPiBackgroundArgs(config: PiBackgroundConfig): string[] {
+export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContext?: PiReviewerValidationContext): string[] {
   const args = ["--print", "--mode", "json", "--session-id", config.sessionId];
   if (config.model) args.push("--model", config.model);
   if (config.provider) args.push("--provider", config.provider);
@@ -815,7 +837,8 @@ export function buildPiBackgroundArgs(config: PiBackgroundConfig): string[] {
     for (const skill of config.skills) args.push("--skill", skill);
     if (config.trustedExtension) args.push("--extension", config.trustedExtension);
   }
-  args.push(readFileSync(config.primerPath, "utf8"));
+  const primer = readFileSync(config.primerPath, "utf8");
+  args.push(reviewerContext ? `${primer}\n\n${piReviewerValidationPrompt(reviewerContext)}` : primer);
   return args;
 }
 
@@ -834,6 +857,8 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
   const repositoryHandoffPath = value.repositoryHandoffPath;
   const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
+  const validationHandoffPath = value.validationHandoffPath;
+  const validValidationHandoffPath = validationHandoffPath === undefined || (typeof validationHandoffPath === "string" && resolve(validationHandoffPath) === validationHandoffPath);
   const validRepositoryEvidence = (value.repoKey === undefined || typeof value.repoKey === "string")
     && (value.ticketId === undefined || typeof value.ticketId === "string")
     && (value.repoRoot === undefined || (typeof value.repoRoot === "string" && resolve(value.repoRoot) === value.repoRoot))
@@ -852,7 +877,7 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
     && typeof registry.branch_head_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_head_sha)
     && typeof registry.ticket_slot_id === "string" && (registry.repository_permit === 1 || registry.repository_permit === 2 || registry.repository_permit === 3 || registry.repository_permit === 4)
   );
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validRepositoryEvidence || !validRegistryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validValidationHandoffPath || !validRepositoryEvidence || !validRegistryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
