@@ -456,7 +456,7 @@ test("live foreground PTY PID protects status, wait, health, and sweep before se
   });
 });
 
-test("foreground and background Pi children receive distinct internal execution modes", async () => {
+test("foreground and background Pi children receive execution modes and exact plan repository keys", async () => {
   await withPiEnv(async () => {
     const captured: SpawnOpts[] = [];
     const adapter = stubAdapter({ onSpawn: (opts) => { captured.push(opts); } });
@@ -464,6 +464,10 @@ test("foreground and background Pi children receive distinct internal execution 
     assert.equal((await deployWithPi({ team: "builder", mode: "implement", background: true }, adapter)).status, "success");
     assert.equal(captured[0]?.env?.["PA_PI_EXECUTION_MODE"], "foreground");
     assert.equal(captured[1]?.env?.["PA_PI_EXECUTION_MODE"], "background");
+    assert.equal(captured[0]?.executionPlan?.repoKey, "pa-platform");
+    assert.equal(captured[1]?.executionPlan?.repoKey, "pa-platform");
+    assert.equal(captured[0]?.env?.["PA_REPO_KEY"], captured[0]?.executionPlan?.repoKey);
+    assert.equal(captured[1]?.env?.["PA_REPO_KEY"], captured[1]?.executionPlan?.repoKey);
   });
 });
 

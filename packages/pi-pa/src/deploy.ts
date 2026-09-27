@@ -251,7 +251,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     observe("deploy-diagnostic", reason, requestedEnvironment);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
-  const env = { ...plan.environment, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<string, string>;
+  const env = { ...plan.environment, PA_REPO_KEY: plan.repoKey, [PA_PI_EXECUTION_MODE_ENV]: requestedEnvironment[PA_PI_EXECUTION_MODE_ENV] } as Record<string, string>;
   // A legacy parent shell may still contain this key. Never carry it into the
   // model/tool environment; direct borrowing is authenticated by live process lineage.
   delete env[PI_PARENT_LEASE_CAPABILITY_ENV];
