@@ -4,8 +4,11 @@ import { dirname, join } from "node:path";
 
 export const PA_SAFETY_ACTIVITY_PLUGIN_FILENAME = "pa-safety-activity.js";
 
+const PA_CORE_SAFETY_MODULE_URL = new URL("./safety-policy.js", import.meta.resolve("@pa-platform/pa-core")).href;
+
 export const PA_SAFETY_ACTIVITY_PLUGIN_SOURCE = String.raw`import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import * as paSafety from ${JSON.stringify(PA_CORE_SAFETY_MODULE_URL)}
 
 function deploymentId() {
   return process.env.PA_DEPLOYMENT_ID || "unknown"
@@ -120,17 +123,62 @@ function commandReferencesBlockedFile(command) {
     .replace(/[|;&()]/g, " ")
     .split(/\s+/)
     .map((token) => token.replace(/^['"]|['"]$/g, ""))
-    .filter((token) => token && !token.startsWith("-") && !token.includes("="))
+    .filter((token) => token && !token.startsWith("-") && !token.includes("=") && !token.includes(" "))
     .find((token) => isBlockedFilePath(token))
+}
+
+function trashGuidance(target, executable) {
+  if (typeof paSafety.formatTrashMoveGuidance === "function") return paSafety.formatTrashMoveGuidance(target, executable)
+  return executable + " trash move " + target + " --reason 'Replace direct deletion denied by PA safety policy' --yes"
+}
+
+function legacySafetyDecision(input, executable) {
+  if (input.kind === "prose") return { allowed: true }
+  if (input.kind === "path") return isBlockedFilePath(input.value)
+    ? { allowed: false, reason: "Protected path access is not allowed: " + input.value, target: input.value }
+    : { allowed: true }
+  const command = input.value || ""
+  const deletion = /(?:^|[\s;&|()])(?:command\s+|sudo\s+)*(?:rm|rmdir|unlink|shred)\b(?:\s+-[^\s]+)*\s+("[^"]+"|'[^']+'|[^\s;&|()<>]+)/i.exec(command)
+  if (deletion) {
+    const target = deletion[1] || "<target>"
+    return { allowed: false, reason: "Direct deletion is not allowed for target " + target, target, guidance: trashGuidance(target, executable) }
+  }
+  if (/(^|\||;|&&|\|\|)\s*(?:find\s+[^|;]*-delete|xargs\s+[^|;]*\brm)\b/.test(command)) {
+    return { allowed: false, reason: "Direct deletion is not allowed for target <target>", target: "<target>", guidance: trashGuidance("<target>", executable) }
+  }
+  const redirects = /(?:^|[^>])(?:\d*)>{1,2}\s*("[^"]+"|'[^']+'|[^\s;&|()]+)/g
+  for (const match of command.matchAll(redirects)) {
+    const target = (match[1] || "").replace(/^['"]|['"]$/g, "")
+    if (target === "/dev/null" || target.startsWith("/tmp/") || target.startsWith("$TMPDIR/")) continue
+    return { allowed: false, reason: "Output is allowed only for /dev/null or a verified system-temp target: " + target, target }
+  }
+  const blockedPath = commandReferencesBlockedFile(command)
+  return blockedPath
+    ? { allowed: false, reason: "Protected path access is not allowed: " + blockedPath, target: blockedPath }
+    : { allowed: true }
+}
+
+function evaluatePolicy(input, executable = "opa") {
+  return typeof paSafety.evaluateSafetyPolicy === "function"
+    ? paSafety.evaluateSafetyPolicy(input, { trashExecutable: executable })
+    : legacySafetyDecision(input, executable)
+}
+
+function denyMessage(decision) {
+  return "BLOCKED: " + (decision.reason || "PA safety policy denied this operation.")
+    + (decision.guidance ? " Use " + decision.guidance + "." : "")
 }
 
 function guardBash(command) {
   if (!command) return
-  if (/(^|[|;&])\s*(rm|rmdir)\b/.test(command)) throw new Error("BLOCKED: rm/rmdir is not allowed. Use pa trash move instead.")
-  if (/(^|\||;|&&|\|\|)\s*find\s+[^|;]*-delete\b/.test(command)) throw new Error("BLOCKED: find -delete is not allowed. Use pa trash move instead.")
-  if (/(^|\||;|&&|\|\|)\s*xargs\s+[^|;]*\brm\b/.test(command)) throw new Error("BLOCKED: xargs rm is not allowed. Use pa trash move instead.")
-  const blockedPath = commandReferencesBlockedFile(command)
-  if (blockedPath) throw new Error("BLOCKED: bash command references sensitive file: " + blockedPath)
+  const decision = evaluatePolicy({ kind: "shell", value: command })
+  if (!decision.allowed) throw new Error(denyMessage(decision))
+}
+
+function guardPath(filePath) {
+  if (!filePath) return
+  const decision = evaluatePolicy({ kind: "path", value: filePath })
+  if (!decision.allowed) throw new Error(denyMessage(decision))
 }
 
 function patchText(args) {
@@ -149,9 +197,12 @@ function pathsFromPatch(patch) {
 function guardPatch(args) {
   const patch = patchText(args)
   if (!patch) return
-  if (patch.split("\n").some((line) => /^\*\*\* Delete File: /.test(line))) throw new Error("BLOCKED: file deletion via apply_patch is not allowed. Use pa trash move instead.")
-  const blockedPath = pathsFromPatch(patch).find((filePath) => isBlockedFilePath(filePath))
-  if (blockedPath) throw new Error("BLOCKED: sensitive file modification is not allowed: " + blockedPath)
+  const deletedPath = patch.split("\n").map((line) => line.match(/^\*\*\* Delete File: (.+)$/)?.[1]?.trim()).find(Boolean)
+  if (deletedPath) throw new Error(denyMessage({
+    reason: "Direct deletion is not allowed for target " + deletedPath,
+    guidance: trashGuidance(deletedPath, "opa"),
+  }))
+  for (const filePath of pathsFromPatch(patch)) guardPath(filePath)
 }
 
 function summarizeTool(tool, args) {
@@ -219,9 +270,8 @@ export const PaSafetyActivityPlugin = async () => {
           guardBash(args.command || "")
           if (typeof activityArgs.command === "string") activityArgs.command = maskSensitiveText(activityArgs.command)
         }
-        if (["read", "write", "edit"].includes(tool)) {
-          const filePath = args.filePath || args.file_path
-          if (isBlockedFilePath(filePath)) throw new Error("BLOCKED: sensitive file access is not allowed: " + filePath)
+        if (["read", "write", "edit", "grep", "glob"].includes(tool)) {
+          guardPath(args.filePath || args.file_path || args.path)
         }
         if (tool === "apply_patch") guardPatch(args)
       }

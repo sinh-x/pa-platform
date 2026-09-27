@@ -503,8 +503,9 @@ complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subc
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __pa_core_completing_option_value --project' -a '(__pa_core_projects)'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l all -d 'Include terminal, archived, and backlog tickets while retaining explicit filters'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l archived -d 'Only archived tickets'
-complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
+complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list show' -l json -d 'Output JSON'
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
 complete -c pa-core -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
 complete -c pa-core -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __pa_core_completing_option_value --blocked-by' -a '(__pa_core_ticket_ids)'

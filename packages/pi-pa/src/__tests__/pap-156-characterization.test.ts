@@ -205,6 +205,11 @@ test("background launch transfers ownership without retaining caller listeners o
     },
   });
 
+  // Synchronize the independently bounded host preflight before measuring the
+  // non-blocking supervisor handoff. Full-suite scheduler load must not consume
+  // the launch-return budget, while the real preflight still executes and fails
+  // visibly rather than being stubbed or hidden.
+  await adapter.preflight();
   const startedAt = performance.now();
   const result = await adapter.spawn({ primerPath: primer, deployId: fixture.id, mode: "background" });
   const elapsed = performance.now() - startedAt;

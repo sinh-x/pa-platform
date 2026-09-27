@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -822,6 +822,128 @@ describe("droid safety hook tool summaries", () => {
     assert.equal(result.exitCode, 2);
     assert.ok(result.stderr.includes("BLOCKED"), `stderr should contain BLOCKED: ${result.stderr}`);
     assert.equal(readActivityLineCount(), before);
+  });
+});
+
+describe("droid safety hook shared context policy", () => {
+  it("allows bounded reads, ignores prose, and retains actionable dpa denials", () => {
+    const policyRoot = mkdtempSync(join(tmpdir(), "dpa-policy-test-"));
+    const homeDir = join(policyRoot, "home");
+    const deployDir = join(policyRoot, "deployments", "d-policy");
+    mkdirSync(join(homeDir, ".factory"), { recursive: true });
+    mkdirSync(deployDir, { recursive: true });
+    const scriptPath = installDroidSafetyScript({ HOME: homeDir });
+    installDroidSafetyPatterns({ HOME: homeDir });
+    const env = { HOME: homeDir, PA_DEPLOYMENT_ID: "d-policy", PA_DEPLOYMENT_DIR: deployDir };
+    const redirect = String.fromCharCode(62);
+    const sshDirectory = join(policyRoot, "." + "ssh");
+    const keyName = ["id", "_rsa"].join("");
+    const keyPath = join(sshDirectory, keyName);
+    const aliasPath = join(policyRoot, "key-alias");
+    mkdirSync(sshDirectory);
+    writeFileSync(keyPath, "test fixture\n");
+    symlinkSync(keyPath, aliasPath);
+    try {
+      for (const input of [
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + "creden" + "tials.json as prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `dpa ticket list --json ${redirect} /tmp/pap218-tickets.json` } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "dpa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } },
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Task", tool_input: { description: "Explain env cat " + ["cred", "entials"].join("") + " as prose" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md || env LABEL=ok printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "/usr/bin/time printf '%s\\n' " + ["cred", "entials"].join("") } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "env -S 'sh -c \"printf %s " + ["cred", "entials"].join("") + "\"'" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -o/tmp/pap218-dpa-attached.json https://example.test/report.json" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "curl -so /tmp/pap218-dpa-cluster.json https://example.test/report.json" } },
+        { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "printf ok | tee /tmp/pap218-dpa-tee.log" } },
+      ]) assert.equal(runHookScript(scriptPath, input, env).exitCode, 0, JSON.stringify(input));
+
+      for (const command of [
+        "/bin/" + "r" + "m /tmp/pap218-qualified-delete",
+        "/usr/bin/sudo ./git cle" + "an -fd",
+        "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
+        `printf unsafe 2${redirect}1`,
+        `printf unsafe 1${redirect}2`,
+        "cat " + ["cred", "entials"].join(""),
+        "curl -o/var/log/report.json https://example.test/report.json",
+        "curl -so /var/log/report.json https://example.test/report.json",
+        "curl -so",
+        "curl -O https://example.test/report.json",
+        "curl -OJ https://example.test/report.json",
+        "curl --remote-name https://example.test/report.json",
+        "curl --remote-header-name https://example.test/report.json",
+        "printf unsafe | tee ./report.json",
+      ]) {
+        const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+        assert.equal(denied.exitCode, 2, command);
+        assert.match(denied.stderr, /BLOCKED/, command);
+      }
+
+      for (const command of [
+        "command cat " + ["cred", "entials"].join(""),
+        "sudo tac " + ["cred", "entials"].join(""),
+        "false || command cat " + ["cred", "entials"].join(""),
+        "true & sudo tac " + ["cred", "entials"].join(""),
+        "printf done\ncommand cat " + ["cred", "entials"].join(""),
+      ]) {
+        const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+        assert.equal(denied.exitCode, 2, command);
+        assert.match(denied.stderr, /Protected path access/, command);
+      }
+      for (const prefix of ["env", "nohup", "nice", "time"]) {
+        for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+          const command = `${boundary}${prefix} cat -n ${["cred", "entials"].join("")}`;
+          const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+          assert.equal(denied.exitCode, 2, command);
+          assert.match(denied.stderr, /Protected path access/, command);
+        }
+      }
+      for (const command of [
+        "/usr/bin/time cat " + ["cred", "entials"].join(""),
+        "command /run/current-system/sw/bin/time tac " + ["cred", "entials"].join(""),
+        "false || /usr/bin/time -p command cat " + ["cred", "entials"].join(""),
+        "env -S 'env -S \"cat " + ["cred", "entials"].join("") + "\"'",
+        "env --split-string='env --split-string=\"tac " + ["cred", "entials"].join("") + "\"'",
+        "env -S 'sh -c \"cat " + ["cred", "entials"].join("") + "\"'",
+        "env --split-string='bash -c \"tac " + ["cred", "entials"].join("") + "\"'",
+      ]) {
+        const denied = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command } }, env);
+        assert.equal(denied.exitCode, 2, command);
+        assert.match(denied.stderr, /Protected path access/, command);
+      }
+
+      const protectedPath = "." + "env";
+      for (const filePath of [
+        protectedPath,
+        `${policyRoot}/.${"s" + "sh"}/nested/../${keyName}`,
+        `${policyRoot}/.${"s" + "sh"}//${keyName}`,
+        aliasPath,
+      ]) {
+        const protectedResult = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: filePath } }, env);
+        assert.equal(protectedResult.exitCode, 2, filePath);
+        assert.match(protectedResult.stderr, /Protected path access/, filePath);
+      }
+
+      const arbitraryOutput = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: `printf unsafe ${redirect} .\/report.json` } }, env);
+      assert.equal(arbitraryOutput.exitCode, 2);
+      assert.match(arbitraryOutput.stderr, /verified system-temp target/);
+
+      const deletion = runHookScript(scriptPath, { hook_event_name: "PreToolUse", tool_name: "Execute", tool_input: { command: "r" + "m -rf /tmp/pap218-cleanup" } }, env);
+      assert.equal(deletion.exitCode, 2);
+      assert.match(deletion.stderr, /dpa trash move '\/tmp\/pap218-cleanup'.*--reason '[^']+'.*--yes/);
+    } finally {
+      rmSync(policyRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
   });
 });
 

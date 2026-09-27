@@ -502,8 +502,9 @@ complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcomma
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list; and __dpa_completing_option_value --project' -a '(__dpa_projects)'
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l search -d 'Search text' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l exclude-tags -d 'Excluded tags' -r
+complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l all -d 'Include terminal, archived, and backlog tickets while retaining explicit filters'
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list' -l archived -d 'Only archived tickets'
-complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from show' -l json -d 'Output JSON'
+complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from list show' -l json -d 'Output JSON'
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update create comment move delete attach' -l actor -d 'Actor' -r
 complete -c dpa -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update' -l blocked-by -d 'Blocking ticket IDs' -r
 complete -c dpa -f -n '__fish_seen_subcommand_from ticket; and __fish_seen_subcommand_from update; and __dpa_completing_option_value --blocked-by' -a '(__dpa_ticket_ids)'

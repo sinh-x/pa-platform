@@ -3,12 +3,64 @@ import { resolve } from "node:path";
 import { listRepos, resolveProjectFromCwd } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { resolveTrustedTicketMutationContext, TicketStore } from "../../tickets/index.js";
-import { TERMINAL_STATUSES } from "../../tickets/types.js";
+import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "../../tickets/types.js";
 import { nowUtc } from "../../time.js";
-import type { CreateTicketInput, Estimate, SubTicketStatus, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
+import type { CreateTicketInput, Estimate, SubTicketStatus, TicketListFilters, TicketPriority, TicketStatus, TicketType } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
 import { formatTicketList, formatTicketShow } from "../formatters.js";
 import { sanitizeTextInput } from "../../deploy/control.js";
+
+function printTicketShowHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket show <id> [options]");
+  io.stdout("");
+  io.stdout("Show full details for one ticket.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --json              Output as JSON");
+}
+
+function printTicketCreateHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket create [options]");
+  io.stdout("");
+  io.stdout("Create a new ticket.");
+  io.stdout("");
+  io.stdout("Required options:");
+  io.stdout("  --title <text>       Ticket title");
+  io.stdout("  --type <type>        Ticket type");
+  io.stdout("  --priority <p>       Ticket priority");
+  io.stdout("  --estimate <size>    Estimate (XS, S, M, L, XL)");
+  io.stdout("  --assignee <name>    Ticket assignee");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --project <key>      Project key (inferred from the current repository when omitted)");
+  io.stdout("  --summary <text>     Ticket summary");
+  io.stdout("  --description <text> Ticket description");
+  io.stdout("  --status <status>    Initial status");
+  io.stdout("  --tags <csv>         Comma-separated tags");
+  io.stdout("  --doc-ref <value>    Initial document reference");
+  io.stdout("  --actor <name>       Actor name for history");
+}
+
+function printTicketCommentHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket comment <id> [options]");
+  io.stdout("");
+  io.stdout("Add a comment to a ticket.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --author <name>      Comment author (required)");
+  io.stdout("  --content <text>     Comment content");
+  io.stdout("  --content-file <p>   Read comment content from a guarded local text file");
+}
+
+function printTicketAttachHelp(io: Required<CliIo>): void {
+  io.stdout("Usage: ticket attach <id> [options]");
+  io.stdout("");
+  io.stdout("Attach a file as a ticket document reference.");
+  io.stdout("");
+  io.stdout("Options:");
+  io.stdout("  --file <path>        File to attach (required)");
+  io.stdout("  --actor <name>       Actor name for history");
+}
 
 function printTicketMoveHelp(io: Required<CliIo>): void {
   io.stdout("Usage: ticket move <id> [options]");
@@ -144,11 +196,15 @@ function printTicketListHelp(io: Required<CliIo>): void {
   io.stdout("  --search <text>        Full-text search across title and summary");
   io.stdout("  --tags <csv>           Comma-separated tags to match (ticket must include all)");
   io.stdout("  --exclude-tags <csv>   Comma-separated tags to exclude");
+  io.stdout("  --all                  Include terminal, archived, and backlog tickets while retaining explicit filters");
   io.stdout("  --archived             Show only tickets tagged \"archived\" (composable with other filters)");
   io.stdout("  --json                 Output as JSON");
   io.stdout("");
+  io.stdout("Without --all or --archived, lists default to active, non-archived, non-backlog tickets.");
+  io.stdout("");
   io.stdout("Examples:");
   io.stdout("  ticket list --project pa-platform --status done");
+  io.stdout("  ticket list --all --status done");
   io.stdout("  ticket list --archived");
   io.stdout("  ticket list --archived --status done --project pa-platform");
   io.stdout("  ticket list --tags \"bug,urgent\" --json");
@@ -183,6 +239,7 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     printTicketHelp(io);
     return 0;
   }
+  if (subcommand !== "subticket" && hasHelpFlag(rest) && printTicketSubcommandHelp(subcommand, io)) return 0;
   if (subcommand === "list") {
     if (rest[0] === "--help" || rest[0] === "-h") {
       printTicketListHelp(io);
@@ -190,8 +247,14 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
     }
     const opts = parseTicketListArgs(rest);
     if ("error" in opts) return printError(opts.error, io);
-    const { json, archived: _archived, ...filters } = opts;
-    const tickets = store.list(filters);
+    const { json, archived, all, ...filters } = opts;
+    if (!all) {
+      filters.excludeTags = Array.from(new Set([...(filters.excludeTags ?? []), "backlog", ...(archived ? [] : ["archived"])]));
+    }
+    if (archived) filters.tags = Array.from(new Set([...(filters.tags ?? []), "archived"]));
+    let tickets = store.list(filters);
+    if (!all && !archived && !filters.status) tickets = tickets.filter((ticket) => ACTIVE_STATUSES.includes(ticket.status));
+    tickets = Array.from(new Map(tickets.map((ticket) => [ticket.id, ticket])).values());
     io.stdout(json ? JSON.stringify(tickets, null, 2) : formatTicketList(tickets));
     return 0;
   }
@@ -341,9 +404,11 @@ export function runTicketCommand(argv: string[], io: Required<CliIo>): number {
   return 1;
 }
 
-function parseTicketListArgs(argv: string[]): { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } | { error: string } {
-  const opts: { project?: string; status?: TicketStatus; assignee?: string; priority?: TicketPriority; type?: TicketType; search?: string; tags?: string[]; excludeTags?: string[]; archived?: boolean; json?: boolean } = {};
-  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--json", "--archived"]), new Set(["--json", "--archived"]));
+type TicketListOptions = TicketListFilters & { all?: boolean; archived?: boolean; json?: boolean };
+
+function parseTicketListArgs(argv: string[]): TicketListOptions | { error: string } {
+  const opts: TicketListOptions = {};
+  const result = parseFlagPairs(argv, new Set(["--project", "--status", "--assignee", "--priority", "--type", "--search", "--tags", "--exclude-tags", "--all", "--json", "--archived"]), new Set(["--all", "--json", "--archived"]));
   if ("error" in result) return result;
   if (result.values["--project"]) opts.project = result.values["--project"];
   if (result.values["--status"]) opts.status = result.values["--status"] as TicketStatus;
@@ -353,11 +418,9 @@ function parseTicketListArgs(argv: string[]): { project?: string; status?: Ticke
   if (result.values["--search"]) opts.search = result.values["--search"];
   if (result.values["--tags"]) opts.tags = splitCsv(result.values["--tags"]);
   if (result.values["--exclude-tags"]) opts.excludeTags = splitCsv(result.values["--exclude-tags"]);
+  if (result.booleans.has("--all")) opts.all = true;
   if (result.booleans.has("--json")) opts.json = true;
   if (result.booleans.has("--archived")) opts.archived = true;
-  if (opts.archived) {
-    opts.tags = Array.from(new Set([...(opts.tags ?? []), "archived"]));
-  }
   return opts;
 }
 
@@ -560,8 +623,12 @@ function printSubticketCompleteHelp(io: Required<CliIo>): void {
 
 function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketStore): number {
   const [subcommand, parentId, maybeSubId, ...rest] = argv;
-  if (argv[0] === "--help" || argv[0] === "-h") {
-    printTicketSubticketHelp(io);
+  if (hasHelpFlag(argv)) {
+    if (subcommand === "create") printSubticketCreateHelp(io);
+    else if (subcommand === "list") printSubticketListHelp(io);
+    else if (subcommand === "update") printSubticketUpdateHelp(io);
+    else if (subcommand === "complete") printSubticketCompleteHelp(io);
+    else printTicketSubticketHelp(io);
     return 0;
   }
   if (!subcommand) return printError("ticket subticket requires subcommand", io);
@@ -635,6 +702,26 @@ function runSubTicketCommand(argv: string[], io: Required<CliIo>, store: TicketS
     return 0;
   }
   return printError(`Unknown ticket subticket subcommand: ${subcommand}`, io);
+}
+
+function hasHelpFlag(argv: string[]): boolean {
+  return argv.includes("--help") || argv.includes("-h");
+}
+
+function printTicketSubcommandHelp(subcommand: string, io: Required<CliIo>): boolean {
+  if (subcommand === "list") printTicketListHelp(io);
+  else if (subcommand === "show") printTicketShowHelp(io);
+  else if (subcommand === "create") printTicketCreateHelp(io);
+  else if (subcommand === "update") printTicketUpdateHelp(io);
+  else if (subcommand === "comment") printTicketCommentHelp(io);
+  else if (subcommand === "attach") printTicketAttachHelp(io);
+  else if (subcommand === "move") printTicketMoveHelp(io);
+  else if (subcommand === "delete") printTicketDeleteHelp(io);
+  else if (subcommand === "archive") printTicketArchiveHelp(io);
+  else if (subcommand === "unarchive") printTicketUnarchiveHelp(io);
+  else if (subcommand === "check-refs") printTicketCheckRefsHelp(io);
+  else return false;
+  return true;
 }
 
 function parseFlagPairs(argv: string[], allowed: Set<string>, booleanFlags = new Set<string>()): { values: Record<string, string>; booleans: Set<string> } | { error: string } {

@@ -303,6 +303,41 @@ test("implement context rejects hard and soft delete without mutation", () => {
   });
 });
 
+test("TicketStore reads and filtered lists stay mutation-free while serialized comments are retained", () => {
+  withTicketEnv((_root, ticketsDir) => {
+    const store = new TicketStore(ticketsDir);
+    const ticket = store.create({
+      project: "pa-platform",
+      title: "Read-only list target",
+      summary: "Needle summary",
+      description: "",
+      status: "implementing",
+      priority: "high",
+      type: "task",
+      assignee: "builder/team-manager",
+      estimate: "S",
+      from: "",
+      to: "",
+      tags: ["target"],
+      blockedBy: [],
+      doc_refs: [],
+      comments: [],
+    }, "test");
+    const beforeReads = store.get(ticket.id);
+    const auditBeforeReads = store.readAudit();
+
+    assert.equal(store.get(ticket.id)?.id, ticket.id);
+    assert.deepEqual(store.list({ project: "pa-platform", status: "implementing", assignee: "builder", priority: "high", type: "task", tags: ["target"], search: "Needle" }).map((item) => item.id), [ticket.id]);
+    assert.deepEqual(store.get(ticket.id), beforeReads);
+    assert.deepEqual(store.readAudit(), auditBeforeReads);
+
+    store.comment(ticket.id, "first", "First serialized comment");
+    store.comment(ticket.id, "second", "Second serialized comment");
+    assert.deepEqual(store.get(ticket.id)?.comments.map((comment) => comment.content), ["First serialized comment", "Second serialized comment"]);
+    assert.equal(store.readAudit().filter((entry) => entry.action === "commented").length, 2);
+  });
+});
+
 test("ticket list --archived filters down to archived tickets only", () => {
   withTicketEnv((_root, ticketsDir) => {
     const store = new TicketStore(ticketsDir);

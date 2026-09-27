@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1838,6 +1838,116 @@ test("pa safety activity plugin does not enforce guards outside PA deployments",
   } finally {
     restore("PA_ACTIVITY_LOG", originalActivityLog);
     restore("PA_DEPLOYMENT_DIR", originalDeploymentDir);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pa safety activity plugin applies shared declared-context policy and opa guidance", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opa-plugin-policy-"));
+  const previous = {
+    activityLog: process.env.PA_ACTIVITY_LOG,
+    deploymentDir: process.env.PA_DEPLOYMENT_DIR,
+    deploymentId: process.env.PA_DEPLOYMENT_ID,
+    home: process.env.HOME,
+  };
+  try {
+    process.env.HOME = root;
+    process.env.PA_DEPLOYMENT_ID = "d-policy";
+    process.env.PA_DEPLOYMENT_DIR = join(root, "deployments", "d-policy");
+    process.env.PA_ACTIVITY_LOG = join(process.env.PA_DEPLOYMENT_DIR, "activity.jsonl");
+    const pluginPath = join(root, "pa-safety-policy.mjs");
+    writeFileSync(pluginPath, PA_SAFETY_ACTIVITY_PLUGIN_SOURCE, "utf-8");
+    const module = await import(`${pathToFileURL(pluginPath).href}?policy=${Date.now()}`);
+    const plugin = await module.PaSafetyActivityPlugin();
+    const before = plugin["tool.execute.before"];
+    const redirect = String.fromCharCode(62);
+    const sshDirectory = join(root, "." + "ssh");
+    const keyName = ["id", "_rsa"].join("");
+    const keyPath = join(sshDirectory, keyName);
+    const aliasPath = join(root, "key-alias");
+    mkdirSync(sshDirectory);
+    writeFileSync(keyPath, "test fixture\n");
+    symlinkSync(keyPath, aliasPath);
+
+    await before({ tool: "question" }, { args: { question: "Discuss " + "creden" + "tials.json as prose" } });
+    await before({ tool: "bash" }, { args: { command: `opa ticket list --json ${redirect} /tmp/pap218-tickets.json` } });
+    await before({ tool: "bash" }, { args: { command: "opa ticket list --json | python -c 'import json,sys; print(len(json.load(sys.stdin)))'" } });
+    await before({ tool: "bash" }, { args: { command: "for c in HEAD develop; do git cat-file -e $c && git merge-base HEAD $c && git log -1 $c; done" } });
+    await before({ tool: "bash" }, { args: { command: `printf ok 2${redirect}&1; exec 3${redirect}&-` } });
+    await before({ tool: "question" }, { args: { question: "Discuss " + ["cred", "entials"].join("") + " as ordinary prose" } });
+    await before({ tool: "question" }, { args: { question: "Explain env cat " + ["cred", "entials"].join("") + " as prose" } });
+    await before({ tool: "bash" }, { args: { command: "command printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "LABEL=" + ["cred", "entials"].join("") + " sudo printf '%s\\n' ordinary" } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md || command printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md & sudo printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md\ncommand printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md || env LABEL=ok printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md & nohup printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "cat README.md\nnice -n 5 printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "time -p printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "/usr/bin/time printf '%s\\n' " + ["cred", "entials"].join("") } });
+    await before({ tool: "bash" }, { args: { command: "env -S 'sh -c \"printf %s " + ["cred", "entials"].join("") + "\"'" } });
+    await before({ tool: "bash" }, { args: { command: "curl -o/tmp/pap218-opa-attached.json https://example.test/report.json" } });
+    await before({ tool: "bash" }, { args: { command: "curl -so /tmp/pap218-opa-cluster.json https://example.test/report.json" } });
+    await before({ tool: "bash" }, { args: { command: "printf ok | tee /tmp/pap218-opa-tee.log" } });
+
+    for (const command of [
+      "/bin/" + "r" + "m /tmp/pap218-qualified-delete",
+      "/usr/bin/sudo ./git cle" + "an -fd",
+      "/bin/bash -lc '/usr/bin/git pu" + "sh origin main --for" + "ce'",
+      `printf unsafe 2${redirect}1`,
+      `printf unsafe 1${redirect}2`,
+      "cat " + ["cred", "entials"].join(""),
+      "curl -o/var/log/report.json https://example.test/report.json",
+      "curl -so /var/log/report.json https://example.test/report.json",
+      "curl -so",
+      "curl -O https://example.test/report.json",
+      "curl -OJ https://example.test/report.json",
+      "curl --remote-name https://example.test/report.json",
+      "curl --remote-header-name https://example.test/report.json",
+      "printf unsafe | tee ./report.json",
+    ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /BLOCKED/);
+
+    for (const command of [
+      "command cat " + ["cred", "entials"].join(""),
+      "sudo tac " + ["cred", "entials"].join(""),
+      "false || command cat " + ["cred", "entials"].join(""),
+      "true & sudo tac " + ["cred", "entials"].join(""),
+      "printf done\ncommand cat " + ["cred", "entials"].join(""),
+    ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/);
+    for (const prefix of ["env", "nohup", "nice", "time"]) {
+      for (const boundary of ["false || ", "true & ", "printf done\n"]) {
+        const command = `${boundary}${prefix} cat -n ${["cred", "entials"].join("")}`;
+        await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/, command);
+      }
+    }
+    for (const command of [
+      "/usr/bin/time cat " + ["cred", "entials"].join(""),
+      "command /run/current-system/sw/bin/time tac " + ["cred", "entials"].join(""),
+      "false || /usr/bin/time -p command cat " + ["cred", "entials"].join(""),
+      "env -S 'env -S \"cat " + ["cred", "entials"].join("") + "\"'",
+      "env --split-string='env --split-string=\"tac " + ["cred", "entials"].join("") + "\"'",
+      "env -S 'sh -c \"cat " + ["cred", "entials"].join("") + "\"'",
+      "env --split-string='bash -c \"tac " + ["cred", "entials"].join("") + "\"'",
+    ]) await assert.rejects(before({ tool: "bash" }, { args: { command } }), /Protected path access/, command);
+
+    const protectedPath = "." + "env";
+    for (const filePath of [
+      protectedPath,
+      `${root}/.${"s" + "sh"}/nested/../${keyName}`,
+      `${root}/.${"s" + "sh"}//${keyName}`,
+      aliasPath,
+    ]) await assert.rejects(before({ tool: "read" }, { args: { filePath } }), /Protected path access/);
+    await assert.rejects(before({ tool: "bash" }, { args: { command: `printf unsafe ${redirect} .\/report.json` } }), /verified system-temp target/);
+    await assert.rejects(
+      before({ tool: "bash" }, { args: { command: "r" + "m -rf /tmp/pap218-cleanup" } }),
+      /opa trash move '\/tmp\/pap218-cleanup'.*--reason '[^']+'.*--yes/,
+    );
+  } finally {
+    restore("PA_ACTIVITY_LOG", previous.activityLog);
+    restore("PA_DEPLOYMENT_DIR", previous.deploymentDir);
+    restore("PA_DEPLOYMENT_ID", previous.deploymentId);
+    restore("HOME", previous.home);
     rmSync(root, { recursive: true, force: true });
   }
 });

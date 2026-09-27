@@ -27,6 +27,8 @@ Pi provider/model precedence is explicit CLI flags, the selected flat mode pair 
 
 Print, JSON, and RPC execution loads the same extension and commands but does not install an editor, open an overlay, or wait for terminal input. `question` returns a typed `ui_unavailable` result outside TUI mode. PA tools, output bounds, tool-call guards, and terminal result handling remain active.
 
+The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
+
 ## Treehouse-backed builder ticket checkouts
 
 PPA uses the pinned Treehouse v2.3.0 CLI as the checkout lifecycle manager while
