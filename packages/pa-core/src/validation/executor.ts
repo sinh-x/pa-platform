@@ -388,6 +388,9 @@ async function preflightFilesystem(handoff: ValidationHandoff, options: Validati
     if (!safety.allowed) reject(`${source}.command`, safety.reason ?? safety.code);
     for (const [artifactIndex, artifact] of command.artifacts.entries()) {
       const artifactSource = `${source}.artifacts[${artifactIndex}].path`;
+      if (["*", "?", "[", "]", "{", "}"].some((character) => artifact.path.includes(character))) {
+        reject(artifactSource, "must be one exact path without glob syntax");
+      }
       const pathDecision = evaluateSafetyPolicy({ kind: "path", value: artifact.path }, { cwd: command.cwd });
       if (!pathDecision.allowed) reject(artifactSource, pathDecision.reason ?? pathDecision.code);
       assertWithin(canonicalWorktree, artifact.path, artifactSource);
@@ -668,6 +671,7 @@ async function assertCreatablePath(path: string, root: string, source: string, a
     const existing = await lstat(resolvedPath);
     if (!allowExisting) reject(source, "must not already exist");
     if (existing.isSymbolicLink()) reject(source, "must not be a symbolic link");
+    if (!existing.isFile()) reject(source, "must be an exact regular file when it already exists");
     const canonical = await realpath(resolvedPath);
     assertWithin(root, canonical, source);
     return;

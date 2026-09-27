@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -136,6 +137,20 @@ function cleanup(seed: Fixture): void {
   rmSync(seed.root, { recursive: true, force: true });
 }
 
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function assertOneTerminalLedger(seed: Fixture, result: "passed" | "failed" | "executor_crash"): Record<string, unknown> {
+  const body = readFileSync(seed.ledgerPath, "utf8");
+  assert.equal(body.trim().split("\n").length, 1);
+  assert.equal(statSync(seed.ledgerPath).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(seed.evidenceRoot).filter((name) => name.includes(".tmp")), []);
+  const ledger = JSON.parse(body) as Record<string, unknown>;
+  assert.equal(ledger["result"], result);
+  return ledger;
+}
+
 test("valid protected launch runs one unattended manifest before one reviewer with bounded evidence references", async () => {
   const seed = fixture([]);
   const orderPath = resolve(seed.root, "order.txt");
@@ -167,9 +182,42 @@ test("valid protected launch runs one unattended manifest before one reviewer wi
     assert.equal(reviewerStarts, 1);
     assert.deepEqual(events.map((event) => event.type), ["manifest_start", "command_start", "command_finish", "manifest_finish"]);
     assert.ok(events.every((event) => JSON.stringify(event).length <= 2_000));
-    assert.equal(statSync(seed.ledgerPath).mode & 0o777, 0o600);
+    assertOneTerminalLedger(seed, "passed");
     assert.doesNotMatch(readFileSync(seed.ledgerPath, "utf8"), /review-auth:/);
     assert.doesNotMatch(JSON.stringify(events), /review-auth:/);
+  } finally {
+    cleanup(seed);
+  }
+});
+
+test("1 MiB output remains in exact mode-0600 logs while reviewer handback and events stay bounded", async () => {
+  const seed = fixture([]);
+  const byteCount = 1_048_576;
+  withCommands(seed, [
+    command(seed.root, "large", `${JSON.stringify(process.execPath)} -e "process.stdout.write(Buffer.alloc(${byteCount},120))"`),
+  ]);
+  const events: ValidationEvent[] = [];
+  let reviewerPrompt = "";
+  try {
+    const result = await runPiValidationBeforeReviewer(seed.launch, {
+      evidenceRoot: seed.evidenceRoot,
+      ledgerPath: seed.ledgerPath,
+      emit: (event) => { events.push(event); },
+      startReviewer: (context) => { reviewerPrompt = piReviewerValidationPrompt(context); },
+    });
+    assert.equal(result.admitted, true);
+    const stdout = result.validation.ledger!.commands[0]!.stdout!;
+    assert.equal(stdout.bytes, byteCount);
+    assert.equal(stdout.sha256, sha256(Buffer.alloc(byteCount, 120)));
+    assert.ok(stdout.retainedBytes <= 65_536);
+    assert.equal(statSync(stdout.path).mode & 0o777, 0o600);
+    assert.equal(readFileSync(stdout.path).length, byteCount);
+    assert.ok(events.length <= 4);
+    assert.ok(events.every((event) => JSON.stringify(event).length <= 2_000));
+    assert.ok(reviewerPrompt.length <= 2_000);
+    assert.doesNotMatch(JSON.stringify(events), /x{1000}/);
+    assert.doesNotMatch(reviewerPrompt, /x{1000}/);
+    assertOneTerminalLedger(seed, "passed");
   } finally {
     cleanup(seed);
   }
@@ -193,30 +241,53 @@ test("admitted validation failure skips later commands and still starts the revi
     assert.deepEqual(result.validation.ledger?.commands.map((entry) => entry.status), ["failed", "skipped"]);
     assert.equal(context?.validationResult, "failed");
     assert.equal(existsSync(seed.laterMarker), false);
+    assertOneTerminalLedger(seed, "failed");
   } finally {
     cleanup(seed);
   }
 });
 
-test("invalid admission, authority, safety, and replay evidence starts zero commands and zero reviewers", async (t) => {
+test("invalid admission, authority, safety, repository, path, artifact, and replay evidence starts zero commands and reviewers", async (t) => {
+  const replaceCommand = (seed: Fixture, change: Partial<ValidationCommandSpec>): PiProtectedValidationLaunch => {
+    const handoff = seed.launch.validationHandoff as ValidationHandoff;
+    handoff.manifest.commands = [{ ...handoff.manifest.commands[0]!, ...change }];
+    handoff.manifestSha256 = digestValidationManifest(handoff.manifest);
+    return seed.launch;
+  };
   const cases: Array<{ name: string; mutate: (seed: Fixture) => unknown }> = [
-    {
-      name: "authorization not consumed",
-      mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, authorization: "available" } }),
-    },
-    {
-      name: "review authority mismatch",
-      mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, featureSha: "b".repeat(40) } }),
-    },
-    {
-      name: "unsafe command",
-      mutate: (seed) => {
-        const handoff = seed.launch.validationHandoff as ValidationHandoff;
-        handoff.manifest.commands = [command(seed.root, "unsafe", "rm forbidden")];
-        handoff.manifestSha256 = digestValidationManifest(handoff.manifest);
-        return seed.launch;
-      },
-    },
+    { name: "malformed launch", mutate: (seed) => ({ ...seed.launch, unexpected: true }) },
+    { name: "authorization not consumed", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, authorization: "available" } }) },
+    { name: "matrix digest not verified", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, matrixDigest: "unchecked" } }) },
+    { name: "duplicate active review", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, activeReview: "duplicate" } }) },
+    { name: "review ticket mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, ticketId: "PAP-999" } }) },
+    { name: "review branch mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, branch: "feature/PAP-223-other" } }) },
+    { name: "review feature mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, featureSha: "b".repeat(40) } }) },
+    { name: "review digest mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, matrixAuthoritySha256: "b".repeat(64) } }) },
+    { name: "invalid authorization identifier", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, authorizationId: "review-auth:not-canonical" } }) },
+    { name: "mismatched manifest digest", mutate: (seed) => ({ ...seed.launch, validationHandoff: { ...(seed.launch.validationHandoff as ValidationHandoff), manifestSha256: "b".repeat(64) } }) },
+    { name: "unauthenticated repository", mutate: (seed) => {
+      const handoff = seed.launch.validationHandoff as ValidationHandoff;
+      return { ...seed.launch, validationHandoff: { ...handoff, repositoryEvidence: { ...handoff.repositoryEvidence, authenticated: false } } };
+    } },
+    { name: "conflicting protected identity", mutate: (seed) => {
+      const handoff = seed.launch.validationHandoff as ValidationHandoff;
+      return { ...seed.launch, validationHandoff: { ...handoff, protectedEnvironment: { PA_TICKET_ID: "PAP-999" } } };
+    } },
+    { name: "stale Git HEAD", mutate: (seed) => {
+      execFileSync("git", ["-C", seed.root, "commit", "-q", "--allow-empty", "-m", "drift"]);
+      return seed.launch;
+    } },
+    { name: "unsafe command", mutate: (seed) => {
+      const handoff = seed.launch.validationHandoff as ValidationHandoff;
+      return replaceCommand(seed, { command: `rm forbidden; ${handoff.manifest.commands[0]!.command}` });
+    } },
+    { name: "invalid command path", mutate: (seed) => replaceCommand(seed, { cwd: "/outside-approved-root" }) },
+    { name: "outside artifact", mutate: (seed) => replaceCommand(seed, { artifacts: [{ path: resolve(tmpdir(), "outside-artifact") }] }) },
+    { name: "directory artifact", mutate: (seed) => {
+      const directory = resolve(seed.root, "artifact-directory");
+      mkdirSync(directory);
+      return replaceCommand(seed, { artifacts: [{ path: directory }] });
+    } },
   ];
 
   for (const item of cases) {
@@ -236,6 +307,7 @@ test("invalid admission, authority, safety, and replay evidence starts zero comm
         assert.equal(existsSync(seed.laterMarker), false);
         assert.ok(JSON.stringify(result.diagnostic).length <= 2_000);
         assert.deepEqual(Object.keys(result.diagnostic).sort(), ["condition", "correction", "reason", "resumeAction", "source"]);
+        assert.doesNotMatch(JSON.stringify(result.diagnostic), /review-auth:/);
       } finally {
         cleanup(seed);
       }
@@ -260,6 +332,34 @@ test("invalid admission, authority, safety, and replay evidence starts zero comm
       cleanup(seed);
     }
   });
+});
+
+test("executor throw is recovered into one complete crash ledger before an admitted reviewer starts", async () => {
+  const seed = fixture([]);
+  withCommands(seed, [
+    command(seed.root, "never-started", `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(seed.laterMarker)},'started')`)}`),
+  ]);
+  let reviewerStarts = 0;
+  try {
+    const result = await runPiValidationBeforeReviewer(seed.launch, {
+      evidenceRoot: seed.evidenceRoot,
+      ledgerPath: seed.ledgerPath,
+      execute: async () => { throw new Error("synthetic executor crash"); },
+      startReviewer: (context) => {
+        reviewerStarts += 1;
+        assert.equal(context.validationResult, "executor_crash");
+        assert.equal(existsSync(seed.ledgerPath), true);
+      },
+    });
+    assert.equal(result.admitted, true);
+    assert.equal(reviewerStarts, 1);
+    assert.deepEqual(result.validation.ledger?.commands.map((entry) => entry.status), ["skipped"]);
+    assert.equal(existsSync(seed.laterMarker), false);
+    assertOneTerminalLedger(seed, "executor_crash");
+    assert.doesNotMatch(readFileSync(seed.ledgerPath, "utf8"), /synthetic executor crash|review-auth:/);
+  } finally {
+    cleanup(seed);
+  }
 });
 
 test("supervisor interruption finalizes one executor_crash ledger, preserves evidence, and skips untouched commands", async () => {
@@ -293,7 +393,7 @@ test("supervisor interruption finalizes one executor_crash ledger, preserves evi
     assert.equal(readFileSync(ledger.commands[0]!.stdout!.path, "utf8"), firstOutput);
     assert.equal(existsSync(seed.laterMarker), false);
     assert.doesNotMatch(readFileSync(seed.ledgerPath, "utf8"), /review-auth:/);
-    assert.equal(readFileSync(seed.ledgerPath, "utf8").trim().split("\n").length, 1);
+    assertOneTerminalLedger(seed, "executor_crash");
   } finally {
     cleanup(seed);
   }
@@ -322,6 +422,7 @@ test("timeout cleanup evidence is terminal before reviewer spawn and no later co
     assert.equal(result.validation.ledger?.commands[0]?.processGroupVerifiedDead, true);
     assert.equal(result.validation.ledger?.commands[1]?.status, "skipped");
     assert.equal(existsSync(seed.laterMarker), false);
+    assertOneTerminalLedger(seed, "failed");
   } finally {
     cleanup(seed);
   }

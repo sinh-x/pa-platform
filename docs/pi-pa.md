@@ -29,6 +29,49 @@ Print, JSON, and RPC execution loads the same extension and commands but does no
 
 The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
 
+## Protected structured validation and review handoff
+
+PPA review deployments can receive a launcher-only structured validation handoff. The handoff is not a public CLI input and is never accepted from model output. Before the background runner starts, the trusted launcher consumes the one-use review authorization and binds the ticket, branch, Feature SHA, matrix source and digest, approval evidence, canonical repository identity, authenticated worktree, complete child environment, ordered commands, limits, and exact artifact paths. It writes the protected sidecar atomically with mode `0600`; the runner verifies its deployment identity, rejects hard-linked/symlinked/malformed evidence, reads it once, and unlinks it. The authorization identifier is separate protected review metadata, not a manifest environment variable.
+
+Execution ordering is fixed:
+
+1. PPA authenticates repository and launch authority and consumes the protected sidecar.
+2. The Pi validation supervisor performs strict schema, authority, repository/Git, environment, command-safety, numeric-limit, cwd, evidence-path, and artifact-path preflight for the entire manifest.
+3. Only after every preflight check passes does the runtime execute commands, unchanged, through `bash -c`, in manifest order with the exact declared cwd and environment.
+4. The first exit, signal, timeout, output cap, logging, checksum, artifact, cleanup, or persistence failure stops the run and marks every untouched command `skipped`. Timeout and output-limit handling sends process-group `TERM`, escalates to `KILL` when needed, and verifies the process group is dead before publishing a terminal result.
+5. The executor atomically publishes a complete terminal ledger. Only then does the supervisor start one admitted reviewer with bounded evidence references. Both admitted success and admitted validation failure proceed to review; admission rejection starts neither a command nor a reviewer.
+
+For a deployment rooted at `$PA_DEPLOYMENT_DIR`, evidence is stored under:
+
+```text
+$PA_DEPLOYMENT_DIR/validation-evidence/
+├── commands/001-<command-id>.stdout.log
+├── commands/001-<command-id>.stderr.log
+├── ledger.json
+└── ledger.json.state
+```
+
+Every attempted command has separate exact-byte stdout and stderr files, including empty streams. Logs, state, and the terminal ledger are mode `0600`; their parent evidence directories are owner-only. Ledger command records include the original command and cwd, timing, status, exit code or signal, process-group cleanup evidence, and each log's path, byte count, retained-byte count, and lowercase raw-byte SHA-256. Declared artifacts must be exact regular files at normalized paths inside the authenticated worktree: directories, globs, symlinks, aliases, and outside-root substitutions are rejected. Artifact records carry exact byte counts, raw-byte SHA-256, and the expected digest when one was declared.
+
+Model-visible lifecycle output is deliberately small: only manifest start/finish and command start/finish events are emitted, at most `2A+2` events for `A` attempted commands, and each serialized event is at most 2,000 JavaScript characters. Raw stdout/stderr is never copied into those events. The reviewer receives a protected prompt of at most 2,000 characters containing the terminal result, ledger path and SHA-256, evidence root, and the already-bound review metadata. Operators must not paste the authorization identifier, protected sidecar, or raw logs into ordinary model prompts, ticket comments, activity text, or troubleshooting output.
+
+### Rejection, admitted failure, and crash recovery
+
+An **admission rejection** means protected launch evidence or whole-manifest preflight did not agree. It produces a bounded diagnostic with exactly Condition, Source, Reason, Correction, and Resume Action, starts zero commands and zero reviewer, and requires a fresh authorized launch rather than retry/resume.
+
+An **admitted validation failure** means authority and preflight passed but execution failed. The runtime preserves exact evidence for attempted commands, marks all later entries skipped, publishes one complete `failed` ledger, and hands only bounded ledger references to the reviewer. There is no command retry or partial resume.
+
+If the executor throws or the supervisor is interrupted after admission, the supervisor reads the private in-progress state, preserves completed log evidence, marks the interrupted entry `executor_crash` when applicable, marks untouched entries skipped, and atomically publishes one `executor_crash` ledger before reviewer handback. An already complete terminal ledger is reused rather than replaced. Authorization IDs are excluded from command environments, logs, lifecycle events, and ledgers throughout recovery.
+
+### Operator checks and troubleshooting
+
+- If validation is rejected, inspect the bounded five-field diagnostic first. Reconcile the exact protected ticket/branch/Feature-SHA/matrix/repository evidence and launch a fresh review; do not edit or replay the consumed sidecar.
+- If a command failed, use `ledger.json` to locate its stdout/stderr files. Check owner-only permissions, compare the ledger byte counts with file sizes, and compute `sha256sum` locally against the recorded 64-lowercase-hex digest. Keep raw content in the operator terminal; do not paste it into model context.
+- For `timeout`, `output_limit`, or `cleanup_failure`, inspect `terminationSignals` and require `processGroupVerifiedDead: true`. A missing or false verification is a terminal failure, not a successful timeout cleanup.
+- For `artifact_failure`, verify the declared path is normalized, inside the authenticated worktree, and an exact regular file. Do not replace it with a symlink, directory, or glob and do not waive a checksum mismatch.
+- For `executor_crash`, compare `ledger.json.state` and the terminal ledger to confirm completed commands retained evidence and all untouched commands are skipped. Preserve both files for diagnosis; never synthesize a passing ledger.
+- Treat missing, non-`0600`, partial, aliased, checksum-mismatched, or non-terminal evidence as invalid. Preserve the deployment directory and relaunch only after correcting the originating authority or persistence problem.
+
 ## Treehouse-backed builder ticket checkouts
 
 PPA uses the pinned Treehouse v2.3.0 CLI as the checkout lifecycle manager while
