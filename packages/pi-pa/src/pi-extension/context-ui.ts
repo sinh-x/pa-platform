@@ -303,7 +303,12 @@ export function formatCompactContext(snapshot: PaContextSnapshot): string {
   }
   const model = [snapshot.model.provider, snapshot.model.model].filter(Boolean).join("/");
   if (model) parts.push(model);
-  parts.push(snapshot.repository.identity);
+  if (snapshot.deployment.available) {
+    parts.push(`repo:${normalizeCompactRepositoryValue(snapshot.repository.key ?? "unavailable")}`);
+    parts.push(`cwd:${normalizeCompactRepositoryValue(snapshot.repository.cwd)}`);
+  } else {
+    parts.push(snapshot.repository.identity);
+  }
   if (snapshot.git.available) parts.push(`git:${snapshot.git.branch ?? "detached"}${snapshot.git.dirty ? "*" : ""}${snapshot.git.stale ? "~" : ""}`);
   else parts.push(`git:unavailable${snapshot.git.stale ? "~" : ""}`);
   const active = snapshot.todo.active ? ` #${snapshot.todo.active.id}:${snapshot.todo.active.text}` : "";
@@ -327,7 +332,7 @@ export function formatContextLines(snapshot: PaContextSnapshot): string[] {
   return [
     ...deployment,
     `Provider / model: ${snapshot.model.provider ?? "unavailable"} / ${snapshot.model.model ?? "unavailable"}`,
-    `Repository: ${snapshot.repository.identity}`,
+    `Repository: ${snapshot.repository.root}`,
     `Path: ${snapshot.repository.cwd}`,
     `Git: ${snapshot.git.available ? `${snapshot.git.branch ?? "detached"}${snapshot.git.dirty ? " (dirty)" : " (clean)"}` : "unavailable"}${snapshot.git.stale ? " (stale)" : ""}`,
     `Freshness: ${new Date(snapshot.updatedAt).toISOString()}${snapshot.stale ? " (stale)" : ""}`,
@@ -382,6 +387,10 @@ export class ContextSidebarComponent {
     this.invalidate();
     this.tui.requestRender();
   }
+}
+
+function normalizeCompactRepositoryValue(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, "?");
 }
 
 function deploymentActor(snapshot: PaContextSnapshot): string {

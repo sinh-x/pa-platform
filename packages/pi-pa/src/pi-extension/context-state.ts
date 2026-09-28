@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 export const CONTEXT_REFRESH_INTERVAL_MS = 2_000;
 export const CONTEXT_LOOKUP_DEADLINE_MS = 500;
 export const PA_CANONICAL_REPO_ROOT_ENV = "PA_REPO_ROOT";
+export const PA_REPO_KEY_ENV = "PA_REPO_KEY";
 
 export interface GitContext {
   available: boolean;
@@ -49,7 +50,13 @@ export interface ModelContext {
 }
 
 export interface RepositoryContext {
+  /** Authoritative registered key for managed sessions; never path-derived. */
+  key?: string;
+  /** Canonical repository root, with the ordinary-session fallback retained. */
+  root: string;
+  /** Execution CWD supplied by Pi and used for Git lookup. */
   cwd: string;
+  /** @deprecated Use root. Retained for existing context consumers. */
   identity: string;
 }
 
@@ -314,9 +321,12 @@ function modelContext(model: ContextRefreshInput["model"], env: NodeJS.ProcessEn
 }
 
 function repositoryContext(cwd: string, env: NodeJS.ProcessEnv): RepositoryContext {
+  const root = nonEmpty(env[PA_CANONICAL_REPO_ROOT_ENV]) ?? nonEmpty(env["PA_REPO"]) ?? (basename(cwd) || cwd);
   return {
+    key: originalIfNonBlank(env[PA_REPO_KEY_ENV]),
+    root,
     cwd,
-    identity: nonEmpty(env[PA_CANONICAL_REPO_ROOT_ENV]) ?? nonEmpty(env["PA_REPO"]) ?? (basename(cwd) || cwd),
+    identity: root,
   };
 }
 
@@ -332,4 +342,8 @@ function todoContext(details: TodoDetails | undefined): TodoContext {
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value?.trim() || undefined;
+}
+
+function originalIfNonBlank(value: string | undefined): string | undefined {
+  return value !== undefined && value.trim().length > 0 ? value : undefined;
 }

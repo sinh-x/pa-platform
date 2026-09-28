@@ -6,6 +6,7 @@ import {
   CONTEXT_LOOKUP_DEADLINE_MS,
   CONTEXT_REFRESH_INTERVAL_MS,
   PA_CANONICAL_REPO_ROOT_ENV,
+  PA_REPO_KEY_ENV,
   ContextRefreshLimiter,
   collectContext,
   initialContextSnapshot,
@@ -35,7 +36,7 @@ function managedSnapshot(): PaContextSnapshot {
   return {
     deployment: { available: true, id: "d-test", team: "builder", mode: "worker", ticket: "PAP-145", launchTicket: "PAP-145", status: "running", projectionAvailable: true, stale: false },
     model: { provider: "openai-codex", model: "gpt-5.4" },
-    repository: { cwd: "/repo/pa-platform", identity: "pa-platform" },
+    repository: { key: "pa-platform", root: "/repo/pa-platform", cwd: "/repo/pa-platform", identity: "/repo/pa-platform" },
     git: { available: true, branch: "feature/PAP-145", dirty: true, stale: false },
     todo: { tasks: TODO.tasks, total: 2, completed: 1, active: TODO.tasks[1] },
     updatedAt: Date.parse("2026-08-26T00:00:00.000Z"),
@@ -55,24 +56,31 @@ test("ordinary sessions retain model, repository, Git, and todo while PA is unav
   });
   assert.equal(snapshot.deployment.available, false);
   assert.deepEqual(snapshot.model, { provider: "anthropic", model: "claude" });
+  assert.equal(snapshot.repository.key, undefined);
+  assert.equal(snapshot.repository.root, "demo");
   assert.equal(snapshot.repository.identity, "demo");
   assert.equal(snapshot.git.branch, "develop");
   assert.equal(snapshot.todo.active?.text, "Context");
-  assert.match(formatCompactContext(snapshot), /PA:unavailable/);
+  const compact = formatCompactContext(snapshot);
+  assert.match(compact, /PA:unavailable/);
+  assert.match(compact, /anthropic\/claude • demo • git:develop • todo:1\/2 #2:Context/);
+  assert.doesNotMatch(compact, /repo:|cwd:/);
 });
 
-test("managed context reads PA identity and deployment status", async () => {
+test("primary-root managed context renders exact adjacent repository key and execution CWD", async () => {
   const env = {
     PA_DEPLOYMENT_ID: "d-test",
     PA_TEAM: "builder",
     PA_MODE: "worker",
     PA_TICKET_ID: "PAP-145",
-    PA_REPO: "pa-platform",
+    PA_REPO: "/repo/pa-platform",
+    [PA_CANONICAL_REPO_ROOT_ENV]: "/repo/pa-platform",
+    [PA_REPO_KEY_ENV]: "pa-platform",
     PA_PROVIDER: "openai-codex",
     PA_MODEL: "gpt-5.4",
   };
-  const initial = initialContextSnapshot({ cwd: "/repo" }, { env, now: () => 1 });
-  const snapshot = await collectContext(initial, { cwd: "/repo" }, {
+  const initial = initialContextSnapshot({ cwd: "/repo/pa-platform" }, { env, now: () => 1 });
+  const snapshot = await collectContext(initial, { cwd: "/repo/pa-platform" }, {
     env,
     now: () => 2,
     gitLookup: async () => ({ available: true, branch: "feature/PAP-145", dirty: true }),
@@ -89,8 +97,12 @@ test("managed context reads PA identity and deployment status", async () => {
     projectionAvailable: true,
     stale: false,
   });
-  assert.match(formatCompactContext(snapshot), /d-test\/builder\/worker\/PAP-145/);
-  assert.match(formatCompactContext(snapshot), /git:feature\/PAP-145\*/);
+  assert.equal(snapshot.repository.key, "pa-platform");
+  assert.equal(snapshot.repository.root, "/repo/pa-platform");
+  assert.equal(snapshot.repository.cwd, "/repo/pa-platform");
+  const compact = formatCompactContext(snapshot);
+  assert.match(compact, /d-test\/builder\/worker\/PAP-145/);
+  assert.match(compact, /openai-codex\/gpt-5\.4 • repo:pa-platform • cwd:\/repo\/pa-platform • git:feature\/PAP-145\*/);
 });
 
 test("registry projection replaces the displayed current ticket without mutating launch evidence", async () => {
@@ -123,6 +135,7 @@ test("managed Alt+I separates canonical repository identity from worktree Path a
     PA_REPO: worktreeRoot,
     PA_WORKTREE_ROOT: worktreeRoot,
     [PA_CANONICAL_REPO_ROOT_ENV]: canonicalRoot,
+    [PA_REPO_KEY_ENV]: "pa-platform",
   };
   let gitLookupCwd = "";
   const initial = initialContextSnapshot({ cwd: worktreeRoot }, { env, now: () => 1 });
@@ -136,13 +149,50 @@ test("managed Alt+I separates canonical repository identity from worktree Path a
     deploymentLookup: async () => "running",
   });
 
+  assert.equal(snapshot.repository.key, "pa-platform");
+  assert.equal(snapshot.repository.root, canonicalRoot);
   assert.equal(snapshot.repository.identity, canonicalRoot);
   assert.equal(snapshot.repository.cwd, worktreeRoot);
   assert.equal(gitLookupCwd, worktreeRoot);
+  assert.match(formatCompactContext(snapshot), /repo:pa-platform • cwd:\/treehouse\/PAP-221\/pa-platform • git:feature\/PAP-221-worktree\*/);
   const lines = formatContextLines(snapshot);
   assert.ok(lines.includes(`Repository: ${canonicalRoot}`));
   assert.ok(lines.includes(`Path: ${worktreeRoot}`));
   assert.ok(lines.includes("Git: feature/PAP-221-worktree (dirty)"));
+});
+
+test("managed compact context uses unavailable for missing or blank repository keys without path derivation", () => {
+  for (const key of [undefined, "", " \t\r\n "]) {
+    const env = {
+      PA_DEPLOYMENT_ID: "d-no-key",
+      PA_REPO: "/treehouse/derived-name",
+      [PA_CANONICAL_REPO_ROOT_ENV]: "/registered/also-not-a-key",
+      ...(key === undefined ? {} : { [PA_REPO_KEY_ENV]: key }),
+    };
+    const snapshot = initialContextSnapshot({ cwd: "/treehouse/derived-name" }, { env, now: () => 1 });
+    assert.equal(snapshot.repository.key, undefined);
+    const compact = formatCompactContext(snapshot);
+    assert.match(compact, /repo:unavailable • cwd:\/treehouse\/derived-name • git:unavailable/);
+    assert.doesNotMatch(compact, /repo:(?:derived-name|also-not-a-key)/);
+  }
+});
+
+test("managed compact key and CWD collapse each maximal C0/C1 run to one question mark", () => {
+  const snapshot = initialContextSnapshot(
+    { cwd: "/tree\u0009\u000a\u0085house/path\u007f\u009fend" },
+    {
+      env: {
+        PA_DEPLOYMENT_ID: "d-control",
+        [PA_CANONICAL_REPO_ROOT_ENV]: "/registered/root",
+        [PA_REPO_KEY_ENV]: "pa\u0000\u0001\u0080-platform\u009f",
+      },
+      now: () => 1,
+    },
+  );
+  const compact = formatCompactContext(snapshot);
+  assert.equal(compact, "PA:d-control • repo:pa?-platform? • cwd:/tree?house/path?end • git:unavailable • todo:0/0");
+  assert.doesNotMatch(compact, /[\u0000-\u001f\u007f-\u009f]/u);
+  assert.equal(compact.split("\n").length, 1);
 });
 
 test("500 ms lookup deadline abandons late values and retains stale prior data", async () => {
@@ -353,7 +403,7 @@ test("compact and expanded rendering expose required context within supplied wid
   const compact = formatCompactContext(snapshot);
   assert.match(compact, /PA:d-test/);
   assert.match(compact, /openai-codex\/gpt-5.4/);
-  assert.match(compact, /pa-platform/);
+  assert.match(compact, /repo:pa-platform • cwd:\/repo\/pa-platform/);
   assert.match(compact, /git:feature\/PAP-145\*/);
   assert.match(compact, /todo:1\/2 #2:Context/);
 
