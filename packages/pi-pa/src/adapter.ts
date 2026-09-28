@@ -12,6 +12,7 @@ import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
+  parsePiProtectedValidationLaunch,
   piReviewerValidationPrompt,
   writePiProtectedValidationLaunch,
   type PiProtectedValidationLaunch,
@@ -169,7 +170,7 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly sessionIdFactory: () => string;
   private readonly secretValues: string[];
   private readonly supervision: PiSupervisionOptions;
-  private readonly protectedValidationLaunch?: PiProtectedValidationLaunch;
+  private readonly protectedValidationLaunches = new Map<string, PiProtectedValidationLaunch>();
 
   constructor(options: PiAdapterOptions = {}) {
     this.cwd = options.cwd ?? process.cwd(); this.env = withoutParentLeaseCapability(options.env ?? process.env);
@@ -180,7 +181,15 @@ export class PiAdapter implements RuntimeAdapter {
     this.sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.secretValues = [...(options.secretValues ?? [])];
     this.supervision = options.supervision ?? {};
-    this.protectedValidationLaunch = options.protectedValidationLaunch;
+    if (options.protectedValidationLaunch) this.registerProtectedValidationLaunch(options.protectedValidationLaunch);
+  }
+
+  registerProtectedValidationLaunch(input: PiProtectedValidationLaunch): void {
+    const launch = parsePiProtectedValidationLaunch(input);
+    if (this.protectedValidationLaunches.has(launch.deploymentId)) {
+      throw new Error("Pi protected validation launch is duplicated for this deployment");
+    }
+    this.protectedValidationLaunches.set(launch.deploymentId, launch);
   }
 
   spawn(opts: SpawnOpts): Promise<SpawnResult> { return this.run(opts); }
@@ -220,7 +229,13 @@ export class PiAdapter implements RuntimeAdapter {
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
     const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
-    const protectedAuthority = [opts.repositoryLease?.ownershipToken, opts.repositoryBorrower?.borrowerToken].filter((value): value is string => Boolean(value));
+    const protectedValidationLaunch = this.protectedValidationLaunches.get(opts.deployId);
+    this.protectedValidationLaunches.delete(opts.deployId);
+    const protectedAuthority = [
+      opts.repositoryLease?.ownershipToken,
+      opts.repositoryBorrower?.borrowerToken,
+      protectedValidationLaunch?.review.authorizationId,
+    ].filter((value): value is string => Boolean(value));
     const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));
     try { assertPiExecutionRootAgreement(plan, opts.env); }
@@ -252,12 +267,17 @@ export class PiAdapter implements RuntimeAdapter {
     args.push(readFileSync(opts.primerPath, "utf8"));
     const piEnv = piRegistryEnvironment(env);
     if (interactive) clearPiTerminalStatus(dirname(opts.primerPath));
+    if (protectedValidationLaunch && (interactive || opts.mode !== "background" || this.runCommand)) {
+      const message = "protected Pi validation requires the production background supervisor";
+      audit.observe("adapter-diagnostic", message, secrets);
+      return failure(message);
+    }
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
       : interactive
         ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision)
         : opts.mode === "background"
-          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision, protectedValidationLaunch: this.protectedValidationLaunch })
+          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision, protectedValidationLaunch })
           : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision);
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets, audit) };

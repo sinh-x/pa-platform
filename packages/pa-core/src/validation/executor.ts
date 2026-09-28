@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   lstat,
@@ -9,6 +10,7 @@ import {
   realpath,
   rename,
   stat,
+  type FileHandle,
 } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -39,7 +41,7 @@ export interface ValidationEvent {
   schemaVersion: "pa-validation-event/v1";
   type: ValidationEventType;
   timestamp: string;
-  manifestSha256: string;
+  manifestSha256?: string;
   commandIndex?: number;
   commandId?: string;
   status?: ValidationCommandStatus | ValidationLedgerResult | "rejected";
@@ -124,6 +126,7 @@ export interface ValidationExecutorOptions {
   abortSignal?: AbortSignal;
   terminationGraceMs?: number;
   terminationVerifyMs?: number;
+  beforeArtifactOpen?: (path: string) => void | Promise<void>;
 }
 
 export interface ValidationExecutionResult {
@@ -168,7 +171,6 @@ export async function executeValidationHandoff(
 ): Promise<ValidationExecutionResult> {
   const events: ValidationEvent[] = [];
   const now = options.now ?? (() => new Date());
-  let manifestSha256 = unknownManifestDigest(input);
 
   const emit = async (event: ValidationEvent): Promise<void> => {
     if (JSON.stringify(event).length > MAX_VALIDATION_EVENT_CHARACTERS) {
@@ -178,12 +180,22 @@ export async function executeValidationHandoff(
     await options.emit?.(event);
   };
 
-  await emit(eventOf("manifest_start", manifestSha256, now));
-
   let handoff: ValidationHandoff;
   try {
     handoff = parseValidationHandoff(input);
-    manifestSha256 = handoff.manifestSha256;
+  } catch (error) {
+    const diagnostic = diagnosticFor(error);
+    await emit({
+      ...eventOf("manifest_finish", undefined, now),
+      status: "rejected",
+      diagnostic,
+    });
+    return { admitted: false, diagnostic, events };
+  }
+
+  const manifestSha256 = handoff.manifestSha256;
+  await emit(eventOf("manifest_start", manifestSha256, now));
+  try {
     assertValidationAuthority(handoff, options.authority);
     await preflightFilesystem(handoff, options);
   } catch (error) {
@@ -247,7 +259,15 @@ export async function executeValidationHandoff(
       commands,
     });
     try {
-      await executeCommand(spec, entry, index, options.evidenceRoot, handoff.manifest.environment, options);
+      await executeCommand(
+        spec,
+        entry,
+        index,
+        options.evidenceRoot,
+        handoff.manifest.repository.worktreeRoot,
+        handoff.manifest.environment,
+        options,
+      );
     } catch (error) {
       entry.status = "logging_failure";
       entry.reason = errorMessage(error);
@@ -422,6 +442,7 @@ async function executeCommand(
   entry: ValidationCommandLedgerEntry,
   index: number,
   evidenceRoot: string,
+  artifactRoot: string,
   environment: Record<string, string>,
   options: ValidationExecutorOptions,
 ): Promise<void> {
@@ -516,7 +537,7 @@ async function executeCommand(
   } else {
     entry.exitCode = 0;
     try {
-      entry.artifacts = await collectArtifacts(spec.artifacts, spec.cwd);
+      entry.artifacts = await collectArtifacts(spec.artifacts, artifactRoot, options.beforeArtifactOpen);
       entry.status = "passed";
     } catch (error) {
       entry.status = "artifact_failure";
@@ -603,32 +624,63 @@ function groupAlive(pid: number): boolean {
   }
 }
 
-async function collectArtifacts(specs: ValidationArtifactSpec[], cwd: string): Promise<ValidationArtifactEvidence[]> {
+async function collectArtifacts(
+  specs: ValidationArtifactSpec[],
+  root: string,
+  beforeOpen?: (path: string) => void | Promise<void>,
+): Promise<ValidationArtifactEvidence[]> {
   const artifacts: ValidationArtifactEvidence[] = [];
+  const canonicalRoot = await realpath(root);
   for (const spec of specs) {
-    const file = await lstat(spec.path);
-    if (!file.isFile() || file.isSymbolicLink()) throw new Error(`artifact is not an exact regular file: ${spec.path}`);
+    const before = await lstat(spec.path);
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error(`artifact is not an exact regular file: ${spec.path}`);
     const canonical = await realpath(spec.path);
+    assertWithin(canonicalRoot, canonical, "artifact collection path");
     if (canonical !== resolve(spec.path)) throw new Error(`artifact resolves through a symlink: ${spec.path}`);
-    const hash = createHash("sha256");
-    let bytes = 0;
-    const handle = await open(spec.path, "r");
+
+    await beforeOpen?.(spec.path);
+    const handle = await openArtifactNoFollow(spec.path);
     try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+        throw new Error(`artifact identity changed before open: ${spec.path}`);
+      }
+      const after = await lstat(spec.path);
+      if (!after.isFile() || after.isSymbolicLink() || after.dev !== opened.dev || after.ino !== opened.ino) {
+        throw new Error(`artifact identity changed during open: ${spec.path}`);
+      }
+      const afterCanonical = await realpath(spec.path);
+      assertWithin(canonicalRoot, afterCanonical, "artifact collection path");
+      if (afterCanonical !== resolve(spec.path)) throw new Error(`artifact resolves through a symlink: ${spec.path}`);
+
+      const hash = createHash("sha256");
+      let bytes = 0;
       for await (const rawChunk of handle.createReadStream({ autoClose: false })) {
         const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as Uint8Array);
         hash.update(chunk);
         bytes += chunk.length;
       }
+      const sha256 = hash.digest("hex");
+      if (spec.expectedSha256 && sha256 !== spec.expectedSha256) {
+        throw new Error(`artifact checksum mismatch: ${spec.path}`);
+      }
+      artifacts.push({ path: spec.path, bytes, sha256, ...(spec.expectedSha256 ? { expectedSha256: spec.expectedSha256 } : {}) });
     } finally {
       await handle.close();
     }
-    const sha256 = hash.digest("hex");
-    if (spec.expectedSha256 && sha256 !== spec.expectedSha256) {
-      throw new Error(`artifact checksum mismatch: ${spec.path}`);
-    }
-    artifacts.push({ path: spec.path, bytes, sha256, ...(spec.expectedSha256 ? { expectedSha256: spec.expectedSha256 } : {}) });
   }
   return artifacts;
+}
+
+async function openArtifactNoFollow(path: string): Promise<FileHandle> {
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  try {
+    return await open(path, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (noFollow === 0 || code !== "EINVAL" && code !== "ENOTSUP") throw error;
+    return open(path, fsConstants.O_RDONLY);
+  }
 }
 
 async function atomicWriteJson(path: string, value: unknown): Promise<void> {
@@ -797,21 +849,13 @@ function terminalLedger(
   return { ...base, finishedAt: now().toISOString(), result, commands };
 }
 
-function eventOf(type: ValidationEventType, manifestSha256: string, now: () => Date): ValidationEvent {
+function eventOf(type: ValidationEventType, manifestSha256: string | undefined, now: () => Date): ValidationEvent {
   return {
     schemaVersion: "pa-validation-event/v1",
     type,
     timestamp: now().toISOString(),
-    manifestSha256,
+    ...(manifestSha256 ? { manifestSha256 } : {}),
   };
-}
-
-function unknownManifestDigest(input: unknown): string {
-  try {
-    return createHash("sha256").update(Buffer.from(JSON.stringify(input), "utf8")).digest("hex");
-  } catch {
-    return "0".repeat(64);
-  }
 }
 
 function diagnosticFor(error: unknown): ValidationDiagnostic {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -175,6 +175,7 @@ test("executes unchanged commands sequentially and fails fast with a complete le
     "manifest_start", "command_start", "command_finish", "command_start", "command_finish", "manifest_finish",
   ]);
   assert.ok(result.events.every((event) => JSON.stringify(event).length <= 2_000));
+  assert.ok(result.events.every((event) => event.manifestSha256 === result.ledger?.manifestSha256));
   const persisted = await assertAtomicTerminalLedger(seed.ledgerPath, "failed");
   assert.equal(persisted["schemaVersion"], "pa-validation-ledger/v1");
 });
@@ -236,8 +237,14 @@ test("rejects every authority, safety, repository, limit, path, and artifact cla
       const result = await executeValidationHandoff(candidate, options(seed));
       assert.equal(result.admitted, false);
       assert.equal(result.ledger, undefined);
-      assert.equal(result.events.length, 2);
-      assert.equal(result.events[1]?.status, "rejected");
+      assert.equal(result.events.at(-1)?.status, "rejected");
+      if (result.events[0]?.type === "manifest_start") {
+        assert.equal(result.events.length, 2);
+        assert.ok(result.events.every((event) => event.manifestSha256 === (candidate as ValidationHandoff).manifestSha256));
+      } else {
+        assert.equal(result.events.length, 1);
+        assert.equal(Object.hasOwn(result.events[0]!, "manifestSha256"), false);
+      }
       assert.ok(result.events.every((event) => JSON.stringify(event).length <= 2_000));
       assert.ok(JSON.stringify(result.diagnostic).length <= 2_000);
       assert.deepEqual(Object.keys(result.diagnostic ?? {}).sort(), [
@@ -400,6 +407,53 @@ test("publishes complete failure ledgers for timeout, output limit, and artifact
   });
 });
 
+test("artifact collection rejects deterministic pathname substitution before hashing", async (t) => {
+  await t.test("outside-root symlink substitution", async () => {
+    const seed = await fixture([]);
+    const artifactPath = resolve(seed.root, "artifact.bin");
+    const preservedPath = resolve(seed.root, "artifact-before-open.bin");
+    const outsideRoot = await mkdtemp(resolve(tmpdir(), "pa-validation-outside-"));
+    fixtureRoots.add(outsideRoot);
+    const outsidePath = resolve(outsideRoot, "substituted.bin");
+    const substituted = Buffer.from("outside substituted bytes");
+    await writeFile(artifactPath, "admitted bytes");
+    await writeFile(outsidePath, substituted);
+    seed.manifest.commands = [command(seed.root, "artifact-race", "true", { artifacts: [{ path: artifactPath }] })];
+
+    const executionOptions = options(seed);
+    executionOptions.beforeArtifactOpen = async (path) => {
+      assert.equal(path, artifactPath);
+      await rename(artifactPath, preservedPath);
+      await symlink(outsidePath, artifactPath);
+    };
+    const result = await executeValidationHandoff(handoff(seed), executionOptions);
+
+    assert.equal(result.ledger?.commands[0]?.status, "artifact_failure");
+    assert.deepEqual(result.ledger?.commands[0]?.artifacts, []);
+    assert.doesNotMatch(await readFile(seed.ledgerPath, "utf8"), new RegExp(sha256(substituted)));
+  });
+
+  await t.test("same-root regular-file replacement", async () => {
+    const seed = await fixture([]);
+    const artifactPath = resolve(seed.root, "artifact.bin");
+    const preservedPath = resolve(seed.root, "artifact-before-open.bin");
+    const substituted = Buffer.from("same-root substituted bytes");
+    await writeFile(artifactPath, "admitted bytes");
+    seed.manifest.commands = [command(seed.root, "artifact-race", "true", { artifacts: [{ path: artifactPath }] })];
+
+    const executionOptions = options(seed);
+    executionOptions.beforeArtifactOpen = async () => {
+      await rename(artifactPath, preservedPath);
+      await writeFile(artifactPath, substituted);
+    };
+    const result = await executeValidationHandoff(handoff(seed), executionOptions);
+
+    assert.equal(result.ledger?.commands[0]?.status, "artifact_failure");
+    assert.deepEqual(result.ledger?.commands[0]?.artifacts, []);
+    assert.doesNotMatch(await readFile(seed.ledgerPath, "utf8"), new RegExp(sha256(substituted)));
+  });
+});
+
 test("success publishes one complete atomic terminal ledger and terminal state", async () => {
   const seed = await fixture([]);
   seed.manifest.commands = [command(seed.root, "success", `${JSON.stringify(process.execPath)} -e "process.stdout.write('ok')"`)];
@@ -410,4 +464,5 @@ test("success publishes one complete atomic terminal ledger and terminal state",
   const state = await readLedger(`${executionOptions.ledgerPath}.state`);
   assert.equal(state["phase"], "terminal");
   assert.equal(result.events.length, 4);
+  assert.ok(result.events.every((event) => event.manifestSha256 === result.ledger?.manifestSha256));
 });

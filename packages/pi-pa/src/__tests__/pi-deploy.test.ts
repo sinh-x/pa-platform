@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,6 +145,81 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     for (const [key, value] of Object.entries(previous)) restore(key, value);
     rmSync(root, { recursive: true, force: true });
   });
+}
+
+function prepareProtectedReview(root: string, authorizationId: string): {
+  objective: string;
+  markerPath: string;
+  matrixSource: string;
+  matrixAuthoritySha256: string;
+  branch: string;
+  featureSha: string;
+} {
+  const repo = join(root, "repo");
+  const branch = "feature/PAP-198-protected-review";
+  if (git(["branch", "--list", branch], repo)) git(["switch", branch], repo);
+  else git(["switch", "-c", branch], repo);
+  const featureSha = git(["rev-parse", "HEAD"], repo);
+  const markerPath = join(repo, "validation-completed.txt");
+  const matrixSource = "agent-teams/requirements/artifacts/protected-review.md";
+  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`if(process.env.PA_REVIEW_AUTHORIZATION_ID)process.exit(91);require('node:fs').writeFileSync(${JSON.stringify(markerPath)},'validation-complete')`)}`;
+  const environment = [
+    "PA_REPO", "PA_TICKET_ID", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256",
+    "PA_MATRIX_APPROVAL_EVIDENCE", "CI", "HOME", "LANG", "TZ", "PATH",
+  ].map((name) => `- \`${name}\` is launcher-bound.`).join("\n");
+  const authority = [
+    "### Full Validation Matrix",
+    "",
+    "**Environment:**",
+    environment,
+    "",
+    "**Commands (run in this exact order):**",
+    "",
+    "1. Production launch ordering fixture:",
+    "```bash",
+    command,
+    "```",
+    "",
+    "**Required Outputs and Artifacts:**",
+    "- One terminal validation ledger.",
+    "",
+    "**Pass Criteria:**",
+    "- The command exits zero before reviewer spawn.",
+    "",
+  ].join("\n");
+  const matrixAuthoritySha256 = createHash("sha256").update(Buffer.from(authority, "utf8")).digest("hex");
+  const matrixPath = join(root, matrixSource);
+  mkdirSync(join(matrixPath, ".."), { recursive: true });
+  writeFileSync(
+    matrixPath,
+    `# Protected review fixture\n> Matrix Authority SHA-256: ${matrixAuthoritySha256}\n\n${authority}## 13. Implementation Plan\nfixture\n`,
+  );
+
+  const approvalCommentId = "c-20260928124221490";
+  const ticketPath = join(root, "tickets", "PAP-198.json");
+  const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as Record<string, unknown>;
+  ticket["linkedBranches"] = [{
+    repo: "pa-platform", branch, state: "materialized", headSha: featureSha,
+    linkedAt: "2026-09-28T00:00:00.000Z", linkedBy: "test",
+  }];
+  ticket["comments"] = [{
+    id: approvalCommentId,
+    author: "sinh",
+    content: `Approved ${matrixSource} at ${matrixAuthoritySha256}`,
+    timestamp: "2026-09-28T00:00:00.000Z",
+  }];
+  writeFileSync(ticketPath, JSON.stringify(ticket));
+  const matrixApprovalEvidence = `PAP-198 comment ${approvalCommentId} by sinh names ${matrixSource} and ${matrixAuthoritySha256}`;
+  const objective = [
+    "Ticket: PAP-198",
+    `Branch: ${branch}`,
+    `Feature SHA: ${featureSha}`,
+    `Matrix Source: ${matrixSource}`,
+    `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+    `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+    `Review Authorization ID: ${authorizationId}`,
+  ].join("\n");
+  return { objective, markerPath, matrixSource, matrixAuthoritySha256, branch, featureSha };
 }
 
 function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onInstall?: (plan: SpawnOpts["executionPlan"]) => void; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
@@ -2035,7 +2111,7 @@ test("one fresh linked-worktree launch keeps every Pi and Git execution CWD equa
   });
 });
 
-test("requirements/review-auto CWD inference keeps canonical and authenticated linked-worktree identities in separate domains", async () => {
+test("ordinary requirements CWD inference keeps canonical and authenticated linked-worktree identities in separate domains", async () => {
   await withPiEnv(async (root) => {
     const primary = join(root, "repo");
     const worktree = join(root, "linked-review-auto");
@@ -2046,7 +2122,7 @@ test("requirements/review-auto CWD inference keeps canonical and authenticated l
 
     const observations: SpawnOpts[] = [];
     const stderr: string[] = [];
-    const code = await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+    const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => stderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: (opts) => observations.push(opts) })),
@@ -2085,7 +2161,7 @@ test("requirements/review-auto CWD inference keeps canonical and authenticated l
     process.chdir(untrustedWorktree);
     let rejectedSpawns = 0;
     const untrustedStderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => untrustedStderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
@@ -2096,13 +2172,126 @@ test("requirements/review-auto CWD inference keeps canonical and authenticated l
     writeFileSync(join(root, "config", "repos.yaml"), `repos:\n  pa-platform:\n    path: ${untrustedPrimary}\n    description: Mismatched canonical identity\n    prefix: PAP\n`);
     process.chdir(worktree);
     const canonicalMismatchStderr: string[] = [];
-    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "review-auto", "--ticket", "PAP-198"], {
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-198"], {
       binaryName: "ppa",
       io: { stdout: () => {}, stderr: (line) => canonicalMismatchStderr.push(line) },
       hooks: createPiHooks(stubAdapter({ onSpawn: () => { rejectedSpawns += 1; } })),
     }), 1);
     assert.equal(rejectedSpawns, 0);
     assert.match(canonicalMismatchStderr.join("\n"), /does not have a unique registered primary repository/i);
+  });
+});
+
+test("production Pi hook constructs protected validation before reviewer spawn and rejects absent, reused, mismatched, or duplicate authority", async () => {
+  await withPiEnv(async (root) => {
+    const repo = join(root, "repo");
+    let launches = 0;
+    let reviewerStarts = 0;
+    let runnerCompletion: Promise<void> | undefined;
+    let capturedConfig: PiBackgroundConfig | undefined;
+    const launcher = new BackgroundDeploymentProcess(99_001);
+    const adapter = new PiAdapter({
+      cwd: repo,
+      env: process.env,
+      versionProbe: () => "0.84.4",
+      nativeRegistryProbe: () => undefined,
+      supervision: {
+        launchBackgroundRunner: ((_runnerPath, configPath) => {
+          launches += 1;
+          const config = readPiBackgroundConfig(configPath);
+          capturedConfig = config;
+          assert.ok(config.validationHandoffPath);
+          assert.doesNotMatch(readFileSync(configPath, "utf8"), /review-auth:/);
+          const reviewer = new BackgroundDeploymentProcess(99_002);
+          runnerCompletion = runPiBackgroundRunner(config, { supervision: {
+            spawnProcess: (() => reviewer as never) as never,
+            onSpawn: () => {
+              reviewerStarts += 1;
+              const ledgerPath = join(getDeployPaths(config.deploymentId).deployDir, "validation-evidence", "ledger.json");
+              assert.equal(readFileSync(join(repo, "validation-completed.txt"), "utf8"), "validation-complete");
+              const ledger = JSON.parse(readFileSync(ledgerPath, "utf8")) as Record<string, unknown>;
+              assert.equal(ledger["result"], "passed");
+              queueMicrotask(() => reviewer.emit("close", 0));
+            },
+          } });
+          return launcher as never;
+        }) as never,
+      },
+    });
+    const hooks = createPiHooks(adapter);
+
+    const absent = await hooks.deploy!({ team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true });
+    assert.equal(absent.status, "failed");
+    assert.match(absent.reason ?? "", /protected review authority fields are absent/);
+    assert.equal(launches, 0);
+
+    const authorization = "review-auth:123e4567-e89b-42d3-a456-426614174000";
+    const fixture = prepareProtectedReview(root, authorization);
+    const deployed = await hooks.deploy!({
+      team: "requirements",
+      mode: "review-auto",
+      ticket: "PAP-198",
+      background: true,
+      objective: fixture.objective,
+      timeout: 60,
+    });
+    assert.equal(deployed.status, "pending", deployed.reason);
+    assert.equal(launches, 1);
+    assert.ok(runnerCompletion);
+    await runnerCompletion;
+    assert.equal(reviewerStarts, 1);
+    assert.ok(capturedConfig);
+    const deployDir = getDeployPaths(deployed.deploymentId!).deployDir;
+    const ledgerBody = readFileSync(join(deployDir, "validation-evidence", "ledger.json"), "utf8");
+    assert.doesNotMatch(ledgerBody, /review-auth:/);
+    assert.doesNotMatch(JSON.stringify(readActivityEvents(getDeployPaths(deployed.deploymentId!).activityLogPath)), /review-auth:/);
+    assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "success");
+
+    const replay = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective, timeout: 60,
+    });
+    assert.equal(replay.status, "failed");
+    assert.match(replay.reason ?? "", /authorization is absent, reused/);
+    assert.equal(launches, 1);
+    assert.equal(reviewerStarts, 1);
+
+    const mismatched = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective
+        .replace(fixture.featureSha, "b".repeat(40))
+        .replace(authorization, "review-auth:223e4567-e89b-42d3-a456-426614174001"),
+      timeout: 60,
+    });
+    assert.equal(mismatched.status, "failed");
+    assert.match(mismatched.reason ?? "", /Feature SHA is stale or mismatched/);
+    assert.equal(launches, 1);
+
+    const duplicateAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174002";
+    const contenderAuthorization = "review-auth:423e4567-e89b-42d3-a456-426614174003";
+    const duplicateObjective = fixture.objective.replace(authorization, duplicateAuthorization);
+    appendRegistryEvent({
+      deployment_id: "d-active-review",
+      team: "requirements",
+      mode: "review-auto",
+      event: "started",
+      timestamp: new Date().toISOString(),
+      runtime: "pi",
+      binary: "ppa",
+      ticket_id: "PAP-198",
+      objective: fixture.objective.replace(authorization, contenderAuthorization),
+      repo,
+      repo_root: repo,
+      worktree_root: repo,
+    });
+    const duplicate = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: duplicateObjective, timeout: 60,
+    });
+    assert.equal(duplicate.status, "failed");
+    assert.match(duplicate.reason ?? "", /another active review or duplicate authority/);
+    assert.equal(launches, 1);
+    assert.equal(reviewerStarts, 1);
   });
 });
 
@@ -2972,7 +3161,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
     ].join("\n") + "\n");
     writeFileSync(join(root, "teams", "requirements.yaml"), [
       "name: requirements", "description: Requirements", "objective: Review", "agents: []", "deploy_modes:",
-      "  - id: review-auto", "    label: Review Auto", "    provider: openai", "    model: openai/gpt-5.6-sol",
+      "  - id: analyze", "    label: Analyze", "    provider: openai", "    model: openai/gpt-5.6-sol",
     ].join("\n") + "\n");
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
@@ -2984,7 +3173,7 @@ test("active builder and requirements modes keep one normalized pair across Pi e
       },
     });
 
-    for (const [team, mode] of [["builder", "implement"], ["builder", "orchestrator"], ["requirements", "review-auto"]] as const) {
+    for (const [team, mode] of [["builder", "implement"], ["builder", "orchestrator"], ["requirements", "analyze"]] as const) {
       const result = await deployWithPi({ team, mode }, adapter);
       assert.equal(result.status, "success", result.reason);
       const invocation = invocations.at(-1)!;

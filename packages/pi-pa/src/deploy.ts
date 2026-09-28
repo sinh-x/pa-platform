@@ -8,6 +8,8 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
+import { createPiProtectedValidationLaunch, isPiProtectedReviewRequest } from "./validation-launch.js";
+import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -403,6 +405,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     observe("deploy-diagnostic", resultReason, env);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: resultReason };
   };
+  let protectedValidationLaunch: PiProtectedValidationLaunch | undefined;
+  if (isPiProtectedReviewRequest(request, plan)) {
+    if (!(adapter instanceof PiAdapter)) {
+      return completeFailure("protected Pi review launch requires the production PiAdapter");
+    }
+    try {
+      protectedValidationLaunch = createPiProtectedValidationLaunch({ deploymentId, request, plan, environment: env });
+    } catch (error) {
+      return completeFailure(error instanceof Error ? error.message : String(error));
+    }
+  }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
@@ -568,6 +581,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       publishedPid = pid;
     };
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    if (protectedValidationLaunch) {
+      (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
+    }
     dependencies.observeOperation?.("runtime-spawn");
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
