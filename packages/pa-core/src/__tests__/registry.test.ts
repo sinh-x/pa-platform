@@ -133,6 +133,7 @@ test("review authorization claim atomically enforces one-use and active ticket/b
 
     const objectiveReplay = start("d-review-replay", authorizationOne);
     expectClaimError(() => claim("d-review-replay", authorizationOne, objectiveReplay), "authorization-consumed");
+    appendRegistryEvent({ deployment_id: "d-review-replay", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
 
     const authorizationTwo = "review-auth:223e4567-e89b-42d3-a456-426614174001";
     const objectiveTwo = start("d-review-two", authorizationTwo);
@@ -147,7 +148,74 @@ test("review authorization claim atomically enforces one-use and active ticket/b
 
     appendRegistryEvent({ deployment_id: "d-review-two", team: "requirements", event: "crashed", timestamp: new Date().toISOString(), error: "fixture crash", exit_code: 1 });
     assert.equal(queryReviewAuthorizationClaim(authorizationTwo)?.active, false);
-    expectClaimError(() => claim("d-review-replay", authorizationOne, objectiveReplay), "authorization-consumed");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review authorization claim rejects legacy running exact-ticket branches, excludes self, and serializes contenders", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-legacy-review-claim-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const objectiveFor = (authorizationId: string, objectiveBranch = branch): string => [
+    `Ticket: ${ticketId}`,
+    `Branch: ${objectiveBranch}`,
+    `Feature SHA: ${featureSha}`,
+    `Matrix Source: ${matrixSource}`,
+    `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+    `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+    `Review Authorization ID: ${authorizationId}`,
+  ].join("\n");
+  const start = (deploymentId: string, objective: string): void => appendRegistryEvent({
+    deployment_id: deploymentId,
+    team: "requirements",
+    mode: "review-auto",
+    event: "started",
+    timestamp: new Date().toISOString(),
+    runtime: "pi",
+    binary: "ppa",
+    ticket_id: ticketId,
+    objective,
+  });
+  const claim = (deploymentId: string, authorizationId: string, objective: string) => claimReviewAuthorization({
+    deploymentId, authorizationId, ticketId, branch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective,
+  });
+  const expectActiveReview = (run: () => unknown): void => assert.throws(
+    run,
+    (error: unknown) => error instanceof ReviewAuthorizationClaimError
+      && error.code === "active-review"
+      && /running requirements\/review-auto deployment.*legacy deployment without a claim/.test(error.message),
+  );
+  try {
+    const legacyAuthorization = "review-auth:123e4567-e89b-42d3-a456-426614174010";
+    start("d-legacy-review", objectiveFor(legacyAuthorization));
+
+    const firstAuthorization = "review-auth:223e4567-e89b-42d3-a456-426614174011";
+    const firstObjective = objectiveFor(firstAuthorization);
+    start("d-first-contender", firstObjective);
+    const secondAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174012";
+    const secondObjective = objectiveFor(secondAuthorization);
+    start("d-second-contender", secondObjective);
+
+    expectActiveReview(() => claim("d-first-contender", firstAuthorization, firstObjective));
+    expectActiveReview(() => claim("d-second-contender", secondAuthorization, secondObjective));
+    assert.deepEqual(queryReviewAuthorizationClaims(), [], "legacy reconciliation leaves concurrent contenders unconsumed");
+
+    appendRegistryEvent({ deployment_id: "d-legacy-review", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+    appendRegistryEvent({ deployment_id: "d-second-contender", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+    const admitted = claim("d-first-contender", firstAuthorization, firstObjective);
+    assert.equal(admitted.deploymentId, "d-first-contender", "the current deployment never rejects itself");
+    assert.equal(admitted.active, true);
+    assert.equal(queryReviewAuthorizationClaims().length, 1);
   } finally {
     closeDb();
     if (previous === undefined) delete process.env["PA_REGISTRY_DB"];

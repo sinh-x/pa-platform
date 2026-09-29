@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { closeSync, constants as fsConstants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import {
   VALIDATION_HANDOFF_SCHEMA_VERSION,
@@ -39,6 +39,10 @@ const REQUIRED_OBJECTIVE_FIELDS = [
 ] as const;
 const OPTIONAL_OBJECTIVE_FIELDS = new Set(["PR", "Changed Files", "Requested Review Areas"]);
 const ALLOWED_OBJECTIVE_FIELDS = new Set<string>([...REQUIRED_OBJECTIVE_FIELDS, ...OPTIONAL_OBJECTIVE_FIELDS]);
+export const PI_MATRIX_ATTEMPT_STATE_DIRECTORY = "team-manager";
+export const PI_MATRIX_ATTEMPT_STATE_FILE = "review-attempt-state.jsonl";
+const MATRIX_START_EVENT_SCHEMA_VERSION = "pa-review-attempt-event/v1" as const;
+const MAX_MATRIX_START_EVENT_BYTES = 64 * 1024;
 const MATRIX_ENVIRONMENT_NAMES = [
   "PA_REPO",
   "PA_TICKET_ID",
@@ -90,13 +94,194 @@ interface PrerequisiteContext {
 
 export interface PiValidationLaunchInput {
   deploymentId: string;
+  deploymentDirectory: string;
   request: DeployRequest;
   plan: ExecutionPlan;
   environment: Record<string, string>;
 }
 
+export interface PiMatrixStartedEvent {
+  schemaVersion: typeof MATRIX_START_EVENT_SCHEMA_VERSION;
+  type: "matrix-started";
+  timestamp: string;
+  deploymentId: string;
+  authorizationId: string;
+  ticketId: string;
+  branch: string;
+  featureSha: string;
+  matrixSource: string;
+  matrixAuthoritySha256: string;
+  matrixApprovalEvidence: string;
+  repoKey: string;
+  repoRoot: string;
+  worktreeRoot: string;
+}
+
+export interface PiMatrixStartDependencies {
+  now?: () => Date;
+  afterWrite?: () => void;
+  afterFileFsync?: () => void;
+  afterParentFsync?: () => void;
+}
+
 export function isPiProtectedReviewRequest(request: DeployRequest, plan: ExecutionPlan): boolean {
   return request.team === "requirements" && plan.mode === "review-auto";
+}
+
+export function piMatrixAttemptStatePath(deploymentDirectory: string): string {
+  return resolve(deploymentDirectory, PI_MATRIX_ATTEMPT_STATE_DIRECTORY, PI_MATRIX_ATTEMPT_STATE_FILE);
+}
+
+export function writePiMatrixStartedEvent(
+  input: { deploymentDirectory: string; event: Omit<PiMatrixStartedEvent, "schemaVersion" | "type" | "timestamp"> },
+  dependencies: PiMatrixStartDependencies = {},
+): PiMatrixStartedEvent {
+  const parent = resolve(input.deploymentDirectory, PI_MATRIX_ATTEMPT_STATE_DIRECTORY);
+  const path = piMatrixAttemptStatePath(input.deploymentDirectory);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertSecureMatrixStartParent(parent);
+  fsyncDirectory(dirname(parent));
+
+  const existing = readPiMatrixStartedEventIfPresent(path);
+  if (existing) return reconcilePiMatrixStartedEvent(path, parent, existing, input.event, dependencies);
+
+  const event: PiMatrixStartedEvent = {
+    schemaVersion: MATRIX_START_EVENT_SCHEMA_VERSION,
+    type: "matrix-started",
+    timestamp: (dependencies.now ?? (() => new Date()))().toISOString(),
+    ...input.event,
+  };
+  validatePiMatrixStartedEvent(event);
+  const body = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
+  if (body.length > MAX_MATRIX_START_EVENT_BYTES) throw new Error("matrix-started event exceeds its durable size limit");
+
+  const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, flags, 0o600);
+    fchmodSync(descriptor, 0o600);
+    let offset = 0;
+    while (offset < body.length) {
+      const written = writeSync(descriptor, body, offset, body.length - offset);
+      if (written <= 0) throw new Error("matrix-started journal write made no progress");
+      offset += written;
+    }
+    dependencies.afterWrite?.();
+    fsyncSync(descriptor);
+    dependencies.afterFileFsync?.();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const raced = readPiMatrixStartedEvent(path);
+      return reconcilePiMatrixStartedEvent(path, parent, raced, input.event, dependencies);
+    }
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  fsyncDirectory(parent);
+  dependencies.afterParentFsync?.();
+  const persisted = readPiMatrixStartedEvent(path);
+  if (!matrixStartedIdentityEqual(persisted, event)) throw new Error("matrix-started durable readback does not match the launch identity");
+  return Object.freeze(persisted);
+}
+
+export function assertPiMatrixStartedForLaunch(deploymentDirectory: string, launch: PiProtectedValidationLaunch): PiMatrixStartedEvent {
+  const event = readPiMatrixStartedEvent(piMatrixAttemptStatePath(deploymentDirectory));
+  if (event.deploymentId !== launch.deploymentId || event.deploymentId !== launch.review.reviewDeploymentId
+    || event.authorizationId !== launch.review.authorizationId || event.ticketId !== launch.review.ticketId
+    || event.branch !== launch.review.branch || event.featureSha !== launch.review.featureSha
+    || event.matrixSource !== launch.review.matrixSource || event.matrixAuthoritySha256 !== launch.review.matrixAuthoritySha256
+    || event.matrixApprovalEvidence !== launch.review.matrixApprovalEvidence
+    || event.repoKey !== launch.authority.repository.repoKey || event.repoRoot !== launch.authority.repository.canonicalRoot
+    || event.worktreeRoot !== launch.authority.repository.worktreeRoot) {
+    throw new Error("matrix-started event does not match the protected validation launch identity");
+  }
+  return event;
+}
+
+export function readPiMatrixStartedEvent(path: string): PiMatrixStartedEvent {
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || (file.mode & 0o777) !== 0o600
+    || file.size === 0 || file.size > MAX_MATRIX_START_EVENT_BYTES) {
+    throw new Error("matrix-started journal is insecure, empty, or oversized");
+  }
+  const body = readFileSync(path, "utf8");
+  if (!body.endsWith("\n") || body.slice(0, -1).includes("\n")) {
+    throw new Error("matrix-started journal must contain exactly one complete event");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(body.slice(0, -1)); }
+  catch { throw new Error("matrix-started journal contains malformed JSON"); }
+  return validatePiMatrixStartedEvent(parsed);
+}
+
+function readPiMatrixStartedEventIfPresent(path: string): PiMatrixStartedEvent | undefined {
+  try { return readPiMatrixStartedEvent(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function reconcilePiMatrixStartedEvent(
+  path: string,
+  parent: string,
+  persisted: PiMatrixStartedEvent,
+  expected: Omit<PiMatrixStartedEvent, "schemaVersion" | "type" | "timestamp">,
+  dependencies: PiMatrixStartDependencies,
+): PiMatrixStartedEvent {
+  if (!matrixStartedIdentityEqual(persisted, expected)) {
+    throw new Error("matrix-started recovery identity does not match the current protected launch");
+  }
+  const descriptor = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  fsyncDirectory(parent);
+  dependencies.afterParentFsync?.();
+  return Object.freeze(persisted);
+}
+
+function validatePiMatrixStartedEvent(input: unknown): PiMatrixStartedEvent {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("matrix-started event must be an object");
+  const row = input as Record<string, unknown>;
+  const keys = ["schemaVersion", "type", "timestamp", "deploymentId", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence", "repoKey", "repoRoot", "worktreeRoot"].sort();
+  if (JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(keys)
+    || row["schemaVersion"] !== MATRIX_START_EVENT_SCHEMA_VERSION || row["type"] !== "matrix-started") {
+    throw new Error("matrix-started event schema is invalid");
+  }
+  for (const field of keys.filter((key) => key !== "schemaVersion" && key !== "type")) {
+    if (typeof row[field] !== "string" || row[field].length === 0) throw new Error(`matrix-started event ${field} is invalid`);
+  }
+  const timestamp = String(row["timestamp"]);
+  if (new Date(timestamp).toISOString() !== timestamp
+    || !REVIEW_AUTHORIZATION.test(String(row["authorizationId"]))
+    || !GIT_SHA.test(String(row["featureSha"])) || !SHA256.test(String(row["matrixAuthoritySha256"]))) {
+    throw new Error("matrix-started event authority format is invalid");
+  }
+  return row as unknown as PiMatrixStartedEvent;
+}
+
+function matrixStartedIdentityEqual(
+  persisted: PiMatrixStartedEvent,
+  expected: Omit<PiMatrixStartedEvent, "schemaVersion" | "type" | "timestamp"> | PiMatrixStartedEvent,
+): boolean {
+  return persisted.deploymentId === expected.deploymentId && persisted.authorizationId === expected.authorizationId
+    && persisted.ticketId === expected.ticketId && persisted.branch === expected.branch
+    && persisted.featureSha === expected.featureSha && persisted.matrixSource === expected.matrixSource
+    && persisted.matrixAuthoritySha256 === expected.matrixAuthoritySha256
+    && persisted.matrixApprovalEvidence === expected.matrixApprovalEvidence && persisted.repoKey === expected.repoKey
+    && persisted.repoRoot === expected.repoRoot && persisted.worktreeRoot === expected.worktreeRoot;
+}
+
+function assertSecureMatrixStartParent(parent: string): void {
+  const directory = lstatSync(parent);
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0) {
+    throw new Error("matrix-started parent must be a private real directory");
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  const descriptor = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
 export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput): PiProtectedValidationLaunch {
@@ -124,8 +309,30 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
   }
   if (plan.runtime !== "pi" || plan.team !== "requirements" || plan.repositoryCwd !== plan.worktreeRoot
     || plan.environment.PA_REPO !== plan.worktreeRoot || plan.environment.PA_WORKTREE_ROOT !== plan.worktreeRoot
-    || plan.environment.PA_REPO_ROOT !== plan.repoRoot) {
-    throw launchError("review repository identity", "immutable Pi canonical and authenticated worktree identity domains do not agree");
+    || plan.environment.PA_REPO_ROOT !== plan.repoRoot
+    || plan.environment.PA_DEPLOYMENT_DIR !== input.deploymentDirectory) {
+    throw launchError("review repository identity", "immutable Pi canonical, authenticated worktree, and deployment workspace identity domains do not agree");
+  }
+
+  try {
+    writePiMatrixStartedEvent({
+      deploymentDirectory: input.deploymentDirectory,
+      event: {
+        deploymentId,
+        authorizationId,
+        ticketId,
+        branch,
+        featureSha,
+        matrixSource,
+        matrixAuthoritySha256,
+        matrixApprovalEvidence,
+        repoKey: plan.repoKey,
+        repoRoot: plan.repoRoot,
+        worktreeRoot: plan.worktreeRoot,
+      },
+    });
+  } catch (error) {
+    throw launchError("durable matrix-start boundary", error instanceof Error ? error.message : String(error));
   }
 
   const matrix = readApprovedMatrix(matrixSource);

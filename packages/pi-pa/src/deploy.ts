@@ -411,7 +411,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       return completeFailure("protected Pi review launch requires the production PiAdapter");
     }
     try {
-      protectedValidationLaunch = createPiProtectedValidationLaunch({ deploymentId, request, plan, environment: env });
+      protectedValidationLaunch = createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env });
     } catch (error) {
       return completeFailure(error instanceof Error ? error.message : String(error));
     }

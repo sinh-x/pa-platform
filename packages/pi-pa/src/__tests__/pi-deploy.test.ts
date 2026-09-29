@@ -12,6 +12,7 @@ import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendR
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
+import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { collectContext, initialContextSnapshot } from "../pi-extension/context-state.js";
@@ -23,6 +24,11 @@ function restore(name: string, value: string | undefined): void { if (value === 
 function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+const REAL_NODE = process.execPath;
+const REAL_BASH = execFileSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).trim();
+const PROTECTED_REVIEW_NODE_VERSION = "v22.23.2";
+const PROTECTED_REVIEW_PNPM_VERSION = "10.28.0";
+const PROTECTED_REVIEW_PI_VERSION = "0.84.4";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -129,7 +135,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     "  - id: review-auto",
     "    label: Review Auto",
   ].join("\n") + "\n");
-  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  const previous = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_REGISTRY_DB", "PA_AI_USAGE_HOME", "PA_MAX_RUNTIME", "PATH", "HOME"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const gitState = installGitStateRecorder(root);
   const previousCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;
@@ -137,6 +143,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PATH"] = `${gitState.binDir}:${previous["PATH"] ?? ""}`;
+  process.env["HOME"] = "/home/sinh";
   delete process.env["PA_MAX_RUNTIME"];
   process.chdir(repo);
   return fn(root, gitState).finally(() => {
@@ -187,7 +194,7 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   const environment = environmentNames.map((name) => `- \`${name}\` is launcher-bound.`).join("\n");
   const prerequisites = [
     `- Linux \`x86_64\`; canonical repository \`${options.canonicalRepoKey ?? "pa-platform"}\`; authenticated ticket checkout on \`${branch}\`; clean tracked and untracked state; \`HEAD\` equals the launch-intent Feature SHA and descends from \`${baseSha}\`.`,
-    `- Node.js \`${options.nodeVersion ?? process.version}\`, pnpm \`${execFileSync("corepack", ["pnpm", "--version"], { encoding: "utf8" }).trim()}\` through Corepack, Pi \`${execFileSync("pi", ["--version"], { encoding: "utf8" }).trim()}\`, Git, Bash, Nix, and the repository's existing installed dependencies including \`better-sqlite3@${options.expectedDependencyVersion ?? "13.0.3"}\`.`,
+    `- Node.js \`${options.nodeVersion ?? PROTECTED_REVIEW_NODE_VERSION}\`, pnpm \`${PROTECTED_REVIEW_PNPM_VERSION}\` through Corepack, Pi \`${PROTECTED_REVIEW_PI_VERSION}\`, Git, Bash, Nix, and the repository's existing installed dependencies including \`better-sqlite3@${options.expectedDependencyVersion ?? "13.0.3"}\`.`,
     `- The approved requirements artifact exists at \`${join(root, matrixSource)}\` and its header, durable PAP-198 approval comment, launch intent, and recomputed raw matrix digest agree exactly.`,
     "- The trusted launcher has atomically consumed the one-use review authorization, rejected duplicate active review lineage, and supplied the complete explicit command environment. The authorization ID is excluded from command child environments, logs, activity progress, and ledger artifacts; it is supplied separately to the reviewer for exact objective, report, and registry agreement. No project command starts before these checks pass.",
   ].join("\n");
@@ -266,10 +273,20 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
 function installProtectedReviewToolFixture(root: string): void {
   const bin = join(root, "protected-review-bin");
   mkdirSync(bin, { recursive: true });
-  const nix = join(bin, "nix");
-  writeFileSync(nix, "#!/bin/sh\nprintf '%s\\n' 'nix (Nix) test-fixture'\n");
-  chmodSync(nix, 0o755);
-  process.env["PATH"] = `${bin}:${process.env["PATH"] ?? ""}`;
+  const scripts: Record<string, string> = {
+    node: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' '${PROTECTED_REVIEW_NODE_VERSION}'; exit 0; fi\nexec ${JSON.stringify(REAL_NODE)} "$@"\n`,
+    corepack: `#!/bin/sh\nif [ "$#" -eq 2 ] && [ "$1" = pnpm ] && [ "$2" = --version ]; then printf '%s\\n' '${PROTECTED_REVIEW_PNPM_VERSION}'; exit 0; fi\nexit 64\n`,
+    pi: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' '${PROTECTED_REVIEW_PI_VERSION}'; exit 0; fi\nexit 64\n`,
+    git: `#!/bin/sh\nexec ${JSON.stringify(REAL_GIT)} "$@"\n`,
+    bash: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' 'GNU bash, fixture'; exit 0; fi\nexec ${JSON.stringify(REAL_BASH)} "$@"\n`,
+    nix: "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = --version ]; then printf '%s\\n' 'nix (Nix) fixture'; exit 0; fi\nexit 64\n",
+  };
+  for (const [name, script] of Object.entries(scripts)) {
+    const path = join(bin, name);
+    writeFileSync(path, script);
+    chmodSync(path, 0o755);
+  }
+  process.env["PATH"] = bin;
 }
 
 function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onInstall?: (plan: SpawnOpts["executionPlan"]) => void; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
@@ -2232,6 +2249,78 @@ test("ordinary requirements CWD inference keeps canonical and authenticated link
   });
 });
 
+test("matrix-start journal is identity-bound, exactly once, durable before return, and fail-closed across crash recovery", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-matrix-start-"));
+  const deploymentDirectory = join(root, "deployments", "d-matrix-start");
+  mkdirSync(deploymentDirectory, { recursive: true, mode: 0o700 });
+  const identity = {
+    deploymentId: "d-matrix-start",
+    authorizationId: "review-auth:123e4567-e89b-42d3-a456-426614174000",
+    ticketId: "PAP-223",
+    branch: "feature/PAP-223-structured-validation-executor",
+    featureSha: "a".repeat(40),
+    matrixSource: "agent-teams/requirements/artifacts/pap-223.md",
+    matrixAuthoritySha256: "b".repeat(64),
+    matrixApprovalEvidence: "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest",
+    repoKey: "pa-platform",
+    repoRoot: "/canonical/pa-platform",
+    worktreeRoot: "/authenticated/pa-platform",
+  };
+  try {
+    const order: string[] = [];
+    const event = writePiMatrixStartedEvent(
+      { deploymentDirectory, event: identity },
+      {
+        now: () => new Date("2026-09-29T09:35:57.263Z"),
+        afterWrite: () => order.push("write"),
+        afterFileFsync: () => order.push("file-fsync"),
+        afterParentFsync: () => order.push("parent-fsync"),
+      },
+    );
+    assert.deepEqual(order, ["write", "file-fsync", "parent-fsync"]);
+    assert.deepEqual(event, {
+      schemaVersion: "pa-review-attempt-event/v1",
+      type: "matrix-started",
+      timestamp: "2026-09-29T09:35:57.263Z",
+      ...identity,
+    });
+    const path = piMatrixAttemptStatePath(deploymentDirectory);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.deepEqual(readPiMatrixStartedEvent(path), event);
+    assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 1);
+
+    const reconciled = writePiMatrixStartedEvent(
+      { deploymentDirectory, event: identity },
+      { now: () => new Date("2026-09-29T10:00:00.000Z") },
+    );
+    assert.deepEqual(reconciled, event, "recovery preserves the one original identity-bound event");
+    assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 1);
+    assert.throws(
+      () => writePiMatrixStartedEvent({ deploymentDirectory, event: { ...identity, featureSha: "c".repeat(40) } }),
+      /recovery identity does not match/,
+    );
+
+    const crashDirectory = join(root, "deployments", "d-crash-boundary");
+    mkdirSync(crashDirectory, { recursive: true, mode: 0o700 });
+    const crashIdentity = { ...identity, deploymentId: "d-crash-boundary" };
+    assert.throws(
+      () => writePiMatrixStartedEvent(
+        { deploymentDirectory: crashDirectory, event: crashIdentity },
+        { afterFileFsync: () => { throw new Error("simulated crash before parent fsync"); } },
+      ),
+      /simulated crash/,
+    );
+    const recovered = writePiMatrixStartedEvent({ deploymentDirectory: crashDirectory, event: crashIdentity });
+    assert.equal(recovered.deploymentId, "d-crash-boundary");
+    assert.equal(readFileSync(piMatrixAttemptStatePath(crashDirectory), "utf8").split("\n").filter(Boolean).length, 1);
+
+    writeFileSync(path, `${readFileSync(path, "utf8")}{}\n`, { mode: 0o600 });
+    assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }), /exactly one complete event/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("production Pi hook constructs protected validation before reviewer spawn and rejects absent, reused, mismatched, or duplicate authority", async () => {
   await withPiEnv(async (root) => {
     installProtectedReviewToolFixture(root);
@@ -2240,6 +2329,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     let reviewerStarts = 0;
     let runnerCompletion: Promise<void> | undefined;
     let capturedConfig: PiBackgroundConfig | undefined;
+    let removeMatrixStartBeforeRunner = false;
     const launcher = new BackgroundDeploymentProcess(99_001);
     const adapter = new PiAdapter({
       cwd: repo,
@@ -2253,6 +2343,10 @@ test("production Pi hook constructs protected validation before reviewer spawn a
           capturedConfig = config;
           assert.ok(config.validationHandoffPath);
           assert.doesNotMatch(readFileSync(configPath, "utf8"), /review-auth:/);
+          if (removeMatrixStartBeforeRunner) {
+            removeMatrixStartBeforeRunner = false;
+            rmSync(piMatrixAttemptStatePath(getDeployPaths(config.deploymentId).deployDir));
+          }
           const reviewer = new BackgroundDeploymentProcess(99_002);
           runnerCompletion = runPiBackgroundRunner(config, { supervision: {
             spawnProcess: (() => reviewer as never) as never,
@@ -2336,6 +2430,10 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     });
     assert.equal(dirty.status, "failed");
     assert.match(dirty.reason ?? "", /authenticated clean checkout/);
+    assert.ok(dirty.deploymentId);
+    const dirtyMatrixStart = readPiMatrixStartedEvent(piMatrixAttemptStatePath(getDeployPaths(dirty.deploymentId!).deployDir));
+    assert.equal(dirtyMatrixStart.deploymentId, dirty.deploymentId, "prerequisite 1 cannot precede durable matrix-start identity");
+    assert.equal(queryReviewAuthorizationClaims().length, 0, "prerequisite 1 failure occurs before authorization claim");
     assert.equal(launches, 0, "dirty prerequisite started zero matrix commands");
     assert.equal(reviewerStarts, 0, "dirty prerequisite started zero reviewers");
     rmSync(join(repo, "dirty-review-state.txt"));
@@ -2361,6 +2459,20 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       assert.equal(existsSync(fixture.markerPath), false, `${failure.name} did not run command 1`);
     }
 
+    const crashBoundaryAuthorization = "review-auth:723e4567-e89b-42d3-a456-426614174006";
+    const crashBoundaryFixture = prepareProtectedReview(root, crashBoundaryAuthorization);
+    removeMatrixStartBeforeRunner = true;
+    const crashBoundary = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: crashBoundaryFixture.objective, timeout: 60,
+    });
+    assert.equal(crashBoundary.status, "failed");
+    assert.match(crashBoundary.reason ?? "", /matrix-started|review-attempt-state/);
+    assert.ok(runnerCompletion);
+    await runnerCompletion;
+    assert.equal(existsSync(crashBoundaryFixture.markerPath), false, "crash after launch admission starts zero matrix commands");
+    assert.equal(reviewerStarts, 0, "crash after launch admission starts zero reviewers");
+
     fixture = prepareProtectedReview(root, authorization);
     const deployed = await hooks.deploy!({
       team: "requirements",
@@ -2371,12 +2483,19 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       timeout: 60,
     });
     assert.equal(deployed.status, "pending", deployed.reason);
-    assert.equal(launches, 1);
+    assert.equal(launches, 2);
     assert.ok(runnerCompletion);
     await runnerCompletion;
     assert.equal(reviewerStarts, 1);
     assert.ok(capturedConfig);
     const deployDir = getDeployPaths(deployed.deploymentId!).deployDir;
+    const matrixStart = readPiMatrixStartedEvent(piMatrixAttemptStatePath(deployDir));
+    const durableClaim = queryReviewAuthorizationClaims().find((claim) => claim.authorizationId === authorization);
+    assert.equal(matrixStart.deploymentId, deployed.deploymentId);
+    assert.equal(matrixStart.authorizationId, authorization);
+    assert.ok(durableClaim);
+    assert.ok(matrixStart.timestamp <= durableClaim.claimedAt, "durable matrix-start precedes authorization claim");
+    assert.equal(readFileSync(piMatrixAttemptStatePath(deployDir), "utf8").split("\n").filter(Boolean).length, 1);
     const ledgerBody = readFileSync(join(deployDir, "validation-evidence", "ledger.json"), "utf8");
     assert.doesNotMatch(ledgerBody, /review-auth:/);
     assert.doesNotMatch(JSON.stringify(readActivityEvents(getDeployPaths(deployed.deploymentId!).activityLogPath)), /review-auth:/);
@@ -2388,7 +2507,9 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     });
     assert.equal(replay.status, "failed");
     assert.match(replay.reason ?? "", /already has a durable registry consumer/);
-    assert.equal(launches, 1);
+    assert.ok(replay.deploymentId);
+    assert.equal(readPiMatrixStartedEvent(piMatrixAttemptStatePath(getDeployPaths(replay.deploymentId!).deployDir)).authorizationId, authorization);
+    assert.equal(launches, 2);
     assert.equal(reviewerStarts, 1);
 
     const mismatched = await hooks.deploy!({
@@ -2400,7 +2521,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     });
     assert.equal(mismatched.status, "failed");
     assert.match(mismatched.reason ?? "", /branch, HEAD, or durable ticket binding is unmet/);
-    assert.equal(launches, 1);
+    assert.equal(launches, 2);
 
     const duplicateAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174002";
     const contenderAuthorization = "review-auth:423e4567-e89b-42d3-a456-426614174003";
@@ -2437,7 +2558,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     });
     assert.equal(duplicate.status, "failed");
     assert.match(duplicate.reason ?? "", /another durable active review claim/);
-    assert.equal(launches, 1);
+    assert.equal(launches, 2);
     assert.equal(reviewerStarts, 1);
   });
 });

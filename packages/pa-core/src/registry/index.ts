@@ -189,6 +189,24 @@ export function claimReviewAuthorization(input: ReviewAuthorizationClaimInput): 
     if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE ticket_id = ? AND branch = ? AND active = 1").get(input.ticketId, input.branch)) {
       throw reviewClaimError("active-review", "another durable active review claim exists for the ticket and branch");
     }
+    const legacyRunningReviews = db.prepare(`
+      SELECT start.deployment_id, start.objective
+      FROM registry_events AS start
+      JOIN deployments AS projection ON projection.deployment_id = start.deployment_id
+      WHERE start.event = 'started'
+        AND start.team = 'requirements'
+        AND start.mode = 'review-auto'
+        AND start.ticket_id = ?
+        AND projection.status = 'running'
+        AND projection.team = 'requirements'
+        AND projection.mode = 'review-auto'
+        AND projection.ticket_id = ?
+        AND start.deployment_id <> ?
+      ORDER BY start.id
+    `).all(input.ticketId, input.ticketId, input.deploymentId) as Array<{ deployment_id: string; objective: unknown }>;
+    if (legacyRunningReviews.some((review) => exactObjectiveField(review.objective, "Branch") === input.branch)) {
+      throw reviewClaimError("active-review", "another running requirements/review-auto deployment, including a legacy deployment without a claim, exists for the exact ticket and branch");
+    }
     const claim: ReviewAuthorizationClaim = {
       deploymentId: input.deploymentId,
       authorizationId: input.authorizationId,
@@ -247,6 +265,15 @@ function isExactAuthorityValue(value: string): boolean {
     if ((/\s/u.test(character) && character !== " ") || code < 0x20 || code === 0x7f) return false;
   }
   return true;
+}
+
+function exactObjectiveField(objective: unknown, label: string): string | undefined {
+  if (typeof objective !== "string" || objective.includes("\r")) return undefined;
+  const prefix = `${label}: `;
+  const matches = objective.split("\n").filter((line) => line.startsWith(prefix));
+  if (matches.length !== 1) return undefined;
+  const value = matches[0]!.slice(prefix.length);
+  return isExactAuthorityValue(value) ? value : undefined;
 }
 
 function reviewClaimError(code: ReviewAuthorizationClaimErrorCode, reason: string): ReviewAuthorizationClaimError {

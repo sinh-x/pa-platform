@@ -40,6 +40,7 @@ import {
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
+import { assertPiMatrixStartedForLaunch } from "./validation-launch.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
   readPiProtectedValidationLaunch,
@@ -201,6 +202,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         if (config.validationHandoffPath !== resolve(deployDir, PI_VALIDATION_HANDOFF_FILE)) throw new Error("runner-readiness: validation handoff path mismatch");
         validationLaunch = readPiProtectedValidationLaunch(config.validationHandoffPath);
         if (validationLaunch.deploymentId !== config.deploymentId) throw new Error("runner-readiness: validation handoff deployment identity mismatch");
+        assertPiMatrixStartedForLaunch(deployDir, validationLaunch);
         if (!secrets.includes(validationLaunch.review.authorizationId)) secrets.push(validationLaunch.review.authorizationId);
       } finally {
         try { unlinkSync(config.validationHandoffPath); } catch { /* missing or consumed protected handoff remains a causal failure */ }
