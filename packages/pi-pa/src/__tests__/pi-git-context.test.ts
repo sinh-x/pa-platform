@@ -81,6 +81,9 @@ function makeRepository(t: test.TestContext): string {
     git(root, "commit", "-q", "-m", `feature-${String(index).padStart(2, "0")}`);
   }
   mkdirSync(join(root, "nested"));
+  for (let index = 0; index < 25; index++) {
+    writeFileSync(join(root, `file-${String(index).padStart(2, "0")}.txt`), `unstaged ${index}\n`, { flag: "a" });
+  }
   writeFileSync(join(root, "worktree-only.txt"), "not committed\n");
   return root;
 }
@@ -118,7 +121,11 @@ function makeEdgeRepository(t: test.TestContext): { root: string; renamedPath: s
 function scriptedRunner(overrides: Partial<Record<string, string | Error | "pending">> = {}, calls?: string[][]): GitCommandRunner {
   return async (_cwd, args) => {
     calls?.push([...args]);
-    const key = args[0] === "rev-parse" && args.includes("--show-toplevel") ? "root" : args[0]!;
+    const key = args[0] === "rev-parse" && args.includes("--show-toplevel")
+      ? "root"
+      : args[0] === "diff"
+        ? args.length === 5 ? "unstaged-diff" : "committed-diff"
+        : args[0]!;
     const override = overrides[key];
     if (override === "pending") return new Promise<string>(() => {});
     if (override instanceof Error) throw override;
@@ -131,7 +138,8 @@ function scriptedRunner(overrides: Partial<Record<string, string | Error | "pend
       case "merge-base": return `${OID}\n`;
       case "rev-list": return "0\n";
       case "log":
-      case "diff": return "";
+      case "committed-diff":
+      case "unstaged-diff": return "";
       default: throw new Error(`Unexpected command: ${args.join(" ")}`);
     }
   };
@@ -198,6 +206,78 @@ test("NUL parsers preserve metadata, unusual paths, renames, and binary markers"
   ]);
 });
 
+test("snapshot reuses NUL-safe numstat semantics for tracked unstaged rows and aggregates every row", async () => {
+  const state = await scriptedCollection({
+    "unstaged-diff": [
+      "2\t1\tline\nwith\ttab.txt",
+      "3\t4\t", "old\nname.txt", "new\tname.txt",
+      "-\t-\tbinary.dat",
+      "0\t7\tdeleted.txt",
+      "",
+    ].join("\0"),
+  });
+  assert.equal(state.status, "ready");
+  if (state.status !== "ready") return;
+
+  assert.equal(state.snapshot.unstagedFileTotal, 4);
+  assert.equal(state.snapshot.unstagedFileTruncated, 0);
+  assert.equal(state.snapshot.unstagedAdditions, 5);
+  assert.equal(state.snapshot.unstagedDeletions, 12);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => `${file.oldPath ?? ""}\0${file.path}`), [
+    "\0binary.dat",
+    "\0deleted.txt",
+    "\0line\nwith\ttab.txt",
+    "old\nname.txt\0new\tname.txt",
+  ]);
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.binary
+    && file.additions === null && file.deletions === null));
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.path === "deleted.txt"
+    && file.additions === 0 && file.deletions === 7));
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.oldPath === "old\nname.txt"
+    && file.displayPath === "old\nname.txt → new\tname.txt"));
+});
+
+test("real Git collection uses exact no-range argv and includes only tracked working-tree changes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-git-unstaged-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Pi Unstaged Test");
+  git(root, "config", "user.email", "pi-unstaged@example.test");
+  writeFileSync(join(root, "tracked.txt"), "base\n");
+  writeFileSync(join(root, "staged-only.txt"), "base\n");
+  writeFileSync(join(root, "mixed.txt"), "base\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "branch", "develop");
+  git(root, "checkout", "-q", "-b", "feature/unstaged");
+
+  writeFileSync(join(root, "tracked.txt"), "one\ntwo\n", { flag: "a" });
+  writeFileSync(join(root, "staged-only.txt"), "staged\n", { flag: "a" });
+  git(root, "add", "staged-only.txt");
+  writeFileSync(join(root, "mixed.txt"), "staged\n", { flag: "a" });
+  git(root, "add", "mixed.txt");
+  writeFileSync(join(root, "mixed.txt"), "unstaged\n", { flag: "a" });
+  writeFileSync(join(root, "untracked.txt"), "untracked\n");
+
+  const calls: string[][] = [];
+  const runGit: GitCommandRunner = async (cwd, args) => {
+    calls.push([...args]);
+    return execFileSync("git", [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  };
+  const state = await collectGitContext(undefined, { cwd: root, explicitReference: "develop" }, { runGit });
+  assert.equal(state.status, "ready");
+  if (state.status !== "ready") return;
+
+  assert.deepEqual(calls.at(-1), ["diff", "--numstat", "-z", "--find-renames", "--"]);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => file.path), ["mixed.txt", "tracked.txt"]);
+  assert.equal(state.snapshot.unstagedFileTotal, 2);
+  assert.equal(state.snapshot.unstagedFileTruncated, 0);
+  assert.equal(state.snapshot.unstagedAdditions, 3);
+  assert.equal(state.snapshot.unstagedDeletions, 0);
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "staged-only.txt"));
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "untracked.txt"));
+});
+
 test("real Git numstat preserves rename, deletion, binary, spaces, tabs, Unicode, and newlines", async (t) => {
   const { root, renamedPath, unusualPath } = makeEdgeRepository(t);
   const state = await collectGitContext(undefined, { cwd: root });
@@ -240,6 +320,14 @@ test("collector canonicalizes a nested worktree and returns exact committed 10/2
   assert.equal(state.snapshot.fileTruncated, 5);
   assert.equal(state.snapshot.additions, 36);
   assert.equal(state.snapshot.deletions, 0);
+  assert.equal(state.snapshot.unstagedFileTotal, 25);
+  assert.equal(state.snapshot.unstagedFiles.length, GIT_CONTEXT_FILE_LIMIT);
+  assert.equal(state.snapshot.unstagedFileTruncated, 5);
+  assert.equal(state.snapshot.unstagedAdditions, 25);
+  assert.equal(state.snapshot.unstagedDeletions, 0);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => file.path),
+    Array.from({ length: GIT_CONTEXT_FILE_LIMIT }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`));
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "worktree-only.txt"));
   assert.ok(!state.snapshot.files.some((file) => file.path === "worktree-only.txt"));
   assert.ok(!state.snapshot.branches.some((branch) => ["origin/HEAD", "release-test", "custom/free-form"].includes(branch.name)));
   assert.equal(await loadGitContextReference(root), undefined);
@@ -457,8 +545,23 @@ test("collector models every initial edge state and retains only prior error/tim
   assert.equal(timeout.status, "timeout");
   assert.equal(timeout.stale, false);
 
-  const ready = await scriptedCollection();
+  assert.equal((await scriptedCollection({ "unstaged-diff": new Error("unstaged diff failed") })).status, "git-error");
+
+  const ready = await scriptedCollection({ "unstaged-diff": "1\t2\ttracked.txt\0" });
   assert.equal(ready.status, "ready");
+  const staleUnstagedError = await collectGitContext(ready, { cwd: "/repo" }, {
+    runGit: scriptedRunner({ "unstaged-diff": new Error("unstaged diff failed") }),
+    canonicalize: async () => "/repo",
+    now: () => 250,
+  });
+  assert.equal(staleUnstagedError.status, "stale");
+  if (staleUnstagedError.status === "stale" && ready.status === "ready") {
+    assert.equal(staleUnstagedError.cause, "git-error");
+    assert.equal(staleUnstagedError.snapshot, ready.snapshot);
+    assert.equal(staleUnstagedError.snapshot.unstagedFileTotal, 1);
+    assert.equal(staleUnstagedError.snapshot.unstagedAdditions, 1);
+    assert.equal(staleUnstagedError.snapshot.unstagedDeletions, 2);
+  }
   const staleError = await collectGitContext(ready, { cwd: "/repo" }, {
     runGit: scriptedRunner({ root: new Error("Git unavailable") }),
     canonicalize: async () => "/repo",
@@ -480,6 +583,8 @@ test("collector models every initial edge state and retains only prior error/tim
 });
 
 test("the complete collection attempt uses one fake 2,000 ms deadline and aborts late Git", async () => {
+  const previous = await scriptedCollection({ "unstaged-diff": "1\t0\ttracked.txt\0" });
+  assert.equal(previous.status, "ready");
   let deadline: (() => void) | undefined;
   let delay: number | undefined;
   let timerCount = 0;
@@ -492,21 +597,34 @@ test("the complete collection attempt uses one fake 2,000 ms deadline and aborts
     return 1 as unknown as NodeJS.Timeout;
   }) as typeof setTimeout;
   const clearTimer = (() => { clearCount++; }) as typeof clearTimeout;
-  const collection = collectGitContext(undefined, { cwd: "/repo" }, {
-    runGit: async (_cwd, _args, signal) => new Promise<string>(() => {
-      signal.addEventListener("abort", () => { aborted = true; }, { once: true });
-    }),
+  const calls: string[][] = [];
+  const baseRunner = scriptedRunner({}, calls);
+  const collection = collectGitContext(previous, { cwd: "/repo" }, {
+    runGit: async (cwd, args, signal) => {
+      if (args[0] === "diff" && args.length === 5) {
+        calls.push([...args]);
+        return new Promise<string>(() => {
+          signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+        });
+      }
+      return baseRunner(cwd, args, signal);
+    },
     canonicalize: async () => "/repo",
     setTimer,
     clearTimer,
   });
 
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(timerCount, 1);
   assert.equal(delay, GIT_CONTEXT_COLLECTION_DEADLINE_MS);
+  assert.deepEqual(calls.at(-1), ["diff", "--numstat", "-z", "--find-renames", "--"]);
   deadline?.();
   const state = await collection;
-  assert.equal(state.status, "timeout");
+  assert.equal(state.status, "stale");
+  if (state.status === "stale" && previous.status === "ready") {
+    assert.equal(state.cause, "timeout");
+    assert.equal(state.snapshot, previous.snapshot);
+  }
   assert.equal(aborted, true);
   assert.equal(clearCount, 1);
 });
@@ -520,12 +638,13 @@ test("collector subprocess surface is fixed, validated, and read-only", async ()
   });
   assert.equal(state.status, "ready");
   assert.deepEqual(calls.map((args) => args[0]), [
-    "rev-parse", "rev-parse", "symbolic-ref", "for-each-ref", "merge-base", "rev-list", "log", "diff",
+    "rev-parse", "rev-parse", "symbolic-ref", "for-each-ref", "merge-base", "rev-list", "log", "diff", "diff",
   ]);
   const forbidden = new Set(["fetch", "checkout", "switch", "stage", "add", "commit", "reset"]);
   assert.ok(calls.every((args) => !args.some((arg) => forbidden.has(arg))));
   assert.deepEqual(calls[4]?.slice(0, 2), ["merge-base", "refs/heads/develop"]);
-  assert.deepEqual(calls[7]?.slice(0, 5), ["diff", "--numstat", "-z", "--find-renames", `${OID}..HEAD`]);
+  assert.deepEqual(calls[7], ["diff", "--numstat", "-z", "--find-renames", `${OID}..HEAD`, "--"]);
+  assert.deepEqual(calls[8], ["diff", "--numstat", "-z", "--find-renames", "--"]);
 });
 
 test("first-open, reference-change, and event hooks coalesce to one start per 10 seconds and dispose", () => {
@@ -595,6 +714,11 @@ function uiReadyState(reference = "main"): GitContextState {
       fileTruncated: 5,
       additions: 325,
       deletions: 300,
+      unstagedFiles: [],
+      unstagedFileTotal: 0,
+      unstagedFileTruncated: 0,
+      unstagedAdditions: 0,
+      unstagedDeletions: 0,
       collectedAt: 123,
     },
   };
