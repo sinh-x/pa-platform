@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 interface AssociationFixture {
   root: string;
@@ -91,6 +91,67 @@ test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and stri
     assert.throws(() => readPiForegroundCompletion(root), /malformed or exceeds/);
     assert.ok(readFileSync(path).byteLength > MAX_PI_FOREGROUND_COMPLETION_BYTES);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review authorization claim atomically enforces one-use and active ticket/branch exclusion", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-review-claim-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const start = (deploymentId: string, authorizationId: string): string => {
+    const objective = [
+      `Ticket: ${ticketId}`,
+      `Branch: ${branch}`,
+      `Feature SHA: ${featureSha}`,
+      `Matrix Source: ${matrixSource}`,
+      `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+      `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+      `Review Authorization ID: ${authorizationId}`,
+    ].join("\n");
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", event: "started", timestamp: new Date().toISOString(), runtime: "pi", binary: "ppa", ticket_id: ticketId, objective });
+    return objective;
+  };
+  const claim = (deploymentId: string, authorizationId: string, objective: string) => claimReviewAuthorization({
+    deploymentId, authorizationId, ticketId, branch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective,
+  });
+  const expectClaimError = (run: () => unknown, code: ReviewAuthorizationClaimError["code"]): void => {
+    assert.throws(run, (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === code);
+  };
+  try {
+    const authorizationOne = "review-auth:123e4567-e89b-42d3-a456-426614174000";
+    const objectiveOne = start("d-review-one", authorizationOne);
+    const first = claim("d-review-one", authorizationOne, objectiveOne);
+    assert.equal(first.active, true);
+    assert.deepEqual(queryReviewAuthorizationClaim(authorizationOne), first);
+
+    const objectiveReplay = start("d-review-replay", authorizationOne);
+    expectClaimError(() => claim("d-review-replay", authorizationOne, objectiveReplay), "authorization-consumed");
+
+    const authorizationTwo = "review-auth:223e4567-e89b-42d3-a456-426614174001";
+    const objectiveTwo = start("d-review-two", authorizationTwo);
+    expectClaimError(() => claim("d-review-two", authorizationTwo, objectiveTwo), "active-review");
+    assert.equal(queryReviewAuthorizationClaims().length, 1);
+
+    appendRegistryEvent({ deployment_id: "d-review-one", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "success" });
+    assert.equal(queryReviewAuthorizationClaim(authorizationOne)?.active, false);
+    const second = claim("d-review-two", authorizationTwo, objectiveTwo);
+    assert.equal(second.active, true);
+    assert.equal(queryReviewAuthorizationClaims().length, 2);
+
+    appendRegistryEvent({ deployment_id: "d-review-two", team: "requirements", event: "crashed", timestamp: new Date().toISOString(), error: "fixture crash", exit_code: 1 });
+    assert.equal(queryReviewAuthorizationClaim(authorizationTwo)?.active, false);
+    expectClaimError(() => claim("d-review-replay", authorizationOne, objectiveReplay), "authorization-consumed");
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -570,11 +631,15 @@ test("registry schema-v13 migration expands the production event constraint with
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "14" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "15" });
     for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
     for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
       assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
+    }
+    const claimColumns = (db.prepare("PRAGMA table_info(review_authorization_claims)").all() as Array<{ name: string }>).map((entry) => entry.name);
+    for (const column of ["authorization_id", "deployment_id", "ticket_id", "branch", "feature_sha", "matrix_source", "matrix_authority_sha256", "matrix_approval_evidence", "claimed_at", "active"]) {
+      assert.equal(claimColumns.includes(column), true);
     }
     const eventTableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registry_events'").get() as { sql: string }).sql;
     assert.doesNotMatch(eventTableSql, /CHECK\s*\(\s*event\s+IN/i);

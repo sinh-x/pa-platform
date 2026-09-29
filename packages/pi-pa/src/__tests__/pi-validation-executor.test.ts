@@ -161,7 +161,7 @@ test("valid protected launch runs one unattended manifest before one reviewer wi
   const seed = fixture([]);
   const orderPath = resolve(seed.root, "order.txt");
   withCommands(seed, [
-    command(seed.root, "validate", `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`if(process.env.PA_REVIEW_AUTHORIZATION_ID)process.exit(91);require('node:fs').writeFileSync(${JSON.stringify(orderPath)},'validation')`)}`),
+    command(seed.root, "validate", `test -z "\${PA_REVIEW_AUTHORIZATION_ID+x}" && printf %s validation > ${JSON.stringify(orderPath)}`),
   ]);
   const events: ValidationEvent[] = [];
   let reviewerStarts = 0;

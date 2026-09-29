@@ -185,6 +185,32 @@ export interface AssociateDeploymentTicketResult {
   writeOccurred: boolean;
 }
 
+export interface ReviewAuthorizationClaimInput {
+  deploymentId: string;
+  authorizationId: string;
+  ticketId: string;
+  branch: string;
+  featureSha: string;
+  matrixSource: string;
+  matrixAuthoritySha256: string;
+  matrixApprovalEvidence: string;
+  objective: string;
+  claimedAt?: string;
+}
+
+export interface ReviewAuthorizationClaim {
+  deploymentId: string;
+  authorizationId: string;
+  ticketId: string;
+  branch: string;
+  featureSha: string;
+  matrixSource: string;
+  matrixAuthoritySha256: string;
+  matrixApprovalEvidence: string;
+  claimedAt: string;
+  active: boolean;
+}
+
 export interface DeploymentStatus {
   deploy_id: string;
   team: string;

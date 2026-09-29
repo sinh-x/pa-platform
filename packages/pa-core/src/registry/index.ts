@@ -1,7 +1,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb } from "./db.js";
-import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, TicketAssociatedRegistryEvent } from "../types.js";
+import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, ReviewAuthorizationClaim, ReviewAuthorizationClaimInput, TicketAssociatedRegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js";
 import { formatBoundedFiveFieldDiagnostic, loadReposYaml } from "../repos.js";
@@ -143,6 +143,149 @@ export function validateRegistryEvent(event: RegistryEvent): void {
 
 export class DeploymentStartConflictError extends Error {}
 export class DeploymentCorrelationConflictError extends Error {}
+
+export type ReviewAuthorizationClaimErrorCode =
+  | "invalid-binding"
+  | "deployment-not-running"
+  | "launch-identity-mismatch"
+  | "authorization-consumed"
+  | "deployment-already-claimed"
+  | "active-review";
+
+export class ReviewAuthorizationClaimError extends Error {
+  constructor(readonly code: ReviewAuthorizationClaimErrorCode, message: string) {
+    super(message);
+    this.name = "ReviewAuthorizationClaimError";
+  }
+}
+
+/**
+ * Atomically consumes one review authorization and the active ticket/branch
+ * slot. The immutable deployment start must already exist and agree exactly;
+ * the returned row is the durable binding consumed by protected handoff
+ * construction rather than an inference from a later status snapshot.
+ */
+export function claimReviewAuthorization(input: ReviewAuthorizationClaimInput): ReviewAuthorizationClaim {
+  validateReviewClaimInput(input);
+  const db = getDb();
+  return db.transaction(() => {
+    const projection = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(input.deploymentId) as Record<string, unknown> | undefined;
+    const start = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started' ORDER BY id LIMIT 1").get(input.deploymentId) as Record<string, unknown> | undefined;
+    if (!projection || !start || projection["status"] !== "running") {
+      throw reviewClaimError("deployment-not-running", "the current deployment has no exact running registry start and projection");
+    }
+    if (start["team"] !== "requirements" || start["mode"] !== "review-auto"
+      || start["runtime"] !== "pi" || start["binary"] !== "ppa"
+      || start["ticket_id"] !== input.ticketId || projection["ticket_id"] !== input.ticketId
+      || start["objective"] !== input.objective || projection["objective"] !== input.objective) {
+      throw reviewClaimError("launch-identity-mismatch", "the immutable start, current projection, and exact protected objective do not agree");
+    }
+    if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE authorization_id = ?").get(input.authorizationId)) {
+      throw reviewClaimError("authorization-consumed", "the one-use Review Authorization ID already has a durable registry consumer");
+    }
+    if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE deployment_id = ?").get(input.deploymentId)) {
+      throw reviewClaimError("deployment-already-claimed", "the deployment already consumed a review authorization");
+    }
+    if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE ticket_id = ? AND branch = ? AND active = 1").get(input.ticketId, input.branch)) {
+      throw reviewClaimError("active-review", "another durable active review claim exists for the ticket and branch");
+    }
+    const claim: ReviewAuthorizationClaim = {
+      deploymentId: input.deploymentId,
+      authorizationId: input.authorizationId,
+      ticketId: input.ticketId,
+      branch: input.branch,
+      featureSha: input.featureSha,
+      matrixSource: input.matrixSource,
+      matrixAuthoritySha256: input.matrixAuthoritySha256,
+      matrixApprovalEvidence: input.matrixApprovalEvidence,
+      claimedAt: normalizeTimestamp(input.claimedAt ?? new Date().toISOString()),
+      active: true,
+    };
+    db.prepare(`
+      INSERT INTO review_authorization_claims (
+        authorization_id, deployment_id, ticket_id, branch, feature_sha,
+        matrix_source, matrix_authority_sha256, matrix_approval_evidence, claimed_at, active
+      ) VALUES (
+        @authorizationId, @deploymentId, @ticketId, @branch, @featureSha,
+        @matrixSource, @matrixAuthoritySha256, @matrixApprovalEvidence, @claimedAt, 1
+      )
+    `).run(claim);
+    const persisted = queryReviewAuthorizationClaimRow(db, input.authorizationId);
+    if (!persisted || !persisted.active || !reviewClaimsEqual(persisted, claim)) {
+      throw new Error("Review authorization claim persistence verification failed");
+    }
+    return Object.freeze(persisted);
+  }).immediate();
+}
+
+export function queryReviewAuthorizationClaim(authorizationId: string): ReviewAuthorizationClaim | null {
+  return queryReviewAuthorizationClaimRow(getDb(), authorizationId);
+}
+
+export function queryReviewAuthorizationClaims(): ReviewAuthorizationClaim[] {
+  const rows = getDb().prepare("SELECT * FROM review_authorization_claims ORDER BY claimed_at, authorization_id").all() as Record<string, unknown>[];
+  return rows.map(reviewClaimFromRow);
+}
+
+function validateReviewClaimInput(input: ReviewAuthorizationClaimInput): void {
+  const exactValues = [input.deploymentId, input.authorizationId, input.ticketId, input.branch, input.featureSha,
+    input.matrixSource, input.matrixAuthoritySha256, input.matrixApprovalEvidence];
+  if (exactValues.some((value) => !isExactAuthorityValue(value))
+    || !/^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.authorizationId)
+    || !isCanonicalTicketId(input.ticketId) || !/^[0-9a-f]{40}$/.test(input.featureSha)
+    || !/^[0-9a-f]{64}$/.test(input.matrixAuthoritySha256)
+    || typeof input.objective !== "string" || input.objective.length === 0 || input.objective.length > 65_536 || input.objective.includes("\r")) {
+    throw reviewClaimError("invalid-binding", "one or more review claim fields are malformed or contain authority-significant whitespace drift");
+  }
+}
+
+function isExactAuthorityValue(value: string): boolean {
+  if (typeof value !== "string" || value.length === 0 || value.length > 16_384
+    || value.startsWith(" ") || value.endsWith(" ")) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    if ((/\s/u.test(character) && character !== " ") || code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+function reviewClaimError(code: ReviewAuthorizationClaimErrorCode, reason: string): ReviewAuthorizationClaimError {
+  return new ReviewAuthorizationClaimError(code, formatBoundedFiveFieldDiagnostic({
+    condition: "protected review authorization claim rejected",
+    source: "atomic registry one-use authorization and active ticket/branch boundary",
+    reason,
+    correction: "persist one fresh exact running review launch and an unused authorization with no active ticket/branch claim",
+    resumeAction: "launch a fresh requirements/review-auto deployment only after the durable binding is reconciled",
+  }));
+}
+
+function queryReviewAuthorizationClaimRow(db: ReturnType<typeof getDb>, authorizationId: string): ReviewAuthorizationClaim | null {
+  const row = db.prepare("SELECT * FROM review_authorization_claims WHERE authorization_id = ?").get(authorizationId) as Record<string, unknown> | undefined;
+  return row ? reviewClaimFromRow(row) : null;
+}
+
+function reviewClaimFromRow(row: Record<string, unknown>): ReviewAuthorizationClaim {
+  return {
+    deploymentId: String(row["deployment_id"]),
+    authorizationId: String(row["authorization_id"]),
+    ticketId: String(row["ticket_id"]),
+    branch: String(row["branch"]),
+    featureSha: String(row["feature_sha"]),
+    matrixSource: String(row["matrix_source"]),
+    matrixAuthoritySha256: String(row["matrix_authority_sha256"]),
+    matrixApprovalEvidence: String(row["matrix_approval_evidence"]),
+    claimedAt: String(row["claimed_at"]),
+    active: row["active"] === 1,
+  };
+}
+
+function reviewClaimsEqual(left: ReviewAuthorizationClaim, right: ReviewAuthorizationClaim): boolean {
+  return left.deploymentId === right.deploymentId && left.authorizationId === right.authorizationId
+    && left.ticketId === right.ticketId && left.branch === right.branch && left.featureSha === right.featureSha
+    && left.matrixSource === right.matrixSource && left.matrixAuthoritySha256 === right.matrixAuthoritySha256
+    && left.matrixApprovalEvidence === right.matrixApprovalEvidence && left.claimedAt === right.claimedAt
+    && left.active === right.active;
+}
 
 export type TicketAssociationErrorCode =
   | "deployment-not-found"
@@ -638,6 +781,9 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     `).run({ ...row, status: event.status ?? "success" });
   } else if (event.event === "crashed") {
     db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, summary = NULL, log_file = NULL, rating = NULL, error = @error, exit_code = @exit_code, fallback = 0, branch_state = COALESCE(@branch_state, branch_state), branch_base_sha = COALESCE(@branch_base_sha, branch_base_sha), branch_head_sha = COALESCE(@branch_head_sha, branch_head_sha) WHERE deployment_id = @deployment_id").run(row);
+  }
+  if (event.event === "completed" || event.event === "crashed") {
+    db.prepare("UPDATE review_authorization_claims SET active = 0 WHERE deployment_id = ? AND active = 1").run(event.deployment_id);
   }
 }
 

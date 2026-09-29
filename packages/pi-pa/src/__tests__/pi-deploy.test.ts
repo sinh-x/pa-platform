@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
@@ -261,6 +261,15 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
     `Review Authorization ID: ${authorizationId}`,
   ].join("\n");
   return { objective, markerPath, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, branch, featureSha };
+}
+
+function installProtectedReviewToolFixture(root: string): void {
+  const bin = join(root, "protected-review-bin");
+  mkdirSync(bin, { recursive: true });
+  const nix = join(bin, "nix");
+  writeFileSync(nix, "#!/bin/sh\nprintf '%s\\n' 'nix (Nix) test-fixture'\n");
+  chmodSync(nix, 0o755);
+  process.env["PATH"] = `${bin}:${process.env["PATH"] ?? ""}`;
 }
 
 function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onInstall?: (plan: SpawnOpts["executionPlan"]) => void; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
@@ -2225,6 +2234,7 @@ test("ordinary requirements CWD inference keeps canonical and authenticated link
 
 test("production Pi hook constructs protected validation before reviewer spawn and rejects absent, reused, mismatched, or duplicate authority", async () => {
   await withPiEnv(async (root) => {
+    installProtectedReviewToolFixture(root);
     const repo = join(root, "repo");
     let launches = 0;
     let reviewerStarts = 0;
@@ -2268,6 +2278,38 @@ test("production Pi hook constructs protected validation before reviewer spawn a
 
     const authorization = "review-auth:123e4567-e89b-42d3-a456-426614174000";
     let fixture = prepareProtectedReview(root, authorization);
+    const protectedFields = ["Ticket", "Branch", "Feature SHA", "Matrix Source", "Matrix Authority SHA-256", "Matrix Approval Evidence", "Review Authorization ID"] as const;
+    const authorityDrifts = [
+      { name: "leading label space", mutate: (line: string) => ` ${line}` },
+      { name: "leading value space", mutate: (line: string) => line.replace(": ", ":  ") },
+      { name: "trailing value space", mutate: (line: string) => `${line} ` },
+      { name: "carriage return", mutate: (line: string) => `${line}\r` },
+      { name: "unicode whitespace", mutate: (line: string) => `${line}\u00a0` },
+      { name: "malformed delimiter", mutate: (line: string) => line.replace(": ", ":") },
+    ];
+    for (const field of protectedFields) {
+      for (const drift of authorityDrifts) {
+        const alteredObjective = fixture.objective.split("\n").map((line) => line.startsWith(`${field}: `) ? drift.mutate(line) : line).join("\n");
+        const rejected = await hooks.deploy!({
+          team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+          objective: alteredObjective, timeout: 60,
+        });
+        assert.equal(rejected.status, "failed", `${field}: ${drift.name}`);
+        assert.match(rejected.reason ?? "", /review objective|authority fields are absent/, `${field}: ${drift.name}`);
+        assert.equal(launches, 0, `${field}: ${drift.name} started zero matrix commands`);
+        assert.equal(reviewerStarts, 0, `${field}: ${drift.name} started zero reviewers`);
+        assert.equal(existsSync(fixture.markerPath), false, `${field}: ${drift.name} did not run command 1`);
+      }
+    }
+    const duplicateLabel = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: `${fixture.objective}\nMatrix Approval Evidence: ${fixture.matrixApprovalEvidence}`, timeout: 60,
+    });
+    assert.equal(duplicateLabel.status, "failed");
+    assert.match(duplicateLabel.reason ?? "", /malformed, duplicated/);
+    assert.equal(launches, 0, "duplicate authority label started zero matrix commands");
+    assert.equal(reviewerStarts, 0, "duplicate authority label started zero reviewers");
+
     for (const [name, alteredEvidence, alteredAuthorization] of [
       ["punctuation drift", `${fixture.matrixApprovalEvidence}.`, "review-auth:123e4567-e89b-42d3-a456-426614174001"],
       ["surrounding text drift", `Approved evidence: ${fixture.matrixApprovalEvidence}`, "review-auth:123e4567-e89b-42d3-a456-426614174002"],
@@ -2345,7 +2387,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       objective: fixture.objective, timeout: 60,
     });
     assert.equal(replay.status, "failed");
-    assert.match(replay.reason ?? "", /authorization is absent, reused/);
+    assert.match(replay.reason ?? "", /already has a durable registry consumer/);
     assert.equal(launches, 1);
     assert.equal(reviewerStarts, 1);
 
@@ -2363,6 +2405,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     const duplicateAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174002";
     const contenderAuthorization = "review-auth:423e4567-e89b-42d3-a456-426614174003";
     const duplicateObjective = fixture.objective.replace(authorization, duplicateAuthorization);
+    const contenderObjective = fixture.objective.replace(authorization, contenderAuthorization);
     appendRegistryEvent({
       deployment_id: "d-active-review",
       team: "requirements",
@@ -2372,19 +2415,114 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       runtime: "pi",
       binary: "ppa",
       ticket_id: "PAP-198",
-      objective: fixture.objective.replace(authorization, contenderAuthorization),
+      objective: contenderObjective,
       repo,
       repo_root: repo,
       worktree_root: repo,
+    });
+    claimReviewAuthorization({
+      deploymentId: "d-active-review",
+      authorizationId: contenderAuthorization,
+      ticketId: "PAP-198",
+      branch: fixture.branch,
+      featureSha: fixture.featureSha,
+      matrixSource: fixture.matrixSource,
+      matrixAuthoritySha256: fixture.matrixAuthoritySha256,
+      matrixApprovalEvidence: fixture.matrixApprovalEvidence,
+      objective: contenderObjective,
     });
     const duplicate = await hooks.deploy!({
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
       objective: duplicateObjective, timeout: 60,
     });
     assert.equal(duplicate.status, "failed");
-    assert.match(duplicate.reason ?? "", /another active review or duplicate authority/);
+    assert.match(duplicate.reason ?? "", /another durable active review claim/);
     assert.equal(launches, 1);
     assert.equal(reviewerStarts, 1);
+  });
+});
+
+test("concurrent protected review contenders persist one authorization consumer and start one executor", async () => {
+  await withPiEnv(async (root) => {
+    installProtectedReviewToolFixture(root);
+    const repo = join(root, "repo");
+    const authorization = "review-auth:523e4567-e89b-42d3-a456-426614174004";
+    const differentAuthorization = "review-auth:623e4567-e89b-42d3-a456-426614174005";
+    const fixture = prepareProtectedReview(root, authorization);
+    let releasePreflight!: () => void;
+    let markPreflightEntered!: () => void;
+    const preflightGate = new Promise<void>((resolveGate) => { releasePreflight = resolveGate; });
+    const preflightEntered = new Promise<void>((resolveEntered) => { markPreflightEntered = resolveEntered; });
+    let executorStarts = 0;
+    let reviewerStarts = 0;
+    let runnerCompletion: Promise<void> | undefined;
+    const adapter = new PiAdapter({
+      cwd: repo,
+      env: process.env,
+      versionProbe: async () => {
+        markPreflightEntered();
+        await preflightGate;
+        return "0.84.4";
+      },
+      nativeRegistryProbe: () => undefined,
+      supervision: {
+        launchBackgroundRunner: ((_runnerPath, configPath) => {
+          executorStarts += 1;
+          const config = readPiBackgroundConfig(configPath);
+          const launcher = new BackgroundDeploymentProcess(99_101);
+          const reviewer = new BackgroundDeploymentProcess(99_102);
+          runnerCompletion = runPiBackgroundRunner(config, { supervision: {
+            spawnProcess: (() => reviewer as never) as never,
+            onSpawn: () => {
+              reviewerStarts += 1;
+              queueMicrotask(() => reviewer.emit("close", 0));
+            },
+          } });
+          return launcher as never;
+        }) as never,
+      },
+    });
+    const hooks = createPiHooks(adapter);
+    const firstPromise = hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective, timeout: 60,
+    });
+    await preflightEntered;
+
+    const sameAuthorizationLoser = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective, timeout: 60,
+    });
+    assert.equal(sameAuthorizationLoser.status, "failed");
+    assert.match(sameAuthorizationLoser.reason ?? "", /already has a durable registry consumer/);
+    assert.equal(executorStarts, 0, "same-authorization loser starts zero executors while the winner is barrier-held");
+    assert.equal(reviewerStarts, 0, "same-authorization loser starts zero reviewers while the winner is barrier-held");
+    assert.equal(existsSync(fixture.markerPath), false, "same-authorization loser starts zero matrix commands");
+
+    const differentAuthorizationLoser = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective.replace(authorization, differentAuthorization), timeout: 60,
+    });
+    assert.equal(differentAuthorizationLoser.status, "failed");
+    assert.match(differentAuthorizationLoser.reason ?? "", /another durable active review claim/);
+    assert.equal(executorStarts, 0, "different-authorization duplicate lineage starts zero executors");
+    assert.equal(reviewerStarts, 0, "different-authorization duplicate lineage starts zero reviewers");
+
+    const claims = queryReviewAuthorizationClaims();
+    assert.equal(claims.length, 1, "exactly one contender persists a registry authorization consumer");
+    assert.equal(claims[0]?.authorizationId, authorization);
+    assert.equal(claims[0]?.active, true);
+
+    releasePreflight();
+    const winner = await firstPromise;
+    assert.equal(winner.status, "pending", winner.reason);
+    assert.equal(executorStarts, 1);
+    assert.ok(runnerCompletion);
+    await runnerCompletion;
+    assert.equal(reviewerStarts, 1);
+    assert.equal(readFileSync(fixture.markerPath, "utf8"), "validation-complete");
+    assert.equal(queryReviewAuthorizationClaims().length, 1);
+    assert.equal(queryReviewAuthorizationClaims()[0]?.active, false);
   });
 });
 

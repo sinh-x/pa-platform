@@ -8,18 +8,17 @@ import {
   VALIDATION_MANIFEST_SCHEMA_VERSION,
   TicketStore,
   captureRepositoryGitSnapshot,
+  claimReviewAuthorization,
   digestValidationManifest,
   formatBoundedFiveFieldDiagnostic,
   getAiUsageDir,
-  queryDeploymentStatus,
-  queryDeploymentStatuses,
   type DeployRequest,
-  type DeploymentStatus,
   type ExecutionPlan,
   type ValidationAuthorityBinding,
   type ValidationCommandSpec,
   type ValidationHandoff,
   type ValidationManifest,
+  type ReviewAuthorizationClaim,
 } from "@pa-platform/pa-core";
 import {
   PI_PROTECTED_VALIDATION_SCHEMA_VERSION,
@@ -77,7 +76,6 @@ interface PrerequisiteContext {
   approval: { author: string; content: string } | undefined;
   authorizationId: string;
   branch: string;
-  current: DeploymentStatus | null;
   environment: Record<string, string>;
   featureSha: string;
   input: PiValidationLaunchInput;
@@ -87,7 +85,6 @@ interface PrerequisiteContext {
   matrixSource: string;
   linkedBranchMatches: boolean;
   snapshot: ReturnType<typeof captureRepositoryGitSnapshot>;
-  statuses: readonly DeploymentStatus[];
   ticketId: string;
 }
 
@@ -140,8 +137,6 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     && (linked[0].headSha ?? linked[0].sha) === featureSha;
   const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
   const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
-  const current = queryDeploymentStatus(deploymentId);
-  const statuses = queryDeploymentStatuses();
   const manifestEnvironment = matrixEnvironment(environment, {
     ticketId,
     featureSha,
@@ -150,11 +145,10 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     matrixApprovalEvidence,
     worktreeRoot: plan.worktreeRoot,
   });
-  evaluatePrerequisites({
+  const claim = evaluatePrerequisites({
     approval,
     authorizationId,
     branch,
-    current,
     environment: manifestEnvironment,
     featureSha,
     input,
@@ -164,7 +158,6 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     matrixAuthoritySha256,
     matrixSource,
     snapshot,
-    statuses,
     ticketId,
   });
   const repository = {
@@ -174,13 +167,13 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
   };
   const manifest: ValidationManifest = {
     schemaVersion: VALIDATION_MANIFEST_SCHEMA_VERSION,
-    ticketId,
-    branch,
-    featureSha,
+    ticketId: claim.ticketId,
+    branch: claim.branch,
+    featureSha: claim.featureSha,
     matrix: {
-      source: matrixSource,
-      authoritySha256: matrixAuthoritySha256,
-      approvalEvidence: matrixApprovalEvidence,
+      source: claim.matrixSource,
+      authoritySha256: claim.matrixAuthoritySha256,
+      approvalEvidence: claim.matrixApprovalEvidence,
     },
     repository,
     environment: manifestEnvironment,
@@ -197,12 +190,12 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     MATRIX_ENVIRONMENT_NAMES.filter((name) => name.startsWith("PA_")).map((name) => [name, manifestEnvironment[name]]),
   ) as Record<string, string>;
   const authority: ValidationAuthorityBinding = {
-    ticketId,
-    branch,
-    featureSha,
-    matrixSource,
-    matrixAuthoritySha256,
-    matrixApprovalEvidence,
+    ticketId: claim.ticketId,
+    branch: claim.branch,
+    featureSha: claim.featureSha,
+    matrixSource: claim.matrixSource,
+    matrixAuthoritySha256: claim.matrixAuthoritySha256,
+    matrixApprovalEvidence: claim.matrixApprovalEvidence,
     repository,
     protectedEnvironment,
   };
@@ -212,9 +205,9 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     manifest,
     repositoryEvidence: {
       ...repository,
-      ticketId,
-      branch,
-      featureSha,
+      ticketId: claim.ticketId,
+      branch: claim.branch,
+      featureSha: claim.featureSha,
       authenticated: true,
     },
     protectedEnvironment,
@@ -237,28 +230,32 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     validationHandoff,
     authority,
     review: {
-      reviewDeploymentId: deploymentId,
-      authorizationId,
-      ticketId,
-      branch,
-      featureSha,
-      matrixSource,
-      matrixAuthoritySha256,
-      matrixApprovalEvidence,
+      reviewDeploymentId: claim.deploymentId,
+      authorizationId: claim.authorizationId,
+      ticketId: claim.ticketId,
+      branch: claim.branch,
+      featureSha: claim.featureSha,
+      matrixSource: claim.matrixSource,
+      matrixAuthoritySha256: claim.matrixAuthoritySha256,
+      matrixApprovalEvidence: claim.matrixApprovalEvidence,
     },
   });
 }
 
 function parseReviewObjective(input: string | undefined): ReviewObjective {
   if (!input) throw launchError("review objective", "protected review authority fields are absent");
+  if (input.includes("\r")) throw launchError("review objective", "authority contains forbidden carriage-return drift");
+  const lines = input.split("\n");
+  if (lines.some((line) => line.length === 0)) {
+    throw launchError("review objective", "authority contains blank, leading, or trailing line drift");
+  }
   const values = new Map<string, string>();
-  for (const line of input.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const match = /^([^:]+):\s*(.+)$/.exec(line);
-    const label = match?.[1]?.trim() ?? "";
-    const value = match?.[2]?.trim() ?? "";
-    if (!ALLOWED_OBJECTIVE_FIELDS.has(label) || !value || values.has(label)) {
-      throw launchError("review objective", "authority is malformed, duplicated, or contains an unsupported clause");
+  for (const line of lines) {
+    const delimiter = line.indexOf(": ");
+    const label = delimiter > 0 ? line.slice(0, delimiter) : "";
+    const value = delimiter > 0 ? line.slice(delimiter + 2) : "";
+    if (!ALLOWED_OBJECTIVE_FIELDS.has(label) || !isExactAuthorityValue(value) || values.has(label)) {
+      throw launchError("review objective", "authority is malformed, duplicated, whitespace-drifted, or contains an unsupported clause");
     }
     values.set(label, value);
   }
@@ -268,23 +265,13 @@ function parseReviewObjective(input: string | undefined): ReviewObjective {
   return Object.fromEntries(REQUIRED_OBJECTIVE_FIELDS.map((field) => [field, values.get(field)!])) as ReviewObjective;
 }
 
-function objectiveValue(input: string | undefined, label: ObjectiveField): string | undefined {
-  if (!input) return undefined;
-  const matches = input.split(/\r?\n/).map((line) => {
-    const match = /^([^:]+):\s*(.+)$/.exec(line);
-    return match?.[1]?.trim() === label ? match[2]!.trim() : undefined;
-  }).filter((value): value is string => value !== undefined);
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
-function assertCurrentLaunchIntent(current: DeploymentStatus | null, input: PiValidationLaunchInput, objective: ReviewObjective): void {
-  const { deploymentId, request, plan } = input;
-  if (!current || current.deploy_id !== deploymentId || current.status !== "running"
-    || current.team !== "requirements" || current.mode !== "review-auto" || current.runtime !== "pi" || current.binary !== "ppa"
-    || current.ticket_id !== objective["Ticket"] || current.objective !== request.objective
-    || current.repo !== plan.worktreeRoot || current.repo_root !== plan.repoRoot || current.worktree_root !== plan.worktreeRoot) {
-    throw launchError("durable review launch intent", "the current registry start evidence is absent, stale, or mismatched");
+function isExactAuthorityValue(value: string): boolean {
+  if (!value || value.startsWith(" ") || value.endsWith(" ")) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    if ((/\s/u.test(character) && character !== " ") || code < 0x20 || code === 0x7f) return false;
   }
+  return true;
 }
 
 function approvalCommentReference(evidence: string): string {
@@ -364,11 +351,11 @@ function readApprovedMatrix(source: string): ApprovedMatrix {
   };
 }
 
-function evaluatePrerequisites(context: PrerequisiteContext): void {
+function evaluatePrerequisites(context: PrerequisiteContext): ReviewAuthorizationClaim {
   evaluateRepositoryPrerequisite(context, context.matrix.prerequisites[0]!);
   evaluateToolPrerequisite(context, context.matrix.prerequisites[1]!);
   evaluateArtifactPrerequisite(context, context.matrix.prerequisites[2]!);
-  evaluateAuthorizationPrerequisite(context, context.matrix.prerequisites[3]!);
+  return evaluateAuthorizationPrerequisite(context, context.matrix.prerequisites[3]!);
 }
 
 function evaluateRepositoryPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
@@ -431,22 +418,26 @@ function evaluateArtifactPrerequisite(context: PrerequisiteContext, prerequisite
     || occurrences(context.approval.content, context.matrixAuthoritySha256) !== 1) {
     throw launchError("matrix prerequisite 3", "the named durable Sinh approval comment does not bind the exact matrix source and digest");
   }
-  assertCurrentLaunchIntent(context.current, context.input, parseReviewObjective(context.input.request.objective));
 }
 
-function evaluateAuthorizationPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
+function evaluateAuthorizationPrerequisite(context: PrerequisiteContext, prerequisite: string): ReviewAuthorizationClaim {
   const expected = "The trusted launcher has atomically consumed the one-use review authorization, rejected duplicate active review lineage, and supplied the complete explicit command environment. The authorization ID is excluded from command child environments, logs, activity progress, and ledger artifacts; it is supplied separately to the reviewer for exact objective, report, and registry agreement. No project command starts before these checks pass.";
   if (prerequisite !== expected) throw launchError("matrix prerequisite 4", "the authorization/environment prerequisite is not the complete approved contract");
   assertExactCommandEnvironment(context);
-  const authorizationMatches = context.statuses.filter((status) => objectiveValue(status.objective, "Review Authorization ID") === context.authorizationId);
-  if (authorizationMatches.length !== 1 || authorizationMatches[0]?.deploy_id !== context.input.deploymentId) {
-    throw launchError("matrix prerequisite 4", "authorization is absent, reused, or not atomically consumed by the current deployment");
-  }
-  const activeReviews = context.statuses.filter((status) => status.status === "running"
-    && status.team === "requirements" && status.mode === "review-auto"
-    && status.ticket_id === context.ticketId && objectiveValue(status.objective, "Branch") === context.branch);
-  if (activeReviews.length !== 1 || activeReviews[0]?.deploy_id !== context.input.deploymentId) {
-    throw launchError("matrix prerequisite 4", "another active review or duplicate authority exists for the ticket and branch");
+  try {
+    return claimReviewAuthorization({
+      deploymentId: context.input.deploymentId,
+      authorizationId: context.authorizationId,
+      ticketId: context.ticketId,
+      branch: context.branch,
+      featureSha: context.featureSha,
+      matrixSource: context.matrixSource,
+      matrixAuthoritySha256: context.matrixAuthoritySha256,
+      matrixApprovalEvidence: context.matrixApprovalEvidence,
+      objective: context.input.request.objective!,
+    });
+  } catch (error) {
+    throw launchError("matrix prerequisite 4", error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -470,10 +461,11 @@ function assertExactCommandEnvironment(context: PrerequisiteContext): void {
 
 function exactHeaderValue(text: string, label: string): string {
   const prefix = `> ${label}:`;
-  const candidates = text.split("\n").map((line) => line.endsWith("\r") ? line.slice(0, -1) : line)
-    .filter((line) => line.startsWith(prefix));
+  const candidates = text.split("\n").filter((line) => line.startsWith(prefix));
   const match = candidates.length === 1 ? new RegExp(`^${escapeRegExp(prefix)} (.+)$`).exec(candidates[0]!) : null;
-  if (!match?.[1]) throw launchError("requirements header", `exactly one approved ${label} header line is required`);
+  if (!match?.[1] || !isExactAuthorityValue(match[1])) {
+    throw launchError("requirements header", `exactly one byte-exact approved ${label} header line is required`);
+  }
   return match[1];
 }
 
