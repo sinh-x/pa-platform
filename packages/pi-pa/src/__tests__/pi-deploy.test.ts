@@ -147,11 +147,20 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   });
 }
 
-function prepareProtectedReview(root: string, authorizationId: string): {
+interface ProtectedReviewFixtureOptions {
+  baseSha?: string;
+  canonicalRepoKey?: string;
+  expectedDependencyVersion?: string;
+  nodeVersion?: string;
+  omitEnvironmentName?: string;
+}
+
+function prepareProtectedReview(root: string, authorizationId: string, options: ProtectedReviewFixtureOptions = {}): {
   objective: string;
   markerPath: string;
   matrixSource: string;
   matrixAuthoritySha256: string;
+  matrixApprovalEvidence: string;
   branch: string;
   featureSha: string;
 } {
@@ -159,16 +168,36 @@ function prepareProtectedReview(root: string, authorizationId: string): {
   const branch = "feature/PAP-198-protected-review";
   if (git(["branch", "--list", branch], repo)) git(["switch", branch], repo);
   else git(["switch", "-c", branch], repo);
+  if (!existsSync(join(repo, ".gitignore"))) {
+    writeFileSync(join(repo, ".gitignore"), "node_modules/\nvalidation-completed.txt\n");
+    git(["add", ".gitignore"], repo);
+    git(["commit", "-m", "test dependency fixture"], repo);
+  }
+  mkdirSync(join(repo, "node_modules", "better-sqlite3"), { recursive: true });
+  writeFileSync(join(repo, "node_modules", "better-sqlite3", "package.json"), JSON.stringify({ name: "better-sqlite3", version: "13.0.3" }));
   const featureSha = git(["rev-parse", "HEAD"], repo);
+  const baseSha = options.baseSha ?? featureSha;
   const markerPath = join(repo, "validation-completed.txt");
   const matrixSource = "agent-teams/requirements/artifacts/protected-review.md";
   const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`if(process.env.PA_REVIEW_AUTHORIZATION_ID)process.exit(91);require('node:fs').writeFileSync(${JSON.stringify(markerPath)},'validation-complete')`)}`;
-  const environment = [
+  const environmentNames = [
     "PA_REPO", "PA_TICKET_ID", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256",
     "PA_MATRIX_APPROVAL_EVIDENCE", "CI", "HOME", "LANG", "TZ", "PATH",
-  ].map((name) => `- \`${name}\` is launcher-bound.`).join("\n");
+  ].filter((name) => name !== options.omitEnvironmentName);
+  const environment = environmentNames.map((name) => `- \`${name}\` is launcher-bound.`).join("\n");
+  const prerequisites = [
+    `- Linux \`x86_64\`; canonical repository \`${options.canonicalRepoKey ?? "pa-platform"}\`; authenticated ticket checkout on \`${branch}\`; clean tracked and untracked state; \`HEAD\` equals the launch-intent Feature SHA and descends from \`${baseSha}\`.`,
+    `- Node.js \`${options.nodeVersion ?? process.version}\`, pnpm \`${execFileSync("corepack", ["pnpm", "--version"], { encoding: "utf8" }).trim()}\` through Corepack, Pi \`${execFileSync("pi", ["--version"], { encoding: "utf8" }).trim()}\`, Git, Bash, Nix, and the repository's existing installed dependencies including \`better-sqlite3@${options.expectedDependencyVersion ?? "13.0.3"}\`.`,
+    `- The approved requirements artifact exists at \`${join(root, matrixSource)}\` and its header, durable PAP-198 approval comment, launch intent, and recomputed raw matrix digest agree exactly.`,
+    "- The trusted launcher has atomically consumed the one-use review authorization, rejected duplicate active review lineage, and supplied the complete explicit command environment. The authorization ID is excluded from command child environments, logs, activity progress, and ledger artifacts; it is supplied separately to the reviewer for exact objective, report, and registry agreement. No project command starts before these checks pass.",
+  ].join("\n");
   const authority = [
     "### Full Validation Matrix",
+    "",
+    `**Matrix Source:** \`${matrixSource}\``,
+    "",
+    "**Prerequisites:**",
+    prerequisites,
     "",
     "**Environment:**",
     environment,
@@ -188,14 +217,27 @@ function prepareProtectedReview(root: string, authorizationId: string): {
     "",
   ].join("\n");
   const matrixAuthoritySha256 = createHash("sha256").update(Buffer.from(authority, "utf8")).digest("hex");
+  const approvalCommentId = "c-20260928124221490";
+  const matrixApprovalEvidence = `PAP-198 comment ${approvalCommentId} by sinh names the exact Matrix Source and revised digest`;
   const matrixPath = join(root, matrixSource);
   mkdirSync(join(matrixPath, ".."), { recursive: true });
   writeFileSync(
     matrixPath,
-    `# Protected review fixture\n> Matrix Authority SHA-256: ${matrixAuthoritySha256}\n\n${authority}## 13. Implementation Plan\nfixture\n`,
+    [
+      "# Protected review fixture",
+      "> Repository Key: pa-platform",
+      "> Ticket: PAP-198",
+      `> Approved Base SHA: ${baseSha}`,
+      `> Feature Branch: ${branch}`,
+      `> Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+      `> Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+      "",
+      authority + "## 13. Implementation Plan",
+      "fixture",
+      "",
+    ].join("\n"),
   );
 
-  const approvalCommentId = "c-20260928124221490";
   const ticketPath = join(root, "tickets", "PAP-198.json");
   const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as Record<string, unknown>;
   ticket["linkedBranches"] = [{
@@ -205,11 +247,10 @@ function prepareProtectedReview(root: string, authorizationId: string): {
   ticket["comments"] = [{
     id: approvalCommentId,
     author: "sinh",
-    content: `Approved ${matrixSource} at ${matrixAuthoritySha256}`,
+    content: `Approval: Matrix Source ${matrixSource}. Matrix Authority SHA-256: ${matrixAuthoritySha256}.`,
     timestamp: "2026-09-28T00:00:00.000Z",
   }];
   writeFileSync(ticketPath, JSON.stringify(ticket));
-  const matrixApprovalEvidence = `PAP-198 comment ${approvalCommentId} by sinh names ${matrixSource} and ${matrixAuthoritySha256}`;
   const objective = [
     "Ticket: PAP-198",
     `Branch: ${branch}`,
@@ -219,7 +260,7 @@ function prepareProtectedReview(root: string, authorizationId: string): {
     `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
     `Review Authorization ID: ${authorizationId}`,
   ].join("\n");
-  return { objective, markerPath, matrixSource, matrixAuthoritySha256, branch, featureSha };
+  return { objective, markerPath, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, branch, featureSha };
 }
 
 function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessionId: string) => SpawnResult | Promise<SpawnResult>; onInstall?: (plan: SpawnOpts["executionPlan"]) => void; onSpawn?: (opts: SpawnOpts) => void; onResume?: (opts: SpawnOpts) => void; onDescribe?: () => void }): RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } {
@@ -2226,7 +2267,59 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     assert.equal(launches, 0);
 
     const authorization = "review-auth:123e4567-e89b-42d3-a456-426614174000";
-    const fixture = prepareProtectedReview(root, authorization);
+    let fixture = prepareProtectedReview(root, authorization);
+    for (const [name, alteredEvidence, alteredAuthorization] of [
+      ["punctuation drift", `${fixture.matrixApprovalEvidence}.`, "review-auth:123e4567-e89b-42d3-a456-426614174001"],
+      ["surrounding text drift", `Approved evidence: ${fixture.matrixApprovalEvidence}`, "review-auth:123e4567-e89b-42d3-a456-426614174002"],
+    ] as const) {
+      const rejected = await hooks.deploy!({
+        team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+        objective: fixture.objective
+          .replace(fixture.matrixApprovalEvidence, alteredEvidence)
+          .replace(authorization, alteredAuthorization),
+        timeout: 60,
+      });
+      assert.equal(rejected.status, "failed", name);
+      assert.match(rejected.reason ?? "", /header, objective, or launch binding does not agree byte-for-byte/, name);
+      assert.equal(launches, 0, `${name} started zero matrix commands`);
+      assert.equal(reviewerStarts, 0, `${name} started zero reviewers`);
+      assert.equal(existsSync(fixture.markerPath), false, `${name} did not run command 1`);
+    }
+
+    writeFileSync(join(repo, "dirty-review-state.txt"), "dirty\n");
+    const dirty = await hooks.deploy!({
+      team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: fixture.objective.replace(authorization, "review-auth:123e4567-e89b-42d3-a456-426614174003"),
+      timeout: 60,
+    });
+    assert.equal(dirty.status, "failed");
+    assert.match(dirty.reason ?? "", /authenticated clean checkout/);
+    assert.equal(launches, 0, "dirty prerequisite started zero matrix commands");
+    assert.equal(reviewerStarts, 0, "dirty prerequisite started zero reviewers");
+    rmSync(join(repo, "dirty-review-state.txt"));
+
+    const prerequisiteFailures: Array<{ name: string; authorization: string; options: ProtectedReviewFixtureOptions; reason: RegExp }> = [
+      { name: "canonical repository", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174004", options: { canonicalRepoKey: "wrong-repository" }, reason: /canonical repository/ },
+      { name: "base ancestry", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174005", options: { baseSha: "b".repeat(40) }, reason: /base commit/ },
+      { name: "tool version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174006", options: { nodeVersion: "v0.0.0" }, reason: /tool versions/ },
+      { name: "dependency version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174007", options: { expectedDependencyVersion: "0.0.0" }, reason: /installed dependency/ },
+      { name: "complete environment", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174008", options: { omitEnvironmentName: "TZ" }, reason: /required environment value/ },
+    ];
+    for (const failure of prerequisiteFailures) {
+      const invalidFixture = prepareProtectedReview(root, failure.authorization, failure.options);
+      const rejected = await hooks.deploy!({
+        team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+        objective: invalidFixture.objective,
+        timeout: 60,
+      });
+      assert.equal(rejected.status, "failed", failure.name);
+      assert.match(rejected.reason ?? "", failure.reason, failure.name);
+      assert.equal(launches, 0, `${failure.name} prerequisite started zero matrix commands`);
+      assert.equal(reviewerStarts, 0, `${failure.name} prerequisite started zero reviewers`);
+      assert.equal(existsSync(fixture.markerPath), false, `${failure.name} did not run command 1`);
+    }
+
+    fixture = prepareProtectedReview(root, authorization);
     const deployed = await hooks.deploy!({
       team: "requirements",
       mode: "review-auto",
@@ -2264,7 +2357,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       timeout: 60,
     });
     assert.equal(mismatched.status, "failed");
-    assert.match(mismatched.reason ?? "", /Feature SHA is stale or mismatched/);
+    assert.match(mismatched.reason ?? "", /branch, HEAD, or durable ticket binding is unmet/);
     assert.equal(launches, 1);
 
     const duplicateAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174002";

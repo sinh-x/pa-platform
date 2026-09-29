@@ -32,12 +32,19 @@ const MAX_PROTECTED_HANDOFF_BYTES = 64 * 1024 * 1024;
 const REVIEW_AUTHORIZATION = /^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DEPLOYMENT_ID = /^d-[a-z0-9-]+$/;
 
+export interface PiValidationPrerequisiteEvidence {
+  sourceOrder: number;
+  text: string;
+  status: "verified";
+}
+
 export interface PiValidationAdmissionEvidence {
   authorization: "consumed";
   matrixDigest: "verified";
   featureSha: "verified";
   approval: "verified";
   activeReview: "admitted";
+  prerequisites: readonly PiValidationPrerequisiteEvidence[];
 }
 
 export interface PiProtectedReviewMetadata {
@@ -208,12 +215,13 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
-  const admission = strictRecord(row["admission"], "Pi validation admission", ["authorization", "matrixDigest", "featureSha", "approval", "activeReview"]);
+  const admission = strictRecord(row["admission"], "Pi validation admission", ["authorization", "matrixDigest", "featureSha", "approval", "activeReview", "prerequisites"]);
   if (admission["authorization"] !== "consumed" || admission["matrixDigest"] !== "verified"
     || admission["featureSha"] !== "verified" || admission["approval"] !== "verified"
     || admission["activeReview"] !== "admitted") {
     throw new Error("Pi validation admission evidence is incomplete");
   }
+  const prerequisites = parsePrerequisites(admission["prerequisites"]);
   const authority = parseAuthority(row["authority"]);
   const review = parseReview(row["review"]);
   return {
@@ -225,11 +233,27 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       featureSha: "verified",
       approval: "verified",
       activeReview: "admitted",
+      prerequisites,
     },
     validationHandoff: row["validationHandoff"],
     authority,
     review,
   };
+}
+
+function parsePrerequisites(input: unknown): readonly PiValidationPrerequisiteEvidence[] {
+  if (!Array.isArray(input) || input.length === 0) throw new Error("Pi validation prerequisite evidence is incomplete");
+  return input.map((value, index) => {
+    const row = strictRecord(value, "Pi validation prerequisite evidence", ["sourceOrder", "text", "status"]);
+    if (row["sourceOrder"] !== index + 1 || row["status"] !== "verified") {
+      throw new Error("Pi validation prerequisite evidence is incomplete or out of source order");
+    }
+    return {
+      sourceOrder: index + 1,
+      text: requiredString(row["text"], `admission.prerequisites[${index}].text`),
+      status: "verified" as const,
+    };
+  });
 }
 
 function parseAuthority(input: unknown): ValidationAuthorityBinding {

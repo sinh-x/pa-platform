@@ -110,6 +110,12 @@ function fixture(commands: ValidationCommandSpec[]): Fixture {
         featureSha: "verified",
         approval: "verified",
         activeReview: "admitted",
+        prerequisites: [
+          { sourceOrder: 1, text: "authenticated clean repository", status: "verified" },
+          { sourceOrder: 2, text: "exact tools and dependencies", status: "verified" },
+          { sourceOrder: 3, text: "artifact and approval equality", status: "verified" },
+          { sourceOrder: 4, text: "sole authorization and exact environment", status: "verified" },
+        ],
       },
       validationHandoff,
       authority,
@@ -259,6 +265,14 @@ test("invalid admission, authority, safety, repository, path, artifact, and repl
     { name: "authorization not consumed", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, authorization: "available" } }) },
     { name: "matrix digest not verified", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, matrixDigest: "unchecked" } }) },
     { name: "duplicate active review", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, activeReview: "duplicate" } }) },
+    { name: "missing prerequisite evidence", mutate: (seed) => ({ ...seed.launch, admission: { ...seed.launch.admission, prerequisites: [] } }) },
+    { name: "reordered prerequisite evidence", mutate: (seed) => ({
+      ...seed.launch,
+      admission: {
+        ...seed.launch.admission,
+        prerequisites: seed.launch.admission.prerequisites.map((value, index) => ({ ...value, sourceOrder: index === 0 ? 2 : value.sourceOrder })),
+      },
+    }) },
     { name: "review ticket mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, ticketId: "PAP-999" } }) },
     { name: "review branch mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, branch: "feature/PAP-223-other" } }) },
     { name: "review feature mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, featureSha: "b".repeat(40) } }) },

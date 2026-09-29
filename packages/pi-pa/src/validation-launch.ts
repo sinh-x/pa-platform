@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -56,6 +57,40 @@ const MATRIX_ENVIRONMENT_NAMES = [
 type ObjectiveField = (typeof REQUIRED_OBJECTIVE_FIELDS)[number];
 type ReviewObjective = Record<ObjectiveField, string>;
 
+interface ApprovedMatrix {
+  authority: string;
+  digest: string;
+  header: {
+    approvedBaseSha: string;
+    featureBranch: string;
+    matrixApprovalEvidence: string;
+    matrixAuthoritySha256: string;
+    repositoryKey: string;
+    ticketId: string;
+  };
+  prerequisites: readonly string[];
+  environmentSection: string;
+  commands: readonly string[];
+}
+
+interface PrerequisiteContext {
+  approval: { author: string; content: string } | undefined;
+  authorizationId: string;
+  branch: string;
+  current: DeploymentStatus | null;
+  environment: Record<string, string>;
+  featureSha: string;
+  input: PiValidationLaunchInput;
+  matrix: ApprovedMatrix;
+  matrixApprovalEvidence: string;
+  matrixAuthoritySha256: string;
+  matrixSource: string;
+  linkedBranchMatches: boolean;
+  snapshot: ReturnType<typeof captureRepositoryGitSnapshot>;
+  statuses: readonly DeploymentStatus[];
+  ticketId: string;
+}
+
 export interface PiValidationLaunchInput {
   deploymentId: string;
   request: DeployRequest;
@@ -96,39 +131,17 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     throw launchError("review repository identity", "immutable Pi canonical and authenticated worktree identity domains do not agree");
   }
 
+  const matrix = readApprovedMatrix(matrixSource);
   const snapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
-  if (snapshot.branch !== branch || snapshot.head !== featureSha) {
-    throw launchError("review candidate snapshot", "objective branch or Feature SHA is stale or mismatched with the authenticated worktree");
-  }
-
   const ticket = new TicketStore().get(ticketId);
   if (!ticket) throw launchError("durable ticket", "the review ticket is absent");
   const linked = ticket.linkedBranches.filter((value) => value.repo === plan.repoKey && value.branch === branch);
-  if (linked.length !== 1 || linked[0]?.state !== "materialized" || (linked[0].headSha ?? linked[0].sha) !== featureSha) {
-    throw launchError("durable ticket branch", "the ticket does not carry one exact materialized branch and Feature SHA binding");
-  }
+  const linkedBranchMatches = linked.length === 1 && linked[0]?.state === "materialized"
+    && (linked[0].headSha ?? linked[0].sha) === featureSha;
   const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
   const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
-  if (!approval || approval.author.toLowerCase() !== "sinh"
-    || !approval.content.includes(matrixSource) || !approval.content.includes(matrixAuthoritySha256)) {
-    throw launchError("durable ticket approval", "the named Sinh approval comment does not bind the exact matrix source and digest");
-  }
-
   const current = queryDeploymentStatus(deploymentId);
-  assertCurrentLaunchIntent(current, input, objective);
   const statuses = queryDeploymentStatuses();
-  const authorizationMatches = statuses.filter((status) => objectiveValue(status.objective, "Review Authorization ID") === authorizationId);
-  if (authorizationMatches.length !== 1 || authorizationMatches[0]?.deploy_id !== deploymentId) {
-    throw launchError("one-use review authorization", "authorization is absent, reused, or bound to more than the current deployment");
-  }
-  const activeReviews = statuses.filter((status) => status.status === "running"
-    && status.team === "requirements" && status.mode === "review-auto"
-    && status.ticket_id === ticketId && objectiveValue(status.objective, "Branch") === branch);
-  if (activeReviews.length !== 1 || activeReviews[0]?.deploy_id !== deploymentId) {
-    throw launchError("active review exclusion", "another active review or duplicate authority exists for the ticket and branch");
-  }
-
-  const matrix = readApprovedMatrix(matrixSource, matrixAuthoritySha256);
   const manifestEnvironment = matrixEnvironment(environment, {
     ticketId,
     featureSha,
@@ -136,6 +149,23 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     matrixAuthoritySha256,
     matrixApprovalEvidence,
     worktreeRoot: plan.worktreeRoot,
+  });
+  evaluatePrerequisites({
+    approval,
+    authorizationId,
+    branch,
+    current,
+    environment: manifestEnvironment,
+    featureSha,
+    input,
+    linkedBranchMatches,
+    matrix,
+    matrixApprovalEvidence,
+    matrixAuthoritySha256,
+    matrixSource,
+    snapshot,
+    statuses,
+    ticketId,
   });
   const repository = {
     repoKey: plan.repoKey,
@@ -198,6 +228,11 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
       featureSha: "verified" as const,
       approval: "verified" as const,
       activeReview: "admitted" as const,
+      prerequisites: matrix.prerequisites.map((text, index) => Object.freeze({
+        sourceOrder: index + 1,
+        text,
+        status: "verified" as const,
+      })),
     },
     validationHandoff,
     authority,
@@ -258,7 +293,7 @@ function approvalCommentReference(evidence: string): string {
   return matches[0]!;
 }
 
-function readApprovedMatrix(source: string, expectedDigest: string): { commands: string[] } {
+function readApprovedMatrix(source: string): ApprovedMatrix {
   if (isAbsolute(source) || source.split(/[\\/]/).includes("..")) {
     throw launchError("matrix source", "matrix source must be one normalized AI-usage-relative path");
   }
@@ -286,13 +321,18 @@ function readApprovedMatrix(source: string, expectedDigest: string): { commands:
   if (!boundary) throw launchError("matrix authority", "matrix terminal heading boundary is absent");
   const authority = text.slice(start, afterStart + boundary.index);
   const digest = createHash("sha256").update(Buffer.from(authority, "utf8")).digest("hex");
-  if (digest !== expectedDigest) throw launchError("matrix authority", "raw matrix digest does not match the durable launch intent");
-  const headerMatches = [...text.matchAll(/^> Matrix Authority SHA-256:\s*([0-9a-f]{64})$/gm)];
-  if (headerMatches.length !== 1 || headerMatches[0]?.[1] !== expectedDigest) {
-    throw launchError("matrix authority", "requirements header does not bind the exact matrix digest");
+  const prerequisiteSection = authority.match(/\*\*Prerequisites:\*\*\n([\s\S]*?)(?=\n\*\*Environment:\*\*)/)?.[1];
+  if (!prerequisiteSection) throw launchError("matrix prerequisites", "the authoritative prerequisite section is absent");
+  const prerequisiteLines = prerequisiteSection.split("\n").filter((line) => line.length > 0);
+  if (prerequisiteLines.length !== 4 || prerequisiteLines.some((line) => !line.startsWith("- "))) {
+    throw launchError("matrix prerequisites", "the complete four-clause prerequisite contract is malformed or reordered");
   }
+  const prerequisites = prerequisiteLines.map((line) => line.slice(2));
+  const environmentSection = authority.match(/\*\*Environment:\*\*\n([\s\S]*?)(?=\n\*\*Commands \(run in this exact order\):\*\*)/)?.[1];
+  if (!environmentSection) throw launchError("matrix environment", "the complete exact command environment section is absent");
   for (const name of MATRIX_ENVIRONMENT_NAMES) {
-    if (!authority.includes(`\`${name}\``)) throw launchError("matrix environment", "the approved matrix does not name one complete required environment");
+    const matches = environmentSection.match(new RegExp(`\\\`${escapeRegExp(name)}\\\``, "g")) ?? [];
+    if (matches.length !== 1) throw launchError("matrix environment", "the approved matrix does not name each required environment value exactly once");
   }
   const commandSection = authority.match(/\*\*Commands \(run in this exact order\):\*\*([\s\S]*?)(?=\n\*\*Required Outputs and Artifacts:\*\*)/)?.[1];
   if (!commandSection) throw launchError("matrix commands", "the exact ordered command section is absent");
@@ -307,7 +347,178 @@ function readApprovedMatrix(source: string, expectedDigest: string): { commands:
   if (commands.length === 0 || !authority.includes("**Pass Criteria:**")) {
     throw launchError("matrix commands", "matrix commands or pass criteria are absent");
   }
-  return { commands };
+  return {
+    authority,
+    digest,
+    header: {
+      approvedBaseSha: exactHeaderValue(text, "Approved Base SHA"),
+      featureBranch: exactHeaderValue(text, "Feature Branch"),
+      matrixApprovalEvidence: exactHeaderValue(text, "Matrix Approval Evidence"),
+      matrixAuthoritySha256: exactHeaderValue(text, "Matrix Authority SHA-256"),
+      repositoryKey: exactHeaderValue(text, "Repository Key"),
+      ticketId: exactHeaderValue(text, "Ticket"),
+    },
+    prerequisites,
+    environmentSection,
+    commands,
+  };
+}
+
+function evaluatePrerequisites(context: PrerequisiteContext): void {
+  evaluateRepositoryPrerequisite(context, context.matrix.prerequisites[0]!);
+  evaluateToolPrerequisite(context, context.matrix.prerequisites[1]!);
+  evaluateArtifactPrerequisite(context, context.matrix.prerequisites[2]!);
+  evaluateAuthorizationPrerequisite(context, context.matrix.prerequisites[3]!);
+}
+
+function evaluateRepositoryPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
+  const match = /^Linux `([^`]+)`; canonical repository `([^`]+)`; authenticated ticket checkout on `([^`]+)`; clean tracked and untracked state; `HEAD` equals the launch-intent Feature SHA and descends from `([0-9a-f]{40})`\.$/.exec(prerequisite);
+  if (!match) throw launchError("matrix prerequisite 1", "the repository/platform prerequisite is not the complete approved contract");
+  const [, architecture, repoKey, branch, baseSha] = match;
+  const { input, snapshot } = context;
+  if (process.platform !== "linux" || architecture !== "x86_64" || process.arch !== "x64") {
+    throw launchError("matrix prerequisite 1", "the exact Linux architecture prerequisite is unmet");
+  }
+  if (repoKey !== input.plan.repoKey || branch !== context.branch || snapshot.branch !== context.branch
+    || snapshot.head !== context.featureSha || snapshot.dirty || !context.linkedBranchMatches) {
+    throw launchError("matrix prerequisite 1", "canonical repository, authenticated clean checkout, branch, HEAD, or durable ticket binding is unmet");
+  }
+  if (!gitSucceeds(input.plan.worktreeRoot, context.environment, ["cat-file", "-e", `${baseSha}^{commit}`])
+    || !gitSucceeds(input.plan.worktreeRoot, context.environment, ["merge-base", "--is-ancestor", baseSha, context.featureSha])) {
+    throw launchError("matrix prerequisite 1", "the approved base commit is absent or is not an ancestor of the Feature SHA");
+  }
+}
+
+function evaluateToolPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
+  const match = /^Node\.js `([^`]+)`, pnpm `([^`]+)` through Corepack, Pi `([^`]+)`, Git, Bash, Nix, and the repository's existing installed dependencies including (.+)\.$/.exec(prerequisite);
+  if (!match) throw launchError("matrix prerequisite 2", "the tool/dependency prerequisite is not the complete approved contract");
+  const [, nodeVersion, pnpmVersion, piVersion, dependencyText] = match;
+  if (probe("node", ["--version"], context.environment) !== nodeVersion
+    || probe("corepack", ["pnpm", "--version"], context.environment) !== pnpmVersion
+    || probe("pi", ["--version"], context.environment) !== piVersion
+    || probe("git", ["--version"], context.environment) === undefined
+    || probe("bash", ["--version"], context.environment) === undefined
+    || probe("nix", ["--version"], context.environment) === undefined) {
+    throw launchError("matrix prerequisite 2", "one or more exact platform tool versions or executables are unavailable");
+  }
+  const dependencySpecs = [...dependencyText.matchAll(/`([^`]+)`/g)].map((value) => value[1]!);
+  if (dependencySpecs.length === 0 || dependencyText !== dependencySpecs.map((value) => `\`${value}\``).join(", ")) {
+    throw launchError("matrix prerequisite 2", "the exact installed dependency list is malformed");
+  }
+  for (const specification of dependencySpecs) assertInstalledDependency(context.input.plan.worktreeRoot, specification);
+}
+
+function evaluateArtifactPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
+  const match = /^The approved requirements artifact exists at `([^`]+)` and its header, durable ([A-Z]+-[0-9]+) approval comment, launch intent, and recomputed raw matrix digest agree exactly\.$/.exec(prerequisite);
+  if (!match) throw launchError("matrix prerequisite 3", "the artifact/approval prerequisite is not the complete approved contract");
+  const [, artifactPath, approvalTicket] = match;
+  const expectedPath = resolve(getAiUsageDir(), context.matrixSource);
+  const header = context.matrix.header;
+  if (artifactPath !== expectedPath || approvalTicket !== context.ticketId
+    || header.repositoryKey !== context.input.plan.repoKey || header.ticketId !== context.ticketId
+    || header.featureBranch !== context.branch || header.matrixAuthoritySha256 !== context.matrixAuthoritySha256
+    || header.matrixApprovalEvidence !== context.matrixApprovalEvidence
+    || header.approvedBaseSha !== repositoryPrerequisiteBase(context.matrix.prerequisites[0]!)) {
+    throw launchError("matrix prerequisite 3", "requirements artifact header, objective, or launch binding does not agree byte-for-byte");
+  }
+  const sourceLines = [...context.matrix.authority.matchAll(/^\*\*Matrix Source:\*\* `([^`]+)`$/gm)];
+  if (sourceLines.length !== 1 || sourceLines[0]?.[1] !== context.matrixSource
+    || context.matrix.digest !== context.matrixAuthoritySha256) {
+    throw launchError("matrix prerequisite 3", "matrix source or recomputed raw authority digest does not agree exactly");
+  }
+  if (!context.approval || context.approval.author.toLowerCase() !== "sinh"
+    || occurrences(context.approval.content, context.matrixSource) !== 1
+    || occurrences(context.approval.content, context.matrixAuthoritySha256) !== 1) {
+    throw launchError("matrix prerequisite 3", "the named durable Sinh approval comment does not bind the exact matrix source and digest");
+  }
+  assertCurrentLaunchIntent(context.current, context.input, parseReviewObjective(context.input.request.objective));
+}
+
+function evaluateAuthorizationPrerequisite(context: PrerequisiteContext, prerequisite: string): void {
+  const expected = "The trusted launcher has atomically consumed the one-use review authorization, rejected duplicate active review lineage, and supplied the complete explicit command environment. The authorization ID is excluded from command child environments, logs, activity progress, and ledger artifacts; it is supplied separately to the reviewer for exact objective, report, and registry agreement. No project command starts before these checks pass.";
+  if (prerequisite !== expected) throw launchError("matrix prerequisite 4", "the authorization/environment prerequisite is not the complete approved contract");
+  assertExactCommandEnvironment(context);
+  const authorizationMatches = context.statuses.filter((status) => objectiveValue(status.objective, "Review Authorization ID") === context.authorizationId);
+  if (authorizationMatches.length !== 1 || authorizationMatches[0]?.deploy_id !== context.input.deploymentId) {
+    throw launchError("matrix prerequisite 4", "authorization is absent, reused, or not atomically consumed by the current deployment");
+  }
+  const activeReviews = context.statuses.filter((status) => status.status === "running"
+    && status.team === "requirements" && status.mode === "review-auto"
+    && status.ticket_id === context.ticketId && objectiveValue(status.objective, "Branch") === context.branch);
+  if (activeReviews.length !== 1 || activeReviews[0]?.deploy_id !== context.input.deploymentId) {
+    throw launchError("matrix prerequisite 4", "another active review or duplicate authority exists for the ticket and branch");
+  }
+}
+
+function assertExactCommandEnvironment(context: PrerequisiteContext): void {
+  const expected = [...MATRIX_ENVIRONMENT_NAMES].sort();
+  if (JSON.stringify(Object.keys(context.environment).sort()) !== JSON.stringify(expected)
+    || context.environment["PA_REPO"] !== context.input.plan.worktreeRoot
+    || context.environment["PA_TICKET_ID"] !== context.ticketId
+    || context.environment["PA_FEATURE_SHA"] !== context.featureSha
+    || context.environment["PA_MATRIX_SOURCE"] !== context.matrixSource
+    || context.environment["PA_MATRIX_AUTHORITY_SHA256"] !== context.matrixAuthoritySha256
+    || context.environment["PA_MATRIX_APPROVAL_EVIDENCE"] !== context.matrixApprovalEvidence
+    || context.environment["CI"] !== "1" || context.environment["HOME"] !== "/home/sinh"
+    || context.environment["LANG"] !== "C.UTF-8" || context.environment["TZ"] !== "UTC"
+    || !context.environment["PATH"] || context.environment["PATH"] !== process.env["PATH"]
+    || Object.hasOwn(context.environment, "PA_REVIEW_AUTHORIZATION_ID")
+    || Object.values(context.environment).includes(context.authorizationId)) {
+    throw launchError("matrix prerequisite 4", "the complete explicit command environment is absent, ambient, or mismatched");
+  }
+}
+
+function exactHeaderValue(text: string, label: string): string {
+  const prefix = `> ${label}:`;
+  const candidates = text.split("\n").map((line) => line.endsWith("\r") ? line.slice(0, -1) : line)
+    .filter((line) => line.startsWith(prefix));
+  const match = candidates.length === 1 ? new RegExp(`^${escapeRegExp(prefix)} (.+)$`).exec(candidates[0]!) : null;
+  if (!match?.[1]) throw launchError("requirements header", `exactly one approved ${label} header line is required`);
+  return match[1];
+}
+
+function repositoryPrerequisiteBase(prerequisite: string): string {
+  const match = / descends from `([0-9a-f]{40})`\.$/.exec(prerequisite);
+  if (!match?.[1]) throw launchError("matrix prerequisite 1", "the approved base SHA is absent");
+  return match[1];
+}
+
+function gitSucceeds(cwd: string, environment: Record<string, string>, args: string[]): boolean {
+  return probe("git", args, environment, cwd) !== undefined;
+}
+
+function probe(command: string, args: string[], environment: Record<string, string>, cwd?: string): string | undefined {
+  try {
+    return execFileSync(command, args, {
+      ...(cwd ? { cwd } : {}),
+      env: environment,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function assertInstalledDependency(worktreeRoot: string, specification: string): void {
+  const separator = specification.lastIndexOf("@");
+  if (separator <= 0) throw launchError("matrix prerequisite 2", "an installed dependency version is malformed");
+  const name = specification.slice(0, separator);
+  const version = specification.slice(separator + 1);
+  try {
+    const packageJson = JSON.parse(readFileSync(resolve(worktreeRoot, "node_modules", name, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+    if (packageJson.name !== name || packageJson.version !== version) throw new Error("dependency mismatch");
+  } catch {
+    throw launchError("matrix prerequisite 2", `installed dependency ${name} does not match the approved exact version`);
+  }
+}
+
+function occurrences(input: string, value: string): number {
+  return input.split(value).length - 1;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function matrixEnvironment(
@@ -322,7 +533,8 @@ function matrixEnvironment(
   },
 ): Record<string, string> {
   const path = environment["PATH"] ?? process.env["PATH"];
-  if (!path) throw launchError("trusted command environment", "the trusted launcher has no resolved PATH");
+  const home = environment["HOME"] ?? process.env["HOME"];
+  if (!path || !home) throw launchError("trusted command environment", "the trusted launcher has no complete explicit PATH and HOME");
   return {
     PA_REPO: binding.worktreeRoot,
     PA_TICKET_ID: binding.ticketId,
@@ -331,7 +543,7 @@ function matrixEnvironment(
     PA_MATRIX_AUTHORITY_SHA256: binding.matrixAuthoritySha256,
     PA_MATRIX_APPROVAL_EVIDENCE: binding.matrixApprovalEvidence,
     CI: "1",
-    HOME: environment["HOME"] ?? process.env["HOME"] ?? "",
+    HOME: home,
     LANG: "C.UTF-8",
     TZ: "UTC",
     PATH: path,
