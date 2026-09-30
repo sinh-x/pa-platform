@@ -186,6 +186,7 @@ export function claimReviewAuthorization(input: ReviewAuthorizationClaimInput): 
     if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE deployment_id = ?").get(input.deploymentId)) {
       throw reviewClaimError("deployment-already-claimed", "the deployment already consumed a review authorization");
     }
+    reconcileDurablyTerminalReviewClaims(db, input.ticketId, input.branch);
     if (db.prepare("SELECT 1 FROM review_authorization_claims WHERE ticket_id = ? AND branch = ? AND active = 1").get(input.ticketId, input.branch)) {
       throw reviewClaimError("active-review", "another durable active review claim exists for the ticket and branch");
     }
@@ -312,6 +313,28 @@ function reviewClaimsEqual(left: ReviewAuthorizationClaim, right: ReviewAuthoriz
     && left.matrixSource === right.matrixSource && left.matrixAuthoritySha256 === right.matrixAuthoritySha256
     && left.matrixApprovalEvidence === right.matrixApprovalEvidence && left.claimedAt === right.claimedAt
     && left.active === right.active;
+}
+
+function deactivateReviewAuthorizationClaim(db: ReturnType<typeof getDb>, deploymentId: string): void {
+  db.prepare("UPDATE review_authorization_claims SET active = 0 WHERE deployment_id = ? AND active = 1").run(deploymentId);
+}
+
+function reconcileDurablyTerminalReviewClaims(db: ReturnType<typeof getDb>, ticketId: string, branch: string): void {
+  db.prepare(`
+    UPDATE review_authorization_claims
+    SET active = 0
+    WHERE ticket_id = ? AND branch = ? AND active = 1
+      AND EXISTS (
+        SELECT 1 FROM deployments AS projection
+        WHERE projection.deployment_id = review_authorization_claims.deployment_id
+          AND projection.status IN ('success', 'partial', 'failed', 'crashed')
+      )
+      AND EXISTS (
+        SELECT 1 FROM registry_events AS terminal
+        WHERE terminal.deployment_id = review_authorization_claims.deployment_id
+          AND terminal.event IN ('completed', 'crashed')
+      )
+  `).run(ticketId, branch);
 }
 
 export type TicketAssociationErrorCode =
@@ -556,7 +579,7 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
   validateRegistryEvent(requested);
   if (requested.event !== "completed" && requested.event !== "crashed") throw new Error("Terminal reconciliation requires a completed or crashed event");
   const db = getDb();
-  return db.transaction(() => {
+  const transaction = db.transaction(() => {
     assertEventMatchesStartedIdentity(db, requested);
     const existingRows = terminalRows(db, requested.deployment_id);
     const existing = existingRows.map(fromRow).find(isFailedTerminal) ?? existingRows.map(fromRow)[0];
@@ -567,6 +590,7 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
         insertRegistryEvent(db, retained);
         upsertDeployment(db, retained);
       }
+      deactivateReviewAuthorizationClaim(db, requested.deployment_id);
       return { event: retained, retainedExisting: true };
     }
 
@@ -574,7 +598,8 @@ export function reconcileTerminalRegistryEvent(requested: RegistryEvent): Reconc
     insertRegistryEvent(db, requested);
     upsertDeployment(db, requested);
     return { event: requested, retainedExisting: false };
-  })();
+  });
+  return transaction.immediate();
 }
 
 /**
@@ -590,7 +615,10 @@ export function reconcileTerminalRegistryEventIfAbsent(requested: RegistryEvent)
     assertEventMatchesStartedIdentity(db, requested);
     const existingRows = terminalRows(db, requested.deployment_id);
     const existing = existingRows.map(fromRow)[0];
-    if (existing) return { event: existing, retainedExisting: true };
+    if (existing) {
+      deactivateReviewAuthorizationClaim(db, requested.deployment_id);
+      return { event: existing, retainedExisting: true };
+    }
     insertRegistryEvent(db, requested);
     upsertDeployment(db, requested);
     return { event: requested, retainedExisting: false };
@@ -810,7 +838,7 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
     db.prepare("UPDATE deployments SET status = 'crashed', completed_at = @timestamp, summary = NULL, log_file = NULL, rating = NULL, error = @error, exit_code = @exit_code, fallback = 0, branch_state = COALESCE(@branch_state, branch_state), branch_base_sha = COALESCE(@branch_base_sha, branch_base_sha), branch_head_sha = COALESCE(@branch_head_sha, branch_head_sha) WHERE deployment_id = @deployment_id").run(row);
   }
   if (event.event === "completed" || event.event === "crashed") {
-    db.prepare("UPDATE review_authorization_claims SET active = 0 WHERE deployment_id = ? AND active = 1").run(event.deployment_id);
+    deactivateReviewAuthorizationClaim(db, event.deployment_id);
   }
 }
 
