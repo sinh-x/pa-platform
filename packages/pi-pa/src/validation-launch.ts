@@ -566,9 +566,17 @@ function assertApprovedMatrixEnvironment(environmentSection: string): void {
   for (const span of spans) {
     const representation = span[1]!;
     const delimiter = representation.indexOf("=");
-    const name = delimiter === -1 ? representation : representation.slice(0, delimiter);
-    const value = delimiter === -1 ? undefined : representation.slice(delimiter + 1);
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(name) || (value !== undefined && !isExactAuthorityValue(value))) {
+    if (delimiter === -1) {
+      if (approved.has(representation)) counts.set(representation, counts.get(representation)! + 1);
+      else if (representation.length === 0) {
+        throw launchError("matrix environment", "the approved matrix command environment contains a malformed or empty assignment representation");
+      }
+      continue;
+    }
+
+    const name = representation.slice(0, delimiter);
+    const value = representation.slice(delimiter + 1);
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(name) || !isExactAuthorityValue(value)) {
       throw launchError("matrix environment", "the approved matrix command environment contains a malformed or empty assignment representation");
     }
     if (!approved.has(name)) {
