@@ -10,6 +10,7 @@ import {
   ensureTerminalRegistryMarker,
   finalizeRepositoryMutationBorrower,
   finalizeRepositoryMutationLease,
+  formatBoundedFiveFieldDiagnostic,
   getDeployPaths,
   readProcessFingerprint,
   reconcileTerminalRegistryEvent,
@@ -20,6 +21,7 @@ import {
   transferRepositoryTicketSlot,
   type RegistryEvent,
   type RepositoryGitSnapshot,
+  type ValidationEvent,
 } from "@pa-platform/pa-core";
 import {
   buildPiBackgroundArgs,
@@ -38,6 +40,14 @@ import {
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
+import { assertPiMatrixStartedForLaunch } from "./validation-launch.js";
+import {
+  PI_VALIDATION_HANDOFF_FILE,
+  readPiProtectedValidationLaunch,
+  runPiValidationBeforeReviewer,
+  type PiProtectedValidationLaunch,
+  type PiReviewerValidationContext,
+} from "./validation-supervisor.js";
 
 const FINALIZATION_DEADLINE_MS = 5_000;
 const ACTIVITY_DIAGNOSTIC_MAX = 500;
@@ -157,12 +167,11 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         repositoryBorrowerTransferred = true;
       }
     }
-    const args = buildPiBackgroundArgs(config);
     const runtimeEnvironment = { ...process.env };
     if (repositoryBorrower) delete runtimeEnvironment[PI_PARENT_LEASE_CAPABILITY_ENV];
     const childEnv = piRegistryEnvironment(runtimeEnvironment);
-    const result = await runPiManagedProcess(
-      args,
+    const startReviewer = (reviewerContext?: PiReviewerValidationContext): Promise<PiCommandResult> => runPiManagedProcess(
+      buildPiBackgroundArgs(config, reviewerContext),
       config.cwd,
       childEnv,
       {
@@ -186,8 +195,39 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         },
       },
     );
+    let result: PiCommandResult;
+    if (config.validationHandoffPath) {
+      let validationLaunch: PiProtectedValidationLaunch;
+      try {
+        if (config.validationHandoffPath !== resolve(deployDir, PI_VALIDATION_HANDOFF_FILE)) throw new Error("runner-readiness: validation handoff path mismatch");
+        validationLaunch = readPiProtectedValidationLaunch(config.validationHandoffPath);
+        if (validationLaunch.deploymentId !== config.deploymentId) throw new Error("runner-readiness: validation handoff deployment identity mismatch");
+        assertPiMatrixStartedForLaunch(deployDir, validationLaunch);
+        if (!secrets.includes(validationLaunch.review.authorizationId)) secrets.push(validationLaunch.review.authorizationId);
+      } finally {
+        try { unlinkSync(config.validationHandoffPath); } catch { /* missing or consumed protected handoff remains a causal failure */ }
+      }
+      ready = true;
+      writePiSupervisorOwnership(ownershipPath, ownership("active"));
+      const validationRoot = resolve(deployDir, "validation-evidence");
+      const ledgerPath = resolve(validationRoot, "ledger.json");
+      const supervised = await runPiValidationBeforeReviewer(validationLaunch, {
+        evidenceRoot: validationRoot,
+        ledgerPath,
+        now,
+        abortSignal: shutdown.signal,
+        emit: (event) => appendValidationActivity(config.deploymentId, event, secrets),
+        startReviewer,
+      });
+      if (!supervised.admitted) {
+        throw new Error(`runner-readiness: ${formatBoundedFiveFieldDiagnostic(supervised.diagnostic)}`);
+      }
+      result = supervised.reviewerResult;
+    } else {
+      result = await startReviewer();
+    }
 
-    if (!ready) throw new Error("runner-spawn: Pi child did not expose a process id");
+    if (!ready || !childPid) throw new Error("runner-spawn: Pi child did not expose a process id");
     writePiSupervisorOwnership(ownershipPath, ownership("finalizing"));
     const authority = repositoryLease ?? repositoryBorrower;
     if (authority) {
@@ -407,6 +447,20 @@ function reconcileRunnerTerminal(config: PiBackgroundConfig, deployDir: string, 
   audit.observe("registry-diagnostic", authoritative, secrets);
   audit.observe("terminal-status", status, secrets);
   return { event: authoritative.event === "crashed" ? "crashed" : "completed", status: success ? "success" : "failed" };
+}
+
+function appendValidationActivity(deploymentId: string, validation: ValidationEvent, secrets: string[]): void {
+  const body = JSON.stringify(validation);
+  if (body.length > TERMINAL_DIAGNOSTIC_MAX) throw new Error("runner-persistence: validation lifecycle event exceeds 2000 JavaScript characters");
+  const event = createActivityEvent({
+    deployId: deploymentId,
+    kind: validation.status === "rejected" ? "error" : "text",
+    source: "pi",
+    body,
+    partType: `validation_${validation.type}`,
+  });
+  appendActivityEvent(event, getDeployPaths(deploymentId).activityLogPath);
+  new PiRedactionAudit(deploymentId, dirname(getDeployPaths(deploymentId).activityLogPath)).observe("validation-activity", event, secrets);
 }
 
 function appendRunnerError(deploymentId: string, deployDir: string, reason: string, secrets: string[]): void {

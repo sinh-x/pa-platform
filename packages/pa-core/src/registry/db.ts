@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
 let singleton: Database.Database | null = null;
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 export const REGISTRY_NATIVE_BINDING_ENV = "PA_SQLITE_NATIVE_BINDING";
 
 export interface RegistryNativeAddonEvidence {
@@ -147,6 +147,20 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
     CREATE INDEX IF NOT EXISTS idx_deployments_started_at ON deployments(started_at);
     CREATE INDEX IF NOT EXISTS idx_deployments_ticket_id ON deployments(ticket_id);
+    CREATE TABLE IF NOT EXISTS review_authorization_claims (
+      authorization_id TEXT PRIMARY KEY,
+      deployment_id TEXT NOT NULL UNIQUE,
+      ticket_id TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      feature_sha TEXT NOT NULL,
+      matrix_source TEXT NOT NULL,
+      matrix_authority_sha256 TEXT NOT NULL,
+      matrix_approval_evidence TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      active INTEGER NOT NULL CHECK (active IN (0, 1))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_review_claim_active_ticket_branch
+      ON review_authorization_claims(ticket_id, branch) WHERE active = 1;
     CREATE TABLE IF NOT EXISTS evaluator_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       target_deployment_id TEXT NOT NULL,

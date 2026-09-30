@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 interface AssociationFixture {
   root: string;
@@ -91,6 +91,283 @@ test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and stri
     assert.throws(() => readPiForegroundCompletion(root), /malformed or exceeds/);
     assert.ok(readFileSync(path).byteLength > MAX_PI_FOREGROUND_COMPLETION_BYTES);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review authorization claim atomically enforces one-use and active ticket/branch exclusion", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-review-claim-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const start = (deploymentId: string, authorizationId: string): string => {
+    const objective = [
+      `Ticket: ${ticketId}`,
+      `Branch: ${branch}`,
+      `Feature SHA: ${featureSha}`,
+      `Matrix Source: ${matrixSource}`,
+      `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+      `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+      `Review Authorization ID: ${authorizationId}`,
+    ].join("\n");
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", event: "started", timestamp: new Date().toISOString(), runtime: "pi", binary: "ppa", ticket_id: ticketId, objective });
+    return objective;
+  };
+  const claim = (deploymentId: string, authorizationId: string, objective: string) => claimReviewAuthorization({
+    deploymentId, authorizationId, ticketId, branch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective,
+  });
+  const expectClaimError = (run: () => unknown, code: ReviewAuthorizationClaimError["code"]): void => {
+    assert.throws(run, (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === code);
+  };
+  try {
+    const authorizationOne = "review-auth:123e4567-e89b-42d3-a456-426614174000";
+    const objectiveOne = start("d-review-one", authorizationOne);
+    const first = claim("d-review-one", authorizationOne, objectiveOne);
+    assert.equal(first.active, true);
+    assert.deepEqual(queryReviewAuthorizationClaim(authorizationOne), first);
+
+    const objectiveReplay = start("d-review-replay", authorizationOne);
+    expectClaimError(() => claim("d-review-replay", authorizationOne, objectiveReplay), "authorization-consumed");
+    appendRegistryEvent({ deployment_id: "d-review-replay", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+
+    const authorizationTwo = "review-auth:223e4567-e89b-42d3-a456-426614174001";
+    const objectiveTwo = start("d-review-two", authorizationTwo);
+    expectClaimError(() => claim("d-review-two", authorizationTwo, objectiveTwo), "active-review");
+    assert.equal(queryReviewAuthorizationClaims().length, 1);
+
+    appendRegistryEvent({ deployment_id: "d-review-one", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "success" });
+    assert.equal(queryReviewAuthorizationClaim(authorizationOne)?.active, false);
+    const second = claim("d-review-two", authorizationTwo, objectiveTwo);
+    assert.equal(second.active, true);
+    assert.equal(queryReviewAuthorizationClaims().length, 2);
+
+    appendRegistryEvent({ deployment_id: "d-review-two", team: "requirements", event: "crashed", timestamp: new Date().toISOString(), error: "fixture crash", exit_code: 1 });
+    assert.equal(queryReviewAuthorizationClaim(authorizationTwo)?.active, false);
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review authorization claim rejects legacy running exact-ticket branches, excludes self, and serializes contenders", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-legacy-review-claim-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const objectiveFor = (authorizationId: string, objectiveBranch = branch): string => [
+    `Ticket: ${ticketId}`,
+    `Branch: ${objectiveBranch}`,
+    `Feature SHA: ${featureSha}`,
+    `Matrix Source: ${matrixSource}`,
+    `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+    `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+    `Review Authorization ID: ${authorizationId}`,
+  ].join("\n");
+  const start = (deploymentId: string, objective: string): void => appendRegistryEvent({
+    deployment_id: deploymentId,
+    team: "requirements",
+    mode: "review-auto",
+    event: "started",
+    timestamp: new Date().toISOString(),
+    runtime: "pi",
+    binary: "ppa",
+    ticket_id: ticketId,
+    objective,
+  });
+  const claim = (deploymentId: string, authorizationId: string, objective: string) => claimReviewAuthorization({
+    deploymentId, authorizationId, ticketId, branch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective,
+  });
+  const expectActiveReview = (run: () => unknown): void => assert.throws(
+    run,
+    (error: unknown) => error instanceof ReviewAuthorizationClaimError
+      && error.code === "active-review"
+      && /running requirements\/review-auto deployment.*legacy deployment without a claim/.test(error.message),
+  );
+  try {
+    const legacyAuthorization = "review-auth:123e4567-e89b-42d3-a456-426614174010";
+    start("d-legacy-review", objectiveFor(legacyAuthorization));
+
+    const firstAuthorization = "review-auth:223e4567-e89b-42d3-a456-426614174011";
+    const firstObjective = objectiveFor(firstAuthorization);
+    start("d-first-contender", firstObjective);
+    const secondAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174012";
+    const secondObjective = objectiveFor(secondAuthorization);
+    start("d-second-contender", secondObjective);
+
+    expectActiveReview(() => claim("d-first-contender", firstAuthorization, firstObjective));
+    expectActiveReview(() => claim("d-second-contender", secondAuthorization, secondObjective));
+    assert.deepEqual(queryReviewAuthorizationClaims(), [], "legacy reconciliation leaves concurrent contenders unconsumed");
+
+    appendRegistryEvent({ deployment_id: "d-legacy-review", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+    appendRegistryEvent({ deployment_id: "d-second-contender", team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+    const admitted = claim("d-first-contender", firstAuthorization, firstObjective);
+    assert.equal(admitted.deploymentId, "d-first-contender", "the current deployment never rejects itself");
+    assert.equal(admitted.active, true);
+    assert.equal(queryReviewAuthorizationClaims().length, 1);
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retained terminal reconciliation deactivates only the matching review claim without rewriting stable history", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-retained-terminal-claim-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const objectiveFor = (authorizationId: string, objectiveBranch: string): string => [
+    `Ticket: ${ticketId}`,
+    `Branch: ${objectiveBranch}`,
+    `Feature SHA: ${featureSha}`,
+    `Matrix Source: ${matrixSource}`,
+    `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+    `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+    `Review Authorization ID: ${authorizationId}`,
+  ].join("\n");
+  const startAndClaim = (deploymentId: string, authorizationId: string, claimBranch: string): void => {
+    const objective = objectiveFor(authorizationId, claimBranch);
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", event: "started", timestamp: new Date().toISOString(), runtime: "pi", binary: "ppa", ticket_id: ticketId, objective });
+    claimReviewAuthorization({ deploymentId, authorizationId, ticketId, branch: claimBranch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective });
+  };
+  const terminalEvents = (deploymentId: string) => getDeploymentEvents(deploymentId).filter((event) => event.event === "completed" || event.event === "crashed");
+  try {
+    const successAuthorization = "review-auth:123e4567-e89b-42d3-a456-426614174020";
+    const unrelatedAuthorization = "review-auth:223e4567-e89b-42d3-a456-426614174021";
+    startAndClaim("d-retained-success", successAuthorization, branch);
+    startAndClaim("d-unrelated-active", unrelatedAuthorization, "feature/PAP-223-unrelated-review");
+    appendRegistryEvent({ deployment_id: "d-retained-success", team: "requirements", event: "completed", timestamp: "2026-09-30T00:01:00Z", status: "success", summary: "stable success", exit_code: 0 });
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-retained-success");
+    const stableSuccess = terminalEvents("d-retained-success");
+
+    const retainedSuccess = reconcileTerminalRegistryEvent({ deployment_id: "d-retained-success", team: "requirements", event: "completed", timestamp: "2026-09-30T00:02:00Z", status: "success", summary: "duplicate success", exit_code: 0 });
+    assert.equal(retainedSuccess.retainedExisting, true);
+    assert.deepEqual(terminalEvents("d-retained-success"), stableSuccess, "idempotent reconciliation preserves the stable terminal row exactly");
+    assert.equal(queryReviewAuthorizationClaim(successAuthorization)?.active, false);
+    assert.equal(queryReviewAuthorizationClaim(unrelatedAuthorization)?.active, true, "an unrelated deployment claim remains active");
+
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-retained-success");
+    const statusOnly = reconcileTerminalRegistryEventIfAbsent({ deployment_id: "d-retained-success", team: "requirements", event: "crashed", timestamp: "2026-09-30T00:03:00Z", error: "status observer", exit_code: -1 });
+    assert.equal(statusOnly.retainedExisting, true);
+    assert.deepEqual(terminalEvents("d-retained-success"), stableSuccess, "status-only reconciliation preserves the stable terminal row exactly");
+    assert.equal(queryReviewAuthorizationClaim(successAuthorization)?.active, false);
+
+    const failedAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174022";
+    startAndClaim("d-retained-failure", failedAuthorization, "feature/PAP-223-failed-review");
+    appendRegistryEvent({ deployment_id: "d-retained-failure", team: "requirements", event: "crashed", timestamp: "2026-09-30T00:04:00Z", error: "stable crash", exit_code: 1 });
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-retained-failure");
+    const stableFailure = terminalEvents("d-retained-failure");
+    const retainedFailure = reconcileTerminalRegistryEvent({ deployment_id: "d-retained-failure", team: "requirements", event: "completed", timestamp: "2026-09-30T00:05:00Z", status: "success", summary: "late success", exit_code: 0 });
+    assert.equal(retainedFailure.retainedExisting, true);
+    assert.deepEqual(terminalEvents("d-retained-failure"), stableFailure, "crash remains sticky and is not duplicated");
+    assert.equal(queryReviewAuthorizationClaim(failedAuthorization)?.active, false);
+
+    const completedFailureAuthorization = "review-auth:423e4567-e89b-42d3-a456-426614174029";
+    startAndClaim("d-retained-completed-failure", completedFailureAuthorization, "feature/PAP-223-completed-failed-review");
+    appendRegistryEvent({ deployment_id: "d-retained-completed-failure", team: "requirements", event: "completed", timestamp: "2026-09-30T00:06:00Z", status: "failed", summary: "stable failed completion", exit_code: 1 });
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-retained-completed-failure");
+    const stableCompletedFailure = terminalEvents("d-retained-completed-failure");
+    assert.equal(reconcileTerminalRegistryEvent({ deployment_id: "d-retained-completed-failure", team: "requirements", event: "completed", timestamp: "2026-09-30T00:07:00Z", status: "success", summary: "late success", exit_code: 0 }).retainedExisting, true);
+    assert.deepEqual(terminalEvents("d-retained-completed-failure"), stableCompletedFailure, "failed completion remains sticky and is not duplicated");
+    assert.equal(queryReviewAuthorizationClaim(completedFailureAuthorization)?.active, false);
+    assert.equal(queryReviewAuthorizationClaim(unrelatedAuthorization)?.active, true);
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh review admission atomically retires terminal claims but preserves replay, running, uncertain, and unrelated exclusions", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-stale-terminal-admission-"));
+  const previous = process.env["PA_REGISTRY_DB"];
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  const ticketId = "PAP-223";
+  const branch = "feature/PAP-223-structured-validation-executor";
+  const featureSha = "a".repeat(40);
+  const matrixAuthoritySha256 = "b".repeat(64);
+  const matrixSource = "agent-teams/requirements/artifacts/pap-223.md";
+  const matrixApprovalEvidence = "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest";
+  const objectiveFor = (authorizationId: string, objectiveBranch = branch): string => [
+    `Ticket: ${ticketId}`,
+    `Branch: ${objectiveBranch}`,
+    `Feature SHA: ${featureSha}`,
+    `Matrix Source: ${matrixSource}`,
+    `Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
+    `Matrix Approval Evidence: ${matrixApprovalEvidence}`,
+    `Review Authorization ID: ${authorizationId}`,
+  ].join("\n");
+  const start = (deploymentId: string, authorizationId: string, objectiveBranch = branch): string => {
+    const objective = objectiveFor(authorizationId, objectiveBranch);
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", event: "started", timestamp: new Date().toISOString(), runtime: "pi", binary: "ppa", ticket_id: ticketId, objective });
+    return objective;
+  };
+  const claim = (deploymentId: string, authorizationId: string, objective: string, claimBranch = branch) => claimReviewAuthorization({
+    deploymentId, authorizationId, ticketId, branch: claimBranch, featureSha, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, objective,
+  });
+  const expectClaimError = (run: () => unknown, code: ReviewAuthorizationClaimError["code"]): void => {
+    assert.throws(run, (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === code);
+  };
+  try {
+    const staleAuthorization = "review-auth:423e4567-e89b-42d3-a456-426614174023";
+    const staleObjective = start("d-stale-terminal", staleAuthorization);
+    claim("d-stale-terminal", staleAuthorization, staleObjective);
+    appendRegistryEvent({ deployment_id: "d-stale-terminal", team: "requirements", event: "completed", timestamp: "2026-09-30T01:00:00Z", status: "success", summary: "durable terminal", exit_code: 0 });
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-stale-terminal");
+
+    const unrelatedAuthorization = "review-auth:523e4567-e89b-42d3-a456-426614174024";
+    const unrelatedBranch = "feature/PAP-223-unrelated-review";
+    const unrelatedObjective = start("d-unrelated-running", unrelatedAuthorization, unrelatedBranch);
+    claim("d-unrelated-running", unrelatedAuthorization, unrelatedObjective, unrelatedBranch);
+
+    const winnerAuthorization = "review-auth:623e4567-e89b-42d3-a456-426614174025";
+    const winnerObjective = start("d-fresh-winner", winnerAuthorization);
+    const winner = claim("d-fresh-winner", winnerAuthorization, winnerObjective);
+    assert.equal(winner.active, true, "one fresh contender atomically replaces the stale terminal slot holder");
+    assert.equal(queryReviewAuthorizationClaim(staleAuthorization)?.active, false);
+    assert.equal(queryReviewAuthorizationClaim(unrelatedAuthorization)?.active, true, "admission does not clean another branch");
+
+    const replayObjective = start("d-replay-loser", staleAuthorization);
+    expectClaimError(() => claim("d-replay-loser", staleAuthorization, replayObjective), "authorization-consumed");
+    expectClaimError(() => claim("d-fresh-winner", "review-auth:723e4567-e89b-42d3-a456-426614174026", winnerObjective), "deployment-already-claimed");
+
+    const runningAuthorization = "review-auth:823e4567-e89b-42d3-a456-426614174027";
+    const runningObjective = start("d-running-loser", runningAuthorization);
+    expectClaimError(() => claim("d-running-loser", runningAuthorization, runningObjective), "active-review");
+    assert.equal(queryReviewAuthorizationClaim(winnerAuthorization)?.active, true, "a running claim remains active");
+
+    appendRegistryEvent({ deployment_id: "d-fresh-winner", team: "requirements", event: "completed", timestamp: "2026-09-30T01:01:00Z", status: "failed", summary: "terminal before uncertainty fixture", exit_code: 1 });
+    getDb().prepare("UPDATE review_authorization_claims SET active = 1 WHERE deployment_id = ?").run("d-fresh-winner");
+    getDb().prepare("DELETE FROM registry_events WHERE deployment_id = ? AND event IN ('completed', 'crashed')").run("d-fresh-winner");
+    const uncertainAuthorization = "review-auth:923e4567-e89b-42d3-a456-426614174028";
+    const uncertainObjective = start("d-uncertain-loser", uncertainAuthorization);
+    expectClaimError(() => claim("d-uncertain-loser", uncertainAuthorization, uncertainObjective), "active-review");
+    assert.equal(queryReviewAuthorizationClaim(winnerAuthorization)?.active, true, "terminal projection without durable terminal history remains uncertain and blocking");
+    assert.equal(queryReviewAuthorizationClaims().filter((entry) => entry.active && entry.branch === branch).length, 1, "exactly one exact-ticket/branch contender owns the active slot");
+    assert.equal(queryReviewAuthorizationClaim(unrelatedAuthorization)?.active, true);
+  } finally {
+    closeDb();
+    if (previous === undefined) delete process.env["PA_REGISTRY_DB"];
+    else process.env["PA_REGISTRY_DB"] = previous;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -570,11 +847,15 @@ test("registry schema-v13 migration expands the production event constraint with
     const db = getDb();
     const eventColumns = db.prepare("PRAGMA table_info(registry_events)").all() as Array<{ name: string }>;
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
-    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "14" });
+    assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "15" });
     for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
     for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
       assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
+    }
+    const claimColumns = (db.prepare("PRAGMA table_info(review_authorization_claims)").all() as Array<{ name: string }>).map((entry) => entry.name);
+    for (const column of ["authorization_id", "deployment_id", "ticket_id", "branch", "feature_sha", "matrix_source", "matrix_authority_sha256", "matrix_approval_evidence", "claimed_at", "active"]) {
+      assert.equal(claimColumns.includes(column), true);
     }
     const eventTableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registry_events'").get() as { sql: string }).sql;
     assert.doesNotMatch(eventTableSql, /CHECK\s*\(\s*event\s+IN/i);

@@ -3,11 +3,13 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
-import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, type PiSupervisionHandle } from "./adapter.js";
+import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
+import { createPiProtectedValidationLaunch, isPiProtectedReviewRequest } from "./validation-launch.js";
+import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);
@@ -270,9 +272,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     observe("deploy-diagnostic", reason, env);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
-  const writePrimer = (currentPlan: ExecutionPlan): void => {
+  const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId?: string): void => {
     const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
-    writeFileSync(primerPath, primer, "utf8");
+    const persistedPrimer = protectedAuthorizationId
+      ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
+      : primer;
+    writeFileSync(primerPath, persistedPrimer, "utf8");
+    if (protectedAuthorizationId && readFileSync(primerPath, "utf8").includes(protectedAuthorizationId)) {
+      throw new Error("protected reviewer persisted primer authorization redaction could not be proven exact");
+    }
   };
   process.stdout.write(`Deployment: ${deploymentId}\n`);
   emitResolutionWarning(runtimeConfig, deploymentId, paths.activityLogPath, diagnostics, audit, env);
@@ -403,6 +411,17 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     observe("deploy-diagnostic", resultReason, env);
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: resultReason };
   };
+  let protectedValidationLaunch: PiProtectedValidationLaunch | undefined;
+  if (isPiProtectedReviewRequest(request, plan)) {
+    if (!(adapter instanceof PiAdapter)) {
+      return completeFailure("protected Pi review launch requires the production PiAdapter");
+    }
+    try {
+      protectedValidationLaunch = createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env });
+    } catch (error) {
+      return completeFailure(error instanceof Error ? error.message : String(error));
+    }
+  }
   let prior: string | undefined;
   if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
@@ -515,7 +534,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
     }
     if (activeRepositoryBorrower) {
-      writePrimer(plan);
+      writePrimer(plan, protectedValidationLaunch?.review.authorizationId);
       const expected = plan.repositoryAdmission.gitSnapshot;
       const observed = captureRepositoryGitSnapshot(plan.worktreeRoot);
       if (!expected || !repositoryGitSnapshotsEqual(expected, observed)) {
@@ -537,7 +556,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       let stable = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        writePrimer(plan);
+        writePrimer(plan, protectedValidationLaunch?.review.authorizationId);
         const expected = plan.repositoryAdmission.gitSnapshot!;
         const observed = captureRepositoryGitSnapshot(plan.worktreeRoot);
         if (repositoryGitSnapshotsEqual(expected, observed)) {
@@ -556,7 +575,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       if (!stable) throw new Error("repository-admission: Git state did not stabilize after Pi preflight; ownership was released and no runtime was started");
     } else {
-      writePrimer(plan);
+      writePrimer(plan, protectedValidationLaunch?.review.authorizationId);
     }
 
     if (activeRepositoryBorrower) reauthenticateParentBeforeSpawn?.();
@@ -568,6 +587,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       publishedPid = pid;
     };
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
+    if (protectedValidationLaunch) {
+      (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
+    }
     dependencies.observeOperation?.("runtime-spawn");
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
