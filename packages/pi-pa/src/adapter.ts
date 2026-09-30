@@ -848,6 +848,14 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
   };
 }
 
+export function redactPiProtectedReviewPrimer(primer: string, authorizationId: string): string {
+  const count = occurrences(primer, authorizationId);
+  if (count === 0) throw new Error("protected reviewer primer does not contain the admitted authorization to redact");
+  const redacted = primer.split(authorizationId).join("[protected-review-authorization]");
+  if (redacted.includes(authorizationId)) throw new Error("protected reviewer primer authorization redaction could not be proven exact");
+  return redacted;
+}
+
 export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContext?: PiReviewerValidationContext): string[] {
   const args = ["--print", "--mode", "json", "--session-id", config.sessionId];
   if (config.model) args.push("--model", config.model);
@@ -858,8 +866,36 @@ export function buildPiBackgroundArgs(config: PiBackgroundConfig, reviewerContex
     if (config.trustedExtension) args.push("--extension", config.trustedExtension);
   }
   const primer = readFileSync(config.primerPath, "utf8");
-  args.push(reviewerContext ? `${primer}\n\n${piReviewerValidationPrompt(reviewerContext)}` : primer);
+  if (!reviewerContext) {
+    args.push(primer);
+    return args;
+  }
+
+  const authorizationId = reviewerContext.authorizationId;
+  if (primer.includes(authorizationId)) {
+    throw new Error("protected reviewer ordinary primer still contains the one-use authorization");
+  }
+  const metadata = piReviewerValidationPrompt(reviewerContext);
+  const open = "<protected-review-metadata>";
+  const close = "</protected-review-metadata>";
+  const openIndex = metadata.indexOf(open);
+  const closeIndex = metadata.indexOf(close);
+  const authorizationIndex = metadata.indexOf(authorizationId);
+  if (openIndex !== 0 || closeIndex <= openIndex || closeIndex + close.length !== metadata.length
+    || occurrences(metadata, authorizationId) !== 1
+    || authorizationIndex <= openIndex + open.length || authorizationIndex >= closeIndex) {
+    throw new Error("protected reviewer authorization placement could not be proven exact");
+  }
+  const reviewerInput = `${primer}\n\n${metadata}`;
+  if (occurrences(reviewerInput, authorizationId) !== 1) {
+    throw new Error("protected reviewer input must contain the one-use authorization exactly once");
+  }
+  args.push(reviewerInput);
   return args;
+}
+
+function occurrences(input: string, value: string): number {
+  return value.length === 0 ? 0 : input.split(value).length - 1;
 }
 
 export function writePiBackgroundConfig(path: string, config: PiBackgroundConfig): void {

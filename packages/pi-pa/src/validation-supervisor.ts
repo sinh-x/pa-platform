@@ -157,7 +157,7 @@ export async function runPiValidationBeforeReviewer<T>(
       diagnostic: validation.diagnostic ?? validationDiagnostic("pi.validation.preflight", "validation authority was rejected"),
     };
   }
-  const ledger = validation.ledger ?? (await recover(launch.validationHandoff, executorOptions)).ledger;
+  const ledger = (await recover(launch.validationHandoff, executorOptions)).ledger;
   const reviewerContext = reviewerContextFor(launch.review, ledger, options.evidenceRoot, options.ledgerPath);
   const reviewerResult = await options.startReviewer(reviewerContext);
   return { admitted: true, reviewerStarted: true, validation: { ...validation, ledger, ledgerPath: options.ledgerPath }, reviewerContext, reviewerResult };

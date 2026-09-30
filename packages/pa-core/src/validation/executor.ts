@@ -338,13 +338,13 @@ export async function finalizeValidationExecutorCrash(
 
   const existing = await readRecoveryRecord(ledgerPath);
   if (existing) {
-    const ledger = validationLedgerFromRecord(existing, handoff);
+    const ledger = await validationLedgerFromRecord(existing, handoff, evidenceRoot);
     return { ledger, ledgerPath, recovered: false };
   }
 
   const state = await readRecoveryRecord(statePath);
   const commands = state
-    ? validationCommandsFromState(state, handoff)
+    ? await validationCommandsFromState(state, handoff, evidenceRoot)
     : handoff.manifest.commands.map(pendingEntry);
   const interrupted = commands.find((entry) => entry.status === "pending" && entry.startedAt !== undefined);
   if (interrupted) {
@@ -452,6 +452,8 @@ async function executeCommand(
   const basename = `${String(index + 1).padStart(3, "0")}-${spec.id}`;
   const stdoutPath = resolve(commandDirectory, `${basename}.stdout.log`);
   const stderrPath = resolve(commandDirectory, `${basename}.stderr.log`);
+  const stdoutReference = evidenceReferenceFromPath(evidenceRoot, stdoutPath);
+  const stderrReference = evidenceReferenceFromPath(evidenceRoot, stderrPath);
   const stdoutHandle = await open(stdoutPath, "wx", 0o600);
   let stderrHandle;
   try {
@@ -495,11 +497,11 @@ async function executeCommand(
   options.abortSignal?.addEventListener("abort", onAbort, { once: true });
   if (options.abortSignal?.aborted) onAbort();
 
-  const stdoutCapture = captureStream(child.stdout, stdoutHandle, stdoutPath, (count) => {
+  const stdoutCapture = captureStream(child.stdout, stdoutHandle, stdoutReference, (count) => {
     outputBytes += count;
     if (outputBytes > spec.maxOutputBytes) requestStop("output_limit", `exceeded maxOutputBytes=${spec.maxOutputBytes}`);
   }, (error) => requestStop("logging_failure", error.message));
-  const stderrCapture = captureStream(child.stderr, stderrHandle, stderrPath, (count) => {
+  const stderrCapture = captureStream(child.stderr, stderrHandle, stderrReference, (count) => {
     outputBytes += count;
     if (outputBytes > spec.maxOutputBytes) requestStop("output_limit", `exceeded maxOutputBytes=${spec.maxOutputBytes}`);
   }, (error) => requestStop("logging_failure", error.message));
@@ -549,7 +551,7 @@ async function executeCommand(
 async function captureStream(
   stream: Readable,
   handle: Awaited<ReturnType<typeof open>>,
-  path: string,
+  reference: string,
   onBytes: (count: number) => void,
   onError: (error: Error) => void,
 ): Promise<StreamCapture> {
@@ -582,7 +584,7 @@ async function captureStream(
   }
   return captureError
     ? { error: captureError }
-    : { evidence: { path, bytes, sha256: hash.digest("hex"), retainedBytes } };
+    : { evidence: { path: reference, bytes, sha256: hash.digest("hex"), retainedBytes } };
 }
 
 async function waitForChild(child: ChildProcessByStdio<null, Readable, Readable>): Promise<ChildOutcome> {
@@ -752,6 +754,95 @@ function assertWithin(root: string, target: string, source: string): void {
   reject(source, `must stay inside approved root ${root}`);
 }
 
+function evidenceReferenceFromPath(evidenceRoot: string, path: string): string {
+  const root = resolve(evidenceRoot);
+  const target = resolve(path);
+  const reference = relative(root, target).split(sep).join("/");
+  const resolved = resolveValidationEvidenceReference(root, reference);
+  if (resolved !== target) reject("executor.evidence.reference", "does not resolve to the exact captured stream path");
+  return reference;
+}
+
+export function resolveValidationEvidenceReference(evidenceRoot: string, reference: string): string {
+  if (!isAbsolute(evidenceRoot) || resolve(evidenceRoot) !== evidenceRoot) {
+    reject("executor.evidenceRoot", "must be one absolute normalized protected evidence root");
+  }
+  if (typeof reference !== "string" || reference.length === 0 || reference.length > 4_096
+    || isAbsolute(reference) || /^[A-Za-z]:/.test(reference) || reference.includes("\\") || reference.includes("\0")) {
+    reject("executor.evidence.reference", "must be one non-empty normalized evidence-root-relative path");
+  }
+  const segments = reference.split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment))) {
+    reject("executor.evidence.reference", "contains empty, traversing, or malformed path segments");
+  }
+  const target = resolve(evidenceRoot, ...segments);
+  assertWithin(evidenceRoot, target, "executor.evidence.reference");
+  const normalized = relative(evidenceRoot, target).split(sep).join("/");
+  if (normalized !== reference) reject("executor.evidence.reference", "must be normalized");
+  return target;
+}
+
+async function validationLogEvidenceFromRecord(
+  input: unknown,
+  evidenceRoot: string,
+  source: string,
+): Promise<ValidationLogEvidence | undefined> {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input)) reject(source, "is malformed");
+  const row = input as Record<string, unknown>;
+  const keys = ["bytes", "path", "retainedBytes", "sha256"].sort();
+  if (JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(keys)
+    || typeof row["path"] !== "string"
+    || !Number.isSafeInteger(row["bytes"]) || Number(row["bytes"]) < 0
+    || !Number.isSafeInteger(row["retainedBytes"]) || Number(row["retainedBytes"]) < 0
+    || Number(row["retainedBytes"]) !== Math.min(MAX_RETAINED_STREAM_BYTES, Number(row["bytes"]))
+    || typeof row["sha256"] !== "string" || !/^[0-9a-f]{64}$/.test(row["sha256"])) {
+    reject(source, "is malformed or has invalid byte/checksum evidence");
+  }
+  const reference = row["path"];
+  const path = resolveValidationEvidenceReference(evidenceRoot, reference);
+  let before: Awaited<ReturnType<typeof lstat>>;
+  try { before = await lstat(path); }
+  catch { reject(source, "does not resolve to a protected stream evidence file"); }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600) {
+    reject(source, "must resolve to one mode-0600 single-link regular stream evidence file");
+  }
+  let canonical: string;
+  try { canonical = await realpath(path); }
+  catch { reject(source, "cannot be canonically resolved inside the protected evidence root"); }
+  if (canonical !== path) reject(source, "must not resolve through a symlink alias");
+
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || (opened.mode & 0o777) !== 0o600
+      || opened.dev !== before.dev || opened.ino !== before.ino) {
+      reject(source, "stream evidence identity, mode, or link count changed before consumption");
+    }
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const rawChunk of handle.createReadStream({ autoClose: false })) {
+      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk as Uint8Array);
+      hash.update(chunk);
+      bytes += chunk.length;
+    }
+    const after = await lstat(path);
+    if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1 || (after.mode & 0o777) !== 0o600
+      || after.dev !== opened.dev || after.ino !== opened.ino
+      || bytes !== row["bytes"] || hash.digest("hex") !== row["sha256"]) {
+      reject(source, "stream evidence identity, mode, bytes, or SHA-256 does not match the ledger");
+    }
+  } finally {
+    await handle.close();
+  }
+  return {
+    path: reference,
+    bytes: Number(row["bytes"]),
+    sha256: row["sha256"],
+    retainedBytes: Number(row["retainedBytes"]),
+  };
+}
+
 async function readRecoveryRecord(path: string): Promise<Record<string, unknown> | undefined> {
   let file;
   try {
@@ -770,17 +861,25 @@ async function readRecoveryRecord(path: string): Promise<Record<string, unknown>
   return value as Record<string, unknown>;
 }
 
-function validationLedgerFromRecord(record: Record<string, unknown>, handoff: ValidationHandoff): ValidationLedger {
+async function validationLedgerFromRecord(
+  record: Record<string, unknown>,
+  handoff: ValidationHandoff,
+  evidenceRoot: string,
+): Promise<ValidationLedger> {
   if (record["schemaVersion"] !== VALIDATION_LEDGER_SCHEMA_VERSION
     || record["result"] !== "passed" && record["result"] !== "failed" && record["result"] !== "executor_crash"
     || typeof record["finishedAt"] !== "string") {
     reject("executor.recovery.ledger", "is not a complete terminal validation ledger");
   }
-  const commands = validationCommandsFromState(record, handoff);
+  const commands = await validationCommandsFromState(record, handoff, evidenceRoot);
   return { ...record, commands } as unknown as ValidationLedger;
 }
 
-function validationCommandsFromState(record: Record<string, unknown>, handoff: ValidationHandoff): ValidationCommandLedgerEntry[] {
+async function validationCommandsFromState(
+  record: Record<string, unknown>,
+  handoff: ValidationHandoff,
+  evidenceRoot: string,
+): Promise<ValidationCommandLedgerEntry[]> {
   if (record["schemaVersion"] !== VALIDATION_LEDGER_SCHEMA_VERSION
     || record["manifestSchemaVersion"] !== handoff.manifest.schemaVersion
     || record["manifestSha256"] !== handoff.manifestSha256
@@ -801,7 +900,8 @@ function validationCommandsFromState(record: Record<string, unknown>, handoff: V
     "pending", "passed", "executor_crash", "failed", "signal", "timeout", "output_limit",
     "artifact_failure", "logging_failure", "cleanup_failure", "persistence_failure", "skipped",
   ]);
-  return rawCommands.map((raw, index) => {
+  const commands: ValidationCommandLedgerEntry[] = [];
+  for (const [index, raw] of rawCommands.entries()) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
       reject(`executor.recovery.state.commands[${index}]`, "is malformed");
     }
@@ -813,8 +913,16 @@ function validationCommandsFromState(record: Record<string, unknown>, handoff: V
       || !Array.isArray(entry["terminationSignals"]) || !Array.isArray(entry["artifacts"])) {
       reject(`executor.recovery.state.commands[${index}]`, "does not match the admitted manifest");
     }
-    return entry as unknown as ValidationCommandLedgerEntry;
-  });
+    const source = `executor.recovery.state.commands[${index}]`;
+    const stdout = await validationLogEvidenceFromRecord(entry["stdout"], evidenceRoot, `${source}.stdout`);
+    const stderr = await validationLogEvidenceFromRecord(entry["stderr"], evidenceRoot, `${source}.stderr`);
+    commands.push({
+      ...entry,
+      ...(stdout ? { stdout } : {}),
+      ...(stderr ? { stderr } : {}),
+    } as unknown as ValidationCommandLedgerEntry);
+  }
+  return commands;
 }
 
 function pendingEntry(spec: ValidationCommandSpec, index: number): ValidationCommandLedgerEntry {

@@ -9,6 +9,7 @@ import {
   VALIDATION_HANDOFF_SCHEMA_VERSION,
   VALIDATION_MANIFEST_SCHEMA_VERSION,
   digestValidationManifest,
+  resolveValidationEvidenceReference,
   type ValidationAuthorityBinding,
   type ValidationCommandSpec,
   type ValidationEvent,
@@ -216,8 +217,10 @@ test("1 MiB output remains in exact mode-0600 logs while reviewer handback and e
     assert.equal(stdout.bytes, byteCount);
     assert.equal(stdout.sha256, sha256(Buffer.alloc(byteCount, 120)));
     assert.ok(stdout.retainedBytes <= 65_536);
-    assert.equal(statSync(stdout.path).mode & 0o777, 0o600);
-    assert.equal(readFileSync(stdout.path).length, byteCount);
+    assert.equal(stdout.path, "commands/001-large.stdout.log");
+    const stdoutPath = resolveValidationEvidenceReference(seed.evidenceRoot, stdout.path);
+    assert.equal(statSync(stdoutPath).mode & 0o777, 0o600);
+    assert.equal(readFileSync(stdoutPath).length, byteCount);
     assert.ok(events.length <= 4);
     assert.ok(events.every((event) => JSON.stringify(event).length <= 2_000));
     assert.ok(reviewerPrompt.length <= 2_000);
@@ -404,7 +407,7 @@ test("supervisor interruption finalizes one executor_crash ledger, preserves evi
     const ledger = result.validation.ledger!;
     assert.equal(ledger.result, "executor_crash");
     assert.deepEqual(ledger.commands.map((entry) => entry.status), ["passed", "executor_crash", "skipped"]);
-    assert.equal(readFileSync(ledger.commands[0]!.stdout!.path, "utf8"), firstOutput);
+    assert.equal(readFileSync(resolveValidationEvidenceReference(seed.evidenceRoot, ledger.commands[0]!.stdout!.path), "utf8"), firstOutput);
     assert.equal(existsSync(seed.laterMarker), false);
     assert.doesNotMatch(readFileSync(seed.ledgerPath, "utf8"), /review-auth:/);
     assertOneTerminalLedger(seed, "executor_crash");

@@ -314,6 +314,23 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     throw launchError("review repository identity", "immutable Pi canonical, authenticated worktree, and deployment workspace identity domains do not agree");
   }
 
+  const matrix = readApprovedMatrix(matrixSource);
+  const snapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
+  const ticket = new TicketStore().get(ticketId);
+  if (!ticket) throw launchError("durable ticket", "the review ticket is absent");
+  const linked = ticket.linkedBranches.filter((value) => value.repo === plan.repoKey && value.branch === branch);
+  const linkedBranchMatches = linked.length === 1 && linked[0]?.state === "materialized"
+    && (linked[0].headSha ?? linked[0].sha) === featureSha;
+  const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
+  const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
+  const manifestEnvironment = matrixEnvironment(environment, {
+    ticketId,
+    featureSha,
+    matrixSource,
+    matrixAuthoritySha256,
+    matrixApprovalEvidence,
+    worktreeRoot: plan.worktreeRoot,
+  });
   try {
     writePiMatrixStartedEvent({
       deploymentDirectory: input.deploymentDirectory,
@@ -334,24 +351,6 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
   } catch (error) {
     throw launchError("durable matrix-start boundary", error instanceof Error ? error.message : String(error));
   }
-
-  const matrix = readApprovedMatrix(matrixSource);
-  const snapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
-  const ticket = new TicketStore().get(ticketId);
-  if (!ticket) throw launchError("durable ticket", "the review ticket is absent");
-  const linked = ticket.linkedBranches.filter((value) => value.repo === plan.repoKey && value.branch === branch);
-  const linkedBranchMatches = linked.length === 1 && linked[0]?.state === "materialized"
-    && (linked[0].headSha ?? linked[0].sha) === featureSha;
-  const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
-  const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
-  const manifestEnvironment = matrixEnvironment(environment, {
-    ticketId,
-    featureSha,
-    matrixSource,
-    matrixAuthoritySha256,
-    matrixApprovalEvidence,
-    worktreeRoot: plan.worktreeRoot,
-  });
   const claim = evaluatePrerequisites({
     approval,
     authorizationId,

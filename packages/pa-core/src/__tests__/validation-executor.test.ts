@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import test from "node:test";
 import {
   MAX_RETAINED_STREAM_BYTES,
@@ -11,6 +11,8 @@ import {
   VALIDATION_MANIFEST_SCHEMA_VERSION,
   digestValidationManifest,
   executeValidationHandoff,
+  finalizeValidationExecutorCrash,
+  resolveValidationEvidenceReference,
   type ValidationAuthorityBinding,
   type ValidationCommandSpec,
   type ValidationExecutorOptions,
@@ -165,8 +167,8 @@ test("executes unchanged commands sequentially and fails fast with a complete le
   );
   assert.equal(result.ledger?.commands[1]?.exitCode, 7);
   assert.equal(result.ledger?.commands[2]?.startedAt, undefined);
-  assert.equal(await readFile(result.ledger!.commands[0]!.stdout!.path, "utf8"), "one\n");
-  assert.equal(await readFile(result.ledger!.commands[1]!.stderr!.path, "utf8"), "two\n");
+  assert.equal(await readFile(resolveValidationEvidenceReference(seed.evidenceRoot, result.ledger!.commands[0]!.stdout!.path), "utf8"), "one\n");
+  assert.equal(await readFile(resolveValidationEvidenceReference(seed.evidenceRoot, result.ledger!.commands[1]!.stderr!.path), "utf8"), "two\n");
   assert.equal(result.ledger!.commands[0]!.stdout!.sha256, sha256(Buffer.from("one\n")));
   assert.equal(result.ledger!.commands[1]!.stderr!.sha256, sha256(Buffer.from("two\n")));
   await assert.rejects(stat(seed.markerPath), { code: "ENOENT" });
@@ -269,8 +271,10 @@ test("streams at least 1 MiB as exact mode-0600 evidence with bounded memory and
   assert.equal(entry?.stdout?.bytes, byteCount);
   assert.equal(entry?.stdout?.sha256, sha256(Buffer.alloc(byteCount, 97)));
   assert.ok((entry?.stdout?.retainedBytes ?? Infinity) <= MAX_RETAINED_STREAM_BYTES);
-  assert.equal((await stat(entry!.stdout!.path)).mode & 0o777, 0o600);
-  assert.equal((await stat(entry!.stderr!.path)).mode & 0o777, 0o600);
+  assert.equal(isAbsolute(entry!.stdout!.path), false);
+  assert.match(entry!.stdout!.path, /^commands\/[0-9]{3}-large\.stdout\.log$/);
+  assert.equal((await stat(resolveValidationEvidenceReference(seed.evidenceRoot, entry!.stdout!.path))).mode & 0o777, 0o600);
+  assert.equal((await stat(resolveValidationEvidenceReference(seed.evidenceRoot, entry!.stderr!.path))).mode & 0o777, 0o600);
   assert.equal((await stat(options(seed).ledgerPath)).mode & 0o777, 0o600);
   assert.ok(result.events.every((event) => JSON.stringify(event).length <= 2_000));
   assert.ok(result.events.every((event) => !JSON.stringify(event).includes("a".repeat(1_000))));
@@ -465,4 +469,50 @@ test("success publishes one complete atomic terminal ledger and terminal state",
   assert.equal(state["phase"], "terminal");
   assert.equal(result.events.length, 4);
   assert.ok(result.events.every((event) => event.manifestSha256 === result.ledger?.manifestSha256));
+  const recovered = await finalizeValidationExecutorCrash(handoff(seed), executionOptions);
+  assert.equal(recovered.recovered, false);
+  assert.equal(recovered.ledger.commands[0]!.stdout!.path, "commands/001-success.stdout.log");
+});
+
+test("recovery rejects absolute, empty, traversing, malformed, or integrity-invalid stream references", async (t) => {
+  const referenceCases = [
+    { name: "absolute", reference: "/tmp/absolute.stdout.log" },
+    { name: "empty", reference: "" },
+    { name: "traversing", reference: "../escape.stdout.log" },
+    { name: "empty segment", reference: "commands//001-success.stdout.log" },
+    { name: "backslash", reference: "commands\\001-success.stdout.log" },
+  ] as const;
+  for (const item of referenceCases) {
+    await t.test(item.name, async () => {
+      const seed = await fixture([]);
+      seed.manifest.commands = [command(seed.root, "success", `${JSON.stringify(process.execPath)} -e "process.stdout.write('ok')"`)];
+      const executionOptions = options(seed);
+      await executeValidationHandoff(handoff(seed), executionOptions);
+      const ledger = await readLedger(seed.ledgerPath);
+      const commands = ledger["commands"] as Array<{ stdout: { path: string } }>;
+      commands[0]!.stdout.path = item.reference;
+      await writeFile(seed.ledgerPath, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
+      await assert.rejects(
+        finalizeValidationExecutorCrash(handoff(seed), executionOptions),
+        /normalized evidence-root-relative path|path segments/,
+      );
+    });
+  }
+
+  for (const integrity of ["mode", "link-count", "bytes-sha256"] as const) {
+    await t.test(integrity, async () => {
+      const seed = await fixture([]);
+      seed.manifest.commands = [command(seed.root, "success", `${JSON.stringify(process.execPath)} -e "process.stdout.write('ok')"`)];
+      const executionOptions = options(seed);
+      const result = await executeValidationHandoff(handoff(seed), executionOptions);
+      const stdout = resolveValidationEvidenceReference(seed.evidenceRoot, result.ledger!.commands[0]!.stdout!.path);
+      if (integrity === "mode") await chmod(stdout, 0o644);
+      else if (integrity === "link-count") await link(stdout, resolve(seed.evidenceRoot, "stdout-alias.log"));
+      else await writeFile(stdout, "changed bytes");
+      await assert.rejects(
+        finalizeValidationExecutorCrash(handoff(seed), executionOptions),
+        /mode-0600 single-link|mode, bytes, or SHA-256/,
+      );
+    });
+  }
 });
