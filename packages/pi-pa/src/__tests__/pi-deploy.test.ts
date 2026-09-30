@@ -29,6 +29,19 @@ const REAL_BASH = execFileSync("sh", ["-c", "command -v bash"], { encoding: "utf
 const PROTECTED_REVIEW_NODE_VERSION = "v22.23.2";
 const PROTECTED_REVIEW_PNPM_VERSION = "10.28.0";
 const PROTECTED_REVIEW_PI_VERSION = "0.84.4";
+const APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS = [
+  "PA_REPO",
+  "PA_TICKET_ID=PAP-223",
+  "PA_FEATURE_SHA",
+  "PA_MATRIX_SOURCE=agent-teams/requirements/artifacts/2026-09-23-pap-223-structured-validation-executor.md",
+  "PA_MATRIX_AUTHORITY_SHA256",
+  "PA_MATRIX_APPROVAL_EVIDENCE",
+  "CI=1",
+  "HOME=/home/sinh",
+  "LANG=C.UTF-8",
+  "TZ=UTC",
+  "PATH",
+] as const;
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -157,6 +170,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
 interface ProtectedReviewFixtureOptions {
   baseSha?: string;
   canonicalRepoKey?: string;
+  environmentCodeSpans?: readonly string[];
   expectedDependencyVersion?: string;
   nodeVersion?: string;
   omitEnvironmentName?: string;
@@ -187,11 +201,9 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   const markerPath = join(repo, "validation-completed.txt");
   const matrixSource = "agent-teams/requirements/artifacts/protected-review.md";
   const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`if(process.env.PA_REVIEW_AUTHORIZATION_ID)process.exit(91);require('node:fs').writeFileSync(${JSON.stringify(markerPath)},'validation-complete')`)}`;
-  const environmentNames = [
-    "PA_REPO", "PA_TICKET_ID", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256",
-    "PA_MATRIX_APPROVAL_EVIDENCE", "CI", "HOME", "LANG", "TZ", "PATH",
-  ].filter((name) => name !== options.omitEnvironmentName);
-  const environment = environmentNames.map((name) => `- \`${name}\` is launcher-bound.`).join("\n");
+  const environmentCodeSpans = (options.environmentCodeSpans ?? APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS)
+    .filter((representation) => representation.replace(/=.*/, "") !== options.omitEnvironmentName);
+  const environment = environmentCodeSpans.map((representation) => `- \`${representation}\` is launcher-bound.`).join("\n");
   const prerequisites = [
     `- Linux \`x86_64\`; canonical repository \`${options.canonicalRepoKey ?? "pa-platform"}\`; authenticated ticket checkout on \`${branch}\`; clean tracked and untracked state; \`HEAD\` equals the launch-intent Feature SHA and descends from \`${baseSha}\`.`,
     `- Node.js \`${options.nodeVersion ?? PROTECTED_REVIEW_NODE_VERSION}\`, pnpm \`${PROTECTED_REVIEW_PNPM_VERSION}\` through Corepack, Pi \`${PROTECTED_REVIEW_PI_VERSION}\`, Git, Bash, Nix, and the repository's existing installed dependencies including \`better-sqlite3@${options.expectedDependencyVersion ?? "13.0.3"}\`.`,
@@ -2444,6 +2456,30 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       { name: "tool version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174006", options: { nodeVersion: "v0.0.0" }, reason: /tool versions/ },
       { name: "dependency version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174007", options: { expectedDependencyVersion: "0.0.0" }, reason: /installed dependency/ },
       { name: "complete environment", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174008", options: { omitEnvironmentName: "TZ" }, reason: /required environment value/ },
+      {
+        name: "duplicate bare and assigned environment representations",
+        authorization: "review-auth:123e4567-e89b-42d3-a456-426614174009",
+        options: { environmentCodeSpans: [...APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS, "CI"] },
+        reason: /required environment value exactly once/,
+      },
+      {
+        name: "environment name prefix collision",
+        authorization: "review-auth:123e4567-e89b-42d3-a456-426614174010",
+        options: { environmentCodeSpans: APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS.map((value) => value === "PA_REPO" ? "PA_REPOSITORY=/tmp" : value) },
+        reason: /non-approved extra command environment/,
+      },
+      {
+        name: "empty environment assignment",
+        authorization: "review-auth:123e4567-e89b-42d3-a456-426614174011",
+        options: { environmentCodeSpans: APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS.map((value) => value === "HOME=/home/sinh" ? "HOME=" : value) },
+        reason: /malformed or empty assignment/,
+      },
+      {
+        name: "non-approved extra environment",
+        authorization: "review-auth:123e4567-e89b-42d3-a456-426614174012",
+        options: { environmentCodeSpans: [...APPROVED_MATRIX_ENVIRONMENT_CODE_SPANS, "NODE_ENV=test"] },
+        reason: /non-approved extra command environment/,
+      },
     ];
     for (const failure of prerequisiteFailures) {
       const invalidFixture = prepareProtectedReview(root, failure.authorization, failure.options);
@@ -2456,6 +2492,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       assert.match(rejected.reason ?? "", failure.reason, failure.name);
       assert.equal(launches, 0, `${failure.name} prerequisite started zero matrix commands`);
       assert.equal(reviewerStarts, 0, `${failure.name} prerequisite started zero reviewers`);
+      assert.equal(queryReviewAuthorizationClaims().length, 0, `${failure.name} failed before authorization claim`);
       assert.equal(existsSync(fixture.markerPath), false, `${failure.name} did not run command 1`);
     }
 

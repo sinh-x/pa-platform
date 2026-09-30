@@ -524,10 +524,7 @@ function readApprovedMatrix(source: string): ApprovedMatrix {
   const prerequisites = prerequisiteLines.map((line) => line.slice(2));
   const environmentSection = authority.match(/\*\*Environment:\*\*\n([\s\S]*?)(?=\n\*\*Commands \(run in this exact order\):\*\*)/)?.[1];
   if (!environmentSection) throw launchError("matrix environment", "the complete exact command environment section is absent");
-  for (const name of MATRIX_ENVIRONMENT_NAMES) {
-    const matches = environmentSection.match(new RegExp(`\\\`${escapeRegExp(name)}\\\``, "g")) ?? [];
-    if (matches.length !== 1) throw launchError("matrix environment", "the approved matrix does not name each required environment value exactly once");
-  }
+  assertApprovedMatrixEnvironment(environmentSection);
   const commandSection = authority.match(/\*\*Commands \(run in this exact order\):\*\*([\s\S]*?)(?=\n\*\*Required Outputs and Artifacts:\*\*)/)?.[1];
   if (!commandSection) throw launchError("matrix commands", "the exact ordered command section is absent");
   const commands: string[] = [];
@@ -556,6 +553,32 @@ function readApprovedMatrix(source: string): ApprovedMatrix {
     environmentSection,
     commands,
   };
+}
+
+function assertApprovedMatrixEnvironment(environmentSection: string): void {
+  const spans = [...environmentSection.matchAll(/`([^`\r\n]*)`/g)];
+  if (occurrences(environmentSection, "`") !== spans.length * 2) {
+    throw launchError("matrix environment", "the approved matrix command environment contains malformed backtick code spans");
+  }
+
+  const approved = new Set<string>(MATRIX_ENVIRONMENT_NAMES);
+  const counts = new Map<string, number>(MATRIX_ENVIRONMENT_NAMES.map((name) => [name, 0] as const));
+  for (const span of spans) {
+    const representation = span[1]!;
+    const delimiter = representation.indexOf("=");
+    const name = delimiter === -1 ? representation : representation.slice(0, delimiter);
+    const value = delimiter === -1 ? undefined : representation.slice(delimiter + 1);
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(name) || (value !== undefined && !isExactAuthorityValue(value))) {
+      throw launchError("matrix environment", "the approved matrix command environment contains a malformed or empty assignment representation");
+    }
+    if (!approved.has(name)) {
+      throw launchError("matrix environment", "the approved matrix contains a non-approved extra command environment");
+    }
+    counts.set(name, counts.get(name)! + 1);
+  }
+  if (MATRIX_ENVIRONMENT_NAMES.some((name) => counts.get(name) !== 1)) {
+    throw launchError("matrix environment", "the approved matrix does not name each required environment value exactly once");
+  }
 }
 
 function evaluatePrerequisites(context: PrerequisiteContext): ReviewAuthorizationClaim {
