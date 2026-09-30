@@ -24,6 +24,7 @@ import {
   resolveGitReference,
   type GitBranch,
   type GitCommandRunner,
+  type GitFileRow,
   type GitContextCollectionInput,
   type GitContextState,
 } from "../pi-extension/git-context-state.js";
@@ -682,7 +683,17 @@ test("first-open, reference-change, and event hooks coalesce to one start per 10
   assert.equal(starts.length, 2);
 });
 
-function uiReadyState(reference = "main"): GitContextState {
+function uiUnstagedFiles(): GitFileRow[] {
+  return Array.from({ length: 25 }, (_, index) => ({
+    path: `worktree/long/path/file-${String(index).padStart(2, "0")}-界面.ts`,
+    displayPath: `worktree/long/path/file-${String(index).padStart(2, "0")}-界面.ts`,
+    additions: index + 1,
+    deletions: index,
+    binary: false,
+  }));
+}
+
+function uiReadyState(reference = "main", unstagedFiles: GitFileRow[] = []): GitContextState {
   const branches = BRANCHES.map((branch) => ({ ...branch }));
   const selected = branches.find((branch) => branch.name === reference) ?? branches[1]!;
   return {
@@ -714,11 +725,11 @@ function uiReadyState(reference = "main"): GitContextState {
       fileTruncated: 5,
       additions: 325,
       deletions: 300,
-      unstagedFiles: [],
-      unstagedFileTotal: 0,
-      unstagedFileTruncated: 0,
-      unstagedAdditions: 0,
-      unstagedDeletions: 0,
+      unstagedFiles,
+      unstagedFileTotal: unstagedFiles.length,
+      unstagedFileTruncated: Math.max(0, unstagedFiles.length - GIT_CONTEXT_FILE_LIMIT),
+      unstagedAdditions: unstagedFiles.reduce((total, file) => total + (file.additions ?? 0), 0),
+      unstagedDeletions: unstagedFiles.reduce((total, file) => total + (file.deletions ?? 0), 0),
       collectedAt: 123,
     },
   };
@@ -732,7 +743,7 @@ const TEST_THEME = {
 const REQUIRED_WIDTHS = [40, 80, 119, 120, 160] as const;
 
 test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 160 columns", () => {
-  const state = uiReadyState();
+  const state = uiReadyState("main", uiUnstagedFiles());
   const panel = new GitContextPanelComponent(
     { requestRender() {} } as never,
     TEST_THEME as never,
@@ -760,9 +771,19 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
   assert.match(content.join("\n"), /Reference: main \(saved\)/);
   assert.match(content.join("\n"), /Commits: 10\/12 shown • 2 truncated/);
   assert.equal(content.filter((line) => /^  c\d{6} /.test(line)).length, GIT_CONTEXT_COMMIT_LIMIT);
-  assert.match(content.join("\n"), /Diff: \+325 -300/);
-  assert.match(content.join("\n"), /Files: 20\/25 shown • 5 truncated/);
-  assert.equal(content.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  const unstagedHeading = content.indexOf("Unstaged Changes:");
+  assert.ok(unstagedHeading > 0);
+  const committedContent = content.slice(0, unstagedHeading);
+  const unstagedContent = content.slice(unstagedHeading);
+  assert.match(committedContent.join("\n"), /Diff: \+325 -300/);
+  assert.match(committedContent.join("\n"), /Files: 20\/25 shown • 5 truncated/);
+  assert.equal(committedContent.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  assert.match(unstagedContent.join("\n"), /Diff: \+325 -300/);
+  assert.match(unstagedContent.join("\n"), /Files: 20\/25 shown • 5 truncated/);
+  assert.equal(unstagedContent.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  assert.match(unstagedContent.join("\n"), /worktree\/long\/path\/file-00-界面\.ts/);
+  assert.match(unstagedContent.join("\n"), /worktree\/long\/path\/file-19-界面\.ts/);
+  assert.doesNotMatch(unstagedContent.join("\n"), /worktree\/long\/path\/file-20-界面\.ts/);
 
   assert.equal(GIT_CONTEXT_MIN_WIDE_WIDTH, 120);
   for (const width of [40, 80, 119]) {
@@ -771,6 +792,66 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
     assert.equal(layout.width, width - 4);
   }
   for (const width of [120, 160]) assert.equal(gitContextOverlayOptions(width).anchor, "right-center");
+});
+
+test("ready and retained-stale panels render explicit empty unstaged aggregates", () => {
+  const ready = uiReadyState();
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "git-error",
+    checkedAt: 456,
+  };
+
+  for (const state of [ready, stale]) {
+    const lines = formatGitContextLines(state);
+    const heading = lines.indexOf("Unstaged Changes:");
+    assert.ok(heading > 0);
+    assert.deepEqual(lines.slice(heading, heading + 3), [
+      "Unstaged Changes:",
+      "Diff: +0 -0",
+      "Files: 0/0 shown",
+    ]);
+  }
+});
+
+test("unstaged rendering reuses binary, deletion, rename, and single-line path semantics without patch content", () => {
+  const ready = uiReadyState("main", [
+    { path: "binary.dat", displayPath: "binary.dat", additions: null, deletions: null, binary: true },
+    { path: "deleted.txt", displayPath: "deleted.txt", additions: 0, deletions: 7, binary: false },
+    {
+      path: "new\nname\u0001.txt",
+      oldPath: "old\tname.txt",
+      displayPath: "old\tname.txt → new\nname\u0001.txt",
+      additions: 3,
+      deletions: 4,
+      binary: false,
+    },
+  ]);
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "timeout",
+    checkedAt: 789,
+  };
+
+  const readyLines = formatGitContextLines(ready);
+  const staleLines = formatGitContextLines(stale);
+  for (const lines of [readyLines, staleLines]) {
+    const rendered = lines.slice(lines.indexOf("Unstaged Changes:")).join("\n");
+    assert.match(rendered, /^Unstaged Changes:\nDiff: \+3 -11\nFiles: 3\/3 shown/m);
+    assert.match(rendered, /^  binary binary\.dat$/m);
+    assert.match(rendered, /^  \+0 -7 deleted\.txt$/m);
+    assert.match(rendered, /^  \+3 -4 old name\.txt → new↵name�\.txt$/m);
+    assert.doesNotMatch(rendered, /@@|patch content/);
+  }
+  assert.deepEqual(staleLines.slice(1), readyLines.slice(1));
 });
 
 test("one registered panel recreates with current layout and bounded focused lines across 160→80→160 reopen", async () => {
