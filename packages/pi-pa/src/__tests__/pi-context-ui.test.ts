@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type OverlayOptions } from "@earendil-works/pi-tui";
 import { deploymentTaskStatusMarker, type AssociateDeploymentTicketInput } from "@pa-platform/pa-core";
 import {
   CONTEXT_LOOKUP_DEADLINE_MS,
@@ -13,9 +13,8 @@ import {
   withDeadline,
   type PaContextSnapshot,
 } from "../pi-extension/context-state.js";
+import { contextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
 import {
-  CONTEXT_MIN_WIDTH,
-  CONTEXT_WIDTH_PERCENT,
   ContextSidebarComponent,
   formatCompactContext,
   formatContextLines,
@@ -398,7 +397,7 @@ test("idle periodic refresh publishes an external ticket within 2,500 ms and lif
   assert.doesNotMatch(statuses.filter((value): value is string => typeof value === "string").at(-1) ?? "", /PAP-AFTER-SHUTDOWN/);
 });
 
-test("compact and expanded rendering expose required context within supplied width", () => {
+test("Alt+I expanded rendering is width-safe at 40, 80, 119, 120, and 160 columns", () => {
   const snapshot = managedSnapshot();
   const compact = formatCompactContext(snapshot);
   assert.match(compact, /PA:d-test/);
@@ -417,7 +416,7 @@ test("compact and expanded rendering expose required context within supplied wid
     () => snapshot,
     () => {},
   );
-  for (const width of [1, 20, 42, 80]) {
+  for (const width of [40, 80, 119, 120, 160]) {
     for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width);
     component.invalidate();
   }
@@ -555,7 +554,7 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
   let focused = 0;
   let unfocused = 0;
   let hiddenPermanently = 0;
-  let overlayOptions: { anchor?: string; width?: number | string; minWidth?: number; margin?: number | { right?: number }; visible?: (width: number, height: number) => boolean } | undefined;
+  let overlayOptions: OverlayOptions | undefined;
   const statuses: Array<string | undefined> = [];
 
   registerContextUiModuleWithOptions({
@@ -598,13 +597,14 @@ test("command and Alt+I toggle the same initially hidden responsive right overla
 
   command?.("", context);
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(overlayOptions, contextOverlayOptions());
   assert.equal(overlayOptions?.anchor, "top-right");
-  assert.equal(CONTEXT_WIDTH_PERCENT, 34 * 2);
-  assert.equal(overlayOptions?.width, `${CONTEXT_WIDTH_PERCENT}%`);
+  assert.equal(overlayOptions?.width, "68%");
   assert.equal(overlayOptions?.minWidth, 42);
+  assert.equal(overlayOptions?.maxHeight, "90%");
   assert.deepEqual(overlayOptions?.margin, { right: 1 });
-  assert.equal(overlayOptions?.visible?.(CONTEXT_MIN_WIDTH - 1, 40), false);
-  assert.equal(overlayOptions?.visible?.(CONTEXT_MIN_WIDTH, 40), true);
+  for (const width of [40, 80, 119]) assert.equal(overlayOptions?.visible?.(width, 40), false);
+  for (const width of [120, 160]) assert.equal(overlayOptions?.visible?.(width, 40), true);
   assert.ok(statuses.at(-1)?.includes("PA:unavailable"), "narrow terminals retain the compact status fallback");
   assert.equal(focused, 1);
 
