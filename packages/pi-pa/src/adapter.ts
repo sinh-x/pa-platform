@@ -9,7 +9,7 @@ import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnos
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
-import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
+import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, resolvePiNodeHost, type PiNativeHostEvidence } from "./native-host.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
   parsePiProtectedValidationLaunch,
@@ -23,6 +23,8 @@ const MAX_BODY = 500;
 const MAX_STDERR = 2000;
 const MAX_CAPTURE = 8000;
 export const PI_VERSION_TIMEOUT_MS = 15_000;
+export const PI_MINIMUM_VERSION = "0.99.2";
+const PI_MINIMUM_VERSION_PARTS = [0, 99, 2] as const;
 const TERM_GRACE = 250;
 const MAX_CARRY = 256 * 1024;
 const PROCESS_TREE_TIMEOUT = 4900;
@@ -200,7 +202,7 @@ export class PiAdapter implements RuntimeAdapter {
     return readFileSync(path, "utf8").split("\n").filter(Boolean).flatMap((line) => projector.observeLine(line));
   }
   installHooks(_targetDir: string, _config: HookConfig): void {}
-  describeTools(): ToolReference { return { runtime: "pi", markdown: "Runtime: Pi via `ppa`. Use `ppa` for PA deployments; Pi 0.84.4 or later must be installed as `pi`." }; }
+  describeTools(): ToolReference { return { runtime: "pi", markdown: `Runtime: Pi via \`ppa\`. Use \`ppa\` for PA deployments; Pi ${PI_MINIMUM_VERSION} or later must be installed as \`pi\`.` }; }
 
   async preflight(): Promise<void> {
     if (!this.preflightPromise) {
@@ -216,7 +218,7 @@ export class PiAdapter implements RuntimeAdapter {
         catch (error) { nativeResultPromise = Promise.reject(error); }
         const [versionResult, nativeResult] = await Promise.allSettled([versionResultPromise, nativeResultPromise]);
         if (versionResult.status === "rejected") throw versionResult.reason;
-        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.84.4 or later; detected '${versionResult.value || "unknown"}'.`);
+        if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be ${PI_MINIMUM_VERSION} or later; detected '${versionResult.value || "unknown"}'.`);
         if (nativeResult.status === "rejected") throw nativeResult.reason;
       })();
       this.preflightPromise = probe;
@@ -356,27 +358,27 @@ function piExecutionRootDiagnostic(condition: string, reason: string, treehouse:
 }
 
 function probeNativeRegistryFromCurrentBuild(env: NodeJS.ProcessEnv, secretValues: string[]): PiNativeHostEvidence | undefined {
-  // Source tests execute adapter.ts through tsx while the host smoke must run as
-  // plain JavaScript under Pi's Node. The approved verification builds dist
-  // first, so use that exact compiled probe instead of a nonexistent source JS
-  // sibling. Keep this boundary synchronous like the installed probe so fixture
-  // child events cannot race ahead of adapter process attachment.
+  // Source tests execute adapter.ts through tsx, so run the source smoke through
+  // the same loader under Pi's Node instead of requiring generated dist files.
+  // Installed adapters continue through the compiled native-host boundary.
   if (fileURLToPath(import.meta.url).endsWith(".ts")) {
-    if (!env[PI_REGISTRY_ADDON_ENV]?.trim()) return probePiNativeRegistryAddon(env, secretValues);
-    const compiledProbeUrl = new URL("../dist/native-host.js", import.meta.url);
-    if (existsSync(fileURLToPath(compiledProbeUrl))) {
-      const runner = 'let body=""; for await (const chunk of process.stdin) body += chunk; const secrets=JSON.parse(body); const module=await import(process.argv[1]); const evidence=module.probePiNativeRegistryAddon(process.env, secrets); process.stdout.write(JSON.stringify(evidence ?? null));';
-      const result = spawnSync(process.execPath, ["--input-type=module", "--eval", runner, compiledProbeUrl.href], {
+    const addonPath = env[PI_REGISTRY_ADDON_ENV]?.trim();
+    if (!addonPath) return probePiNativeRegistryAddon(env, secretValues);
+    try {
+      const nodePath = resolvePiNodeHost(env);
+      const sourceProbePath = fileURLToPath(new URL("pi-host-smoke.ts", import.meta.url));
+      const result = spawnSync(nodePath, ["--import", import.meta.resolve("tsx/esm"), sourceProbePath, "native", addonPath], {
         encoding: "utf8",
         env: sourcePiHostEnvironment(env),
-        input: JSON.stringify(secretValues),
         timeout: PI_VERSION_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
       });
       if (result.status !== 0) {
-        throw sourceNativeProbeError(result.stderr || result.error?.message || result.stdout || "source Pi host probe failed", env, secretValues);
+        throw new Error(result.stderr || result.error?.message || result.stdout || "source Pi host probe failed");
       }
-      return parseSourcePiHostEvidence(result.stdout);
+      return parseSourcePiHostEvidence(result.stdout, nodePath);
+    } catch (error) {
+      throw sourceNativeProbeError(error instanceof Error ? error.message : String(error), env, secretValues);
     }
   }
   return probePiNativeRegistryAddon(env, secretValues);
@@ -408,14 +410,14 @@ function sourcePiHostEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, NODE_OPTIONS: `${existingOptions ? `${existingOptions} ` : ""}--import=${hookUrl}` };
 }
 
-function parseSourcePiHostEvidence(output: string): PiNativeHostEvidence | undefined {
+function parseSourcePiHostEvidence(output: string, nodePath: string): PiNativeHostEvidence {
   let value: unknown;
   try { value = JSON.parse(output); }
   catch { throw new Error("native-load: source Pi host returned malformed addon evidence"); }
-  if (value === null) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("native-load: source Pi host returned malformed addon evidence");
-  const evidence = value as Record<string, unknown>;
-  if (typeof evidence["nodePath"] !== "string" || typeof evidence["node"] !== "string" || typeof evidence["modules"] !== "string" || typeof evidence["v8"] !== "string" || typeof evidence["addonPath"] !== "string" || evidence["registryQuery"] !== "PRAGMA user_version" || evidence["close"] !== "explicit") {
+  const parsed = value as Record<string, unknown>;
+  const evidence: Record<string, unknown> = { nodePath, ...parsed };
+  if (typeof evidence["node"] !== "string" || typeof evidence["modules"] !== "string" || typeof evidence["v8"] !== "string" || typeof evidence["addonPath"] !== "string" || evidence["registryQuery"] !== "PRAGMA user_version" || evidence["close"] !== "explicit") {
     throw new Error("native-load: source Pi host returned malformed addon evidence");
   }
   return evidence as unknown as PiNativeHostEvidence;
@@ -429,7 +431,15 @@ function sourceNativeProbeError(message: string, env: NodeJS.ProcessEnv, secretV
   return error;
 }
 
-export function meetsMinimum(version: string): boolean { const match = version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?=\s|$)/); if (!match) return false; const actual = [Number(match[1]), Number(match[2]), Number(match[3])]; return actual[0] > 0 || actual[0] === 0 && (actual[1] > 84 || actual[1] === 84 && actual[2] >= 4); }
+export function meetsMinimum(version: string): boolean {
+  const match = version.trim().match(/^(?:pi\s+)?v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
+  if (!match) return false;
+  const actual = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < PI_MINIMUM_VERSION_PARTS.length; index++) {
+    if (actual[index]! !== PI_MINIMUM_VERSION_PARTS[index]) return actual[index]! > PI_MINIMUM_VERSION_PARTS[index]!;
+  }
+  return true;
+}
 export function normalizePiEvent(raw: Record<string, unknown>, deployId: string, secrets: string[] = []): ActivityEvent {
   const safe = raw;
   const outerType = String(safe.type ?? safe.event ?? safe.kind ?? "text").toLowerCase();
@@ -1333,7 +1343,7 @@ function probePiVersion(cwd: string, env: NodeJS.ProcessEnv, timeout: number): P
       finish(new Error(`Pi version probe timed out after ${timeout}ms.`));
     }, timeout);
     child.stdout?.on("data", (chunk: Buffer) => { stdout = tail(stdout + chunk.toString("utf8"), MAX_CAPTURE); });
-    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi 0.84.4 or later and ensure 'pi' is on PATH.`)));
+    child.once("error", (error) => finish(new Error(`Pi is unavailable: ${error.message}. Install Pi ${PI_MINIMUM_VERSION} or later and ensure 'pi' is on PATH.`)));
     child.once("close", (code) => finish(code === 0 ? undefined : new Error(`Pi version probe failed with exit code ${code ?? 1}.`)));
   });
 }

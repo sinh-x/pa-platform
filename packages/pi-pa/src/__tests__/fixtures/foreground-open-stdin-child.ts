@@ -33,7 +33,7 @@ const pty = new ForegroundFixturePty();
 const readableFlowingBefore = process.stdin.readableFlowing;
 const adapter = new PiAdapter({
   cwd: dir,
-  versionProbe: () => "0.84.4",
+  versionProbe: () => "0.99.2",
   nativeRegistryProbe: () => undefined,
   supervision: {
     spawnPty: () => pty as never,

@@ -155,7 +155,7 @@ test("real managed Pi shell environment enumeration cannot observe or emit the p
   const adapter = new PiAdapter({
     cwd: root,
     env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, [PI_PARENT_LEASE_CAPABILITY_ENV]: sentinel },
-    versionProbe: () => "0.84.4",
+    versionProbe: () => "0.99.2",
     nativeRegistryProbe: () => undefined,
     supervision: { persistLine: (line) => { persisted.push(line); } },
   });
@@ -185,7 +185,7 @@ test("Pi preflight verifies version then native registry addon before objective 
   const order: string[] = [];
   const adapter = new PiAdapter({
     cwd: root,
-    versionProbe: () => { order.push("version"); return "0.84.4"; },
+    versionProbe: () => { order.push("version"); return "0.99.2"; },
     nativeRegistryProbe: () => { order.push("native"); return undefined; },
     runCommand: () => { order.push("objective"); return { status: 0, stdout: "", stderr: "" }; },
   });
@@ -209,7 +209,7 @@ test("Pi preflight overlaps independent cold version and native validations", as
     versionProbe: async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(nativeStarted, true, "native validation must start before version validation settles");
-      return "0.84.4";
+      return "0.99.2";
     },
     nativeRegistryProbe: () => { nativeStarted = true; return undefined; },
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
@@ -230,7 +230,7 @@ test("parallel preflight retains deterministic version-first causal failure", as
   let executed = false;
   const adapter = new PiAdapter({
     cwd: root,
-    versionProbe: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return "0.80.7"; },
+    versionProbe: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return "0.99.1"; },
     nativeRegistryProbe: () => { throw new Error("native-load: concurrent fixture failure"); },
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
   });
@@ -238,7 +238,7 @@ test("parallel preflight retains deterministic version-first causal failure", as
     const result = await adapter.spawn({ primerPath: primer, deployId: "d-causal", mode: "foreground" });
     assert.equal(result.exitCode, 1);
     assert.equal(executed, false);
-    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.84\.4 or later/);
+    assert.match(result.errorMessage ?? "", /^Pi version must be 0\.99\.2 or later/);
     assert.doesNotMatch(result.errorMessage ?? "", /native-load/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -252,7 +252,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
   try {
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 500 }).preflight(),
-      /Pi is unavailable:.*Install Pi 0\.84\.4 or later/,
+      /Pi is unavailable:.*Install Pi 0\.99\.2 or later/,
     );
 
     const pi = join(bin, "pi");
@@ -263,7 +263,7 @@ test("async Pi version process failures remain bounded and causal", async () => 
       /Pi version probe failed with exit code 7/,
     );
 
-    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.84.4");\n`);
+    writeFileSync(pi, `#!${process.execPath}\nawait new Promise((resolve) => setTimeout(resolve, 1_000));\nconsole.log("0.99.2");\n`);
     await assert.rejects(
       new PiAdapter({ cwd: root, env: { PATH: bin }, versionTimeoutMs: 20 }).preflight(),
       /Pi version probe timed out after 20ms/,
@@ -283,7 +283,7 @@ test("missing Pi addon fails causally before objective execution", async () => {
   const adapter = new PiAdapter({
     cwd: root,
     env,
-    versionProbe: () => "0.84.4",
+    versionProbe: () => "0.99.2",
     runCommand: () => { executed = true; return { status: 0, stdout: "", stderr: "" }; },
   });
   try {
@@ -602,7 +602,7 @@ test("native host smoke records its registry query and explicit close", async ()
   assert.equal(evidence.close, "explicit");
 });
 
-test("source adapter preflight resolves generated editor imports in an npm-style plain Pi host", async () => {
+test("source adapter preflight runs the source native smoke in an npm-style plain Pi host", async () => {
   const root = mkdtempSync(join(tmpdir(), "pap-191-source-pi-host-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -615,10 +615,10 @@ test("source adapter preflight resolves generated editor imports in an npm-style
       env: {
         ...process.env,
         PATH: bin,
-        [PI_REGISTRY_ADDON_ENV]: "",
-        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "0",
+        [PI_REGISTRY_ADDON_ENV]: localAddonPath(),
+        [REQUIRE_PI_REGISTRY_ADDON_ENV]: "1",
       },
-      versionProbe: () => "0.84.4",
+      versionProbe: () => "0.99.2",
     }).preflight());
   } finally {
     rmSync(root, { recursive: true, force: true });
