@@ -1023,6 +1023,60 @@ test("Git panel renders all named states with exact Path first and width-safe li
   assert.match(staleLines.join("\n"), /Reference: main/);
 });
 
+test("Path escapes every terminal control while preserving printable text in every named state", () => {
+  const ready = uiReadyState();
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "timeout",
+    checkedAt: 2,
+  };
+  const pending: GitContextState = {
+    status: "pending",
+    stale: false,
+    repositoryRoot: ready.snapshot.repositoryRoot,
+    activeBranch: ready.snapshot.activeBranch,
+    reference: ready.snapshot.reference,
+    branches: ready.snapshot.branches,
+    requestedAt: 1,
+    recoverySnapshot: ready.snapshot,
+  };
+  const states: Array<{ name: string; state: GitContextState }> = [
+    { name: "pending", state: pending },
+    { name: "ready", state: ready },
+    { name: "stale", state: stale },
+    ...(["non-git", "detached-head", "unborn-head", "missing-ref", "missing-merge-base", "git-error", "timeout", "unavailable"] as const)
+      .map((status) => ({ name: status, state: { status, stale: false, checkedAt: 1 } as GitContextState })),
+  ];
+  const printable = Array.from({ length: 0x7f - 0x20 }, (_, index) => String.fromCharCode(0x20 + index)).join("");
+  const controlCodes = [
+    ...Array.from({ length: 0x20 }, (_, index) => index),
+    0x7f,
+    ...Array.from({ length: 0x20 }, (_, index) => 0x80 + index),
+  ];
+  const allControls = controlCodes.map((code) => String.fromCharCode(code)).join("");
+  const allEscapes = controlCodes.map((code) => `x${code.toString(16).padStart(2, "0")}`).join("");
+  const cwd = `${printable}é界\nnewline\x1b[31mCSI\x1b]52;c;payload\x07OSC\x9b31mC1-CSI\x9d52;c;payload\x9cC1-OSC-ST${allControls}end`;
+  const expectedPath = `Path: ${printable}é界x0anewlinex1b[31mCSIx1b]52;c;payloadx07OSCx9b31mC1-CSIx9d52;c;payloadx9cC1-OSC-ST${allEscapes}end`;
+  const rawTerminalControl = /[\u0000-\u001f\u007f-\u009f]/;
+
+  for (const { name, state } of states) {
+    const lines = formatGitContextLines(state, cwd);
+    assert.equal(lines[0], expectedPath, `${name} escaped Path row`);
+    assert.equal(lines.filter((line) => line.startsWith("Path: ")).length, 1, `${name} single Path row`);
+    assert.doesNotMatch(lines[0] ?? "", rawTerminalControl, `${name} raw terminal control`);
+    assert.equal((lines[0] ?? "").split(/\r\n|\r|\n/).length, 1, `${name} Path must stay on one line`);
+  }
+
+  assert.ok(expectedPath.startsWith(`Path: ${printable}é界`), "all printable ASCII and Unicode remain exact");
+  assert.match(expectedPath, /x0anewlinex1b\[31mCSI/);
+  assert.match(expectedPath, /x1b\]52;c;payloadx07OSC/);
+  assert.match(expectedPath, /x9b31mC1-CSIx9d52;c;payloadx9cC1-OSC-ST/);
+});
+
 test("Alt+G and command share one overlay; selection renders pending immediately while collection stays deferred", async () => {
   const events = new Map<string, (event: unknown, context: unknown) => unknown>();
   const commands = new Map<string, (args: string, context: unknown) => unknown>();

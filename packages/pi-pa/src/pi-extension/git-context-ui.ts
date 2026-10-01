@@ -271,7 +271,7 @@ export function registerGitContextUiModuleWithOptions(
 export const registerGitContextUiModule: PiExtensionModule = (pi) => registerGitContextUiModuleWithOptions(pi);
 
 export function formatGitContextLines(state: GitContextState, cwd: string): string[] {
-  const pathLine = `Path: ${cwd}`;
+  const pathLine = `Path: ${escapeTerminalControls(cwd)}`;
   if (state.status === "pending") {
     return [
       pathLine,
@@ -450,4 +450,10 @@ function singleLine(value: string): string {
     .replace(/\r\n|\r|\n/g, "↵")
     .replace(/\t/g, " ")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "�");
+}
+
+function escapeTerminalControls(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, (control) =>
+    `x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  );
 }
