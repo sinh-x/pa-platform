@@ -6,7 +6,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type OverlayOptions } from "@earendil-works/pi-tui";
 import {
   GIT_CONTEXT_COLLECTION_DEADLINE_MS,
   GIT_CONTEXT_COMMIT_LIMIT,
@@ -27,15 +27,14 @@ import {
   type GitContextCollectionInput,
   type GitContextState,
 } from "../pi-extension/git-context-state.js";
+import { contextOverlayOptions } from "../pi-extension/context-overlay-layout.js";
 import { registerContextUiModuleWithOptions } from "../pi-extension/context-ui.js";
 import {
   GIT_CONTEXT_COMMAND,
-  GIT_CONTEXT_MIN_WIDE_WIDTH,
   GIT_CONTEXT_SHORTCUT,
   GitContextPanelComponent,
   GitReferenceSelectorComponent,
   formatGitContextLines,
-  gitContextOverlayOptions,
   registerGitContextUiModuleWithOptions,
   type GitContextRefreshSchedulerLike,
 } from "../pi-extension/git-context-ui.js";
@@ -640,23 +639,24 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
   assert.match(content.join("\n"), /Files: 20\/25 shown • 5 truncated/);
   assert.equal(content.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
 
-  assert.equal(GIT_CONTEXT_MIN_WIDE_WIDTH, 120);
-  for (const width of [40, 80, 119]) {
-    const layout = gitContextOverlayOptions(width);
-    assert.equal(layout.anchor, "center");
-    assert.equal(layout.width, width - 4);
-  }
-  for (const width of [120, 160]) assert.equal(gitContextOverlayOptions(width).anchor, "right-center");
+  const layout = contextOverlayOptions();
+  assert.equal(layout.anchor, "top-right");
+  assert.equal(layout.width, "68%");
+  assert.equal(layout.minWidth, 42);
+  assert.equal(layout.maxHeight, "90%");
+  assert.deepEqual(layout.margin, { right: 1 });
+  for (const width of [40, 80, 119]) assert.equal(layout.visible?.(width, 40), false);
+  for (const width of [120, 160]) assert.equal(layout.visible?.(width, 40), true);
 });
 
-test("one registered panel recreates with current layout and bounded focused lines across 160→80→160 reopen", async () => {
+test("one registered panel retains shared geometry and bounded focused lines across 160→80→160 reopen", async () => {
   const events = new Map<string, (event: unknown, context: unknown) => unknown>();
   const commands = new Map<string, (args: string, context: unknown) => unknown>();
   const shortcuts = new Map<string, (context: unknown) => unknown>();
   const tui = { terminal: { columns: 160 }, requestRender() {} };
   type RecordedOverlay = {
     panel: GitContextPanelComponent;
-    layout: { anchor?: string; width?: number | string };
+    layout: OverlayOptions;
     hidden: boolean;
     focused: boolean;
     removed: boolean;
@@ -691,14 +691,14 @@ test("one registered panel recreates with current layout and bounded focused lin
       notify() {},
       custom: (factory: (tuiValue: typeof tui, theme: typeof TEST_THEME, keybindings: unknown, done: (result: void) => void) => unknown, options?: {
         overlay?: boolean;
-        overlayOptions?: () => { anchor?: string; width?: number | string };
+        overlayOptions?: OverlayOptions;
         onHandle?: (handle: unknown) => void;
       }) => {
         assert.equal(options?.overlay, true);
         const panel = factory(tui, TEST_THEME, {}, () => {}) as GitContextPanelComponent;
         const record: RecordedOverlay = {
           panel,
-          layout: options?.overlayOptions?.() ?? {},
+          layout: options?.overlayOptions ?? {},
           hidden: false,
           focused: false,
           removed: false,
@@ -726,12 +726,11 @@ test("one registered panel recreates with current layout and bounded focused lin
       },
     },
   };
-  const assertCurrentOverlay = (anchor: string, width: number) => {
+  const assertCurrentOverlay = (width: number) => {
     const visible = overlays.filter((overlay) => !overlay.removed && !overlay.hidden);
     assert.equal(visible.length, 1);
     const current = visible[0]!;
-    assert.equal(current.layout.anchor, anchor);
-    assert.equal(current.layout.width, width);
+    assert.equal(current.layout, contextOverlayOptions());
     assert.equal(current.focused, true);
     assert.ok(current.panel.render(width).every((line) => visibleWidth(line) <= width));
   };
@@ -739,18 +738,18 @@ test("one registered panel recreates with current layout and bounded focused lin
   events.get("session_start")?.({}, context);
   commands.get(GIT_CONTEXT_COMMAND)?.("", context);
   await new Promise((resolve) => setImmediate(resolve));
-  assertCurrentOverlay("right-center", 64);
+  assertCurrentOverlay(160);
 
   shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
   tui.terminal.columns = 80;
   commands.get(GIT_CONTEXT_COMMAND)?.("", context);
-  assertCurrentOverlay("center", 76);
+  assertCurrentOverlay(80);
 
   commands.get(GIT_CONTEXT_COMMAND)?.("", context);
   tui.terminal.columns = 160;
   shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
-  assertCurrentOverlay("right-center", 64);
-  assert.equal(overlays.length, 3);
+  assertCurrentOverlay(160);
+  assert.equal(overlays.length, 1);
   assert.equal(collectionStarts, 1);
 });
 
@@ -839,7 +838,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
       notify: (message: string) => notifications.push(message),
       custom: (factory: (tuiValue: unknown, theme: unknown, keybindings: unknown, done: (result: string | null) => void) => unknown, customOptions?: {
         overlay?: boolean;
-        overlayOptions?: (() => { anchor?: string; width?: number | string });
+        overlayOptions?: OverlayOptions;
         onHandle?: (handle: typeof overlayHandle) => void;
       }) => new Promise<string | null>((resolve) => {
         const component = factory(tui, TEST_THEME, {}, (result) => {
@@ -849,7 +848,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
         if (customOptions?.overlay) {
           overlayCount++;
           panel = component as GitContextPanelComponent;
-          assert.deepEqual(customOptions.overlayOptions?.().anchor, "right-center");
+          assert.equal(customOptions.overlayOptions, contextOverlayOptions());
           customOptions.onHandle?.(overlayHandle);
         } else {
           selector = component as GitReferenceSelectorComponent;

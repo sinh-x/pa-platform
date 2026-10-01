@@ -6,11 +6,11 @@ import {
   truncateToWidth,
   visibleWidth,
   type OverlayHandle,
-  type OverlayOptions,
   type SelectItem,
   type TUI,
 } from "@earendil-works/pi-tui";
 import type { PiExtensionModule } from "./index.js";
+import { contextOverlayOptions } from "./context-overlay-layout.js";
 import {
   GIT_CONTEXT_COMMIT_LIMIT,
   GIT_CONTEXT_FILE_LIMIT,
@@ -24,7 +24,6 @@ import {
   type GitRefreshReason,
 } from "./git-context-state.js";
 
-export const GIT_CONTEXT_MIN_WIDE_WIDTH = 120;
 export const GIT_CONTEXT_COMMAND = "pa-git-context";
 export const GIT_CONTEXT_SHORTCUT = "alt+g";
 
@@ -41,24 +40,6 @@ export interface GitContextUiModuleOptions {
   persist?: typeof persistGitContextReference;
   schedulerFactory?: () => GitContextRefreshSchedulerLike;
   now?: () => number;
-}
-
-export function gitContextOverlayOptions(terminalWidth: number): OverlayOptions {
-  const width = Math.max(1, Math.floor(terminalWidth));
-  if (width >= GIT_CONTEXT_MIN_WIDE_WIDTH) {
-    return {
-      anchor: "right-center",
-      width: Math.min(64, Math.max(48, Math.floor(width * 0.4))),
-      maxHeight: "94%",
-      margin: { right: 1 },
-    };
-  }
-  return {
-    anchor: "center",
-    width: Math.max(1, width - 4),
-    maxHeight: "94%",
-    margin: 1,
-  };
 }
 
 export function registerGitContextUiModuleWithOptions(
@@ -78,7 +59,6 @@ export function registerGitContextUiModuleWithOptions(
   let overlayHandle: OverlayHandle | undefined;
   let overlayHidden = true;
   let overlayCreationPending = false;
-  let overlayTerminalWidth: number | undefined;
   let selectorDone: ((result: string | null) => void) | undefined;
   let selectorRun = 0;
   let disposed = false;
@@ -189,7 +169,6 @@ export function registerGitContextUiModuleWithOptions(
     overlayHandle = undefined;
     panel = undefined;
     overlayCreationPending = false;
-    overlayTerminalWidth = undefined;
   };
 
   const ensureOverlay = (context: ExtensionContext) => {
@@ -197,22 +176,17 @@ export function registerGitContextUiModuleWithOptions(
     const generation = sessionGeneration;
     overlayCreationPending = true;
     overlayHidden = false;
-    let terminalWidth = GIT_CONTEXT_MIN_WIDE_WIDTH;
     void context.ui.custom<void>(
       (tui, theme, _keybindings, _done) => {
-        terminalWidth = tui.terminal.columns;
         const createdPanel = new GitContextPanelComponent(tui, theme, () => state, () => setOverlayVisible(false), () => {
           void selectReference();
         });
-        if (!disposed && generation === sessionGeneration) {
-          panel = createdPanel;
-          overlayTerminalWidth = terminalWidth;
-        }
+        if (!disposed && generation === sessionGeneration) panel = createdPanel;
         return createdPanel;
       },
       {
         overlay: true,
-        overlayOptions: () => gitContextOverlayOptions(terminalWidth),
+        overlayOptions: contextOverlayOptions(),
         onHandle: (handle) => {
           if (disposed || generation !== sessionGeneration) {
             handle.hide();
@@ -247,13 +221,6 @@ export function registerGitContextUiModuleWithOptions(
     currentContext = context;
     collectionInput = { ...collectionInput, cwd: context.cwd };
     if (!overlayHandle) {
-      ensureOverlay(context);
-      return;
-    }
-    if (overlayHidden && panel && overlayTerminalWidth !== panel.terminalWidth()) {
-      cancelSelector();
-      overlayHidden = false;
-      closeOverlay();
       ensureOverlay(context);
       return;
     }
@@ -378,9 +345,6 @@ export class GitContextPanelComponent {
     this.tui.requestRender();
   }
 
-  terminalWidth(): number {
-    return this.tui.terminal.columns;
-  }
 }
 
 export class GitReferenceSelectorComponent {

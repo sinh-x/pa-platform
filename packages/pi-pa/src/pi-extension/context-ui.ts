@@ -10,6 +10,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { associateDeploymentTicket, deploymentTaskStatusMarker } from "@pa-platform/pa-core";
 import { Key, matchesKey, truncateToWidth, visibleWidth, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import type { PiExtensionModule, PiSessionLifecycle } from "./index.js";
+import { contextOverlayOptions } from "./context-overlay-layout.js";
 import type { TodoDetails } from "./todo.js";
 import {
   CONTEXT_REFRESH_INTERVAL_MS,
@@ -23,8 +24,6 @@ import {
 } from "./context-state.js";
 
 export const CONTEXT_STATUS_ID = "pa-context";
-export const CONTEXT_MIN_WIDTH = 120;
-export const CONTEXT_WIDTH_PERCENT = 68;
 
 export interface ContextUiModuleOptions {
   collector?: ContextCollectorDependencies;
@@ -97,14 +96,7 @@ export function registerContextUiModuleWithOptions(pi: Parameters<PiExtensionMod
       },
       {
         overlay: true,
-        overlayOptions: {
-          anchor: "top-right",
-          width: `${CONTEXT_WIDTH_PERCENT}%`,
-          minWidth: 42,
-          maxHeight: "90%",
-          margin: { right: 1 },
-          visible: (terminalWidth) => terminalWidth >= CONTEXT_MIN_WIDTH,
-        },
+        overlayOptions: contextOverlayOptions(),
         onHandle: (handle) => {
           overlayHandle = handle;
           handle.focus();
