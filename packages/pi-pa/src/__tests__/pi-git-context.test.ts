@@ -216,7 +216,7 @@ test("real Git numstat preserves rename, deletion, binary, spaces, tabs, Unicode
     && file.additions === null && file.deletions === null));
   assert.ok(state.snapshot.files.some((file) => file.path === unusualPath));
   assert.ok(!state.snapshot.files.some((file) => file.path === "worktree only.txt"));
-  assert.match(formatGitContextLines(state).join("\n"), /renamed  界↵file\.txt/);
+  assert.match(formatGitContextLines(state, root).join("\n"), /renamed  界↵file\.txt/);
 });
 
 test("collector canonicalizes a nested worktree and returns exact committed 10/20 limits", async (t) => {
@@ -612,6 +612,7 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
     { requestRender() {} } as never,
     TEST_THEME as never,
     () => state,
+    () => "/worktrees/PAP-230/exact Pi cwd-界",
     () => {},
     () => {},
   );
@@ -630,7 +631,8 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
     selector.invalidate();
   }
 
-  const content = formatGitContextLines(state);
+  const content = formatGitContextLines(state, "/worktrees/PAP-230/exact Pi cwd-界");
+  assert.equal(content[0], "Path: /worktrees/PAP-230/exact Pi cwd-界");
   assert.match(content.join("\n"), /Active: feature\/PAP-149-wide-界面/);
   assert.match(content.join("\n"), /Reference: main \(saved\)/);
   assert.match(content.join("\n"), /Commits: 10\/12 shown • 2 truncated/);
@@ -753,13 +755,8 @@ test("one registered panel retains shared geometry and bounded focused lines acr
   assert.equal(collectionStarts, 1);
 });
 
-test("Git panel renders all named unavailable states and stale prior data without fabrication", () => {
-  for (const status of ["non-git", "detached-head", "unborn-head", "missing-ref", "missing-merge-base", "git-error", "timeout", "unavailable"] as const) {
-    const lines = formatGitContextLines({ status, stale: false, checkedAt: 1, detail: "detail\nline" });
-    assert.equal(lines[0], `State: ${status}`);
-    assert.match(lines[1] ?? "", /detail↵line/);
-    assert.ok(!lines.some((line) => /^(Active|Reference|Commits|Files|Diff):/.test(line)));
-  }
+test("Git panel renders all named states with exact Path first and width-safe lines", () => {
+  const cwd = "/worktrees/PAP-230/exact Pi cwd-界";
   const ready = uiReadyState();
   assert.equal(ready.status, "ready");
   if (ready.status !== "ready") return;
@@ -770,9 +767,51 @@ test("Git panel renders all named unavailable states and stale prior data withou
     cause: "timeout",
     checkedAt: 2,
   };
-  const lines = formatGitContextLines(stale);
-  assert.equal(lines[0], "State: stale (timeout)");
-  assert.match(lines.join("\n"), /Reference: main/);
+  const pending: GitContextState = {
+    status: "pending",
+    stale: false,
+    repositoryRoot: ready.snapshot.repositoryRoot,
+    activeBranch: ready.snapshot.activeBranch,
+    reference: ready.snapshot.reference,
+    branches: ready.snapshot.branches,
+    requestedAt: 1,
+    recoverySnapshot: ready.snapshot,
+  };
+  const states: Array<{ name: string; state: GitContextState }> = [
+    { name: "pending", state: pending },
+    { name: "ready", state: ready },
+    { name: "stale", state: stale },
+    ...(["non-git", "detached-head", "unborn-head", "missing-ref", "missing-merge-base", "git-error", "timeout", "unavailable"] as const)
+      .map((status) => ({ name: status, state: { status, stale: false, checkedAt: 1, detail: "detail\nline" } as GitContextState })),
+  ];
+
+  for (const { name, state } of states) {
+    const lines = formatGitContextLines(state, cwd);
+    assert.equal(lines[0], `Path: ${cwd}`, `${name} Path row`);
+    const panel = new GitContextPanelComponent(
+      { requestRender() {} } as never,
+      TEST_THEME as never,
+      () => state,
+      () => cwd,
+      () => {},
+      () => {},
+    );
+    for (const width of REQUIRED_WIDTHS) {
+      assert.ok(panel.render(width).every((line) => visibleWidth(line) <= width), `${name} overflow at ${width}`);
+      panel.invalidate();
+    }
+    if (state.status !== "pending" && state.status !== "ready" && state.status !== "stale") {
+      assert.equal(lines[1], `State: ${state.status}`);
+      assert.match(lines[2] ?? "", /detail↵line/);
+      assert.ok(!lines.some((line) => /^(Active|Reference|Commits|Files|Diff):/.test(line)));
+    }
+  }
+
+  assert.equal(formatGitContextLines(pending, cwd)[1], "State: loading (pending collection)");
+  assert.equal(formatGitContextLines(ready, cwd)[1], "State: ready");
+  const staleLines = formatGitContextLines(stale, cwd);
+  assert.equal(staleLines[1], "State: stale (timeout)");
+  assert.match(staleLines.join("\n"), /Reference: main/);
 });
 
 test("Alt+G and command share one overlay; selection renders pending immediately while collection stays deferred", async () => {
@@ -802,6 +841,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   let overlayHides = 0;
   let selectorCompletions = 0;
   const notifications: string[] = [];
+  const executionPath = "/worktrees/PAP-230/nested";
   const overlayHandle = {
     setHidden: (hidden: boolean) => { overlayHidden = hidden; },
     isHidden: () => overlayHidden,
@@ -833,7 +873,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   const context = {
     mode: "tui",
     hasUI: true,
-    cwd: "/repo",
+    cwd: executionPath,
     ui: {
       notify: (message: string) => notifications.push(message),
       custom: (factory: (tuiValue: unknown, theme: unknown, keybindings: unknown, done: (result: string | null) => void) => unknown, customOptions?: {
@@ -863,6 +903,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   assert.equal(overlayCount, 1);
   assert.deepEqual(refreshReasons, ["first-open"]);
   assert.equal(collectionInputs.length, 1);
+  assert.equal(collectionInputs[0]?.cwd, executionPath);
 
   panel?.handleInput("r");
   assert.ok(selector);
@@ -881,6 +922,7 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   assert.equal(collectionInputs.length, 1);
   assert.ok(refreshReasons.includes("reference-change"));
   const pendingLines = panel?.render(80) ?? [];
+  assert.ok(pendingLines.some((line) => line.includes(`Path: ${executionPath}`)));
   assert.ok(pendingLines.some((line) => line.includes("State: loading (pending collection)")));
   assert.ok(pendingLines.some((line) => line.includes("Reference: origin/develop (selected)")));
   assert.ok(pendingLines.every((line) => visibleWidth(line) <= 80));
@@ -891,9 +933,12 @@ test("Alt+G and command share one overlay; selection renders pending immediately
   shortcuts.get(GIT_CONTEXT_SHORTCUT)?.(context);
   assert.equal(overlayHidden, true);
   assert.equal(unfocusCount, 1);
+  const movedExecutionPath = "/worktrees/PAP-230/moved";
+  context.cwd = movedExecutionPath;
   commands.get(GIT_CONTEXT_COMMAND)?.("", context);
   assert.equal(overlayCount, 1);
   assert.equal(overlayHidden, false);
+  assert.ok(panel?.render(80).some((line) => line.includes(`Path: ${movedExecutionPath}`)));
 
   events.get("turn_end")?.({}, context);
   events.get("session_tree")?.({}, context);

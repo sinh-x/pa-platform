@@ -178,7 +178,7 @@ export function registerGitContextUiModuleWithOptions(
     overlayHidden = false;
     void context.ui.custom<void>(
       (tui, theme, _keybindings, _done) => {
-        const createdPanel = new GitContextPanelComponent(tui, theme, () => state, () => setOverlayVisible(false), () => {
+        const createdPanel = new GitContextPanelComponent(tui, theme, () => state, () => collectionInput.cwd, () => setOverlayVisible(false), () => {
           void selectReference();
         });
         if (!disposed && generation === sessionGeneration) panel = createdPanel;
@@ -269,16 +269,18 @@ export function registerGitContextUiModuleWithOptions(
 
 export const registerGitContextUiModule: PiExtensionModule = (pi) => registerGitContextUiModuleWithOptions(pi);
 
-export function formatGitContextLines(state: GitContextState): string[] {
+export function formatGitContextLines(state: GitContextState, cwd: string): string[] {
+  const pathLine = `Path: ${cwd}`;
   if (state.status === "pending") {
     return [
+      pathLine,
       "State: loading (pending collection)",
       `Active: ${singleLine(state.activeBranch)}`,
       `Reference: ${singleLine(state.reference.name)} (selected)`,
     ];
   }
   if (state.status !== "ready" && state.status !== "stale") {
-    const lines = [`State: ${state.status}`];
+    const lines = [pathLine, `State: ${state.status}`];
     if (state.detail) lines.push(`Detail: ${singleLine(state.detail)}`);
     return lines;
   }
@@ -289,6 +291,7 @@ export function formatGitContextLines(state: GitContextState): string[] {
   const commitTruncated = Math.max(snapshot.commitTruncated, snapshot.commitTotal - commits.length);
   const fileTruncated = Math.max(snapshot.fileTruncated, snapshot.fileTotal - files.length);
   const lines = [
+    pathLine,
     state.status === "stale" ? `State: stale (${state.cause})` : "State: ready",
     `Active: ${singleLine(snapshot.activeBranch)}`,
     `Reference: ${singleLine(snapshot.reference.name)} (${snapshot.referenceSource})`,
@@ -308,12 +311,14 @@ export function formatGitContextLines(state: GitContextState): string[] {
 
 export class GitContextPanelComponent {
   private cachedWidth?: number;
+  private cachedPath?: string;
   private cachedLines?: string[];
 
   constructor(
     private readonly tui: TUI,
     private readonly theme: Theme,
     private readonly getState: () => GitContextState,
+    private readonly getPath: () => string,
     private readonly hide: () => void,
     private readonly selectReference: () => void,
   ) {}
@@ -324,19 +329,22 @@ export class GitContextPanelComponent {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-    const rows = formatGitContextLines(this.getState());
+    const path = this.getPath();
+    if (this.cachedLines && this.cachedWidth === width && this.cachedPath === path) return this.cachedLines;
+    const rows = formatGitContextLines(this.getState(), path);
     this.cachedLines = frameLines(this.theme, "PA Git Context", [
       ...rows,
       "",
       "r reference • Esc or Alt+G hide",
     ], width);
     this.cachedWidth = width;
+    this.cachedPath = path;
     return this.cachedLines;
   }
 
   invalidate(): void {
     this.cachedWidth = undefined;
+    this.cachedPath = undefined;
     this.cachedLines = undefined;
   }
 
