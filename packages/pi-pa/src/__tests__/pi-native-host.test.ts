@@ -629,8 +629,8 @@ test("managed command expectations follow all four factory selections exactly", 
   const selections = [
     { factories: [], commands: ["pa-context", "pa-git-context"] },
     { factories: ["pi-vimmode@0.9.0"], commands: ["vimmode", "pa-context", "pa-git-context"] },
-    { factories: ["proper-base@0.5.0"], commands: ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
-    { factories: ["pi-vimmode@0.9.0", "proper-base@0.5.0"], commands: ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
+    { factories: ["proper-base@0.7.0"], commands: ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
+    { factories: ["pi-vimmode@0.9.0", "proper-base@0.7.0"], commands: ["vimmode", "fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt", "pa-context", "pa-git-context"] },
   ] as const;
 
   for (const { factories, commands } of selections) {
@@ -640,7 +640,7 @@ test("managed command expectations follow all four factory selections exactly", 
 });
 
 test("managed command expectations reject extra, missing, and reordered commands", () => {
-  const factories = ["pi-vimmode@0.9.0", "proper-base@0.5.0"];
+  const factories = ["pi-vimmode@0.9.0", "proper-base@0.7.0"];
   const expected = expectedManagedExtensionCommands(factories);
   const fixtures = [
     [...expected, "unexpected-editor-command"],

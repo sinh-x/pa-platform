@@ -26,7 +26,7 @@ const TRANSCRIPT_CLEANUP = Symbol.for("pi-proper-base.transcript-cleanup");
 type ScheduledCallback = () => void;
 
 const VIM_FACTORY: BundledEditorFactory = { name: "pi-vimmode", version: "0.9.0", register: registerPiVimMode };
-const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.5.0", register: registerProperBase };
+const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.7.0", register: registerProperBase };
 const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
 
 async function captureScheduled(run: () => Promise<void>): Promise<ScheduledCallback[]> {

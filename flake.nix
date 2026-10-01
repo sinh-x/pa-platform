@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     properPiExtensions = {
-      url = "github:sharaf-nassar/proper-pi-extensions/859feb321ec81d773beea379d28e21d0b7d0c8c0";
+      url = "github:sharaf-nassar/proper-pi-extensions/bfec53cadd89c3582b2da69a87e1c71246780d4d";
       flake = false;
     };
     piVimMode = {
@@ -96,7 +96,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-U0endCfk4nhOnF1y8GQCHP24oAomWgM4cJG9meQFznc=";
+            hash = "sha256-bA5NkLqeL81shLiVvpA7PyEkurPfHAFxtaCNL8+64GE=";
             fetcherVersion = 4;
           };
 

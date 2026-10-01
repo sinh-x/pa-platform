@@ -6,11 +6,11 @@ digests, entrypoints, and generated bundle names are recorded in
 `extension-sources.lock.json` and copied into each build's
 `dist/pi-extension/vendor/provenance.json`.
 
-## proper-base 0.5.0
+## proper-base 0.7.0
 
 - Project: `proper-base` from `proper-pi-extensions`
 - Repository: <https://github.com/sharaf-nassar/proper-pi-extensions.git>
-- Commit: `859feb321ec81d773beea379d28e21d0b7d0c8c0`
+- Commit: `bfec53cadd89c3582b2da69a87e1c71246780d4d`
 - Source path: `proper-base/`
 - License: MIT, Copyright (c) 2026 mamba
 - License source: `vendor/proper-pi-extensions/proper-base/LICENSE`

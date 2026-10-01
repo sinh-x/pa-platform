@@ -190,7 +190,7 @@ for variant in "${variant_names[@]}"; do
       ].filter(Boolean);
       const reviewed = {
         "pi-vimmode": { version: "0.9.0", import: "#pi-pa-vimmode", target: "./dist/pi-extension/vendor/pi-vimmode.js", bundle: "pi-vimmode.js", commit: "52bd6ac5e905157ac46ec15c120b7d0cc61a62df", contentSha256: "40fba5841b53c042c3cb31c92c86a240d60c9674c37f2d69bb62e5ef6efc52c5", license: "MIT", licenseSha256: "4f0857fdc3d54e6adb6ec2c3602bd8e0e4bed2f83fb206e4522b987f55b9c74b" },
-        "proper-base": { version: "0.5.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "859feb321ec81d773beea379d28e21d0b7d0c8c0", contentSha256: "5150bed13e50a737679ed8ff4f6994b580f744a223c14a1798ec4f4d959b3065", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
+        "proper-base": { version: "0.7.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "bfec53cadd89c3582b2da69a87e1c71246780d4d", contentSha256: "4670fb7aaab2a2493d5599e8b8f2bd82e757914e07d169c87120cdc5a887fdb0", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
       };
       const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       const provenance = JSON.parse(readFileSync(join(root, "dist/pi-extension/vendor/provenance.json"), "utf8"));
@@ -225,7 +225,7 @@ for variant in "${variant_names[@]}"; do
       "$store_output/bin/pa-platform-node" --input-type=module --eval 'const plugin = await import("#pi-pa-vimmode"); if (typeof plugin.default !== "function") process.exit(1);'
     fi
     if [[ "$expected_proper" == true ]]; then
-      "$store_output/bin/pa-platform-node" --input-type=module --eval 'import sharp from "sharp"; const plugin = await import("#pi-pa-proper-base"); if (typeof plugin.default !== "function" || sharp.versions.sharp !== "0.35.3") process.exit(1); const png = await sharp({ create: { width: 1, height: 1, channels: 4, background: "#00000000" } }).png().toBuffer(); if (png.byteLength === 0) process.exit(1);'
+      "$store_output/bin/pa-platform-node" --input-type=module --eval 'import sharp from "sharp"; const plugin = await import("#pi-pa-proper-base"); if (typeof plugin.default !== "function" || sharp.versions.sharp !== "0.35.4") process.exit(1); const png = await sharp({ create: { width: 1, height: 1, channels: 4, background: "#00000000" } }).png().toBuffer(); if (png.byteLength === 0) process.exit(1);'
     fi
   )
 
@@ -250,7 +250,7 @@ for variant in "${variant_names[@]}"; do
       if (!existsSync(process.env.HELPER_PATH) || !pi.nodePath.endsWith("/bin/node")) process.exit(1);
       const expectedTools = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"];
       if (JSON.stringify(tools.tools) !== JSON.stringify(expectedTools.map((name) => ({ name, status: "passed" })))) process.exit(1);
-      const expectedFactories = [process.env.EXPECTED_VIM === "true" ? "pi-vimmode@0.9.0" : undefined, process.env.EXPECTED_PROPER === "true" ? "proper-base@0.5.0" : undefined].filter(Boolean);
+      const expectedFactories = [process.env.EXPECTED_VIM === "true" ? "pi-vimmode@0.9.0" : undefined, process.env.EXPECTED_PROPER === "true" ? "proper-base@0.7.0" : undefined].filter(Boolean);
       const expectedCommands = [
         ...(process.env.EXPECTED_VIM === "true" ? ["vimmode"] : []),
         ...(process.env.EXPECTED_PROPER === "true" ? ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"] : []),

@@ -36,17 +36,17 @@
     "properPiExtensions": {
       "flake": false,
       "locked": {
-        "lastModified": 1788299273,
-        "narHash": "sha256-XVrUvN4F7xgVeDZb4oOm0CIdbjlmd7mkuGTYbUZJfAM=",
+        "lastModified": 1790027580,
+        "narHash": "sha256-F1xi/FgaS8GXiNDFOuYeaplX2DnFqOvYZVLG3r49kbs=",
         "owner": "sharaf-nassar",
         "repo": "proper-pi-extensions",
-        "rev": "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+        "rev": "bfec53cadd89c3582b2da69a87e1c71246780d4d",
         "type": "github"
       },
       "original": {
         "owner": "sharaf-nassar",
         "repo": "proper-pi-extensions",
-        "rev": "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+        "rev": "bfec53cadd89c3582b2da69a87e1c71246780d4d",
         "type": "github"
       }
     },

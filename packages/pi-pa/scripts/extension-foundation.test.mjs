@@ -30,7 +30,7 @@ function createEntrypoint(root, path, content) {
 test("exact extension source validator accepts the approved initialized gitlinks", () => {
   const lock = validateExtensionSources();
   assert.deepEqual(lock.sources.map((source) => source.commit), [
-    "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+    "bfec53cadd89c3582b2da69a87e1c71246780d4d",
     "52bd6ac5e905157ac46ec15c120b7d0cc61a62df",
   ]);
 });
@@ -80,11 +80,16 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
   const bundler = readFileSync(resolve(PACKAGE_ROOT, "scripts/bundle-extension-sources.mjs"), "utf8");
   assert.equal(lock.sources.length, 2);
   assert.deepEqual(lock.sources.map(({ name, version, license }) => ({ name, version, license })), [
-    { name: "proper-base", version: "0.5.0", license: "MIT" },
+    { name: "proper-base", version: "0.7.0", license: "MIT" },
     { name: "pi-vimmode", version: "0.9.0", license: "MIT" },
   ]);
   assert.deepEqual(selectedExtensionSources(lock, { "pi-vimmode": true, "proper-base": true }).map(({ name }) => name), ["pi-vimmode", "proper-base"]);
-  assert.equal(packageJson.dependencies.sharp, "0.35.3");
+  assert.equal(packageJson.dependencies.sharp, "0.35.4");
+  assert.equal(packageJson.dependencies.typebox, "1.3.27");
+  for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+    assert.equal(packageJson.peerDependencies[dependency], "0.99.2");
+    assert.equal(packageJson.devDependencies[dependency], "0.99.2");
+  }
   assert.equal(packageJson.devDependencies.esbuild, "0.27.7");
   assert.equal(packageJson.imports, undefined, "installed import mappings must be generated only for selected sources");
   for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "sharp", "typebox"]) {
@@ -171,6 +176,11 @@ test("CI and Nix inputs require recursive exact sources and both Linux sharp art
   assert.match(flake, /supportedSystems = \[ "x86_64-linux" "aarch64-linux" \]/);
   assert.match(flake, /THIRD_PARTY_NOTICES\.md/);
   assert.match(workspace, /onlyBuiltDependencies:[\s\S]*- sharp/);
-  assert.match(lockfile, /'@img\/sharp-linux-x64@0\.35\.3'/);
-  assert.match(lockfile, /'@img\/sharp-linux-arm64@0\.35\.3'/);
+  for (const dependency of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
+    assert.match(lockfile, new RegExp(`'@earendil-works/${dependency}@0\\.99\\.2'`));
+  }
+  assert.match(lockfile, /typebox@1\.3\.27/);
+  assert.match(lockfile, /sharp@0\.35\.4/);
+  assert.match(lockfile, /'@img\/sharp-linux-x64@0\.35\.4'/);
+  assert.match(lockfile, /'@img\/sharp-linux-arm64@0\.35\.4'/);
 });
