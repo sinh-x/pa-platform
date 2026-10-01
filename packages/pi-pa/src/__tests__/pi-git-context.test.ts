@@ -24,6 +24,7 @@ import {
   resolveGitReference,
   type GitBranch,
   type GitCommandRunner,
+  type GitFileRow,
   type GitContextCollectionInput,
   type GitContextState,
 } from "../pi-extension/git-context-state.js";
@@ -80,6 +81,9 @@ function makeRepository(t: test.TestContext): string {
     git(root, "commit", "-q", "-m", `feature-${String(index).padStart(2, "0")}`);
   }
   mkdirSync(join(root, "nested"));
+  for (let index = 0; index < 25; index++) {
+    writeFileSync(join(root, `file-${String(index).padStart(2, "0")}.txt`), `unstaged ${index}\n`, { flag: "a" });
+  }
   writeFileSync(join(root, "worktree-only.txt"), "not committed\n");
   return root;
 }
@@ -117,7 +121,11 @@ function makeEdgeRepository(t: test.TestContext): { root: string; renamedPath: s
 function scriptedRunner(overrides: Partial<Record<string, string | Error | "pending">> = {}, calls?: string[][]): GitCommandRunner {
   return async (_cwd, args) => {
     calls?.push([...args]);
-    const key = args[0] === "rev-parse" && args.includes("--show-toplevel") ? "root" : args[0]!;
+    const key = args[0] === "rev-parse" && args.includes("--show-toplevel")
+      ? "root"
+      : args[0] === "diff"
+        ? args.length === 5 ? "unstaged-diff" : "committed-diff"
+        : args[0]!;
     const override = overrides[key];
     if (override === "pending") return new Promise<string>(() => {});
     if (override instanceof Error) throw override;
@@ -130,7 +138,8 @@ function scriptedRunner(overrides: Partial<Record<string, string | Error | "pend
       case "merge-base": return `${OID}\n`;
       case "rev-list": return "0\n";
       case "log":
-      case "diff": return "";
+      case "committed-diff":
+      case "unstaged-diff": return "";
       default: throw new Error(`Unexpected command: ${args.join(" ")}`);
     }
   };
@@ -197,6 +206,78 @@ test("NUL parsers preserve metadata, unusual paths, renames, and binary markers"
   ]);
 });
 
+test("snapshot reuses NUL-safe numstat semantics for tracked unstaged rows and aggregates every row", async () => {
+  const state = await scriptedCollection({
+    "unstaged-diff": [
+      "2\t1\tline\nwith\ttab.txt",
+      "3\t4\t", "old\nname.txt", "new\tname.txt",
+      "-\t-\tbinary.dat",
+      "0\t7\tdeleted.txt",
+      "",
+    ].join("\0"),
+  });
+  assert.equal(state.status, "ready");
+  if (state.status !== "ready") return;
+
+  assert.equal(state.snapshot.unstagedFileTotal, 4);
+  assert.equal(state.snapshot.unstagedFileTruncated, 0);
+  assert.equal(state.snapshot.unstagedAdditions, 5);
+  assert.equal(state.snapshot.unstagedDeletions, 12);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => `${file.oldPath ?? ""}\0${file.path}`), [
+    "\0binary.dat",
+    "\0deleted.txt",
+    "\0line\nwith\ttab.txt",
+    "old\nname.txt\0new\tname.txt",
+  ]);
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.binary
+    && file.additions === null && file.deletions === null));
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.path === "deleted.txt"
+    && file.additions === 0 && file.deletions === 7));
+  assert.ok(state.snapshot.unstagedFiles.some((file) => file.oldPath === "old\nname.txt"
+    && file.displayPath === "old\nname.txt → new\tname.txt"));
+});
+
+test("real Git collection uses exact no-range argv and includes only tracked working-tree changes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-git-unstaged-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Pi Unstaged Test");
+  git(root, "config", "user.email", "pi-unstaged@example.test");
+  writeFileSync(join(root, "tracked.txt"), "base\n");
+  writeFileSync(join(root, "staged-only.txt"), "base\n");
+  writeFileSync(join(root, "mixed.txt"), "base\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "branch", "develop");
+  git(root, "checkout", "-q", "-b", "feature/unstaged");
+
+  writeFileSync(join(root, "tracked.txt"), "one\ntwo\n", { flag: "a" });
+  writeFileSync(join(root, "staged-only.txt"), "staged\n", { flag: "a" });
+  git(root, "add", "staged-only.txt");
+  writeFileSync(join(root, "mixed.txt"), "staged\n", { flag: "a" });
+  git(root, "add", "mixed.txt");
+  writeFileSync(join(root, "mixed.txt"), "unstaged\n", { flag: "a" });
+  writeFileSync(join(root, "untracked.txt"), "untracked\n");
+
+  const calls: string[][] = [];
+  const runGit: GitCommandRunner = async (cwd, args) => {
+    calls.push([...args]);
+    return execFileSync("git", [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  };
+  const state = await collectGitContext(undefined, { cwd: root, explicitReference: "develop" }, { runGit });
+  assert.equal(state.status, "ready");
+  if (state.status !== "ready") return;
+
+  assert.deepEqual(calls.at(-1), ["diff", "--numstat", "-z", "--find-renames", "--"]);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => file.path), ["mixed.txt", "tracked.txt"]);
+  assert.equal(state.snapshot.unstagedFileTotal, 2);
+  assert.equal(state.snapshot.unstagedFileTruncated, 0);
+  assert.equal(state.snapshot.unstagedAdditions, 3);
+  assert.equal(state.snapshot.unstagedDeletions, 0);
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "staged-only.txt"));
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "untracked.txt"));
+});
+
 test("real Git numstat preserves rename, deletion, binary, spaces, tabs, Unicode, and newlines", async (t) => {
   const { root, renamedPath, unusualPath } = makeEdgeRepository(t);
   const state = await collectGitContext(undefined, { cwd: root });
@@ -239,6 +320,14 @@ test("collector canonicalizes a nested worktree and returns exact committed 10/2
   assert.equal(state.snapshot.fileTruncated, 5);
   assert.equal(state.snapshot.additions, 36);
   assert.equal(state.snapshot.deletions, 0);
+  assert.equal(state.snapshot.unstagedFileTotal, 25);
+  assert.equal(state.snapshot.unstagedFiles.length, GIT_CONTEXT_FILE_LIMIT);
+  assert.equal(state.snapshot.unstagedFileTruncated, 5);
+  assert.equal(state.snapshot.unstagedAdditions, 25);
+  assert.equal(state.snapshot.unstagedDeletions, 0);
+  assert.deepEqual(state.snapshot.unstagedFiles.map((file) => file.path),
+    Array.from({ length: GIT_CONTEXT_FILE_LIMIT }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`));
+  assert.ok(!state.snapshot.unstagedFiles.some((file) => file.path === "worktree-only.txt"));
   assert.ok(!state.snapshot.files.some((file) => file.path === "worktree-only.txt"));
   assert.ok(!state.snapshot.branches.some((branch) => ["origin/HEAD", "release-test", "custom/free-form"].includes(branch.name)));
   assert.equal(await loadGitContextReference(root), undefined);
@@ -456,8 +545,23 @@ test("collector models every initial edge state and retains only prior error/tim
   assert.equal(timeout.status, "timeout");
   assert.equal(timeout.stale, false);
 
-  const ready = await scriptedCollection();
+  assert.equal((await scriptedCollection({ "unstaged-diff": new Error("unstaged diff failed") })).status, "git-error");
+
+  const ready = await scriptedCollection({ "unstaged-diff": "1\t2\ttracked.txt\0" });
   assert.equal(ready.status, "ready");
+  const staleUnstagedError = await collectGitContext(ready, { cwd: "/repo" }, {
+    runGit: scriptedRunner({ "unstaged-diff": new Error("unstaged diff failed") }),
+    canonicalize: async () => "/repo",
+    now: () => 250,
+  });
+  assert.equal(staleUnstagedError.status, "stale");
+  if (staleUnstagedError.status === "stale" && ready.status === "ready") {
+    assert.equal(staleUnstagedError.cause, "git-error");
+    assert.equal(staleUnstagedError.snapshot, ready.snapshot);
+    assert.equal(staleUnstagedError.snapshot.unstagedFileTotal, 1);
+    assert.equal(staleUnstagedError.snapshot.unstagedAdditions, 1);
+    assert.equal(staleUnstagedError.snapshot.unstagedDeletions, 2);
+  }
   const staleError = await collectGitContext(ready, { cwd: "/repo" }, {
     runGit: scriptedRunner({ root: new Error("Git unavailable") }),
     canonicalize: async () => "/repo",
@@ -479,6 +583,8 @@ test("collector models every initial edge state and retains only prior error/tim
 });
 
 test("the complete collection attempt uses one fake 2,000 ms deadline and aborts late Git", async () => {
+  const previous = await scriptedCollection({ "unstaged-diff": "1\t0\ttracked.txt\0" });
+  assert.equal(previous.status, "ready");
   let deadline: (() => void) | undefined;
   let delay: number | undefined;
   let timerCount = 0;
@@ -491,21 +597,34 @@ test("the complete collection attempt uses one fake 2,000 ms deadline and aborts
     return 1 as unknown as NodeJS.Timeout;
   }) as typeof setTimeout;
   const clearTimer = (() => { clearCount++; }) as typeof clearTimeout;
-  const collection = collectGitContext(undefined, { cwd: "/repo" }, {
-    runGit: async (_cwd, _args, signal) => new Promise<string>(() => {
-      signal.addEventListener("abort", () => { aborted = true; }, { once: true });
-    }),
+  const calls: string[][] = [];
+  const baseRunner = scriptedRunner({}, calls);
+  const collection = collectGitContext(previous, { cwd: "/repo" }, {
+    runGit: async (cwd, args, signal) => {
+      if (args[0] === "diff" && args.length === 5) {
+        calls.push([...args]);
+        return new Promise<string>(() => {
+          signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+        });
+      }
+      return baseRunner(cwd, args, signal);
+    },
     canonicalize: async () => "/repo",
     setTimer,
     clearTimer,
   });
 
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(timerCount, 1);
   assert.equal(delay, GIT_CONTEXT_COLLECTION_DEADLINE_MS);
+  assert.deepEqual(calls.at(-1), ["diff", "--numstat", "-z", "--find-renames", "--"]);
   deadline?.();
   const state = await collection;
-  assert.equal(state.status, "timeout");
+  assert.equal(state.status, "stale");
+  if (state.status === "stale" && previous.status === "ready") {
+    assert.equal(state.cause, "timeout");
+    assert.equal(state.snapshot, previous.snapshot);
+  }
   assert.equal(aborted, true);
   assert.equal(clearCount, 1);
 });
@@ -519,12 +638,13 @@ test("collector subprocess surface is fixed, validated, and read-only", async ()
   });
   assert.equal(state.status, "ready");
   assert.deepEqual(calls.map((args) => args[0]), [
-    "rev-parse", "rev-parse", "symbolic-ref", "for-each-ref", "merge-base", "rev-list", "log", "diff",
+    "rev-parse", "rev-parse", "symbolic-ref", "for-each-ref", "merge-base", "rev-list", "log", "diff", "diff",
   ]);
   const forbidden = new Set(["fetch", "checkout", "switch", "stage", "add", "commit", "reset"]);
   assert.ok(calls.every((args) => !args.some((arg) => forbidden.has(arg))));
   assert.deepEqual(calls[4]?.slice(0, 2), ["merge-base", "refs/heads/develop"]);
-  assert.deepEqual(calls[7]?.slice(0, 5), ["diff", "--numstat", "-z", "--find-renames", `${OID}..HEAD`]);
+  assert.deepEqual(calls[7], ["diff", "--numstat", "-z", "--find-renames", `${OID}..HEAD`, "--"]);
+  assert.deepEqual(calls[8], ["diff", "--numstat", "-z", "--find-renames", "--"]);
 });
 
 test("first-open, reference-change, and event hooks coalesce to one start per 10 seconds and dispose", () => {
@@ -562,7 +682,17 @@ test("first-open, reference-change, and event hooks coalesce to one start per 10
   assert.equal(starts.length, 2);
 });
 
-function uiReadyState(reference = "main"): GitContextState {
+function uiUnstagedFiles(): GitFileRow[] {
+  return Array.from({ length: 25 }, (_, index) => ({
+    path: `worktree/long/path/file-${String(index).padStart(2, "0")}-界面.ts`,
+    displayPath: `worktree/long/path/file-${String(index).padStart(2, "0")}-界面.ts`,
+    additions: index + 1,
+    deletions: index,
+    binary: false,
+  }));
+}
+
+function uiReadyState(reference = "main", unstagedFiles: GitFileRow[] = []): GitContextState {
   const branches = BRANCHES.map((branch) => ({ ...branch }));
   const selected = branches.find((branch) => branch.name === reference) ?? branches[1]!;
   return {
@@ -594,6 +724,11 @@ function uiReadyState(reference = "main"): GitContextState {
       fileTruncated: 5,
       additions: 325,
       deletions: 300,
+      unstagedFiles,
+      unstagedFileTotal: unstagedFiles.length,
+      unstagedFileTruncated: Math.max(0, unstagedFiles.length - GIT_CONTEXT_FILE_LIMIT),
+      unstagedAdditions: unstagedFiles.reduce((total, file) => total + (file.additions ?? 0), 0),
+      unstagedDeletions: unstagedFiles.reduce((total, file) => total + (file.deletions ?? 0), 0),
       collectedAt: 123,
     },
   };
@@ -607,7 +742,7 @@ const TEST_THEME = {
 const REQUIRED_WIDTHS = [40, 80, 119, 120, 160] as const;
 
 test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 160 columns", () => {
-  const state = uiReadyState();
+  const state = uiReadyState("main", uiUnstagedFiles());
   const panel = new GitContextPanelComponent(
     { requestRender() {} } as never,
     TEST_THEME as never,
@@ -637,9 +772,19 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
   assert.match(content.join("\n"), /Reference: main \(saved\)/);
   assert.match(content.join("\n"), /Commits: 10\/12 shown • 2 truncated/);
   assert.equal(content.filter((line) => /^  c\d{6} /.test(line)).length, GIT_CONTEXT_COMMIT_LIMIT);
-  assert.match(content.join("\n"), /Diff: \+325 -300/);
-  assert.match(content.join("\n"), /Files: 20\/25 shown • 5 truncated/);
-  assert.equal(content.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  const unstagedHeading = content.indexOf("Unstaged Changes:");
+  assert.ok(unstagedHeading > 0);
+  const committedContent = content.slice(0, unstagedHeading);
+  const unstagedContent = content.slice(unstagedHeading);
+  assert.match(committedContent.join("\n"), /Diff: \+325 -300/);
+  assert.match(committedContent.join("\n"), /Files: 20\/25 shown • 5 truncated/);
+  assert.equal(committedContent.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  assert.match(unstagedContent.join("\n"), /Diff: \+325 -300/);
+  assert.match(unstagedContent.join("\n"), /Files: 20\/25 shown • 5 truncated/);
+  assert.equal(unstagedContent.filter((line) => /^  \+\d+ -\d+ /.test(line)).length, GIT_CONTEXT_FILE_LIMIT);
+  assert.match(unstagedContent.join("\n"), /worktree\/long\/path\/file-00-界面\.ts/);
+  assert.match(unstagedContent.join("\n"), /worktree\/long\/path\/file-19-界面\.ts/);
+  assert.doesNotMatch(unstagedContent.join("\n"), /worktree\/long\/path\/file-20-界面\.ts/);
 
   const layout = contextOverlayOptions();
   assert.equal(layout.anchor, "top-right");
@@ -649,6 +794,70 @@ test("Git panel and SelectList selector are width-safe at 40, 80, 119, 120, and 
   assert.deepEqual(layout.margin, { right: 1 });
   for (const width of [40, 80, 119]) assert.equal(layout.visible?.(width, 40), false);
   for (const width of [120, 160]) assert.equal(layout.visible?.(width, 40), true);
+});
+
+test("ready and retained-stale panels render explicit empty unstaged aggregates after exact Path", () => {
+  const cwd = "/worktrees/PAP-230/exact Pi cwd";
+  const ready = uiReadyState();
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "git-error",
+    checkedAt: 456,
+  };
+
+  for (const state of [ready, stale]) {
+    const lines = formatGitContextLines(state, cwd);
+    assert.equal(lines[0], `Path: ${cwd}`);
+    const heading = lines.indexOf("Unstaged Changes:");
+    assert.ok(heading > 0);
+    assert.deepEqual(lines.slice(heading, heading + 3), [
+      "Unstaged Changes:",
+      "Diff: +0 -0",
+      "Files: 0/0 shown",
+    ]);
+  }
+});
+
+test("unstaged rendering reuses binary, deletion, rename, and single-line path semantics without patch content", () => {
+  const cwd = "/worktrees/PAP-230/exact Pi cwd";
+  const ready = uiReadyState("main", [
+    { path: "binary.dat", displayPath: "binary.dat", additions: null, deletions: null, binary: true },
+    { path: "deleted.txt", displayPath: "deleted.txt", additions: 0, deletions: 7, binary: false },
+    {
+      path: "new\nname\u0001.txt",
+      oldPath: "old\tname.txt",
+      displayPath: "old\tname.txt → new\nname\u0001.txt",
+      additions: 3,
+      deletions: 4,
+      binary: false,
+    },
+  ]);
+  assert.equal(ready.status, "ready");
+  if (ready.status !== "ready") return;
+  const stale: GitContextState = {
+    status: "stale",
+    stale: true,
+    snapshot: ready.snapshot,
+    cause: "timeout",
+    checkedAt: 789,
+  };
+
+  const readyLines = formatGitContextLines(ready, cwd);
+  const staleLines = formatGitContextLines(stale, cwd);
+  for (const lines of [readyLines, staleLines]) {
+    assert.equal(lines[0], `Path: ${cwd}`);
+    const rendered = lines.slice(lines.indexOf("Unstaged Changes:")).join("\n");
+    assert.match(rendered, /^Unstaged Changes:\nDiff: \+3 -11\nFiles: 3\/3 shown/m);
+    assert.match(rendered, /^  binary binary\.dat$/m);
+    assert.match(rendered, /^  \+0 -7 deleted\.txt$/m);
+    assert.match(rendered, /^  \+3 -4 old name\.txt → new↵name�\.txt$/m);
+    assert.doesNotMatch(rendered, /@@|patch content/);
+  }
+  assert.deepEqual(staleLines.slice(2), readyLines.slice(2));
 });
 
 test("one registered panel retains shared geometry and bounded focused lines across 160→80→160 reopen", async () => {
