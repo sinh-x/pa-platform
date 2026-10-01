@@ -69,6 +69,11 @@ export interface GitContextSnapshot {
   fileTruncated: number;
   additions: number;
   deletions: number;
+  unstagedFiles: GitFileRow[];
+  unstagedFileTotal: number;
+  unstagedFileTruncated: number;
+  unstagedAdditions: number;
+  unstagedDeletions: number;
   collectedAt: number;
 }
 
@@ -166,9 +171,9 @@ interface BoundConfigDirectory {
 }
 
 /**
- * Collect one committed-only Git comparison under one deadline. Runtime Git
- * commands are read-only and selector values are resolved back to enumerated
- * fully-qualified branch refs before they are passed to Git.
+ * Collect committed and tracked-unstaged Git comparisons under one deadline.
+ * Runtime Git commands are read-only and selector values are resolved back to
+ * enumerated fully-qualified branch refs before they are passed to Git.
  */
 export async function collectGitContext(
   previous: GitContextState | undefined,
@@ -276,6 +281,12 @@ async function collectGitContextAttempt(
   const orderedFiles = [...parsedFiles].sort(compareFileRows);
   const additions = parsedFiles.reduce((total, file) => total + (file.additions ?? 0), 0);
   const deletions = parsedFiles.reduce((total, file) => total + (file.deletions ?? 0), 0);
+  const parsedUnstagedFiles = parseGitNumstat(
+    await runGit(repositoryRoot, ["diff", "--numstat", "-z", "--find-renames", "--"], signal),
+  );
+  const orderedUnstagedFiles = [...parsedUnstagedFiles].sort(compareFileRows);
+  const unstagedAdditions = parsedUnstagedFiles.reduce((total, file) => total + (file.additions ?? 0), 0);
+  const unstagedDeletions = parsedUnstagedFiles.reduce((total, file) => total + (file.deletions ?? 0), 0);
 
   return {
     status: "ready",
@@ -295,6 +306,11 @@ async function collectGitContextAttempt(
       fileTruncated: Math.max(0, parsedFiles.length - GIT_CONTEXT_FILE_LIMIT),
       additions,
       deletions,
+      unstagedFiles: orderedUnstagedFiles.slice(0, GIT_CONTEXT_FILE_LIMIT),
+      unstagedFileTotal: parsedUnstagedFiles.length,
+      unstagedFileTruncated: Math.max(0, parsedUnstagedFiles.length - GIT_CONTEXT_FILE_LIMIT),
+      unstagedAdditions,
+      unstagedDeletions,
       collectedAt: now(),
     },
   };

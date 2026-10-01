@@ -21,6 +21,7 @@ import {
   type GitContextCollectionInput,
   type GitContextCollectorDependencies,
   type GitContextState,
+  type GitFileRow,
   type GitRefreshReason,
 } from "./git-context-state.js";
 
@@ -319,8 +320,13 @@ export function formatGitContextLines(state: GitContextState): string[] {
   const snapshot = state.snapshot;
   const commits = snapshot.commits.slice(0, GIT_CONTEXT_COMMIT_LIMIT);
   const files = snapshot.files.slice(0, GIT_CONTEXT_FILE_LIMIT);
+  const unstagedFiles = snapshot.unstagedFiles.slice(0, GIT_CONTEXT_FILE_LIMIT);
   const commitTruncated = Math.max(snapshot.commitTruncated, snapshot.commitTotal - commits.length);
   const fileTruncated = Math.max(snapshot.fileTruncated, snapshot.fileTotal - files.length);
+  const unstagedFileTruncated = Math.max(
+    snapshot.unstagedFileTruncated,
+    snapshot.unstagedFileTotal - unstagedFiles.length,
+  );
   const lines = [
     state.status === "stale" ? `State: stale (${state.cause})` : "State: ready",
     `Active: ${singleLine(snapshot.activeBranch)}`,
@@ -332,10 +338,11 @@ export function formatGitContextLines(state: GitContextState): string[] {
   }
   lines.push(`Diff: +${snapshot.additions} -${snapshot.deletions}`);
   lines.push(`Files: ${files.length}/${snapshot.fileTotal} shown${fileTruncated > 0 ? ` • ${fileTruncated} truncated` : ""}`);
-  for (const file of files) {
-    const counts = file.binary ? "binary" : `+${file.additions ?? 0} -${file.deletions ?? 0}`;
-    lines.push(`  ${counts} ${singleLine(file.displayPath)}`);
-  }
+  for (const file of files) lines.push(formatFileRow(file));
+  lines.push("Unstaged Changes:");
+  lines.push(`Diff: +${snapshot.unstagedAdditions} -${snapshot.unstagedDeletions}`);
+  lines.push(`Files: ${unstagedFiles.length}/${snapshot.unstagedFileTotal} shown${unstagedFileTruncated > 0 ? ` • ${unstagedFileTruncated} truncated` : ""}`);
+  for (const file of unstagedFiles) lines.push(formatFileRow(file));
   return lines;
 }
 
@@ -459,6 +466,11 @@ function unavailableState(checkedAt: number): GitContextState {
 
 function snapshotFromState(state: GitContextState) {
   return state.status === "ready" || state.status === "stale" ? state.snapshot : undefined;
+}
+
+function formatFileRow(file: GitFileRow): string {
+  const counts = file.binary ? "binary" : `+${file.additions ?? 0} -${file.deletions ?? 0}`;
+  return `  ${counts} ${singleLine(file.displayPath)}`;
 }
 
 function singleLine(value: string): string {

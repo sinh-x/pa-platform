@@ -531,18 +531,32 @@ While the panel has focus, press `r` to open the reference selector. It contains
 
 A valid saved selection is restored in an independent Pi session. If no valid saved ref exists, resolution is exactly: the locally detected default branch, local `develop`, locally present `origin/develop`, then `unavailable`. A missing saved ref follows that fallback without rewriting the state file; fallback is never persisted as if the user selected it.
 
-The comparison is committed-only. The collector finds the selected reference's merge base with `HEAD`, then displays:
+The panel keeps the committed comparison and working-tree summary separate. For the committed comparison, the collector finds the selected reference's merge base with `HEAD`, then displays:
 
 - active and reference branch names;
 - the newest 10 commits from `merge-base..HEAD`, each with short hash, subject, author, and ISO date, plus exact total and truncated counts;
 - aggregate committed insertions/deletions; and
 - the first 20 deterministically sorted committed file rows, plus exact total and truncated counts.
 
-Rename rows render as `old → new`, binary rows render as `binary`, and NUL-delimited Git output preserves spaces, tabs, Unicode, and newline-capable paths (control characters are made single-line for display). Deleted files remain in the committed file rows. Staged, unstaged, untracked, and other worktree-only changes are not included.
+A distinct `Unstaged Changes` section follows in ready and retained-stale snapshots. It runs exactly `git diff --numstat -z --find-renames --`, which compares the working tree with the index. The section is tracked-only: it excludes staged-only changes and untracked files, while a file with both staged and unstaged edits contributes only its working-tree-versus-index delta. It shows explicit aggregate values such as `Diff: +0 -0`, explicit shown/total values such as `Files: 0/0 shown`, and a truncation count when applicable. Aggregates and totals cover every parsed unstaged row before display truncation; the first 20 deterministically sorted unstaged rows are bounded independently from the 20 committed rows.
 
-Collection starts on first open and is requested after reference changes and eligible tree/turn events. Requests are coalesced so no more than one refresh starts per 10,000 ms; reference selection updates the visible pending state immediately, while the cadence can defer the requested collection start. One complete collection attempt has a 2,000 ms total deadline, not a separate deadline per Git command. The panel names `non-git`, `detached-head`, `unborn-head`, `missing-ref`, `missing-merge-base`, `git-error`, `timeout`, and `unavailable` states. An initial failure shows no invented branch, commit, diff, or file data. If a successful snapshot already exists, a later timeout or Git error retains that snapshot and visibly marks it `stale` with the cause. This recovery snapshot also survives the immediate selected-reference pending state: if its cadence-deferred attempt times out or returns a Git error, the prior successful comparison reappears as stale. Shutdown, session replacement, and `/reload` cancel selectors, dispose cadence timers, hide overlays, and reject late results or overlay handles from the old session.
+Both file sections use the same summary-only row semantics. Rename rows render as `old → new`, binary rows render as `binary`, deletion counts remain visible, and NUL-delimited Git output preserves spaces, tabs, Unicode, and newline-capable paths before control characters are made single-line for display. No patch hunks or changed-line content enter the snapshot or panel.
 
-All runtime Git argv are fixed or selected from enumerated refs and use only read operations (`rev-parse`, `symbolic-ref`, `for-each-ref`, `merge-base`, `rev-list`, `log`, and `diff`). The panel never fetches, so remote-tracking choices reflect only local clone state; it never checks out, switches, stages, adds, commits, resets, or intentionally writes under `.git`.
+Collection starts on first open and is requested after reference changes and eligible tree/turn events. Requests are coalesced so no more than one refresh starts per 10,000 ms; reference selection updates the visible pending state immediately, while the cadence can defer the requested collection start. One complete collection attempt, including both committed and unstaged queries, has one 2,000 ms total deadline, not a separate deadline per Git command. The panel names `non-git`, `detached-head`, `unborn-head`, `missing-ref`, `missing-merge-base`, `git-error`, `timeout`, and `unavailable` states. An initial failure shows no invented branch, commit, diff, file, or unstaged data. If a successful snapshot already exists, a later timeout or Git error retains the whole prior committed-and-unstaged snapshot and visibly marks it `stale` with the cause. This recovery snapshot also survives the immediate selected-reference pending state: if its cadence-deferred attempt times out or returns a Git error, the prior successful snapshot reappears as stale. Shutdown, session replacement, and `/reload` cancel selectors, dispose cadence timers, hide overlays, and reject late results or overlay handles from the old session.
+
+Runtime collection invokes Git directly without a shell or string interpolation. Its read-only argv are exactly:
+
+- `git rev-parse --path-format=absolute --show-toplevel`;
+- `git rev-parse --verify HEAD^{commit}`;
+- `git symbolic-ref --quiet --short HEAD`;
+- `git for-each-ref --format=%(refname)%00%(symref) refs/heads refs/remotes`;
+- `git merge-base <enumerated-full-reference> HEAD`;
+- `git rev-list --count <merge-base>..HEAD`;
+- `git log -z --max-count=10 --format=%h%x00%s%x00%an%x00%aI <merge-base>..HEAD`;
+- `git diff --numstat -z --find-renames <merge-base>..HEAD --`; and
+- `git diff --numstat -z --find-renames --`.
+
+The variable reference is selected only from enumerated local or remote-tracking refs, and the range is built from Git's validated merge-base object ID. The panel never fetches, so remote-tracking choices reflect only local clone state; it never checks out, switches, stages, adds, commits, resets, mutates the index/worktree, or intentionally writes under `.git`.
 
 RPC mode can emit the `PA Git context requires TUI mode.` warning but opens no custom component. JSON and print modes also open no component; because those modes have no UI, they do not display the warning.
 
