@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
+import { createAgentApiApp, DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
 
 const teamConfig: TeamConfig = {
   name: "builder",
@@ -35,6 +36,7 @@ interface Fixture {
   repo: string;
   otherRepo: string;
   worktree: string;
+  aiUsage: string;
 }
 
 function createFixture(name: string): Fixture {
@@ -43,13 +45,24 @@ function createFixture(name: string): Fixture {
   const repo = join(root, "repo");
   const otherRepo = join(root, "other-repo");
   const worktree = join(root, "worktree");
+  const aiUsage = join(root, "ai-usage");
   mkdirSync(config);
+  mkdirSync(join(aiUsage, "tickets"), { recursive: true });
   initializeRepo(repo);
   initializeRepo(otherRepo);
   git(["remote", "add", "origin", "git@github.com:owner/project.git"], repo);
   git(["worktree", "add", "-b", `feature/${name}`, worktree], repo);
   writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n    remote_url: git@github.com:owner/project.git\n  other:\n    path: ${otherRepo}\n`);
-  return { root, config, repo, otherRepo, worktree };
+  return { root, config, repo, otherRepo, worktree, aiUsage };
+}
+
+function writeTicket(fixture: Fixture, id: string, project: string): void {
+  writeFileSync(join(fixture.aiUsage, "tickets", `${id}.json`), JSON.stringify({ id, project, title: id }));
+}
+
+function assertFiveFieldDiagnostic(value: string): void {
+  assert.match(value, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+  assert.ok(value.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS, `diagnostic length ${value.length} exceeded the bound`);
 }
 
 function capture() {
@@ -61,14 +74,18 @@ function capture() {
 async function withFixture(name: string, callback: (fixture: Fixture) => Promise<void>): Promise<void> {
   const fixture = createFixture(name);
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
   const originalCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = fixture.config;
+  process.env["PA_AI_USAGE_HOME"] = fixture.aiUsage;
   try {
     await callback(fixture);
   } finally {
     process.chdir(originalCwd);
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
+    else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 }
@@ -236,6 +253,127 @@ test("ppa parented explicit selectors preserve the authenticated linked-worktree
   });
 });
 
+test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary", async () => {
+  await withFixture("ticket-worktree-boundary", async (fixture) => {
+    writeTicket(fixture, "PAP-234", "registered");
+    process.chdir(fixture.repo);
+
+    for (const selector of [undefined, "registered", fixture.repo]) {
+      const captured = capture();
+      const seen: Array<{ request: DeployRequest; cwd: string }> = [];
+      const selectorArgs = selector ? ["--repo", selector] : [];
+      const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-234", "--ticket-worktree", "--timeout", String(DEFAULT_DEPLOY_TIMEOUT_SECONDS), ...selectorArgs], {
+        binaryName: "ppa",
+        io: captured.io,
+        hooks: { deploy: (request) => {
+          seen.push({ request, cwd: process.cwd() });
+          return { status: "pending", deploymentId: "d-selection" };
+        } },
+      });
+      assert.equal(code, 0, captured.stderr.join("\n"));
+      assert.deepEqual(seen, [{
+        request: {
+          team: "requirements",
+          mode: "analyze",
+          repo: fixture.repo,
+          ticket: "PAP-234",
+          timeout: DEFAULT_DEPLOY_TIMEOUT_SECONDS,
+          ticketWorktree: true,
+          invocationChannel: "cli",
+        },
+        cwd: fixture.repo,
+      }]);
+    }
+
+    let rejectedHookCalls = 0;
+    for (const binaryName of ["opa", "cpa", "dpa", "pa-core"]) {
+      const captured = capture();
+      const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-234", "--ticket-worktree"], {
+        binaryName,
+        io: captured.io,
+        hooks: { deploy: () => { rejectedHookCalls += 1; return { status: "pending", deploymentId: "d-forbidden" }; } },
+      });
+      assert.equal(code, 1, `${binaryName} unexpectedly accepted --ticket-worktree`);
+      assertFiveFieldDiagnostic(captured.stderr.join("\n"));
+    }
+
+    for (const args of [
+      ["deploy", "requirements", "--mode", "analyze", "--ticket-worktree"],
+      ["deploy", "builder", "--mode", "orchestrator", "--ticket", "PAP-234", "--ticket-worktree"],
+    ]) {
+      const captured = capture();
+      const code = await runCoreCommand(args, {
+        binaryName: "ppa",
+        io: captured.io,
+        hooks: { deploy: () => { rejectedHookCalls += 1; return { status: "pending", deploymentId: "d-forbidden" }; } },
+      });
+      assert.equal(code, 1);
+      assertFiveFieldDiagnostic(captured.stderr.join("\n"));
+    }
+    assert.equal(rejectedHookCalls, 0, "unsupported binaries, missing tickets, and builders must not reach adapter execution");
+  });
+});
+
+test("ticket-worktree canonical selector and ticket project gates reject before adapter execution", async () => {
+  await withFixture("ticket-worktree-repository", async (fixture) => {
+    writeTicket(fixture, "PAP-234", "registered");
+    writeTicket(fixture, "PAP-235", "other");
+    process.chdir(fixture.repo);
+    let hookCalls = 0;
+
+    for (const args of [
+      ["--ticket", "PAP-234", "--repo", fixture.worktree],
+      ["--ticket", "PAP-235", "--repo", "registered"],
+      ["--ticket", "PAP-999", "--repo", "registered"],
+      ["--ticket", "PAP-234", "--repo", "x".repeat(4_000)],
+    ]) {
+      const captured = capture();
+      const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket-worktree", ...args], {
+        binaryName: "ppa",
+        io: captured.io,
+        hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-forbidden" }; } },
+      });
+      assert.equal(code, 1);
+      assertFiveFieldDiagnostic(captured.stderr.join("\n"));
+    }
+    assert.equal(hookCalls, 0);
+  });
+});
+
+test("Agent API exposes no ticket-worktree request capability", async () => {
+  await withFixture("ticket-worktree-api", async () => {
+    let hookCalls = 0;
+    const deploy = () => { hookCalls += 1; return { status: "pending" as const, deploymentId: "d-forbidden" }; };
+    const api = createAgentApiApp({ hooks: { runtimeHooks: { opencode: { deploy }, pi: { deploy } } } });
+    try {
+      for (const ticketWorktree of [true, false]) {
+        const response = await api.app.request("/api/deploy", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ team: "requirements", mode: "analyze", runtime: "pi", ticket: "PAP-234", ticketWorktree }),
+        });
+        assert.equal(response.status, 400);
+        const body = await response.json() as { error: string; code: string };
+        assert.equal(body.code, "BAD_REQUEST");
+        assertFiveFieldDiagnostic(body.error);
+      }
+      assert.equal(hookCalls, 0, "Agent API attempts must reject before runtime hook execution");
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+test("source completions define a PPA-only ticket-worktree generation contract", () => {
+  const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const source = readFileSync(join(repositoryRoot, "completions", "pa-core.fish"), "utf8");
+  const generator = readFileSync(join(repositoryRoot, "scripts", "dev", "generate_completions.sh"), "utf8");
+  assert.match(source, /^# PPA_ONLY_DEPLOY_OPTION ticket-worktree$/m);
+  assert.doesNotMatch(source, /complete -c pa-core .* -l ticket-worktree/);
+  assert.match(generator, /complete -c ppa -n __ppa_deploy_completing -l ticket-worktree/);
+  assert.equal((generator.match(/PPA_ONLY_DEPLOY_OPTION ticket-worktree/g) ?? []).length, 4, "one PPA replacement and three non-PPA removals are required");
+});
+
 test("five-field repository diagnostics reserve every field under hostile long values", () => {
   const diagnostic = formatBoundedFiveFieldDiagnostic({
     condition: `selector\n${"c".repeat(4_000)}`,
@@ -252,9 +390,15 @@ test("five-field repository diagnostics reserve every field under hostile long v
 test("ppa and opa deploy help document force and the registered-path-only contract", async () => {
   const opa = capture();
   const ppa = capture();
+  const cpa = capture();
+  const dpa = capture();
+  const core = capture();
   const branch = capture();
   assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "opa", io: opa.io }), 0);
   assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: ppa.io }), 0);
+  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "cpa", io: cpa.io }), 0);
+  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "dpa", io: dpa.io }), 0);
+  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "pa-core", io: core.io }), 0);
   assert.equal(await runCoreCommand(["branch", "--help"], { io: branch.io }), 0);
   for (const output of [opa.stdout.join("\n"), ppa.stdout.join("\n")]) {
     assert.match(output, /registered repository key or exact configured path/i);
@@ -267,6 +411,10 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   assert.match(ppa.stdout.join("\n"), /protected parent worktree remains the only runtime root/i);
   assert.match(ppa.stdout.join("\n"), /there is no canonical-root execution mode/i);
   assert.match(ppa.stdout.join("\n"), /standalone implement must start.*--repo omitted.*non-Pi adapter behavior is unchanged/i);
+  assert.match(ppa.stdout.join("\n"), /--ticket-worktree\s+Select the ticket's existing authenticated worktree.*requires --ticket/i);
+  for (const output of [opa, cpa, dpa, core].map((captured) => captured.stdout.join("\n"))) {
+    assert.doesNotMatch(output, /--ticket-worktree/);
+  }
   assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
 });
 
