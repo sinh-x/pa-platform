@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
-import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
+import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PI_MANAGED_INSTALL_ROOT_ENV, PiAdapter, projectPiActivity, PROPER_UPDATER_OFF_ENV, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { detectPiRedactionMatches, PiRedactionAudit, StreamingPiRedactionAuditor, type PiRedactionAuditRecord } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
 
@@ -363,8 +363,8 @@ test("enforces the stable Pi 0.99.2 minimum boundary", () => {
 });
 
 test("uses interactive Pi arguments for foreground and JSON arguments for background", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0; const invocations: string[][] = [];
-  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.99.2"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args) => { invocations.push(args); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
+  const dir = mkdtempSync(join(tmpdir(), "pi-pa-")); const primer = join(dir, "primer.md"); writeFileSync(primer, "work"); let probes = 0; const invocations: string[][] = []; const environments: NodeJS.ProcessEnv[] = [];
+  const adapter = new PiAdapter({ cwd: dir, versionProbe: () => { probes++; return "0.99.2"; }, sessionIdFactory: () => "00000000-0000-0000-0000-000000000001", runCommand: (args, options) => { invocations.push(args); environments.push(options.env); return { status: 0, stdout: '{"type":"message","text":"ok"}\n', stderr: "" }; } });
   await adapter.spawn({ primerPath: primer, deployId: "d-aaaaaa", mode: "foreground" });
   await adapter.spawn({ primerPath: primer, deployId: "d-bbbbbb", mode: "background" });
   assert.equal(probes, 2);
@@ -373,6 +373,10 @@ test("uses interactive Pi arguments for foreground and JSON arguments for backgr
   assert.ok(!invocations[0]?.includes("--mode"));
   assert.deepEqual(invocations[1]?.slice(0, 5), ["--print", "--mode", "json", "--session-id", "00000000-0000-0000-0000-000000000001"]);
   assert.ok(!invocations[1]?.includes("--json"));
+  for (const environment of environments) {
+    assert.equal(environment[PI_MANAGED_INSTALL_ROOT_ENV], undefined, "ordinary Pi retains upstream proper-base update behavior");
+    assert.equal(environment[PROPER_UPDATER_OFF_ENV], undefined, "ordinary Pi retains upstream updater opt-in");
+  }
 });
 
 test("managed Pi invocations normalize OpenAI provider and model arguments", async () => {
@@ -420,11 +424,13 @@ test("managed foreground and background Pi invocations isolate discovery behind 
   const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
   writeFileSync(primer, "work");
   const invocations: string[][] = [];
+  const environments: NodeJS.ProcessEnv[] = [];
   const adapter = new PiAdapter({
     cwd: tmpdir(),
     versionProbe: () => "0.99.2",
     runCommand: (args, options) => {
       invocations.push(args);
+      environments.push(options.env);
       assert.equal(options.cwd, dir);
       return { status: 0, stdout: "", stderr: "" };
     },
@@ -448,6 +454,11 @@ test("managed foreground and background Pi invocations isolate discovery behind 
   }
 
   assert.equal(invocations.length, 2);
+  assert.equal(environments.length, 2);
+  for (const environment of environments) {
+    assert.match(environment[PI_MANAGED_INSTALL_ROOT_ENV] ?? "", /packages\/pi-pa$/);
+    assert.equal(environment[PROPER_UPDATER_OFF_ENV], "1");
+  }
   assert.deepEqual(invocations[0]?.slice(0, 4), ["--session-id", invocations[0]?.[1], "--no-skills", "--no-extensions"]);
   assert.deepEqual(invocations[1]?.slice(0, 7), ["--print", "--mode", "json", "--session-id", invocations[1]?.[4], "--no-skills", "--no-extensions"]);
   for (const args of invocations) {

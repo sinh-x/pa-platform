@@ -139,9 +139,9 @@ async function exerciseRepresentativeDefaults(
   });
   assert.equal(host.selectedModel, model);
 
-  const titlePrompt = (await host.dispatch("before_agent_start", { systemPrompt: "base" }, context))
-    .find((result): result is { systemPrompt: string } => Boolean(result && typeof result === "object" && "systemPrompt" in result));
-  assert.match(titlePrompt?.systemPrompt ?? "", /<session_title>/);
+  const beforeAgentStart = { systemPromptOptions: { sections: {} as Record<string, string> } };
+  await host.dispatch("before_agent_start", beforeAgentStart, context);
+  assert.match(beforeAgentStart.systemPromptOptions.sections["proper_base_title"] ?? "", /<session_title>/);
   await host.dispatch("message_end", {
     message: {
       role: "assistant",
@@ -169,6 +169,94 @@ async function exerciseRepresentativeDefaults(
   assert.match(blocked.reason, /--reason '[^']+'/);
   assert.match(blocked.reason, /--yes/);
 }
+
+test("ordinary Pi retains upstream proper-base updater registration and opt-in default", () => {
+  const previousManagedRoot = process.env["PI_MANAGED_INSTALL_ROOT"];
+  const previousUpdaterOff = process.env["PROPER_UPDATER_OFF"];
+  delete process.env["PI_MANAGED_INSTALL_ROOT"];
+  delete process.env["PROPER_UPDATER_OFF"];
+  try {
+    const host = new FakeComposedHost();
+    registerProperBase(host.runtime as never);
+    assert.deepEqual(host.flags.get("no-auto-update"), {
+      description: "Skip automatic updates for this launch",
+      type: "boolean",
+      default: false,
+    });
+    assert.equal(host.runtime.getFlag?.("no-auto-update"), false);
+    assert.equal(process.env["PI_MANAGED_INSTALL_ROOT"], undefined);
+    assert.equal(process.env["PROPER_UPDATER_OFF"], undefined);
+  } finally {
+    if (previousManagedRoot === undefined) delete process.env["PI_MANAGED_INSTALL_ROOT"];
+    else process.env["PI_MANAGED_INSTALL_ROOT"] = previousManagedRoot;
+    if (previousUpdaterOff === undefined) delete process.env["PROPER_UPDATER_OFF"];
+    else process.env["PROPER_UPDATER_OFF"] = previousUpdaterOff;
+  }
+});
+
+test("managed/Nix PPA performs zero updater install subprocesses and zero automatic restarts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-pa-managed-updater-"));
+  const agentDir = join(root, "agent");
+  const readyDir = join(agentDir, "proper-updater-ready");
+  mkdirSync(readyDir, { recursive: true });
+  writeFileSync(join(readyDir, "pi-00000000-0000-4000-8000-000000000000"), "");
+
+  const previous = {
+    agentDir: process.env["PI_CODING_AGENT_DIR"],
+    managedRoot: process.env["PI_MANAGED_INSTALL_ROOT"],
+    updaterOff: process.env["PROPER_UPDATER_OFF"],
+  };
+  const started = Symbol.for("proper-updater.started.v1");
+  const launch = Symbol.for("proper-updater.launch.v1");
+  const savedStarted = Object.getOwnPropertyDescriptor(process, started);
+  const savedLaunch = Object.getOwnPropertyDescriptor(process, launch);
+  const exitListeners = new Set(process.rawListeners("exit"));
+
+  process.env["PI_CODING_AGENT_DIR"] = agentDir;
+  process.env["PI_MANAGED_INSTALL_ROOT"] = root;
+  process.env["PROPER_UPDATER_OFF"] = "1";
+  Reflect.deleteProperty(process, started);
+  Reflect.deleteProperty(process, launch);
+  try {
+    const host = new FakeComposedHost();
+    const context = createHostContext("tui", root);
+    registerPiSessionModules(
+      host.runtime,
+      createPiSessionLifecycle(() => {}),
+      createPiPaModules([PROPER_FACTORY]),
+    );
+    const scheduled = await captureScheduled(async () => {
+      await host.dispatch("session_start", { type: "session_start", reason: "startup" }, context);
+    });
+    await host.dispatch("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
+    for (const callback of scheduled) callback();
+
+    const updaterInstallSubprocesses = Number(context.ui.widgets.has("proper-updater"));
+    const automaticRestarts = context.shutdownCalls
+      + process.rawListeners("exit").filter((listener) => !exitListeners.has(listener)).length;
+    assert.deepEqual(
+      { updaterInstallSubprocesses, automaticRestarts },
+      { updaterInstallSubprocesses: 0, automaticRestarts: 0 },
+    );
+    assert.equal(host.flags.has("no-auto-update"), true, "the upstream CLI opt-out remains registered");
+    assert.equal(context.ui.widgets.get("proper-updater"), undefined);
+  } finally {
+    for (const listener of process.rawListeners("exit")) {
+      if (!exitListeners.has(listener)) process.removeListener("exit", listener);
+    }
+    if (savedStarted) Object.defineProperty(process, started, savedStarted);
+    else Reflect.deleteProperty(process, started);
+    if (savedLaunch) Object.defineProperty(process, launch, savedLaunch);
+    else Reflect.deleteProperty(process, launch);
+    if (previous.agentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+    else process.env["PI_CODING_AGENT_DIR"] = previous.agentDir;
+    if (previous.managedRoot === undefined) delete process.env["PI_MANAGED_INSTALL_ROOT"];
+    else process.env["PI_MANAGED_INSTALL_ROOT"] = previous.managedRoot;
+    if (previous.updaterOff === undefined) delete process.env["PROPER_UPDATER_OFF"];
+    else process.env["PROPER_UPDATER_OFF"] = previous.updaterOff;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("4/4 editor selections preserve non-editor modules and register no unselected behavior", async () => {
   const matrix: Array<{

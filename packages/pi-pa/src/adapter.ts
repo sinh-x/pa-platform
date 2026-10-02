@@ -39,6 +39,9 @@ export const PI_BACKGROUND_CONFIG_FILE = "pi-background.json";
 export const PI_REPOSITORY_HANDOFF_FILE = "pi-repository-handoff.json";
 /** Legacy capability key scrubbed at every process boundary. New launches never set it. */
 export const PI_PARENT_LEASE_CAPABILITY_ENV = "PA_PI_PARENT_LEASE_TOKEN";
+export const PI_MANAGED_INSTALL_ROOT_ENV = "PI_MANAGED_INSTALL_ROOT";
+export const PROPER_UPDATER_OFF_ENV = "PROPER_UPDATER_OFF";
+const PI_PA_INSTALL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export interface PiCommandResult { status: number | null; stdout: string; stderr: string; spawnError?: Error; metadata?: Record<string, unknown> }
 /** @deprecated Background completion is owned by the persistent runner. */
 export interface PiSupervisionHandle { completion: Promise<PiCommandResult>; pid?: number }
@@ -230,7 +233,16 @@ export class PiAdapter implements RuntimeAdapter {
   allocateSessionId(): string { return this.sessionIdFactory(); }
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
-    const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    const inheritedEnv = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    // Managed PPA owns its immutable runtime; ordinary planless Pi keeps the
+    // reviewed proper-base updater defaults and user-facing opt-out surfaces.
+    const env = plan
+      ? {
+          ...inheritedEnv,
+          [PI_MANAGED_INSTALL_ROOT_ENV]: PI_PA_INSTALL_ROOT,
+          [PROPER_UPDATER_OFF_ENV]: "1",
+        }
+      : inheritedEnv;
     const protectedValidationLaunch = this.protectedValidationLaunches.get(opts.deployId);
     this.protectedValidationLaunches.delete(opts.deployId);
     const protectedAuthority = [
