@@ -44,6 +44,9 @@ fi
 
 flake_ref='.?submodules=1'
 repo_url="git+file://$PWD?submodules=1"
+expected_pi_version=0.99.2
+expected_proper_version=0.7.0
+expected_vim_version=0.9.0
 host_system=$(nix eval --raw --impure --expr builtins.currentSystem)
 supported_systems=(x86_64-linux aarch64-linux)
 variant_names=(neither vim-only proper-only both)
@@ -179,6 +182,7 @@ for variant in "${variant_names[@]}"; do
     '
 
   PACKAGE_ROOT="$package_root" EXPECTED_VIM="$expected_vim" EXPECTED_PROPER="$expected_proper" \
+  EXPECTED_PI_VERSION="$expected_pi_version" EXPECTED_PROPER_VERSION="$expected_proper_version" EXPECTED_VIM_VERSION="$expected_vim_version" \
     "$store_output/bin/pa-platform-node" --input-type=module --eval '
       const { createHash } = await import("node:crypto");
       const { existsSync, readFileSync } = await import("node:fs");
@@ -193,6 +197,11 @@ for variant in "${variant_names[@]}"; do
         "proper-base": { version: "0.7.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "bfec53cadd89c3582b2da69a87e1c71246780d4d", contentSha256: "4670fb7aaab2a2493d5599e8b8f2bd82e757914e07d169c87120cdc5a887fdb0", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
       };
       const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+        if (packageJson.peerDependencies[dependency] !== process.env.EXPECTED_PI_VERSION || packageJson.devDependencies[dependency] !== process.env.EXPECTED_PI_VERSION) process.exit(1);
+      }
+      if (packageJson.dependencies.typebox !== "1.3.27" || packageJson.dependencies.sharp !== "0.35.4") process.exit(1);
+      if (reviewed["proper-base"].version !== process.env.EXPECTED_PROPER_VERSION || reviewed["pi-vimmode"].version !== process.env.EXPECTED_VIM_VERSION) process.exit(1);
       const provenance = JSON.parse(readFileSync(join(root, "dist/pi-extension/vendor/provenance.json"), "utf8"));
       const notices = readFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
       const imports = Object.fromEntries(selected.map((name) => [reviewed[name].import, reviewed[name].target]));
@@ -207,10 +216,15 @@ for variant in "${variant_names[@]}"; do
           `dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`,
         ]) if (existsSync(join(root, relative)) !== enabled) process.exit(1);
         if (Object.hasOwn(packageJson.imports, expected.import) !== enabled) process.exit(1);
-        if (notices.includes(`## ${name} ${expected.version}`) !== enabled) process.exit(1);
+        for (const noticeEvidence of [
+          `## ${name} ${expected.version}`,
+          `- Commit: \`${expected.commit}\``,
+          `- Source SHA-256: \`${expected.contentSha256}\``,
+          `- License SHA-256: \`${expected.licenseSha256}\``,
+        ]) if (notices.includes(noticeEvidence) !== enabled) process.exit(1);
         const record = provenance.sources.find((source) => source.name === name);
         if (Boolean(record) !== enabled) process.exit(1);
-        if (record && [record.commit, record.contentSha256, record.license, record.licenseSha256].join("|") !== [expected.commit, expected.contentSha256, expected.license, expected.licenseSha256].join("|")) process.exit(1);
+        if (record && [record.version, record.import, record.importTarget, record.commit, record.contentSha256, record.license, record.licenseSha256].join("|") !== [expected.version, expected.import, expected.target, expected.commit, expected.contentSha256, expected.license, expected.licenseSha256].join("|")) process.exit(1);
         if (enabled) {
           const license = readFileSync(join(root, `dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`));
           if (createHash("sha256").update(license).digest("hex") !== expected.licenseSha256) process.exit(1);
@@ -296,7 +310,7 @@ PI_ADDON="$selected_output/share/pa-platform/native-addons/pi-node-24/better_sql
   '
 "$selected_output/bin/pa-platform-node" ./scripts/pap-156-caller-boundary-smoke.mjs "$selected_output"
 
-printf 'nix-smoke host=%s pi=%s pi-node=%s selections=4/4 evaluations=8/8 alias-systems=2/2 invalid-values=2/2 non-native-dry-runs=4/4 native-builds=4/4 artifacts=4/4 provenance=4/4 native-tools=32/32 teardown=20/20 caller-boundary=passed\n' "$host_system" "$actual_pi" "$expected_pi_node" >&2
+printf 'nix-smoke host=%s pi=%s pi-node=%s pi-sdk=%s proper-base=%s pi-vimmode=%s selections=4/4 evaluations=8/8 alias-systems=2/2 invalid-values=2/2 non-native-dry-runs=4/4 native-builds=4/4 artifacts=4/4 provenance=4/4 package-evidence=4/4 native-tools=32/32 teardown=20/20 caller-boundary=passed\n' "$host_system" "$actual_pi" "$expected_pi_node" "$expected_pi_version" "$expected_proper_version" "$expected_vim_version" >&2
 for system in "${supported_systems[@]}"; do
   for variant in "${variant_names[@]}"; do
     printf 'nix-smoke drv system=%s variant=%s path=%s\n' "$system" "$variant" "${drv_paths[$system/$variant]}" >&2

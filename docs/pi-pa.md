@@ -1,6 +1,6 @@
 # Pi Integration
 
-`ppa` supports Node.js 22.19.0 or newer and Pi 0.84.4 or newer. It does not install Pi, configure authentication, or copy credentials.
+`ppa` supports Node.js 22.19.0 or newer and Pi 0.99.2 or newer. It does not install or update Pi, configure authentication, or copy credentials. The current bundled editor sources are proper-base 0.7.0 and pi-vimmode 0.9.0.
 
 ## Setup
 
@@ -18,6 +18,17 @@ Setup is confirmation-gated and idempotent. `--local` changes only the current p
 Both ordinary sessions configured this way and managed deployments load the same trusted `pi-pa` entrypoint, so both receive the PA modules and the editors selected in the installed build. Ordinary Pi sessions can still discover other packages and extensions according to Pi's normal rules.
 
 After editing skills or package metadata in the config checkout, run `/reload` in an active Pi session. New ordinary sessions discover the current files without reinstalling the packages.
+
+### proper-base updater ownership
+
+Ordinary Pi retains proper-base 0.7.0's unchanged upstream automatic updater. Its default remains enabled. Use any of the upstream controls when updates are undesirable:
+
+- launch Pi with `--no-auto-update` for a one-session opt-out;
+- set `PROPER_UPDATER_OFF=1` to disable proper-base updates in that environment;
+- set `PI_OFFLINE` when Pi must avoid network-dependent update behavior; or
+- open `/settings` and turn off **Automatic updates** for the ordinary Pi configuration.
+
+These controls belong to ordinary Pi; `ppa pi setup` only registers package paths and neither runs the updater nor changes its setting. Managed/Nix `ppa deploy` sessions use the immutable installed package, set the managed-install marker and `PROPER_UPDATER_OFF=1`, and perform zero updater install subprocesses and zero automatic restarts. No managed install or restart action is required from the operator.
 
 ## Managed Deployments
 
@@ -302,11 +313,11 @@ out=$(nix build --no-link --print-out-paths '.#ppa')
 sudo nixos-rebuild switch --flake '.#my-host'
 ```
 
-A build with both plugins registers `pi-vimmode` 0.9.0 first and `proper-base` 0.5.0 second. proper-base therefore remains the outer editor wrapper around the Vim editor. A one-plugin build registers only that factory; a default build retains Pi's base editor. Startup, resource discovery, `/reload`, new/resumed/forked sessions, and shutdown retain one active selected editor chain; cleanup removes stale handlers, timers, overlays, and cursor state before replacement. The selected upstream sources and defaults are bundled unchanged.
+A build with both plugins registers `pi-vimmode` 0.9.0 first and `proper-base` 0.7.0 second. proper-base therefore remains the outer editor wrapper around the Vim editor. A one-plugin build registers only that factory; a default build retains Pi's base editor. Startup, resource discovery, `/reload`, new/resumed/forked sessions, and shutdown retain one active selected editor chain; cleanup removes stale handlers, timers, overlays, and cursor state before replacement. The selected upstream sources and defaults are bundled unchanged.
 
 When selected, pi-vimmode starts in **insert** mode. Press Esc for normal mode and `i` to return to insert mode. Its supported motions, edits, visual modes, registers, marks, macros, prompt search, and Ex-style commands retain upstream 0.9.0 behavior. `/vimmode`, `/vimmode on`, `/vimmode off`, `/vimmode status`, and `/vimmode reload` control the current runtime. This is practical modal prompt editing, not a claim of complete Vim compatibility. JSON settings remain under the `piVimMode` key; start mode, cursor style, keymap, protected overrides, status items, and other defaults are unchanged.
 
-When selected, proper-base keeps its 0.5.0 defaults for automatic session titles, model-preserving `/clear`, project prompt history and reverse search, prompt editing/cancellation, autocomplete, collapsed settled tool rows, transcript navigation, footer composition, image handling through packaged `sharp`, skill/image context transforms, and its commit-command guard. Internal commands beginning with `__proper-` remain reserved. PA's destructive-command and sensitive-path interception still runs independently, so the bundled editor cannot bypass PA tool-call policy.
+When selected, proper-base keeps its 0.7.0 defaults for automatic session titles, model-preserving `/clear`, project prompt history and reverse search, prompt editing/cancellation, autocomplete, collapsed settled tool rows, transcript navigation, footer composition, image handling through packaged `sharp` 0.35.4, skill/image context transforms, its commit-command guard, and the ordinary-Pi updater controls above. Internal commands beginning with `__proper-` remain reserved. PA's destructive-command and sensitive-path interception still runs independently, so the bundled editor cannot bypass PA tool-call policy.
 
 ### Verify the built artifacts and runtime
 
@@ -341,8 +352,8 @@ The preflight must report the packaged Pi-host addon and a Node 24 host. `smoke-
 | --- | --- | --- |
 | Neither | `[]` | `["pa-context","pa-git-context"]` |
 | pi-vimmode only | `["pi-vimmode@0.9.0"]` | `["vimmode","pa-context","pa-git-context"]` |
-| proper-base only | `["proper-base@0.5.0"]` | `["fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
-| Both | `["pi-vimmode@0.9.0","proper-base@0.5.0"]` | `["vimmode","fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+| proper-base only | `["proper-base@0.7.0"]` | `["fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
+| Both | `["pi-vimmode@0.9.0","proper-base@0.7.0"]` | `["vimmode","fast-global","__proper-restore-model","clear","__proper-cancel-prompt","pa-context","pa-git-context"]` |
 
 After `ppa pi setup`, start a new Pi session or run `/reload`. `/vimmode status` exists only when pi-vimmode was selected; proper-base-only behavior can be checked with its model-preserving `/clear` and prompt history. Neither command should be attributed to a disabled plugin.
 
@@ -507,7 +518,7 @@ This snapshot and status section are Pi-only. OpenCode, Claude Code, and Droid d
 
 The shared default single-deployment header used by all adapters now renders exactly one Team line as `  Team:     <team>/<mode>` when a recorded mode is non-empty. If mode is absent, the byte-equivalent team-only fallback remains exactly `  Team:     <team>` with no slash or synthetic value. This human-readable formatting performs no additional I/O; list and alternate status paths remain unchanged. Structured registry and API fields are unchanged.
 
-The snapshot/status implementation adds no external runtime dependency and remains compatible with Node.js `>=22.19.0` and the Pi APIs available since `>=0.80.8`; the synchronized `pi-pa` package continues to require Pi `>=0.84.4`.
+The snapshot/status implementation adds no external runtime dependency. Its Pi 0.80.8 reference is historical attribution for the adapted task/status examples, not the current support floor; the synchronized `pi-pa` package requires Node.js `>=22.19.0` and Pi `>=0.99.2`.
 
 ## Context Status and Sidebar
 
@@ -562,7 +573,7 @@ RPC mode can emit the `PA Git context requires TUI mode.` warning but opens no c
 
 ## Compatibility, Reuse, and Collisions
 
-The package targets Node.js 22.19.0 or later and Pi 0.84.4 or later. The question, todo, status, and overlay implementations adapt the MIT-licensed Pi 0.80.8 examples `examples/extensions/question.ts`, `todo.ts`, `status-line.ts`, and `overlay-qa-tests.ts`; that number identifies the adapted example source, not the supported Pi runtime floor. Comments in the source identify intentional PA changes.
+The package targets Node.js 22.19.0 or later and Pi 0.99.2 or later. The question, todo, status, and overlay implementations adapt the historical MIT-licensed Pi 0.80.8 examples `examples/extensions/question.ts`, `todo.ts`, `status-line.ts`, and `overlay-qa-tests.ts`; that number identifies the adapted example source, not the supported Pi runtime floor. Comments in the source identify intentional PA changes.
 
 An ordinary session can load unrelated extensions that also register `question`, `todo`, `/pa-context`, `/pa-git-context`, Alt+I, or Alt+G. Pi keeps duplicate extension commands and assigns numeric invocation suffixes in load order (for example, `/pa-git-context:1` and `/pa-git-context:2`). For duplicate extension shortcuts, Pi emits a collision diagnostic and the later-loaded shortcut wins; an allowed built-in shortcut conflict is also diagnosed, while a restricted built-in shortcut cannot be overridden. Remove, disable, or reorder the conflicting ordinary-session extension when deterministic routing is required. The selector's plain `r` binding applies only while the Git panel is focused.
 
@@ -574,7 +585,7 @@ Alt+I and `/pa-context` remain independent from Alt+G and `/pa-git-context`: tog
 
 | Bundled source | Immutable commit | Reviewed version |
 | --- | --- | --- |
-| `proper-base` from `proper-pi-extensions` | `859feb321ec81d773beea379d28e21d0b7d0c8c0` | 0.5.0 |
+| `proper-base` from `proper-pi-extensions` | `bfec53cadd89c3582b2da69a87e1c71246780d4d` | 0.7.0 |
 | `pi-vimmode` | `52bd6ac5e905157ac46ec15c120b7d0cc61a62df` | 0.9.0 |
 
 `packages/pi-pa/THIRD_PARTY_NOTICES.md` records the eligible source attribution. Each output copies only the selected MIT text(s), emits only selected plugin sections in its installed `THIRD_PARTY_NOTICES.md`, and generates `dist/pi-extension/vendor/provenance.json` without a timestamp. Selected provenance retains the exact reviewed commit, source digest, license, and license digest from the lock; a neither-selected output has empty selected-source and source arrays. The build performs no source fetch or package installation. It still validates both eligible source checkouts and fails before TypeScript compilation or Pi startup when a gitlink, checkout, URL, source digest, package version/license, or license digest is absent or drifted. Initialize a checkout with `git submodule update --init --recursive` before building.
@@ -660,7 +671,8 @@ For the editor-default migration, choose one constructor combination above, rebu
 
 ## Troubleshooting
 
-- `Pi version must be 0.84.4 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe allows up to 15 seconds for a loaded system to start Pi.
+- `Pi version must be 0.99.2 or later`: upgrade Pi and ensure `pi --version` is available on `PATH`. The version probe rejects prerelease or malformed values and allows up to 15 seconds for a loaded system to start Pi.
+- Unexpected ordinary-Pi update behavior: use `--no-auto-update`, `PROPER_UPDATER_OFF=1`, `PI_OFFLINE`, or the **Automatic updates** toggle in `/settings`. These opt-outs are not needed for managed/Nix `ppa deploy`, which performs zero updater install subprocesses and zero automatic restarts.
 - `Missing ... entrypoint` or source/license drift: initialize recursively with `git submodule update --init --recursive`, confirm both submodules are clean at the commits above, and rerun the validator. Do not repair the mismatch by editing vendor contents.
 - `Pi PA extension package path is missing`: reinstall/build pa-platform or use the current packaged `ppa`; inspect the path printed by `ppa pi status`.
 - `PA config package path is missing`: set `PA_PLATFORM_CONFIG_DIR` to the existing `pa-platform-config` checkout.
@@ -673,4 +685,4 @@ For the editor-default migration, choose one constructor combination above, rebu
 
 Every Nix output includes the trusted `pi-pa` entrypoint, selected-only provenance and notices, Node 22 and Pi-host Node 24 native addons, runtime-host resources under `$out/share/pa-platform/packages/`, and `ppa.fish` under `$out/share/fish/vendor_completions.d/`. Plugin bundles, import mappings, and MIT license copies exist only for selected plugins; shared dependencies such as `sharp` may remain present when proper-base is disabled.
 
-`bash scripts/nix-store-output-smoke.sh` evaluates all four selections on both `x86_64-linux` and `aarch64-linux`, rejects invalid constructor values, verifies default aliases and the overlay, dry-runs every non-native selection, and builds all four native outputs. It checks exact selected/absent artifacts and reviewed hashes, Node 22 registry load/query/close, Pi Node 24.19.0 addon/helper preflight, eight managed tools for each selection, both-enabled teardown regression, and caller-boundary behavior. It does not include the operator's config checkout or credentials.
+`bash scripts/nix-store-output-smoke.sh` evaluates all four selections on both `x86_64-linux` and `aarch64-linux`, rejects invalid constructor values, verifies default aliases and the overlay, dry-runs every non-native selection, and builds all four native outputs. It checks exact Pi 0.99.2 package evidence, selected/absent proper-base 0.7.0 and pi-vimmode 0.9.0 artifacts, notices, provenance and reviewed hashes, Node 22 registry load/query/close, Pi Node 24.19.0 addon/helper preflight, eight managed tools for each selection, both-enabled teardown regression, and caller-boundary behavior. Its terminal counters include `selections=4/4`, `evaluations=8/8`, `alias-systems=2/2`, `invalid-values=2/2`, `non-native-dry-runs=4/4`, `native-builds=4/4`, `artifacts=4/4`, `provenance=4/4`, `package-evidence=4/4`, `native-tools=32/32`, `teardown=20/20`, and `caller-boundary=passed`. It does not include the operator's config checkout or credentials.

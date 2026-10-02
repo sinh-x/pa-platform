@@ -134,7 +134,12 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle)), enabled);
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", `${source.bundle}.map`)), enabled);
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle.replace(/\.js$/, ".d.ts"))), enabled);
-        assert.equal(generatedNotice.includes(`## ${source.name} ${source.version}`), enabled);
+        for (const noticeEvidence of [
+          `## ${source.name} ${source.version}`,
+          `- Commit: \`${source.commit}\``,
+          `- Source SHA-256: \`${source.contentSha256}\``,
+          `- License SHA-256: \`${source.licenseSha256}\``,
+        ]) assert.equal(generatedNotice.includes(noticeEvidence), enabled);
         assert.equal(provenance.sources.some(({ name }) => name === source.name), enabled);
         if (enabled) {
           const record = provenance.sources.find(({ name }) => name === source.name);
@@ -172,6 +177,8 @@ test("CI and Nix inputs require recursive exact sources and both Linux sharp art
   assert.match(nixSmoke, /supported_systems=\(x86_64-linux aarch64-linux\)/);
   assert.match(nixSmoke, /nix build --impure --expr "\$expr" --dry-run --no-link/);
   assert.match(nixSmoke, /#pi-pa-vimmode/);
+  assert.match(nixSmoke, /expected_pi_version=0\.99\.2/);
+  assert.match(nixSmoke, /package-evidence=4\/4/);
   assert.match(nixSmoke, /sharp\.versions\.sharp/);
   assert.match(flake, /supportedSystems = \[ "x86_64-linux" "aarch64-linux" \]/);
   assert.match(flake, /THIRD_PARTY_NOTICES\.md/);

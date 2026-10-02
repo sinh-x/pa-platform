@@ -148,7 +148,9 @@ export async function bundleExtensionSources({
       "",
       `- Repository: ${source.repository}`,
       `- Commit: \`${source.commit}\``,
+      `- Source SHA-256: \`${source.contentSha256}\``,
       `- License: ${source.license}`,
+      `- License SHA-256: \`${source.licenseSha256}\``,
       `- Packaged license: \`dist/pi-extension/vendor/licenses/${source.name}-LICENSE.txt\``,
     );
   }
