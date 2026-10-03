@@ -175,6 +175,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
 | `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Standalone PPA explicit inputs and non-Pi behavior are unchanged. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
+| `--ticket-worktree` | — | PPA CLI only: select the ticket's sole existing authenticated Treehouse checkout from canonical CWD; requires exact `--ticket` and a non-builder team. No allocation or new authority; supports dry-run/background/same-checkout resume. Excluded from OPA/CPA/DPA, direct pa-core and Agent API. |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
 | `--autonomy <low\|medium\|high>` | level | Override autonomy level (default: medium) |
@@ -189,9 +190,48 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--team-model <name>` | model | Deprecated warning alias for `--model`; final removal is PAP-147 |
 | `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
 
-**Repository admission:** every `requirements/*` mode bypasses Git status and ownership-lease access. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Dirty authenticated linked worktrees launch in foreground or background without admission edits, while dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
+### PPA existing-ticket selection
 
-PPA alone permits one authenticated exception: a process-verified,
+```bash
+cd /registered/canonical/repository
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --dry-run
+```
+
+Optional `--repo` accepts only a registered key or exact canonical root, never a
+worktree path. Selection requires matching ticket project, exactly one explicit
+`materialized` linked branch with full lowercase 40-hex base/HEAD, and exactly
+one existing lease held by `pa:<repo-key>:<ticket>`. Only bounded Treehouse v2.3.0
+`status --json` is used (15 seconds, 1 MiB). Physical linked-worktree membership,
+forward/reverse Git metadata, common directory, branch and HEAD authenticate
+before planning and are reread with ticket/lease/live-owner evidence before
+preflight/spawn or dry-run completion.
+
+Canonical plan `repoRoot` and registry `repo_root` remain registered; execution,
+memory/project root, Pi CWD, `PA_REPO`, `PA_WORKTREE_ROOT`, deployment-context
+`cwd`/`repo` and registry `repo` use the exact checkout. Separate immutable
+selection evidence grants no builder authority, ticket slot, repository permit,
+lineage, mutation lease, borrowing, return or new write rights. Selection does
+zero allocation/lifecycle, branch or ticket-write actions. Existing mode/tool
+permissions remain authoritative, not a sandbox or immutable post-spawn snapshot.
+
+A process-verified live owner/borrower on that checkout allows `read-only`
+`requirements/*` but blocks `non-locking` teams; stale, malformed or ambiguous
+ownership rejects without repair even with `--force`. Dry-run spawns no Pi.
+`--resume <id>` requires the same flag and ticket, prior canonical repository and
+physical checkout plus current authenticated evidence. Rejections precede native
+preflight/spawn with Condition, Source, Reason, Correction and Resume Action,
+bounded to 2,000 characters. Builder and non-Pi behavior is unchanged; no Agent
+API request field is supported.
+
+Paired rollout **PAPC-038** owns eligible non-builder root contracts in
+`pa-platform-config`; do not claim broad mode availability before paired
+validation. PAPC-037 owns worktree-local dependencies/late canonical
+reconciliation; PAPC-031/PAPC-036 cover related integration policy. See
+[Pi integration](../pi-pa.md#opt-in-existing-ticket-worktree-selection-ppa-cli-only).
+
+**Repository admission:** ordinary omitted-flag `requirements/*` modes bypass Git status and ownership-lease access; explicit ticket-worktree selection additionally inspects Git and owner/borrower evidence. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Dirty authenticated linked worktrees launch in foreground or background without admission edits, while dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
+
+PPA builder admission separately permits this authenticated exception: a process-verified,
 registry-running Pi `builder/orchestrator` owner may launch one direct background
 Pi `builder/implement` child for the exact same repository and ticket-linked
 feature branch. The parent may pass either the registered repository key or the

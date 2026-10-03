@@ -141,6 +141,9 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
   if (binaryName === "ppa") {
     io.stdout("  --ticket-worktree   Select the ticket's existing authenticated worktree (non-builder; requires --ticket)");
+    io.stdout("                     PPA CLI only, from canonical CWD; status-only selection, no new authority or return rights.");
+    io.stdout("                     Dry-run authenticates without spawning; resume requires the same ticket and physical checkout.");
+    io.stdout("                     Excluded from builder, other binaries and Agent API; eligible mode rollout requires paired config validation (PAPC-038).");
   }
   if (binaryName !== "cpa" && binaryName !== "dpa") {
     io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");

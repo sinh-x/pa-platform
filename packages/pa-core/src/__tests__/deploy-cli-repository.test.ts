@@ -346,16 +346,18 @@ test("Agent API exposes no ticket-worktree request capability", async () => {
     const deploy = () => { hookCalls += 1; return { status: "pending" as const, deploymentId: "d-forbidden" }; };
     const api = createAgentApiApp({ hooks: { runtimeHooks: { opencode: { deploy }, pi: { deploy } } } });
     try {
-      for (const ticketWorktree of [true, false]) {
-        const response = await api.app.request("/api/deploy", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ team: "requirements", mode: "analyze", runtime: "pi", ticket: "PAP-234", ticketWorktree }),
-        });
-        assert.equal(response.status, 400);
-        const body = await response.json() as { error: string; code: string };
-        assert.equal(body.code, "BAD_REQUEST");
-        assertFiveFieldDiagnostic(body.error);
+      for (const runtime of [undefined, "pi", "opencode", "claude", "droid"]) {
+        for (const ticketWorktree of [true, false, null, "true", {}, 1]) {
+          const response = await api.app.request("/api/deploy", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "requirements", mode: "analyze", runtime, ticket: "PAP-234", ticketWorktree }),
+          });
+          assert.equal(response.status, 400);
+          const body = await response.json() as { error: string; code: string };
+          assert.equal(body.code, "BAD_REQUEST");
+          assertFiveFieldDiagnostic(body.error);
+        }
       }
       assert.equal(hookCalls, 0, "Agent API attempts must reject before runtime hook execution");
     } finally {
@@ -372,6 +374,18 @@ test("source completions define a PPA-only ticket-worktree generation contract",
   assert.doesNotMatch(source, /complete -c pa-core .* -l ticket-worktree/);
   assert.match(generator, /complete -c ppa -n __ppa_deploy_completing -l ticket-worktree/);
   assert.equal((generator.match(/PPA_ONLY_DEPLOY_OPTION ticket-worktree/g) ?? []).length, 4, "one PPA replacement and three non-PPA removals are required");
+});
+
+test("generated completions and paired rollout documentation preserve PPA-only selection", () => {
+  const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const completion = (binary: string) => readFileSync(join(repositoryRoot, "completions", `${binary}.fish`), "utf8");
+  assert.match(completion("ppa"), /complete -c ppa .* -l ticket-worktree .*non-builder; --ticket required/);
+  for (const binary of ["pa-core", "opa", "cpa", "dpa"]) assert.doesNotMatch(completion(binary), /complete .* -l ticket-worktree|--ticket-worktree/);
+  for (const doc of ["api/cli-reference.md", "pi-pa.md", "runtime-neutral-config.md"]) {
+    const text = readFileSync(join(repositoryRoot, "docs", doc), "utf8");
+    assert.match(text, /--ticket-worktree/); assert.match(text, /PAPC-038/);
+    assert.match(text, /broad mode availability/); assert.match(text, /Agent API/);
+  }
 });
 
 test("five-field repository diagnostics reserve every field under hostile long values", () => {
@@ -412,6 +426,9 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   assert.match(ppa.stdout.join("\n"), /there is no canonical-root execution mode/i);
   assert.match(ppa.stdout.join("\n"), /standalone implement must start.*--repo omitted.*non-Pi adapter behavior is unchanged/i);
   assert.match(ppa.stdout.join("\n"), /--ticket-worktree\s+Select the ticket's existing authenticated worktree.*requires --ticket/i);
+  assert.match(ppa.stdout.join("\n"), /status-only selection, no new authority or return rights/);
+  assert.match(ppa.stdout.join("\n"), /resume requires the same ticket and physical checkout/);
+  assert.match(ppa.stdout.join("\n"), /Agent API.*paired config validation \(PAPC-038\)/);
   for (const output of [opa, cpa, dpa, core].map((captured) => captured.stdout.join("\n"))) {
     assert.doesNotMatch(output, /--ticket-worktree/);
   }

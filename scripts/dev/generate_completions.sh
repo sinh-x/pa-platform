@@ -84,7 +84,7 @@ perl \
     local $/;
     $_ = <>;
     s/Fish completions for pa-core/Fish completions for ppa (pi-pa adapter)/;
-    s/# PPA_ONLY_DEPLOY_OPTION ticket-worktree/complete -c ppa -n __ppa_deploy_completing -l ticket-worktree -d '\''Select existing authenticated worktree for exact ticket'\''/;
+    s/# PPA_ONLY_DEPLOY_OPTION ticket-worktree/complete -c ppa -n __ppa_deploy_completing -l ticket-worktree -d '\''Select existing ticket worktree (non-builder; --ticket required)'\''/;
     s/__pa_core_/__ppa_/g;
     s/\bpa-core\b/ppa/g;
     s/Link branch repo\|branch\|sha/Plan or authenticate branch repo|branch/;
