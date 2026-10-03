@@ -321,7 +321,7 @@ function writeRogueOneTeamConfig(root: string): void {
     "  - id: direct",
     "    label: Direct",
     "    provider: openai",
-    "    model: openai/gpt-5.6-sol",
+    "    model: openai/gpt-6.1-sol",
     "    require_ticket: true",
   ].join("\n"));
 }
@@ -3665,12 +3665,12 @@ test("active builder and requirements modes keep one normalized pair across Pi e
   await withPiEnv(async (root) => {
     writeFileSync(join(root, "teams", "builder.yaml"), [
       "name: builder", "description: Builder", "objective: Build", "agents: []", "deploy_modes:",
-      "  - id: implement", "    label: Implement", "    provider: openai", "    model: openai/gpt-5.6-sol",
-      "  - id: orchestrator", "    label: Orchestrator", "    provider: openai", "    model: openai/gpt-5.6-sol",
+      "  - id: implement", "    label: Implement", "    provider: openai", "    model: openai/gpt-6.1-sol",
+      "  - id: orchestrator", "    label: Orchestrator", "    provider: openai", "    model: openai/gpt-6-astra",
     ].join("\n") + "\n");
     writeFileSync(join(root, "teams", "requirements.yaml"), [
       "name: requirements", "description: Requirements", "objective: Review", "agents: []", "deploy_modes:",
-      "  - id: analyze", "    label: Analyze", "    provider: openai", "    model: openai/gpt-5.6-sol",
+      "  - id: analyze", "    label: Analyze", "    provider: openai", "    model: openai/gpt-6.1-sol",
     ].join("\n") + "\n");
     const invocations: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const adapter = new PiAdapter({
@@ -3682,25 +3682,25 @@ test("active builder and requirements modes keep one normalized pair across Pi e
       },
     });
 
-    for (const [team, mode] of [["builder", "implement"], ["builder", "orchestrator"], ["requirements", "analyze"]] as const) {
+    for (const [team, mode, model] of [["builder", "implement", "gpt-6.1-sol"], ["builder", "orchestrator", "gpt-6-astra"], ["requirements", "analyze", "gpt-6.1-sol"]] as const) {
       const result = await deployWithPi({ team, mode }, adapter);
       assert.equal(result.status, "success", result.reason);
       const invocation = invocations.at(-1)!;
       const modelIndex = invocation.args.indexOf("--model");
       const providerIndex = invocation.args.indexOf("--provider");
-      assert.equal(invocation.args[modelIndex + 1], "gpt-5.6-sol");
+      assert.equal(invocation.args[modelIndex + 1], model);
       assert.equal(invocation.args[providerIndex + 1], "openai-codex");
       assert.equal(invocation.env["PA_PROVIDER"], "openai-codex");
-      assert.equal(invocation.env["PA_MODEL"], "gpt-5.6-sol");
+      assert.equal(invocation.env["PA_MODEL"], model);
       const paths = getDeployPaths(result.deploymentId!);
       const primer = readFileSync(join(paths.deployDir, "primer.md"), "utf8");
       assert.match(primer, /PA_PROVIDER: openai-codex/);
-      assert.match(primer, /PA_MODEL: gpt-5.6-sol/);
+      assert.ok(primer.includes(`PA_MODEL: ${model}`));
       const resolution = readActivityEvents(paths.activityLogPath)[0];
-      assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-sol", resolution: "mode" });
+      assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model, resolution: "mode" });
       const started = getDeploymentEvents(result.deploymentId!)[0];
       assert.equal(started?.provider, "openai-codex");
-      assert.equal(started?.models?.team, "gpt-5.6-sol");
+      assert.equal(started?.models?.team, model);
     }
   });
 });
@@ -3710,17 +3710,17 @@ test("PPA defaults to Sol and uses one normalized pair for spawn, env, primer, a
     let captured: SpawnOpts | undefined;
     const result = await deployWithPi({ team: "builder", mode: "implement" }, stubAdapter({ onSpawn: (opts) => { captured = opts; } }));
     assert.equal(result.status, "success");
-    assert.equal(captured?.model, "gpt-5.6-sol");
+    assert.equal(captured?.model, "gpt-6.1-sol");
     assert.equal(captured?.env?.["PA_PROVIDER"], "openai-codex");
-    assert.equal(captured?.env?.["PA_MODEL"], "gpt-5.6-sol");
+    assert.equal(captured?.env?.["PA_MODEL"], "gpt-6.1-sol");
     assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_PROVIDER: openai-codex/);
-    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_MODEL: gpt-5.6-sol/);
+    assert.match(readFileSync(captured!.primerPath, "utf8"), /PA_MODEL: gpt-6\.1-sol/);
     const resolution = readActivityEvents(getDeployPaths(result.deploymentId!).activityLogPath)[0];
-    assert.equal(resolution?.body, "Resolved Pi runtime openai-codex/gpt-5.6-sol");
-    assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-5.6-sol", resolution: "default" });
+    assert.equal(resolution?.body, "Resolved Pi runtime openai-codex/gpt-6.1-sol");
+    assert.deepEqual(resolution?.metadata, { provider: "openai-codex", model: "gpt-6.1-sol", resolution: "default" });
     const started = getDeploymentEvents(result.deploymentId!)[0];
     assert.equal(started?.provider, "openai-codex");
-    assert.equal(started?.models?.team, "gpt-5.6-sol");
+    assert.equal(started?.models?.team, "gpt-6.1-sol");
   });
 });
 

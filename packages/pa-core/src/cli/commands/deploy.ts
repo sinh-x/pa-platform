@@ -86,8 +86,8 @@ function deployHelpProfile(binaryName: string): DeployHelpProfile {
     return {
       runtime: "Pi",
       providerDescription: "Pi provider (`openai` or `openai-codex`; default command value: `openai-codex`)",
-      modelDescription: "Pi model (default command value: `gpt-5.6-sol`; flat config uses `openai/gpt-5.6-sol`)",
-      defaultDescription: "PPA uses OpenAI Sol (`openai-codex` / `gpt-5.6-sol`)",
+      modelDescription: "Pi model (default command value: `gpt-6.1-sol`; flat config uses `openai/gpt-6.1-sol`)",
+      defaultDescription: "PPA uses OpenAI Sol (`openai-codex` / `gpt-6.1-sol`)",
     };
   }
   if (binaryName === "cpa") {

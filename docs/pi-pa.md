@@ -445,14 +445,14 @@ OpenCode, Claude Code, Droid, or other non-Pi runtime values:
 
 | Effective provider | Effective model | Pi command values |
 | --- | --- | --- |
-| `openai` | `openai/gpt-5.6-sol` | `openai-codex` / `gpt-5.6-sol` |
+| `openai` | `openai/gpt-6.1-sol` | `openai-codex` / `gpt-6.1-sol` |
 | `openai` | `openai/<model>` | `openai-codex` / `<model>` |
 | `openai` | `<model>` | `openai-codex` / `<model>` |
 | `openai-codex` | `openai/<model>` | `openai-codex` / `<model>` |
 | `openai-codex` | `<model>` | `openai-codex` / `<model>` |
 | any other provider | any model | provider and model unchanged |
 
-Only one leading `openai/` model prefix is removed. PPA defaults to configured `openai` / `openai/gpt-5.6-sol` when the flat pair is
+Only one leading `openai/` model prefix is removed. PPA defaults to configured `openai` / `openai/gpt-6.1-sol` when the flat pair is
 absent, so Pi-local configuration cannot silently select Luna. Empty values
 remain omitted only for direct low-level session-command callers; managed
 `ppa deploy` resolves a complete pair before spawn.
@@ -650,7 +650,7 @@ marker is emitted exactly once.
 
 Replace every team- or mode-level `runtimes` block with flat mode fields. Use
 both fields for an explicit pair, for example `provider: openai` and `model:
-openai/gpt-5.6-sol`, or omit both to use the selected adapter default. Run
+openai/gpt-6.1-sol`, or omit both to use the selected adapter default. Run
 `ppa deploy <team> --validate` after migration; partial pairs and removed maps
 are rejected with their YAML paths.
 

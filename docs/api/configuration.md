@@ -386,7 +386,7 @@ The OpenCode adapter (`packages/opencode-pa/src/adapter.ts`) resolves default mo
 | `OPA_OLLAMA_CLOUD_MODEL` | `ollama-cloud/deepseek-v4-pro` | `ollama-cloud` (default provider) |
 | `OPA_OPENCODE_GO_MODEL` | `opencode-go/deepseek-v4-pro` | `opencode-go` |
 
-Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed. `cpa` defaults to `anthropic` / `claude-opus-4-7`; `dpa` defaults to `deepseek-v4-pro`; and `ppa` defaults to configured `openai` / `openai/gpt-5.6-sol`, normalized for Pi commands to `openai-codex` / `gpt-5.6-sol`. An incompatible pair emits a redacted warning and uses the selected adapter's fallback.
+Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed. `cpa` defaults to `anthropic` / `claude-opus-4-7`; `dpa` defaults to `deepseek-v4-pro`; and `ppa` defaults to configured `openai` / `openai/gpt-6.1-sol`, normalized for Pi commands to `openai-codex` / `gpt-6.1-sol`. An incompatible pair emits a redacted warning and uses the selected adapter's fallback.
 
 ### Command Resolution
 

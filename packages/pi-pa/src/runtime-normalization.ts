@@ -1,7 +1,7 @@
 import { formatRuntimePair, modelMatchesProvider, type EffectiveRuntimeConfig } from "@pa-platform/pa-core";
 
 export const PI_DEFAULT_PROVIDER = "openai";
-export const PI_DEFAULT_MODEL = "openai/gpt-5.6-sol";
+export const PI_DEFAULT_MODEL = "openai/gpt-6.1-sol";
 
 export interface PiRuntimeConfig {
   provider?: string;

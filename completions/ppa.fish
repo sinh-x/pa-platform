@@ -402,8 +402,8 @@ complete -c ppa -n __ppa_deploy_completing -l objective-file -d 'Objective from 
 complete -c ppa -n __ppa_deploy_completing -l list-modes -d 'List available deploy modes'
 complete -c ppa -n __ppa_deploy_completing -l validate -d 'Validate team config'
 complete -c ppa -f -n __ppa_deploy_completing -l provider -d 'Pi provider override (openai/openai-codex)' -r -a 'openai openai-codex'
-complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Model' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
-complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Deprecated model alias (PAP-147)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n __ppa_deploy_completing -l model -d 'Model' -r -a 'gpt-6.1-sol openai/gpt-6.1-sol'
+complete -c ppa -f -n __ppa_deploy_completing -l team-model -d 'Deprecated model alias (PAP-147)' -r -a 'gpt-6.1-sol openai/gpt-6.1-sol'
 complete -c ppa -f -n __ppa_deploy_completing -l agent-model -d 'Unsupported per-agent model override (PAP-148)' -r
 complete -c ppa -n __ppa_deploy_completing -l background -d 'Run detached/headless'
 complete -c ppa -n __ppa_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
@@ -426,7 +426,7 @@ complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l ticket -d 'Ticke
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l repo -d 'Registered repository key or exact configured path' -r -a '(__ppa_projects)'
 complete -c ppa -n '__fish_seen_subcommand_from evaluate' -l timeout -d 'Timeout seconds' -r
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l provider -d 'Pi provider (openai/openai-codex)' -r -a 'openai openai-codex'
-complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Pi model (default gpt-5.6-sol)' -r -a 'gpt-5.6-sol openai/gpt-5.6-sol'
+complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Pi model (default gpt-6.1-sol)' -r -a 'gpt-6.1-sol openai/gpt-6.1-sol'
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
 
 
