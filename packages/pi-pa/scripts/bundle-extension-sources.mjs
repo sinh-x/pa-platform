@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,6 +32,7 @@ export async function bundleExtensionSources({
   const sourceVendorRoot = typeof sourcePath === "string" ? resolve(dirname(sourcePath), "vendor") : undefined;
   const packageJson = JSON.parse(await readFile(resolve(packageRoot, "package.json"), "utf8"));
   const externalPackages = new Set();
+  const runtimeAssets = new Map();
 
   await rm(vendorRoot, { recursive: true, force: true });
   await mkdir(resolve(vendorRoot, "licenses"), { recursive: true });
@@ -58,6 +60,18 @@ export async function bundleExtensionSources({
         if (imported.external) externalPackages.add(imported.path);
       }
     }
+    // esbuild retains import.meta.url but cannot discover child-process assets.
+    // Keep the unchanged reviewed helper beside the bundle in both layouts.
+    const assets = [];
+    if (source.name === "proper-base") {
+      const sourcePath = `${source.sourcePath}/src/auto-update/inventory.mjs`;
+      const packagedPath = "inventory.mjs";
+      const bytes = await readFile(resolve(packageRoot, sourcePath));
+      await copyFile(resolve(packageRoot, sourcePath), resolve(vendorRoot, packagedPath));
+      if (sourceVendorRoot) await copyFile(resolve(packageRoot, sourcePath), resolve(sourceVendorRoot, packagedPath));
+      assets.push({ sourcePath, packagedPath, sha256: createHash("sha256").update(bytes).digest("hex") });
+    }
+    runtimeAssets.set(source.name, assets);
     await copyFile(resolve(packageRoot, source.licensePath), resolve(vendorRoot, "licenses", `${source.name}-LICENSE.txt`));
     if (sourceVendorRoot) {
       await copyFile(resolve(vendorRoot, source.bundle), resolve(sourceVendorRoot, source.bundle));
@@ -95,6 +109,7 @@ export async function bundleExtensionSources({
       licenseSha256,
       packagedLicense: `licenses/${name}-LICENSE.txt`,
       bundle,
+      runtimeAssets: runtimeAssets.get(name),
     })),
   };
   await writeFile(resolve(vendorRoot, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`, "utf8");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -118,6 +119,18 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
       const generatedPackage = JSON.parse(readFileSync(resolve(outputRoot, "pi-pa-package.json"), "utf8"));
       const generatedNotice = readFileSync(resolve(outputRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
 
+      const inventoryPath = "vendor/proper-pi-extensions/proper-base/src/auto-update/inventory.mjs";
+      const inventory = readFileSync(resolve(PACKAGE_ROOT, inventoryPath));
+      const properEnabled = expectedNames.includes("proper-base");
+      for (const layout of ["pi-extension/vendor", "source/vendor"]) {
+        const asset = resolve(outputRoot, layout, "inventory.mjs");
+        assert.equal(existsSync(asset), properEnabled, `${layout}: selected-only updater inventory`);
+        if (properEnabled) assert.deepEqual(readFileSync(asset), inventory, `${layout}: unchanged reviewed helper bytes`);
+      }
+      assert.deepEqual(provenance.sources.find(({ name }) => name === "proper-base")?.runtimeAssets,
+        properEnabled ? [{ sourcePath: inventoryPath, packagedPath: "inventory.mjs", sha256: createHash("sha256").update(inventory).digest("hex") }] : undefined);
+      assert.deepEqual(provenance.sources.find(({ name }) => name === "pi-vimmode")?.runtimeAssets,
+        expectedNames.includes("pi-vimmode") ? [] : undefined);
       assert.deepEqual(provenance.selectedSources, expectedNames);
       assert.deepEqual(provenance.sources.map(({ name }) => name), expectedNames);
       assert.deepEqual(generatedPackage.imports, Object.fromEntries(expectedNames.map((name) => {

@@ -194,7 +194,7 @@ test("ordinary Pi retains upstream proper-base updater registration and opt-in d
   }
 });
 
-test("managed/Nix PPA performs zero updater install subprocesses and zero automatic restarts", async () => {
+test("managed/Nix PPA preserves updater opt-out registration and cleans updater UI", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-pa-managed-updater-"));
   const agentDir = join(root, "agent");
   const readyDir = join(agentDir, "proper-updater-ready");
@@ -231,13 +231,10 @@ test("managed/Nix PPA performs zero updater install subprocesses and zero automa
     await host.dispatch("session_shutdown", { type: "session_shutdown", reason: "quit" }, context);
     for (const callback of scheduled) callback();
 
-    const updaterInstallSubprocesses = Number(context.ui.widgets.has("proper-updater"));
-    const automaticRestarts = context.shutdownCalls
-      + process.rawListeners("exit").filter((listener) => !exitListeners.has(listener)).length;
-    assert.deepEqual(
-      { updaterInstallSubprocesses, automaticRestarts },
-      { updaterInstallSubprocesses: 0, automaticRestarts: 0 },
-    );
+    // Installer/execve attempts are observed in the eligible isolated packaged
+    // host in scripts/proper-updater.test.mjs; widget absence proves only cleanup.
+    assert.equal(context.shutdownCalls, 0);
+    assert.equal(process.rawListeners("exit").filter((listener) => !exitListeners.has(listener)).length, 0);
     assert.equal(host.flags.has("no-auto-update"), true, "the upstream CLI opt-out remains registered");
     assert.equal(context.ui.widgets.get("proper-updater"), undefined);
   } finally {

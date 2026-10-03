@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **pi-pa**: Preserve proper-base's upstream updater for ordinary Pi with `--no-auto-update`, `PROPER_UPDATER_OFF=1`, `PI_OFFLINE`, and `/settings` controls, while managed/Nix PPA performs zero updater installs and zero automatic restarts.
 - **docs**: Add PAP-078 Phase 5 handoff documentation for packaging status, memory/skill/knowledge boundaries, UAT fixtures, and verification command contract.
 
+### Fixed
+
+- **pi-pa**: Package proper-base's exact updater inventory helper only when selected, record its digest in provenance, and verify ordinary updater execution plus zero managed installer/restart attempts with an isolated host.
+
 ### Documentation
 
 - Expand dashboard Phase 1 UAT notes with full-repo verification commands and fixture source references.

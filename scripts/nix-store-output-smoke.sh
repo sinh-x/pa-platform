@@ -196,6 +196,14 @@ for variant in "${variant_names[@]}"; do
         "pi-vimmode": { version: "0.9.0", import: "#pi-pa-vimmode", target: "./dist/pi-extension/vendor/pi-vimmode.js", bundle: "pi-vimmode.js", commit: "52bd6ac5e905157ac46ec15c120b7d0cc61a62df", contentSha256: "40fba5841b53c042c3cb31c92c86a240d60c9674c37f2d69bb62e5ef6efc52c5", license: "MIT", licenseSha256: "4f0857fdc3d54e6adb6ec2c3602bd8e0e4bed2f83fb206e4522b987f55b9c74b" },
         "proper-base": { version: "0.7.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "bfec53cadd89c3582b2da69a87e1c71246780d4d", contentSha256: "4670fb7aaab2a2493d5599e8b8f2bd82e757914e07d169c87120cdc5a887fdb0", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
       };
+      const updaterAsset = {
+        sourcePath: "vendor/proper-pi-extensions/proper-base/src/auto-update/inventory.mjs",
+        packagedPath: "inventory.mjs",
+        sha256: "46679b9aa55a16760b9f220b4e8895ca4b18d0b6b48de87e13138955244dd3ca",
+      };
+      const helper = join(root, "dist/pi-extension/vendor", updaterAsset.packagedPath);
+      if (existsSync(helper) !== selected.includes("proper-base")) process.exit(1);
+      if (existsSync(helper) && createHash("sha256").update(readFileSync(helper)).digest("hex") !== updaterAsset.sha256) process.exit(1);
       const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
         if (packageJson.peerDependencies[dependency] !== process.env.EXPECTED_PI_VERSION || packageJson.devDependencies[dependency] !== process.env.EXPECTED_PI_VERSION) process.exit(1);
@@ -225,6 +233,7 @@ for variant in "${variant_names[@]}"; do
         const record = provenance.sources.find((source) => source.name === name);
         if (Boolean(record) !== enabled) process.exit(1);
         if (record && [record.version, record.import, record.importTarget, record.commit, record.contentSha256, record.license, record.licenseSha256].join("|") !== [expected.version, expected.import, expected.target, expected.commit, expected.contentSha256, expected.license, expected.licenseSha256].join("|")) process.exit(1);
+        if (record && JSON.stringify(record.runtimeAssets) !== JSON.stringify(name === "proper-base" ? [updaterAsset] : [])) process.exit(1);
         if (enabled) {
           const license = readFileSync(join(root, `dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`));
           if (createHash("sha256").update(license).digest("hex") !== expected.licenseSha256) process.exit(1);
