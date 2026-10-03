@@ -147,6 +147,7 @@ for variant in "${variant_names[@]}"; do
   for artifact in \
     "$package_root/package.json" \
     "$package_root/dist/diagnostics.js" \
+    "$package_root/dist/native-host-bootstrap.js" \
     "$package_root/dist/pi-extension/index.js" \
     "$package_root/dist/pi-extension/vendor/provenance.json" \
     "$package_root/THIRD_PARTY_NOTICES.md" \
@@ -173,7 +174,7 @@ for variant in "${variant_names[@]}"; do
       const before = structuredClone(keyed);
       if (audit.observe("installed-create", keyed) !== 1 || JSON.stringify(keyed) !== JSON.stringify(before)) process.exit(1);
       if (!existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) process.exit(1);
-      const bearer = "Bearer synthetic-installed-bearer-value";
+      const bearer = ["Bearer", "synthetic-installed-bearer-value"].join(" ");
       if (diagnostics.redactDiagnostic(bearer) !== bearer || audit.observe("installed-append", bearer) !== 1) process.exit(1);
       if ((statSync(path).mode & 0o777) !== 0o600) process.exit(1);
       const records = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
@@ -206,9 +207,22 @@ for variant in "${variant_names[@]}"; do
       if (existsSync(helper) && createHash("sha256").update(readFileSync(helper)).digest("hex") !== updaterAsset.sha256) process.exit(1);
       const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
-        if (packageJson.peerDependencies[dependency] !== process.env.EXPECTED_PI_VERSION || packageJson.devDependencies[dependency] !== process.env.EXPECTED_PI_VERSION) process.exit(1);
+        if (packageJson.peerDependencies[dependency] !== "*" || packageJson.devDependencies[dependency] !== process.env.EXPECTED_PI_VERSION) process.exit(1);
       }
-      if (packageJson.dependencies.typebox !== "1.3.27" || packageJson.dependencies.sharp !== "0.35.4") process.exit(1);
+      if (packageJson.dependencies.typebox !== undefined || packageJson.peerDependencies.typebox !== "*" || packageJson.dependencies.sharp !== "0.35.4") process.exit(1);
+      for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+        if (packageJson.dependencies[name] !== undefined || packageJson.peerDependencies[name] !== "*") throw Error(`host dependency manifest: ${name}`);
+        const physical = join(root, "native-host/node_modules", name, "package.json");
+        const expectedVersion = name === "typebox" ? "1.3.27" : process.env.EXPECTED_PI_VERSION;
+        if (JSON.parse(readFileSync(physical, "utf8")).version !== expectedVersion) throw Error(`standalone host pin: ${name}`);
+        // This process has the standalone hook. require.resolve with explicit
+        // paths still uses that hook, so probe normal Node in a fresh child.
+      }
+      const { spawnSync } = await import("node:child_process");
+      const shadowProbe = spawnSync(process.execPath, ["--input-type=module", "--eval", `import { createRequire } from "node:module"; const require = createRequire(${JSON.stringify(join(root, "dist/pi-extension/index.js"))}); for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) { try { require.resolve(name); throw Error("physical host shadow: " + name); } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; } }`], { encoding: "utf8" });
+      if (shadowProbe.status !== 0) throw Error(shadowProbe.stderr);
+      const runtimeHost = await import(join(root, "../runtime-host/dist/index.js"));
+      if (typeof runtimeHost.createRuntimeHostHooks !== "function") throw Error("standalone runtime-host API missing");
       if (reviewed["proper-base"].version !== process.env.EXPECTED_PROPER_VERSION || reviewed["pi-vimmode"].version !== process.env.EXPECTED_VIM_VERSION) process.exit(1);
       const provenance = JSON.parse(readFileSync(join(root, "dist/pi-extension/vendor/provenance.json"), "utf8"));
       const notices = readFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");

@@ -136,6 +136,19 @@
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
             rm $share/packages/pi-pa/dist/pi-pa-package.json $share/packages/pi-pa/dist/THIRD_PARTY_NOTICES.md
             cp -r packages/pi-pa/node_modules $share/packages/pi-pa/node_modules
+            # Physical host SDK copies bypass Pi's virtual module mapping in
+            # nested ESM. Keep the pinned graph off the extension search path;
+            # only standalone Node helpers opt into it via --import.
+            piPackage=$share/packages/pi-pa
+            mkdir -p $piPackage/native-host/node_modules/@earendil-works
+            for hostPackage in @earendil-works/pi-ai @earendil-works/pi-coding-agent @earendil-works/pi-tui typebox; do
+              hostTarget=$(readlink "$piPackage/node_modules/$hostPackage")
+              ln -s "../$hostTarget" "$piPackage/native-host/node_modules/$hostPackage"
+              rm "$piPackage/node_modules/$hostPackage"
+            done
+            # Agent-core is host-provided too, but was only a transitive SDK peer.
+            ln -s "$(dirname "$(readlink "$piPackage/native-host/node_modules/@earendil-works/pi-coding-agent")")/pi-agent-core" \
+              "$piPackage/native-host/node_modules/@earendil-works/pi-agent-core"
             test -f packages/pi-pa/package.json
             rm -f $share/packages/pi-pa/node_modules/@pa-platform/pa-core
             mkdir -p $share/packages/pi-pa/node_modules/@pa-platform
@@ -209,6 +222,7 @@
               --prefix PATH : "${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
+              --add-flags "--import=$share/packages/pi-pa/dist/native-host-bootstrap.js" \
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { build } from "esbuild";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -118,6 +120,10 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
       const generatedSourceFactories = readFileSync(generatedSourcePath, "utf8");
       const generatedPackage = JSON.parse(readFileSync(resolve(outputRoot, "pi-pa-package.json"), "utf8"));
       const generatedNotice = readFileSync(resolve(outputRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+      for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+        assert.equal(generatedPackage.dependencies[name], undefined, `${name}: no installed host dependency warning`);
+        assert.equal(generatedPackage.peerDependencies[name], "*", `${name}: borrow the owning host`);
+      }
 
       const inventoryPath = "vendor/proper-pi-extensions/proper-base/src/auto-update/inventory.mjs";
       const inventory = readFileSync(resolve(PACKAGE_ROOT, inventoryPath));
@@ -170,6 +176,56 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
     } finally {
       rmSync(outputRoot, { recursive: true, force: true });
     }
+  }
+});
+
+test("installed physical host modules cannot shadow Pi but remain available to explicitly bootstrapped Node", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-pa-host-boundary-"));
+  const packageRoot = join(root, "packages/pi-pa");
+  const names = ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"];
+  const previousNodeOptions = process.env.NODE_OPTIONS;
+  try {
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), '{"type":"module"}');
+    symlinkSync(join(REPOSITORY_ROOT, "node_modules"), join(root, "node_modules"));
+    cpSync(join(PACKAGE_ROOT, "node_modules"), join(packageRoot, "node_modules"), { recursive: true, verbatimSymlinks: true });
+    const resolutionProbe = join(packageRoot, "dist/resolution-probe.js");
+    writeFileSync(resolutionProbe, 'console.log(import.meta.resolve(process.argv[2]));');
+    const resolveHost = (name) => spawnSync(process.execPath, [resolutionProbe, name], { encoding: "utf8" });
+    // Negative control: the pre-repair layout really resolves physical copies.
+    for (const name of ["@earendil-works/pi-coding-agent", "typebox"]) {
+      const before = resolveHost(name);
+      assert.equal(before.status, 0, before.stderr);
+      assert.match(before.stdout, /node_modules/);
+    }
+    const flake = readFileSync(join(REPOSITORY_ROOT, "flake.nix"), "utf8");
+    const installBoundary = flake.slice(flake.indexOf("            piPackage=$share/packages/pi-pa"), flake.indexOf("            test -f packages/pi-pa/package.json"));
+    assert.ok(installBoundary.length > 0);
+    // Nix copies the shared pnpm tree later in installPhase; do not rely on
+    // dereferencing those links while relocating them.
+    rmSync(join(root, "node_modules"));
+    const installed = spawnSync("bash", ["-euc", installBoundary], { env: { ...process.env, share: root }, encoding: "utf8" });
+    assert.equal(installed.status, 0, installed.stderr);
+    symlinkSync(join(REPOSITORY_ROOT, "node_modules"), join(root, "node_modules"));
+    for (const name of names) {
+      const after = resolveHost(name);
+      assert.notEqual(after.status, 0, `${name}: no physical extension shadow`);
+      assert.match(after.stderr, /ERR_MODULE_NOT_FOUND/);
+      assert.ok(existsSync(join(packageRoot, "native-host/node_modules", name)), `${name}: preserved standalone graph`);
+    }
+    const bootstrap = join(packageRoot, "dist/native-host-bootstrap.js");
+    await build({ entryPoints: [join(PACKAGE_ROOT, "src/native-host-bootstrap.ts")], outfile: bootstrap, format: "esm", platform: "node", logLevel: "warning" });
+    const probe = 'import { Type } from "typebox"; import { InteractiveMode } from "@earendil-works/pi-coding-agent"; if (Type.String().type !== "string" || typeof InteractiveMode !== "function") throw Error("standalone host missing"); console.log(JSON.stringify([import.meta.resolve("typebox/value"), import.meta.resolve("@earendil-works/pi-ai"), import.meta.resolve("@earendil-works/pi-agent-core"), import.meta.resolve("@earendil-works/pi-tui")]));';
+    writeFileSync(join(packageRoot, "dist/probe.js"), probe);
+    const without = spawnSync(process.execPath, [join(packageRoot, "dist/probe.js")], { encoding: "utf8" });
+    assert.notEqual(without.status, 0, "ordinary Node must not accidentally find extension host copies");
+    assert.match(without.stderr, /ERR_MODULE_NOT_FOUND/);
+    const withBootstrap = spawnSync(process.execPath, ["--import", bootstrap, join(packageRoot, "dist/probe.js")], { encoding: "utf8" });
+    assert.equal(withBootstrap.status, 0, withBootstrap.stderr);
+    assert.equal(JSON.parse(withBootstrap.stdout).length, 4);
+    assert.equal(process.env.NODE_OPTIONS, previousNodeOptions, "bootstrap must not leak to a later Pi process");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

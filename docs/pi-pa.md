@@ -19,6 +19,10 @@ Both ordinary sessions configured this way and managed deployments load the same
 
 After editing skills or package metadata in the config checkout, run `/reload` in an active Pi session. New ordinary sessions discover the current files without reinstalling the packages.
 
+### Installed host-module boundary
+
+The installed extension uses Pi's host-provided SDK and TypeBox modules (wildcard peers), so editor hooks share the actual Pi runtime's classes. Exact SDK 0.99.2 and TypeBox 1.3.27 build/standalone pins remain in the frozen graph. Nix keeps their physical links under `pi-pa/native-host/node_modules`, outside extension resolution. Standalone preflight/tool helpers and `pa-platform-node` explicitly preload `dist/native-host-bootstrap.js`; this resolver is not loaded by Pi or inherited through `NODE_OPTIONS`. For direct Node imports of the installed extension or runtime-host API, use `pa-platform-node` (or explicitly pass `--import=<installed-pi-pa>/dist/native-host-bootstrap.js`).
+
 ### proper-base updater ownership
 
 Ordinary Pi retains proper-base 0.7.0's unchanged upstream automatic updater. Its default remains enabled. Use any of the upstream controls when updates are undesirable:

@@ -146,6 +146,12 @@ export async function bundleExtensionSources({
     await writeFile(sourcePath, generatedTypeScript, "utf8");
   }
 
+  // The installed extension borrows the owning Pi runtime, not physical SDK
+  // copies. Exact build/standalone pins remain in the frozen workspace graph.
+  for (const name of EXTERNAL_PACKAGES.filter((name) => name !== "sharp")) {
+    delete packageJson.dependencies[name];
+    packageJson.peerDependencies[name] = "*";
+  }
   packageJson.imports = Object.fromEntries(selectedSources.map((source) => [source.import, source.importTarget]));
   await writeFile(resolve(outputRoot, "pi-pa-package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
 
