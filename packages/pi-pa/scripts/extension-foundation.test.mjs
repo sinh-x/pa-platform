@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { build } from "esbuild";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -30,7 +33,7 @@ function createEntrypoint(root, path, content) {
 test("exact extension source validator accepts the approved initialized gitlinks", () => {
   const lock = validateExtensionSources();
   assert.deepEqual(lock.sources.map((source) => source.commit), [
-    "859feb321ec81d773beea379d28e21d0b7d0c8c0",
+    "bfec53cadd89c3582b2da69a87e1c71246780d4d",
     "52bd6ac5e905157ac46ec15c120b7d0cc61a62df",
   ]);
 });
@@ -80,11 +83,16 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
   const bundler = readFileSync(resolve(PACKAGE_ROOT, "scripts/bundle-extension-sources.mjs"), "utf8");
   assert.equal(lock.sources.length, 2);
   assert.deepEqual(lock.sources.map(({ name, version, license }) => ({ name, version, license })), [
-    { name: "proper-base", version: "0.5.0", license: "MIT" },
+    { name: "proper-base", version: "0.7.0", license: "MIT" },
     { name: "pi-vimmode", version: "0.9.0", license: "MIT" },
   ]);
   assert.deepEqual(selectedExtensionSources(lock, { "pi-vimmode": true, "proper-base": true }).map(({ name }) => name), ["pi-vimmode", "proper-base"]);
-  assert.equal(packageJson.dependencies.sharp, "0.35.3");
+  assert.equal(packageJson.dependencies.sharp, "0.35.4");
+  assert.equal(packageJson.dependencies.typebox, "1.3.27");
+  for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+    assert.equal(packageJson.peerDependencies[dependency], "0.99.2");
+    assert.equal(packageJson.devDependencies[dependency], "0.99.2");
+  }
   assert.equal(packageJson.devDependencies.esbuild, "0.27.7");
   assert.equal(packageJson.imports, undefined, "installed import mappings must be generated only for selected sources");
   for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "sharp", "typebox"]) {
@@ -112,7 +120,23 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
       const generatedSourceFactories = readFileSync(generatedSourcePath, "utf8");
       const generatedPackage = JSON.parse(readFileSync(resolve(outputRoot, "pi-pa-package.json"), "utf8"));
       const generatedNotice = readFileSync(resolve(outputRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+      for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+        assert.equal(generatedPackage.dependencies[name], undefined, `${name}: no installed host dependency warning`);
+        assert.equal(generatedPackage.peerDependencies[name], "*", `${name}: borrow the owning host`);
+      }
 
+      const inventoryPath = "vendor/proper-pi-extensions/proper-base/src/auto-update/inventory.mjs";
+      const inventory = readFileSync(resolve(PACKAGE_ROOT, inventoryPath));
+      const properEnabled = expectedNames.includes("proper-base");
+      for (const layout of ["pi-extension/vendor", "source/vendor"]) {
+        const asset = resolve(outputRoot, layout, "inventory.mjs");
+        assert.equal(existsSync(asset), properEnabled, `${layout}: selected-only updater inventory`);
+        if (properEnabled) assert.deepEqual(readFileSync(asset), inventory, `${layout}: unchanged reviewed helper bytes`);
+      }
+      assert.deepEqual(provenance.sources.find(({ name }) => name === "proper-base")?.runtimeAssets,
+        properEnabled ? [{ sourcePath: inventoryPath, packagedPath: "inventory.mjs", sha256: createHash("sha256").update(inventory).digest("hex") }] : undefined);
+      assert.deepEqual(provenance.sources.find(({ name }) => name === "pi-vimmode")?.runtimeAssets,
+        expectedNames.includes("pi-vimmode") ? [] : undefined);
       assert.deepEqual(provenance.selectedSources, expectedNames);
       assert.deepEqual(provenance.sources.map(({ name }) => name), expectedNames);
       assert.deepEqual(generatedPackage.imports, Object.fromEntries(expectedNames.map((name) => {
@@ -129,7 +153,12 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle)), enabled);
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", `${source.bundle}.map`)), enabled);
         assert.equal(existsSync(resolve(outputRoot, "source/vendor", source.bundle.replace(/\.js$/, ".d.ts"))), enabled);
-        assert.equal(generatedNotice.includes(`## ${source.name} ${source.version}`), enabled);
+        for (const noticeEvidence of [
+          `## ${source.name} ${source.version}`,
+          `- Commit: \`${source.commit}\``,
+          `- Source SHA-256: \`${source.contentSha256}\``,
+          `- License SHA-256: \`${source.licenseSha256}\``,
+        ]) assert.equal(generatedNotice.includes(noticeEvidence), enabled);
         assert.equal(provenance.sources.some(({ name }) => name === source.name), enabled);
         if (enabled) {
           const record = provenance.sources.find(({ name }) => name === source.name);
@@ -150,6 +179,56 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
   }
 });
 
+test("installed physical host modules cannot shadow Pi but remain available to explicitly bootstrapped Node", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-pa-host-boundary-"));
+  const packageRoot = join(root, "packages/pi-pa");
+  const names = ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"];
+  const previousNodeOptions = process.env.NODE_OPTIONS;
+  try {
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), '{"type":"module"}');
+    symlinkSync(join(REPOSITORY_ROOT, "node_modules"), join(root, "node_modules"));
+    cpSync(join(PACKAGE_ROOT, "node_modules"), join(packageRoot, "node_modules"), { recursive: true, verbatimSymlinks: true });
+    const resolutionProbe = join(packageRoot, "dist/resolution-probe.js");
+    writeFileSync(resolutionProbe, 'console.log(import.meta.resolve(process.argv[2]));');
+    const resolveHost = (name) => spawnSync(process.execPath, [resolutionProbe, name], { encoding: "utf8" });
+    // Negative control: the pre-repair layout really resolves physical copies.
+    for (const name of ["@earendil-works/pi-coding-agent", "typebox"]) {
+      const before = resolveHost(name);
+      assert.equal(before.status, 0, before.stderr);
+      assert.match(before.stdout, /node_modules/);
+    }
+    const flake = readFileSync(join(REPOSITORY_ROOT, "flake.nix"), "utf8");
+    const installBoundary = flake.slice(flake.indexOf("            piPackage=$share/packages/pi-pa"), flake.indexOf("            test -f packages/pi-pa/package.json"));
+    assert.ok(installBoundary.length > 0);
+    // Nix copies the shared pnpm tree later in installPhase; do not rely on
+    // dereferencing those links while relocating them.
+    rmSync(join(root, "node_modules"));
+    const installed = spawnSync("bash", ["-euc", installBoundary], { env: { ...process.env, share: root }, encoding: "utf8" });
+    assert.equal(installed.status, 0, installed.stderr);
+    symlinkSync(join(REPOSITORY_ROOT, "node_modules"), join(root, "node_modules"));
+    for (const name of names) {
+      const after = resolveHost(name);
+      assert.notEqual(after.status, 0, `${name}: no physical extension shadow`);
+      assert.match(after.stderr, /ERR_MODULE_NOT_FOUND/);
+      assert.ok(existsSync(join(packageRoot, "native-host/node_modules", name)), `${name}: preserved standalone graph`);
+    }
+    const bootstrap = join(packageRoot, "dist/native-host-bootstrap.js");
+    await build({ entryPoints: [join(PACKAGE_ROOT, "src/native-host-bootstrap.ts")], outfile: bootstrap, format: "esm", platform: "node", logLevel: "warning" });
+    const probe = 'import { Type } from "typebox"; import { InteractiveMode } from "@earendil-works/pi-coding-agent"; if (Type.String().type !== "string" || typeof InteractiveMode !== "function") throw Error("standalone host missing"); console.log(JSON.stringify([import.meta.resolve("typebox/value"), import.meta.resolve("@earendil-works/pi-ai"), import.meta.resolve("@earendil-works/pi-agent-core"), import.meta.resolve("@earendil-works/pi-tui")]));';
+    writeFileSync(join(packageRoot, "dist/probe.js"), probe);
+    const without = spawnSync(process.execPath, [join(packageRoot, "dist/probe.js")], { encoding: "utf8" });
+    assert.notEqual(without.status, 0, "ordinary Node must not accidentally find extension host copies");
+    assert.match(without.stderr, /ERR_MODULE_NOT_FOUND/);
+    const withBootstrap = spawnSync(process.execPath, ["--import", bootstrap, join(packageRoot, "dist/probe.js")], { encoding: "utf8" });
+    assert.equal(withBootstrap.status, 0, withBootstrap.stderr);
+    assert.equal(JSON.parse(withBootstrap.stdout).length, 4);
+    assert.equal(process.env.NODE_OPTIONS, previousNodeOptions, "bootstrap must not leak to a later Pi process");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("CI and Nix inputs require recursive exact sources and both Linux sharp artifacts", () => {
   const ci = readFileSync(resolve(REPOSITORY_ROOT, ".github/workflows/ci.yml"), "utf8");
   const nixWorkflow = readFileSync(resolve(REPOSITORY_ROOT, ".github/workflows/nix-build.yml"), "utf8");
@@ -167,10 +246,17 @@ test("CI and Nix inputs require recursive exact sources and both Linux sharp art
   assert.match(nixSmoke, /supported_systems=\(x86_64-linux aarch64-linux\)/);
   assert.match(nixSmoke, /nix build --impure --expr "\$expr" --dry-run --no-link/);
   assert.match(nixSmoke, /#pi-pa-vimmode/);
+  assert.match(nixSmoke, /expected_pi_version=0\.99\.2/);
+  assert.match(nixSmoke, /package-evidence=4\/4/);
   assert.match(nixSmoke, /sharp\.versions\.sharp/);
   assert.match(flake, /supportedSystems = \[ "x86_64-linux" "aarch64-linux" \]/);
   assert.match(flake, /THIRD_PARTY_NOTICES\.md/);
   assert.match(workspace, /onlyBuiltDependencies:[\s\S]*- sharp/);
-  assert.match(lockfile, /'@img\/sharp-linux-x64@0\.35\.3'/);
-  assert.match(lockfile, /'@img\/sharp-linux-arm64@0\.35\.3'/);
+  for (const dependency of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
+    assert.match(lockfile, new RegExp(`'@earendil-works/${dependency}@0\\.99\\.2'`));
+  }
+  assert.match(lockfile, /typebox@1\.3\.27/);
+  assert.match(lockfile, /sharp@0\.35\.4/);
+  assert.match(lockfile, /'@img\/sharp-linux-x64@0\.35\.4'/);
+  assert.match(lockfile, /'@img\/sharp-linux-arm64@0\.35\.4'/);
 });
