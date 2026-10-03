@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -28,23 +28,8 @@ export interface PiDeployDependencies {
   readonly observeOperation?: (operation: "checkout" | "branch" | "slot" | "permit" | "lineage" | "runtime-spawn") => void;
 }
 
-/** Internal authentication result, deliberately not TreehouseLaunchEvidence.
- * It conveys neither builder authority nor capacity, mutation or return rights.
- * Phase 3 owns durable plan/primer/registry projection and resume binding.
- */
-export interface TicketWorktreeSelectionEvidence {
-  readonly repoKey: string;
-  readonly repoRoot: string;
-  readonly ticket: string;
-  readonly worktreeRoot: string;
-  readonly gitDir: string;
-  readonly gitCommonDir: string;
-  readonly leaseId: string;
-  readonly leaseHolder: string;
-  readonly branch: string;
-  readonly baseSha: string;
-  readonly headSha: string;
-}
+export type { TicketWorktreeSelectionEvidence } from "@pa-platform/pa-core";
+const TICKET_WORKTREE_SELECTION_FILE = "ticket-worktree-selection.json";
 
 /** Read-only selection and a closure that re-reads all authoritative sources.
  * No ticket refresh, force recovery, capacity claim, or builder borrowing occurs.
@@ -120,6 +105,7 @@ export function authenticateTicketWorktreeSelection(
         leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
         branch: linked.branch, baseSha: linked.baseSha!, headSha: linked.headSha!,
       });
+      if (request.resume) authenticateTicketWorktreeResume(request.resume, evidence);
       return { evidence, holders: inspectTicketWorktreeBuilders(evidence, request.team, mode, dependencies) };
     } catch (error) {
       throw new Error(ticketWorktreeDiagnostic(error));
@@ -191,10 +177,16 @@ function inspectTicketWorktreeBuilders(
 }
 
 function ticketWorktreeDiagnostic(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  // Preserve one five-field envelope when lower admission layers already format
+  // their failure; nesting consumes the bounded reason budget and hides cause.
+  const reason = /^Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(detail)
+    ? detail.match(/Reason:\s*(.*?)\s*Correction:/s)?.[1] ?? detail
+    : detail;
   return formatBoundedFiveFieldDiagnostic({
     condition: "ticket-worktree selection admission stopped",
     source: "registered canonical repository, durable ticket, bounded Treehouse status, physical Git and process-verified builder evidence",
-    reason: error instanceof Error ? error.message : String(error),
+    reason,
     correction: "preserve the checkout, ticket and all authority evidence; selection grants no mutation or return rights",
     resumeAction: "reconcile the exact existing materialized checkout and retry with fresh matching evidence; no allocation or force bypass",
   });
@@ -258,6 +250,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let planningRequest = request;
   let plan: ExecutionPlan;
   try {
+    if (request.resume && existsSync(resolve(getDeployPaths(request.resume).deployDir, TICKET_WORKTREE_SELECTION_FILE)) && !request.ticketWorktree) {
+      throw new Error(ticketWorktreeDiagnostic("resuming a ticket-worktree selection requires the same flag and exact ticket"));
+    }
     if (request.ticketWorktree) {
       selectedTicketWorktree = authenticateTicketWorktreeSelection(request, mode?.id ?? "default", planningCwd, dependencies);
       planningCwd = selectedTicketWorktree.evidence.worktreeRoot;
@@ -419,6 +414,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       cwd: planningCwd,
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
+      ...(selectedTicketWorktree ? { ticketWorktreeSelection: selectedTicketWorktree.evidence } : {}),
     });
     assertPiExecutionRootAgreement(plan, plan.environment as Record<string, string>);
   } catch (error) {
@@ -462,11 +458,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId?: string): void => {
-    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;
     writeFileSync(primerPath, persistedPrimer, "utf8");
+    if (currentPlan.ticketWorktreeSelection) {
+      writeFileSync(resolve(deployDir, TICKET_WORKTREE_SELECTION_FILE), JSON.stringify(currentPlan.ticketWorktreeSelection), { flag: "wx" });
+    }
     if (protectedAuthorizationId && readFileSync(primerPath, "utf8").includes(protectedAuthorizationId)) {
       throw new Error("protected reviewer persisted primer authorization redaction could not be proven exact");
     }
@@ -897,6 +896,8 @@ function deploymentCorrelation(plan: ExecutionPlan): {
     builderAuthority: evidence.authority, treehousePath: evidence.path, treehouseLeaseId: evidence.leaseId,
     treehouseLeaseHolder: evidence.leaseHolder, branchState: evidence.branchState, branchBaseSha: evidence.baseSha,
     branchHeadSha: evidence.headSha, ticketSlotId: evidence.ticketSlotId, repositoryPermit: evidence.repositoryPermit,
+  } : plan.ticketWorktreeSelection ? {
+    branchState: "materialized", branchBaseSha: plan.ticketWorktreeSelection.baseSha, branchHeadSha: plan.ticketWorktreeSelection.headSha,
   } : {};
 }
 
@@ -911,7 +912,27 @@ function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "mat
     branch_state: terminal?.branchState ?? evidence.branchState, branch_base_sha: terminal?.branchBaseSha ?? evidence.baseSha,
     branch_head_sha: terminal?.branchHeadSha ?? evidence.headSha, ticket_slot_id: evidence.ticketSlotId,
     repository_permit: evidence.repositoryPermit,
+  } : plan.ticketWorktreeSelection ? {
+    branch_state: "materialized", branch_base_sha: plan.ticketWorktreeSelection.baseSha, branch_head_sha: plan.ticketWorktreeSelection.headSha,
   } : {};
+}
+
+function authenticateTicketWorktreeResume(id: string, evidence: TicketWorktreeSelectionEvidence): void {
+  if (!/^d-[0-9a-f]{6}$/.test(id)) throw new Error("selection resume requires an exact deployment ID");
+  const status = queryDeploymentStatus(id);
+  const path = resolve(getDeployPaths(id).deployDir, TICKET_WORKTREE_SELECTION_FILE);
+  if (!existsSync(path) || lstatSync(path).isSymbolicLink() || lstatSync(path).size > 16_384) {
+    throw new Error("prior immutable ticket-worktree selection evidence is missing or malformed");
+  }
+  const prior: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!prior || typeof prior !== "object" || Array.isArray(prior)
+    || !status || status.runtime !== "pi" || status.binary !== "ppa" || status.builder_authority
+    || status.ticket_id !== evidence.ticket || status.repo_root !== evidence.repoRoot
+    || status.repo !== evidence.worktreeRoot || status.worktree_root !== evidence.worktreeRoot
+    || (["repoKey", "repoRoot", "ticket", "worktreeRoot", "gitDir", "gitCommonDir"] as const)
+      .some((field) => (prior as Record<string, unknown>)[field] !== evidence[field])) {
+    throw new Error("resume requires the prior exact canonical repository, ticket and physical selected checkout");
+  }
 }
 
 function authenticateParentTicketBranch(repoKey: string, worktreeRoot: string, ticketId: string): { branch: string; baseSha?: string; headSha: string } {

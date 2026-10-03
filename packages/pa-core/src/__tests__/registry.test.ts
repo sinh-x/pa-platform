@@ -61,6 +61,20 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   return caught;
 }
 
+test("selection-only registry lifecycle preserves branch and dual roots without builder correlation", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const worktree = "/selected/PAP-234";
+    const branch = { branch_state: "materialized" as const, branch_base_sha: "a".repeat(40), branch_head_sha: "b".repeat(40) };
+    appendRegistryEvent({ deployment_id: "d-aabbcc", team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", event: "started", timestamp: "2026-10-03T00:00:00Z", ticket_id: "PAP-001", repo: worktree, repo_root: canonicalRoot, worktree_root: worktree, ...branch });
+    appendRegistryEvent({ deployment_id: "d-aabbcc", team: "requirements", event: "completed", status: "success", timestamp: "2026-10-03T00:01:00Z", ...branch });
+    const status = queryDeploymentStatus("d-aabbcc")!;
+    assert.equal(status.repo, worktree); assert.equal(status.repo_root, canonicalRoot); assert.equal(status.worktree_root, worktree);
+    assert.equal(status.branch_base_sha, branch.branch_base_sha); assert.equal(status.branch_head_sha, branch.branch_head_sha);
+    for (const key of ["builder_authority", "parent_deployment_id", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "ticket_slot_id", "repository_permit", "repository_slot"] as const) assert.equal(status[key], undefined);
+    assert.throws(() => appendRegistryEvent({ deployment_id: "d-aabbcc", team: "requirements", event: "completed", timestamp: "2026-10-03T00:02:00Z", treehouse_path: worktree }), /requires authority/);
+  });
+});
+
 test("Pi foreground completion sidecars are atomic, bounded, mode 0600, and strictly validated", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-pi-completion-"));
   const path = join(root, PI_FOREGROUND_COMPLETION_FILE);

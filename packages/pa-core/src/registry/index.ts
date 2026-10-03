@@ -911,6 +911,8 @@ function correlationToValidationInput(event: RegistryEvent): Record<string, unkn
   };
 }
 
+// Branch/root evidence alone is safe for a non-builder ticket-worktree selection.
+// Lease/authority/slot fields remain the indivisible protected builder binding.
 function hasTreehouseBinding(event: RegistryEvent): boolean {
   return event.builder_authority !== undefined || event.parent_deployment_id !== undefined || event.treehouse_path !== undefined
     || event.treehouse_lease_id !== undefined || event.treehouse_lease_holder !== undefined || event.ticket_slot_id !== undefined

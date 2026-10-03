@@ -40,6 +40,21 @@ export interface TreehouseLaunchEvidence {
   readonly repositoryPermit: 1 | 2 | 3 | 4;
 }
 
+/** Read-only authenticated selection; never builder launch or return authority. */
+export interface TicketWorktreeSelectionEvidence {
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly ticket: string;
+  readonly worktreeRoot: string;
+  readonly gitDir: string;
+  readonly gitCommonDir: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly headSha: string;
+}
+
 export type ExecutionPlanEnvironmentKey = PaEnvKey | "PA_REPO_ROOT";
 
 export interface ExecutionPlan {
@@ -58,6 +73,7 @@ export interface ExecutionPlan {
   readonly memoryDocumentRoot: string;
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
   readonly treehouse?: TreehouseLaunchEvidence;
+  readonly ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
   readonly rogue_one?: true;
   readonly invocation_channel?: DeploymentInvocationChannel;
   readonly ticket?: string;
@@ -94,6 +110,8 @@ export interface ResolveExecutionPlanOptions {
   allowDirtyInheritedBorrow?: boolean;
   /** Trusted PPA-only evidence established before immutable planning. */
   treehouse?: TreehouseLaunchEvidence;
+  /** Authenticated by the PPA CLI adapter, not accepted from the Agent API. */
+  ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
 }
 
 export function withAuthoritativeRepositoryAdmission(
@@ -167,6 +185,22 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       throw new Error("execution-plan: trusted Treehouse lease, branch, slot, permit, and authenticated Git snapshot must agree exactly");
     }
   }
+  if (options.request.ticketWorktree !== Boolean(options.ticketWorktreeSelection) && (options.request.ticketWorktree || options.ticketWorktreeSelection)) {
+    throw new Error("execution-plan: ticket-worktree intent requires authenticated selection evidence");
+  }
+  if (options.ticketWorktreeSelection) {
+    const evidence = options.ticketWorktreeSelection;
+    if (options.runtime !== "pi" || invocationChannel !== "cli" || options.treehouse
+      || repositoryAdmission.access === "exclusive-builder" || repositoryAdmission.ownershipIntent !== "none"
+      || repository.worktreeKind !== "linked" || evidence.repoKey !== repository.repoKey
+      || evidence.repoRoot !== repository.repoRoot || evidence.worktreeRoot !== repository.worktreeRoot
+      || evidence.gitDir !== repository.gitDir || evidence.gitCommonDir !== repository.gitCommonDir
+      || !options.request.ticket || evidence.ticket !== options.request.ticket
+      || evidence.leaseHolder !== `pa:${repository.repoKey}:${options.request.ticket}` || !evidence.leaseId
+      || !evidence.branch || !/^[0-9a-f]{40}$/.test(evidence.baseSha) || !/^[0-9a-f]{40}$/.test(evidence.headSha)) {
+      throw new Error("execution-plan: selection-only evidence and authenticated canonical/runtime identity must agree without builder authority");
+    }
+  }
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,
     deploymentDir: options.deploymentDir,
@@ -188,6 +222,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     memoryDocumentRoot: repository.worktreeRoot,
     repositoryAdmission,
     ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
+    ...(options.ticketWorktreeSelection ? { ticketWorktreeSelection: Object.freeze({ ...options.ticketWorktreeSelection }) } : {}),
     ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
@@ -211,6 +246,9 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
         PA_TREEHOUSE_LEASE_HOLDER: options.treehouse.leaseHolder,
         PA_TICKET_SLOT: options.treehouse.ticketSlotId,
         PA_REPOSITORY_PERMIT: String(options.treehouse.repositoryPermit),
+      } : {}),
+      ...(options.ticketWorktreeSelection ? {
+        PA_TREEHOUSE_LEASE_ID: "", PA_TREEHOUSE_LEASE_HOLDER: "", PA_TICKET_SLOT: "", PA_REPOSITORY_PERMIT: "",
       } : {}),
       ...(rogueOne ? { PA_TEAM: options.teamConfig.name, PA_MODE: modeName, PA_ROGUE_ONE: "1" } : {}),
     }),
