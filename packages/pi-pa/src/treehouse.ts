@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
-import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "@pa-platform/pa-core";
+import { formatBoundedFiveFieldDiagnostic } from "@pa-platform/pa-core";
 
 export const MAX_TREEHOUSE_JSON_BYTES = 1024 * 1024;
 export const TREEHOUSE_TIMEOUT_MS = 15_000;
@@ -72,6 +72,16 @@ export class TreehouseClient {
     if (matches.length > 1) throw treehouseError(`found ${matches.length} leases for deterministic holder ${holder}`, "preserve all Treehouse leases and reconcile duplicates interactively");
     if (matches.length === 1) return Object.freeze(asLease(matches[0]!));
     return this.getLease(canonicalRepoRoot, holder);
+  }
+
+  /** Selection only: absence rejects rather than falling back to allocation. */
+  selectExisting(canonicalRepoRoot: string, repoKey: string, ticketId: string): TreehouseLeaseEvidence {
+    const holder = deriveTreehouseLeaseHolder(repoKey, ticketId);
+    const matches = this.status(canonicalRepoRoot).filter((entry) => entry.leased && entry.leaseHolder === holder);
+    if (matches.length !== 1) {
+      throw treehouseError(`expected one existing leased checkout for ${holder}, found ${matches.length}`, "reconcile missing or duplicate Treehouse lease evidence without allocation");
+    }
+    return Object.freeze(asLease(matches[0]!));
   }
 
   authenticatePrepared(canonicalRepoRoot: string, repoKey: string, ticketId: string, physicalCwd: string): TreehouseLeaseEvidence {
@@ -202,6 +212,11 @@ function canonicalRepoRoot(value: string): string { return value; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
 function bounded(value: string, max: number): string { return value.length <= max ? value : `${value.slice(0, max - 3)}...`; }
 function treehouseError(reason: string, resume: string): Error {
-  const message = `Condition: Treehouse ticket checkout admission. Source: bounded Treehouse v2.3.0 JSON subprocess boundary. Reason: ${reason}. Correction: preserve all Treehouse leases and branches; do not return, prune, destroy, or force. Resume Action: ${resume}.`;
-  return new Error(bounded(message, MAX_REPOSITORY_DIAGNOSTIC_CHARS));
+  return new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "Treehouse ticket checkout admission",
+    source: "bounded Treehouse v2.3.0 JSON subprocess boundary",
+    reason,
+    correction: "preserve all Treehouse leases and branches; do not return, prune, destroy, or force",
+    resumeAction: resume,
+  }));
 }
