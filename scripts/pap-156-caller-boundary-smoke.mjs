@@ -71,7 +71,7 @@ try {
     "  - id: smoke",
     "    label: Smoke",
     "    provider: openai",
-    "    model: openai/gpt-5.6-sol",
+    "    model: openai/gpt-6.1-sol",
     "    agents: []",
     "    skills: []",
     "",

@@ -277,7 +277,7 @@ ppa repository quarantine --repo pa-platform --expected-evidence v1-<sha256-from
 
 Quarantine reacquires the crash-safe advisory mutex, re-reads evidence, refuses process-verified live ownership, rejects an identity mismatch, and uses a unique no-clobber destination. Do not replace this operation with a raw `mv` of the lease path.
 
-**Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, `cpa` uses `anthropic` / `claude-opus-4-7`, `dpa` uses `deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-5.6-sol`, normalized to Pi's `openai-codex` / `gpt-5.6-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
+**Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, `cpa` uses `anthropic` / `claude-opus-4-7`, `dpa` uses `deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-6.1-sol`, normalized to Pi's `openai-codex` / `gpt-6.1-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
 
 ---
 

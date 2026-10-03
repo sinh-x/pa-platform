@@ -121,7 +121,7 @@ test("PPA deploy help documents normalized Sol defaults and supported legacy fla
   assert.equal(code, 0);
   const help = stdout.join("\n");
   assert.match(help, /openai.*openai-codex/);
-  assert.match(help, /gpt-5\.6-sol/);
+  assert.match(help, /gpt-6\.1-sol/);
   assert.match(help, /--team-model.*PAP-147/);
   assert.match(help, /--agent-model.*PAP-148/);
   assert.doesNotMatch(help, /ollama-cloud/);

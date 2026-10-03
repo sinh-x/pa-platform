@@ -222,7 +222,7 @@ deploy_modes:
   - id: implement
     label: Implement
     provider: openai
-    model: openai/gpt-5.6-sol
+    model: openai/gpt-6.1-sol
 ```
 
 An intentionally provider/model-absent mode delegates both values to the
@@ -243,7 +243,7 @@ dry-run output, and registry metadata.
 
 | Adapter | Default and mapping boundary |
 |---|---|
-| ppa | Defaults to `openai` / `openai/gpt-5.6-sol`, normalized for Pi as `openai-codex` / `gpt-5.6-sol`; incompatible pairs warn and fall back. |
+| ppa | Defaults to `openai` / `openai/gpt-6.1-sol`, normalized for Pi as `openai-codex` / `gpt-6.1-sol`; incompatible pairs warn and fall back. |
 | opa | Defaults to `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`; provider-specific model mapping remains in the OpenCode adapter. |
 | cpa | Defaults to `anthropic` / `claude-opus-4-7`; non-Anthropic pairs warn and fall back to the Claude default. |
 | dpa | Defaults to `deepseek-v4-pro`; Droid receives its flat model identifier and adapter-specific provider handling. |
