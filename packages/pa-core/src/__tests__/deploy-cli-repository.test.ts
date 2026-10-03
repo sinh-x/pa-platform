@@ -253,6 +253,31 @@ test("ppa parented explicit selectors preserve the authenticated linked-worktree
   });
 });
 
+test("ticket-worktree early CLI rejections are bounded five-field diagnostics regardless of flag order", async () => {
+  await withFixture("selection-early", async (fixture) => {
+    let calls = 0;
+    const defects = [
+      ["--ticket", "../PAP-1"], ["--repo", "evil\nrepo"], ["--resume", "../outside"],
+      ["--timeout", "1"], ["--objective-file", join(fixture.root, "absent")],
+      ["--" + "x".repeat(2500)], ["--ticket-worktree=false"], ["--ticket-worktree", "false"],
+      ["--objective", "api_key=sk-" + "x".repeat(60)],
+    ];
+    for (const binaryName of ["ppa", "opa", "cpa", "dpa", "pa-core"]) {
+      for (const defect of defects) for (const first of [false, true]) {
+        const output = capture();
+        const args = ["deploy", "requirements", ...(first ? ["--ticket-worktree"] : []), ...defect, ...(!first ? ["--ticket-worktree"] : [])];
+        const code = await runCoreCommand(args, { binaryName, io: output.io, hooks: { deploy: () => { calls += 1; return { status: "pending" }; } } });
+        assert.equal(code, 1); assertFiveFieldDiagnostic(output.stderr.join("\n"));
+        assert.doesNotMatch(output.stderr.join("\n"), /sk-x{20}/);
+      }
+    }
+    assert.equal(calls, 0);
+    const raw = capture();
+    assert.equal(await runCoreCommand(["deploy", "requirements", "--ticket", "../PAP-1"], { binaryName: "ppa", io: raw.io }), 1);
+    assert.deepEqual(raw.stderr, ["Invalid ticket ID"]);
+  });
+});
+
 test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary", async () => {
   await withFixture("ticket-worktree-boundary", async (fixture) => {
     writeTicket(fixture, "PAP-234", "registered");

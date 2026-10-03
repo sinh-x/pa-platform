@@ -113,6 +113,8 @@ export interface EvaluatorResult {
 }
 
 export interface RegistryEvent {
+  /** Immutable serialized selection-only context; never a builder capability. */
+  ticket_worktree_selection?: string;
   deployment_id: string;
   team: string;
   event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated" | "ticket-associated";
@@ -212,6 +214,8 @@ export interface ReviewAuthorizationClaim {
 }
 
 export interface DeploymentStatus {
+  /** Immutable serialized selection-only context; absent on ordinary launches. */
+  ticket_worktree_selection?: string;
   deploy_id: string;
   team: string;
   status: "running" | "success" | "partial" | "failed" | "crashed" | "dead" | "unknown";

@@ -181,9 +181,18 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     printDeployHelp(io, binaryName);
     return 0;
   }
+  // Detect raw intent before parsing: earlier invalid fields/options must not
+  // escape the selection diagnostic boundary, regardless of flag order.
+  const selectionIntent = argv.some((arg) => arg === "--ticket-worktree" || arg.startsWith("--ticket-worktree="));
+  const reject = (reason: string): void => io.stderr(selectionIntent ? ticketWorktreeDiagnostic({
+    source: "CLI deploy argument parsing and validation",
+    reason: reason.startsWith("Unsupported deploy option:") ? "unsupported deploy option" : reason,
+    correction: "provide valid supported CLI fields without sensitive input; preserve existing checkout and authority evidence",
+    resumeAction: "retry the corrected PPA CLI request with the same exact ticket and selection flag",
+  }) : reason);
   const parsed = parseDeployArgs(argv);
   if ("error" in parsed) {
-    io.stderr(parsed.error);
+    reject(parsed.error);
     return 1;
   }
   const ticketWorktree = parsed.fields["ticketWorktree"] === true;
@@ -191,11 +200,11 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   delete sharedFields["ticketWorktree"];
   const validated = validateDeployRequestFields(sharedFields);
   if ("error" in validated) {
-    for (const warning of validated.warnings ?? []) io.stderr(warning);
-    io.stderr(validated.error);
+    if (!selectionIntent) for (const warning of validated.warnings ?? []) io.stderr(warning);
+    reject(validated.error);
     return 1;
   }
-  if (validated.warnings) {
+  if (validated.warnings && !selectionIntent) {
     for (const warning of validated.warnings) io.stderr(warning);
   }
   if (ticketWorktree) {
@@ -211,15 +220,23 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     io.stderr(`${binaryName}: --force is unsupported because this adapter does not execute exclusive builder deployments; use ppa or opa for builder ownership enforcement`);
     return 1;
   }
-  if (validated.request.listModes) return printDeployModes(validated.request.team, io);
-  if (validated.request.validate) return validateDeployConfig(validated.request.team, io, binaryName);
+  if (validated.request.listModes || validated.request.validate) {
+    try {
+      const actual = loadTeamConfig(validated.request.team);
+      if (ticketWorktree && actual.name === "builder") { reject("resolved builder team cannot request selection-only intent"); return 1; }
+      return validated.request.listModes ? printDeployModes(validated.request.team, io) : validateDeployConfig(validated.request.team, io, binaryName);
+    } catch (error) {
+      if (!selectionIntent) throw error;
+      reject(error instanceof Error ? error.message : String(error)); return 1;
+    }
+  }
   const resolved = withResolvedDeployTimeout(validated.request);
   if ("error" in resolved) {
-    io.stderr(resolved.error);
+    reject(resolved.error);
     return 1;
   }
   if (!hooks.deploy) {
-    io.stderr("Deployment execution requires an adapter hook");
+    reject("Deployment execution requires an adapter hook");
     return 1;
   }
 
@@ -339,11 +356,14 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
       ? resolved.request
       : { ...resolved.request, repo: canonicalRepoRoot };
     result = await hooks.deploy(adapterRequest, { stderr: io.stderr });
+  } catch (error) {
+    if (!selectionIntent) throw error;
+    reject(error instanceof Error ? error.message : String(error)); return 1;
   } finally {
     process.chdir(originalCwd);
   }
   if (result.status === "failed") {
-    io.stderr(result.reason ?? "Deployment failed");
+    reject(result.reason ?? "Deployment failed");
     return 1;
   }
   const label = result.status === "success" ? "completed" : "pending";

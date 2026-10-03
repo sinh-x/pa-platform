@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
@@ -2110,6 +2110,21 @@ test("ticket-selection resume reauthenticates the same canonical/ticket/physical
     await assertRejected({ resume: "d-ffffff" });
     const evidencePath = join(getDeployPaths(initial.deploymentId!).deployDir, "ticket-worktree-selection.json");
     const bytes = readFileSync(evidencePath); const evidence = JSON.parse(bytes.toString()) as Record<string, unknown>;
+    const context = queryDeploymentStatus(initial.deploymentId!)!.ticket_worktree_selection;
+    assert.equal(context, bytes.toString());
+    rmSync(evidencePath);
+    await assertRejected(); await assertRejected({ ticketWorktree: false });
+    for (const malformed of ["{", "null", "[]", "{}", JSON.stringify({ ...evidence, ticket: "PAP-999" })]) {
+      writeFileSync(evidencePath, malformed); await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    writeFileSync(evidencePath, bytes);
+    // The canonical registry is an independent immutable discriminator. Missing,
+    // malformed or substituted context cannot be repaired from the sidecar.
+    for (const metadata of [null, "{", "null", "{}", JSON.stringify({ ...evidence, worktreeRoot: canonical })]) {
+      getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(metadata, initial.deploymentId!);
+      await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(context, initial.deploymentId!);
     for (const field of ["repoRoot", "repoKey", "ticket", "worktreeRoot", "gitDir", "gitCommonDir"]) {
       writeFileSync(evidencePath, JSON.stringify({ ...evidence, [field]: "/wrong" })); await assertRejected();
     }

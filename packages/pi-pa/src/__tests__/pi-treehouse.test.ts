@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -425,6 +425,41 @@ test("selection fails closed on stale, malformed-live, oversized, registry-confl
     assert.throws(() => fixture.authenticate(), /ambiguous builder owners/);
     assert.deepEqual(readFileSync(owner.leasePath), ownerBytes);
     fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("selection rejects dangling/resolved symlinks, directories and unreadable owner/borrower entries without any operations", async () => {
+  const fixture = selectionFixture();
+  try {
+    const before = fixture.snapshot();
+    const target = join(fixture.root, "target"); writeFileSync(target, "{}", { mode: 0o600 });
+    for (const path of [repositoryMutationLeasePath(fixture.worktree), repositoryMutationLeasePath(fixture.worktree, "implement"), repositoryMutationBorrowerPath(fixture.worktree)]) {
+      for (const shape of ["dangling", "resolved", "directory", "unreadable"]) {
+        if (shape === "directory") mkdirSync(path);
+        else if (shape === "unreadable") { writeFileSync(path, "{}"); chmodSync(path, 0); }
+        else symlinkSync(shape === "dangling" ? join(fixture.root, "absent") : target, path);
+        const prior = lstatSync(path); const link = prior.isSymbolicLink() ? readlinkSync(path) : undefined;
+        const result = await deployWithPi({ ...fixture.request, team: "learner", force: true }, fixture.adapter, undefined, fixture.dependencies);
+        assert.equal(result.status, "failed"); assertSelectionDiagnostic(result.reason!);
+        assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+        assert.equal(lstatSync(path).ino, prior.ino); if (link) assert.equal(readlinkSync(path), link);
+        fixture.assertNeutral(); assert.deepEqual(fixture.snapshot(), before);
+        rmSync(path, { recursive: true });
+      }
+    }
+  } finally { fixture.dispose(); }
+});
+
+test("selection rejects a resolved builder filename alias before capacity, ticket writes or native preflight", async () => {
+  const fixture = selectionFixture();
+  try {
+    const before = fixture.snapshot();
+    writeFileSync(join(fixture.root, "teams", "requirements.yaml"), "name: builder\ndescription: Alias\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+    const result = await deployWithPi({ ...fixture.request, mode: "orchestrator" }, fixture.adapter, undefined, fixture.dependencies);
+    assert.equal(result.status, "failed"); assert.match(result.reason!, /resolved builder/); assertSelectionDiagnostic(result.reason!);
+    assert.throws(() => fixture.authenticate(), /non-builder/);
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 }); assert.equal(fixture.calls.length, 0);
+    fixture.assertNeutral(); assert.deepEqual(fixture.snapshot(), before);
   } finally { fixture.dispose(); }
 });
 
