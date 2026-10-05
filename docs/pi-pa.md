@@ -72,6 +72,59 @@ If the executor throws or the supervisor is interrupted after admission, the sup
 - For `executor_crash`, compare `ledger.json.state` and the terminal ledger to confirm completed commands retained evidence and all untouched commands are skipped. Preserve both files for diagnosis; never synthesize a passing ledger.
 - Treat missing, non-`0600`, partial, aliased, checksum-mismatched, or non-terminal evidence as invalid. Preserve the deployment directory and relaunch only after correcting the originating authority or persistence problem.
 
+## Opt-in existing ticket worktree selection (PPA CLI only)
+
+From the registered canonical repository, a non-builder deployment can explicitly
+select a ticket's existing authenticated Treehouse checkout:
+
+```bash
+cd /registered/canonical/repository
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --dry-run
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --background
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --resume d-abcdef
+```
+
+Optional `--repo` accepts only a registered key or exact canonical root, never a
+linked-worktree path. The exact ticket project must match that repository and
+have exactly one explicit `materialized` linked branch with full lowercase
+40-character `baseSha` and `headSha`. Planned, duplicate, legacy-incomplete or
+conflicting evidence rejects; selection never refreshes ticket evidence.
+
+PPA runs **status only**, with Treehouse v2.3.0's 15-second timeout and 1-MiB
+stdout cap. Exactly one leased row must have holder `pa:<repo-key>:<ticket>`.
+Its physical path, forward/reverse `.git` metadata, common directory, registered
+worktree membership, branch and HEAD must agree. No `get`, return, checkout
+lifecycle operation, Git branch action, ticket write, slot, permit, lineage,
+mutation lease or borrower acquisition is performed by selection.
+
+Canonical plan `repoRoot` and registry/deployment-context `repo_root` remain the
+registered root. `worktreeRoot`, `repositoryCwd`, memory/project root, Pi CWD,
+`PA_REPO`, `PA_WORKTREE_ROOT`, deployment-context `cwd`/`repo` and registry `repo`
+use the exact selected checkout. Immutable selection evidence is separate from
+builder authority; its primer and registry project only safe branch/root
+context. It grants no new write permissions or return rights.
+
+Ticket, lease, physical Git and process-verified owner/borrower evidence are
+reread before native preflight, immediately before spawn and before dry-run
+finalization. A live builder on that exact checkout permits existing `read-only`
+access (`requirements/*`), but blocks `non-locking` teams. Stale, malformed or
+ambiguous ownership rejects without repair; `--force` does not override this.
+Dry-run authenticates and previews the dual-root primer without spawning Pi.
+Resume requires the same flag and ticket, the prior canonical repository and
+same physical checkout path/Git identity, plus fresh current authentication.
+Every selection rejection precedes preflight/spawn and is bounded to 2,000
+characters with Condition, Source, Reason, Correction and Resume Action.
+
+The flag is excluded from builder deployments, OPA, CPA, DPA, direct `pa-core`
+and the Agent API (no request field). Existing builder and omitted-flag behavior
+is unchanged. Selection is neither filesystem sandboxing nor an immutable
+post-spawn snapshot. **Paired rollout ticket PAPC-038** owns eligible non-builder
+mode root contracts in `pa-platform-config`; runtime support does not establish
+broad mode availability before paired validation. PAPC-037 owns worktree-local
+dependency and late canonical-reconciliation guidance; PAPC-031/PAPC-036 own
+related integration policy.
+
 ## Treehouse-backed builder ticket checkouts
 
 PPA uses the pinned Treehouse v2.3.0 CLI as the checkout lifecycle manager while
@@ -118,7 +171,7 @@ PPA atomically reserves the ticket and one of four repository permits before it
 calls Treehouse. It derives holder `pa:pa-platform:PAP-189`, reuses exactly one
 matching lease or runs bounded `treehouse get --lease --lease-holder ... --json`,
 authenticates the returned physical linked worktree, and materializes or selects
-the ticket branch there. For this authenticated Treehouse builder flow only,
+the ticket branch there. For this authenticated Treehouse builder flow,
 Pi's CWD, `PA_REPO`, and `PA_WORKTREE_ROOT` are that exact checkout. Canonical
 identity remains separately available as immutable plan `repoRoot`, deployment
 and registry `repo_root`, and repository lease evidence. Canonical branch, HEAD,

@@ -270,6 +270,7 @@ function addCorrelationColumns(db: Database.Database, table: string): void {
     ["parent_deployment_id", "TEXT"], ["builder_authority", "TEXT"], ["treehouse_path", "TEXT"],
     ["treehouse_lease_id", "TEXT"], ["treehouse_lease_holder", "TEXT"], ["branch_state", "TEXT"],
     ["branch_base_sha", "TEXT"], ["branch_head_sha", "TEXT"], ["ticket_slot_id", "TEXT"], ["repository_permit", "INTEGER"],
+    ["ticket_worktree_selection", "TEXT"],
   ] as const) addColumn(db, table, column, type);
 }
 

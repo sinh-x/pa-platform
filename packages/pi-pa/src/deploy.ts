@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -27,6 +28,198 @@ export interface PiDeployDependencies {
   readonly observeOperation?: (operation: "checkout" | "branch" | "slot" | "permit" | "lineage" | "runtime-spawn") => void;
 }
 
+export type { TicketWorktreeSelectionEvidence } from "@pa-platform/pa-core";
+const TICKET_WORKTREE_SELECTION_FILE = "ticket-worktree-selection.json";
+
+/** Read-only selection and a closure that re-reads all authoritative sources.
+ * No ticket refresh, force recovery, capacity claim, or builder borrowing occurs.
+ */
+export function authenticateTicketWorktreeSelection(
+  request: DeployRequest,
+  mode: string,
+  cwd = process.cwd(),
+  dependencies: PiDeployDependencies = {},
+  expectedTeam?: string,
+): { readonly evidence: TicketWorktreeSelectionEvidence; readonly reread: () => void } {
+  const treehouse = dependencies.treehouse ?? new TreehouseClient();
+  const read = (): { team: string; evidence: TicketWorktreeSelectionEvidence; holders: readonly (string | undefined)[] } => {
+    try {
+      const resolvedTeam = loadTeamConfig(request.team).name;
+      // Bind admission to the immutable plan's resolved identity, not its filename
+      // selector. The closure also detects same-access identity drift on rereads.
+      if (expectedTeam !== undefined && resolvedTeam !== expectedTeam) {
+        throw new Error("resolved team identity changed from the immutable planning config");
+      }
+      if (!request.ticket || !/^[A-Z]+-\d+$/.test(request.ticket)
+        || resolvedTeam === "builder" || classifyRepositoryAccess(resolvedTeam, mode) === "exclusive-builder"
+        || (request.invocationChannel !== undefined && request.invocationChannel !== "cli")) {
+        throw new Error("selection requires an exact ticket and a non-builder CLI request");
+      }
+      const canonical = resolveRepoExecutionPath(request.repo, cwd);
+      const ticket = new TicketStore().get(request.ticket);
+      if (!ticket || ticket.id !== request.ticket) throw new Error("the exact durable ticket is missing or mismatched");
+      // TicketStore intentionally normalizes legacy sha/state for builder flows.
+      // Selection must not mistake that compatibility view for an explicit full
+      // materialized record, or conceal a conflicting legacy sha.
+      const raw: unknown = JSON.parse(readFileSync(resolve(getTicketsDir(), `${request.ticket}.json`), "utf8"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("ticket record is malformed");
+      const branches = (raw as Record<string, unknown>)["linkedBranches"];
+      const matches = Array.isArray(branches) ? branches.filter((value: unknown): value is Record<string, unknown> =>
+        Boolean(value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>)["repo"] === canonical.repoKey)) : [];
+      const record = matches[0];
+      if (matches.length !== 1 || !record || record["state"] !== "materialized"
+        || typeof record["baseSha"] !== "string" || !/^[0-9a-f]{40}$/.test(record["baseSha"])
+        || typeof record["headSha"] !== "string" || !/^[0-9a-f]{40}$/.test(record["headSha"])
+        || (record["sha"] !== undefined && record["sha"] !== record["headSha"])) {
+        throw new Error("selection requires exactly one explicit materialized ticket link with full lowercase baseSha/headSha and no conflicting legacy sha");
+      }
+      const linked = requireTicketLinkedBranch(ticket, canonical.repoKey);
+      if ((raw as Record<string, unknown>)["id"] !== ticket.id || (raw as Record<string, unknown>)["project"] !== ticket.project
+        || record["branch"] !== linked.branch || record["baseSha"] !== linked.baseSha || record["headSha"] !== linked.headSha) {
+        throw new Error("durable ticket identity or branch tuple changed during selection");
+      }
+      if (linked.state !== "materialized" || !/^[0-9a-f]{40}$/.test(linked.baseSha ?? "") || !/^[0-9a-f]{40}$/.test(linked.headSha ?? "")) {
+        throw new Error("selection requires one materialized ticket link with full lowercase baseSha and headSha; planned or legacy-incomplete evidence is ineligible");
+      }
+      const lease = treehouse.selectExisting(canonical.repoRoot, canonical.repoKey, request.ticket);
+      // Reuse the resolver's forward/reverse .git, commondir and membership checks.
+      const selected = resolveRepoExecutionPath(undefined, lease.path, { allowLinkedWorktreeCwd: true });
+      if (selected.repoKey !== canonical.repoKey || selected.repoRoot !== canonical.repoRoot
+        || selected.worktreeKind !== "linked" || selected.worktreeRoot !== lease.path
+        || selected.repositoryCwd !== lease.path || selected.gitCommonDir !== canonical.gitCommonDir
+        || dirname(selected.gitDir) !== resolve(canonical.gitCommonDir, "worktrees")) {
+        throw new Error("selected lease path is not the exact physical registered linked worktree of the canonical repository");
+      }
+      for (const field of ["gitdir", "commondir"]) {
+        const metadata = lstatSync(resolve(selected.gitDir, field));
+        if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("linked Git registration metadata is not an exact physical file");
+      }
+      const registered = execFileSync("git", ["worktree", "list", "--porcelain", "-z"], {
+        cwd: canonical.repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_DIR: canonical.gitDir, GIT_COMMON_DIR: canonical.gitCommonDir, GIT_WORK_TREE: canonical.repoRoot },
+      }).split("\0").filter((field) => field === `worktree ${lease.path}`);
+      if (registered.length !== 1) throw new Error("selected checkout does not have exactly one canonical Git worktree registration");
+      const snapshot = captureRepositoryGitSnapshot(lease.path, (args, gitCwd) => execFileSync("git", [...args], {
+        cwd: gitCwd, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_DIR: selected.gitDir, GIT_COMMON_DIR: selected.gitCommonDir, GIT_WORK_TREE: lease.path },
+      }), { repositoryGitDir: selected.gitDir, repositoryGitCommonDir: selected.gitCommonDir });
+      if (snapshot.branch !== linked.branch || snapshot.head !== linked.headSha) {
+        throw new Error("selected Git branch/HEAD does not equal the materialized ticket record; selection never refreshes ticket evidence");
+      }
+      const evidence = Object.freeze({
+        repoKey: canonical.repoKey, repoRoot: canonical.repoRoot, ticket: request.ticket,
+        worktreeRoot: lease.path, gitDir: selected.gitDir, gitCommonDir: selected.gitCommonDir,
+        leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
+        branch: linked.branch, baseSha: linked.baseSha!, headSha: linked.headSha!,
+      });
+      if (request.resume) authenticateTicketWorktreeResume(request.resume, evidence);
+      return { team: resolvedTeam, evidence, holders: inspectTicketWorktreeBuilders(evidence, resolvedTeam, mode, dependencies) };
+    } catch (error) {
+      throw new Error(ticketWorktreeDiagnostic(error));
+    }
+  };
+  const initial = read();
+  return Object.freeze({ evidence: initial.evidence, reread: () => {
+    const current = read();
+    if (JSON.stringify(current) !== JSON.stringify(initial)) {
+      throw new Error(ticketWorktreeDiagnostic("canonical repository, ticket, lease, physical Git identity or builder evidence changed after selection"));
+    }
+  } });
+}
+
+function inspectTicketWorktreeBuilders(
+  evidence: TicketWorktreeSelectionEvidence,
+  team: string,
+  mode: string,
+  dependencies: PiDeployDependencies,
+): readonly (string | undefined)[] {
+  const inspectionDependencies = {
+    getProcessFingerprint: dependencies.getProcessFingerprint ?? readProcessFingerprint,
+    worktreeRoot: evidence.worktreeRoot, repositoryGitDir: evidence.gitDir,
+  };
+  // lstat distinguishes true absence from dangling/aliased authority entries.
+  // This selection-only check never repairs evidence or changes builder recovery.
+  const evidencePresent = (path: string): boolean => {
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw new Error("builder evidence metadata is unreadable");
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o444) === 0 || stat.size > 16_384) {
+      throw new Error("builder evidence entry is not a readable bounded physical file");
+    }
+    // Prove readability before the compatibility inspectors (which can mask IO failure).
+    readFileSync(path);
+    return true;
+  };
+  const ownerPresence = (["orchestrator", "implement"] as const).map((slot) => evidencePresent(repositoryMutationLeasePath(evidence.worktreeRoot, slot)));
+  const borrowerPresence = evidencePresent(repositoryMutationBorrowerPath(evidence.worktreeRoot));
+  const owners = (["orchestrator", "implement"] as const).map((slot) =>
+    inspectRepositoryMutationLease(evidence.repoRoot, { ...inspectionDependencies, slot }));
+  const borrower = inspectRepositoryMutationBorrower(evidence.repoRoot, inspectionDependencies);
+  const query = dependencies.queryParentDeploymentStatus ?? queryDeploymentStatus;
+  const matchesRegistry = (id: string, holderMode: string, runtime: string): boolean => {
+    const status = query(id);
+    return status?.deploy_id === id && status.status === "running" && status.team === "builder" && status.mode === holderMode && status.runtime === runtime
+      && status.repo_root === evidence.repoRoot && status.worktree_root === evidence.worktreeRoot
+      && status.repo === evidence.worktreeRoot && status.ticket_id === evidence.ticket;
+  };
+  for (const [index, owner] of owners.entries()) {
+    if (owner.state === "absent") {
+      if (ownerPresence[index]) throw new Error("builder owner evidence disappeared or became unreadable during inspection");
+      continue;
+    }
+    const lease = owner.lease;
+    if (owner.state !== "live" || !lease || lease.team !== "builder"
+      || lease.canonicalRepoKey !== evidence.repoKey || lease.canonicalRepoRoot !== evidence.repoRoot
+      || lease.worktreeRoot !== evidence.worktreeRoot || lease.slot !== (["orchestrator", "implement"] as const)[index]
+      || (lease.repositoryGitDir !== undefined && lease.repositoryGitDir !== evidence.gitDir)
+      || (lease.repositoryGitCommonDir !== undefined && lease.repositoryGitCommonDir !== evidence.gitCommonDir)
+      || lease.ticket !== evidence.ticket || !matchesRegistry(lease.deploymentId, lease.mode, lease.runtime)) {
+      throw new Error("builder owner evidence is stale, malformed, context-conflicting or not registry-running");
+    }
+  }
+  const liveOwners = owners.filter((owner) => owner.state === "live");
+  if (liveOwners.length > 1) throw new Error("ambiguous builder owners occupy the selected checkout");
+  if (borrower.state === "absent" && borrowerPresence) throw new Error("builder borrower evidence disappeared or became unreadable during inspection");
+  if (borrower.state !== "absent") {
+    const child = borrower.borrower;
+    const parent = owners[0]!.lease;
+    if (borrower.state !== "live" || !child || child.finalizationState || child.finalizedAt
+      || child.canonicalRepoKey !== evidence.repoKey || child.canonicalRepoRoot !== evidence.repoRoot
+      || child.worktreeRoot !== evidence.worktreeRoot || child.ticket !== evidence.ticket || child.branch !== evidence.branch
+      || child.deploymentId === child.parentDeploymentId
+      || !matchesRegistry(child.deploymentId, "implement", child.runtime) || owners[1]!.state !== "absent"
+      || (parent && (child.parentDeploymentId !== parent.deploymentId
+        || child.parentProcessFingerprint.pid !== parent.processFingerprint.pid
+        || child.parentProcessFingerprint.startTimeTicks !== parent.processFingerprint.startTimeTicks
+        || child.parentProcessFingerprint.bootId !== parent.processFingerprint.bootId))) {
+      throw new Error("builder borrower evidence is stale, malformed, context-conflicting or ambiguous");
+    }
+  }
+  if ((liveOwners.length > 0 || borrower.state === "live") && classifyRepositoryAccess(team, mode) !== "read-only") {
+    throw new Error("non-locking access cannot coexist with a process-verified live builder owner or borrower on the selected checkout");
+  }
+  // Identities stay inside the reread closure; no protected tokens are projected.
+  return Object.freeze([...owners.map((owner) => owner.evidenceIdentity), borrower.evidenceIdentity]);
+}
+
+function ticketWorktreeDiagnostic(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  // Preserve one five-field envelope when lower admission layers already format
+  // their failure; nesting consumes the bounded reason budget and hides cause.
+  const reason = /^Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(detail)
+    ? detail.match(/Reason:\s*(.*?)\s*Correction:/s)?.[1] ?? detail
+    : detail;
+  return formatBoundedFiveFieldDiagnostic({
+    condition: "ticket-worktree selection admission stopped",
+    source: "registered canonical repository, durable ticket, bounded Treehouse status, physical Git and process-verified builder evidence",
+    reason,
+    correction: "preserve the checkout, ticket and all authority evidence; selection grants no mutation or return rights",
+    resumeAction: "reconcile the exact existing materialized checkout and retry with fresh matching evidence; no allocation or force bypass",
+  });
+}
+
 export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), dependencies: PiDeployDependencies = {}): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics, dependencies), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
@@ -34,13 +227,23 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
   const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
-    const reason = inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
-  const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId); const team = loadTeamConfig(request.team); const mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+  let team: TeamConfig;
+  let mode: ReturnType<typeof selectMode>;
+  try {
+    team = loadTeamConfig(request.team);
+    if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
+    mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+  } catch (error) {
+    if (!request.ticketWorktree) throw error;
+    return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
+  }
+  const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId);
   const audit = new PiRedactionAudit(deploymentId, deployDir);
   const observe = (surfaceId: string, value: unknown, configuredEnv: NodeJS.ProcessEnv = process.env): void => { audit.observe(surfaceId, value, environmentSecrets({ ...process.env, ...configuredEnv })); };
   const appendActivity = (event: ReturnType<typeof createActivityEvent>, configuredEnv: NodeJS.ProcessEnv = process.env): void => {
@@ -52,7 +255,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     runtimeConfig = resolvePiRuntimeConfig(resolveRuntimeConfig({ runtime: "pi", request, team, mode, local: { provider: PI_DEFAULT_PROVIDER, model: PI_DEFAULT_MODEL }, requireCompleteCliPair: true }));
   } catch (error) {
     const rawReason = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
-    const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(rawReason) : inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, process.env, 500) }));
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, process.env, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
@@ -70,11 +273,37 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let activeTicketSlot: RepositoryTicketSlotHandoff | undefined;
   let treehouseEvidence: TreehouseLaunchEvidence | undefined;
   let reauthenticateParentBeforeSpawn: (() => void) | undefined;
+  let selectedTicketWorktree: ReturnType<typeof authenticateTicketWorktreeSelection> | undefined;
   let parentDurableAuthentication: ParentDurableAuthentication | undefined;
   let planningCwd = process.cwd();
   let planningRequest = request;
   let plan: ExecutionPlan;
   try {
+    if (request.resume) {
+      const prior = queryDeploymentStatus(request.resume);
+      const starts = getDeploymentEvents(request.resume).filter((event) => event.event === "started");
+      const selectionPath = resolve(getDeployPaths(request.resume).deployDir, TICKET_WORKTREE_SELECTION_FILE);
+      let artifactPresent = false;
+      try { lstatSync(selectionPath); artifactPresent = true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(ticketWorktreeDiagnostic("prior selection artifact metadata is unreadable"));
+      }
+      // Legacy branch-only selected records cannot be silently upgraded or used
+      // to substitute canonical execution. Ordinary inferred worktrees have no
+      // selection branch correlation and remain on their existing resume path.
+      const selectedBefore = artifactPresent || prior?.ticket_worktree_selection !== undefined
+        || starts.some((event) => event.ticket_worktree_selection !== undefined)
+        || (prior?.branch_state !== undefined && !prior.builder_authority && prior.repo_root !== prior.worktree_root);
+      if (!prior || starts.length !== 1) throw new Error(ticketWorktreeDiagnostic("prior immutable registry start evidence is missing or ambiguous"));
+      if (selectedBefore && !request.ticketWorktree) {
+        throw new Error(ticketWorktreeDiagnostic("resuming a ticket-worktree selection requires the same flag and exact ticket"));
+      }
+    }
+    if (request.ticketWorktree) {
+      selectedTicketWorktree = authenticateTicketWorktreeSelection(request, mode?.id ?? "default", planningCwd, dependencies, team.name);
+      planningCwd = selectedTicketWorktree.evidence.worktreeRoot;
+      const { repo: _selector, ...selectionRequest } = request;
+      planningRequest = selectionRequest;
+    }
     const builderMode = !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
       ? mode.id
       : undefined;
@@ -230,6 +459,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       cwd: planningCwd,
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
+      ...(selectedTicketWorktree ? { ticketWorktreeSelection: selectedTicketWorktree.evidence } : {}),
     });
     assertPiExecutionRootAgreement(plan, plan.environment as Record<string, string>);
   } catch (error) {
@@ -241,7 +471,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
     const raw = `${error instanceof Error ? error.message : String(error)}${cleanupFailure ? `; ${cleanupFailure}` : ""}`;
     const rawReason = boundedDiagnostic(raw, requestedEnvironment, 2000);
-    const reason = inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(rawReason) : inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), requestedEnvironment);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
     emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
@@ -268,16 +498,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (cleanup.status === "released" || cleanup.status === "absent") activeTicketSlot = undefined;
       else detail += `; matching ticket-slot cleanup failed (${cleanup.status})`;
     }
-    const reason = boundedDiagnostic(detail, env, 2000);
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail) : boundedDiagnostic(detail, env, 2000);
     observe("deploy-diagnostic", reason, env);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
   const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId?: string): void => {
-    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
+    const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)
       : primer;
     writeFileSync(primerPath, persistedPrimer, "utf8");
+    if (currentPlan.ticketWorktreeSelection) {
+      writeFileSync(resolve(deployDir, TICKET_WORKTREE_SELECTION_FILE), JSON.stringify(currentPlan.ticketWorktreeSelection), { flag: "wx" });
+    }
     if (protectedAuthorizationId && readFileSync(primerPath, "utf8").includes(protectedAuthorizationId)) {
       throw new Error("protected reviewer persisted primer authorization redaction could not be proven exact");
     }
@@ -288,9 +521,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   appendActivity(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: `Resolved Pi runtime ${provider}/${model}`, metadata: { provider, model, resolution: runtimeConfig.source } }), env);
   if (plan.rogue_one) appendActivity(createActivityEvent({ deployId: deploymentId, kind: "text", source: "pi", body: rogueOneAuditNotice(plan.invocation_channel!), metadata: { rogue_one: true, invocation_channel: plan.invocation_channel, team: plan.team, mode: plan.mode } }), env);
   if (request.dryRun) {
-    try { writePrimer(plan); }
+    try { selectedTicketWorktree?.reread(); writePrimer(plan); }
     catch (error) {
-      const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+      const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), env, 2000);
+      const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail) : detail;
       observe("deploy-diagnostic", reason, env);
       return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
     }
@@ -372,7 +606,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     const containmentFailure = await finalizeActiveRepositoryAuthority(kind === "completed" && status === "success");
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
@@ -395,7 +629,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   };
   const completeFailure = async (reason: string, exitCode = 1) => {
     const boundedReason = boundedDiagnostic(reason, env, 2000);
-    const safeReason = inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
+    const safeReason = request.ticketWorktree ? ticketWorktreeDiagnostic(boundedReason) : inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
     const outcome = await writeTerminal("completed", "failed", `ppa deploy failed: ${safeReason}`, exitCode);
     const resultReason = outcome.authorityFailure ? outcome.reason : safeReason;
@@ -404,7 +638,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   };
   const crashFailure = async (reason: string) => {
     const boundedReason = boundedDiagnostic(reason, env, 2000);
-    const safeReason = inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
+    const safeReason = request.ticketWorktree ? ticketWorktreeDiagnostic(boundedReason) : inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
     const outcome = await writeTerminal("crashed", "failed", safeReason, 1);
     const resultReason = outcome.authorityFailure ? outcome.reason : safeReason;
@@ -429,6 +663,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     if (!request.background) clearPiForegroundCompletion(deployDir);
     await adapter.installHooks(deployDir, { deploymentId, deploymentDir: deployDir, activityLogPath: paths.activityLogPath, env, executionPlan: plan });
+    selectedTicketWorktree?.reread();
     const inheritedParent = inheritedAttempt;
     if (inheritedParent) {
       reauthenticateParentBeforeSpawn?.();
@@ -579,6 +814,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
 
     if (activeRepositoryBorrower) reauthenticateParentBeforeSpawn?.();
+    selectedTicketWorktree?.reread();
 
     let publishedPid: number | undefined;
     const publishPid = (pid: number): void => {
@@ -705,6 +941,8 @@ function deploymentCorrelation(plan: ExecutionPlan): {
     builderAuthority: evidence.authority, treehousePath: evidence.path, treehouseLeaseId: evidence.leaseId,
     treehouseLeaseHolder: evidence.leaseHolder, branchState: evidence.branchState, branchBaseSha: evidence.baseSha,
     branchHeadSha: evidence.headSha, ticketSlotId: evidence.ticketSlotId, repositoryPermit: evidence.repositoryPermit,
+  } : plan.ticketWorktreeSelection ? {
+    branchState: "materialized", branchBaseSha: plan.ticketWorktreeSelection.baseSha, branchHeadSha: plan.ticketWorktreeSelection.headSha,
   } : {};
 }
 
@@ -719,7 +957,37 @@ function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "mat
     branch_state: terminal?.branchState ?? evidence.branchState, branch_base_sha: terminal?.branchBaseSha ?? evidence.baseSha,
     branch_head_sha: terminal?.branchHeadSha ?? evidence.headSha, ticket_slot_id: evidence.ticketSlotId,
     repository_permit: evidence.repositoryPermit,
+  } : plan.ticketWorktreeSelection ? {
+    branch_state: "materialized", branch_base_sha: plan.ticketWorktreeSelection.baseSha, branch_head_sha: plan.ticketWorktreeSelection.headSha,
   } : {};
+}
+
+function authenticateTicketWorktreeResume(id: string, evidence: TicketWorktreeSelectionEvidence): void {
+  if (!/^d-[0-9a-f]{6}$/.test(id)) throw new Error("selection resume requires an exact deployment ID");
+  const status = queryDeploymentStatus(id);
+  const path = resolve(getDeployPaths(id).deployDir, TICKET_WORKTREE_SELECTION_FILE);
+  if (!existsSync(path) || !lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || lstatSync(path).size > 16_384) {
+    throw new Error("prior immutable ticket-worktree selection evidence is missing or malformed");
+  }
+  const prior: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const starts = getDeploymentEvents(id).filter((event) => event.event === "started");
+  if (!status?.ticket_worktree_selection || starts.length !== 1
+    || starts[0]?.ticket_worktree_selection !== status.ticket_worktree_selection
+    || status.ticket_worktree_selection.length > 16_384) throw new Error("prior immutable selection registry context is missing, malformed or inconsistent");
+  const registryPrior: unknown = JSON.parse(status.ticket_worktree_selection);
+  if (!registryPrior || typeof registryPrior !== "object" || Array.isArray(registryPrior)
+    || (Object.keys(evidence) as (keyof TicketWorktreeSelectionEvidence)[]).some((field) => typeof (registryPrior as Record<string, unknown>)[field] !== "string" || !(registryPrior as Record<string, unknown>)[field])
+    || !/^[0-9a-f]{40}$/.test(String((registryPrior as Record<string, unknown>)["baseSha"]))
+    || !/^[0-9a-f]{40}$/.test(String((registryPrior as Record<string, unknown>)["headSha"]))) throw new Error("prior immutable selection registry context is malformed");
+  if (JSON.stringify(registryPrior) !== JSON.stringify(prior)) throw new Error("prior selection artifact and immutable registry context disagree");
+  if (!prior || typeof prior !== "object" || Array.isArray(prior)
+    || !status || status.runtime !== "pi" || status.binary !== "ppa" || status.builder_authority
+    || status.ticket_id !== evidence.ticket || status.repo_root !== evidence.repoRoot
+    || status.repo !== evidence.worktreeRoot || status.worktree_root !== evidence.worktreeRoot
+    || (["repoKey", "repoRoot", "ticket", "worktreeRoot", "gitDir", "gitCommonDir"] as const)
+      .some((field) => (prior as Record<string, unknown>)[field] !== evidence[field])) {
+    throw new Error("resume requires the prior exact canonical repository, ticket and physical selected checkout");
+  }
 }
 
 function authenticateParentTicketBranch(repoKey: string, worktreeRoot: string, ticketId: string): { branch: string; baseSha?: string; headSha: string } {

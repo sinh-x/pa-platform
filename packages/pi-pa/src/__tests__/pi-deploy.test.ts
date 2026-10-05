@@ -8,10 +8,11 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, TicketStore, type RepositoryMutationLease, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, type PiDeployDependencies } from "../deploy.js";
+import { TreehouseClient } from "../treehouse.js";
 import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
@@ -2007,6 +2008,256 @@ test("PPA and OPA builders hold different canonical repositories independently",
     assert.equal(outcomes.every((outcome) => outcome.status === "success"), true);
     assert.equal(inspectRepositoryMutationLease(firstRepo).state, "absent");
     assert.equal(inspectRepositoryMutationLease(secondRepo).state, "absent");
+  });
+});
+
+async function withSelectionAliasFixture(holder: "owner" | "borrower" | "absent", callback: (fixture: {
+  root: string; canonical: string; selected: string; dependencies: PiDeployDependencies;
+  statusCalls: string[][]; setTeam: (name: string, filename?: string) => void;
+}) => Promise<void>): Promise<void> {
+  await withPiEnv(async (root, gitState) => {
+    const canonical = join(root, "repo"); const selected = join(root, "selected");
+    const branch = "feature/PAP-234-alias";
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, selected], { cwd: canonical, stdio: "ignore" });
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "alias", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
+    const setTeam = (name: string, filename = "requirements") => writeFileSync(join(root, "teams", `${filename}.yaml`), `name: ${name}\ndescription: Alias fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: analyze\n    label: Analyze\n    require_ticket: true\n`);
+    setTeam("requirements"); setTeam("learner", "learner");
+    const snapshot = captureRepositoryGitSnapshot(selected);
+    const fingerprint = readProcessFingerprint(process.pid)!;
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], selected);
+    const gitCommonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], selected);
+    const authorityPath = holder === "owner" ? repositoryMutationLeasePath(selected) : repositoryMutationBorrowerPath(selected);
+    // Synthetic fixture-only evidence: no acquisition API or production authority.
+    if (holder !== "absent") {
+      const deploymentId = holder === "owner" ? "d-aabbcc" : "d-ddeeff";
+      const mode = holder === "owner" ? "orchestrator" : "implement";
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", mode, runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(), ticket_id: "PAP-234", repo: selected, repo_root: canonical, worktree_root: selected });
+      const identity = { schemaVersion: 1 as const, canonicalRepoKey: "pa-platform", canonicalRepoRoot: canonical, worktreeRoot: selected, deploymentId, deploymentDirectory: join(root, "deployments", deploymentId), runtime: "pi" as const, team: "builder" as const, ticket: "PAP-234", processFingerprint: fingerprint };
+      const authority: RepositoryMutationLease | RepositoryMutationBorrower = holder === "owner"
+        ? { ...identity, mode: "orchestrator", slot: "orchestrator", launchMode: "foreground", ownershipToken: "fixture-owner", acquiredAt: new Date().toISOString(), preLaunchGitSnapshot: snapshot, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir }
+        : { ...identity, mode: "implement", launchMode: "background", borrowerToken: "fixture-borrower", parentDeploymentId: "d-aabbcc", parentProcessFingerprint: fingerprint, branch, registeredAt: new Date().toISOString(), timeoutSeconds: 60, launchGitSnapshot: snapshot };
+      writeFileSync(authorityPath, JSON.stringify(authority));
+      const inspection = { getProcessFingerprint: readProcessFingerprint, worktreeRoot: selected, repositoryGitDir: gitDir };
+      assert.equal(holder === "owner" ? inspectRepositoryMutationLease(canonical, inspection).state : inspectRepositoryMutationBorrower(canonical, inspection).state, "live");
+    }
+    const authorityBytes = holder === "absent" ? undefined : readFileSync(authorityPath);
+    const ticketBytes = readFileSync(ticketPath); const projectBytes = readFileSync(join(selected, "README.md"));
+    const operations: string[] = []; const statusCalls: string[][] = [];
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      assert.equal(cwd, canonical); statusCalls.push([...args]); assert.deepEqual(args, ["status", "--json"]);
+      return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: selected, status: "leased", lease_id: "lease-234", lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) };
+    } });
+    const originalUpdate = TicketStore.prototype.update; const originalComment = TicketStore.prototype.comment; const originalGet = TreehouseClient.prototype.getLease;
+    TicketStore.prototype.update = function () { operations.push("ticket-write"); throw new Error("forbidden ticket write"); };
+    TicketStore.prototype.comment = function () { operations.push("ticket-write"); throw new Error("forbidden ticket comment"); };
+    TreehouseClient.prototype.getLease = function () { operations.push("allocation"); throw new Error("forbidden allocation"); };
+    try {
+      await callback({ root, canonical, selected, dependencies: { treehouse, observeOperation: (op) => operations.push(op) }, statusCalls, setTeam });
+      assert.deepEqual(operations.filter((op) => op !== "runtime-spawn"), [], "zero checkout/branch/slot/permit/lineage/ticket writes");
+      assert.deepEqual(captureRepositoryGitSnapshot(selected), snapshot);
+      assert.deepEqual(readFileSync(ticketPath), ticketBytes); assert.deepEqual(readFileSync(join(selected, "README.md")), projectBytes);
+      if (authorityBytes) assert.deepEqual(readFileSync(authorityPath), authorityBytes, "selection preserves live authority bytes");
+      else for (const path of [repositoryMutationLeasePath(selected), repositoryMutationLeasePath(selected, "implement"), repositoryMutationBorrowerPath(selected)]) assert.equal(existsSync(path), false);
+      assert.ok(gitState.readOperations().every((args) => args[0] === "worktree" && args[1] === "list"), "zero branch or checkout lifecycle actions");
+    } finally {
+      TicketStore.prototype.update = originalUpdate; TicketStore.prototype.comment = originalComment; TreehouseClient.prototype.getLease = originalGet;
+    }
+  });
+}
+
+for (const holder of ["owner", "borrower"] as const) test(`ticket-worktree resolved non-locking alias rejects alongside live builder ${holder}`, async () => {
+  await withSelectionAliasFixture(holder, async ({ selected, dependencies, setTeam, statusCalls }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    let preflights = 0; const spawned: SpawnOpts[] = []; const resumed: SpawnOpts[] = [];
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts), onResume: (opts) => resumed.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "requirements");
+    assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "read-only");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    setTeam("learner");
+    for (const extra of [{}, { background: true }, { dryRun: true }, { resume: allowed.deploymentId! }]) {
+      const rejected = await deployWithPi({ ...request, ...extra }, adapter, undefined, dependencies);
+      assert.equal(rejected.status, "failed"); assert.match(rejected.reason ?? "", /non-locking access cannot coexist/);
+      assert.match(rejected.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((rejected.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1); assert.equal(resumed.length, 0);
+    // Actual read-only identity remains allowed even with a non-locking filename.
+    setTeam("requirements", "learner");
+    const reverseAlias = await deployWithPi({ ...request, team: "learner" }, adapter, undefined, dependencies);
+    assert.equal(reverseAlias.status, "success", reverseAlias.reason);
+    assert.equal(spawned.at(-1)?.executionPlan?.team, "requirements");
+    assert.equal(spawned.at(-1)?.executionPlan?.repositoryAdmission.access, "read-only");
+    setTeam("builder"); const reads = statusCalls.length;
+    const builder = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(builder.status, "failed"); assert.match(builder.reason ?? "", /resolved builder team/);
+    assert.equal(statusCalls.length, reads, "resolved builder still rejects before any status/capacity action");
+    assert.equal(preflights, 2); assert.equal(spawned.length, 2);
+  });
+});
+
+test("ticket-worktree alias plan/access consistency and resolved-identity rereads reject drift", async () => {
+  await withSelectionAliasFixture("absent", async ({ canonical, selected, dependencies, setTeam }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    setTeam("learner");
+    const spawned: SpawnOpts[] = []; let preflights = 0;
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "learner"); assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "non-locking");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    // Same access classification is insufficient: bind the resolved team name.
+    const authentication = authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies);
+    setTeam("planner");
+    assert.throws(() => authentication.reread(), /changed after selection/);
+    assert.throws(() => authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies, "learner"), /resolved team identity changed/);
+    for (const dryRun of [false, true]) {
+      setTeam("learner");
+      const changed = await deployWithPi({ ...request, dryRun }, stubAdapter({
+        onDescribe: () => setTeam("planner"), preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts),
+      }), undefined, dependencies);
+      assert.equal(changed.status, "failed"); assert.match(changed.reason ?? "", /resolved team identity changed/);
+      assert.match(changed.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((changed.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1);
+    setTeam("requirements");
+    const preflightDrift = await deployWithPi({ ...request, resume: allowed.deploymentId! }, stubAdapter({
+      preflight: async () => { preflights += 1; setTeam("learner"); }, onResume: (opts) => spawned.push(opts),
+    }), undefined, dependencies);
+    assert.equal(preflightDrift.status, "failed"); assert.match(preflightDrift.reason ?? "", /resolved team identity changed/);
+    assert.equal(preflights, 2); assert.equal(spawned.length, 1, "post-preflight reread blocks resume");
+  });
+});
+
+test("explicit ticket selection projects foreground/background/dry-run roots without acquiring or mutating authority", async () => {
+  await withPiEnv(async (root) => {
+    const canonical = join(root, "repo");
+    const selected = join(root, "selected");
+    const branch = "feature/PAP-234-selection";
+    git(["worktree", "add", "-b", branch, selected], canonical);
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "selection", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
+    writeFileSync(join(selected, "README.md"), "dirty inspection checkout\n");
+    const before = captureRepositoryGitSnapshot(selected);
+    const ticketBefore = readFileSync(ticketPath);
+    const calls: string[][] = [];
+    const operations: string[] = [];
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      calls.push([...args]); assert.equal(cwd, canonical);
+      return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: selected, status: "leased", lease_id: "lease-234", lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) };
+    } });
+    const spawned: SpawnOpts[] = [];
+    let preflights = 0;
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
+    for (const background of [false, true]) {
+      const result = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, repo: "pa-platform", background }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
+      assert.equal(result.status, "success", result.reason);
+      const opts = spawned.at(-1)!; const plan = opts.executionPlan!;
+      assert.equal(plan.repositoryCwd, selected); assert.equal(opts.mode, background ? "background" : "foreground");
+      assert.equal(plan.repoRoot, canonical);
+      for (const path of [plan.worktreeRoot, plan.repositoryCwd, plan.memoryDocumentRoot, plan.environment.PA_REPO, plan.environment.PA_WORKTREE_ROOT, opts.env?.["PA_REPO"], opts.env?.["PA_WORKTREE_ROOT"]]) assert.equal(path, selected);
+      assert.equal(plan.ticketWorktreeSelection?.branch, branch); assert.equal(Object.isFrozen(plan.ticketWorktreeSelection), true);
+      assert.equal(plan.treehouse, undefined); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+      for (const key of ["PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"] as const) assert.equal(plan.environment[key], "");
+      const primer = readFileSync(opts.primerPath, "utf8");
+      assert.match(primer, /Immutable Ticket Worktree Selection Evidence/);
+      assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(canonical)}$`, "m"));
+      for (const field of ["cwd", "repo", "worktree_root"]) assert.match(primer, new RegExp(`^${field}: ${escapeRegExp(selected)}$`, "m"));
+      assert.doesNotMatch(primer, /Authority:|ticket_slot=|treehouse return --/);
+      const status = queryDeploymentStatus(result.deploymentId!)!;
+      assert.equal(status.repo_root, canonical); assert.equal(status.repo, selected); assert.equal(status.worktree_root, selected);
+      assert.equal(status.ticket_id, "PAP-234"); assert.equal(status.branch_head_sha, head); assert.equal(status.branch_base_sha, head);
+      for (const key of ["builder_authority", "treehouse_path", "treehouse_lease_id", "ticket_slot_id", "repository_permit", "repository_slot"] as const) assert.equal(status[key], undefined);
+    }
+    const dry = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, dryRun: true }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
+    assert.equal(dry.status, "pending", dry.reason);
+    const preview = readFileSync(join(getDeployPaths(dry.deploymentId!).deployDir, "primer.md"), "utf8");
+    assert.match(preview, /Immutable Ticket Worktree Selection Evidence/);
+    assert.match(preview, new RegExp(`^cwd: ${escapeRegExp(selected)}$`, "m"));
+    assert.equal(preflights, 2); assert.equal(spawned.length, 2);
+    assert.deepEqual(operations, ["runtime-spawn", "runtime-spawn"]);
+    assert.ok(calls.every((args) => args.join(" ") === "status --json"));
+    assert.deepEqual(captureRepositoryGitSnapshot(selected), before); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
+    const runtimeRoots: string[] = [];
+    const realAdapter = new PiAdapter({
+      cwd: canonical, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+      runCommand: (_args, opts) => {
+        runtimeRoots.push(opts.cwd, opts.env["PA_REPO"]!, opts.env["PA_WORKTREE_ROOT"]!);
+        assert.equal(execFileSync(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { cwd: opts.cwd, env: opts.env, encoding: "utf8" }), selected);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    for (const background of [false, true]) {
+      const runtime = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, background }, realAdapter, undefined, { treehouse });
+      assert.equal(runtime.status, "success", runtime.reason);
+    }
+    assert.equal(runtimeRoots.length, 6); assert.ok(runtimeRoots.every((path) => path === selected));
+    assert.deepEqual(captureRepositoryGitSnapshot(selected), before); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
+  });
+});
+
+test("ticket-selection resume reauthenticates the same canonical/ticket/physical checkout before preflight", async () => {
+  await withPiEnv(async (root) => {
+    const canonical = join(root, "repo"); const selected = join(root, "selected"); const branch = "feature/PAP-234-selection";
+    git(["worktree", "add", "-b", branch, selected], canonical);
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    const ticket = { id: "PAP-234", project: "pa-platform", title: "selection", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] };
+    writeFileSync(ticketPath, JSON.stringify(ticket));
+    let leasePath = selected; let leaseId = "lease-234";
+    const treehouse = new TreehouseClient({ run() { return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: leasePath, status: "leased", lease_id: leaseId, lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) }; } });
+    let preflights = 0; const resumed: SpawnOpts[] = [];
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onResume: (opts) => resumed.push(opts) });
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true };
+    const initial = await deployWithPi(request, adapter, undefined, { treehouse });
+    assert.equal(initial.status, "success", initial.reason);
+    const resume = { ...request, resume: initial.deploymentId! };
+    const success = await deployWithPi(resume, adapter, undefined, { treehouse });
+    assert.equal(success.status, "success", success.reason); assert.equal(resumed[0]?.executionPlan?.repositoryCwd, selected);
+    assert.equal(resumed[0]?.sessionId, "authoritative-session-id");
+    const beforePreflights = preflights;
+    const assertRejected = async (override: Partial<typeof resume> = {}) => {
+      const failure = await deployWithPi({ ...resume, ...override }, adapter, undefined, { treehouse });
+      assert.equal(failure.status, "failed"); assert.ok((failure.reason?.length ?? 0) <= 2_000);
+      assert.match(failure.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.equal(preflights, beforePreflights); assert.equal(resumed.length, 1);
+    };
+    await assertRejected({ ticketWorktree: false });
+    await assertRejected({ ticket: undefined });
+    await assertRejected({ resume: "d-ffffff" });
+    const evidencePath = join(getDeployPaths(initial.deploymentId!).deployDir, "ticket-worktree-selection.json");
+    const bytes = readFileSync(evidencePath); const evidence = JSON.parse(bytes.toString()) as Record<string, unknown>;
+    const context = queryDeploymentStatus(initial.deploymentId!)!.ticket_worktree_selection;
+    assert.equal(context, bytes.toString());
+    rmSync(evidencePath);
+    await assertRejected(); await assertRejected({ ticketWorktree: false });
+    for (const malformed of ["{", "null", "[]", "{}", JSON.stringify({ ...evidence, ticket: "PAP-999" })]) {
+      writeFileSync(evidencePath, malformed); await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    writeFileSync(evidencePath, bytes);
+    // The canonical registry is an independent immutable discriminator. Missing,
+    // malformed or substituted context cannot be repaired from the sidecar.
+    for (const metadata of [null, "{", "null", "{}", JSON.stringify({ ...evidence, worktreeRoot: canonical })]) {
+      getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(metadata, initial.deploymentId!);
+      await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(context, initial.deploymentId!);
+    for (const field of ["repoRoot", "repoKey", "ticket", "worktreeRoot", "gitDir", "gitCommonDir"]) {
+      writeFileSync(evidencePath, JSON.stringify({ ...evidence, [field]: "/wrong" })); await assertRejected();
+    }
+    writeFileSync(evidencePath, bytes);
+    writeFileSync(ticketPath, JSON.stringify({ ...ticket, linkedBranches: [{ ...ticket.linkedBranches[0], headSha: "0".repeat(40) }] })); await assertRejected();
+    writeFileSync(ticketPath, JSON.stringify(ticket));
+    const replacement = join(root, "replacement"); git(["worktree", "add", "--force", replacement, branch], canonical);
+    leasePath = replacement; await assertRejected(); leasePath = selected;
+    const raceAdapter = stubAdapter({ preflight: async () => { leaseId = "replacement"; }, onResume: (opts) => resumed.push(opts) });
+    const race = await deployWithPi(resume, raceAdapter, undefined, { treehouse });
+    assert.equal(race.status, "failed"); assert.match(race.reason ?? "", /changed after selection/); assert.equal(resumed.length, 1);
   });
 });
 

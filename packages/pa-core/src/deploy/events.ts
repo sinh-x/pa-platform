@@ -6,9 +6,11 @@ import type { DeploymentCorrelationEvidence } from "./correlation.js";
 
 export const OPA_WRAPPER_FALLBACK_SUMMARY = "Automated fallback: opa wrapper wrote this partial registry marker after OpenCode exited without an agent completion marker.";
 
+/** Selection-only launches project branch evidence only; never builder bindings. */
 export type DeploymentCorrelationOpts = DeploymentCorrelationEvidence;
 
 export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
+  ticketWorktreeSelection?: string;
   deploymentId: string;
   team: string;
   primer?: string;
@@ -38,6 +40,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     deployment_id: opts.deploymentId,
     team: opts.team,
     event: "started",
+    ticket_worktree_selection: opts.ticketWorktreeSelection,
     timestamp: nowUtc(),
     primer: opts.primer,
     agents: opts.agents,

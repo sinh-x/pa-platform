@@ -16,6 +16,7 @@ perl \
     local $/;
     $_ = <>;
     s/Fish completions for pa-core/Fish completions for opa (opencode-pa adapter)/;
+    s/\n# PPA_ONLY_DEPLOY_OPTION ticket-worktree//;
     s/__pa_core_/__opa_/g;
     s/\bpa-core\b/opa/g;
     s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
@@ -35,6 +36,7 @@ perl \
     local $/;
     $_ = <>;
     s/Fish completions for pa-core/Fish completions for cpa (claudecode-pa adapter)/;
+    s/\n# PPA_ONLY_DEPLOY_OPTION ticket-worktree//;
     s/__pa_core_/__cpa_/g;
     s/\bpa-core\b/cpa/g;
     s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
@@ -58,6 +60,7 @@ perl \
     local $/;
     $_ = <>;
     s/Fish completions for pa-core/Fish completions for dpa (droidcode-pa adapter)/;
+    s/\n# PPA_ONLY_DEPLOY_OPTION ticket-worktree//;
     s/__pa_core_/__dpa_/g;
     s/\bpa-core\b/dpa/g;
     s/Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD/Registered repository key or exact configured path/;
@@ -81,6 +84,7 @@ perl \
     local $/;
     $_ = <>;
     s/Fish completions for pa-core/Fish completions for ppa (pi-pa adapter)/;
+    s/# PPA_ONLY_DEPLOY_OPTION ticket-worktree/complete -c ppa -n __ppa_deploy_completing -l ticket-worktree -d '\''Select existing ticket worktree (non-builder; --ticket required)'\''/;
     s/__pa_core_/__ppa_/g;
     s/\bpa-core\b/ppa/g;
     s/Link branch repo\|branch\|sha/Plan or authenticate branch repo|branch/;

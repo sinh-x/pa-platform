@@ -4,7 +4,7 @@ import { getPlatformHomeDir, getSkillsDir } from "../paths.js";
 import { resolveRepoExecutionPath } from "../repos.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { RepositoryAdmissionEvidence } from "../deploy/repository-admission.js";
-import type { TreehouseLaunchEvidence } from "../deploy/plan.js";
+import type { TicketWorktreeSelectionEvidence, TreehouseLaunchEvidence } from "../deploy/plan.js";
 import type { ToolReference } from "../runtime-api/types.js";
 import { isRogueOneTeam, rogueOneAuditNotice, type DeploymentInvocationChannel } from "../deploy/rogue-one.js";
 
@@ -28,6 +28,7 @@ export interface GeneratePrimerOptions {
   repository?: PrimerRepositoryContext;
   repositoryAdmission?: RepositoryAdmissionEvidence;
   treehouse?: TreehouseLaunchEvidence;
+  ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
   toolReference?: ToolReference;
   rogueOne?: boolean;
   invocationChannel?: DeploymentInvocationChannel;
@@ -44,7 +45,7 @@ export function generatePrimer(options: GeneratePrimerOptions): string {
   const adaptedExtraInstructions = options.extraInstructions ? adaptContentForRuntime(options.extraInstructions, options.runtime) : undefined;
   const repository = options.repository ?? resolvePrimerRepositoryContext(adaptedExtraInstructions);
   const globalDocs = collectGlobalDocs(options.teamConfig, mode, repository?.repoKey);
-  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission, options.treehouse);
+  const additionalInstructions = renderAdditionalInstructions(userObjective, adaptedExtraInstructions, repository, options.repositoryAdmission, options.treehouse, options.ticketWorktreeSelection);
 
   const body = [
     `# PA Deployment Primer`,
@@ -110,6 +111,7 @@ function generateRogueOnePrimer(options: GeneratePrimerOptions): string {
     demoteAuthoritativeAdditionalInstructionsHeading(userObjective),
     "",
     "## Deployment Context",
+    renderTicketWorktreeSelection(options.ticketWorktreeSelection) ?? "",
     context ?? "Canonical deployment context unavailable.",
     "",
     "## Runtime Tools",
@@ -138,6 +140,7 @@ function renderAdditionalInstructions(
   repository: PrimerRepositoryContext | undefined,
   repositoryAdmission: RepositoryAdmissionEvidence | undefined,
   treehouse: TreehouseLaunchEvidence | undefined,
+  ticketWorktreeSelection: TicketWorktreeSelectionEvidence | undefined,
 ): string {
   const objective = demoteAuthoritativeAdditionalInstructionsHeading(userObjective?.trim() || "No user objective override was provided.");
   const extra = extraInstructions ? demoteAuthoritativeAdditionalInstructionsHeading(extraInstructions.trim()) : undefined;
@@ -147,7 +150,7 @@ function renderAdditionalInstructions(
   const dirtyBuilderContract = renderDirtyBuilderIntentContract(repositoryAdmission);
   const approvedBorrowerScope = renderApprovedBorrowerScope(repositoryAdmission);
   const treehouseEvidence = renderTreehouseLaunchEvidence(treehouse);
-  return ["## Additional Instructions", objective, repositoryIdentity, repositoryEvidence, treehouseEvidence, dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
+  return ["## Additional Instructions", objective, repositoryIdentity, repositoryEvidence, treehouseEvidence, renderTicketWorktreeSelection(ticketWorktreeSelection), dirtyBuilderContract, approvedBorrowerScope, contextualInstructions].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 function renderRepositoryIdentityDomains(repository: PrimerRepositoryContext | undefined): string | undefined {
@@ -168,6 +171,19 @@ function renderRepositoryAdmissionEvidence(repositoryAdmission: RepositoryAdmiss
     `- Slot: ${repositoryAdmission.slot ?? "implement"}`,
     `- Git: branch=${snapshot.branch}, head=${snapshot.head}, staged=${snapshot.stagedCount}, unstaged=${snapshot.unstagedCount}, untracked=${snapshot.untrackedCount}`,
     "- Recovery: preserve the recorded branch and files; on identity, slot, or snapshot drift, stop before spawn and retry only after the blocking evidence is reconciled.",
+  ].join("\n");
+}
+
+function renderTicketWorktreeSelection(evidence: TicketWorktreeSelectionEvidence | undefined): string | undefined {
+  if (!evidence) return undefined;
+  return [
+    "### Immutable Ticket Worktree Selection Evidence",
+    `- Canonical repository: ${evidence.repoKey} at ${evidence.repoRoot}`,
+    `- Ticket: ${evidence.ticket}; selected physical checkout: ${evidence.worktreeRoot}`,
+    `- Branch: ${evidence.branch}, state=materialized, base=${evidence.baseSha}, head=${evidence.headSha}`,
+    "- Selection only: no builder authority, ticket slot, repository permit, lineage, mutation lease, borrowing or return rights are granted. Preserve existing team/mode permissions.",
+    "- No checkout allocation, branch action or ticket write is performed by selection. Never return the selected checkout on this evidence.",
+    "- Authentication is reread before launch; this is neither filesystem sandboxing nor an immutable post-spawn snapshot.",
   ].join("\n");
 }
 
