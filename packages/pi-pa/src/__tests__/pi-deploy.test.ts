@@ -11,9 +11,11 @@ import { fileURLToPath } from "node:url";
 import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, TicketStore, type RepositoryMutationLease, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, type PiDeployDependencies } from "../deploy.js";
-import { TreehouseClient } from "../treehouse.js";
-import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent } from "../validation-launch.js";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, selectPiReviewCandidateBeforePlanning, reservePiReviewCandidate, rereadPiReviewCandidate, withPiReviewCandidateReservation, type PiDeployDependencies, type PiReviewCandidateOperation } from "../deploy.js";
+import { finalizeRepositoryReview, repositoryReviewReservationPath, resolveExecutionPlan, type RepositoryReviewFinalEvidence } from "@pa-platform/pa-core";
+import { TreehouseClient, TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
+import type { PiProtectedValidationLaunch } from "../validation-supervisor.js";
+import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent, withPiReviewCandidateAtMatrixBoundary } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { collectContext, initialContextSnapshot } from "../pi-extension/context-state.js";
@@ -58,6 +60,168 @@ function initializeGitRepo(path: string): void {
   git(["add", "README.md"], path);
   git(["commit", "-m", "initial"], path);
 }
+
+test("review-auto rejects candidate binding drift and concurrent borrowers", async (t) => {
+  const prior = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+  for (const key of Object.keys(prior)) delete process.env[key];
+  const root = mkdtempSync(join(tmpdir(), "pi-review-reservation-"));
+  const authorityId = "review-auth:11111111-1111-4111-8111-111111111111";
+  const snapshotFiles = (dir: string): Record<string, string> => {
+    const files: Record<string, string> = {};
+    const walk = (path: string): void => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) walk(child);
+        else files[child] = `${statSync(child).mode}:${readFileSync(child).toString("base64")}`;
+      }
+    };
+    walk(dir); return files;
+  };
+  const driftCases = ["lease-id", "lease-holder", "lease-path", "ticket-head", "ticket-base", "ticket-branch", "ticket-duplicate", "registry-root", "branch", "head", "staged", "unstaged", "untracked", "git-dir", "common-dir", "reservation-token", "reservation-missing", "reservation-insecure", "authorization", "deployment"];
+  const cases = ["zero owner", "idle parent", "active borrower", "standalone implement", "wrong-ticket parent", "wrong-path parent", "terminal parent", "stale parent",
+    ...driftCases.map((drift) => `after-plan:${drift}`), ...driftCases.map((drift) => `matrix:${drift}`)];
+  try {
+    assert.equal(TREEHOUSE_TIMEOUT_MS, 15_000); assert.equal(MAX_TREEHOUSE_JSON_BYTES, 1024 * 1024);
+    for (const [index, scenario] of cases.entries()) await t.test(scenario, () => {
+      const dir = join(root, String(index)); mkdirSync(dir);
+      const repo = join(dir, "repo"); const worktree = join(dir, "candidate"); initializeGitRepo(repo);
+      const baseSha = git(["rev-parse", "HEAD"], repo); const branch = "feature/ALT-7-candidate";
+      git(["worktree", "add", "-b", branch, worktree, baseSha], repo);
+      git(["commit", "--allow-empty", "-m", "candidate"], worktree);
+      const featureSha = git(["rev-parse", "HEAD"], worktree);
+      const config = join(dir, "config"); const tickets = join(dir, "tickets"); mkdirSync(config); mkdirSync(tickets);
+      const configBody = `config_dir: ${dir}\nrepos:\n  generic-repo:\n    path: ${repo}\n    prefix: ALT\n`;
+      writeFileSync(join(config, "config.yaml"), configBody);
+      process.env["PA_PLATFORM_CONFIG"] = config; process.env["PA_AI_USAGE_HOME"] = dir; process.env["PA_REGISTRY_DB"] = join(dir, "registry.db");
+      const taskPath = join(dir, "deployment-tasks.json"); writeFileSync(taskPath, "fixture-task-sentinel");
+      assert.equal(process.env["PA_DEPLOYMENT_DIR"], undefined); assert.equal(process.env["PI_SESSION_ID"], undefined);
+      const linked = { repo: "generic-repo", branch, state: "materialized", baseSha, headSha: featureSha, sha: featureSha };
+      const ticket = { id: "ALT-7", project: "generic-repo", linkedBranches: [linked] };
+      const ticketPath = join(tickets, "ALT-7.json"); writeFileSync(ticketPath, JSON.stringify(ticket));
+      const row = { name: "1", path: worktree, status: "leased", flavor: "git", lease_id: "lease-7", lease_holder: "pa:generic-repo:ALT-7", leased_at: "2026-10-02T00:00:00Z", processes: [] };
+      const operations: PiReviewCandidateOperation[] = [];
+      const treehouse = new TreehouseClient({ run: (args, cwd) => {
+        assert.deepEqual(args, ["status", "--json"]); assert.equal(cwd, repo);
+        return { status: 0, stdout: Buffer.from(JSON.stringify([row])), stderr: Buffer.alloc(0) };
+      } });
+      const admission = { isDeploymentRunning: () => scenario !== "terminal parent" };
+      const deps = { treehouse, admission, observeOperation: (operation: PiReviewCandidateOperation) => { operations.push(operation); } };
+      const selected = selectPiReviewCandidateBeforePlanning({ request: { team: "requirements", mode: "review-auto", ticket: "ALT-7", repo: "generic-repo" }, runtime: "pi", cwd: repo,
+        authorizedBinding: { repoKey: "generic-repo", repoRoot: repo, ticket: "ALT-7", branch, baseSha, featureSha } }, deps)!;
+      const checkout = selected.reviewCheckout;
+      let parentBytes: Buffer | undefined;
+      let capability: string | undefined;
+      const borrowerOptions = () => ({ canonicalRepoKey: "generic-repo", canonicalRepoRoot: repo, worktreeRoot: worktree,
+        expectedGitDir: checkout.repositoryGitDir, expectedGitCommonDir: checkout.repositoryGitCommonDir,
+        capability, parentDeploymentId: "d-111111", deploymentId: "d-333333", deploymentDirectory: dir,
+        runtime: "pi" as const, team: "builder", mode: "implement", launchMode: "background" as const, ticket: "ALT-7", branch, timeoutSeconds: 60,
+        dependencies: admission });
+      if (scenario !== "zero owner" && scenario !== "standalone implement") {
+        const owner = acquireRepositoryMutationLease({ ...borrowerOptions(), deploymentId: "d-111111", mode: "orchestrator" });
+        assert.equal(owner.status, "acquired"); if (owner.status !== "acquired") assert.fail("parent not admitted"); capability = owner.lease.ownershipToken;
+        const path = repositoryMutationLeasePath(worktree);
+        if (scenario === "wrong-ticket parent" || scenario === "wrong-path parent" || scenario === "stale parent") {
+          const data = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+          if (scenario === "wrong-ticket parent") data["ticket"] = "ALT-8";
+          if (scenario === "wrong-path parent") data["worktreeRoot"] = repo;
+          if (scenario === "stale parent") data["processFingerprint"] = { pid: process.pid, startTimeTicks: "wrong", bootId: "wrong" };
+          writeFileSync(path, JSON.stringify(data));
+        }
+        parentBytes = readFileSync(path);
+      }
+      if (scenario === "active borrower") assert.equal(registerRepositoryMutationBorrower(borrowerOptions()).status, "registered");
+      if (scenario === "standalone implement") assert.equal(acquireRepositoryMutationLease(borrowerOptions()).status, "acquired");
+      let matrixStarts = 0; let reviewerStarts = 0;
+      const reject = (action: () => unknown) => assert.throws(action, (error: unknown) => {
+        assert.ok(error instanceof Error); assert.ok(error.message.length <= 2000);
+        assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.doesNotMatch(error.message, /review-auth:|reservationToken/); return true;
+      });
+      const reserve = () => reservePiReviewCandidate({ checkout, deploymentId: "d-222222", authorizationId: authorityId }, deps);
+      const blocked = ["active borrower", "standalone implement", "wrong-ticket parent", "wrong-path parent", "terminal parent", "stale parent"].includes(scenario);
+      if (blocked) {
+        const ticketBefore = readFileSync(ticketPath); const gitBefore = captureRepositoryGitSnapshot(worktree);
+        const filesBefore = snapshotFiles(dir);
+        reject(reserve); assert.deepEqual(snapshotFiles(dir), filesBefore, "rejection preserves all candidate, ticket, task and authority bytes");
+        assert.deepEqual(readFileSync(ticketPath), ticketBefore); assert.deepEqual(captureRepositoryGitSnapshot(worktree), gitBefore);
+        assert.equal(existsSync(repositoryReviewReservationPath(worktree)), false);
+      } else {
+        const reservation = reserve(); const reservationPath = repositoryReviewReservationPath(worktree);
+        assert.equal(statSync(reservationPath).mode & 0o777, 0o600);
+        const plan = resolveExecutionPlan({ request: selected.planningRequest, cwd: selected.planningCwd, runtime: "pi",
+          teamConfig: { name: "requirements", description: "fixture", objective: "fixture", agents: [], default_mode: "review-auto" },
+          deploymentId: "d-222222", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), environment: {}, timeoutSeconds: 60 });
+        assert.equal(plan.worktreeRoot, worktree); assert.equal(plan.repoRoot, repo); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+        const launch: PiProtectedValidationLaunch = { schemaVersion: "pi-protected-validation/v1", deploymentId: "d-222222",
+          admission: { authorization: "consumed", matrixDigest: "verified", featureSha: "verified", approval: "verified", activeReview: "admitted", prerequisites: [] },
+          validationHandoff: {}, // This test exercises only the candidate seam, not a fabricated matrix authorization.
+          authority: { ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture",
+            repository: { repoKey: "generic-repo", canonicalRoot: repo, worktreeRoot: worktree }, protectedEnvironment: { PA_REPO: worktree } },
+          review: { reviewDeploymentId: "d-222222", authorizationId: authorityId, ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture" } };
+        const boundary = () => withPiReviewCandidateAtMatrixBoundary({ launch, reservation, rereadCheckout: () => rereadPiReviewCandidate(checkout, deps), dependencies: admission }, () => { matrixStarts++; reviewerStarts++; });
+        if (scenario.startsWith("matrix:")) withPiReviewCandidateReservation(reservation, () => undefined, deps);
+        const drift = scenario.split(":")[1];
+        if (drift === "lease-id") row.lease_id = "replacement";
+        if (drift === "lease-holder") row.lease_holder = "pa:generic-repo:ALT-8";
+        if (drift === "lease-path") row.path = repo;
+        if (drift === "ticket-head") { linked.headSha = baseSha; linked.sha = baseSha; }
+        if (drift === "ticket-base") linked.baseSha = featureSha;
+        if (drift === "ticket-branch") linked.branch = "feature/ALT-7-other";
+        if (drift === "ticket-duplicate") ticket.linkedBranches.push({ ...linked });
+        if (drift?.startsWith("ticket-")) writeFileSync(ticketPath, JSON.stringify(ticket));
+        if (drift === "registry-root") writeFileSync(join(config, "config.yaml"), configBody.replace(repo, worktree));
+        if (["branch", "head", "staged", "unstaged", "untracked"].includes(drift ?? "")) applyPreflightGitDrift(worktree, drift as PreflightGitDrift);
+        if (drift === "git-dir" || drift === "common-dir") preparePreflightMetadataDrift(dir, worktree, drift).apply();
+        if (drift === "reservation-token") { const data = JSON.parse(readFileSync(reservationPath, "utf8")) as Record<string, unknown>; data["reservationToken"] = "replacement"; writeFileSync(reservationPath, JSON.stringify(data)); }
+        if (drift === "reservation-missing") rmSync(reservationPath);
+        if (drift === "reservation-insecure") chmodSync(reservationPath, 0o644);
+        if (drift === "authorization") launch.review.authorizationId = "review-auth:22222222-2222-4222-8222-222222222222";
+        if (drift === "deployment") launch.deploymentId = "d-444444";
+        const ticketBefore = readFileSync(ticketPath); const projectBefore = readFileSync(join(worktree, "README.md"));
+        const reservedBefore = existsSync(reservationPath) ? readFileSync(reservationPath) : undefined;
+        if (drift) {
+          // Authorization/deployment are checked specifically at the protected matrix boundary.
+          const filesBefore = snapshotFiles(dir);
+          if (scenario.startsWith("after-plan:") && drift !== "authorization" && drift !== "deployment") reject(() => {
+            withPiReviewCandidateReservation(reservation, () => undefined, deps);
+            boundary();
+          });
+          else reject(boundary);
+          assert.deepEqual(snapshotFiles(dir), filesBefore, "drift rejects without changing any fixture bytes or modes");
+          assert.deepEqual(existsSync(reservationPath) ? readFileSync(reservationPath) : undefined, reservedBefore);
+          assert.deepEqual(readFileSync(ticketPath), ticketBefore); assert.deepEqual(readFileSync(join(worktree, "README.md")), projectBefore);
+        } else {
+          const denied = registerRepositoryMutationBorrower({ ...borrowerOptions(), force: true });
+          assert.equal(denied.status, "rejected"); if (denied.status === "rejected") assert.equal(denied.category, "review-reservation");
+          assert.equal(acquireRepositoryMutationLease({ ...borrowerOptions(), force: true }).status, "rejected");
+          reject(reserve);
+          withPiReviewCandidateReservation(reservation, () => undefined, deps);
+          boundary();
+          assert.equal(matrixStarts, 1); assert.equal(reviewerStarts, 1);
+          const published: RepositoryReviewFinalEvidence[] = [];
+          const finalOptions = { reservation, verifyTerminal: () => true, publishFinalEvidence: (evidence: RepositoryReviewFinalEvidence) => { published.push(evidence); } };
+          assert.equal(finalizeRepositoryReview({ ...finalOptions, reservation: { ...reservation, reservationToken: "wrong" } }), "mismatch");
+          assert.equal(finalizeRepositoryReview(finalOptions), "finalized"); assert.equal(finalizeRepositoryReview(finalOptions), "absent");
+          assert.equal(published.length, 1); assert.deepEqual(published[0]?.finalGitSnapshot, checkout.gitSnapshot);
+          assert.equal(published[0]?.leaseDisposition, "retained"); assert.equal(row.lease_id, "lease-7");
+          if (capability) assert.equal(registerRepositoryMutationBorrower(borrowerOptions()).status, "registered", "matching review finalization unblocks the idle parent's next child");
+        }
+      }
+      if (blocked || scenario.includes(":")) { assert.equal(matrixStarts, 0); assert.equal(reviewerStarts, 0); }
+      if (parentBytes) assert.deepEqual(readFileSync(repositoryMutationLeasePath(worktree)), parentBytes, "parent custody remains byte-identical");
+      assert.equal(readFileSync(taskPath, "utf8"), "fixture-task-sentinel");
+      assert.equal(git(["branch", "--show-current"], repo), "develop"); assert.equal(git(["rev-parse", "HEAD"], repo), baseSha);
+      for (const operation of ["checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease", "matrix-start", "reviewer-start"]) {
+        assert.equal(operations.filter((observed) => observed === operation).length, 0, `selector/rereads: zero ${operation}`);
+      }
+      closeDb();
+    });
+  } finally {
+    closeDb(); rmSync(root, { recursive: true, force: true });
+    for (const key of Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key))) delete process.env[key];
+    for (const [key, value] of Object.entries(prior)) if (value !== undefined) process.env[key] = value;
+  }
+});
 
 type PreflightGitDrift = "branch" | "head" | "staged" | "unstaged" | "untracked";
 type PreflightMetadataDrift = "git-dir" | "common-dir";

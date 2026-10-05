@@ -12,6 +12,10 @@ import {
   digestValidationManifest,
   formatBoundedFiveFieldDiagnostic,
   getAiUsageDir,
+  withRepositoryReviewReservation,
+  type RepositoryReviewReservation,
+  type ReviewCheckoutEvidence,
+  type RepositoryAdmissionDependencies,
   type DeployRequest,
   type ExecutionPlan,
   type ValidationAuthorityBinding,
@@ -126,6 +130,32 @@ export interface PiMatrixStartDependencies {
 
 export function isPiProtectedReviewRequest(request: DeployRequest, plan: ExecutionPlan): boolean {
   return request.team === "requirements" && plan.mode === "review-auto";
+}
+
+/**
+ * Candidate-only Phase 2 boundary. Compose around the existing PAP-223 matrix-start
+ * journal/executor path, never instead of its authority/environment/ledger checks.
+ * The adapter supplies its existing-only selector as rereadCheckout. No public flag.
+ */
+export function withPiReviewCandidateAtMatrixBoundary<T>(input: {
+  launch: PiProtectedValidationLaunch;
+  reservation: RepositoryReviewReservation;
+  rereadCheckout: () => ReviewCheckoutEvidence;
+  dependencies?: Partial<RepositoryAdmissionDependencies>;
+}, start: () => T): T {
+  const { launch, reservation } = input;
+  const checkout = reservation.checkout;
+  const review = launch.review;
+  const authority = launch.authority;
+  if (launch.deploymentId !== reservation.deploymentId || review.reviewDeploymentId !== reservation.deploymentId
+    || review.authorizationId !== reservation.authorizationId || review.ticketId !== checkout.ticket
+    || review.branch !== checkout.branch || review.featureSha !== checkout.featureSha
+    || authority.ticketId !== checkout.ticket || authority.branch !== checkout.branch || authority.featureSha !== checkout.featureSha
+    || authority.repository.repoKey !== checkout.repoKey || authority.repository.canonicalRoot !== checkout.repoRoot
+    || authority.repository.worktreeRoot !== checkout.worktreeRoot || authority.protectedEnvironment["PA_REPO"] !== checkout.worktreeRoot) {
+    throw launchError("review reservation matrix boundary", "protected launch and exact reserved candidate binding do not agree");
+  }
+  return withRepositoryReviewReservation(input, start);
 }
 
 export function piMatrixAttemptStatePath(deploymentDirectory: string): string {

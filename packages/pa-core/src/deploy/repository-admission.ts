@@ -4,6 +4,8 @@ import {
   closeSync,
   existsSync,
   fstatSync,
+  fsyncSync,
+  constants as fsConstants,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -25,6 +27,27 @@ import { queryDeploymentStatus } from "../registry/index.js";
 import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
+import type { ReviewCheckoutEvidence } from "./plan.js";
+import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
+
+export const REPOSITORY_REVIEW_RESERVATION_FILE = "pa-repository-review.reservation.json";
+
+/** Protected launcher capability. Never include token or authorization in public projections. */
+export interface RepositoryReviewReservation {
+  readonly schemaVersion: 1;
+  readonly reservationToken: string;
+  readonly deploymentId: string;
+  readonly authorizationId: string;
+  readonly reservedAt: string;
+  readonly checkout: ReviewCheckoutEvidence;
+}
+
+export interface RepositoryReviewFinalEvidence {
+  readonly deploymentId: string;
+  readonly checkout: ReviewCheckoutEvidence;
+  readonly finalGitSnapshot: RepositoryGitSnapshot;
+  readonly leaseDisposition: "retained";
+}
 
 export const REPOSITORY_MUTATION_LEASE_FILE = "pa-repository-mutation.lease.json";
 export const REPOSITORY_MUTATION_BORROWER_FILE = "pa-repository-mutation.borrower.json";
@@ -462,6 +485,202 @@ function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string
   return { root, worktree, gitDir, leasePath, mutexPath, linked };
 }
 
+export function repositoryReviewReservationPath(worktreeRoot: string): string {
+  return join(repositoryPhysicalGitDir(worktreeRoot), REPOSITORY_REVIEW_RESERVATION_FILE);
+}
+
+function reviewReservationError(reason: string): Error {
+  return new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "read-only review reservation stopped", source: "serialized repository admission evidence",
+    reason, correction: "preserve the candidate, builder custody, and Treehouse lease; reconcile the exact protected evidence",
+    resumeAction: "retry only with matching candidate and review authority; start no matrix command or reviewer",
+  }));
+}
+
+function reviewReservationPresent(path: string): boolean {
+  try { lstatSync(path); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+function validateReviewCheckout(checkout: ReviewCheckoutEvidence): ReviewCheckoutEvidence {
+  const { repositoryGitDir, repositoryGitCommonDir, gitSnapshot, ...identity } = checkout;
+  const correlation = validateReviewCheckoutCorrelationEvidence(identity);
+  if (!boundedString(repositoryGitDir) || !isAbsolute(repositoryGitDir)
+    || !boundedString(repositoryGitCommonDir) || !isAbsolute(repositoryGitCommonDir)
+    || !isGitSnapshot(gitSnapshot) || !isCompleteGitSnapshot(gitSnapshot)
+    || gitSnapshot.branch !== correlation.branch || gitSnapshot.head !== correlation.featureSha
+    || gitSnapshot.dirty || gitSnapshot.statusPorcelainV2Base64 !== "" || gitSnapshot.statusRecordCount !== 0) {
+    throw reviewReservationError("candidate requires exact physical Git identity and complete clean snapshot");
+  }
+  return Object.freeze({ ...correlation, repositoryGitDir, repositoryGitCommonDir,
+    gitSnapshot: Object.freeze({ ...gitSnapshot, statusEntries: Object.freeze([]) }) });
+}
+
+export function reviewCheckoutsEqual(left: ReviewCheckoutEvidence, right: ReviewCheckoutEvidence): boolean {
+  const keys = ["kind", "repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha", "repositoryGitDir", "repositoryGitCommonDir"] as const;
+  return keys.every((key) => left[key] === right[key]) && repositoryGitSnapshotsEqual(left.gitSnapshot, right.gitSnapshot);
+}
+
+function readReviewReservation(path: string): RepositoryReviewReservation {
+  const descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  let value: unknown;
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600
+      || stat.size === 0 || stat.size > MAX_REPOSITORY_LEASE_BYTES) throw reviewReservationError("reservation is missing, insecure, or oversized");
+    const bytes = Buffer.alloc(MAX_REPOSITORY_LEASE_BYTES + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const count = readSync(descriptor, bytes, size, bytes.length - size, null);
+      if (count === 0) break;
+      size += count;
+    }
+    if (size !== stat.size || size > MAX_REPOSITORY_LEASE_BYTES) throw reviewReservationError("reservation size changed during bounded read");
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size)));
+  } finally { closeSync(descriptor); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw reviewReservationError("malformed reservation");
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).sort().join(",") !== "authorizationId,checkout,deploymentId,reservationToken,reservedAt,schemaVersion"
+    || row["schemaVersion"] !== 1 || !boundedString(row["reservationToken"]) || !validTimestamp(row["reservedAt"])
+    || typeof row["authorizationId"] !== "string" || !/^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(row["authorizationId"])) {
+    throw reviewReservationError("malformed reservation binding");
+  }
+  return Object.freeze({ schemaVersion: 1, reservationToken: row["reservationToken"] as string,
+    deploymentId: validateCanonicalDeploymentId(row["deploymentId"]), authorizationId: row["authorizationId"],
+    reservedAt: row["reservedAt"] as string, checkout: validateReviewCheckout(row["checkout"] as ReviewCheckoutEvidence) });
+}
+
+function assertIdleReviewCustody(checkout: ReviewCheckoutEvidence, dependencies: ResolvedRepositoryAdmissionDependencies): void {
+  const root = checkout.repoRoot;
+  const gitDir = checkout.repositoryGitDir;
+  // Even stale/malformed implement evidence is blocking; review never repairs builder state.
+  for (const file of [REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE]) {
+    if (reviewReservationPresent(join(gitDir, file))) throw reviewReservationError("active or unresolved implement ownership/borrower evidence blocks review");
+  }
+  const leasePath = join(gitDir, REPOSITORY_MUTATION_LEASE_FILE);
+  if (!reviewReservationPresent(leasePath)) return;
+  const stat = lstatSync(leasePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) {
+    throw reviewReservationError("idle orchestrator ownership evidence is not a protected regular file");
+  }
+  const inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
+  const lease = inspection.lease;
+  if (inspection.state !== "live" || !lease || !dependencies.isDeploymentRunning(lease.deploymentId)
+    || lease.runtime !== "pi" || lease.mode !== "orchestrator" || normalizedTeam(lease.team ?? "") !== "builder"
+    || lease.canonicalRepoKey !== checkout.repoKey || lease.canonicalRepoRoot !== root || lease.worktreeRoot !== checkout.worktreeRoot
+    || lease.ticket !== checkout.ticket || lease.slot !== "orchestrator"
+    || lease.repositoryGitDir !== gitDir || lease.repositoryGitCommonDir !== checkout.repositoryGitCommonDir
+    || !repositoryGitSnapshotsEqual(lease.authorityGitSnapshot ?? lease.preLaunchGitSnapshot, checkout.gitSnapshot)) {
+    throw reviewReservationError("only one process-verified registry-running idle orchestrator for the exact ticket/check-out snapshot may retain custody");
+  }
+}
+
+function fsyncReviewDirectory(gitDir: string): void {
+  const descriptor = openSync(gitDir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+/** Same per-worktree mutex as both builder slots and direct borrowers. No capacity or mutation lease is acquired. */
+export function reserveRepositoryReview(options: {
+  checkout: ReviewCheckoutEvidence;
+  deploymentId: string;
+  authorizationId: string;
+  /** Trusted selector rereads Treehouse, ticket and registered physical Git identity while serialized. */
+  rereadCheckout: () => ReviewCheckoutEvidence;
+  dependencies?: Partial<RepositoryAdmissionDependencies>;
+}): RepositoryReviewReservation {
+  try {
+    const checkout = validateReviewCheckout(options.checkout);
+    const deploymentId = validateCanonicalDeploymentId(options.deploymentId);
+    if (!/^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.authorizationId)) throw new Error("invalid authorization");
+    const { mutexPath } = repositoryLeaseLocation(checkout.repoRoot, checkout.worktreeRoot, "orchestrator", checkout.repositoryGitDir);
+    const dependencies = resolveDependencies(options.dependencies);
+    return withMutationMutex(mutexPath, () => {
+      assertExpectedGitIdentity(checkout.worktreeRoot, checkout.repositoryGitDir, checkout.repositoryGitCommonDir);
+      const path = join(checkout.repositoryGitDir, REPOSITORY_REVIEW_RESERVATION_FILE);
+      if (reviewReservationPresent(path)) throw reviewReservationError("an existing reservation blocks duplicate or replacement review");
+      assertIdleReviewCustody(checkout, dependencies);
+      if (!reviewCheckoutsEqual(checkout, validateReviewCheckout(options.rereadCheckout()))) throw reviewReservationError("candidate binding changed before reservation publication");
+      const reservation: RepositoryReviewReservation = Object.freeze({ schemaVersion: 1, reservationToken: randomUUID(),
+        deploymentId, authorizationId: options.authorizationId, reservedAt: dependencies.now().toISOString(), checkout });
+      const temporary = temporaryPath(path, randomUUID());
+      try {
+        const body = `${JSON.stringify(reservation)}\n`;
+        if (Buffer.byteLength(body) > MAX_REPOSITORY_LEASE_BYTES) throw reviewReservationError("reservation exceeds its durable size bound");
+        writeFileSync(temporary, body, { flag: "wx", mode: 0o600 });
+        const descriptor = openSync(temporary, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+        linkSync(temporary, path);
+      } finally { if (reviewReservationPresent(temporary)) unlinkSync(temporary); }
+      fsyncReviewDirectory(checkout.repositoryGitDir);
+      const persisted = readReviewReservation(path);
+      if (!reviewReservationMatches(persisted, reservation)) throw reviewReservationError("reservation durable readback mismatch");
+      return reservation;
+    });
+  } catch { throw reviewReservationError("reservation admission failed: candidate, idle custody, or durable reservation evidence did not agree"); }
+}
+
+function reviewReservationMatches(actual: RepositoryReviewReservation, expected: RepositoryReviewReservation): boolean {
+  return actual.schemaVersion === expected.schemaVersion && secureStringsEqual(actual.reservationToken, expected.reservationToken)
+    && actual.deploymentId === expected.deploymentId && secureStringsEqual(actual.authorizationId, expected.authorizationId)
+    && actual.reservedAt === expected.reservedAt && reviewCheckoutsEqual(actual.checkout, expected.checkout);
+}
+
+/** Synchronous protected boundary: reread and initiate the next action before releasing the admission mutex. */
+export function withRepositoryReviewReservation<T>(options: {
+  reservation: RepositoryReviewReservation;
+  rereadCheckout: () => ReviewCheckoutEvidence;
+  dependencies?: Partial<RepositoryAdmissionDependencies>;
+}, action: () => T): T {
+  const checkout = options.reservation.checkout;
+  let actionStarted = false;
+  try {
+    const { mutexPath } = repositoryLeaseLocation(checkout.repoRoot, checkout.worktreeRoot, "orchestrator", checkout.repositoryGitDir);
+    return withMutationMutex(mutexPath, () => {
+      assertExpectedGitIdentity(checkout.worktreeRoot, checkout.repositoryGitDir, checkout.repositoryGitCommonDir);
+      const path = join(checkout.repositoryGitDir, REPOSITORY_REVIEW_RESERVATION_FILE);
+      if (!reviewReservationMatches(readReviewReservation(path), options.reservation)) throw new Error("reservation mismatch");
+      assertIdleReviewCustody(checkout, resolveDependencies(options.dependencies));
+      if (!reviewCheckoutsEqual(checkout, validateReviewCheckout(options.rereadCheckout()))) throw new Error("candidate drift");
+      // Recheck after the external selector callback; it cannot replace the capability mid-boundary.
+      if (!reviewReservationMatches(readReviewReservation(path), options.reservation)) throw new Error("reservation changed");
+      actionStarted = true;
+      return action();
+    });
+  } catch (error) {
+    if (actionStarted) throw error;
+    throw reviewReservationError("protected reread rejected candidate, reservation, or idle builder custody drift");
+  }
+}
+
+/** Trusted terminal caller publishes candidate evidence before removing ONLY this token-bound reservation. */
+export function finalizeRepositoryReview(options: {
+  reservation: RepositoryReviewReservation;
+  verifyTerminal: (deploymentId: string) => boolean;
+  publishFinalEvidence: (evidence: RepositoryReviewFinalEvidence) => void;
+}): "finalized" | "absent" | "mismatch" | "not-terminal" {
+  try {
+    const checkout = options.reservation.checkout;
+    const { mutexPath } = repositoryLeaseLocation(checkout.repoRoot, checkout.worktreeRoot, "orchestrator", checkout.repositoryGitDir);
+    return withMutationMutex(mutexPath, () => {
+      const path = join(checkout.repositoryGitDir, REPOSITORY_REVIEW_RESERVATION_FILE);
+      if (!reviewReservationPresent(path)) return "absent";
+      if (!reviewReservationMatches(readReviewReservation(path), options.reservation)) return "mismatch";
+      if (!options.verifyTerminal(options.reservation.deploymentId)) return "not-terminal";
+      assertExpectedGitIdentity(checkout.worktreeRoot, checkout.repositoryGitDir, checkout.repositoryGitCommonDir);
+      const finalGitSnapshot = captureRepositoryGitSnapshot(checkout.worktreeRoot,
+        (args, cwd, identity) => defaultGitRunner(["--no-optional-locks", ...args], cwd, identity), {
+          repositoryGitDir: checkout.repositoryGitDir, repositoryGitCommonDir: checkout.repositoryGitCommonDir,
+        });
+      options.publishFinalEvidence(Object.freeze({ deploymentId: options.reservation.deploymentId, checkout, finalGitSnapshot, leaseDisposition: "retained" }));
+      if (!reviewReservationMatches(readReviewReservation(path), options.reservation)) return "mismatch";
+      unlinkSync(path);
+      fsyncReviewDirectory(checkout.repositoryGitDir);
+      return "finalized";
+    });
+  } catch { throw reviewReservationError("terminal evidence publication or matching-only reservation finalization failed; preserve checkout custody"); }
+}
+
 export function repositoryDirtyBorrowApprovalPath(parentDeploymentDirectory: string): string {
   return join(assertCanonicalRoot(parentDeploymentDirectory), REPOSITORY_DIRTY_BORROW_APPROVAL_FILE);
 }
@@ -792,6 +1011,9 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
     });
     try { assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir); }
     catch (error) { return reject("repository-identity", error instanceof Error ? error.message : String(error)); }
+    if (reviewReservationPresent(repositoryReviewReservationPath(worktree))) {
+      return reject("review-reservation", "read-only review reservation blocks every new implement borrower, including force requests");
+    }
     const leaseInspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
     const lease = leaseInspection.lease;
     if (leaseInspection.state !== "live" || !lease) return reject("parent-state", "the claimed parent lease is not process-verified live version 1 evidence");
@@ -1070,6 +1292,10 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir);
+    if (reviewReservationPresent(repositoryReviewReservationPath(worktree))) {
+      return { status: "rejected", evidenceState: "live", leasePath,
+        diagnostic: reviewReservationError("read-only review reservation blocks new builder ownership, including force requests").message };
+    }
     // Runtime adapters intentionally omit gitSnapshot so this read occurs after
     // planning/tool setup and inside the same admission-critical section that
     // publishes ownership. Tests and lower-level callers may provide a fixed

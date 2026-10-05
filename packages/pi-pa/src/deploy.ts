@@ -11,7 +11,7 @@ import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCo
 import { TreehouseClient } from "./treehouse.js";
 import { createPiProtectedValidationLaunch, isPiProtectedReviewRequest } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
-import { isCanonicalTicketId, validateReviewCheckoutCorrelationEvidence, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
+import { isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha">;
 
@@ -102,6 +102,39 @@ export function selectPiReviewCandidateBeforePlanning(input: {
   });
   const { repo: _selector, ...planningRequest } = request;
   return Object.freeze({ planningCwd: lease.path, planningRequest: Object.freeze(planningRequest), reviewCheckout });
+}
+
+/** Reuses the existing-only selector: no ticket normalization, branch action, or lease acquisition. */
+export function rereadPiReviewCandidate(checkout: ReviewCheckoutEvidence, dependencies: PiReviewCandidateSelectionDependencies = {}): ReviewCheckoutEvidence {
+  const selected = selectPiReviewCandidateBeforePlanning({
+    request: { team: "requirements", mode: "review-auto", ticket: checkout.ticket, repo: checkout.repoKey },
+    runtime: "pi", cwd: checkout.repoRoot,
+    // Pick is compile-time only: do not forward runtime Git/lease evidence into the strict binding validator.
+    authorizedBinding: { repoKey: checkout.repoKey, repoRoot: checkout.repoRoot, ticket: checkout.ticket,
+      branch: checkout.branch, baseSha: checkout.baseSha, featureSha: checkout.featureSha },
+  }, dependencies);
+  if (!selected || !reviewCheckoutsEqual(checkout, selected.reviewCheckout)) {
+    throw reviewCandidateError("protected candidate reread", "lease, registered Git identity, ticket, branch, HEAD, or complete status drifted");
+  }
+  return selected.reviewCheckout;
+}
+
+/** Phase 2 composition seam; the production launcher supplies PAP-223-authorized IDs in Phase 3. */
+export function reservePiReviewCandidate(input: {
+  checkout: ReviewCheckoutEvidence;
+  deploymentId: string;
+  authorizationId: string;
+}, dependencies: PiReviewCandidateSelectionDependencies & { admission?: Partial<RepositoryAdmissionDependencies> } = {}): RepositoryReviewReservation {
+  return reserveRepositoryReview({ ...input,
+    rereadCheckout: () => rereadPiReviewCandidate(input.checkout, dependencies), dependencies: dependencies.admission });
+}
+
+/** Use after immutable planning and again immediately before protected launch; start is synchronous. */
+export function withPiReviewCandidateReservation<T>(reservation: RepositoryReviewReservation, start: () => T,
+  dependencies: PiReviewCandidateSelectionDependencies & { admission?: Partial<RepositoryAdmissionDependencies> } = {},
+): T {
+  return withRepositoryReviewReservation({ reservation,
+    rereadCheckout: () => rereadPiReviewCandidate(reservation.checkout, dependencies), dependencies: dependencies.admission }, start);
 }
 
 function readReviewCandidateTicket(ticketId: string): Pick<Ticket, "id" | "project" | "linkedBranches"> {
