@@ -39,13 +39,19 @@ export function authenticateTicketWorktreeSelection(
   mode: string,
   cwd = process.cwd(),
   dependencies: PiDeployDependencies = {},
+  expectedTeam?: string,
 ): { readonly evidence: TicketWorktreeSelectionEvidence; readonly reread: () => void } {
   const treehouse = dependencies.treehouse ?? new TreehouseClient();
-  const read = (): { evidence: TicketWorktreeSelectionEvidence; holders: readonly (string | undefined)[] } => {
+  const read = (): { team: string; evidence: TicketWorktreeSelectionEvidence; holders: readonly (string | undefined)[] } => {
     try {
       const resolvedTeam = loadTeamConfig(request.team).name;
+      // Bind admission to the immutable plan's resolved identity, not its filename
+      // selector. The closure also detects same-access identity drift on rereads.
+      if (expectedTeam !== undefined && resolvedTeam !== expectedTeam) {
+        throw new Error("resolved team identity changed from the immutable planning config");
+      }
       if (!request.ticket || !/^[A-Z]+-\d+$/.test(request.ticket)
-        || resolvedTeam === "builder" || classifyRepositoryAccess(request.team, mode) === "exclusive-builder"
+        || resolvedTeam === "builder" || classifyRepositoryAccess(resolvedTeam, mode) === "exclusive-builder"
         || (request.invocationChannel !== undefined && request.invocationChannel !== "cli")) {
         throw new Error("selection requires an exact ticket and a non-builder CLI request");
       }
@@ -107,7 +113,7 @@ export function authenticateTicketWorktreeSelection(
         branch: linked.branch, baseSha: linked.baseSha!, headSha: linked.headSha!,
       });
       if (request.resume) authenticateTicketWorktreeResume(request.resume, evidence);
-      return { evidence, holders: inspectTicketWorktreeBuilders(evidence, request.team, mode, dependencies) };
+      return { team: resolvedTeam, evidence, holders: inspectTicketWorktreeBuilders(evidence, resolvedTeam, mode, dependencies) };
     } catch (error) {
       throw new Error(ticketWorktreeDiagnostic(error));
     }
@@ -293,7 +299,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
     }
     if (request.ticketWorktree) {
-      selectedTicketWorktree = authenticateTicketWorktreeSelection(request, mode?.id ?? "default", planningCwd, dependencies);
+      selectedTicketWorktree = authenticateTicketWorktreeSelection(request, mode?.id ?? "default", planningCwd, dependencies, team.name);
       planningCwd = selectedTicketWorktree.evidence.worktreeRoot;
       const { repo: _selector, ...selectionRequest } = request;
       planningRequest = selectionRequest;

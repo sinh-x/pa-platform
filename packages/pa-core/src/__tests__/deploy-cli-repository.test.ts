@@ -278,6 +278,62 @@ test("ticket-worktree early CLI rejections are bounded five-field diagnostics re
   });
 });
 
+test("ticket-worktree validate missing managed references emits one bounded stop without adapter hooks", async () => {
+  await withFixture("selection-validate", async (fixture) => {
+    const teams = join(fixture.root, "teams");
+    mkdirSync(teams);
+    const previousTeams = process.env["PA_PLATFORM_TEAMS"];
+    process.env["PA_PLATFORM_TEAMS"] = teams;
+    const configPath = join(teams, "requirements.yaml");
+    let hooks = 0;
+    try {
+      for (const reference of ["docs/missing.md", `docs/${"x".repeat(2_500)}.md`]) {
+        writeFileSync(configPath, `name: requirements\ndescription: Fixture\nobjective: Inspect\nagents: []\nglobal_docs:\n  - ${reference}\n`);
+        const bytes = readFileSync(configPath);
+        for (const first of [false, true]) {
+          const output = capture();
+          const args = ["deploy", "requirements", ...(first ? ["--ticket-worktree"] : []), "--ticket", "PAP-234", "--validate", ...(!first ? ["--ticket-worktree"] : [])];
+          assert.equal(await runCoreCommand(args, { binaryName: "ppa", io: output.io, hooks: { deploy: () => { hooks += 1; return { status: "pending" }; } } }), 1);
+          assert.equal(output.stderr.length, 1, "one selection stop, not individual unrestricted reference errors");
+          assertFiveFieldDiagnostic(output.stderr[0]!);
+          assert.match(output.stderr[0]!, /missing referenced file/);
+          assert.deepEqual(output.stdout, []);
+          assert.deepEqual(readFileSync(configPath), bytes);
+        }
+        const ordinary = capture();
+        assert.equal(await runCoreCommand(["deploy", "requirements", "--validate"], { binaryName: "ppa", io: ordinary.io }), 1);
+        assert.equal(ordinary.stderr.length, 5, "omitted-flag validation keeps its existing detailed output");
+        assert.equal(ordinary.stderr[1], `- ${reference} (team global_docs[0]; global_doc)`);
+        assert.match(ordinary.stderr[4]!, /opa deploy requirements --validate/);
+      }
+      assert.equal(hooks, 0);
+    } finally { if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"]; else process.env["PA_PLATFORM_TEAMS"] = previousTeams; }
+  });
+});
+
+test("ticket-worktree helper early returns retain bounded failures and zero adapter hooks", async () => {
+  await withFixture("selection-helpers", async (fixture) => {
+    const teams = join(fixture.root, "teams"); mkdirSync(teams);
+    const previousTeams = process.env["PA_PLATFORM_TEAMS"]; process.env["PA_PLATFORM_TEAMS"] = teams;
+    let hooks = 0;
+    try {
+      for (const helper of ["--validate", "--list-modes"]) {
+        for (const name of ["missing", "requirements"]) {
+          writeFileSync(join(teams, "requirements.yaml"), "name: builder\ndescription: Alias\nobjective: Build\nagents: []\n");
+          const output = capture();
+          assert.equal(await runCoreCommand(["deploy", name, "--ticket", "PAP-234", "--ticket-worktree", helper], { binaryName: "ppa", io: output.io, hooks: { deploy: () => { hooks += 1; return { status: "pending" }; } } }), 1);
+          assert.equal(output.stderr.length, 1); assertFiveFieldDiagnostic(output.stderr[0]!);
+        }
+        writeFileSync(join(teams, "requirements.yaml"), "name: requirements\ndescription: Fixture\nobjective: Inspect\nagents: []\n");
+        const valid = capture();
+        assert.equal(await runCoreCommand(["deploy", "requirements", "--ticket", "PAP-234", "--ticket-worktree", helper], { binaryName: "ppa", io: valid.io }), 0);
+        assert.deepEqual(valid.stderr, []);
+      }
+      assert.equal(hooks, 0);
+    } finally { if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"]; else process.env["PA_PLATFORM_TEAMS"] = previousTeams; }
+  });
+});
+
 test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary", async () => {
   await withFixture("ticket-worktree-boundary", async (fixture) => {
     writeTicket(fixture, "PAP-234", "registered");

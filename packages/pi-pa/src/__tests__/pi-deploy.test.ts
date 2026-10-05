@@ -8,10 +8,10 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, TicketStore, type RepositoryMutationLease, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, type PiDeployDependencies } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
@@ -2008,6 +2008,128 @@ test("PPA and OPA builders hold different canonical repositories independently",
     assert.equal(outcomes.every((outcome) => outcome.status === "success"), true);
     assert.equal(inspectRepositoryMutationLease(firstRepo).state, "absent");
     assert.equal(inspectRepositoryMutationLease(secondRepo).state, "absent");
+  });
+});
+
+async function withSelectionAliasFixture(holder: "owner" | "borrower" | "absent", callback: (fixture: {
+  root: string; canonical: string; selected: string; dependencies: PiDeployDependencies;
+  statusCalls: string[][]; setTeam: (name: string, filename?: string) => void;
+}) => Promise<void>): Promise<void> {
+  await withPiEnv(async (root, gitState) => {
+    const canonical = join(root, "repo"); const selected = join(root, "selected");
+    const branch = "feature/PAP-234-alias";
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, selected], { cwd: canonical, stdio: "ignore" });
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "alias", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
+    const setTeam = (name: string, filename = "requirements") => writeFileSync(join(root, "teams", `${filename}.yaml`), `name: ${name}\ndescription: Alias fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: analyze\n    label: Analyze\n    require_ticket: true\n`);
+    setTeam("requirements"); setTeam("learner", "learner");
+    const snapshot = captureRepositoryGitSnapshot(selected);
+    const fingerprint = readProcessFingerprint(process.pid)!;
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], selected);
+    const gitCommonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], selected);
+    const authorityPath = holder === "owner" ? repositoryMutationLeasePath(selected) : repositoryMutationBorrowerPath(selected);
+    // Synthetic fixture-only evidence: no acquisition API or production authority.
+    if (holder !== "absent") {
+      const deploymentId = holder === "owner" ? "d-aabbcc" : "d-ddeeff";
+      const mode = holder === "owner" ? "orchestrator" : "implement";
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", mode, runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(), ticket_id: "PAP-234", repo: selected, repo_root: canonical, worktree_root: selected });
+      const identity = { schemaVersion: 1 as const, canonicalRepoKey: "pa-platform", canonicalRepoRoot: canonical, worktreeRoot: selected, deploymentId, deploymentDirectory: join(root, "deployments", deploymentId), runtime: "pi" as const, team: "builder" as const, ticket: "PAP-234", processFingerprint: fingerprint };
+      const authority: RepositoryMutationLease | RepositoryMutationBorrower = holder === "owner"
+        ? { ...identity, mode: "orchestrator", slot: "orchestrator", launchMode: "foreground", ownershipToken: "fixture-owner", acquiredAt: new Date().toISOString(), preLaunchGitSnapshot: snapshot, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir }
+        : { ...identity, mode: "implement", launchMode: "background", borrowerToken: "fixture-borrower", parentDeploymentId: "d-aabbcc", parentProcessFingerprint: fingerprint, branch, registeredAt: new Date().toISOString(), timeoutSeconds: 60, launchGitSnapshot: snapshot };
+      writeFileSync(authorityPath, JSON.stringify(authority));
+      const inspection = { getProcessFingerprint: readProcessFingerprint, worktreeRoot: selected, repositoryGitDir: gitDir };
+      assert.equal(holder === "owner" ? inspectRepositoryMutationLease(canonical, inspection).state : inspectRepositoryMutationBorrower(canonical, inspection).state, "live");
+    }
+    const authorityBytes = holder === "absent" ? undefined : readFileSync(authorityPath);
+    const ticketBytes = readFileSync(ticketPath); const projectBytes = readFileSync(join(selected, "README.md"));
+    const operations: string[] = []; const statusCalls: string[][] = [];
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      assert.equal(cwd, canonical); statusCalls.push([...args]); assert.deepEqual(args, ["status", "--json"]);
+      return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: selected, status: "leased", lease_id: "lease-234", lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) };
+    } });
+    const originalUpdate = TicketStore.prototype.update; const originalComment = TicketStore.prototype.comment; const originalGet = TreehouseClient.prototype.getLease;
+    TicketStore.prototype.update = function () { operations.push("ticket-write"); throw new Error("forbidden ticket write"); };
+    TicketStore.prototype.comment = function () { operations.push("ticket-write"); throw new Error("forbidden ticket comment"); };
+    TreehouseClient.prototype.getLease = function () { operations.push("allocation"); throw new Error("forbidden allocation"); };
+    try {
+      await callback({ root, canonical, selected, dependencies: { treehouse, observeOperation: (op) => operations.push(op) }, statusCalls, setTeam });
+      assert.deepEqual(operations.filter((op) => op !== "runtime-spawn"), [], "zero checkout/branch/slot/permit/lineage/ticket writes");
+      assert.deepEqual(captureRepositoryGitSnapshot(selected), snapshot);
+      assert.deepEqual(readFileSync(ticketPath), ticketBytes); assert.deepEqual(readFileSync(join(selected, "README.md")), projectBytes);
+      if (authorityBytes) assert.deepEqual(readFileSync(authorityPath), authorityBytes, "selection preserves live authority bytes");
+      else for (const path of [repositoryMutationLeasePath(selected), repositoryMutationLeasePath(selected, "implement"), repositoryMutationBorrowerPath(selected)]) assert.equal(existsSync(path), false);
+      assert.ok(gitState.readOperations().every((args) => args[0] === "worktree" && args[1] === "list"), "zero branch or checkout lifecycle actions");
+    } finally {
+      TicketStore.prototype.update = originalUpdate; TicketStore.prototype.comment = originalComment; TreehouseClient.prototype.getLease = originalGet;
+    }
+  });
+}
+
+for (const holder of ["owner", "borrower"] as const) test(`ticket-worktree resolved non-locking alias rejects alongside live builder ${holder}`, async () => {
+  await withSelectionAliasFixture(holder, async ({ selected, dependencies, setTeam, statusCalls }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    let preflights = 0; const spawned: SpawnOpts[] = []; const resumed: SpawnOpts[] = [];
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts), onResume: (opts) => resumed.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "requirements");
+    assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "read-only");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    setTeam("learner");
+    for (const extra of [{}, { background: true }, { dryRun: true }, { resume: allowed.deploymentId! }]) {
+      const rejected = await deployWithPi({ ...request, ...extra }, adapter, undefined, dependencies);
+      assert.equal(rejected.status, "failed"); assert.match(rejected.reason ?? "", /non-locking access cannot coexist/);
+      assert.match(rejected.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((rejected.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1); assert.equal(resumed.length, 0);
+    // Actual read-only identity remains allowed even with a non-locking filename.
+    setTeam("requirements", "learner");
+    const reverseAlias = await deployWithPi({ ...request, team: "learner" }, adapter, undefined, dependencies);
+    assert.equal(reverseAlias.status, "success", reverseAlias.reason);
+    assert.equal(spawned.at(-1)?.executionPlan?.team, "requirements");
+    assert.equal(spawned.at(-1)?.executionPlan?.repositoryAdmission.access, "read-only");
+    setTeam("builder"); const reads = statusCalls.length;
+    const builder = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(builder.status, "failed"); assert.match(builder.reason ?? "", /resolved builder team/);
+    assert.equal(statusCalls.length, reads, "resolved builder still rejects before any status/capacity action");
+    assert.equal(preflights, 2); assert.equal(spawned.length, 2);
+  });
+});
+
+test("ticket-worktree alias plan/access consistency and resolved-identity rereads reject drift", async () => {
+  await withSelectionAliasFixture("absent", async ({ canonical, selected, dependencies, setTeam }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    setTeam("learner");
+    const spawned: SpawnOpts[] = []; let preflights = 0;
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "learner"); assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "non-locking");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    // Same access classification is insufficient: bind the resolved team name.
+    const authentication = authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies);
+    setTeam("planner");
+    assert.throws(() => authentication.reread(), /changed after selection/);
+    assert.throws(() => authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies, "learner"), /resolved team identity changed/);
+    for (const dryRun of [false, true]) {
+      setTeam("learner");
+      const changed = await deployWithPi({ ...request, dryRun }, stubAdapter({
+        onDescribe: () => setTeam("planner"), preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts),
+      }), undefined, dependencies);
+      assert.equal(changed.status, "failed"); assert.match(changed.reason ?? "", /resolved team identity changed/);
+      assert.match(changed.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((changed.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1);
+    setTeam("requirements");
+    const preflightDrift = await deployWithPi({ ...request, resume: allowed.deploymentId! }, stubAdapter({
+      preflight: async () => { preflights += 1; setTeam("learner"); }, onResume: (opts) => spawned.push(opts),
+    }), undefined, dependencies);
+    assert.equal(preflightDrift.status, "failed"); assert.match(preflightDrift.reason ?? "", /resolved team identity changed/);
+    assert.equal(preflights, 2); assert.equal(spawned.length, 1, "post-preflight reread blocks resume");
   });
 });
 

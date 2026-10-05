@@ -51,10 +51,19 @@ export function printDeployModes(team: string, io: Required<CliIo>): number {
   return 0;
 }
 
-export function validateDeployConfig(team: string, io: Required<CliIo>, binaryName = "opa"): number {
+export function validateDeployConfig(team: string, io: Required<CliIo>, binaryName = "opa", ticketWorktree = false): number {
   const config = loadTeamConfig(team);
   const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === config.name);
   if (missingReferences.length > 0) {
+    if (ticketWorktree) {
+      io.stderr(ticketWorktreeDiagnostic({
+        source: "resolved team config managed-reference validation",
+        reason: `team config validation failed: ${missingReferences.length} missing referenced file(s)`,
+        correction: "fix the missing managed paths or team references; preserve checkout and authority evidence",
+        resumeAction: "rerun the same PPA selection request with --validate after correcting the team config",
+      }));
+      return 1;
+    }
     io.stderr(`Team config validation failed: ${missingReferences.length} missing referenced file(s) for ${config.name}.`);
     for (const reference of missingReferences) {
       io.stderr(`- ${reference.reference} (${reference.context}; ${reference.kind})`);
@@ -224,7 +233,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     try {
       const actual = loadTeamConfig(validated.request.team);
       if (ticketWorktree && actual.name === "builder") { reject("resolved builder team cannot request selection-only intent"); return 1; }
-      return validated.request.listModes ? printDeployModes(validated.request.team, io) : validateDeployConfig(validated.request.team, io, binaryName);
+      return validated.request.listModes ? printDeployModes(validated.request.team, io) : validateDeployConfig(validated.request.team, io, binaryName, ticketWorktree);
     } catch (error) {
       if (!selectionIntent) throw error;
       reject(error instanceof Error ? error.message : String(error)); return 1;
