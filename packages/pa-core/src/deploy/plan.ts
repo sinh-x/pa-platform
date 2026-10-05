@@ -5,6 +5,7 @@ import { getBranchPattern, loadRepoEntry, resolveRepoExecutionPath } from "../re
 import { TicketStore } from "../tickets/store.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
+import type { ReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
 import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryBranchTransitionPolicy, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
@@ -53,6 +54,13 @@ export interface TicketWorktreeSelectionEvidence {
   readonly branch: string;
   readonly baseSha: string;
   readonly headSha: string;
+}
+
+/** Selection evidence only: not builder authority, capacity, or a review reservation. */
+export interface ReviewCheckoutEvidence extends ReviewCheckoutCorrelationEvidence {
+  readonly repositoryGitDir: string;
+  readonly repositoryGitCommonDir: string;
+  readonly gitSnapshot: RepositoryGitSnapshot;
 }
 
 export type ExecutionPlanEnvironmentKey = PaEnvKey | "PA_REPO_ROOT";

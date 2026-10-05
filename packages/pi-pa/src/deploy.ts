@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
@@ -11,6 +11,133 @@ import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCo
 import { TreehouseClient } from "./treehouse.js";
 import { createPiProtectedValidationLaunch, isPiProtectedReviewRequest } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
+import { isCanonicalTicketId, validateReviewCheckoutCorrelationEvidence, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
+
+export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha">;
+
+export type PiReviewCandidateOperation = "ticket-read" | "treehouse-status" | "physical-authentication" | "git-read"
+  | "checkout" | "branch" | "linked-branch-write" | "project-file-write" | "slot" | "permit" | "mutation-lease" | "matrix-start" | "reviewer-start";
+
+export interface PiReviewCandidateSelectionDependencies {
+  readonly treehouse?: TreehouseClient;
+  readonly observeOperation?: (operation: PiReviewCandidateOperation) => void;
+}
+
+/**
+ * Phase-local pre-plan seam. The trusted caller must supply the already-authorized
+ * objective/launch-intent binding; this performs identity selection, not PAP-223
+ * authorization, reservation, planning, matrix execution, or reviewer launch.
+ * Production integration is deliberately deferred until reservation is available.
+ */
+export function selectPiReviewCandidateBeforePlanning(input: {
+  readonly request: DeployRequest;
+  readonly runtime: RuntimeName;
+  readonly cwd: string;
+  readonly authorizedBinding: PiReviewCandidateBinding;
+}, dependencies: PiReviewCandidateSelectionDependencies = {}): {
+  readonly planningCwd: string;
+  readonly planningRequest: DeployRequest;
+  readonly reviewCheckout: ReviewCheckoutEvidence;
+} | undefined {
+  const { request, authorizedBinding: binding } = input;
+  if (input.runtime !== "pi" || request.team !== "requirements" || request.mode !== "review-auto" || request.dryRun || request.resume) return undefined;
+  if (!isCanonicalTicketId(request.ticket) || request.ticket !== binding.ticket
+    || !/^[0-9a-f]{40}$/.test(binding.baseSha) || !/^[0-9a-f]{40}$/.test(binding.featureSha)) {
+    throw reviewCandidateError("authorized feature binding", "exact ticket and lowercase 40-hex base/Feature SHA are required");
+  }
+  // Ambient Git redirects could undermine physical identity checks in the shared resolver.
+  if (["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].some((key) => process.env[key] !== undefined)) {
+    throw reviewCandidateError("Git invocation environment", "ambient Git identity/configuration overrides are not eligible for candidate selection");
+  }
+  let canonical: ReturnType<typeof resolveRepoExecutionPath>;
+  try { canonical = resolveRepoExecutionPath(request.repo, input.cwd, { allowLinkedWorktreeCwd: request.repo === undefined }); }
+  catch { throw reviewCandidateError("canonical repository registry", "the selector did not identify exactly one physical registered canonical repository"); }
+  if (canonical.repoKey !== binding.repoKey || canonical.repoRoot !== binding.repoRoot) {
+    throw reviewCandidateError("canonical repository binding", "registered key/root and authorized key/root do not agree");
+  }
+  dependencies.observeOperation?.("ticket-read");
+  const ticket = readReviewCandidateTicket(binding.ticket);
+  let linked: LinkedBranch;
+  try { linked = requireTicketLinkedBranch(ticket, binding.repoKey); }
+  catch { throw reviewCandidateError("durable ticket linked branch", "exact ticket must have exactly one valid canonical-repository linked branch"); }
+  if (ticket.id !== binding.ticket || linked.state !== "materialized" || linked.branch !== binding.branch
+    || linked.baseSha !== binding.baseSha || linked.headSha !== binding.featureSha
+    || !/^[0-9a-f]{40}$/.test(linked.baseSha ?? "") || !/^[0-9a-f]{40}$/.test(linked.headSha ?? "")
+    || (linked.sha !== undefined && linked.sha !== linked.headSha)) {
+    throw reviewCandidateError("durable ticket feature binding", "materialized exact branch, immutable base, and HEAD must agree with the authorized Feature SHA without refresh");
+  }
+  dependencies.observeOperation?.("treehouse-status");
+  let lease: ReturnType<TreehouseClient["selectExisting"]>;
+  try { lease = (dependencies.treehouse ?? new TreehouseClient()).selectExisting(binding.repoRoot, binding.repoKey, binding.ticket); }
+  catch { throw reviewCandidateError("bounded Treehouse v2.3.0 status", "expected exactly one existing deterministic ticket lease with complete valid status evidence"); }
+  dependencies.observeOperation?.("physical-authentication");
+  let selected: ReturnType<typeof resolveRepoExecutionPath>;
+  try { selected = resolveRepoExecutionPath(undefined, lease.path, { allowLinkedWorktreeCwd: true }); }
+  catch { throw reviewCandidateError("registered physical linked worktree", "lease path failed physical Git/top-level/common-dir/registered-worktree authentication"); }
+  if (selected.repoKey !== binding.repoKey || selected.repoRoot !== binding.repoRoot || selected.worktreeKind !== "linked"
+    || selected.worktreeRoot !== lease.path || selected.worktreeRoot === binding.repoRoot || selected.gitCommonDir !== canonical.gitCommonDir
+    || selected.worktreeRoot.startsWith(`${binding.repoRoot}${sep}`) || binding.repoRoot.startsWith(`${selected.worktreeRoot}${sep}`)) {
+    throw reviewCandidateError("registered physical linked worktree", "lease must name the exact distinct linked-worktree root for the authorized canonical repository, not a nested or primary path");
+  }
+  const runGit = (args: readonly string[], cwd: string): Buffer => {
+    dependencies.observeOperation?.("git-read");
+    return execFileSync("git", ["--no-optional-locks", ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
+  };
+  let snapshot: ReturnType<typeof captureRepositoryGitSnapshot>;
+  try { snapshot = captureRepositoryGitSnapshot(lease.path, runGit); }
+  catch { throw reviewCandidateError("complete porcelain-v2 snapshot", "candidate branch, full HEAD, or complete NUL-safe status could not be captured"); }
+  if (snapshot.branch !== binding.branch || snapshot.head !== binding.featureSha || snapshot.dirty
+    || snapshot.stagedCount !== 0 || snapshot.unstagedCount !== 0 || snapshot.untrackedCount !== 0
+    || snapshot.statusPorcelainV2Base64 !== "" || snapshot.statusRecordCount !== 0 || snapshot.statusEntries?.length !== 0) {
+    throw reviewCandidateError("candidate Git snapshot", "exact branch/Feature SHA and a complete zero-record porcelain-v2 snapshot are required");
+  }
+  try { runGit(["merge-base", "--is-ancestor", binding.baseSha, binding.featureSha], lease.path); }
+  catch { throw reviewCandidateError("immutable base ancestry", "authorized base must be a commit ancestor of the exact candidate Feature SHA"); }
+  const correlation = validateReviewCheckoutCorrelationEvidence({
+    kind: "existing-review-checkout", ...binding, worktreeRoot: lease.path, leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
+    branchState: "materialized", headSha: binding.featureSha,
+  });
+  const reviewCheckout: ReviewCheckoutEvidence = Object.freeze({
+    ...correlation, repositoryGitDir: selected.gitDir, repositoryGitCommonDir: selected.gitCommonDir, gitSnapshot: snapshot,
+  });
+  const { repo: _selector, ...planningRequest } = request;
+  return Object.freeze({ planningCwd: lease.path, planningRequest: Object.freeze(planningRequest), reviewCheckout });
+}
+
+function readReviewCandidateTicket(ticketId: string): Pick<Ticket, "id" | "project" | "linkedBranches"> {
+  try {
+    const path = join(getTicketsDir(), `${ticketId}.json`);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || realpathSync(path) !== path || stat.size > 1024 * 1024) throw new Error("invalid ticket file");
+    const bytes = readFileSync(path);
+    if (bytes.length > 1024 * 1024) throw new Error("oversized ticket");
+    const row: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("invalid ticket");
+    const value = row as Record<string, unknown>;
+    if (value["id"] !== ticketId || typeof value["project"] !== "string" || !Array.isArray(value["linkedBranches"])) throw new Error("invalid ticket binding");
+    // Do not normalize malformed/legacy state or silently synthesize headSha from sha.
+    const linkedBranches = value["linkedBranches"].map((entry: unknown): LinkedBranch => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("invalid link");
+      const branch = entry as Record<string, unknown>;
+      if (typeof branch["repo"] !== "string" || typeof branch["branch"] !== "string"
+        || (branch["state"] !== "planned" && branch["state"] !== "materialized")
+        || ["baseSha", "headSha", "sha"].some((key) => branch[key] !== undefined && typeof branch[key] !== "string")) throw new Error("invalid link fields");
+      return { repo: branch["repo"], branch: branch["branch"], state: branch["state"],
+        ...(typeof branch["baseSha"] === "string" ? { baseSha: branch["baseSha"] } : {}),
+        ...(typeof branch["headSha"] === "string" ? { headSha: branch["headSha"] } : {}),
+        ...(typeof branch["sha"] === "string" ? { sha: branch["sha"] } : {}), linkedAt: "", linkedBy: "" };
+    });
+    return { id: ticketId, project: value["project"], linkedBranches };
+  } catch { throw reviewCandidateError("bounded durable ticket read", "exact physical ticket file and explicit linked-branch evidence are absent or malformed"); }
+}
+
+function reviewCandidateError(source: string, reason: string): Error {
+  return new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "review-auto existing candidate selection stopped", source, reason,
+    correction: "preserve repository, ticket, and Treehouse lease state; reconcile blocking evidence outside this read-only launch",
+    resumeAction: "retry the exact authorized candidate only after fresh matching evidence; perform no repair",
+  }));
+}
 
 export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, sessionId, env, session }) => {
   const normalized = normalizePiRuntimeConfig(env?.["PA_PROVIDER"] ?? PI_DEFAULT_PROVIDER, model ?? env?.["PA_MODEL"] ?? PI_DEFAULT_MODEL);

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, TicketStore, type DeployRequest, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
-import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, type PiDeployDependencies } from "../deploy.js";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, selectPiReviewCandidateBeforePlanning, type PiDeployDependencies, type PiReviewCandidateBinding, type PiReviewCandidateOperation } from "../deploy.js";
+import { validateDeploymentCorrelationEvidence, validateReviewCheckoutCorrelationEvidence, type RuntimeName } from "@pa-platform/pa-core";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
@@ -25,6 +26,170 @@ function initializeRepo(path: string): void {
   git(["add", "README.md"], path);
   git(["commit", "-m", "initial"], path);
 }
+
+test("review-auto selects the exact existing candidate", async (t) => {
+  // No fixture may inherit deployment/task, checkout, registry, or Git redirection paths.
+  const isolatedKeys = Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key));
+  const prior = Object.fromEntries(isolatedKeys.map((key) => [key, process.env[key]]));
+  for (const key of isolatedKeys) delete process.env[key];
+  const root = mkdtempSync(join(tmpdir(), "pi-review-existing-"));
+  const operations: PiReviewCandidateOperation[] = ["ticket-read", "treehouse-status", "physical-authentication", "git-read", "checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease", "matrix-start", "reviewer-start"];
+  const prohibited = operations.filter((operation) => !["ticket-read", "treehouse-status", "physical-authentication", "git-read"].includes(operation));
+  type Fixture = {
+    dir: string; repo: string; worktree: string; ticketPath: string;
+    request: DeployRequest; binding: PiReviewCandidateBinding;
+    linked: Record<string, unknown>; ticket: Record<string, unknown>;
+    rows: Array<Record<string, unknown>>; output?: TreehouseCommandResult;
+  };
+  const snapshotFiles = (dir: string): Record<string, string> => {
+    const snapshot: Record<string, string> = {};
+    const walk = (path: string): void => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) walk(child);
+        else snapshot[child] = entry.isSymbolicLink() ? `symlink:${readlinkSync(child)}` : readFileSync(child).toString("base64");
+      }
+    };
+    walk(dir);
+    return snapshot;
+  };
+  const cases: Array<{ name: string; change?: (fixture: Fixture) => void; source?: RegExp }> = [
+    { name: "distinct exact candidate" },
+    { name: "exact canonical-path selector", change: (f) => { f.request.repo = f.repo; } },
+    { name: "implicit canonical selector", change: (f) => { delete f.request.repo; } },
+    { name: "absent exact ticket", change: (f) => { delete f.request.ticket; }, source: /authorized feature binding/ },
+    { name: "absent ticket file", change: (f) => { f.ticketPath = join(f.dir, "other-ticket.json"); }, source: /durable ticket read/ },
+    { name: "missing ticket", change: (f) => { f.ticket.id = "ALT-99"; }, source: /durable ticket read/ },
+    { name: "malformed ticket file", change: (f) => { f.ticket.linkedBranches = "not-an-array"; }, source: /durable ticket read/ },
+    { name: "missing branch", change: (f) => { f.ticket.linkedBranches = []; }, source: /linked branch/ },
+    { name: "duplicate repository branches", change: (f) => { f.ticket.linkedBranches = [f.linked, { ...f.linked, branch: "feature/ALT-7-other" }]; }, source: /linked branch/ },
+    { name: "wrong repository", change: (f) => { f.linked.repo = "other"; }, source: /linked branch/ },
+    { name: "wrong ticket project", change: (f) => { f.ticket.project = "other"; }, source: /linked branch/ },
+    { name: "planned branch", change: (f) => { f.linked.state = "planned"; }, source: /linked branch/ },
+    { name: "malformed branch state", change: (f) => { f.linked.state = "invented"; }, source: /durable ticket read/ },
+    { name: "wrong ticket branch", change: (f) => { f.linked.branch = "feature/ALT-77-candidate"; }, source: /linked branch/ },
+    { name: "different exact branch", change: (f) => { f.linked.branch = "feature/ALT-7-other"; }, source: /feature binding/ },
+    { name: "missing immutable base", change: (f) => { delete f.linked.baseSha; }, source: /feature binding/ },
+    { name: "uppercase base", change: (f) => { f.linked.baseSha = "A".repeat(40); }, source: /feature binding/ },
+    { name: "malformed HEAD", change: (f) => { f.linked.headSha = "abc"; }, source: /feature binding/ },
+    { name: "legacy-only HEAD", change: (f) => { delete f.linked.headSha; }, source: /linked branch/ },
+    { name: "stale ticket HEAD", change: (f) => { f.linked.headSha = f.binding.baseSha; }, source: /feature binding/ },
+    { name: "conflicting legacy alias", change: (f) => { f.linked.sha = f.binding.baseSha; }, source: /feature binding/ },
+    { name: "missing lease", change: (f) => { f.rows = []; }, source: /Treehouse/ },
+    { name: "duplicate deterministic leases", change: (f) => { f.rows.push({ ...f.rows[0], path: join(f.dir, "another"), lease_id: "lease-2" }); }, source: /Treehouse/ },
+    { name: "wrong ticket holder", change: (f) => { f.rows[0]!.lease_holder = "pa:generic-repo:ALT-77"; }, source: /Treehouse/ },
+    { name: "wrong repository holder", change: (f) => { f.rows[0]!.lease_holder = "pa:other:ALT-7"; }, source: /Treehouse/ },
+    { name: "stale free lease", change: (f) => { f.rows[0]!.status = "free"; }, source: /Treehouse/ },
+    { name: "missing lease identity", change: (f) => { delete f.rows[0]!.lease_id; }, source: /Treehouse/ },
+    { name: "primary-root lease", change: (f) => { f.rows[0]!.path = f.repo; }, source: /linked worktree/ },
+    { name: "nested lease path", change: (f) => { const nested = join(f.worktree, "nested"); mkdirSync(nested); f.rows[0]!.path = nested; }, source: /linked worktree/ },
+    { name: "registered worktree nested in canonical root", change: (f) => { const nested = join(f.repo, "nested-tree"); git(["worktree", "add", "--detach", nested, "HEAD"], f.repo); f.rows[0]!.path = nested; }, source: /linked worktree/ },
+    { name: "symlink lease path", change: (f) => { const alias = join(f.dir, "alias"); symlinkSync(f.worktree, alias, "dir"); f.rows[0]!.path = alias; }, source: /linked worktree/ },
+    { name: "symlink dot-git", change: (f) => { const dotGit = join(f.worktree, ".git"); const pointer = readFileSync(dotGit); const alias = join(f.dir, "dot-git-target"); writeFileSync(alias, pointer); rmSync(dotGit); symlinkSync(alias, dotGit); }, source: /linked worktree/ },
+    { name: "wrong common directory", change: (f) => { const other = join(f.dir, "other-repo"); initializeRepo(other); const otherTree = join(f.dir, "other-tree"); git(["worktree", "add", "--detach", otherTree, "HEAD"], other); f.rows[0]!.path = otherTree; }, source: /linked worktree/ },
+    { name: "unregistered forged worktree", change: (f) => { const forged = join(f.dir, "forged"); mkdirSync(forged); writeFileSync(join(forged, "README.md"), "candidate\n"); const gitDir = git(["rev-parse", "--absolute-git-dir"], f.worktree); writeFileSync(join(forged, ".git"), `gitdir: ${gitDir}\n`); f.rows[0]!.path = forged; }, source: /linked worktree/ },
+    { name: "detached candidate", change: (f) => { git(["checkout", "--detach", "HEAD"], f.worktree); }, source: /Git snapshot/ },
+    { name: "wrong current branch", change: (f) => { git(["checkout", "-b", "feature/ALT-7-other"], f.worktree); }, source: /Git snapshot/ },
+    { name: "drifted HEAD", change: (f) => { git(["commit", "--allow-empty", "-m", "drift"], f.worktree); }, source: /Git snapshot/ },
+    { name: "staged record", change: (f) => { writeFileSync(join(f.worktree, "README.md"), "staged\n"); git(["add", "README.md"], f.worktree); }, source: /Git snapshot/ },
+    { name: "unstaged record", change: (f) => { writeFileSync(join(f.worktree, "README.md"), "unstaged\n"); }, source: /Git snapshot/ },
+    { name: "untracked NUL-safe record", change: (f) => { writeFileSync(join(f.worktree, "new\nname with spaces.txt"), "preserved\n"); }, source: /Git snapshot/ },
+    { name: "non-ancestor immutable base", change: (f) => { git(["commit", "--allow-empty", "-m", "canonical later"], f.repo); const later = git(["rev-parse", "HEAD"], f.repo); f.binding = { ...f.binding, baseSha: later }; f.linked.baseSha = later; }, source: /base ancestry/ },
+    { name: "base is a blob not a commit", change: (f) => { const blob = git(["rev-parse", "HEAD:README.md"], f.repo); f.binding = { ...f.binding, baseSha: blob }; f.linked.baseSha = blob; }, source: /base ancestry/ },
+    { name: "missing base object", change: (f) => { f.binding = { ...f.binding, baseSha: "f".repeat(40) }; f.linked.baseSha = f.binding.baseSha; }, source: /base ancestry/ },
+    { name: "authorized ticket mismatch", change: (f) => { f.binding = { ...f.binding, ticket: "ALT-77" }; }, source: /authorized feature binding/ },
+    { name: "authorized canonical mismatch", change: (f) => { f.binding = { ...f.binding, repoRoot: f.worktree }; }, source: /canonical repository binding/ },
+    { name: "authorized uppercase Feature SHA", change: (f) => { f.binding = { ...f.binding, featureSha: "A".repeat(40) }; }, source: /authorized feature binding/ },
+    { name: "oversized stdout", change: (f) => { f.output = result(Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1, 0x20)); }, source: /Treehouse/ },
+    { name: "malformed JSON", change: (f) => { f.output = result("["); }, source: /Treehouse/ },
+    { name: "truncated UTF-8", change: (f) => { f.output = result(Buffer.from([0x5b, 0xc3, 0x28, 0x5d])); }, source: /Treehouse/ },
+    { name: "subprocess timeout", change: (f) => { f.output = { ...result("", 1), error: new Error("spawn ETIMEDOUT PRIVATE-STDERR") }; }, source: /Treehouse/ },
+    { name: "oversized/control diagnostic input", change: (f) => { f.linked.branch = "feature/ALT-7-" + "x".repeat(10_000) + "\ncontrol"; }, source: /linked branch|feature binding/ },
+  ];
+  try {
+    assert.equal(TREEHOUSE_TIMEOUT_MS, 15_000);
+    assert.equal(MAX_TREEHOUSE_JSON_BYTES, 1024 * 1024);
+    for (const [index, scenario] of cases.entries()) await t.test(scenario.name, () => {
+      const dir = join(root, String(index)); mkdirSync(dir);
+      const repo = join(dir, "repo"); const worktree = join(dir, "candidate");
+      const config = join(dir, "config"); const tickets = join(dir, "tickets"); mkdirSync(config); mkdirSync(tickets);
+      initializeRepo(repo);
+      const baseSha = git(["rev-parse", "HEAD"], repo);
+      const branch = "feature/ALT-7-candidate";
+      git(["worktree", "add", "-b", branch, worktree, baseSha], repo);
+      writeFileSync(join(worktree, "README.md"), "candidate\n"); git(["add", "README.md"], worktree); git(["commit", "-m", "candidate"], worktree);
+      const featureSha = git(["rev-parse", "HEAD"], worktree);
+      writeFileSync(join(config, "config.yaml"), `config_dir: ${dir}\nrepos:\n  generic-repo:\n    path: ${repo}\n    prefix: ALT\n`);
+      process.env["PA_PLATFORM_CONFIG"] = config; process.env["PA_AI_USAGE_HOME"] = dir; process.env["PA_REGISTRY_DB"] = join(dir, "registry.db");
+      assert.equal(process.env["PA_DEPLOYMENT_DIR"], undefined);
+      const linked = { repo: "generic-repo", branch, state: "materialized", baseSha, headSha: featureSha, sha: featureSha };
+      const ticket = { id: "ALT-7", project: "generic-repo", linkedBranches: [linked] };
+      const fixture: Fixture = { dir, repo, worktree, linked, ticket, ticketPath: join(tickets, "ALT-7.json"),
+        request: { team: "requirements", mode: "review-auto", ticket: "ALT-7", repo: "generic-repo" },
+        binding: { repoKey: "generic-repo", repoRoot: repo, ticket: "ALT-7", branch, baseSha, featureSha },
+        rows: [{ name: "1", path: worktree, status: "leased", flavor: "git", lease_id: "lease-1", lease_holder: "pa:generic-repo:ALT-7", leased_at: "2026-10-02T00:00:00Z", processes: [] }],
+      };
+      scenario.change?.(fixture);
+      writeFileSync(fixture.ticketPath, JSON.stringify(fixture.ticket));
+      const before = snapshotFiles(dir);
+      const counts = Object.fromEntries(operations.map((operation) => [operation, 0])) as Record<PiReviewCandidateOperation, number>;
+      const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+      const treehouse = new TreehouseClient({ run: (args, cwd) => {
+        calls.push({ args: [...args], cwd });
+        if (args[0] !== "status") { counts.checkout += 1; throw new Error("selection attempted checkout lifecycle"); }
+        return fixture.output ?? result(fixture.rows);
+      } });
+      const select = () => selectPiReviewCandidateBeforePlanning({ request: fixture.request, runtime: "pi", cwd: repo, authorizedBinding: fixture.binding }, { treehouse, observeOperation: (operation) => { counts[operation] += 1; } });
+      if (scenario.source) {
+        assert.throws(select, (error: unknown) => {
+          assert.ok(error instanceof Error); assert.match(error.message, scenario.source!);
+          assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+          assert.ok(error.message.length <= 2_000); assert.doesNotMatch(error.message, /PRIVATE-STDERR|[\u0000-\u001f\u007f-\u009f]/);
+          return true;
+        });
+      } else {
+        const selected = select(); assert.ok(selected);
+        assert.equal(selected.planningCwd, worktree); assert.equal(selected.planningRequest.repo, undefined);
+        assert.equal(selected.reviewCheckout.repoRoot, repo); assert.notEqual(selected.planningCwd, repo);
+        assert.equal(selected.reviewCheckout.featureSha, featureSha); assert.equal(selected.reviewCheckout.headSha, featureSha);
+        assert.equal(selected.reviewCheckout.baseSha, baseSha); assert.equal(selected.reviewCheckout.branch, branch);
+        assert.equal(selected.reviewCheckout.leaseId, "lease-1"); assert.equal(selected.reviewCheckout.leaseHolder, "pa:generic-repo:ALT-7");
+        assert.equal(selected.reviewCheckout.gitSnapshot.statusPorcelainV2Base64, "");
+        assert.equal(selected.reviewCheckout.gitSnapshot.statusRecordCount, 0);
+        assert.equal(selected.reviewCheckout.repositoryGitCommonDir, join(repo, ".git"));
+        assert.notEqual(selected.reviewCheckout.repositoryGitDir, selected.reviewCheckout.repositoryGitCommonDir);
+        assert.ok(Object.isFrozen(selected)); assert.ok(Object.isFrozen(selected.reviewCheckout)); assert.ok(Object.isFrozen(selected.reviewCheckout.gitSnapshot));
+        assert.equal("ticketSlotId" in selected.reviewCheckout, false); assert.equal("repositoryPermit" in selected.reviewCheckout, false); assert.equal("authority" in selected.reviewCheckout, false);
+        assert.equal(git(["branch", "--show-current"], repo), "develop"); assert.equal(git(["rev-parse", "HEAD"], repo), baseSha); assert.notEqual(baseSha, featureSha);
+        assert.equal(counts["ticket-read"], 1); assert.equal(counts["treehouse-status"], 1); assert.equal(counts["physical-authentication"], 1); assert.equal(counts["git-read"], 4);
+        process.env["GIT_DIR"] = join(repo, ".git");
+        try { assert.throws(select, /Git invocation environment/); } finally { delete process.env["GIT_DIR"]; }
+        const { repositoryGitDir: _gitDir, repositoryGitCommonDir: _common, gitSnapshot: _snapshot, ...correlation } = selected.reviewCheckout;
+        assert.deepEqual(validateReviewCheckoutCorrelationEvidence(correlation), correlation);
+        assert.throws(() => validateReviewCheckoutCorrelationEvidence({ ...correlation, repositoryPermit: 1 }), /cannot contain builder/);
+        assert.throws(() => validateDeploymentCorrelationEvidence({ treehousePath: worktree, treehouseLeaseId: "lease-1", treehouseLeaseHolder: "pa:generic-repo:ALT-7", branchState: "materialized", branchHeadSha: featureSha }), /requires authority/);
+        assert.deepEqual(validateDeploymentCorrelationEvidence({}), {}, "legacy builder correlation remains readable");
+        for (const route of [
+          { runtime: "opencode" }, { runtime: "claude" }, { runtime: "droid" },
+          { request: { ...fixture.request, dryRun: true } }, { request: { ...fixture.request, resume: "d-abcdef" } },
+          { request: { ...fixture.request, team: "builder" } }, { request: { ...fixture.request, mode: "review" } },
+        ] as Array<{ runtime?: RuntimeName; request?: DeployRequest }>) {
+          const beforeCounts = { ...counts };
+          assert.equal(selectPiReviewCandidateBeforePlanning({ request: route.request ?? fixture.request, runtime: route.runtime ?? "pi", cwd: repo, authorizedBinding: fixture.binding }, { treehouse, observeOperation: (operation) => { counts[operation] += 1; } }), undefined);
+          assert.deepEqual(counts, beforeCounts, "other routes perform no selection");
+        }
+      }
+      for (const operation of prohibited) assert.equal(counts[operation], 0, `${scenario.name}: zero ${operation}`);
+      assert.ok(calls.every((call) => call.cwd === repo && call.args.join(" ") === "status --json"));
+      assert.ok(calls.length <= 1, "one bounded status query at most, no retries");
+      assert.deepEqual(snapshotFiles(dir), before, `${scenario.name}: ticket, project, Git index/refs, task and authority files remain byte-identical`);
+    });
+  } finally {
+    for (const key of Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key))) delete process.env[key];
+    for (const [key, value] of Object.entries(prior)) if (value !== undefined) process.env[key] = value;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Treehouse JSON boundary acquires from an exact v2.3.0 free row, reuses one lease, and rejects malformed evidence", () => {
   const calls: string[][] = [];

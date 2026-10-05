@@ -22,6 +22,49 @@ export interface DeploymentCorrelationEvidence {
   repositoryPermit?: 1 | 2 | 3 | 4;
 }
 
+/** Read-only candidate identity, deliberately separate from builder capacity/ownership. */
+export interface ReviewCheckoutCorrelationEvidence {
+  readonly kind: "existing-review-checkout";
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly branch: string;
+  readonly branchState: "materialized";
+  readonly baseSha: string;
+  readonly headSha: string;
+  readonly featureSha: string;
+}
+
+/** This validates identity only; it neither grants review authority nor reserves a checkout. */
+export function validateReviewCheckoutCorrelationEvidence(input: Record<string, unknown>): ReviewCheckoutCorrelationEvidence {
+  const fields = ["kind", "repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha"];
+  if (Object.keys(input).some((key) => !fields.includes(key)) || fields.some((key) => input[key] === undefined)) {
+    fail("review checkout requires its complete identity tuple and cannot contain builder slot, permit, or authority evidence");
+  }
+  const repoKey = input["repoKey"];
+  const ticket = input["ticket"];
+  if (typeof repoKey !== "string" || repoKey.length > MAX_DEPLOYMENT_CORRELATION_ID_CHARS || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoKey)
+    || !isCanonicalTicketId(ticket)) fail("review checkout repository key or ticket is not canonical");
+  const repoRoot = requiredCanonicalPath(input["repoRoot"], "repoRoot");
+  const worktreeRoot = requiredCanonicalPath(input["worktreeRoot"], "worktreeRoot");
+  const leaseId = optionalCanonicalId(input["leaseId"], "leaseId")!;
+  const leaseHolder = optionalHolder(input["leaseHolder"], "leaseHolder")!;
+  const baseSha = optionalSha(input["baseSha"], "baseSha")!;
+  const headSha = optionalSha(input["headSha"], "headSha")!;
+  const featureSha = optionalSha(input["featureSha"], "featureSha")!;
+  const branch = input["branch"];
+  if (input["kind"] !== "existing-review-checkout" || input["branchState"] !== "materialized"
+    || repoRoot === worktreeRoot || leaseHolder !== `pa:${repoKey}:${ticket}` || headSha !== featureSha
+    || typeof branch !== "string" || branch.length === 0 || branch.length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS
+    || /[\u0000-\u0020\u007f-\u009f]/.test(branch)) {
+    fail("review checkout must be distinct, materialized, and bound to the exact ticket holder, branch, and Feature SHA");
+  }
+  return Object.freeze({ kind: "existing-review-checkout", repoKey, repoRoot, worktreeRoot, ticket, leaseId, leaseHolder, branch, branchState: "materialized", baseSha, headSha, featureSha });
+}
+
 export interface DeploymentCorrelationValidationContext {
   ticketId?: unknown;
   worktreeRoot?: unknown;
