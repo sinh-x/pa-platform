@@ -11,6 +11,10 @@ import {
 import { dirname } from "node:path";
 import {
   MAX_VALIDATION_EVENT_CHARACTERS,
+  parseRepositoryReviewReservation,
+  validateReviewCheckoutCorrelationEvidence,
+  type RepositoryReviewReservation,
+  type ReviewCheckoutCorrelationEvidence,
   assertValidationAuthority,
   executeValidationHandoff,
   finalizeValidationExecutorCrash,
@@ -48,6 +52,7 @@ export interface PiValidationAdmissionEvidence {
 }
 
 export interface PiProtectedReviewMetadata {
+  checkout?: ReviewCheckoutCorrelationEvidence;
   reviewDeploymentId: string;
   authorizationId: string;
   ticketId: string;
@@ -65,6 +70,7 @@ export interface PiProtectedValidationLaunch {
   validationHandoff: unknown;
   authority: ValidationAuthorityBinding;
   review: PiProtectedReviewMetadata;
+  reservation?: RepositoryReviewReservation;
 }
 
 export interface PiReviewerValidationContext extends PiProtectedReviewMetadata {
@@ -80,6 +86,7 @@ export interface PiValidationSupervisorOptions<T> {
   statePath?: string;
   emit?: (event: ValidationEvent) => void | Promise<void>;
   startReviewer: (context: PiReviewerValidationContext) => T | Promise<T>;
+  beforeExecute?: (launch: PiProtectedValidationLaunch) => void;
   execute?: typeof executeValidationHandoff;
   recover?: typeof finalizeValidationExecutorCrash;
   now?: () => Date;
@@ -107,6 +114,7 @@ export async function runPiValidationBeforeReviewer<T>(
     handoff = parseValidationHandoff(launch.validationHandoff);
     assertValidationAuthority(handoff, launch.authority);
     assertReviewBinding(launch, handoff);
+    options.beforeExecute?.(launch);
   } catch (error) {
     return {
       admitted: false,
@@ -171,6 +179,8 @@ export function piReviewerValidationPrompt(context: PiReviewerValidationContext)
     `ticket_id: ${context.ticketId}`,
     `branch: ${context.branch}`,
     `feature_sha: ${context.featureSha}`,
+    ...(context.checkout ? [`repo_root: ${context.checkout.repoRoot}`, `worktree_root: ${context.checkout.worktreeRoot}`,
+      `treehouse_lease_id: ${context.checkout.leaseId}`, `treehouse_lease_holder: ${context.checkout.leaseHolder}`] : []),
     `matrix_source: ${context.matrixSource}`,
     `matrix_authority_sha256: ${context.matrixAuthoritySha256}`,
     `matrix_approval_evidence: ${context.matrixApprovalEvidence}`,
@@ -211,7 +221,7 @@ export function readPiProtectedValidationLaunch(path: string): PiProtectedValida
 }
 
 export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedValidationLaunch {
-  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"]);
+  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation"]);
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
@@ -235,6 +245,7 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       activeReview: "admitted",
       prerequisites,
     },
+    ...(row["reservation"] === undefined ? {} : { reservation: parseRepositoryReviewReservation(row["reservation"]) }),
     validationHandoff: row["validationHandoff"],
     authority,
     review,
@@ -281,10 +292,11 @@ function parseAuthority(input: unknown): ValidationAuthorityBinding {
 function parseReview(input: unknown): PiProtectedReviewMetadata {
   const row = strictRecord(input, "Pi protected review metadata", [
     "reviewDeploymentId", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence",
-  ]);
+  ], ["checkout"]);
   const authorizationId = requiredString(row["authorizationId"], "review.authorizationId");
   if (!REVIEW_AUTHORIZATION.test(authorizationId)) throw new Error("Pi review authorization is not a canonical one-use identifier");
   return {
+    ...(row["checkout"] === undefined ? {} : { checkout: validateReviewCheckoutCorrelationEvidence(row["checkout"] as Record<string, unknown>) }),
     reviewDeploymentId: requiredString(row["reviewDeploymentId"], "review.reviewDeploymentId"),
     authorizationId,
     ticketId: requiredString(row["ticketId"], "review.ticketId"),
@@ -299,6 +311,11 @@ function parseReview(input: unknown): PiProtectedReviewMetadata {
 function assertReviewBinding(launch: PiProtectedValidationLaunch, handoff: ValidationHandoff): void {
   const review = launch.review;
   const authority = launch.authority;
+  if (review.checkout && (review.checkout.ticket !== review.ticketId || review.checkout.branch !== review.branch
+    || review.checkout.featureSha !== review.featureSha || review.checkout.worktreeRoot !== authority.repository.worktreeRoot
+    || review.checkout.repoRoot !== authority.repository.canonicalRoot || review.checkout.repoKey !== authority.repository.repoKey)) {
+    throw new Error("Pi protected candidate metadata does not match validation authority");
+  }
   if (review.reviewDeploymentId !== launch.deploymentId || review.ticketId !== authority.ticketId
     || review.branch !== authority.branch || review.featureSha !== authority.featureSha
     || review.matrixSource !== authority.matrixSource || review.matrixAuthoritySha256 !== authority.matrixAuthoritySha256
@@ -326,10 +343,10 @@ function reviewerContextFor(
   return context;
 }
 
-function strictRecord(input: unknown, label: string, keys: string[]): Record<string, unknown> {
+function strictRecord(input: unknown, label: string, keys: string[], optional: string[] = []): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error(`${label} is malformed`);
   const row = input as Record<string, unknown>;
-  if (Object.keys(row).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
+  if (Object.keys(row).some((key) => !keys.includes(key) && !optional.includes(key)) || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
     throw new Error(`${label} is malformed`);
   }
   return row;

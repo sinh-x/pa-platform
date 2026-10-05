@@ -5,7 +5,7 @@ import { getBranchPattern, loadRepoEntry, resolveRepoExecutionPath } from "../re
 import { TicketStore } from "../tickets/store.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import type { DeployRequest } from "./control.js";
-import type { ReviewCheckoutCorrelationEvidence } from "./correlation.js";
+import { validateReviewCheckoutCorrelationEvidence, type ReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
 import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryBranchTransitionPolicy, RepositoryGitSnapshot } from "./repository-admission.js";
 import type { PaEnvKey } from "../primer/index.js";
@@ -82,6 +82,7 @@ export interface ExecutionPlan {
   readonly repositoryAdmission: RepositoryAdmissionEvidence;
   readonly treehouse?: TreehouseLaunchEvidence;
   readonly ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
+  readonly reviewCheckout?: ReviewCheckoutEvidence;
   readonly rogue_one?: true;
   readonly invocation_channel?: DeploymentInvocationChannel;
   readonly ticket?: string;
@@ -120,6 +121,7 @@ export interface ResolveExecutionPlanOptions {
   treehouse?: TreehouseLaunchEvidence;
   /** Authenticated by the PPA CLI adapter, not accepted from the Agent API. */
   ticketWorktreeSelection?: TicketWorktreeSelectionEvidence;
+  reviewCheckout?: ReviewCheckoutEvidence;
 }
 
 export function withAuthoritativeRepositoryAdmission(
@@ -209,6 +211,17 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       throw new Error("execution-plan: selection-only evidence and authenticated canonical/runtime identity must agree without builder authority");
     }
   }
+  if (options.reviewCheckout) {
+    const { repositoryGitDir, repositoryGitCommonDir, gitSnapshot, ...identity } = options.reviewCheckout;
+    const review = validateReviewCheckoutCorrelationEvidence(identity);
+    if (options.runtime !== "pi" || options.teamConfig.name !== "requirements" || modeName !== "review-auto"
+      || options.treehouse || options.request.ticket !== review.ticket || repository.repoKey !== review.repoKey
+      || repository.repoRoot !== review.repoRoot || repository.worktreeRoot !== review.worktreeRoot
+      || repository.worktreeKind !== "linked" || repository.gitDir !== repositoryGitDir || repository.gitCommonDir !== repositoryGitCommonDir
+      || gitSnapshot.head !== review.featureSha || gitSnapshot.branch !== review.branch || gitSnapshot.statusPorcelainV2Base64 !== "") {
+      throw new Error("execution-plan: protected review checkout identity does not match immutable execution roots");
+    }
+  }
   const lifecycle = Object.freeze({
     deploymentId: options.deploymentId,
     deploymentDir: options.deploymentDir,
@@ -231,6 +244,7 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
     repositoryAdmission,
     ...(options.treehouse ? { treehouse: Object.freeze({ ...options.treehouse }) } : {}),
     ...(options.ticketWorktreeSelection ? { ticketWorktreeSelection: Object.freeze({ ...options.ticketWorktreeSelection }) } : {}),
+    ...(options.reviewCheckout ? { reviewCheckout: Object.freeze({ ...options.reviewCheckout }) } : {}),
     ...(rogueOne ? { rogue_one: true as const, invocation_channel: invocationChannel } : {}),
     ...(options.request.ticket ? { ticket: options.request.ticket } : {}),
     ticketRequired,
@@ -257,6 +271,10 @@ export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): Exec
       } : {}),
       ...(options.ticketWorktreeSelection ? {
         PA_TREEHOUSE_LEASE_ID: "", PA_TREEHOUSE_LEASE_HOLDER: "", PA_TICKET_SLOT: "", PA_REPOSITORY_PERMIT: "",
+      } : {}),
+      ...(options.reviewCheckout ? {
+        PA_TREEHOUSE_LEASE_ID: options.reviewCheckout.leaseId,
+        PA_TREEHOUSE_LEASE_HOLDER: options.reviewCheckout.leaseHolder,
       } : {}),
       ...(rogueOne ? { PA_TEAM: options.teamConfig.name, PA_MODE: modeName, PA_ROGUE_ONE: "1" } : {}),
     }),

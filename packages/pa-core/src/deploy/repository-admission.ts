@@ -538,6 +538,11 @@ function readReviewReservation(path: string): RepositoryReviewReservation {
     if (size !== stat.size || size > MAX_REPOSITORY_LEASE_BYTES) throw reviewReservationError("reservation size changed during bounded read");
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size)));
   } finally { closeSync(descriptor); }
+  return parseRepositoryReviewReservation(value);
+}
+
+/** Protected handoff parser; the token is authenticated against durable state at each boundary. */
+export function parseRepositoryReviewReservation(value: unknown): RepositoryReviewReservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw reviewReservationError("malformed reservation");
   const row = value as Record<string, unknown>;
   if (Object.keys(row).sort().join(",") !== "authorizationId,checkout,deploymentId,reservationToken,reservedAt,schemaVersion"

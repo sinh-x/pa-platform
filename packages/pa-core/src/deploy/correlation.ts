@@ -10,6 +10,7 @@ const HOLDER_PATTERN = /^pa:([A-Za-z0-9][A-Za-z0-9._-]*):([A-Z][A-Z0-9]*-\d+)$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 export interface DeploymentCorrelationEvidence {
+  reviewCheckout?: ReviewCheckoutCorrelationEvidence;
   parentDeploymentId?: string;
   builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
   treehousePath?: string;
@@ -81,6 +82,8 @@ export function validateDeploymentCorrelationEvidence(
   input: Record<string, unknown>,
   context: DeploymentCorrelationValidationContext = {},
 ): DeploymentCorrelationEvidence {
+  const reviewCheckout = input["reviewCheckout"] === undefined ? undefined
+    : validateReviewCheckoutCorrelationEvidence(input["reviewCheckout"] as Record<string, unknown>);
   const parentDeploymentId = optionalDeploymentId(input["parentDeploymentId"], "parentDeploymentId");
   const builderAuthority = optionalEnum(input["builderAuthority"], ["orchestrator", "parented-implement", "standalone-implement"] as const, "builderAuthority");
   const treehousePath = optionalCanonicalPath(input["treehousePath"], "treehousePath");
@@ -98,6 +101,10 @@ export function validateDeploymentCorrelationEvidence(
 
   const hasBinding = [parentDeploymentId, builderAuthority, treehousePath, treehouseLeaseId, treehouseLeaseHolder, ticketSlotId, repositoryPermit]
     .some((value) => value !== undefined);
+  if (reviewCheckout && (hasBinding || (context.ticketId !== undefined && reviewCheckout.ticket !== context.ticketId)
+    || (context.worktreeRoot !== undefined && reviewCheckout.worktreeRoot !== context.worktreeRoot))) {
+    fail("review checkout cannot carry builder authority or mismatched ticket/execution roots");
+  }
   if (hasBinding) {
     if (!builderAuthority || !treehousePath || !treehouseLeaseId || !treehouseLeaseHolder || !ticketSlotId || !repositoryPermit) {
       fail("Treehouse binding requires authority, canonical path, lease ID/holder, ticket slot, and repository permit together");
@@ -119,6 +126,7 @@ export function validateDeploymentCorrelationEvidence(
   }
 
   return {
+    ...(reviewCheckout ? { reviewCheckout } : {}),
     ...(parentDeploymentId ? { parentDeploymentId } : {}),
     ...(builderAuthority ? { builderAuthority } : {}),
     ...(treehousePath ? { treehousePath } : {}),

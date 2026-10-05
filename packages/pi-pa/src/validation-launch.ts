@@ -147,6 +147,10 @@ export function withPiReviewCandidateAtMatrixBoundary<T>(input: {
   const checkout = reservation.checkout;
   const review = launch.review;
   const authority = launch.authority;
+  if (review.checkout && (["repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha"] as const)
+    .some((key) => review.checkout![key] !== checkout[key])) {
+    throw launchError("review candidate metadata", "reviewer identity does not match the exact protected reservation");
+  }
   if (launch.deploymentId !== reservation.deploymentId || review.reviewDeploymentId !== reservation.deploymentId
     || review.authorizationId !== reservation.authorizationId || review.ticketId !== checkout.ticket
     || review.branch !== checkout.branch || review.featureSha !== checkout.featureSha
@@ -314,6 +318,29 @@ function fsyncDirectory(path: string): void {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
+/** Runtime-owned authority parsing before candidate selection; no caller-supplied checkout path. */
+export function authorizePiReviewSelection(request: DeployRequest, repository: { repoKey: string; repoRoot: string }): {
+  binding: { repoKey: string; repoRoot: string; ticket: string; branch: string; baseSha: string; featureSha: string };
+  authorizationId: string;
+} {
+  if (request.background !== true || request.resume) throw launchError("review launch mode", "review requires one fresh background deployment");
+  const objective = parseReviewObjective(request.objective);
+  const matrix = readApprovedMatrix(objective["Matrix Source"]);
+  const ticket = new TicketStore().get(objective["Ticket"]);
+  const approval = ticket?.comments.find((comment) => comment.id === approvalCommentReference(objective["Matrix Approval Evidence"]));
+  if (request.ticket !== objective["Ticket"] || !GIT_SHA.test(objective["Feature SHA"])
+    || !REVIEW_AUTHORIZATION.test(objective["Review Authorization ID"]) || !GIT_SHA.test(matrix.header.approvedBaseSha)
+    || matrix.header.repositoryKey !== repository.repoKey || matrix.header.ticketId !== request.ticket
+    || matrix.header.featureBranch !== objective["Branch"] || matrix.digest !== objective["Matrix Authority SHA-256"]
+    || matrix.header.matrixAuthoritySha256 !== matrix.digest || matrix.header.matrixApprovalEvidence !== objective["Matrix Approval Evidence"]
+    || !approval || approval.author.toLowerCase() !== "sinh"
+    || occurrences(approval.content, objective["Matrix Source"]) !== 1 || occurrences(approval.content, matrix.digest) !== 1) {
+    throw launchError("pre-plan protected review authority", "objective, approved matrix header/digest and durable approval do not agree");
+  }
+  return { binding: { repoKey: repository.repoKey, repoRoot: repository.repoRoot, ticket: objective["Ticket"], branch: objective["Branch"],
+    baseSha: matrix.header.approvedBaseSha, featureSha: objective["Feature SHA"] }, authorizationId: objective["Review Authorization ID"] };
+}
+
 export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput): PiProtectedValidationLaunch {
   const { deploymentId, request, plan, environment } = input;
   if (!isPiProtectedReviewRequest(request, plan)) {
@@ -466,6 +493,10 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     validationHandoff,
     authority,
     review: {
+      ...(plan.reviewCheckout ? { checkout: (() => {
+        const { repositoryGitDir: _git, repositoryGitCommonDir: _common, gitSnapshot: _snapshot, ...identity } = plan.reviewCheckout;
+        return identity;
+      })() } : {}),
       reviewDeploymentId: claim.deploymentId,
       authorizationId: claim.authorizationId,
       ticketId: claim.ticketId,

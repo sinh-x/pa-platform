@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
@@ -9,9 +9,9 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
-import { createPiProtectedValidationLaunch, isPiProtectedReviewRequest } from "./validation-launch.js";
+import { authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
-import { isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
+import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha">;
 
@@ -24,10 +24,8 @@ export interface PiReviewCandidateSelectionDependencies {
 }
 
 /**
- * Phase-local pre-plan seam. The trusted caller must supply the already-authorized
- * objective/launch-intent binding; this performs identity selection, not PAP-223
- * authorization, reservation, planning, matrix execution, or reviewer launch.
- * Production integration is deliberately deferred until reservation is available.
+ * Existing-only pre-plan selector. Production supplies runtime-parsed PAP-223
+ * authority; this seam never accepts an objective checkout path or builder authority.
  */
 export function selectPiReviewCandidateBeforePlanning(input: {
   readonly request: DeployRequest;
@@ -119,7 +117,7 @@ export function rereadPiReviewCandidate(checkout: ReviewCheckoutEvidence, depend
   return selected.reviewCheckout;
 }
 
-/** Phase 2 composition seam; the production launcher supplies PAP-223-authorized IDs in Phase 3. */
+/** Reserve the runtime-authenticated review independently of builder capacity. */
 export function reservePiReviewCandidate(input: {
   checkout: ReviewCheckoutEvidence;
   deploymentId: string;
@@ -135,6 +133,39 @@ export function withPiReviewCandidateReservation<T>(reservation: RepositoryRevie
 ): T {
   return withRepositoryReviewReservation({ reservation,
     rereadCheckout: () => rereadPiReviewCandidate(reservation.checkout, dependencies), dependencies: dependencies.admission }, start);
+}
+
+/** Public identity only; reservation capabilities never enter plan, env or registry. */
+export function piReviewCheckoutCorrelation(checkout: ReviewCheckoutEvidence): ReviewCheckoutCorrelationEvidence {
+  const { repositoryGitDir: _git, repositoryGitCommonDir: _common, gitSnapshot: _snapshot, ...identity } = checkout;
+  return validateReviewCheckoutCorrelationEvidence(identity);
+}
+
+/** Trusted no-spawn/terminated runtime proof plus durable terminal publication are mandatory. */
+export function finalizePiReviewCandidate(reservation: RepositoryReviewReservation, deploymentDirectory: string, runtimeTerminated: boolean): void {
+  const result = finalizeRepositoryReview({ reservation,
+    verifyTerminal: (id) => runtimeTerminated && getDeploymentEvents(id).some((event) => event.event === "completed" || event.event === "crashed")
+      && ["success", "partial", "failed", "crashed"].includes(queryDeploymentStatus(id)?.status ?? ""),
+    publishFinalEvidence: (evidence) => {
+      const terminal = getDeploymentEvents(reservation.deploymentId).find((event) => event.event === "completed" || event.event === "crashed");
+      if (!terminal) throw new Error("review terminal registry evidence absent");
+      reconcileTerminalRegistryEvent({ ...terminal, review_checkout: piReviewCheckoutCorrelation(reservation.checkout) });
+      const path = join(deploymentDirectory, "review-final-evidence.json");
+      const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+      const body = `${JSON.stringify(evidence)}\n`;
+      writeFileSync(temporary, body, { mode: 0o600, flag: "wx" });
+      const file = openSync(temporary, "r");
+      try { fsyncSync(file); } finally { closeSync(file); }
+      renameSync(temporary, path);
+      const directory = openSync(deploymentDirectory, "r");
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+      if (readFileSync(path, "utf8") !== body) throw new Error("review final evidence readback mismatch");
+    },
+  });
+  if (result === "absent" && !existsSync(join(deploymentDirectory, "review-final-evidence.json"))) {
+    throw reviewCandidateError("matching terminal review finalization", "reservation is absent without durable final publication; do not infer successful cleanup");
+  }
+  if (result !== "finalized" && result !== "absent") throw reviewCandidateError("matching terminal review finalization", `reservation retained (${result})`);
 }
 
 function readReviewCandidateTicket(ticketId: string): Pick<Ticket, "id" | "project" | "linkedBranches"> {
@@ -183,6 +214,7 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 
 export interface PiDeployDependencies {
   readonly treehouse?: TreehouseClient;
+  readonly observeReviewOperation?: (operation: PiReviewCandidateOperation) => void;
   readonly getProcessFingerprint?: (pid: number) => ProcessFingerprint | undefined;
   readonly queryParentDeploymentStatus?: typeof queryDeploymentStatus;
   readonly observeOperation?: (operation: "checkout" | "branch" | "slot" | "permit" | "lineage" | "runtime-spawn") => void;
@@ -430,6 +462,19 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const provider = runtimeConfig.provider;
   const model = runtimeConfig.model;
   const requestedEnvironment = paEnv(deploymentId, deployDir, paths.activityLogPath, team, request, provider, model);
+  let activeReviewReservation: RepositoryReviewReservation | undefined;
+  let reviewRuntimeTerminated = true;
+  let reviewCheckout: ReviewCheckoutEvidence | undefined;
+  const reviewSelectionDependencies = { treehouse: dependencies.treehouse, observeOperation: dependencies.observeReviewOperation };
+  const publishUnstartedReviewFailure = (reason: string): void => {
+    if (!activeReviewReservation || !reviewCheckout) return;
+    emitStartedEvent({ deploymentId, team: team.name, mode: "review-auto", runtime: "pi", binary: "ppa", ticketId: request.ticket,
+      objective: request.objective, repo: reviewCheckout.worktreeRoot, repoRoot: reviewCheckout.repoRoot, worktreeRoot: reviewCheckout.worktreeRoot,
+      reviewCheckout: piReviewCheckoutCorrelation(reviewCheckout) });
+    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary: reason, exitCode: 1 });
+    finalizePiReviewCandidate(activeReviewReservation, deployDir, true);
+    activeReviewReservation = undefined;
+  };
   let activeTicketSlot: RepositoryTicketSlotHandoff | undefined;
   let treehouseEvidence: TreehouseLaunchEvidence | undefined;
   let reauthenticateParentBeforeSpawn: (() => void) | undefined;
@@ -463,6 +508,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       planningCwd = selectedTicketWorktree.evidence.worktreeRoot;
       const { repo: _selector, ...selectionRequest } = request;
       planningRequest = selectionRequest;
+    }
+    if (!request.dryRun && !request.resume && team.name === "requirements" && mode?.id === "review-auto") {
+      const canonical = resolveRepoExecutionPath(request.repo, planningCwd, { allowLinkedWorktreeCwd: request.repo === undefined });
+      const authorized = authorizePiReviewSelection(request, canonical);
+      const selection = selectPiReviewCandidateBeforePlanning({ request: { ...request, mode: "review-auto" }, runtime: "pi", cwd: planningCwd,
+        authorizedBinding: authorized.binding }, reviewSelectionDependencies)!;
+      reviewCheckout = selection.reviewCheckout;
+      planningCwd = selection.planningCwd;
+      planningRequest = selection.planningRequest;
+      activeReviewReservation = reservePiReviewCandidate({ checkout: reviewCheckout, deploymentId, authorizationId: authorized.authorizationId }, reviewSelectionDependencies);
     }
     const builderMode = !request.dryRun && team.name === "builder" && mode?.require_ticket === true && Boolean(request.ticket)
       ? mode.id
@@ -620,8 +675,10 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       allowDirtyInheritedBorrow: Boolean(inheritedAttempt),
       ...(treehouseEvidence ? { treehouse: treehouseEvidence } : {}),
       ...(selectedTicketWorktree ? { ticketWorktreeSelection: selectedTicketWorktree.evidence } : {}),
+      ...(reviewCheckout ? { reviewCheckout } : {}),
     });
     assertPiExecutionRootAgreement(plan, plan.environment as Record<string, string>);
+    if (activeReviewReservation) withPiReviewCandidateReservation(activeReviewReservation, () => undefined, reviewSelectionDependencies);
   } catch (error) {
     let cleanupFailure: string | undefined;
     if (activeTicketSlot) {
@@ -629,12 +686,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (cleanup.status === "released" || cleanup.status === "absent") activeTicketSlot = undefined;
       else cleanupFailure = `matching ticket-slot cleanup failed (${cleanup.status})`;
     }
-    const raw = `${error instanceof Error ? error.message : String(error)}${cleanupFailure ? `; ${cleanupFailure}` : ""}`;
+    let raw = `${error instanceof Error ? error.message : String(error)}${cleanupFailure ? `; ${cleanupFailure}` : ""}`;
+    try { publishUnstartedReviewFailure(raw); } catch { raw = reviewCandidateError("pre-plan terminal publication", "review reservation retained because final evidence publication failed").message; }
+    if (team.name === "requirements" && mode?.id === "review-auto" && !/Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(raw)) {
+      raw = reviewCandidateError("pre-plan runtime review admission", raw).message;
+    }
     const rawReason = boundedDiagnostic(raw, requestedEnvironment, 2000);
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(rawReason) : inheritedAttempt ? inheritedAdmissionFailure(rawReason, request.repo ?? "unknown", process.cwd()) : rawReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(reason, requestedEnvironment, 500) }), requestedEnvironment);
     const summary = boundedDiagnostic(`ppa deploy validation failed: ${reason}`, requestedEnvironment, 2000);
-    emitCompletedEvent({ deploymentId, team: team.name, status: "failed", summary, exitCode: 1 });
+    reconcileTerminalRegistryEvent({ deployment_id: deploymentId, team: team.name, event: "completed", timestamp: new Date().toISOString(), status: "failed", summary, exit_code: 1 });
     observe("registry-diagnostic", summary, requestedEnvironment);
     const status = terminalStatus("failed", summary);
     ensurePiTerminalStatus(deployDir, status);
@@ -658,6 +719,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (cleanup.status === "released" || cleanup.status === "absent") activeTicketSlot = undefined;
       else detail += `; matching ticket-slot cleanup failed (${cleanup.status})`;
     }
+    try { publishUnstartedReviewFailure(detail); } catch { detail = reviewCandidateError("terminal publication", "review reservation retained because final evidence publication failed").message; }
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail) : boundedDiagnostic(detail, env, 2000);
     observe("deploy-diagnostic", reason, env);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
@@ -785,9 +847,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     writePiTerminalStatus(deployDir, statusRecord);
     observe("terminal-status", statusRecord, env);
     if (!request.background) clearPiForegroundCompletion(deployDir);
+    if (activeReviewReservation && reviewRuntimeTerminated) {
+      finalizePiReviewCandidate(activeReviewReservation, deployDir, true);
+      activeReviewReservation = undefined;
+    }
     return { ...outcome, authorityFailure: containmentFailure !== undefined };
   };
   const completeFailure = async (reason: string, exitCode = 1) => {
+    if (plan.reviewCheckout && !/Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(reason)) reason = reviewCandidateError("protected launch", reason).message;
     const boundedReason = boundedDiagnostic(reason, env, 2000);
     const safeReason = request.ticketWorktree ? ticketWorktreeDiagnostic(boundedReason) : inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
@@ -797,6 +864,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: resultReason };
   };
   const crashFailure = async (reason: string) => {
+    if (plan.reviewCheckout && !/Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(reason)) reason = reviewCandidateError("protected launch", reason).message;
     const boundedReason = boundedDiagnostic(reason, env, 2000);
     const safeReason = request.ticketWorktree ? ticketWorktreeDiagnostic(boundedReason) : inheritedAttempt ? inheritedAdmissionFailure(boundedReason, plan.repoKey, plan.repoRoot) : boundedReason;
     appendActivity(createActivityEvent({ deployId: deploymentId, kind: "error", source: "pi", body: boundedDiagnostic(safeReason, env, 500) }), env);
@@ -811,7 +879,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       return completeFailure("protected Pi review launch requires the production PiAdapter");
     }
     try {
-      protectedValidationLaunch = createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env });
+      if (!activeReviewReservation || !plan.reviewCheckout) throw reviewCandidateError("protected launch", "runtime-selected reserved candidate is required");
+      protectedValidationLaunch = withPiReviewCandidateReservation(activeReviewReservation, () => ({
+        ...createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env }),
+        reservation: activeReviewReservation,
+      }), reviewSelectionDependencies);
     } catch (error) {
       return completeFailure(error instanceof Error ? error.message : String(error));
     }
@@ -986,8 +1058,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (protectedValidationLaunch) {
       (adapter as PiAdapter).registerProtectedValidationLaunch(protectedValidationLaunch);
     }
+    if (activeReviewReservation && protectedValidationLaunch) {
+      withPiReviewCandidateAtMatrixBoundary({ launch: protectedValidationLaunch, reservation: activeReviewReservation,
+        rereadCheckout: () => rereadPiReviewCandidate(activeReviewReservation!.checkout, reviewSelectionDependencies) }, () => undefined);
+    }
+    // Release the boundary mutex before supervisor startup; the durable reservation remains blocking.
     dependencies.observeOperation?.("runtime-spawn");
+    if (activeReviewReservation) reviewRuntimeTerminated = false;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
+    reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
     if (terminalError) return completeFailure(terminalError);
@@ -1013,6 +1092,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const supervisorPid = result.metadata?.["supervisorPid"];
       if (typeof supervisorPid !== "number") throw new Error("runner-readiness: Pi background supervisor returned without ownership evidence");
       acceptRepositoryAuthorityHandoff(result.metadata);
+      activeReviewReservation = undefined; // protected supervisor owns matching terminal publication
       return { status: "pending", team: request.team, mode: request.mode ?? null, deploymentId };
     }
     const staged = request.background ? undefined : readStagedForegroundCompletion(deployDir, deploymentId, env, paths.activityLogPath, audit);
@@ -1091,10 +1171,12 @@ function inheritedAdmissionFailure(reason: string, canonicalRepoKey: string, can
 }
 
 function deploymentCorrelation(plan: ExecutionPlan): {
+  reviewCheckout?: ReviewCheckoutCorrelationEvidence;
   parentDeploymentId?: string; builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
   treehousePath?: string; treehouseLeaseId?: string; treehouseLeaseHolder?: string; branchState?: "materialized";
   branchBaseSha?: string; branchHeadSha?: string; ticketSlotId?: string; repositoryPermit?: 1 | 2 | 3 | 4;
 } {
+  if (plan.reviewCheckout) return { reviewCheckout: piReviewCheckoutCorrelation(plan.reviewCheckout) };
   const evidence = plan.treehouse;
   return evidence ? {
     ...(evidence.parentDeploymentId ? { parentDeploymentId: evidence.parentDeploymentId } : {}),
@@ -1108,8 +1190,9 @@ function deploymentCorrelation(plan: ExecutionPlan): {
 
 function registryCorrelation(plan: ExecutionPlan, terminal?: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string }): Pick<RegistryEvent,
   "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
-  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
+  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit" | "review_checkout"
 > {
+  if (plan.reviewCheckout) return { review_checkout: piReviewCheckoutCorrelation(plan.reviewCheckout) };
   const evidence = plan.treehouse;
   return evidence ? {
     parent_deployment_id: evidence.parentDeploymentId, builder_authority: evidence.authority,
