@@ -29,6 +29,106 @@ Print, JSON, and RPC execution loads the same extension and commands but does no
 
 The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
 
+## Protected Pi review-auto existing-candidate selection
+
+A fresh, non-dry-run Pi `requirements/review-auto` launch selects its candidate
+**before immutable planning**. This is an existing-only, read-only route, not
+builder checkout preparation. Other teams/modes, non-Pi adapters, dry-runs, and
+resume routing are unchanged; resume is not a supported protected review launch.
+
+Before invoking PPA, the orchestrator must persist a fresh exact launch intent
+binding ticket, branch, Feature SHA, approved matrix source/raw-byte SHA-256,
+durable Sinh approval comment evidence, and one unused Review Authorization ID.
+The guarded objective file must agree with that intent and the approved
+requirements header/ticket. Ticket and repository flags alone are insufficient.
+For example, the operator-prepared file has these seven exact authority lines
+(placeholders are explanatory, not valid launch values):
+
+```text
+Ticket: PAP-232
+Branch: feature/PAP-232-review-auto-candidate-binding
+Feature SHA: <exact-40-lowercase-hex-candidate-HEAD>
+Matrix Source: agent-teams/requirements/artifacts/2026-10-02-pap-232-review-auto-candidate-binding.md
+Matrix Authority SHA-256: <approved-64-lowercase-hex-raw-matrix-digest>
+Matrix Approval Evidence: <exact-approved-header-evidence-naming-one-durable-Sinh-comment>
+Review Authorization ID: review-auth:<fresh-lowercase-canonical-UUIDv4>
+```
+
+Use LF separators with no blank lines, duplicate authority labels, leading or
+trailing whitespace, CR characters, or trailing newline. Copy exact approved
+values; do not generate substitute approval evidence. The full base SHA comes
+from the approved requirements header and materialized ticket link, not an
+additional objective clause. Keep the objective outside the candidate so its
+creation cannot dirty the checkout. Only after that durable authority exists is
+this canonical-root invocation supported:
+
+```bash
+cd /home/sinh/git-repos/sinh-x/tools/pa-platform
+ppa deploy requirements --mode review-auto --ticket PAP-232 --repo pa-platform --background --objective-file /absolute/private/operator-prepared-review-objective.txt
+```
+
+The launcher requires exactly one canonical-repository ticket linked branch in
+`materialized` state with the exact branch, immutable 40-lowercase-hex base, and
+HEAD equal to the approved Feature SHA. It reads bounded Treehouse v2.3.0 status
+(15,000 ms timeout, 1 MiB stdout maximum) and selects exactly one existing lease
+whose holder is `pa:<repoKey>:<ticket>`—for this example,
+`pa:pa-platform:PAP-232`. Missing/duplicate leases or planned/stale/conflicting
+branch evidence reject; review-auto never acquires a checkout or refreshes the
+link. The lease must identify the exact physical, registered linked-worktree
+root, distinct from the canonical root, with matching top-level, Git dir,
+common dir, and registered membership. Symlink aliases, nested paths, primary
+roots, wrong repositories, and unregistered checkouts reject. The candidate must
+be on the exact branch/Feature SHA, descended from the immutable base, with zero
+staged, unstaged, and untracked records in the complete NUL-safe porcelain-v2
+snapshot.
+
+Before runtime spawn, PA persists a token-bound **read-only review reservation**
+for the exact deployment/ticket/branch/Feature-SHA/checkout/lease/authorization
+tuple. Zero builder owners or one live idle same-ticket, same-checkout
+orchestrator may coexist. An active implement borrower rejects review; the
+active review reservation excludes every new implement borrower for that
+checkout. The orchestrator retains custody, not concurrent mutation authority.
+Selection performs zero branch operations, Treehouse acquisition/return calls,
+ticket linked-branch writes, project-file writes, or builder mutation
+lease/ticket-slot/repository-permit acquisitions. PA reservation and deployment
+metadata publication are not project-file writes or Treehouse lease changes.
+
+Canonical `repo_root`/plan `repoRoot` remains the registered trust anchor.
+Plan repository CWD, process CWD, `PA_REPO`, `PA_WORKTREE_ROOT`, project/memory
+root, Git top-level, registry `repo`/`worktree_root`, protected launch repository,
+every matrix command cwd, and reviewer candidate metadata instead identify the
+same selected linked checkout. No execution path falls back to canonical
+`develop`. Ticket, Treehouse lease, reservation, registered Git identity, branch,
+HEAD, and complete status are reread after planning, immediately before protected
+launch, and at the matrix-start boundary. Drift rejects without repair.
+
+PAP-223 matrix authority is unchanged: exact raw digest and approval comment,
+one-use authorization, active-review exclusion, complete explicit environment,
+ordered executor, terminal ledger, and independent reviewer handoff remain
+mandatory. Rejection emits at most 2,000 JavaScript characters containing
+`Condition`, `Source`, `Reason`, `Correction`, and `Resume Action`, with zero
+matrix-command and reviewer starts. Correct originating evidence outside the
+failed launch and obtain a fresh authorized launch; do not switch/reset/clean,
+refresh the ticket, replay authority, or use `--force` as a review bypass.
+
+Registry events and GET status expose optional `review_checkout` identity (see
+[the data shape](api/data-models.md#reviewcheckoutcorrelationevidence)). Default
+status detail adds exactly `Review Candidate`, `Review Branch` (base/Feature SHA),
+and `Review Lease` (ID/holder) lines; Team remains `requirements/review-auto`.
+There is no builder mutation slot/permit line. Old/ordinary rows omit this
+optional evidence rather than inventing a candidate. Terminal publication
+preserves the exact candidate tuple. Verified terminal handling finalizes only
+its matching PA review reservation, never returns or alters the Treehouse lease,
+and never releases an unrelated reservation or retained orchestrator custody.
+Uncertain crash/cleanup evidence remains blocking for operator inspection;
+retain the checkout and lease rather than infer cleanup success.
+
+These contracts and regressions are preparation, not evidence of a successful
+installed independent review. PAP-232 Phase 4/AC7 still requires one authorized
+installed PPA independent `requirements/review-auto` deployment to pass the
+unchanged nine-command Full Validation Matrix and publish matching reviewer,
+ledger, and registry/status evidence. Rogue-one execution is not that proof.
+
 ## Protected structured validation and review handoff
 
 PPA review deployments can receive a launcher-only structured validation handoff. The handoff is not a public CLI input and is never accepted from model output. Before the background runner starts, the trusted launcher consumes the one-use review authorization and binds the ticket, branch, Feature SHA, matrix source and digest, approval evidence, canonical repository identity, authenticated worktree, complete child environment, ordered commands, limits, and exact artifact paths. It writes the protected sidecar atomically with mode `0600`; the runner verifies its deployment identity, rejects hard-linked/symlinked/malformed evidence, reads it once, and unlinks it. The authorization identifier is separate protected review metadata, not a manifest environment variable.
@@ -231,8 +331,9 @@ explicit keys, paths, and canonical-root execution still reject. OPA/OpenCode
 and CPA/Claude Code behavior is unchanged and makes no Treehouse claim.
 Canonical-root, wrong-checkout, duplicate-ticket, fifth-ticket, or
 mismatched-parent attempts fail before Pi spawn. Requirements and non-builder
-modes retain their existing canonical/linked CWD behavior and do not enter this
-ticket-checkout acquisition flow.
+modes do not enter this ticket-checkout acquisition flow. Protected Pi
+`requirements/review-auto` uses the existing-only candidate-selection exception
+above; all other routes retain their existing canonical/linked CWD behavior.
 
 Verified success, failure, or crash handling refreshes authenticated `headSha`
 and finalizes PA ticket/worktree slots, permits, mutation leases, and borrowers.
@@ -434,15 +535,17 @@ different identity domains:
   key/root pair. Runtime evidence is compared only with authenticated
   `worktree_root`; the two roots are not required to be the same path.
 - Explicit `--repo <registered-key-or-primary-path>` ordinarily executes at the
-  primary root, even when invoked from a linked worktree. The sole exception is
-  the authenticated direct background PPA `builder/implement` path described
-  above: key or exact canonical root identifies the protected parent repository,
-  while execution remains exclusively in the parent's worktree. Explicit
-  worktree paths remain invalid, and this exception creates no canonical
-  execution mode.
+  primary root, even when invoked from a linked worktree. Authenticated direct
+  background PPA `builder/implement` instead uses the protected parent's
+  worktree; protected Pi `requirements/review-auto` instead selects the sole
+  existing ticket candidate before planning, as described above. In both
+  exceptions a key or exact canonical root identifies canonical identity only.
+  Explicit worktree paths remain invalid, and neither exception creates a
+  canonical execution mode.
 
-Authenticated linked worktrees may be dirty for foreground or background PPA
-launches. Admission records branch, full HEAD, and staged/unstaged/untracked
+Ordinary authenticated linked worktrees may be dirty for foreground or
+background PPA launches; protected Pi review-auto requires a clean exact
+candidate instead. Admission records branch, full HEAD, and staged/unstaged/untracked
 state without changing files. Ownership evidence is stored under the physical
 per-worktree Git directory, never beneath the worktree's `.git` file. One live
 `builder/orchestrator` and one live implement-slot deployment may coexist in an

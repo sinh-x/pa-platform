@@ -1,8 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BOARD_COLUMNS, type BoardView, type TicketStatus } from "../tickets/index.js";
-import { formatBoard } from "../cli/formatters.js";
+import { formatBoard, formatRegistryShow } from "../cli/formatters.js";
 import type { Ticket } from "../tickets/types.js";
+import type { DeploymentStatus } from "../types.js";
+
+function withUtc(run: () => void): void {
+  const previous = process.env["TZ"];
+  process.env["TZ"] = "UTC";
+  try { run(); }
+  finally {
+    if (previous === undefined) delete process.env["TZ"];
+    else process.env["TZ"] = previous;
+  }
+}
+
+test("formatRegistryShow keeps literal non-review bytes and the existing Team/mode contract", () => {
+  withUtc(() => {
+    const deployment: DeploymentStatus = { deploy_id: "d-a1b2c3", team: "builder", status: "success", started_at: "2026-10-05T00:00:00Z", completed_at: "2026-10-05T00:01:00Z", agents: ["team-manager"], runtime: "opencode", repo_root: "/canonical/pa-platform", worktree_root: "/canonical/pa-platform", ticket_id: "PAP-232", summary: "done" };
+    const baseline = "Deployment: d-a1b2c3\n  Team:     builder\n  Status:   success\n  Started:  2026-10-05 00:00:00 +00:00\n  Ended:    2026-10-05 00:01:00 +00:00\n  Runtime:  opencode\n  Agents:   team-manager\n  Repo Root: /canonical/pa-platform\n  Launch Ticket: PAP-232\n  Current Ticket: PAP-232\n  Summary:  done\n  Events:   2";
+    assert.equal(formatRegistryShow(deployment, 2, "PAP-232"), baseline);
+    assert.equal(formatRegistryShow({ ...deployment, mode: "" }, 2, "PAP-232"), baseline);
+    assert.equal(formatRegistryShow({ ...deployment, mode: "implement" }, 2, "PAP-232"), "Deployment: d-a1b2c3\n  Team:     builder/implement\n  Status:   success\n  Started:  2026-10-05 00:00:00 +00:00\n  Ended:    2026-10-05 00:01:00 +00:00\n  Runtime:  opencode\n  Agents:   team-manager\n  Repo Root: /canonical/pa-platform\n  Launch Ticket: PAP-232\n  Current Ticket: PAP-232\n  Summary:  done\n  Events:   2");
+  });
+});
+
+test("formatRegistryShow prints exactly three read-only review identity lines without mutation capacity", () => {
+  withUtc(() => {
+    const deployment: DeploymentStatus = {
+      deploy_id: "d-232abc", team: "requirements", mode: "review-auto", status: "running", started_at: "2026-10-05T00:00:00Z", agents: [], runtime: "pi", repo: "/treehouse/PAP-232", repo_root: "/canonical/pa-platform", worktree_root: "/treehouse/PAP-232", ticket_id: "PAP-232",
+      review_checkout: { kind: "existing-review-checkout", repoKey: "pa-platform", repoRoot: "/canonical/pa-platform", worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232", leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding", branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40) },
+    };
+    const output = formatRegistryShow(deployment, 1, "PAP-232");
+    assert.equal(output, "Deployment: d-232abc\n  Team:     requirements/review-auto\n  Status:   running\n  Started:  2026-10-05 00:00:00 +00:00\n  Runtime:  pi\n  Repo Root: /canonical/pa-platform\n  Worktree:  /treehouse/PAP-232\n  Review Candidate: /treehouse/PAP-232\n  Review Branch: feature/PAP-232-review-auto-candidate-binding base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa feature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n  Review Lease: lease-review-232 (pa:pa-platform:PAP-232)\n  Launch Ticket: PAP-232\n  Current Ticket: PAP-232\n  Events:   1");
+    assert.deepEqual(output.split("\n").filter((line) => line.startsWith("  Review ")), [
+      "  Review Candidate: /treehouse/PAP-232",
+      "  Review Branch: feature/PAP-232-review-auto-candidate-binding base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa feature=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "  Review Lease: lease-review-232 (pa:pa-platform:PAP-232)",
+    ]);
+    assert.equal(output.split("\n").filter((line) => line.startsWith("  Team:")).length, 1);
+    assert.doesNotMatch(output, /Repo Slot:|Ticket Slot:|Repo Permit:|Authority:/);
+  });
+});
 
 function makeTicket(input: { id: string; status: TicketStatus; priority: string; title: string; assignee: string; hasRunningDeployment?: boolean }): Ticket {
   const ticket = {

@@ -6,6 +6,9 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
+import type { RegistryEvent } from "../types.js";
+import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
+
 interface AssociationFixture {
   root: string;
   canonicalRoot: string;
@@ -632,6 +635,88 @@ test("registry appends WAL-backed events and materializes deployment status", ()
   }
 });
 
+test("registry preserves exact read-only review checkout event and database projections through terminal outcomes", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const review: ReviewCheckoutCorrelationEvidence = {
+      kind: "existing-review-checkout", repoKey: "pa-platform", repoRoot: canonicalRoot,
+      worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232",
+      leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding",
+      branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40),
+    };
+    appendRegistryEvent({ deployment_id: "d-ordinary", team: "requirements", mode: "analyze", event: "started", timestamp: "2026-10-05T00:00:00Z", repo: canonicalRoot, repo_root: canonicalRoot, worktree_root: canonicalRoot });
+    const ordinary = queryDeploymentStatus("d-ordinary");
+    const ordinaryEvents = getDeploymentEvents("d-ordinary");
+    assert.equal(Object.hasOwn(ordinary!, "review_checkout"), false);
+    assert.equal(Object.hasOwn(ordinaryEvents[0]!, "review_checkout"), false);
+    assert.equal(Object.hasOwn(computeDeploymentStatuses(ordinaryEvents)[0]!, "review_checkout"), false);
+
+    for (const outcome of ["success", "failed", "crashed"] as const) {
+      const deploymentId = `d-review-${outcome}`;
+      appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", runtime: "pi", binary: "ppa", event: "started", timestamp: "2026-10-05T00:01:00Z", ticket_id: review.ticket, repo: review.worktreeRoot, repo_root: review.repoRoot, worktree_root: review.worktreeRoot, review_checkout: review });
+      const immutableStart = getDeploymentEvents(deploymentId)[0];
+      const assertProjection = (expectedStatus: string): void => {
+        const events = getDeploymentEvents(deploymentId);
+        const persisted = queryDeploymentStatus(deploymentId)!;
+        const computed = computeDeploymentStatuses(events)[0]!;
+        assert.deepEqual(events[0]?.review_checkout, review);
+        assert.deepEqual(events[0], immutableStart);
+        for (const projection of [persisted, computed]) {
+          assert.equal(projection.status, expectedStatus);
+          assert.deepEqual(projection.review_checkout, review);
+          assert.deepEqual({ repo: projection.repo, repoRoot: projection.repo_root, worktreeRoot: projection.worktree_root, ticket: projection.ticket_id, team: projection.team, mode: projection.mode, runtime: projection.runtime }, { repo: review.worktreeRoot, repoRoot: canonicalRoot, worktreeRoot: review.worktreeRoot, ticket: review.ticket, team: "requirements", mode: "review-auto", runtime: "pi" });
+          for (const field of ["repository_slot", "ticket_slot_id", "repository_permit", "builder_authority", "parent_deployment_id", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder"] as const) assert.equal(projection[field], undefined, field);
+        }
+        for (const table of ["registry_events", "deployments"]) {
+          const row = getDb().prepare(`SELECT review_checkout, repository_slot, ticket_slot_id, repository_permit, builder_authority FROM ${table} WHERE deployment_id = ?${table === "registry_events" ? " AND event = 'started'" : ""}`).get(deploymentId) as Record<string, unknown>;
+          assert.deepEqual(JSON.parse(row["review_checkout"] as string), review);
+          for (const field of ["repository_slot", "ticket_slot_id", "repository_permit", "builder_authority"]) assert.equal(row[field], null);
+        }
+      };
+      assertProjection("running");
+      const terminal: RegistryEvent = { deployment_id: deploymentId, team: "requirements", event: outcome === "crashed" ? "crashed" : "completed", timestamp: "2026-10-05T00:02:00Z", ...(outcome === "crashed" ? { error: "fixture crash", exit_code: 1 } : { status: outcome, summary: "fixture terminal" }) };
+      appendRegistryEvent(terminal);
+      assertProjection(outcome);
+      assert.equal(Object.hasOwn(getDeploymentEvents(deploymentId)[1]!, "review_checkout"), false, "omitted terminal evidence does not erase start projection");
+      reconcileTerminalRegistryEvent({ ...terminal, review_checkout: review });
+      assertProjection(outcome);
+      assert.equal(getDeploymentEvents(deploymentId).length, 2);
+      assert.deepEqual(getDeploymentEvents(deploymentId)[1]?.review_checkout, review, "matching terminal publication retains the complete identity");
+    }
+    assert.deepEqual(queryDeploymentStatus("d-ordinary"), ordinary);
+    assert.deepEqual(getDeploymentEvents("d-ordinary"), ordinaryEvents);
+    assert.deepEqual(getDb().prepare("SELECT review_checkout FROM deployments WHERE deployment_id = 'd-ordinary'").get(), { review_checkout: null });
+  });
+});
+
+test("registry rejects mismatched and malformed review starts before any history or projection write", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const review: ReviewCheckoutCorrelationEvidence = {
+      kind: "existing-review-checkout", repoKey: "pa-platform", repoRoot: canonicalRoot,
+      worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232",
+      leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding",
+      branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40),
+    };
+    const start: RegistryEvent = { deployment_id: "d-review-invalid", team: "requirements", mode: "review-auto", runtime: "pi", event: "started", timestamp: "2026-10-05T00:00:00Z", ticket_id: review.ticket, repo: review.worktreeRoot, repo_root: review.repoRoot, worktree_root: review.worktreeRoot, review_checkout: review };
+    const cases: Array<{ name: string; patch: Record<string, unknown> }> = [
+      ...Object.entries({ team: "builder", mode: "analyze", runtime: "opencode", repo: canonicalRoot, repo_root: "/other", worktree_root: "/other", ticket_id: "PAP-233", repository_permit: 1, ticket_slot_id: review.leaseHolder, builder_authority: "orchestrator" }).map(([name, value]) => ({ name, patch: { [name]: value } })),
+      ...Object.entries({ kind: "builder-checkout", repoKey: "bad/key", repoRoot: "/canonical/../other", worktreeRoot: canonicalRoot, ticket: "pap-232", leaseId: "x".repeat(257), leaseHolder: "pa:pa-platform:PAP-233", branch: "bad branch", branchState: "planned", baseSha: "A".repeat(40), headSha: "c".repeat(40), featureSha: "short", repositoryPermit: 1 }).map(([name, value]) => ({ name: `review.${name}`, patch: { review_checkout: { ...review, [name]: value } } })),
+      ...Object.keys(review).map((name) => ({ name: `missing review.${name}`, patch: { review_checkout: Object.fromEntries(Object.entries(review).filter(([key]) => key !== name)) } })),
+    ];
+    for (const [index, scenario] of cases.entries()) {
+      const deploymentId = `d-review-invalid-${index}`;
+      assert.throws(() => appendRegistryEvent({ ...start, deployment_id: deploymentId, ...scenario.patch } as RegistryEvent), (error: unknown) => {
+        assert.ok(error instanceof Error, scenario.name);
+        assert.ok(error.message.length <= 2_000, scenario.name);
+        for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(error.message.includes(label), `${scenario.name}: ${label}`);
+        return true;
+      }, scenario.name);
+      assert.deepEqual(getDeploymentEvents(deploymentId), [], scenario.name);
+      assert.equal(queryDeploymentStatus(deploymentId), null, scenario.name);
+      for (const table of ["registry_events", "deployments"]) assert.deepEqual(getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), { count: 0 }, scenario.name);
+    }
+  });
+});
+
 test("registry persists rogue-one audit evidence without credentials", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-registry-rogue-"));
   const previous = process.env["PA_REGISTRY_DB"];
@@ -869,7 +954,7 @@ test("registry schema-v13 migration expands the production event constraint with
     const deploymentColumns = db.prepare("PRAGMA table_info(deployments)").all() as Array<{ name: string }>;
     assert.deepEqual(db.prepare("SELECT value FROM _meta WHERE key = 'schema_version'").get(), { value: "15" });
     for (const column of ["previous_ticket_id", "actor", "reason"]) assert.equal(eventColumns.some((entry) => entry.name === column), true);
-    for (const column of ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
+    for (const column of ["review_checkout", "parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"]) {
       assert.equal(eventColumns.some((entry) => entry.name === column), true);
       assert.equal(deploymentColumns.some((entry) => entry.name === column), true);
     }
@@ -890,6 +975,14 @@ test("registry schema-v13 migration expands the production event constraint with
         { id: 11, event: "updated", timestamp: "2026-04-26T10:01:00Z", summary: "legacy update", primer: null, note: "preserved note" },
       ],
     );
+
+    assert.deepEqual(db.prepare("SELECT review_checkout FROM registry_events WHERE deployment_id = 'd-legacy' ORDER BY id").all(), [{ review_checkout: null }, { review_checkout: null }]);
+    assert.deepEqual(db.prepare("SELECT review_checkout FROM deployments WHERE deployment_id = 'd-legacy'").get(), { review_checkout: null });
+    const legacyEvents = getDeploymentEvents("d-legacy");
+    for (const event of legacyEvents) assert.equal(Object.hasOwn(event, "review_checkout"), false);
+    const legacyStatus = queryDeploymentStatus("d-legacy")!;
+    assert.equal(Object.hasOwn(legacyStatus, "review_checkout"), false);
+    assert.equal(Object.hasOwn(computeDeploymentStatuses(legacyEvents)[0]!, "review_checkout"), false);
 
     const result = associateDeploymentTicket({
       deploymentId: "d-legacy",
@@ -919,6 +1012,9 @@ test("registry schema-v13 migration expands the production event constraint with
     assert.equal(status?.primer, "immutable primer");
     assert.equal(status?.runtime, "opencode");
     assert.equal(getDeploymentEvents("d-legacy").length, 3);
+    assert.equal(Object.hasOwn(status!, "review_checkout"), false);
+    assert.deepEqual(getDeploymentEvents("d-legacy").slice(0, 2), legacyEvents, "migration and ordinary ticket association preserve historical rows");
+    assert.deepEqual({ ...status, ticket_id: undefined }, legacyStatus, "ordinary status changes only the requested ticket association");
   } finally {
     closeDb();
     if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"];
