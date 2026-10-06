@@ -575,6 +575,12 @@ interface ReviewCheckoutCorrelationEvidence {
   readonly branch: string;
   readonly branchState: "materialized";
   readonly baseSha: string;
+  readonly approvedReference?: {
+    readonly sha: string;
+    readonly matrixSource: string;
+    readonly matrixAuthoritySha256: string;
+    readonly matrixApprovalEvidence: string;
+  };
   readonly headSha: string;
   readonly featureSha: string;
 }
@@ -591,17 +597,36 @@ interface ReviewCheckoutCorrelationEvidence {
 | `leaseHolder` | Exactly `pa:<repoKey>:<ticket>`. |
 | `branch` | Exact non-empty bounded ticket feature branch, without whitespace/control characters. |
 | `branchState` | Exactly `materialized`; planned intent is not review evidence. |
-| `baseSha` | Immutable 40-lowercase-hex approved base commit. |
+| `baseSha` | Immutable 40-lowercase-hex historical creation/materialization base, exactly matching the linked ticket and artifact historical-base header. |
+| `approvedReference` | Separate current review reference authority pin: full lowercase `sha`, exact durable `matrixSource`, lowercase 64-hex `matrixAuthoritySha256` and `matrixApprovalEvidence`. Required for fresh production Pi reviews; absent only for historical identity compatibility. |
 | `headSha` | Exact 40-lowercase-hex candidate HEAD, equal to `featureSha`. |
 | `featureSha` | Exact 40-lowercase-hex authorized candidate commit. |
 
-All twelve fields are required when the object is present; unknown keys and
-builder slot/permit/authority fields inside it reject. It carries no reservation
+The original twelve fields remain required when the object is present. The
+additive `approvedReference` object, when present, requires exactly its four fields;
+unknown keys and builder slot/permit/authority fields inside either object reject.
+Historical rows without it remain readable without fabricated reference evidence.
+A fresh production Pi launch cannot omit it or substitute ambient `develop`.
+`approvedReference.sha` may differ from `baseSha`: candidates must descend from
+both. The reference is authenticated against the durable artifact's Approved Base
+SHA, hashed matrix ancestry prerequisite and exact Sinh source/digest approval,
+then pinned through plan, reservation, protected rereads, terminal projections
+and reviewer evidence. Artifact/reference drift rejects rather than rewriting
+historical ticket/lease provenance. It carries no reservation
 token, authorization ID, raw Git status, or builder mutation capacity. The
 correlation validator validates identity only: this object alone neither grants
 review authority nor reserves/authenticates a physical checkout. The protected
 Pi launcher separately proves the physical registered linked worktree, clean
-snapshot, base ancestry, approved matrix authority, and matching reservation.
+snapshot and local branch-ref equality, both-base ancestry, approved matrix
+authority, and matching reservation.
+
+The trusted Pi matrix-start journal (not a public registry/API input) also requires
+explicit `candidateHead == featureSha == authenticated HEAD == selected branch tip`.
+Its timestamp is propagated as `prerequisite_started_at`; terminal ledger
+`startedAt` is separately validated and propagated as `executor_started_at`.
+Missing/malformed/conflicting start evidence rejects without migration/backdating.
+These start observations belong to protected reviewer metadata, not new public
+admission fields.
 
 A trusted `started` event with review evidence must be Pi
 `requirements/review-auto`, with `ticket_id == ticket`, `repo_root == repoRoot`,

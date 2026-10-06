@@ -158,7 +158,7 @@ test("review-auto rejects candidate binding drift and concurrent borrowers", asy
           validationHandoff: {}, // This test exercises only the candidate seam, not a fabricated matrix authorization.
           authority: { ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture",
             repository: { repoKey: "generic-repo", canonicalRoot: repo, worktreeRoot: worktree }, protectedEnvironment: { PA_REPO: worktree } },
-          review: { reviewDeploymentId: "d-222222", authorizationId: authorityId, ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture" } };
+          review: { reviewDeploymentId: "d-222222", candidateHead: featureSha, prerequisiteStartedAt: "2020-01-01T00:00:00.000Z", authorizationId: authorityId, ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture" } };
         const boundary = () => withPiReviewCandidateAtMatrixBoundary({ launch, reservation, rereadCheckout: () => rereadPiReviewCandidate(checkout, deps), dependencies: admission }, () => { matrixStarts++; reviewerStarts++; });
         if (scenario.startsWith("matrix:")) withPiReviewCandidateReservation(reservation, () => undefined, deps);
         const drift = scenario.split(":")[1];
@@ -338,6 +338,7 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
 
 interface ProtectedReviewFixtureOptions {
   baseSha?: string;
+  historicalMaterializationBaseSha?: string;
   canonicalRepoKey?: string;
   environmentSection?: string;
   expectedDependencyVersion?: string;
@@ -413,6 +414,7 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
       "> Repository Key: pa-platform",
       "> Ticket: PAP-198",
       `> Approved Base SHA: ${baseSha}`,
+      `> Historical Materialization Base SHA: ${options.historicalMaterializationBaseSha ?? baseSha}`,
       `> Feature Branch: ${branch}`,
       `> Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
       `> Matrix Approval Evidence: ${matrixApprovalEvidence}`,
@@ -426,7 +428,7 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   const ticketPath = join(root, "tickets", "PAP-198.json");
   const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as Record<string, unknown>;
   ticket["linkedBranches"] = [{
-    repo: "pa-platform", branch, state: "materialized", baseSha, headSha: featureSha,
+    repo: "pa-platform", branch, state: "materialized", baseSha: options.historicalMaterializationBaseSha ?? baseSha, headSha: featureSha,
     linkedAt: "2026-09-28T00:00:00.000Z", linkedBy: "test",
   }];
   ticket["comments"] = [{
@@ -2701,6 +2703,9 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
   };
   const reviewerContext = {
     reviewDeploymentId: config.deploymentId,
+    candidateHead: "a".repeat(40),
+    prerequisiteStartedAt: "2026-09-29T09:35:57.263Z",
+    executorStartedAt: "2026-09-29T09:36:00.000Z",
     authorizationId,
     ticketId: "PAP-223",
     branch: "feature/PAP-223-validation",
@@ -2736,7 +2741,7 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
   }
 });
 
-test("matrix-start journal is identity-bound, exactly once, durable before return, and fail-closed across crash recovery", () => {
+test("matrix-started journal is identity-bound, exactly once, durable before return, and fail-closed across crash recovery", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-matrix-start-"));
   const deploymentDirectory = join(root, "deployments", "d-matrix-start");
   mkdirSync(deploymentDirectory, { recursive: true, mode: 0o700 });
@@ -2746,6 +2751,7 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
     ticketId: "PAP-223",
     branch: "feature/PAP-223-structured-validation-executor",
     featureSha: "a".repeat(40),
+    candidateHead: "a".repeat(40),
     matrixSource: "agent-teams/requirements/artifacts/pap-223.md",
     matrixAuthoritySha256: "b".repeat(64),
     matrixApprovalEvidence: "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest",
@@ -2783,7 +2789,7 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
     assert.deepEqual(reconciled, event, "recovery preserves the one original identity-bound event");
     assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 1);
     assert.throws(
-      () => writePiMatrixStartedEvent({ deploymentDirectory, event: { ...identity, featureSha: "c".repeat(40) } }),
+      () => writePiMatrixStartedEvent({ deploymentDirectory, event: { ...identity, featureSha: "c".repeat(40), candidateHead: "c".repeat(40) } }),
       /recovery identity does not match/,
     );
 
@@ -2797,11 +2803,33 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
       ),
       /simulated crash/,
     );
+    const crashPath = piMatrixAttemptStatePath(crashDirectory);
+    const crashBytes = readFileSync(crashPath);
+    assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory: crashDirectory,
+      event: { ...crashIdentity, candidateHead: "c".repeat(40), featureSha: "c".repeat(40) } }), /recovery identity/);
+    assert.deepEqual(readFileSync(crashPath), crashBytes, "conflicting recovery never rewrites old journal");
     const recovered = writePiMatrixStartedEvent({ deploymentDirectory: crashDirectory, event: crashIdentity });
     assert.equal(recovered.deploymentId, "d-crash-boundary");
     assert.equal(readFileSync(piMatrixAttemptStatePath(crashDirectory), "utf8").split("\n").filter(Boolean).length, 1);
 
-    writeFileSync(path, `${readFileSync(path, "utf8")}{}\n`, { mode: 0o600 });
+    for (const candidateHead of [undefined, "short", "A".repeat(40), "c".repeat(40)]) {
+      const freshDirectory = join(root, `invalid-${candidateHead ?? "missing"}`);
+      assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory: freshDirectory,
+        event: { ...identity, candidateHead } as typeof identity }), /candidateHead|authority format/);
+      assert.equal(existsSync(piMatrixAttemptStatePath(freshDirectory)), false, "invalid writer input publishes no event");
+      const invalid: Record<string, unknown> = { ...event, candidateHead };
+      if (candidateHead === undefined) delete invalid["candidateHead"];
+      const bytes = Buffer.from(`${JSON.stringify(invalid)}\n`);
+      writeFileSync(path, bytes);
+      assert.throws(() => readPiMatrixStartedEvent(path), /schema|authority format/);
+      assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }), /schema|authority format/);
+      assert.deepEqual(readFileSync(path), bytes, "invalid historical evidence stays byte-identical");
+    }
+    writeFileSync(path, `${JSON.stringify(event)}\n`);
+    assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }, {
+      afterParentFsync: () => { writeFileSync(path, `${JSON.stringify({ ...event, candidateHead: "c".repeat(40), featureSha: "c".repeat(40) })}\n`); },
+    }), /recovery readback/);
+    writeFileSync(path, `${JSON.stringify(event)}\n{}\n`, { mode: 0o600 });
     assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }), /exactly one complete event/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -2809,10 +2837,23 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
 });
 
 test("review-auto production path rejects candidate and boundary drift before commands", async (t) => {
-  for (const scenario of ["missing lease", "duplicate lease", "canonical path", "ticket duplicate", "staged", "unstaged", "untracked", "active borrower", "after-plan lease", "pre-launch head", "matrix ticket"] as const) {
+  for (const scenario of ["missing lease", "duplicate lease", "canonical path", "ticket duplicate", "staged", "unstaged", "untracked", "active borrower",
+    "missing reference", "malformed reference", "conflicting reference", "missing historical base", "conflicting historical base", "unapproved reference",
+    "reference ancestry", "historical ancestry", "after-plan reference", "pre-launch reference", "after-plan lease", "pre-launch head", "matrix ticket", "matrix reference",
+    "matrix journal missing candidate", "matrix journal malformed candidate", "matrix journal conflicting candidate", "matrix journal identity drift"] as const) {
     await t.test(scenario, async () => withPiEnv(async (root) => {
       installProtectedReviewToolFixture(root);
-      const fixture = prepareProtectedReview(root, "review-auth:923e4567-e89b-42d3-a456-426614174020");
+      const initialBase = git(["rev-parse", "HEAD"], join(root, "repo"));
+      const fixture = prepareProtectedReview(root, "review-auth:923e4567-e89b-42d3-a456-426614174020", { historicalMaterializationBaseSha: initialBase });
+      if (scenario === "reference ancestry" || scenario === "historical ancestry") {
+        git(["commit", "--allow-empty", "-m", "develop-only reference"], join(root, "repo"));
+        const later = git(["rev-parse", "HEAD"], join(root, "repo"));
+        Object.assign(fixture, prepareProtectedReview(root, "review-auth:923e4567-e89b-42d3-a456-426614174020", {
+          baseSha: scenario === "reference ancestry" ? later : fixture.featureSha,
+          historicalMaterializationBaseSha: scenario === "historical ancestry" ? later : initialBase,
+        }));
+      }
+      const matrixRuntime = scenario.startsWith("matrix ");
       const candidate = join(root, "candidate");
       const ticketPath = join(root, "tickets", "PAP-198.json");
       const leasePath = join(root, "treehouse-status.json");
@@ -2831,6 +2872,20 @@ test("review-auto production path rejects candidate and boundary drift before co
           else ticket.linkedBranches[0]!["headSha"] = "b".repeat(40);
           writeFileSync(ticketPath, JSON.stringify(ticket));
         }
+        const matrixPath = join(root, fixture.matrixSource);
+        let artifact = readFileSync(matrixPath, "utf8");
+        if (scenario === "missing reference") artifact = artifact.replace(/^> Approved Base SHA:.*\n/m, "");
+        if (scenario === "malformed reference") artifact = artifact.replace(/^> Approved Base SHA:.*$/m, "> Approved Base SHA: short");
+        if (["conflicting reference", "after-plan reference", "pre-launch reference", "matrix reference"].includes(scenario)) {
+          artifact = artifact.replace(/^> Approved Base SHA:.*$/m, `> Approved Base SHA: ${initialBase}`);
+        }
+        if (scenario === "missing historical base") artifact = artifact.replace(/^> Historical Materialization Base SHA:.*\n/m, "");
+        if (scenario === "conflicting historical base") artifact = artifact.replace(/^> Historical Materialization Base SHA:.*$/m, `> Historical Materialization Base SHA: ${fixture.featureSha}`);
+        if (artifact !== readFileSync(matrixPath, "utf8")) writeFileSync(matrixPath, artifact);
+        if (scenario === "unapproved reference") {
+          const ticket = JSON.parse(readFileSync(ticketPath, "utf8")); ticket.comments[0].author = "not-sinh";
+          writeFileSync(ticketPath, JSON.stringify(ticket));
+        }
         if (scenario === "active borrower") writeFileSync(repositoryMutationBorrowerPath(candidate), "unresolved borrower", { mode: 0o600 });
         if (scenario === "staged" || scenario === "unstaged" || scenario === "untracked") applyPreflightGitDrift(candidate, scenario);
         if (scenario === "pre-launch head") git(["commit", "--allow-empty", "-m", "external candidate drift"], candidate);
@@ -2843,15 +2898,24 @@ test("review-auto production path rejects candidate and boundary drift before co
       const operations: string[] = [];
       const treehouse = new TreehouseClient({ run: (args) => {
         assert.deepEqual(args, ["status", "--json"]);
-        if (++statusReads === 3 && scenario === "after-plan lease") mutate();
+        if (++statusReads === 3 && (scenario === "after-plan lease" || scenario === "after-plan reference")) mutate();
         return { status: 0, stdout: readFileSync(leasePath), stderr: Buffer.alloc(0) };
       } });
       const adapter = new PiAdapter({ cwd: join(root, "repo"), env: process.env,
-        versionProbe: () => { if (scenario === "pre-launch head") mutate(); return "0.84.4"; }, nativeRegistryProbe: () => undefined,
+        versionProbe: () => { if (scenario === "pre-launch head" || scenario === "pre-launch reference") mutate(); return "0.84.4"; }, nativeRegistryProbe: () => undefined,
         supervision: { launchBackgroundRunner: ((_runner, configPath) => {
           runtimeStarts++;
-          assert.equal(scenario, "matrix ticket");
+          assert.ok(matrixRuntime);
           const config = readPiBackgroundConfig(configPath);
+          if (scenario.startsWith("matrix journal")) {
+            const path = piMatrixAttemptStatePath(getDeployPaths(config.deploymentId).deployDir);
+            const event = JSON.parse(readFileSync(path, "utf8"));
+            if (scenario === "matrix journal missing candidate") delete event.candidateHead;
+            if (scenario === "matrix journal malformed candidate") event.candidateHead = "A".repeat(40);
+            if (scenario === "matrix journal conflicting candidate") event.candidateHead = "b".repeat(40);
+            if (scenario === "matrix journal identity drift") { event.candidateHead = "b".repeat(40); event.featureSha = event.candidateHead; }
+            writeFileSync(path, `${JSON.stringify(event)}\n`);
+          }
           process.env["PA_REPO"] = config.cwd;
           process.env["PA_WORKTREE_ROOT"] = config.cwd;
           mutate();
@@ -2865,7 +2929,9 @@ test("review-auto production path rejects candidate and boundary drift before co
       const hooks = createPiHooks(adapter, { treehouse, observeOperation: (operation) => operations.push(operation), observeReviewOperation: (operation) => operations.push(operation) });
       const result = await hooks.deploy!({ team: "requirements", mode: "review-auto", ticket: "PAP-198", repo: "pa-platform", background: true, objective: fixture.objective, timeout: 60 });
       if (completion) await completion;
-      if (scenario === "matrix ticket") {
+      if (matrixRuntime) {
+        assert.equal(runtimeStarts, 1, `matrix-boundary fixture must reach the runner: ${result.reason}`);
+        assert.ok(completion, "matrix-boundary fixture must await runner completion");
         const ownership = JSON.parse(readFileSync(join(getDeployPaths(result.deploymentId!).deployDir, PI_SUPERVISOR_FILE), "utf8")) as { ready: boolean; state: string };
         assert.equal(ownership.ready, false, "matrix-boundary rejection never acknowledges readiness");
         assert.equal(ownership.state, "failed");
@@ -2874,7 +2940,7 @@ test("review-auto production path rejects candidate and boundary drift before co
       assert.equal(result.status, "failed", result.reason);
       assert.ok((result.reason?.length ?? 0) <= 2000);
       assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
-      assert.equal(runtimeStarts, scenario === "matrix ticket" ? 1 : 0);
+      assert.equal(runtimeStarts, matrixRuntime ? 1 : 0);
       assert.equal(reviewerStarts, 0);
       assert.equal(existsSync(fixture.markerPath), false, "zero matrix command starts");
       assert.equal(operations.some((operation) => ["checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease"].includes(operation)), false);
@@ -3125,7 +3191,10 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     assert.equal(existsSync(crashBoundaryFixture.markerPath), false, "crash after launch admission starts zero matrix commands");
     assert.equal(reviewerStarts, 0, "crash after launch admission starts zero reviewers");
 
-    fixture = prepareProtectedReview(root, authorization);
+    const historicalBase = git(["rev-parse", "HEAD"], join(root, "repo"));
+    const approvedReference = git(["rev-parse", "HEAD"], repo);
+    git(["commit", "--allow-empty", "-m", "latest implementation candidate"], repo);
+    fixture = prepareProtectedReview(root, authorization, { baseSha: approvedReference, historicalMaterializationBaseSha: historicalBase });
     markParentRunning("d-112233");
     const parent = acquireRepositoryMutationLease({ canonicalRepoKey: "pa-platform", canonicalRepoRoot: join(root, "repo"), worktreeRoot: repo,
       expectedGitDir: git(["rev-parse", "--path-format=absolute", "--git-dir"], repo),
@@ -3143,6 +3212,10 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       assert.equal(plan.environment.PA_WORKTREE_ROOT, repo);
       assert.equal(plan.environment.PA_REPO_ROOT, join(root, "repo"));
       assert.equal(plan.reviewCheckout?.featureSha, fixture.featureSha);
+      assert.equal(plan.reviewCheckout?.baseSha, historicalBase);
+      assert.equal(plan.reviewCheckout?.approvedReference?.sha, approvedReference);
+      assert.notEqual(plan.reviewCheckout?.approvedReference?.sha, fixture.featureSha);
+      assert.notEqual(plan.reviewCheckout?.baseSha, plan.reviewCheckout?.approvedReference?.sha);
       assert.equal(plan.treehouse, undefined);
       assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
       assert.doesNotMatch(JSON.stringify(plan), /reservationToken/);
@@ -3180,11 +3253,21 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     const durableClaim = queryReviewAuthorizationClaims().find((claim) => claim.authorizationId === authorization);
     assert.equal(matrixStart.deploymentId, deployed.deploymentId);
     assert.equal(matrixStart.authorizationId, authorization);
+    assert.equal(matrixStart.candidateHead, fixture.featureSha);
+    assert.equal(matrixStart.candidateHead, git(["rev-parse", "HEAD"], repo));
+    assert.equal(matrixStart.candidateHead, git(["rev-parse", `refs/heads/${fixture.branch}`], repo));
     assert.ok(durableClaim);
     assert.ok(matrixStart.timestamp <= durableClaim.claimedAt, "durable matrix-start precedes authorization claim");
     assert.equal(readFileSync(piMatrixAttemptStatePath(deployDir), "utf8").split("\n").filter(Boolean).length, 1);
     const ledgerBody = readFileSync(join(deployDir, "validation-evidence", "ledger.json"), "utf8");
     assert.doesNotMatch(ledgerBody, /review-auth:/);
+    const executorStartedAt = JSON.parse(ledgerBody).startedAt;
+    assert.ok(matrixStart.timestamp < executorStartedAt, "journal prerequisite start is an earlier boundary than executor start");
+    assert.ok(reviewerInput.includes(`candidate_head: ${fixture.featureSha}`));
+    assert.ok(reviewerInput.includes(`prerequisite_started_at: ${matrixStart.timestamp}`));
+    assert.ok(reviewerInput.includes(`executor_started_at: ${executorStartedAt}`));
+    assert.ok(reviewerInput.includes(`historical_materialization_base_sha: ${historicalBase}`));
+    assert.ok(reviewerInput.includes(`approved_reference_sha: ${approvedReference}`));
     assert.doesNotMatch(JSON.stringify(readActivityEvents(getDeployPaths(deployed.deploymentId!).activityLogPath)), /review-auth:/);
     const status = queryDeploymentStatus(deployed.deploymentId!)!;
     assert.equal(status.status, "success");
@@ -3192,6 +3275,8 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     assert.equal(status.repo_root, join(root, "repo"));
     assert.equal(status.review_checkout?.worktreeRoot, repo);
     assert.equal(status.review_checkout?.featureSha, fixture.featureSha);
+    assert.equal(status.review_checkout?.baseSha, historicalBase);
+    assert.equal(status.review_checkout?.approvedReference?.sha, approvedReference);
     assert.equal(status.repository_permit, undefined);
     assert.equal(status.builder_authority, undefined);
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes, "matching idle parent custody is byte-stable after review");
@@ -3317,7 +3402,10 @@ test("review-auto concurrent protected contenders persist one authorization cons
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
       objective: fixture.objective, timeout: 60,
     });
-    await preflightEntered;
+    await Promise.race([
+      preflightEntered,
+      firstPromise.then((result) => assert.fail(`winner rejected before the preflight barrier: ${result.reason}`)),
+    ]);
 
     const sameAuthorizationLoser = await hooks.deploy!({
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,

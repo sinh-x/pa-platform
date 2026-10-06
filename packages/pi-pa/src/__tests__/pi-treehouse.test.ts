@@ -161,7 +161,7 @@ test("review-auto selects the exact existing candidate", async (t) => {
         assert.ok(Object.isFrozen(selected)); assert.ok(Object.isFrozen(selected.reviewCheckout)); assert.ok(Object.isFrozen(selected.reviewCheckout.gitSnapshot));
         assert.equal("ticketSlotId" in selected.reviewCheckout, false); assert.equal("repositoryPermit" in selected.reviewCheckout, false); assert.equal("authority" in selected.reviewCheckout, false);
         assert.equal(git(["branch", "--show-current"], repo), "develop"); assert.equal(git(["rev-parse", "HEAD"], repo), baseSha); assert.notEqual(baseSha, featureSha);
-        assert.equal(counts["ticket-read"], 1); assert.equal(counts["treehouse-status"], 1); assert.equal(counts["physical-authentication"], 1); assert.equal(counts["git-read"], 4);
+        assert.equal(counts["ticket-read"], 1); assert.equal(counts["treehouse-status"], 1); assert.equal(counts["physical-authentication"], 1); assert.equal(counts["git-read"], 5);
         process.env["GIT_DIR"] = join(repo, ".git");
         try { assert.throws(select, /Git invocation environment/); } finally { delete process.env["GIT_DIR"]; }
         const { repositoryGitDir: _gitDir, repositoryGitCommonDir: _common, gitSnapshot: _snapshot, ...correlation } = selected.reviewCheckout;

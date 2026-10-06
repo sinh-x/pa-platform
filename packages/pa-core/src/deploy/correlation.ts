@@ -34,7 +34,15 @@ export interface ReviewCheckoutCorrelationEvidence {
   readonly leaseHolder: string;
   readonly branch: string;
   readonly branchState: "materialized";
+  /** Immutable creation/materialization provenance, not the current review reference. */
   readonly baseSha: string;
+  /** Optional only for historical registry compatibility; fresh Pi reviews require this authority pin. */
+  readonly approvedReference?: {
+    readonly sha: string;
+    readonly matrixSource: string;
+    readonly matrixAuthoritySha256: string;
+    readonly matrixApprovalEvidence: string;
+  };
   readonly headSha: string;
   readonly featureSha: string;
 }
@@ -42,7 +50,7 @@ export interface ReviewCheckoutCorrelationEvidence {
 /** This validates identity only; it neither grants review authority nor reserves a checkout. */
 export function validateReviewCheckoutCorrelationEvidence(input: Record<string, unknown>): ReviewCheckoutCorrelationEvidence {
   const fields = ["kind", "repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha"];
-  if (Object.keys(input).some((key) => !fields.includes(key)) || fields.some((key) => input[key] === undefined)) {
+  if (Object.keys(input).some((key) => !fields.includes(key) && key !== "approvedReference") || fields.some((key) => input[key] === undefined)) {
     fail("review checkout requires its complete identity tuple and cannot contain builder slot, permit, or authority evidence");
   }
   const repoKey = input["repoKey"];
@@ -56,6 +64,21 @@ export function validateReviewCheckoutCorrelationEvidence(input: Record<string, 
   const baseSha = optionalSha(input["baseSha"], "baseSha")!;
   const headSha = optionalSha(input["headSha"], "headSha")!;
   const featureSha = optionalSha(input["featureSha"], "featureSha")!;
+  const reference = input["approvedReference"];
+  let approvedReference: ReviewCheckoutCorrelationEvidence["approvedReference"];
+  if (reference !== undefined) {
+    if (!reference || typeof reference !== "object" || Array.isArray(reference)) fail("approved review reference is malformed");
+    const row = reference as Record<string, unknown>;
+    if (Object.keys(row).sort().join(",") !== "matrixApprovalEvidence,matrixAuthoritySha256,matrixSource,sha"
+      || typeof row["sha"] !== "string" || !SHA_PATTERN.test(row["sha"])
+      || typeof row["matrixAuthoritySha256"] !== "string" || !/^[0-9a-f]{64}$/.test(row["matrixAuthoritySha256"])
+      || ["matrixSource", "matrixApprovalEvidence"].some((key) => typeof row[key] !== "string" || (row[key] as string).length === 0
+        || (row[key] as string).length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS || /[\u0000-\u001f\u007f-\u009f]/.test(row[key] as string))) {
+      fail("approved review reference requires exact SHA and complete matrix authority evidence");
+    }
+    approvedReference = Object.freeze({ sha: row["sha"] as string, matrixSource: row["matrixSource"] as string,
+      matrixAuthoritySha256: row["matrixAuthoritySha256"] as string, matrixApprovalEvidence: row["matrixApprovalEvidence"] as string });
+  }
   const branch = input["branch"];
   if (input["kind"] !== "existing-review-checkout" || input["branchState"] !== "materialized"
     || repoRoot === worktreeRoot || leaseHolder !== `pa:${repoKey}:${ticket}` || headSha !== featureSha
@@ -63,7 +86,7 @@ export function validateReviewCheckoutCorrelationEvidence(input: Record<string, 
     || /[\u0000-\u0020\u007f-\u009f]/.test(branch)) {
     fail("review checkout must be distinct, materialized, and bound to the exact ticket holder, branch, and Feature SHA");
   }
-  return Object.freeze({ kind: "existing-review-checkout", repoKey, repoRoot, worktreeRoot, ticket, leaseId, leaseHolder, branch, branchState: "materialized", baseSha, headSha, featureSha });
+  return Object.freeze({ kind: "existing-review-checkout", repoKey, repoRoot, worktreeRoot, ticket, leaseId, leaseHolder, branch, branchState: "materialized", baseSha, ...(approvedReference ? { approvedReference } : {}), headSha, featureSha });
 }
 
 export interface DeploymentCorrelationValidationContext {

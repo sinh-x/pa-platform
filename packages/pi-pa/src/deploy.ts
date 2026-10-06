@@ -9,11 +9,11 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
-import { authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
+import { assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
-export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha">;
+export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha" | "approvedReference">;
 
 export type PiReviewCandidateOperation = "ticket-read" | "treehouse-status" | "physical-authentication" | "git-read"
   | "checkout" | "branch" | "linked-branch-write" | "project-file-write" | "slot" | "permit" | "mutation-lease" | "matrix-start" | "reviewer-start";
@@ -64,6 +64,8 @@ export function selectPiReviewCandidateBeforePlanning(input: {
     || (linked.sha !== undefined && linked.sha !== linked.headSha)) {
     throw reviewCandidateError("durable ticket feature binding", "materialized exact branch, immutable base, and HEAD must agree with the authorized Feature SHA without refresh");
   }
+  // Legacy selector seams may omit the reference; production authorization/construction never may.
+  if (binding.approvedReference) assertPiApprovedReviewReference(binding);
   dependencies.observeOperation?.("treehouse-status");
   let lease: ReturnType<TreehouseClient["selectExisting"]>;
   try { lease = (dependencies.treehouse ?? new TreehouseClient()).selectExisting(binding.repoRoot, binding.repoKey, binding.ticket); }
@@ -82,15 +84,21 @@ export function selectPiReviewCandidateBeforePlanning(input: {
     return execFileSync("git", ["--no-optional-locks", ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
   };
   let snapshot: ReturnType<typeof captureRepositoryGitSnapshot>;
-  try { snapshot = captureRepositoryGitSnapshot(lease.path, runGit); }
-  catch { throw reviewCandidateError("complete porcelain-v2 snapshot", "candidate branch, full HEAD, or complete NUL-safe status could not be captured"); }
-  if (snapshot.branch !== binding.branch || snapshot.head !== binding.featureSha || snapshot.dirty
+  let branchTip: string;
+  try {
+    snapshot = captureRepositoryGitSnapshot(lease.path, runGit);
+    branchTip = runGit(["rev-parse", "--verify", `refs/heads/${binding.branch}`], lease.path).toString("utf8").trim();
+  }
+  catch { throw reviewCandidateError("complete porcelain-v2 snapshot", "candidate branch, full HEAD/ref, or complete NUL-safe status could not be captured"); }
+  if (snapshot.branch !== binding.branch || snapshot.head !== binding.featureSha || snapshot.head !== branchTip || snapshot.dirty
     || snapshot.stagedCount !== 0 || snapshot.unstagedCount !== 0 || snapshot.untrackedCount !== 0
     || snapshot.statusPorcelainV2Base64 !== "" || snapshot.statusRecordCount !== 0 || snapshot.statusEntries?.length !== 0) {
     throw reviewCandidateError("candidate Git snapshot", "exact branch/Feature SHA and a complete zero-record porcelain-v2 snapshot are required");
   }
-  try { runGit(["merge-base", "--is-ancestor", binding.baseSha, binding.featureSha], lease.path); }
-  catch { throw reviewCandidateError("immutable base ancestry", "authorized base must be a commit ancestor of the exact candidate Feature SHA"); }
+  for (const base of [binding.baseSha, ...(binding.approvedReference ? [binding.approvedReference.sha] : [])]) {
+    try { runGit(["merge-base", "--is-ancestor", base, binding.featureSha], lease.path); }
+    catch { throw reviewCandidateError("immutable base ancestry / approved reference ancestry", "historical base must be a commit ancestor of the exact candidate Feature SHA, as must the independently approved current reference"); }
+  }
   const correlation = validateReviewCheckoutCorrelationEvidence({
     kind: "existing-review-checkout", ...binding, worktreeRoot: lease.path, leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
     branchState: "materialized", headSha: binding.featureSha,
@@ -109,7 +117,8 @@ export function rereadPiReviewCandidate(checkout: ReviewCheckoutEvidence, depend
     runtime: "pi", cwd: checkout.repoRoot,
     // Pick is compile-time only: do not forward runtime Git/lease evidence into the strict binding validator.
     authorizedBinding: { repoKey: checkout.repoKey, repoRoot: checkout.repoRoot, ticket: checkout.ticket,
-      branch: checkout.branch, baseSha: checkout.baseSha, featureSha: checkout.featureSha },
+      branch: checkout.branch, baseSha: checkout.baseSha, featureSha: checkout.featureSha,
+      ...(checkout.approvedReference ? { approvedReference: checkout.approvedReference } : {}) },
   }, dependencies);
   if (!selected || !reviewCheckoutsEqual(checkout, selected.reviewCheckout)) {
     throw reviewCandidateError("protected candidate reread", "lease, registered Git identity, ticket, branch, HEAD, or complete status drifted");

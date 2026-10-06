@@ -207,7 +207,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         validationLaunch = readPiProtectedValidationLaunch(config.validationHandoffPath);
         if (validationLaunch.deploymentId !== config.deploymentId) throw new Error("runner-readiness: validation handoff deployment identity mismatch");
         reviewReservation = validationLaunch.reservation;
-        if (!reviewReservation || !validationLaunch.review.checkout || config.cwd !== reviewReservation.checkout.worktreeRoot
+        if (!reviewReservation || !validationLaunch.review.checkout?.approvedReference || !reviewReservation.checkout.approvedReference
+          || config.cwd !== reviewReservation.checkout.worktreeRoot
           || config.repoRoot !== reviewReservation.checkout.repoRoot || config.worktreeRoot !== config.cwd
           || process.env["PA_REPO"] !== config.cwd || process.env["PA_WORKTREE_ROOT"] !== config.cwd) {
           throw new Error("Condition: protected review runner identity. Source: protected handoff and runtime environment. Reason: exact reserved candidate roots are absent or mismatched. Correction: preserve the checkout and reservation. Resume Action: launch only with matching protected evidence.");
@@ -227,8 +228,10 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         abortSignal: shutdown.signal,
         emit: (event) => appendValidationActivity(config.deploymentId, event, secrets),
         beforeExecute: (launch) => {
+          assertPiMatrixStartedForLaunch(deployDir, launch);
           withPiReviewCandidateAtMatrixBoundary({ launch, reservation: reviewReservation!,
             rereadCheckout: () => rereadPiReviewCandidate(reviewReservation!.checkout) }, () => {
+            assertPiMatrixStartedForLaunch(deployDir, launch);
             // Readiness acknowledges protected matrix admission, not just handoff consumption.
             // Publish only after the serialized candidate reread so rejection cannot race a pending response.
             reviewExecutionTerminated = false;
@@ -236,6 +239,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
             writePiSupervisorOwnership(ownershipPath, ownership("active"));
           });
         },
+        beforeReviewer: (launch) => { assertPiMatrixStartedForLaunch(deployDir, launch); },
         startReviewer,
       });
       if (!supervised.admitted) {

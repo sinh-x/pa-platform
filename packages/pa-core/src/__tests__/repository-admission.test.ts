@@ -163,6 +163,8 @@ function reviewReservationFixture() {
   const checkout: ReviewCheckoutEvidence = {
     kind: "existing-review-checkout", repoKey: "generic-repo", repoRoot: repo, worktreeRoot: worktree,
     ticket: "ALT-7", branch, branchState: "materialized", baseSha: head, headSha: head, featureSha: head,
+    approvedReference: { sha: head, matrixSource: "agent-teams/requirements/artifacts/approved.md",
+      matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "ALT-7 comment c-approved by sinh" },
     leaseId: "lease-7", leaseHolder: "pa:generic-repo:ALT-7",
     repositoryGitDir: git(["rev-parse", "--absolute-git-dir"], worktree), repositoryGitCommonDir: join(repo, ".git"),
     gitSnapshot: captureRepositoryGitSnapshot(worktree),
@@ -195,6 +197,17 @@ test("review reservation finalizes only matching terminal evidence", () => {
     assert.equal(finalize(reservation, false), "not-terminal"); assert.equal(publications, 0);
     assert.throws(() => finalizeRepositoryReview({ reservation, verifyTerminal: () => true, publishFinalEvidence: () => { throw new Error("publication failed"); } }), /finalization failed/);
     assert.deepEqual(readFileSync(path), bytes);
+    let starts = 0;
+    for (const field of ["sha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence"] as const) {
+      const drifted = { ...f.checkout, approvedReference: { ...f.checkout.approvedReference!,
+        [field]: field === "sha" ? "c".repeat(40) : field === "matrixAuthoritySha256" ? "b".repeat(64) : "changed" } };
+      assert.throws(() => withRepositoryReviewReservation({ reservation, rereadCheckout: () => drifted }, () => { starts++; }), /protected reread/);
+      assert.equal(finalize({ ...reservation, checkout: drifted }), "mismatch");
+      assert.deepEqual(readFileSync(path), bytes, "reference drift cannot rewrite reservation");
+    }
+    const { approvedReference: _reference, ...missingReference } = f.checkout;
+    assert.throws(() => withRepositoryReviewReservation({ reservation, rereadCheckout: () => missingReference }, () => { starts++; }), /protected reread/);
+    assert.equal(starts, 0, "changed or omitted reference starts zero work");
     assert.equal(withRepositoryReviewReservation({ reservation, rereadCheckout: () => f.checkout }, () => "admitted"), "admitted");
     assert.equal(finalize(), "finalized"); assert.equal(publications, 1); assert.equal(finalize(), "absent");
     const replacement = reserve(); const replacementBytes = readFileSync(path);

@@ -518,7 +518,11 @@ function validateReviewCheckout(checkout: ReviewCheckoutEvidence): ReviewCheckou
 
 export function reviewCheckoutsEqual(left: ReviewCheckoutEvidence, right: ReviewCheckoutEvidence): boolean {
   const keys = ["kind", "repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha", "repositoryGitDir", "repositoryGitCommonDir"] as const;
-  return keys.every((key) => left[key] === right[key]) && repositoryGitSnapshotsEqual(left.gitSnapshot, right.gitSnapshot);
+  const referenceKeys = ["sha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence"] as const;
+  return keys.every((key) => left[key] === right[key])
+    && Boolean(left.approvedReference) === Boolean(right.approvedReference)
+    && referenceKeys.every((key) => left.approvedReference?.[key] === right.approvedReference?.[key])
+    && repositoryGitSnapshotsEqual(left.gitSnapshot, right.gitSnapshot);
 }
 
 function readReviewReservation(path: string): RepositoryReviewReservation {

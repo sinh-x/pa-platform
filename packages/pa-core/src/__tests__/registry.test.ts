@@ -637,12 +637,19 @@ test("registry appends WAL-backed events and materializes deployment status", ()
 
 test("registry preserves exact read-only review checkout event and database projections through terminal outcomes", () => {
   withAssociationFixture(({ canonicalRoot }) => {
-    const review: ReviewCheckoutCorrelationEvidence = {
+    const legacyReview: ReviewCheckoutCorrelationEvidence = {
       kind: "existing-review-checkout", repoKey: "pa-platform", repoRoot: canonicalRoot,
       worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232",
       leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding",
       branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40),
     };
+    const review: ReviewCheckoutCorrelationEvidence = { ...legacyReview,
+      approvedReference: { sha: "c".repeat(40), matrixSource: "agent-teams/requirements/artifacts/approved.md",
+        matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "PAP-232 comment c-20261005184853466 by sinh" } };
+    appendRegistryEvent({ deployment_id: "d-legacy-review", team: "requirements", mode: "review-auto", runtime: "pi", event: "started",
+      timestamp: "2026-10-05T00:00:00Z", ticket_id: legacyReview.ticket, repo: legacyReview.worktreeRoot, repo_root: legacyReview.repoRoot,
+      worktree_root: legacyReview.worktreeRoot, review_checkout: legacyReview });
+    assert.deepEqual(queryDeploymentStatus("d-legacy-review")?.review_checkout, legacyReview, "historical review rows remain readable without inferred reference");
     appendRegistryEvent({ deployment_id: "d-ordinary", team: "requirements", mode: "analyze", event: "started", timestamp: "2026-10-05T00:00:00Z", repo: canonicalRoot, repo_root: canonicalRoot, worktree_root: canonicalRoot });
     const ordinary = queryDeploymentStatus("d-ordinary");
     const ordinaryEvents = getDeploymentEvents("d-ordinary");
@@ -701,6 +708,11 @@ test("registry rejects mismatched and malformed review starts before any history
       ...Object.entries({ team: "builder", mode: "analyze", runtime: "opencode", repo: canonicalRoot, repo_root: "/other", worktree_root: "/other", ticket_id: "PAP-233", repository_permit: 1, ticket_slot_id: review.leaseHolder, builder_authority: "orchestrator" }).map(([name, value]) => ({ name, patch: { [name]: value } })),
       ...Object.entries({ kind: "builder-checkout", repoKey: "bad/key", repoRoot: "/canonical/../other", worktreeRoot: canonicalRoot, ticket: "pap-232", leaseId: "x".repeat(257), leaseHolder: "pa:pa-platform:PAP-233", branch: "bad branch", branchState: "planned", baseSha: "A".repeat(40), headSha: "c".repeat(40), featureSha: "short", repositoryPermit: 1 }).map(([name, value]) => ({ name: `review.${name}`, patch: { review_checkout: { ...review, [name]: value } } })),
       ...Object.keys(review).map((name) => ({ name: `missing review.${name}`, patch: { review_checkout: Object.fromEntries(Object.entries(review).filter(([key]) => key !== name)) } })),
+      ...[null, {}, { sha: "short", matrixSource: "x", matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "approval" },
+        { sha: "c".repeat(40), matrixSource: "x", matrixAuthoritySha256: "D".repeat(64), matrixApprovalEvidence: "approval" },
+        { sha: "c".repeat(40), matrixSource: "x\ncontrol", matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "approval" },
+        { sha: "c".repeat(40), matrixSource: "x", matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "approval", authorizationId: "forbidden" },
+      ].map((approvedReference, index) => ({ name: `invalid approvedReference ${index}`, patch: { review_checkout: { ...review, approvedReference } } })),
     ];
     for (const [index, scenario] of cases.entries()) {
       const deploymentId = `d-review-invalid-${index}`;

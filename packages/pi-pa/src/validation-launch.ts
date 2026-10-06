@@ -7,6 +7,7 @@ import {
   VALIDATION_HANDOFF_SCHEMA_VERSION,
   VALIDATION_MANIFEST_SCHEMA_VERSION,
   TicketStore,
+  assertRepositoryGitIdentity,
   captureRepositoryGitSnapshot,
   claimReviewAuthorization,
   digestValidationManifest,
@@ -69,6 +70,7 @@ interface ApprovedMatrix {
   digest: string;
   header: {
     approvedBaseSha: string;
+    historicalMaterializationBaseSha: string;
     featureBranch: string;
     matrixApprovalEvidence: string;
     matrixAuthoritySha256: string;
@@ -113,6 +115,7 @@ export interface PiMatrixStartedEvent {
   ticketId: string;
   branch: string;
   featureSha: string;
+  candidateHead: string;
   matrixSource: string;
   matrixAuthoritySha256: string;
   matrixApprovalEvidence: string;
@@ -148,12 +151,14 @@ export function withPiReviewCandidateAtMatrixBoundary<T>(input: {
   const review = launch.review;
   const authority = launch.authority;
   if (review.checkout && (["repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha"] as const)
-    .some((key) => review.checkout![key] !== checkout[key])) {
+    .some((key) => review.checkout![key] !== checkout[key])
+    || review.checkout && JSON.stringify(review.checkout.approvedReference) !== JSON.stringify(checkout.approvedReference)) {
     throw launchError("review candidate metadata", "reviewer identity does not match the exact protected reservation");
   }
   if (launch.deploymentId !== reservation.deploymentId || review.reviewDeploymentId !== reservation.deploymentId
     || review.authorizationId !== reservation.authorizationId || review.ticketId !== checkout.ticket
     || review.branch !== checkout.branch || review.featureSha !== checkout.featureSha
+    || review.candidateHead !== checkout.headSha || review.candidateHead !== checkout.gitSnapshot.head
     || authority.ticketId !== checkout.ticket || authority.branch !== checkout.branch || authority.featureSha !== checkout.featureSha
     || authority.repository.repoKey !== checkout.repoKey || authority.repository.canonicalRoot !== checkout.repoRoot
     || authority.repository.worktreeRoot !== checkout.worktreeRoot || authority.protectedEnvironment["PA_REPO"] !== checkout.worktreeRoot) {
@@ -215,7 +220,7 @@ export function writePiMatrixStartedEvent(
   fsyncDirectory(parent);
   dependencies.afterParentFsync?.();
   const persisted = readPiMatrixStartedEvent(path);
-  if (!matrixStartedIdentityEqual(persisted, event)) throw new Error("matrix-started durable readback does not match the launch identity");
+  if (!matrixStartedIdentityEqual(persisted, event) || persisted.timestamp !== event.timestamp) throw new Error("matrix-started durable readback does not match the launch identity");
   return Object.freeze(persisted);
 }
 
@@ -224,6 +229,10 @@ export function assertPiMatrixStartedForLaunch(deploymentDirectory: string, laun
   if (event.deploymentId !== launch.deploymentId || event.deploymentId !== launch.review.reviewDeploymentId
     || event.authorizationId !== launch.review.authorizationId || event.ticketId !== launch.review.ticketId
     || event.branch !== launch.review.branch || event.featureSha !== launch.review.featureSha
+    || event.candidateHead !== launch.review.candidateHead || event.candidateHead !== launch.authority.featureSha
+    || event.timestamp !== launch.review.prerequisiteStartedAt
+    || (launch.review.checkout && (event.candidateHead !== launch.review.checkout.headSha
+      || event.candidateHead !== launch.review.checkout.featureSha))
     || event.matrixSource !== launch.review.matrixSource || event.matrixAuthoritySha256 !== launch.review.matrixAuthoritySha256
     || event.matrixApprovalEvidence !== launch.review.matrixApprovalEvidence
     || event.repoKey !== launch.authority.repository.repoKey || event.repoRoot !== launch.authority.repository.canonicalRoot
@@ -264,6 +273,7 @@ function reconcilePiMatrixStartedEvent(
   expected: Omit<PiMatrixStartedEvent, "schemaVersion" | "type" | "timestamp">,
   dependencies: PiMatrixStartDependencies,
 ): PiMatrixStartedEvent {
+  validatePiMatrixStartedEvent({ schemaVersion: MATRIX_START_EVENT_SCHEMA_VERSION, type: "matrix-started", timestamp: persisted.timestamp, ...expected });
   if (!matrixStartedIdentityEqual(persisted, expected)) {
     throw new Error("matrix-started recovery identity does not match the current protected launch");
   }
@@ -271,13 +281,17 @@ function reconcilePiMatrixStartedEvent(
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
   fsyncDirectory(parent);
   dependencies.afterParentFsync?.();
-  return Object.freeze(persisted);
+  const reread = readPiMatrixStartedEvent(path);
+  if (!matrixStartedIdentityEqual(reread, expected) || reread.timestamp !== persisted.timestamp) {
+    throw new Error("matrix-started recovery readback does not match the current protected launch");
+  }
+  return Object.freeze(reread);
 }
 
 function validatePiMatrixStartedEvent(input: unknown): PiMatrixStartedEvent {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("matrix-started event must be an object");
   const row = input as Record<string, unknown>;
-  const keys = ["schemaVersion", "type", "timestamp", "deploymentId", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence", "repoKey", "repoRoot", "worktreeRoot"].sort();
+  const keys = ["schemaVersion", "type", "timestamp", "deploymentId", "authorizationId", "ticketId", "branch", "featureSha", "candidateHead", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence", "repoKey", "repoRoot", "worktreeRoot"].sort();
   if (JSON.stringify(Object.keys(row).sort()) !== JSON.stringify(keys)
     || row["schemaVersion"] !== MATRIX_START_EVENT_SCHEMA_VERSION || row["type"] !== "matrix-started") {
     throw new Error("matrix-started event schema is invalid");
@@ -286,9 +300,11 @@ function validatePiMatrixStartedEvent(input: unknown): PiMatrixStartedEvent {
     if (typeof row[field] !== "string" || row[field].length === 0) throw new Error(`matrix-started event ${field} is invalid`);
   }
   const timestamp = String(row["timestamp"]);
-  if (new Date(timestamp).toISOString() !== timestamp
+  const time = Date.parse(timestamp);
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== timestamp
     || !REVIEW_AUTHORIZATION.test(String(row["authorizationId"]))
-    || !GIT_SHA.test(String(row["featureSha"])) || !SHA256.test(String(row["matrixAuthoritySha256"]))) {
+    || !GIT_SHA.test(String(row["featureSha"])) || !GIT_SHA.test(String(row["candidateHead"]))
+    || row["candidateHead"] !== row["featureSha"] || !SHA256.test(String(row["matrixAuthoritySha256"]))) {
     throw new Error("matrix-started event authority format is invalid");
   }
   return row as unknown as PiMatrixStartedEvent;
@@ -300,7 +316,8 @@ function matrixStartedIdentityEqual(
 ): boolean {
   return persisted.deploymentId === expected.deploymentId && persisted.authorizationId === expected.authorizationId
     && persisted.ticketId === expected.ticketId && persisted.branch === expected.branch
-    && persisted.featureSha === expected.featureSha && persisted.matrixSource === expected.matrixSource
+    && persisted.featureSha === expected.featureSha && persisted.candidateHead === expected.candidateHead
+    && persisted.matrixSource === expected.matrixSource
     && persisted.matrixAuthoritySha256 === expected.matrixAuthoritySha256
     && persisted.matrixApprovalEvidence === expected.matrixApprovalEvidence && persisted.repoKey === expected.repoKey
     && persisted.repoRoot === expected.repoRoot && persisted.worktreeRoot === expected.worktreeRoot;
@@ -320,7 +337,8 @@ function fsyncDirectory(path: string): void {
 
 /** Runtime-owned authority parsing before candidate selection; no caller-supplied checkout path. */
 export function authorizePiReviewSelection(request: DeployRequest, repository: { repoKey: string; repoRoot: string }): {
-  binding: { repoKey: string; repoRoot: string; ticket: string; branch: string; baseSha: string; featureSha: string };
+  binding: { repoKey: string; repoRoot: string; ticket: string; branch: string; baseSha: string; featureSha: string;
+    approvedReference: NonNullable<ReviewCheckoutEvidence["approvedReference"]> };
   authorizationId: string;
 } {
   if (request.background !== true || request.resume) throw launchError("review launch mode", "review requires one fresh background deployment");
@@ -337,8 +355,32 @@ export function authorizePiReviewSelection(request: DeployRequest, repository: {
     || occurrences(approval.content, objective["Matrix Source"]) !== 1 || occurrences(approval.content, matrix.digest) !== 1) {
     throw launchError("pre-plan protected review authority", "objective, approved matrix header/digest and durable approval do not agree");
   }
-  return { binding: { repoKey: repository.repoKey, repoRoot: repository.repoRoot, ticket: objective["Ticket"], branch: objective["Branch"],
-    baseSha: matrix.header.approvedBaseSha, featureSha: objective["Feature SHA"] }, authorizationId: objective["Review Authorization ID"] };
+  const approvedReference = Object.freeze({ sha: matrix.header.approvedBaseSha, matrixSource: objective["Matrix Source"],
+    matrixAuthoritySha256: matrix.digest, matrixApprovalEvidence: objective["Matrix Approval Evidence"] });
+  const binding = { repoKey: repository.repoKey, repoRoot: repository.repoRoot, ticket: objective["Ticket"], branch: objective["Branch"],
+    baseSha: matrix.header.historicalMaterializationBaseSha, featureSha: objective["Feature SHA"], approvedReference };
+  assertPiApprovedReviewReference(binding);
+  return { binding, authorizationId: objective["Review Authorization ID"] };
+}
+
+/** Reauthenticate the pinned reference from durable artifact bytes and Sinh's matrix approval on every protected reread. */
+export function assertPiApprovedReviewReference(binding: Pick<ReviewCheckoutEvidence, "repoKey" | "ticket" | "branch" | "baseSha" | "approvedReference">): void {
+  const reference = binding.approvedReference;
+  if (!reference || !GIT_SHA.test(reference.sha) || !GIT_SHA.test(binding.baseSha)) {
+    throw launchError("approved review reference", "explicit full historical base and independently approved reference are required");
+  }
+  const matrix = readApprovedMatrix(reference.matrixSource);
+  const approval = new TicketStore().get(binding.ticket)?.comments.find((comment) =>
+    comment.id === approvalCommentReference(reference.matrixApprovalEvidence));
+  if (matrix.header.repositoryKey !== binding.repoKey || matrix.header.ticketId !== binding.ticket
+    || matrix.header.featureBranch !== binding.branch || matrix.header.historicalMaterializationBaseSha !== binding.baseSha
+    || matrix.header.approvedBaseSha !== reference.sha || reference.sha !== repositoryPrerequisiteBase(matrix.prerequisites[0]!)
+    || matrix.digest !== reference.matrixAuthoritySha256 || matrix.header.matrixAuthoritySha256 !== matrix.digest
+    || matrix.header.matrixApprovalEvidence !== reference.matrixApprovalEvidence
+    || !approval || approval.author.toLowerCase() !== "sinh"
+    || occurrences(approval.content, reference.matrixSource) !== 1 || occurrences(approval.content, matrix.digest) !== 1) {
+    throw launchError("approved review reference", "historical provenance, approved current reference and durable matrix approval conflict or drifted");
+  }
 }
 
 export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput): PiProtectedValidationLaunch {
@@ -372,14 +414,13 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
   }
 
   const matrix = readApprovedMatrix(matrixSource);
-  const snapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
-  const ticket = new TicketStore().get(ticketId);
-  if (!ticket) throw launchError("durable ticket", "the review ticket is absent");
-  const linked = ticket.linkedBranches.filter((value) => value.repo === plan.repoKey && value.branch === branch);
-  const linkedBranchMatches = linked.length === 1 && linked[0]?.state === "materialized"
-    && (linked[0].headSha ?? linked[0].sha) === featureSha;
-  const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
-  const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
+  if (!plan.reviewCheckout?.approvedReference) throw launchError("approved review reference", "fresh production review requires independent durable reference authority");
+  assertPiApprovedReviewReference(plan.reviewCheckout);
+  if (plan.reviewCheckout.approvedReference.matrixSource !== matrixSource
+    || plan.reviewCheckout.approvedReference.matrixAuthoritySha256 !== matrixAuthoritySha256
+    || plan.reviewCheckout.approvedReference.matrixApprovalEvidence !== matrixApprovalEvidence) {
+    throw launchError("approved review reference", "selected reference and protected objective authority conflict");
+  }
   const manifestEnvironment = matrixEnvironment(environment, {
     ticketId,
     featureSha,
@@ -388,8 +429,26 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
     matrixApprovalEvidence,
     worktreeRoot: plan.worktreeRoot,
   });
+  assertRepositoryGitIdentity(plan.worktreeRoot, plan.reviewCheckout.repositoryGitDir, plan.reviewCheckout.repositoryGitCommonDir);
+  const snapshot = captureRepositoryGitSnapshot(plan.worktreeRoot);
+  // The immutable PA plan is not a complete subprocess environment. Resolve the
+  // branch tip with the same explicit PATH/HOME used by every matrix prerequisite.
+  const selectedTip = probe("git", ["rev-parse", "--verify", `refs/heads/${branch}`], manifestEnvironment, plan.worktreeRoot);
+  if (snapshot.branch !== branch || snapshot.head !== featureSha || snapshot.head !== selectedTip
+    || snapshot.head !== plan.reviewCheckout.headSha || snapshot.dirty) {
+    throw launchError("candidate HEAD at prerequisite start", "authenticated HEAD, exact branch ref, selected tip and Feature SHA must agree without inference");
+  }
+  const ticket = new TicketStore().get(ticketId);
+  if (!ticket) throw launchError("durable ticket", "the review ticket is absent");
+  const linked = ticket.linkedBranches.filter((value) => value.repo === plan.repoKey && value.branch === branch);
+  const linkedBranchMatches = linked.length === 1 && linked[0]?.state === "materialized"
+    && linked[0].headSha === featureSha && linked[0].baseSha === matrix.header.historicalMaterializationBaseSha
+    && linked[0].baseSha === plan.reviewCheckout.baseSha;
+  const approvalCommentId = approvalCommentReference(matrixApprovalEvidence);
+  const approval = ticket.comments.find((comment) => comment.id === approvalCommentId);
+  let matrixStart: PiMatrixStartedEvent;
   try {
-    writePiMatrixStartedEvent({
+    matrixStart = writePiMatrixStartedEvent({
       deploymentDirectory: input.deploymentDirectory,
       event: {
         deploymentId,
@@ -397,6 +456,7 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
         ticketId,
         branch,
         featureSha,
+        candidateHead: snapshot.head!,
         matrixSource,
         matrixAuthoritySha256,
         matrixApprovalEvidence,
@@ -498,6 +558,8 @@ export function createPiProtectedValidationLaunch(input: PiValidationLaunchInput
         return identity;
       })() } : {}),
       reviewDeploymentId: claim.deploymentId,
+      candidateHead: matrixStart.candidateHead,
+      prerequisiteStartedAt: matrixStart.timestamp,
       authorizationId: claim.authorizationId,
       ticketId: claim.ticketId,
       branch: claim.branch,
@@ -603,6 +665,7 @@ function readApprovedMatrix(source: string): ApprovedMatrix {
     digest,
     header: {
       approvedBaseSha: exactHeaderValue(text, "Approved Base SHA"),
+      historicalMaterializationBaseSha: exactHeaderValue(text, "Historical Materialization Base SHA"),
       featureBranch: exactHeaderValue(text, "Feature Branch"),
       matrixApprovalEvidence: exactHeaderValue(text, "Matrix Approval Evidence"),
       matrixAuthoritySha256: exactHeaderValue(text, "Matrix Authority SHA-256"),
@@ -668,8 +731,9 @@ function evaluateRepositoryPrerequisite(context: PrerequisiteContext, prerequisi
     || snapshot.head !== context.featureSha || snapshot.dirty || !context.linkedBranchMatches) {
     throw launchError("matrix prerequisite 1", "canonical repository, authenticated clean checkout, branch, HEAD, or durable ticket binding is unmet");
   }
-  if (!gitSucceeds(input.plan.worktreeRoot, context.environment, ["cat-file", "-e", `${baseSha}^{commit}`])
-    || !gitSucceeds(input.plan.worktreeRoot, context.environment, ["merge-base", "--is-ancestor", baseSha, context.featureSha])) {
+  if ([baseSha!, context.matrix.header.historicalMaterializationBaseSha].some((base) =>
+    !gitSucceeds(input.plan.worktreeRoot, context.environment, ["cat-file", "-e", `${base}^{commit}`])
+    || !gitSucceeds(input.plan.worktreeRoot, context.environment, ["merge-base", "--is-ancestor", base, context.featureSha]))) {
     throw launchError("matrix prerequisite 1", "the approved base commit is absent or is not an ancestor of the Feature SHA");
   }
 }

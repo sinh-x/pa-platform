@@ -36,9 +36,27 @@ A fresh, non-dry-run Pi `requirements/review-auto` launch selects its candidate
 builder checkout preparation. Other teams/modes, non-Pi adapters, dry-runs, and
 resume routing are unchanged; resume is not a supported protected review launch.
 
-Before invoking PPA, the orchestrator must persist a fresh exact launch intent
-binding ticket, branch, Feature SHA, approved matrix source/raw-byte SHA-256,
-durable Sinh approval comment evidence, and one unused Review Authorization ID.
+Immediately before **each new intent**, the orchestrator authenticates the retained
+physical leased ticket worktree and resolves its latest clean full lowercase-hex
+`HEAD` and exact local `refs/heads/<ticket-branch>` tip. Both must be equal, with
+zero staged/unstaged/untracked porcelain-v2 records. Do this after all integration
+and implementation commits, not from a remembered implementation SHA or canonical
+`develop`. Outside review, use the supported `refreshTicketLinkedBranchHead`
+pa-core operation with the exact canonical key/root, worktree root and ticket ID;
+reread its result and require matching HEAD while preserving immutable `baseSha`.
+An incompatible refresh is a stop condition, not permission to hand-edit storage,
+remove/recreate a link, or retarget the review selector.
+
+Before implementation and every new review, compare local `develop`, cached
+`origin/develop` and freshly read live remote `refs/heads/develop` against the
+recorded approved reference. Drift, conflict or unknown remote state requires
+Sinh's decision naming exact old/current SHAs and action. Never fetch/substitute a
+reference or rebase/reset silently. An approved integration preserves historical
+creation/materialization provenance separately from the approved current reference.
+
+Only then persist a fresh exact launch intent binding ticket, branch, that latest
+Feature SHA, both bases, approved matrix source/raw-byte SHA-256, durable Sinh
+approval comment evidence, and one unused exact-SHA Review Authorization ID.
 The guarded objective file must agree with that intent and the approved
 requirements header/ticket. Ticket and repository flags alone are insufficient.
 For example, the operator-prepared file has these seven exact authority lines
@@ -56,9 +74,12 @@ Review Authorization ID: review-auth:<fresh-lowercase-canonical-UUIDv4>
 
 Use LF separators with no blank lines, duplicate authority labels, leading or
 trailing whitespace, CR characters, or trailing newline. Copy exact approved
-values; do not generate substitute approval evidence. The full base SHA comes
-from the approved requirements header and materialized ticket link, not an
-additional objective clause. Keep the objective outside the candidate so its
+values; do not generate substitute approval evidence. The immutable historical
+base comes from the exact `Historical Materialization Base SHA` artifact header
+and materialized ticket link. The independent current reference comes from
+`Approved Base SHA`, which must equal the digest-approved matrix ancestry
+prerequisite. Both headers are required for a fresh production launch; neither is
+an additional objective clause or an ambient caller assertion. Keep the objective outside the candidate so its
 creation cannot dirty the checkout. Only after that durable authority exists is
 this canonical-root invocation supported:
 
@@ -78,7 +99,9 @@ link. The lease must identify the exact physical, registered linked-worktree
 root, distinct from the canonical root, with matching top-level, Git dir,
 common dir, and registered membership. Symlink aliases, nested paths, primary
 roots, wrong repositories, and unregistered checkouts reject. The candidate must
-be on the exact branch/Feature SHA, descended from the immutable base, with zero
+be on the exact branch with `HEAD == local branch ref == Feature SHA`, descended
+from **both** the historical materialization base and independently approved
+current reference (these may differ), with zero
 staged, unstaged, and untracked records in the complete NUL-safe porcelain-v2
 snapshot.
 
@@ -99,8 +122,25 @@ root, Git top-level, registry `repo`/`worktree_root`, protected launch repositor
 every matrix command cwd, and reviewer candidate metadata instead identify the
 same selected linked checkout. No execution path falls back to canonical
 `develop`. Ticket, Treehouse lease, reservation, registered Git identity, branch,
-HEAD, and complete status are reread after planning, immediately before protected
-launch, and at the matrix-start boundary. Drift rejects without repair.
+HEAD/ref, complete status, and the pinned approved-reference artifact/digest/comment
+are reread after planning, immediately before protected launch, and at the
+matrix-start boundary. The plan, reservation, registry and reviewer evidence carry
+`baseSha` as immutable historical provenance and separate `approvedReference`
+authority. Drift rejects without repair. A newer clean commit after intent creation
+requires a fresh exact-SHA authorization, never automatic retargeting.
+
+The trusted mode-0600 `team-manager/review-attempt-state.jsonl` start event strictly
+requires explicit full lowercase-SHA `candidateHead`, captured from authenticated
+actual Git HEAD and verified against branch ref, selected tip and Feature SHA.
+Writing, crash recovery, serialization and rereads reject absent, malformed or
+conflicting fields; historical failed journals/reports remain unchanged and are
+not migrated or accepted by inference. The event's `timestamp` observes
+**prerequisite start**, before prerequisite evaluation/authorization consumption.
+Protected reviewer metadata names it `prerequisite_started_at` separately from
+`executor_started_at`, taken from the later validated terminal ledger `startedAt`.
+Do not label ledger start as journal start, backdate, or require the two boundaries
+to be equal. The runner rereads the journal before commands and before reviewer
+handoff; invalid evidence cannot start the next phase.
 
 PAP-223 matrix authority is unchanged: exact raw digest and approval comment,
 one-use authorization, active-review exclusion, complete explicit environment,

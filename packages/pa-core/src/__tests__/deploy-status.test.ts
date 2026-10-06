@@ -96,6 +96,8 @@ test("public deploy status preserves trusted review checkout identity without RE
       worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232",
       leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding",
       branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40),
+      approvedReference: { sha: "c".repeat(40), matrixSource: "agent-teams/requirements/artifacts/approved.md",
+        matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "PAP-232 comment c-20261005184853466 by sinh" },
     };
     for (const [index, outcome] of ["success", "failed", "crashed"].entries()) {
       const deploymentId = `d-23200${index}`;
