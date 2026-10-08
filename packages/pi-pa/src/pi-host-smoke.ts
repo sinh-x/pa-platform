@@ -84,6 +84,8 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
       registerTool: (tool) => registered.push(tool.name),
       registerCommand: (name) => commands.push(name),
       registerShortcut: (shortcut) => shortcuts.push(shortcut),
+      registerFlag: () => {},
+      getFlag: () => false,
       on: (event) => { handlers.push(event); },
     });
     const expectedRegistered = ["pa_ticket", "pa_bulletin", "pa_registry", "pa_status", "question", "todo"];

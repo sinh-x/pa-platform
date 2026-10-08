@@ -17,6 +17,27 @@ import { readPiTerminalStatus } from "../terminal-status.js";
 import { BUNDLED_EDITOR_FACTORIES } from "../pi-extension/bundled-editors.js";
 import { removePi, setupPi, statusPi } from "../setup.js";
 
+test("Pi setup enforces the stable 0.99.2 minimum boundary", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ppa-setup-version-"));
+  const extension = join(root, "extension");
+  const config = join(root, "config");
+  mkdirSync(extension);
+  mkdirSync(config);
+  for (const piVersion of ["0.99.1", "0.99.2-alpha.1", "malformed"]) {
+    await assert.rejects(
+      setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion, confirm: async () => false }),
+      /Pi version must be 0\.99\.2 or later/,
+      piVersion,
+    );
+  }
+  for (const piVersion of ["0.99.2", "0.99.3", "0.100.0", "1.0.0"]) {
+    await assert.doesNotReject(
+      setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion, confirm: async () => false }),
+      piVersion,
+    );
+  }
+});
+
 test("Pi setup is confirmation-gated and idempotent for local settings", async () => {
   const root = mkdtempSync(join(tmpdir(), "ppa-setup-"));
   const extension = join(root, "extension");
@@ -25,8 +46,8 @@ test("Pi setup is confirmation-gated and idempotent for local settings", async (
   const { mkdirSync, writeFileSync } = await import("node:fs");
   mkdirSync(extension); mkdirSync(config); mkdirSync(unrelated); mkdirSync(join(root, ".pi"));
   writeFileSync(join(root, ".pi", "settings.json"), `${JSON.stringify({ packages: [unrelated], theme: "dark" }, null, 2)}\n`);
-  const first = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.84.4", confirm: async () => true });
-  const second = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.84.4", confirm: async () => { throw new Error("should not confirm"); } });
+  const first = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.99.2", confirm: async () => true });
+  const second = await setupPi({ local: true, cwd: root, extensionPath: extension, configDir: config, piVersion: "0.99.2", confirm: async () => { throw new Error("should not confirm"); } });
   assert.equal(first.changed, true);
   assert.equal(second.changed, false);
   assert.deepEqual(JSON.parse(readFileSync(first.settingsPath, "utf8")).packages, [unrelated, extension, config]);

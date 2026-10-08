@@ -3,6 +3,7 @@ import type { PiRuntime, PiToolDefinition } from "../../pi-extension/index.js";
 export type HostMode = "tui" | "print" | "json";
 export type HostHandler = (event: unknown, context: unknown) => unknown;
 export type HostCommand = { description: string; handler: (args: string, context: unknown) => unknown };
+export type HostFlag = { description?: string; type: "boolean" | "string"; default?: boolean | string };
 export type EditorFactory = (tui: unknown, theme: unknown, keybindings: unknown) => ComposedEditor;
 
 export interface ComposedEditor {
@@ -33,6 +34,7 @@ export class FakeComposedUi {
   readonly statuses = new Map<string, string | undefined>();
   readonly notifications: Array<[string, string]> = [];
   readonly terminalInputHandlers = new Set<(data: string) => unknown>();
+  readonly widgets = new Map<string, string[] | undefined>();
   customOpenCount = 0;
   toolsExpanded = false;
   editorText = "";
@@ -54,6 +56,8 @@ export class FakeComposedUi {
   };
   addAutocompleteProvider = (): void => {};
   setEditorText = (text: string): void => { this.editorText = text; };
+  getEditorText = (): string => this.editorText;
+  setWidget = (key: string, lines: string[] | undefined): void => { this.widgets.set(key, lines); };
   getToolsExpanded = (): boolean => this.toolsExpanded;
   setToolsExpanded = (expanded: boolean): void => { this.toolsExpanded = expanded; };
   custom = async (): Promise<undefined> => { this.customOpenCount += 1; return undefined; };
@@ -123,8 +127,12 @@ export interface FakeComposedContext {
     getSessionFile(): undefined;
   };
   model?: { provider: string; id: string };
+  scopedModels: Array<{ model: { provider: string; id: string } }>;
   thinkingLevel: string;
   isIdle(): boolean;
+  isProjectTrusted(): boolean;
+  hasPendingMessages(): boolean;
+  shutdownCalls: number;
   shutdown(): void;
   abort(): void;
 }
@@ -132,6 +140,8 @@ export interface FakeComposedContext {
 export class FakeComposedHost {
   readonly handlers = new Map<string, HostHandler[]>();
   readonly commands = new Map<string, HostCommand>();
+  readonly flags = new Map<string, HostFlag>();
+  readonly flagValues = new Map<string, boolean | string>();
   readonly tools = new Map<string, PiToolDefinition>();
   readonly shortcuts: string[] = [];
   readonly markdownTransformers: Array<(markdown: string, context: { messageType: string; isStreaming: boolean }) => string> = [];
@@ -151,6 +161,8 @@ export class FakeComposedHost {
       },
       registerCommand: (name: string, command: HostCommand): void => { this.commands.set(name, command); },
       registerShortcut: (shortcut: string): void => { this.shortcuts.push(shortcut); },
+      registerFlag: (name: string, flag: HostFlag): void => { this.flags.set(name, flag); },
+      getFlag: (name: string): boolean | string | undefined => this.flagValues.get(name) ?? this.flags.get(name)?.default,
       registerTool: (tool: PiToolDefinition): void => { this.tools.set(tool.name, tool); },
       registerMarkdownTransformer: (transformer: (markdown: string, context: { messageType: string; isStreaming: boolean }) => string): void => { this.markdownTransformers.push(transformer); },
       getCommands: (): Array<{ name: string; source: "extension" }> => [...this.commands.keys()].map((name) => ({ name, source: "extension" as const })),
@@ -186,9 +198,13 @@ export function createHostContext(mode: HostMode, cwd: string, ui = new FakeComp
       getLeafId: () => null,
       getSessionFile: () => undefined,
     },
+    scopedModels: [],
     thinkingLevel: "medium",
     isIdle: () => true,
-    shutdown: () => {},
+    isProjectTrusted: () => true,
+    hasPendingMessages: () => false,
+    shutdownCalls: 0,
+    shutdown() { this.shutdownCalls += 1; },
     abort: () => {},
   };
 }

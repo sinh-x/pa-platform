@@ -68,6 +68,8 @@ export interface PiRuntime {
   };
   registerCommand?: (name: string, options: { description: string; handler: (args: string, context: unknown) => unknown }) => void;
   registerShortcut?: (shortcut: string, options: { description: string; handler: (context: unknown) => unknown }) => void;
+  registerFlag?: (name: string, options: { description?: string; type: "boolean"; default?: boolean } | { description?: string; type: "string"; default?: string }) => void;
+  getFlag?: (name: string) => boolean | string | undefined;
 }
 export type PiSessionShutdownHandler = (event: unknown, context: unknown) => unknown;
 export interface PiSessionLifecycle {

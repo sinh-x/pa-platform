@@ -107,7 +107,8 @@ function resolveHostOrThrow(env: NodeJS.ProcessEnv, secretValues: string[]): str
 
 function runPiHost(nodePath: string, args: string[], env: NodeJS.ProcessEnv): SpawnSyncReturns<string> {
   const scriptPath = fileURLToPath(new URL("pi-host-smoke.js", import.meta.url));
-  return spawnSync(nodePath, [scriptPath, ...args], {
+  const bootstrapPath = fileURLToPath(new URL("native-host-bootstrap.js", import.meta.url));
+  return spawnSync(nodePath, ["--import", bootstrapPath, scriptPath, ...args], {
     encoding: "utf8",
     env: piRegistryEnvironment(env),
     timeout: HOST_PROBE_TIMEOUT_MS,

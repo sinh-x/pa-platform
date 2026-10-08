@@ -51,7 +51,7 @@ export function createBundledEditorsModule(factories: readonly BundledEditorFact
         factory.register(createBundledApi(pi, {
           tuiEvents: PROPER_TUI_EVENTS,
           observeHandler: (event, handler) => {
-            if (event === "session_start") properSessionStart = handler;
+            if (event === "session_start" && !properSessionStart) properSessionStart = handler;
           },
         }));
       }
@@ -73,11 +73,15 @@ function createBundledApi(pi: PiRuntime, options: BundledApiOptions): ExtensionA
   const registerCommand = (name: string, command: PiCommandOptions): void => {
     pi.registerCommand?.(name, options.adaptCommand?.(name, command) ?? command);
   };
+  const registerFlag: ExtensionAPI["registerFlag"] = pi.registerFlag?.bind(pi) ?? (() => {});
+  const getFlag: ExtensionAPI["getFlag"] = pi.getFlag?.bind(pi) ?? (() => undefined);
 
   return new Proxy(pi as object, {
     get(target, property) {
       if (property === "on") return on;
       if (property === "registerCommand") return registerCommand;
+      if (property === "registerFlag") return registerFlag;
+      if (property === "getFlag") return getFlag;
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

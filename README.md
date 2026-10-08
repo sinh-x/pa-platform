@@ -52,7 +52,9 @@ Rogue-one intentionally does not serialize repository mutation, so concurrent or
 
 See [`docs/pi-pa.md`](docs/pi-pa.md) for setup, status/removal, source paths, `/reload`, managed isolation, migration, and troubleshooting.
 
-Pi 0.84.4 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted.
+Pi 0.99.2 or later must be installed as `pi` on `PATH`; credentials and Pi-local configuration remain operator-owned. `ppa` does not install, update, or authenticate Pi and does not change the platform default, which remains OpenCode through `opa` and the Agent API when `runtime` is omitted. Current bundled editor sources are proper-base 0.7.0 and pi-vimmode 0.9.0.
+
+Ordinary Pi retains proper-base's upstream automatic updater. Operators can disable it for one launch with `--no-auto-update`, disable it through `PROPER_UPDATER_OFF=1` or `PI_OFFLINE`, or change **Automatic updates** in `/settings`. Managed/Nix `ppa deploy` sessions set the managed updater boundary themselves and perform zero updater install subprocesses and zero automatic restarts; no extra operator setting or restart is required.
 
 PPA provider/model precedence is explicit CLI flags, the selected flat mode pair (`deploy_modes[].provider` and `deploy_modes[].model`), then the PPA adapter default. A mode must provide both fields or neither. PPA defaults to OpenAI Sol (`openai-codex` / `gpt-6.1-sol`) and does not inherit Pi-local Luna. Foreground `ppa deploy` launches Pi's interactive TUI with terminal input/output attached; `--background` uses non-interactive JSON mode for supervised execution and activity capture:
 

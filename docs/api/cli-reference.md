@@ -141,7 +141,7 @@ Status checks the file size and rejects snapshots larger than 5 MiB before JSON 
 
 Task snapshots and task sections are Pi-only: status does not extract tasks from OpenCode, Claude Code, or Droid, mutate todos, aggregate child task lists, or change status list/`--activity`/`--wait`/`--report`/`--artifacts` structures. Managed Pi instructions require two-or-more-step work to initialize todos after discovery and before the first target-repository mutation, complete or cancel the prior active task before the next phase starts, and complete or cancel an active task before shutdown. These lifecycle checkpoints are guidance and observable evidence, not a deployment completion gate.
 
-The task snapshot/status path uses no new external runtime dependency. It remains compatible with Node.js `>=22.19.0` and Pi APIs available since `>=0.80.8`; the synchronized `pi-pa` package currently requires Pi `>=0.84.4`.
+The task snapshot/status path uses no new external runtime dependency. Its Pi 0.80.8 reference is historical attribution for the adapted task/status examples, not a supported runtime floor; the synchronized `pi-pa` package requires Node.js `>=22.19.0` and Pi `>=0.99.2`. Ordinary Pi retains proper-base 0.7.0's upstream updater and its `--no-auto-update`, `PROPER_UPDATER_OFF=1`, `PI_OFFLINE`, and `/settings` controls. Managed/Nix PPA performs zero updater install subprocesses and zero automatic restarts. The other current bundled editor source is pi-vimmode 0.9.0.
 
 **Environment:** `PA_STATUS_WAIT_TIMEOUT` (positive integer seconds between 60 and 7200) overrides the wait timeout. Managed Pi snapshot production uses `PA_DEPLOYMENT_DIR` and `PA_DEPLOYMENT_ID`; operators do not need to set them manually for `ppa deploy`.
 

@@ -3,7 +3,7 @@
   "sources": [
     {
       "name": "proper-base",
-      "version": "0.5.0",
+      "version": "0.7.0",
       "import": "#pi-pa-proper-base",
       "importTarget": "./dist/pi-extension/vendor/proper-base.js",
       "registrationOrder": 20,
@@ -11,8 +11,8 @@
       "submodulePath": "vendor/proper-pi-extensions",
       "sourcePath": "vendor/proper-pi-extensions/proper-base",
       "entrypoint": "vendor/proper-pi-extensions/proper-base/index.ts",
-      "commit": "859feb321ec81d773beea379d28e21d0b7d0c8c0",
-      "contentSha256": "5150bed13e50a737679ed8ff4f6994b580f744a223c14a1798ec4f4d959b3065",
+      "commit": "bfec53cadd89c3582b2da69a87e1c71246780d4d",
+      "contentSha256": "4670fb7aaab2a2493d5599e8b8f2bd82e757914e07d169c87120cdc5a887fdb0",
       "license": "MIT",
       "licensePath": "vendor/proper-pi-extensions/proper-base/LICENSE",
       "licenseSha256": "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4",

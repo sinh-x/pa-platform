@@ -44,6 +44,9 @@ fi
 
 flake_ref='.?submodules=1'
 repo_url="git+file://$PWD?submodules=1"
+expected_pi_version=0.99.2
+expected_proper_version=0.7.0
+expected_vim_version=0.9.0
 host_system=$(nix eval --raw --impure --expr builtins.currentSystem)
 supported_systems=(x86_64-linux aarch64-linux)
 variant_names=(neither vim-only proper-only both)
@@ -144,6 +147,7 @@ for variant in "${variant_names[@]}"; do
   for artifact in \
     "$package_root/package.json" \
     "$package_root/dist/diagnostics.js" \
+    "$package_root/dist/native-host-bootstrap.js" \
     "$package_root/dist/pi-extension/index.js" \
     "$package_root/dist/pi-extension/vendor/provenance.json" \
     "$package_root/THIRD_PARTY_NOTICES.md" \
@@ -170,7 +174,7 @@ for variant in "${variant_names[@]}"; do
       const before = structuredClone(keyed);
       if (audit.observe("installed-create", keyed) !== 1 || JSON.stringify(keyed) !== JSON.stringify(before)) process.exit(1);
       if (!existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) process.exit(1);
-      const bearer = "Bearer synthetic-installed-bearer-value";
+      const bearer = ["Bearer", "synthetic-installed-bearer-value"].join(" ");
       if (diagnostics.redactDiagnostic(bearer) !== bearer || audit.observe("installed-append", bearer) !== 1) process.exit(1);
       if ((statSync(path).mode & 0o777) !== 0o600) process.exit(1);
       const records = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
@@ -179,6 +183,7 @@ for variant in "${variant_names[@]}"; do
     '
 
   PACKAGE_ROOT="$package_root" EXPECTED_VIM="$expected_vim" EXPECTED_PROPER="$expected_proper" \
+  EXPECTED_PI_VERSION="$expected_pi_version" EXPECTED_PROPER_VERSION="$expected_proper_version" EXPECTED_VIM_VERSION="$expected_vim_version" \
     "$store_output/bin/pa-platform-node" --input-type=module --eval '
       const { createHash } = await import("node:crypto");
       const { existsSync, readFileSync } = await import("node:fs");
@@ -190,9 +195,35 @@ for variant in "${variant_names[@]}"; do
       ].filter(Boolean);
       const reviewed = {
         "pi-vimmode": { version: "0.9.0", import: "#pi-pa-vimmode", target: "./dist/pi-extension/vendor/pi-vimmode.js", bundle: "pi-vimmode.js", commit: "52bd6ac5e905157ac46ec15c120b7d0cc61a62df", contentSha256: "40fba5841b53c042c3cb31c92c86a240d60c9674c37f2d69bb62e5ef6efc52c5", license: "MIT", licenseSha256: "4f0857fdc3d54e6adb6ec2c3602bd8e0e4bed2f83fb206e4522b987f55b9c74b" },
-        "proper-base": { version: "0.5.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "859feb321ec81d773beea379d28e21d0b7d0c8c0", contentSha256: "5150bed13e50a737679ed8ff4f6994b580f744a223c14a1798ec4f4d959b3065", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
+        "proper-base": { version: "0.7.0", import: "#pi-pa-proper-base", target: "./dist/pi-extension/vendor/proper-base.js", bundle: "proper-base.js", commit: "bfec53cadd89c3582b2da69a87e1c71246780d4d", contentSha256: "4670fb7aaab2a2493d5599e8b8f2bd82e757914e07d169c87120cdc5a887fdb0", license: "MIT", licenseSha256: "0db23616fd86ab7f86c95f97e24d2df974956fb16b9d8ca1e63a62d19d3278e4" },
       };
+      const updaterAsset = {
+        sourcePath: "vendor/proper-pi-extensions/proper-base/src/auto-update/inventory.mjs",
+        packagedPath: "inventory.mjs",
+        sha256: "46679b9aa55a16760b9f220b4e8895ca4b18d0b6b48de87e13138955244dd3ca",
+      };
+      const helper = join(root, "dist/pi-extension/vendor", updaterAsset.packagedPath);
+      if (existsSync(helper) !== selected.includes("proper-base")) process.exit(1);
+      if (existsSync(helper) && createHash("sha256").update(readFileSync(helper)).digest("hex") !== updaterAsset.sha256) process.exit(1);
       const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      for (const dependency of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+        if (packageJson.peerDependencies[dependency] !== "*" || packageJson.devDependencies[dependency] !== process.env.EXPECTED_PI_VERSION) process.exit(1);
+      }
+      if (packageJson.dependencies.typebox !== undefined || packageJson.peerDependencies.typebox !== "*" || packageJson.dependencies.sharp !== "0.35.4") process.exit(1);
+      for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
+        if (packageJson.dependencies[name] !== undefined || packageJson.peerDependencies[name] !== "*") throw Error(`host dependency manifest: ${name}`);
+        const physical = join(root, "native-host/node_modules", name, "package.json");
+        const expectedVersion = name === "typebox" ? "1.3.27" : process.env.EXPECTED_PI_VERSION;
+        if (JSON.parse(readFileSync(physical, "utf8")).version !== expectedVersion) throw Error(`standalone host pin: ${name}`);
+        // This process has the standalone hook. require.resolve with explicit
+        // paths still uses that hook, so probe normal Node in a fresh child.
+      }
+      const { spawnSync } = await import("node:child_process");
+      const shadowProbe = spawnSync(process.execPath, ["--input-type=module", "--eval", `import { createRequire } from "node:module"; const require = createRequire(${JSON.stringify(join(root, "dist/pi-extension/index.js"))}); for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) { try { require.resolve(name); throw Error("physical host shadow: " + name); } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; } }`], { encoding: "utf8" });
+      if (shadowProbe.status !== 0) throw Error(shadowProbe.stderr);
+      const runtimeHost = await import(join(root, "../runtime-host/dist/index.js"));
+      if (typeof runtimeHost.createRuntimeHostHooks !== "function") throw Error("standalone runtime-host API missing");
+      if (reviewed["proper-base"].version !== process.env.EXPECTED_PROPER_VERSION || reviewed["pi-vimmode"].version !== process.env.EXPECTED_VIM_VERSION) process.exit(1);
       const provenance = JSON.parse(readFileSync(join(root, "dist/pi-extension/vendor/provenance.json"), "utf8"));
       const notices = readFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
       const imports = Object.fromEntries(selected.map((name) => [reviewed[name].import, reviewed[name].target]));
@@ -207,10 +238,16 @@ for variant in "${variant_names[@]}"; do
           `dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`,
         ]) if (existsSync(join(root, relative)) !== enabled) process.exit(1);
         if (Object.hasOwn(packageJson.imports, expected.import) !== enabled) process.exit(1);
-        if (notices.includes(`## ${name} ${expected.version}`) !== enabled) process.exit(1);
+        for (const noticeEvidence of [
+          `## ${name} ${expected.version}`,
+          `- Commit: \`${expected.commit}\``,
+          `- Source SHA-256: \`${expected.contentSha256}\``,
+          `- License SHA-256: \`${expected.licenseSha256}\``,
+        ]) if (notices.includes(noticeEvidence) !== enabled) process.exit(1);
         const record = provenance.sources.find((source) => source.name === name);
         if (Boolean(record) !== enabled) process.exit(1);
-        if (record && [record.commit, record.contentSha256, record.license, record.licenseSha256].join("|") !== [expected.commit, expected.contentSha256, expected.license, expected.licenseSha256].join("|")) process.exit(1);
+        if (record && [record.version, record.import, record.importTarget, record.commit, record.contentSha256, record.license, record.licenseSha256].join("|") !== [expected.version, expected.import, expected.target, expected.commit, expected.contentSha256, expected.license, expected.licenseSha256].join("|")) process.exit(1);
+        if (record && JSON.stringify(record.runtimeAssets) !== JSON.stringify(name === "proper-base" ? [updaterAsset] : [])) process.exit(1);
         if (enabled) {
           const license = readFileSync(join(root, `dist/pi-extension/vendor/licenses/${name}-LICENSE.txt`));
           if (createHash("sha256").update(license).digest("hex") !== expected.licenseSha256) process.exit(1);
@@ -225,7 +262,7 @@ for variant in "${variant_names[@]}"; do
       "$store_output/bin/pa-platform-node" --input-type=module --eval 'const plugin = await import("#pi-pa-vimmode"); if (typeof plugin.default !== "function") process.exit(1);'
     fi
     if [[ "$expected_proper" == true ]]; then
-      "$store_output/bin/pa-platform-node" --input-type=module --eval 'import sharp from "sharp"; const plugin = await import("#pi-pa-proper-base"); if (typeof plugin.default !== "function" || sharp.versions.sharp !== "0.35.3") process.exit(1); const png = await sharp({ create: { width: 1, height: 1, channels: 4, background: "#00000000" } }).png().toBuffer(); if (png.byteLength === 0) process.exit(1);'
+      "$store_output/bin/pa-platform-node" --input-type=module --eval 'import sharp from "sharp"; const plugin = await import("#pi-pa-proper-base"); if (typeof plugin.default !== "function" || sharp.versions.sharp !== "0.35.4") process.exit(1); const png = await sharp({ create: { width: 1, height: 1, channels: 4, background: "#00000000" } }).png().toBuffer(); if (png.byteLength === 0) process.exit(1);'
     fi
   )
 
@@ -250,7 +287,7 @@ for variant in "${variant_names[@]}"; do
       if (!existsSync(process.env.HELPER_PATH) || !pi.nodePath.endsWith("/bin/node")) process.exit(1);
       const expectedTools = ["read", "bash", "question", "todo", "pa_ticket", "pa_bulletin", "pa_registry", "pa_status"];
       if (JSON.stringify(tools.tools) !== JSON.stringify(expectedTools.map((name) => ({ name, status: "passed" })))) process.exit(1);
-      const expectedFactories = [process.env.EXPECTED_VIM === "true" ? "pi-vimmode@0.9.0" : undefined, process.env.EXPECTED_PROPER === "true" ? "proper-base@0.5.0" : undefined].filter(Boolean);
+      const expectedFactories = [process.env.EXPECTED_VIM === "true" ? "pi-vimmode@0.9.0" : undefined, process.env.EXPECTED_PROPER === "true" ? "proper-base@0.7.0" : undefined].filter(Boolean);
       const expectedCommands = [
         ...(process.env.EXPECTED_VIM === "true" ? ["vimmode"] : []),
         ...(process.env.EXPECTED_PROPER === "true" ? ["fast-global", "__proper-restore-model", "clear", "__proper-cancel-prompt"] : []),
@@ -296,7 +333,7 @@ PI_ADDON="$selected_output/share/pa-platform/native-addons/pi-node-24/better_sql
   '
 "$selected_output/bin/pa-platform-node" ./scripts/pap-156-caller-boundary-smoke.mjs "$selected_output"
 
-printf 'nix-smoke host=%s pi=%s pi-node=%s selections=4/4 evaluations=8/8 alias-systems=2/2 invalid-values=2/2 non-native-dry-runs=4/4 native-builds=4/4 artifacts=4/4 provenance=4/4 native-tools=32/32 teardown=20/20 caller-boundary=passed\n' "$host_system" "$actual_pi" "$expected_pi_node" >&2
+printf 'nix-smoke host=%s pi=%s pi-node=%s pi-sdk=%s proper-base=%s pi-vimmode=%s selections=4/4 evaluations=8/8 alias-systems=2/2 invalid-values=2/2 non-native-dry-runs=4/4 native-builds=4/4 artifacts=4/4 provenance=4/4 package-evidence=4/4 native-tools=32/32 teardown=20/20 caller-boundary=passed\n' "$host_system" "$actual_pi" "$expected_pi_node" "$expected_pi_version" "$expected_proper_version" "$expected_vim_version" >&2
 for system in "${supported_systems[@]}"; do
   for variant in "${variant_names[@]}"; do
     printf 'nix-smoke drv system=%s variant=%s path=%s\n' "$system" "$variant" "${drv_paths[$system/$variant]}" >&2
