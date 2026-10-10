@@ -45,6 +45,11 @@
             "quota-axi" = requireBooleanOption "enableQuotaAxi" enableQuotaAxi;
           };
           selectedAxiTools = pkgs.lib.filterAttrs (name: _: axiSelection.${name} or false) (axiToolsFor system);
+          selectedAxiDependencies = pkgs.lib.unique (pkgs.lib.concatMap
+            (tool: [ tool.node ] ++ tool.dependencies) (builtins.attrValues selectedAxiTools));
+          # Only the managed selected-tool directory and its declared dependencies
+          # enter PPA PATH. Raw upstream AXI bins are not the managed boundary.
+          axiDependencyPath = pkgs.lib.makeBinPath selectedAxiDependencies;
           baseSource = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: _type:
@@ -102,7 +107,7 @@
           PI_PA_PLUGIN_SELECTION = builtins.toJSON pluginSelection;
 
           passthru = {
-            inherit pluginSelection axiSelection selectedAxiTools;
+            inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies;
           };
 
           pnpmDeps = pkgs.fetchPnpmDeps {
@@ -121,12 +126,15 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            # Selection records and closure references only. Managed PPA PATH
-            # and browser/quota policy are implemented in subsequent phases.
+            # Selected managed shims: metadata is unauthenticated; browser/quota
+            # operations stay fail-closed until their Phase 3 policy is present.
             mkdir -p $share/axi-tools
             printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON axiSelection)} > $share/axi-selection.json
             ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: tool: ''
               ln -s ${tool} $share/axi-tools/${name}
+              mkdir -p $share/axi-bin
+              makeWrapper ${tool.node}/bin/node $share/axi-bin/${name} \
+                --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"}"
             '') selectedAxiTools)}
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
@@ -224,7 +232,8 @@
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --set PA_PI_SQLITE_NATIVE_BINDING "$share/native-addons/pi-node-24/better_sqlite3.node" \
               --set PA_REQUIRE_PI_SQLITE_NATIVE_BINDING "1" \
-              --prefix PATH : "${runtimePath}"
+              --set PA_AXI_PATH "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}"}" \
+              --prefix PATH : "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}:"}${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \

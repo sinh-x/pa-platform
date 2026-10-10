@@ -8,6 +8,7 @@ import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
+import { axiRuntimeEnvironment } from "./axi-policy.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
@@ -243,7 +244,10 @@ export class PiAdapter implements RuntimeAdapter {
     ].filter((value): value is string => Boolean(value));
     const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));
-    try { assertPiExecutionRootAgreement(plan, opts.env); }
+    try {
+      assertPiExecutionRootAgreement(plan, opts.env);
+      Object.assign(env, axiRuntimeEnvironment(env));
+    }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const result = failure(message);

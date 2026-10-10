@@ -450,6 +450,88 @@ test("managed foreground and background Pi invocations isolate discovery behind 
   }
 });
 
+test("AXI selections preserve all four Pi plugin selections and managed foreground/background discovery with zero tool startup actions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-axi-launch-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  const tools = ["gh-axi", "chrome-devtools-axi", "quota-axi"];
+  const trustedExtension = join(dir, "pi-pa", "dist", "pi-extension", "index.js");
+  const skills = [{ name: "pa-cli", injectAs: "reference" as const, path: join(dir, "pa-cli", "SKILL.md") }];
+  for (let pluginMask = 0; pluginMask < 4; pluginMask++) {
+    const plugins = JSON.stringify({ "pi-vimmode": Boolean(pluginMask & 1), "proper-base": Boolean(pluginMask & 2) });
+    for (let axiMask = 0; axiMask < 8; axiMask++) {
+      const selected = tools.filter((_name, index) => axiMask & (1 << index));
+      const paths = selected.map((name) => `/selected/${name}/bin`);
+      if (axiMask) paths.push("/pinned/node/bin");
+      if (axiMask & 1) paths.push("/pinned/gh/bin");
+      if (axiMask & 2) paths.push("/pinned/mcp/bin");
+      const inherited = "/baseline/bin:/host/unselected-axi/bin::";
+      const env = { PATH: inherited, PA_AXI_PATH: paths.join(":"), PI_PA_PLUGIN_SELECTION: plugins, HOME: "/operator/home" };
+      let calls = 0;
+      const adapter = new PiAdapter({
+        cwd: dir, env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+        runCommand: (args, options) => {
+          calls++;
+          assert.equal(options.env.PATH, `${paths.length ? `${paths.join(":")}:` : ""}${inherited}`);
+          assert.equal(options.env["PI_PA_PLUGIN_SELECTION"], plugins);
+          assert.equal(options.env["HOME"], env.HOME);
+          assert.equal(args.filter((arg) => arg === "--no-skills").length, 1);
+          assert.equal(args.filter((arg) => arg === "--no-extensions").length, 1);
+          assert.equal(args[args.indexOf("--skill") + 1], skills[0]!.path);
+          assert.equal(args[args.indexOf("--extension") + 1], trustedExtension);
+          assert.equal(args.filter((arg) => arg === "--extension").length, 1);
+          assert.ok(!args.some((arg) => [...tools, "setup", "hooks"].includes(arg)));
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      });
+      const plan = { runtime: "pi" as const, team: "builder", mode: "implement", repositoryCwd: dir, skills, trustedExtension, environment: {} } as never;
+      for (const mode of ["foreground", "background"] as const) {
+        const result = await adapter.spawn({ primerPath: primer, deployId: `d-axi-${pluginMask}-${axiMask}-${mode}`, mode, executionPlan: plan });
+        assert.equal(result.exitCode, 0);
+      }
+      assert.equal(calls, 2, "startup launches only Pi, not gh/browser/quota/bootstrap");
+      assert.equal(env.PATH, inherited);
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("AXI environment rejects malformed selected paths before Pi preflight or process launch", async () => {
+  let probes = 0;
+  let launches = 0;
+  const adapter = new PiAdapter({ env: { PA_AXI_PATH: "relative-secret-sentinel" }, versionProbe: () => { probes++; return "0.84.4"; }, nativeRegistryProbe: () => undefined,
+    runCommand: () => { launches++; return { status: 0, stdout: "", stderr: "" }; } });
+  const result = await adapter.spawn({ primerPath: "/unused/primer", deployId: "d-axi-rejected", mode: "foreground" });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? "", /^AXI_POLICY_REJECTED:/);
+  assert.doesNotMatch(result.errorMessage ?? "", /secret-sentinel/);
+  assert.equal(probes, 0);
+  assert.equal(launches, 0);
+});
+
+test("production background launcher carries selected AXI PATH without adding skill/hook configuration", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-axi-background-"));
+  const primer = join(dir, "primer.md");
+  writeFileSync(primer, "work");
+  const child = new FakePiChild();
+  const selected = "/managed/axi-bin:/pinned/node/bin:/pinned/gh/bin";
+  let runnerEnv: NodeJS.ProcessEnv | undefined;
+  const adapter = new PiAdapter({ env: { PA_AXI_PATH: selected, PATH: `${selected}:/baseline/bin` }, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+    supervision: { launchBackgroundRunner: (_runner, configPath, options) => {
+      runnerEnv = options.env;
+      const config = readPiBackgroundConfig(configPath);
+      assert.deepEqual(config.skills, []);
+      assert.equal(config.trustedExtension, undefined);
+      writePiSupervisorOwnership(join(dir, "pi-supervisor.json"), { schemaVersion: 1, deploymentId: config.deploymentId, ownershipToken: config.ownershipToken, state: "active", ready: true, supervisorPid: child.pid, updatedAt: new Date().toISOString(), finalizationDeadlineMs: 5000 });
+      return child as never;
+    } } });
+  const result = await adapter.spawn({ primerPath: primer, deployId: "d-axi-background", mode: "background" });
+  assert.equal(result.exitCode, 0);
+  assert.equal(runnerEnv?.PATH, `${selected}:/baseline/bin`);
+  assert.equal(runnerEnv?.["PA_AXI_PATH"], selected);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("managed Pi background configuration carries registered and linked-worktree evidence", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-managed-worktree-config-"));
   const primary = join(dir, "primary");

@@ -72,6 +72,67 @@ pa-core serve
 
 Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
+## Selected AXI tools for managed PPA (PAP-240)
+
+`lib.mkPaPlatform` accepts independent strict booleans `enableGhAxi`,
+`enableChromeDevtoolsAxi`, and `enableQuotaAxi`, all **false** by default. Selected
+outputs add only managed executable shims and their pinned dependencies to PPA
+PATH; OPA/CPA/DPA and pa-core added prefixes are unchanged. Inherited host PATH
+is not a sandbox prohibition. Pi's existing plugin selection and managed
+skill/extension discovery remain unchanged; no AXI skill or global hook is
+installed. PAPC-040 owns later selected skills; Lavish remains PAP-197/PAPC-020.
+
+| Managed executable | Pin | Selected dependencies / operator prerequisites |
+| --- | --- | --- |
+| `gh-axi` | 0.1.35 | flake-locked Node >=22.19 and gh; operator-managed gh authentication |
+| `chrome-devtools-axi` | 0.1.38 | same Node, chrome-devtools-mcp 1.10.1; absolute executable `PA_AXI_CHROME_EXECUTABLE` |
+| `quota-axi` | 0.1.56 | same Node; explicit deployment-bound `PA_AXI_QUOTA_CONSENT` |
+
+The selected binaries live in `share/pa-platform/axi-bin/`. Nix supplies
+`PA_AXI_PATH` containing that directory and **only selected** dependency bins;
+the adapter preserves that prefix across foreground/background/resume launches.
+Raw upstream closures remain referenced in `share/pa-platform/axi-tools/` and
+explicit standalone Nix outputs. Standalone upstream CLIs are **not** the managed
+policy boundary. Pins, resolved transitive integrity/locks and licenses are
+recorded in [`nix/axi/README.md`](nix/axi/README.md). No runtime package download,
+self-update, fallback npx bootstrap, credential provisioning or browser install
+is performed by managed admission.
+
+**Phase 2 behavior:** exact single-argument `--help`/`-h`/`help` and
+`--version`/`-v`/`-V`/`version` return managed metadata without authentication,
+credential reads or subprocesses. Explicit GitHub operations check the active
+operator gh authentication for the requested hostname, discard auth output,
+then use the pinned upstream entrypoint. `setup` (including hooks/skills) and
+unknown bootstrap/update commands are rejected. Exposing gh grants **no extra
+PA approval, merge, branch, secrets or workflow authority**; all existing action
+gates still apply. Installation, module import and deployment startup execute
+no GitHub action, authentication probe, browser or quota operation.
+
+Missing operational prerequisites return non-secret codes with no input paths,
+identities, credentials or raw auth errors: `AXI_GH_AUTH_REQUIRED`,
+`AXI_CHROME_REQUIRED`, `AXI_QUOTA_CONSENT_REQUIRED`. Unsupported operations or
+unsafe/malformed configuration return `AXI_POLICY_REJECTED` and exit nonzero.
+**Browser and quota operations stay fail-closed even with prerequisites present
+in Phase 2.** A consent path is not consent; this phase does not read it or any
+provider profile and makes no provider request. No placeholder successful quota
+result or browser session is returned.
+
+**Phase 3 contract (not implemented/validated by Phase 2):** operator-owned,
+mode-0600 non-symlink consent JSON at `PA_AXI_QUOTA_CONSENT` must have exactly
+`version: 1`, `deploymentId` matching the current deployment, and `providers`,
+an array of unique `{ "id": "codex" | "claude", "profilePath": "/absolute/path" }`
+objects. Unknown fields/providers, duplicates, wrong ownership/mode or deployment
+must reject before credential/provider access. Each admitted provider must use
+profile-only, no-refresh JSON reads and allowlisted sanitized output; discovery,
+keychain/TUI, refresh, inference, telemetry and automatic routing stay forbidden.
+Browser policy must pin Node/MCP, disable MCP telemetry/update checks, use only
+isolated headless operator Chrome with deployment-owned profile/state and a
+loopback bridge, reject foreign/remote/shared attachments and override arguments,
+and supervise owned cleanup. Required bounds are readiness <=30s, idle=300s,
+deployment-end cleanup <=10s, without modifying foreign processes/profiles.
+Full consent/redaction/lifecycle enforcement belongs to Phase 3; installed-output
+selection/platform/lifecycle evidence belongs to Phase 4 and independent review.
+
 ## Dev server access from phone/Tailscale
 
 `pa-core serve` defaults to `--host 127.0.0.1` with CORS off — safe for production but unreachable from a Tailscale peer (e.g. iPhone). The Nix dev shell ships a `dev-pa-serve` wrapper that bakes in phone-friendly defaults and runs the server backgrounded under `dtach`:

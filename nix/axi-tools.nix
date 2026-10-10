@@ -83,6 +83,8 @@ let
         dependencyLock = records + "/package-lock.json";
         integrityRecords = records + "/integrity.json";
         licenseRecords = records + "/THIRD_PARTY_NOTICES.md";
+        # Fixed managed-shim entrypoint, avoiding PATH/npm/npx resolution.
+        axiEntrypoint = "lib/${name}/node_modules/${name}/${bins.${name}}";
         # Direct entrypoint for the AXI bridge, avoiding npm/npx bootstrap.
         mcpEntrypoint = if name == "chrome-devtools-mcp"
           then "lib/${name}/node_modules/${name}/build/src/bin/chrome-devtools-mcp.js"
