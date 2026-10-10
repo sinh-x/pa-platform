@@ -126,15 +126,15 @@
             runHook preInstall
 
             share=$out/share/pa-platform
-            # Selected managed shims: metadata is unauthenticated; browser/quota
-            # operations stay fail-closed until their Phase 3 policy is present.
+            # Selected managed shims: fixed pinned Node/tool/MCP arguments;
+            # metadata is unauthenticated, operational policy is deployment-bound.
             mkdir -p $share/axi-tools
             printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON axiSelection)} > $share/axi-selection.json
             ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: tool: ''
               ln -s ${tool} $share/axi-tools/${name}
               mkdir -p $share/axi-bin
               makeWrapper ${tool.node}/bin/node $share/axi-bin/${name} \
-                --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"}"
+                --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"} ${if name == "chrome-devtools-axi" then "${builtins.head tool.dependencies}/${(builtins.head tool.dependencies).mcpEntrypoint}" else "-"}"
             '') selectedAxiTools)}
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
