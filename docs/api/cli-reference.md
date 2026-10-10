@@ -122,6 +122,23 @@ opa status --team builder --recent 5
 
 Default `status <deploy-id>` uses the same detail formatter through `opa`, `cpa`, `dpa`, and `ppa`. It emits exactly one Team line. A non-empty recorded mode is appended to the team with a slash—for example, `  Team:     builder/implement`. If mode is absent or empty, the exact team-only fallback remains `  Team:     builder`; no slash or synthetic mode is added. This formatting uses fields already loaded with the deployment, performs no additional file or database I/O, and does not add a Team/mode header to status lists, `--activity`, `--wait`, `--report`, or `--artifacts`. The change is intentionally limited to human-readable default detail; registry storage, events, and structured APIs retain separate team and mode fields.
 
+For an admitted protected Pi `requirements/review-auto`, the existing header
+also renders exactly three candidate lines from optional `review_checkout`:
+
+```text
+  Review Candidate: <exact-physical-linked-worktree-root>
+  Review Branch: <exact-ticket-branch> base=<40-lowercase-hex-base> feature=<40-lowercase-hex-Feature-SHA>
+  Review Lease: <existing-lease-id> (<exact-pa:repoKey:ticket-holder>)
+```
+
+`Repo Root` remains canonical; distinct `Worktree` and the review candidate
+identify execution. Team/mode formatting is unchanged, and read-only review has
+no builder `Repo Slot`, `Ticket Slot`, or `Repo Permit` line. The exact candidate
+is preserved in terminal status. Registry JSON and GET deployment status expose
+optional `review_checkout`; ordinary/legacy rows omit it rather than inventing
+candidate evidence. Terminal review reservation finalization never returns or
+changes the Treehouse lease. See [the exact data shape](./data-models.md#reviewcheckoutcorrelationevidence).
+
 For a deployment whose recorded runtime is `pi`, default detail then appends the latest managed session task snapshot after the normal header. The Pi todo extension produces the version-1 sidecar at `$PA_DEPLOYMENT_DIR/deployment-tasks.json` after `session_start` restoration, each `session_tree` active-branch change, and every todo result. Each successful callback synchronously replaces the sidecar, so the next status invocation sees a complete snapshot without polling. The snapshot contains deployment identity, an ISO update timestamp, the complete ordered task array, monotonic `nextId`, lifecycle statuses, and dependency IDs. A private temporary file is atomically renamed into place with final mode `0600`; a failed write is non-fatal, leaves prior complete evidence intact, and records a bounded activity diagnostic. The last successful sidecar is retained through success, partial completion, failure, and crash reconciliation.
 
 A valid snapshot renders in stable `order`/`id` order, for example:
@@ -173,7 +190,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--objective <text>` | string | Inline objective override |
 | `--objective-file <path>` | file path | Read objective from a (guarded) local file |
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
-| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Standalone PPA explicit inputs and non-Pi behavior are unchanged. |
+| `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Protected fresh Pi `requirements/review-auto` instead selects the sole existing leased ticket candidate before planning; key/canonical path identifies canonical identity, not execution. Explicit linked-worktree paths remain invalid. Other standalone PPA inputs and non-Pi behavior are unchanged. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
 | `--ticket-worktree` | — | PPA CLI only: select the ticket's sole existing authenticated Treehouse checkout from canonical CWD; requires exact `--ticket` and a non-builder team. No allocation or new authority; supports dry-run/background/same-checkout resume. Excluded from OPA/CPA/DPA, direct pa-core and Agent API. |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
@@ -229,7 +246,7 @@ validation. PAPC-037 owns worktree-local dependencies/late canonical
 reconciliation; PAPC-031/PAPC-036 cover related integration policy. See
 [Pi integration](../pi-pa.md#opt-in-existing-ticket-worktree-selection-ppa-cli-only).
 
-**Repository admission:** ordinary omitted-flag `requirements/*` modes bypass Git status and ownership-lease access; explicit ticket-worktree selection additionally inspects Git and owner/borrower evidence. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Dirty authenticated linked worktrees launch in foreground or background without admission edits, while dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
+**Repository admission:** ordinary omitted-flag `requirements/*` modes bypass Git status and ownership-lease access; explicit ticket-worktree selection additionally inspects Git and owner/borrower evidence. Protected fresh, non-dry-run Pi `requirements/review-auto` is the existing-only selection exception described below: it authenticates a clean exact candidate and reserves it read-only, without acquiring builder mutation ownership. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Ordinary authenticated linked worktrees launch dirty in foreground or background without admission edits; protected Pi review-auto instead requires a clean exact candidate. Dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
 
 PPA builder admission separately permits this authenticated exception: a process-verified,
 registry-running Pi `builder/orchestrator` owner may launch one direct background
@@ -305,6 +322,60 @@ opa deploy builder --mode implement --ticket PAP-132 --repo pa-platform --force
 opa deploy builder --mode implement --provider deepseek --model deepseek/deepseek-v4-pro
 cd /path/to/existing-linked-worktree && ppa deploy builder --mode implement --ticket PAP-195
 ```
+
+### Protected Pi requirements/review-auto
+
+This route requires one fresh background launch with an exact ticket and
+**fresh durable protected launch intent/objective/one-use authorization**.
+`--ticket` and `--repo` alone do not authorize a review. Before invoking PPA,
+the orchestrator persists the exact ticket, branch, 40-lowercase-hex Feature SHA,
+approved matrix source/raw-byte digest, durable Sinh approval comment evidence,
+and unused `review-auth:` plus lowercase canonical UUIDv4. Supply the matching
+guarded objective file with the seven exact authority lines documented in
+[Pi operator guidance](../pi-pa.md#protected-pi-review-auto-existing-candidate-selection).
+Place it outside the candidate; use LF without blank/trailing lines or whitespace
+drift. There is no public checkout-path, reservation-token, or authority-bypass
+flag. For an already-authorized objective, the supported canonical-root form is:
+
+```bash
+cd /home/sinh/git-repos/sinh-x/tools/pa-platform
+ppa deploy requirements --mode review-auto --ticket PAP-232 --repo pa-platform --background --objective-file /absolute/private/operator-prepared-review-objective.txt
+```
+
+Before immutable planning, PPA requires exactly one canonical-repository
+`materialized` ticket branch with exact base/HEAD/Feature-SHA agreement and
+exactly one existing Treehouse v2.3.0 lease for `pa:pa-platform:PAP-232`. The
+lease path must authenticate as a physical registered linked worktree distinct
+from the canonical root. It must be on the exact branch and Feature SHA,
+descended from the immutable base, with a complete zero-record staged/unstaged/
+untracked snapshot. Missing, duplicate, malformed, wrong-root, dirty, or stale
+evidence rejects rather than creating/switching/resetting/refreshing anything.
+
+A token-bound read-only review reservation permits zero builder holders or one
+live idle matching orchestrator. Active implement borrowers reject; every new
+implement borrower is excluded while review holds the exact checkout. Selection
+performs zero branch actions, Treehouse acquisition/return calls, ticket/project
+writes, or builder mutation lease/slot/permit acquisitions. Execution CWD,
+`PA_REPO`, `PA_WORKTREE_ROOT`, project/memory root, registry `repo`/`worktree_root`,
+protected launch, every matrix cwd, and reviewer metadata use the selected
+checkout; `repo_root` remains canonical. Ticket, Treehouse, reservation, physical
+Git identity, branch, HEAD, and complete status are reread after planning,
+immediately before protected launch, and at matrix start. Drift rejects without
+repair.
+
+PAP-223 exact matrix digest/approval, one-use claim, active-review exclusion,
+explicit environment, executor order, ledger, and reviewer gates are retained.
+Every admission stop is bounded to 2,000 JavaScript characters with `Condition`,
+`Source`, `Reason`, `Correction`, and `Resume Action`, starting zero matrix
+commands/reviewers. Matching-only verified terminal finalization preserves
+candidate evidence and retains the Treehouse lease; uncertain crash custody
+remains blocking for inspection. Other teams/modes, non-Pi, dry-run and resume
+routes are unchanged; resume cannot substitute for a fresh protected review.
+
+The documentation/regressions are not installed proof. PAP-232 Phase 4/AC7
+remains pending one independent installed PPA protected deployment passing all
+nine unchanged approved matrix commands plus matching ledger, reviewer report,
+and registry/status evidence. Rogue-one is not independent review evidence.
 
 ### repository inspect / quarantine
 
@@ -612,7 +683,7 @@ Manage the deployment registry. Subcommands: `list`, `show`, `complete`, `update
 
 **Usage:** `registry show <deploy-id> [--json]`
 
-Shows details and event count for a deployment. Text output labels the immutable launch ticket and projected current ticket separately. `--json` outputs the deployment record plus `launch_ticket_id` and `current_ticket_id`; `ticket_id` remains the projected current association.
+Shows details and event count for a deployment. Text output labels the immutable launch ticket and projected current ticket separately. Admitted review detail additionally shows the exact Review Candidate/Review Branch/Review Lease lines described under [status](#default-single-deployment-detail); optional `review_checkout` survives terminal projection and is absent for legacy/non-review rows. `--json` outputs the deployment record plus `launch_ticket_id` and `current_ticket_id`; `ticket_id` remains the projected current association.
 
 ### registry complete
 

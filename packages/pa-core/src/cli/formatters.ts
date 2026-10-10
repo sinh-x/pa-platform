@@ -117,6 +117,11 @@ export function formatRegistryShow(deployment: DeploymentStatus, eventCount: num
   if (deployment.effective_timeout_seconds !== undefined) lines.push(`  Timeout:  ${deployment.effective_timeout_seconds}s`);
   if (deployment.repo_root) lines.push(`  Repo Root: ${deployment.repo_root}`);
   if (deployment.worktree_root && deployment.worktree_root !== deployment.repo_root) lines.push(`  Worktree:  ${deployment.worktree_root}`);
+  if (deployment.review_checkout) {
+    const review = deployment.review_checkout;
+    lines.push(`  Review Candidate: ${review.worktreeRoot}`, `  Review Branch: ${review.branch} base=${review.baseSha} feature=${review.featureSha}`,
+      `  Review Lease: ${review.leaseId} (${review.leaseHolder})`);
+  }
   if (deployment.repository_slot) lines.push(`  Repo Slot: ${deployment.repository_slot}`);
   if (deployment.builder_authority) lines.push(`  Authority: ${deployment.builder_authority}`);
   if (deployment.parent_deployment_id) lines.push(`  Parent:    ${deployment.parent_deployment_id}`);

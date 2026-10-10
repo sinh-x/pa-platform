@@ -267,6 +267,7 @@ function quoteIdentifier(value: string): string {
 
 function addCorrelationColumns(db: Database.Database, table: string): void {
   for (const [column, type] of [
+    ["review_checkout", "TEXT"],
     ["parent_deployment_id", "TEXT"], ["builder_authority", "TEXT"], ["treehouse_path", "TEXT"],
     ["treehouse_lease_id", "TEXT"], ["treehouse_lease_holder", "TEXT"], ["branch_state", "TEXT"],
     ["branch_base_sha", "TEXT"], ["branch_head_sha", "TEXT"], ["ticket_slot_id", "TEXT"], ["repository_permit", "INTEGER"],

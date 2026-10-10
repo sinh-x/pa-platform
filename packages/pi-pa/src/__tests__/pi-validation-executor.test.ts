@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   VALIDATION_HANDOFF_SCHEMA_VERSION,
   VALIDATION_MANIFEST_SCHEMA_VERSION,
   digestValidationManifest,
+  executeValidationHandoff,
   resolveValidationEvidenceReference,
   type ValidationAuthorityBinding,
   type ValidationCommandSpec,
@@ -25,6 +26,7 @@ import {
   type PiProtectedValidationLaunch,
   type PiReviewerValidationContext,
 } from "../validation-supervisor.js";
+import { assertPiMatrixStartedForLaunch, piMatrixAttemptStatePath, writePiMatrixStartedEvent } from "../validation-launch.js";
 
 interface Fixture {
   root: string;
@@ -122,6 +124,8 @@ function fixture(commands: ValidationCommandSpec[]): Fixture {
       authority,
       review: {
         reviewDeploymentId: deploymentId,
+        candidateHead: featureSha,
+        prerequisiteStartedAt: "2020-01-01T00:00:00.000Z",
         authorizationId: "review-auth:123e4567-e89b-42d3-a456-426614174000",
         ticketId: authority.ticketId,
         branch: authority.branch,
@@ -176,6 +180,11 @@ test("valid protected launch runs one unattended manifest before one reviewer wi
         assert.equal(readFileSync(orderPath, "utf8"), "validation");
         assert.equal(context.validationResult, "passed");
         assert.equal(context.authorizationId, seed.launch.review.authorizationId);
+        assert.equal(context.candidateHead, seed.launch.authority.featureSha);
+        assert.equal(context.prerequisiteStartedAt, seed.launch.review.prerequisiteStartedAt);
+        assert.equal(context.executorStartedAt, JSON.parse(readFileSync(seed.ledgerPath, "utf8")).startedAt);
+        assert.notEqual(context.prerequisiteStartedAt, context.executorStartedAt);
+        assert.match(piReviewerValidationPrompt(context), /prerequisite_started_at:.*\nexecutor_started_at:/);
         assert.equal(context.validationLedgerPath, seed.ledgerPath);
         assert.match(context.validationLedgerSha256, /^[0-9a-f]{64}$/);
         assert.ok(piReviewerValidationPrompt(context).length <= 2_000);
@@ -279,6 +288,14 @@ test("invalid admission, authority, safety, repository, path, artifact, and repl
     { name: "review ticket mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, ticketId: "PAP-999" } }) },
     { name: "review branch mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, branch: "feature/PAP-223-other" } }) },
     { name: "review feature mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, featureSha: "b".repeat(40) } }) },
+    ...[undefined, "short", "A".repeat(40), "b".repeat(40)].map((candidateHead) => ({
+      name: `candidate HEAD ${candidateHead ?? "missing"}`,
+      mutate: (seed: Fixture) => ({ ...seed.launch, review: { ...seed.launch.review, candidateHead } }),
+    })),
+    ...[undefined, "not-a-time", "2020-01-01"].map((prerequisiteStartedAt) => ({
+      name: `prerequisite start evidence ${prerequisiteStartedAt ?? "missing"}`,
+      mutate: (seed: Fixture) => ({ ...seed.launch, review: { ...seed.launch.review, prerequisiteStartedAt } }),
+    })),
     { name: "review digest mismatch", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, matrixAuthoritySha256: "b".repeat(64) } }) },
     { name: "invalid authorization identifier", mutate: (seed) => ({ ...seed.launch, review: { ...seed.launch.review, authorizationId: "review-auth:not-canonical" } }) },
     { name: "mismatched manifest digest", mutate: (seed) => ({ ...seed.launch, validationHandoff: { ...(seed.launch.validationHandoff as ValidationHandoff), manifestSha256: "b".repeat(64) } }) },
@@ -343,12 +360,72 @@ test("invalid admission, authority, safety, repository, path, artifact, and repl
       assert.throws(() => readPiProtectedValidationLaunch(path), /insecure/);
       unlinkSync(alias);
       assert.equal(readPiProtectedValidationLaunch(path).deploymentId, seed.launch.deploymentId);
+      assert.equal(readPiProtectedValidationLaunch(path).review.candidateHead, seed.launch.authority.featureSha);
+      assert.equal(readPiProtectedValidationLaunch(path).review.prerequisiteStartedAt, seed.launch.review.prerequisiteStartedAt);
+      const original = readFileSync(path);
+      for (const candidateHead of [undefined, "short", "A".repeat(40), "b".repeat(40)]) {
+        writeFileSync(path, JSON.stringify({ ...seed.launch, review: { ...seed.launch.review, candidateHead } }));
+        assert.throws(() => readPiProtectedValidationLaunch(path), /malformed|candidate HEAD/);
+      }
+      writeFileSync(path, original);
       unlinkSync(path);
       assert.throws(() => readPiProtectedValidationLaunch(path), /ENOENT/);
     } finally {
       cleanup(seed);
     }
   });
+});
+
+test("matrix-started reread rejects journal drift after executor before reviewer without rewriting history", async (t) => {
+  for (const candidateHead of [undefined, "short", "b".repeat(40)]) await t.test(String(candidateHead ?? "missing"), async () => {
+    const seed = fixture([]);
+    const deploymentDirectory = mkdtempSync(resolve(tmpdir(), "pi-start-evidence-"));
+    withCommands(seed, [command(seed.root, "noop", "true")]);
+    const review = seed.launch.review;
+    const event = writePiMatrixStartedEvent({ deploymentDirectory, event: {
+      deploymentId: seed.launch.deploymentId, authorizationId: review.authorizationId, ticketId: review.ticketId,
+      branch: review.branch, featureSha: review.featureSha, candidateHead: review.candidateHead,
+      matrixSource: review.matrixSource, matrixAuthoritySha256: review.matrixAuthoritySha256,
+      matrixApprovalEvidence: review.matrixApprovalEvidence, repoKey: seed.launch.authority.repository.repoKey,
+      repoRoot: seed.root, worktreeRoot: seed.root,
+    } }, { now: () => new Date(review.prerequisiteStartedAt) });
+    let reviewers = 0;
+    const path = piMatrixAttemptStatePath(deploymentDirectory);
+    const driftedBytes = JSON.stringify({ ...event, candidateHead }) + "\n";
+    try {
+      await assert.rejects(() => runPiValidationBeforeReviewer(seed.launch, {
+        evidenceRoot: seed.evidenceRoot, ledgerPath: seed.ledgerPath,
+        beforeExecute: (launch) => { assertPiMatrixStartedForLaunch(deploymentDirectory, launch); },
+        execute: async (handoff, options) => {
+          const result = await executeValidationHandoff(handoff, options);
+          writeFileSync(path, driftedBytes);
+          return result;
+        },
+        beforeReviewer: (launch) => { assertPiMatrixStartedForLaunch(deploymentDirectory, launch); },
+        startReviewer: () => { reviewers++; },
+      }), /matrix-started/);
+      assert.equal(reviewers, 0);
+      assert.equal(readFileSync(path, "utf8"), driftedBytes, "no repair, backdating or inference at reviewer boundary");
+      assert.equal(existsSync(seed.ledgerPath), true);
+    } finally { cleanup(seed); rmSync(deploymentDirectory, { recursive: true, force: true }); }
+  });
+});
+
+test("start evidence keeps prerequisite and executor observations distinct and rejects reverse ordering before reviewer", async () => {
+  const seed = fixture([]);
+  withCommands(seed, [command(seed.root, "noop", "true")]);
+  seed.launch.review.prerequisiteStartedAt = "2021-01-01T00:00:00.000Z";
+  let reviewers = 0;
+  try {
+    await assert.rejects(() => runPiValidationBeforeReviewer(seed.launch, {
+      evidenceRoot: seed.evidenceRoot, ledgerPath: seed.ledgerPath,
+      now: () => new Date("2020-01-01T00:00:00.000Z"),
+      startReviewer: () => { reviewers++; },
+    }), /executor start observation precedes prerequisite start/);
+    assert.equal(reviewers, 0);
+    assert.equal(JSON.parse(readFileSync(seed.ledgerPath, "utf8")).startedAt, "2020-01-01T00:00:00.000Z");
+    assert.equal(seed.launch.review.prerequisiteStartedAt, "2021-01-01T00:00:00.000Z", "neither observation is rewritten to fake equality");
+  } finally { cleanup(seed); }
 });
 
 test("executor throw is recovered into one complete crash ledger before an admitted reviewer starts", async () => {

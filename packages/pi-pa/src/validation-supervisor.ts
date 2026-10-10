@@ -11,6 +11,10 @@ import {
 import { dirname } from "node:path";
 import {
   MAX_VALIDATION_EVENT_CHARACTERS,
+  parseRepositoryReviewReservation,
+  validateReviewCheckoutCorrelationEvidence,
+  type RepositoryReviewReservation,
+  type ReviewCheckoutCorrelationEvidence,
   assertValidationAuthority,
   executeValidationHandoff,
   finalizeValidationExecutorCrash,
@@ -48,7 +52,11 @@ export interface PiValidationAdmissionEvidence {
 }
 
 export interface PiProtectedReviewMetadata {
+  checkout?: ReviewCheckoutCorrelationEvidence;
   reviewDeploymentId: string;
+  candidateHead: string;
+  /** Trusted journal observation before prerequisite evaluation, not executor ledger start. */
+  prerequisiteStartedAt: string;
   authorizationId: string;
   ticketId: string;
   branch: string;
@@ -65,9 +73,11 @@ export interface PiProtectedValidationLaunch {
   validationHandoff: unknown;
   authority: ValidationAuthorityBinding;
   review: PiProtectedReviewMetadata;
+  reservation?: RepositoryReviewReservation;
 }
 
 export interface PiReviewerValidationContext extends PiProtectedReviewMetadata {
+  executorStartedAt: string;
   validationResult: ValidationLedgerResult;
   validationLedgerPath: string;
   validationLedgerSha256: string;
@@ -80,6 +90,8 @@ export interface PiValidationSupervisorOptions<T> {
   statePath?: string;
   emit?: (event: ValidationEvent) => void | Promise<void>;
   startReviewer: (context: PiReviewerValidationContext) => T | Promise<T>;
+  beforeExecute?: (launch: PiProtectedValidationLaunch) => void;
+  beforeReviewer?: (launch: PiProtectedValidationLaunch) => void;
   execute?: typeof executeValidationHandoff;
   recover?: typeof finalizeValidationExecutorCrash;
   now?: () => Date;
@@ -107,6 +119,7 @@ export async function runPiValidationBeforeReviewer<T>(
     handoff = parseValidationHandoff(launch.validationHandoff);
     assertValidationAuthority(handoff, launch.authority);
     assertReviewBinding(launch, handoff);
+    options.beforeExecute?.(launch);
   } catch (error) {
     return {
       admitted: false,
@@ -159,11 +172,17 @@ export async function runPiValidationBeforeReviewer<T>(
   }
   const ledger = (await recover(launch.validationHandoff, executorOptions)).ledger;
   const reviewerContext = reviewerContextFor(launch.review, ledger, options.evidenceRoot, options.ledgerPath);
+  options.beforeReviewer?.(launch);
   const reviewerResult = await options.startReviewer(reviewerContext);
   return { admitted: true, reviewerStarted: true, validation: { ...validation, ledger, ledgerPath: options.ledgerPath }, reviewerContext, reviewerResult };
 }
 
 export function piReviewerValidationPrompt(context: PiReviewerValidationContext): string {
+  if (!/^[0-9a-f]{40}$/.test(context.candidateHead) || context.candidateHead !== context.featureSha
+    || !validObservationTimestamp(context.prerequisiteStartedAt) || !validObservationTimestamp(context.executorStartedAt)
+    || Date.parse(context.executorStartedAt) < Date.parse(context.prerequisiteStartedAt)) {
+    throw new Error("protected reviewer candidate HEAD or distinct start observations are invalid");
+  }
   const prompt = [
     "<protected-review-metadata>",
     `review_deployment_id: ${context.reviewDeploymentId}`,
@@ -171,6 +190,13 @@ export function piReviewerValidationPrompt(context: PiReviewerValidationContext)
     `ticket_id: ${context.ticketId}`,
     `branch: ${context.branch}`,
     `feature_sha: ${context.featureSha}`,
+    `candidate_head: ${context.candidateHead}`,
+    `prerequisite_started_at: ${context.prerequisiteStartedAt}`,
+    `executor_started_at: ${context.executorStartedAt}`,
+    ...(context.checkout ? [`repo_root: ${context.checkout.repoRoot}`, `worktree_root: ${context.checkout.worktreeRoot}`,
+      `treehouse_lease_id: ${context.checkout.leaseId}`, `treehouse_lease_holder: ${context.checkout.leaseHolder}`,
+      `historical_materialization_base_sha: ${context.checkout.baseSha}`,
+      ...(context.checkout.approvedReference ? [`approved_reference_sha: ${context.checkout.approvedReference.sha}`] : [])] : []),
     `matrix_source: ${context.matrixSource}`,
     `matrix_authority_sha256: ${context.matrixAuthoritySha256}`,
     `matrix_approval_evidence: ${context.matrixApprovalEvidence}`,
@@ -178,7 +204,7 @@ export function piReviewerValidationPrompt(context: PiReviewerValidationContext)
     `validation_ledger_path: ${context.validationLedgerPath}`,
     `validation_ledger_sha256: ${context.validationLedgerSha256}`,
     `validation_evidence_root: ${context.validationEvidenceRoot}`,
-    "Raw validation output is intentionally excluded. Inspect only the bounded ledger and evidence references.",
+    "Inspect bounded ledger/evidence references; raw output is excluded.",
     "</protected-review-metadata>",
   ].join("\n");
   if (prompt.length > MAX_VALIDATION_EVENT_CHARACTERS) throw new Error("protected reviewer metadata exceeds 2000 JavaScript characters");
@@ -211,7 +237,7 @@ export function readPiProtectedValidationLaunch(path: string): PiProtectedValida
 }
 
 export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedValidationLaunch {
-  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"]);
+  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation"]);
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
@@ -235,6 +261,7 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       activeReview: "admitted",
       prerequisites,
     },
+    ...(row["reservation"] === undefined ? {} : { reservation: parseRepositoryReviewReservation(row["reservation"]) }),
     validationHandoff: row["validationHandoff"],
     authority,
     review,
@@ -280,12 +307,19 @@ function parseAuthority(input: unknown): ValidationAuthorityBinding {
 
 function parseReview(input: unknown): PiProtectedReviewMetadata {
   const row = strictRecord(input, "Pi protected review metadata", [
-    "reviewDeploymentId", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence",
-  ]);
+    "reviewDeploymentId", "candidateHead", "prerequisiteStartedAt", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence",
+  ], ["checkout"]);
+  const candidateHead = requiredString(row["candidateHead"], "review.candidateHead");
+  const prerequisiteStartedAt = requiredString(row["prerequisiteStartedAt"], "review.prerequisiteStartedAt");
+  if (!/^[0-9a-f]{40}$/.test(candidateHead) || candidateHead !== row["featureSha"]
+    || !validObservationTimestamp(prerequisiteStartedAt)) throw new Error("Pi candidate HEAD or prerequisite start evidence is invalid");
   const authorizationId = requiredString(row["authorizationId"], "review.authorizationId");
   if (!REVIEW_AUTHORIZATION.test(authorizationId)) throw new Error("Pi review authorization is not a canonical one-use identifier");
   return {
+    ...(row["checkout"] === undefined ? {} : { checkout: validateReviewCheckoutCorrelationEvidence(row["checkout"] as Record<string, unknown>) }),
     reviewDeploymentId: requiredString(row["reviewDeploymentId"], "review.reviewDeploymentId"),
+    candidateHead,
+    prerequisiteStartedAt,
     authorizationId,
     ticketId: requiredString(row["ticketId"], "review.ticketId"),
     branch: requiredString(row["branch"], "review.branch"),
@@ -299,6 +333,15 @@ function parseReview(input: unknown): PiProtectedReviewMetadata {
 function assertReviewBinding(launch: PiProtectedValidationLaunch, handoff: ValidationHandoff): void {
   const review = launch.review;
   const authority = launch.authority;
+  if (review.checkout && (review.checkout.ticket !== review.ticketId || review.checkout.branch !== review.branch
+    || review.checkout.featureSha !== review.featureSha || review.checkout.worktreeRoot !== authority.repository.worktreeRoot
+    || review.checkout.repoRoot !== authority.repository.canonicalRoot || review.checkout.repoKey !== authority.repository.repoKey
+    || review.checkout.headSha !== review.candidateHead
+    || (review.checkout.approvedReference && (review.checkout.approvedReference.matrixSource !== review.matrixSource
+      || review.checkout.approvedReference.matrixAuthoritySha256 !== review.matrixAuthoritySha256
+      || review.checkout.approvedReference.matrixApprovalEvidence !== review.matrixApprovalEvidence)))) {
+    throw new Error("Pi protected candidate metadata does not match validation authority");
+  }
   if (review.reviewDeploymentId !== launch.deploymentId || review.ticketId !== authority.ticketId
     || review.branch !== authority.branch || review.featureSha !== authority.featureSha
     || review.matrixSource !== authority.matrixSource || review.matrixAuthoritySha256 !== authority.matrixAuthoritySha256
@@ -314,9 +357,14 @@ function reviewerContextFor(
   evidenceRoot: string,
   ledgerPath: string,
 ): PiReviewerValidationContext {
+  if (!validObservationTimestamp(ledger.startedAt)
+    || Date.parse(ledger.startedAt) < Date.parse(review.prerequisiteStartedAt)) {
+    throw new Error("executor start observation precedes prerequisite start or is malformed");
+  }
   const bytes = readFileSync(ledgerPath);
   const context: PiReviewerValidationContext = {
     ...review,
+    executorStartedAt: ledger.startedAt,
     validationResult: ledger.result,
     validationLedgerPath: ledgerPath,
     validationLedgerSha256: createHash("sha256").update(bytes).digest("hex"),
@@ -326,10 +374,15 @@ function reviewerContextFor(
   return context;
 }
 
-function strictRecord(input: unknown, label: string, keys: string[]): Record<string, unknown> {
+function validObservationTimestamp(input: string): boolean {
+  const time = Date.parse(input);
+  return Number.isFinite(time) && new Date(time).toISOString() === input;
+}
+
+function strictRecord(input: unknown, label: string, keys: string[], optional: string[] = []): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error(`${label} is malformed`);
   const row = input as Record<string, unknown>;
-  if (Object.keys(row).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
+  if (Object.keys(row).some((key) => !keys.includes(key) && !optional.includes(key)) || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
     throw new Error(`${label} is malformed`);
   }
   return row;

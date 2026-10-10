@@ -21,6 +21,7 @@ import {
   transferRepositoryTicketSlot,
   type RegistryEvent,
   type RepositoryGitSnapshot,
+  type RepositoryReviewReservation,
   type ValidationEvent,
 } from "@pa-platform/pa-core";
 import {
@@ -40,7 +41,8 @@ import {
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
-import { assertPiMatrixStartedForLaunch } from "./validation-launch.js";
+import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
+import { finalizePiReviewCandidate, rereadPiReviewCandidate } from "./deploy.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
   readPiProtectedValidationLaunch,
@@ -76,6 +78,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let advanceBorrowedParentAuthority = false;
   let terminalRegistryEvidence = config.registryEvidence;
   let finalState: PiSupervisorOwnership["state"] = "failed";
+  let reviewReservation: RepositoryReviewReservation | undefined;
+  let reviewExecutionTerminated = true;
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
     schemaVersion: 1,
@@ -202,13 +206,19 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         if (config.validationHandoffPath !== resolve(deployDir, PI_VALIDATION_HANDOFF_FILE)) throw new Error("runner-readiness: validation handoff path mismatch");
         validationLaunch = readPiProtectedValidationLaunch(config.validationHandoffPath);
         if (validationLaunch.deploymentId !== config.deploymentId) throw new Error("runner-readiness: validation handoff deployment identity mismatch");
+        reviewReservation = validationLaunch.reservation;
+        if (!reviewReservation || !validationLaunch.review.checkout?.approvedReference || !reviewReservation.checkout.approvedReference
+          || config.cwd !== reviewReservation.checkout.worktreeRoot
+          || config.repoRoot !== reviewReservation.checkout.repoRoot || config.worktreeRoot !== config.cwd
+          || process.env["PA_REPO"] !== config.cwd || process.env["PA_WORKTREE_ROOT"] !== config.cwd) {
+          throw new Error("Condition: protected review runner identity. Source: protected handoff and runtime environment. Reason: exact reserved candidate roots are absent or mismatched. Correction: preserve the checkout and reservation. Resume Action: launch only with matching protected evidence.");
+        }
+        secrets.push(reviewReservation.reservationToken);
         assertPiMatrixStartedForLaunch(deployDir, validationLaunch);
         if (!secrets.includes(validationLaunch.review.authorizationId)) secrets.push(validationLaunch.review.authorizationId);
       } finally {
         try { unlinkSync(config.validationHandoffPath); } catch { /* missing or consumed protected handoff remains a causal failure */ }
       }
-      ready = true;
-      writePiSupervisorOwnership(ownershipPath, ownership("active"));
       const validationRoot = resolve(deployDir, "validation-evidence");
       const ledgerPath = resolve(validationRoot, "ledger.json");
       const supervised = await runPiValidationBeforeReviewer(validationLaunch, {
@@ -217,12 +227,27 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         now,
         abortSignal: shutdown.signal,
         emit: (event) => appendValidationActivity(config.deploymentId, event, secrets),
+        beforeExecute: (launch) => {
+          assertPiMatrixStartedForLaunch(deployDir, launch);
+          withPiReviewCandidateAtMatrixBoundary({ launch, reservation: reviewReservation!,
+            rereadCheckout: () => rereadPiReviewCandidate(reviewReservation!.checkout) }, () => {
+            assertPiMatrixStartedForLaunch(deployDir, launch);
+            // Readiness acknowledges protected matrix admission, not just handoff consumption.
+            // Publish only after the serialized candidate reread so rejection cannot race a pending response.
+            reviewExecutionTerminated = false;
+            ready = true;
+            writePiSupervisorOwnership(ownershipPath, ownership("active"));
+          });
+        },
+        beforeReviewer: (launch) => { assertPiMatrixStartedForLaunch(deployDir, launch); },
         startReviewer,
       });
       if (!supervised.admitted) {
+        reviewExecutionTerminated = true; // admission rejection starts neither matrix nor reviewer
         throw new Error(`runner-readiness: ${formatBoundedFiveFieldDiagnostic(supervised.diagnostic)}`);
       }
       result = supervised.reviewerResult;
+      reviewExecutionTerminated = result.metadata?.["cleanupVerified"] !== false;
     } else {
       result = await startReviewer();
     }
@@ -305,6 +330,10 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
     try {
       let authorityFailure: string | undefined;
+      if (reviewReservation && reviewExecutionTerminated) {
+        try { finalizePiReviewCandidate(reviewReservation, deployDir, true); }
+        catch { authorityFailure = "Condition: review terminal finalization stopped. Source: trusted supervisor. Reason: durable matching final evidence could not be published; reservation retained. Correction: preserve checkout and lease custody. Resume Action: reconcile terminal evidence before another review."; }
+      }
       if (repositoryBorrowerTransferred && repositoryBorrower) {
         const finalization = finalizeRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,

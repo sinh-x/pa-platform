@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MAX_DEPLOYMENT_EVENT_BODY_BYTES, closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatus, sanitizeTextInput } from "../index.js";
+import { MAX_DEPLOYMENT_EVENT_BODY_BYTES, appendRegistryEvent, closeDb, createAgentApiApp, getDeploymentEvents, queryDeploymentStatus, sanitizeTextInput } from "../index.js";
+
+import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
 
 const DEPLOYMENT_CREDENTIAL = "deployment-credential";
 const OPERATOR_CREDENTIAL = "operator-credential";
@@ -12,6 +14,7 @@ function withApiEnv(fn: (root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pa-core-deploy-status-"));
   const previousRegistry = process.env["PA_REGISTRY_DB"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
+  closeDb();
   process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
   process.env["PA_AI_USAGE_HOME"] = root;
   return fn(root).finally(() => {
@@ -83,6 +86,48 @@ test("deploy status API accepts authenticated lifecycle events and bounded corre
     body = await response.json() as { status?: Record<string, unknown> };
     assert.equal(body.status?.["status"], "success");
     assert.equal(body.status?.["branch_head_sha"], "c".repeat(40));
+  });
+});
+
+test("public deploy status preserves trusted review checkout identity without REST admission authority", async () => {
+  await withApiEnv(async () => {
+    const review: ReviewCheckoutCorrelationEvidence = {
+      kind: "existing-review-checkout", repoKey: "pa-platform", repoRoot: "/canonical/pa-platform",
+      worktreeRoot: "/treehouse/PAP-232", ticket: "PAP-232", leaseId: "lease-review-232",
+      leaseHolder: "pa:pa-platform:PAP-232", branch: "feature/PAP-232-review-auto-candidate-binding",
+      branchState: "materialized", baseSha: "a".repeat(40), headSha: "b".repeat(40), featureSha: "b".repeat(40),
+      approvedReference: { sha: "c".repeat(40), matrixSource: "agent-teams/requirements/artifacts/approved.md",
+        matrixAuthoritySha256: "d".repeat(64), matrixApprovalEvidence: "PAP-232 comment c-20261005184853466 by sinh" },
+    };
+    for (const [index, outcome] of ["success", "failed", "crashed"].entries()) {
+      const deploymentId = `d-23200${index}`;
+      const app = securedApi(deploymentId);
+      // The REST start schema intentionally does not grant review-checkout authority.
+      for (const field of ["reviewCheckout", "review_checkout"]) {
+        assert.equal((await post(app, "/api/deploy/start", { deploymentId, team: "requirements", mode: "review-auto", runtime: "pi", [field]: review })).status, 400);
+        assert.deepEqual(getDeploymentEvents(deploymentId), []);
+        assert.equal(queryDeploymentStatus(deploymentId), null);
+      }
+      appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", runtime: "pi", binary: "ppa", event: "started", timestamp: "2026-10-05T00:00:00Z", ticket_id: review.ticket, repo: review.worktreeRoot, repo_root: review.repoRoot, worktree_root: review.worktreeRoot, review_checkout: review });
+      const assertPublicStatus = async (expectedStatus: string): Promise<void> => {
+        const response = await app.request(`/api/deploy/status/${deploymentId}`);
+        assert.equal(response.status, 200);
+        const body = await response.json() as { status: Record<string, unknown> };
+        assert.equal(body.status["status"], expectedStatus);
+        assert.deepEqual(body.status["review_checkout"], review);
+        assert.deepEqual(body.status, JSON.parse(JSON.stringify(queryDeploymentStatus(deploymentId))), "public GET exposes the existing registry projection");
+        assert.deepEqual({ repo: body.status["repo"], repoRoot: body.status["repo_root"], worktreeRoot: body.status["worktree_root"], ticket: body.status["ticket_id"] }, { repo: review.worktreeRoot, repoRoot: review.repoRoot, worktreeRoot: review.worktreeRoot, ticket: review.ticket });
+        for (const field of ["repository_slot", "ticket_slot_id", "repository_permit", "builder_authority", "parent_deployment_id", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder"]) assert.equal(Object.hasOwn(body.status, field), false, field);
+      };
+      await assertPublicStatus("running");
+      const path = outcome === "crashed" ? "/api/deploy/crash" : "/api/deploy/complete";
+      const terminal = { deploymentId, team: "requirements", ...(outcome === "crashed" ? { error: "fixture crash", exitCode: 1 } : { status: outcome, summary: "fixture complete" }) };
+      assert.equal((await post(app, path, terminal, "wrong-credential")).status, 401);
+      await assertPublicStatus("running");
+      assert.equal((await post(app, path, terminal)).status, 200);
+      await assertPublicStatus(outcome);
+      assert.deepEqual(getDeploymentEvents(deploymentId)[0]?.review_checkout, review);
+    }
   });
 });
 
@@ -224,6 +269,11 @@ test("authenticated legacy lifecycle rows may omit optional correlation fields",
     assert.equal(status?.status, "crashed");
     assert.equal(status?.treehouse_path, undefined);
     assert.equal(status?.branch_head_sha, undefined);
+    const response = await app.request("/api/deploy/status/d-123abc");
+    assert.equal(response.status, 200);
+    const body = await response.json() as { status: Record<string, unknown> };
+    assert.equal(body.status["status"], "crashed");
+    for (const field of ["review_checkout", "treehouse_path", "treehouse_lease_id", "branch_head_sha", "ticket_slot_id", "repository_permit"]) assert.equal(Object.hasOwn(body.status, field), false, field);
   });
 });
 
