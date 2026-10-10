@@ -30,6 +30,8 @@ import {
   type ValidationLedgerResult,
 } from "@pa-platform/pa-core";
 
+import { parseNixosBaselineReference, type NixosBaselineReference } from "./nixos-prerequisites.js";
+
 export const PI_PROTECTED_VALIDATION_SCHEMA_VERSION = "pi-protected-validation/v1" as const;
 export const PI_VALIDATION_HANDOFF_FILE = "pi-validation-handoff.json";
 const MAX_PROTECTED_HANDOFF_BYTES = 64 * 1024 * 1024;
@@ -74,6 +76,8 @@ export interface PiProtectedValidationLaunch {
   authority: ValidationAuthorityBinding;
   review: PiProtectedReviewMetadata;
   reservation?: RepositoryReviewReservation;
+  /** All-or-none immutable reference; raw baseline/authorization stays in protected transport. */
+  nixosBaseline?: NixosBaselineReference;
 }
 
 export interface PiReviewerValidationContext extends PiProtectedReviewMetadata {
@@ -90,7 +94,9 @@ export interface PiValidationSupervisorOptions<T> {
   statePath?: string;
   emit?: (event: ValidationEvent) => void | Promise<void>;
   startReviewer: (context: PiReviewerValidationContext) => T | Promise<T>;
-  beforeExecute?: (launch: PiProtectedValidationLaunch) => void;
+  beforeExecute?: (launch: PiProtectedValidationLaunch) => void | Promise<void>;
+  /** Phase 3 supplies the trusted session's fresh observation/authority revalidation. */
+  revalidateNixosPrerequisites?: (launch: PiProtectedValidationLaunch) => Promise<void>;
   beforeReviewer?: (launch: PiProtectedValidationLaunch) => void;
   execute?: typeof executeValidationHandoff;
   recover?: typeof finalizeValidationExecutorCrash;
@@ -119,7 +125,11 @@ export async function runPiValidationBeforeReviewer<T>(
     handoff = parseValidationHandoff(launch.validationHandoff);
     assertValidationAuthority(handoff, launch.authority);
     assertReviewBinding(launch, handoff);
-    options.beforeExecute?.(launch);
+    if (launch.nixosBaseline) {
+      if (!options.revalidateNixosPrerequisites) throw new Error("NixOS protected prerequisite revalidation is required");
+      await options.revalidateNixosPrerequisites(launch);
+    }
+    await options.beforeExecute?.(launch);
   } catch (error) {
     return {
       admitted: false,
@@ -237,7 +247,7 @@ export function readPiProtectedValidationLaunch(path: string): PiProtectedValida
 }
 
 export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedValidationLaunch {
-  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation"]);
+  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation", "nixosBaseline"]);
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
@@ -262,6 +272,7 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       prerequisites,
     },
     ...(row["reservation"] === undefined ? {} : { reservation: parseRepositoryReviewReservation(row["reservation"]) }),
+    ...(row["nixosBaseline"] === undefined ? {} : { nixosBaseline: parseNixosBaselineReference(row["nixosBaseline"]) }),
     validationHandoff: row["validationHandoff"],
     authority,
     review,
