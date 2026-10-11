@@ -3,10 +3,12 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, TicketStore, type RepositoryMutationLease, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
@@ -536,8 +538,33 @@ test("PAP-236 legacy exact values, unknown/duplicate variables and all-or-none t
   });
 });
 
+interface NixosStorageFixture {
+  mode: "available" | "missing" | "low";
+  calls: string[];
+}
+
+async function withNixosStorageFixture<T>(context: TestContext, root: string, run: (storage: NixosStorageFixture) => Promise<T>): Promise<T> {
+  const storage: NixosStorageFixture = { mode: "available", calls: [] };
+  const realStatfs = fsPromises.statfs;
+  // Keep the approved /nix/store inventory and the production statfs/threshold path,
+  // but service its I/O from a disposable fixture, never the host's Nix filesystem.
+  const statfs = context.mock.method(fsPromises, "statfs", async (...args: Parameters<typeof fsPromises.statfs>) => {
+    const location = String(args[0]);
+    assert.ok([root, join(root, "candidate"), "/nix/store"].includes(location), `unexpected storage probe: ${location}`);
+    assert.equal(args[1]?.bigint, true);
+    storage.calls.push(location);
+    if (location === "/nix/store" && storage.mode === "missing") throw Object.assign(new Error("fixture store unavailable"), { code: "ENOENT" });
+    const info = await realStatfs(location === "/nix/store" ? root : args[0], args[1]);
+    return location === "/nix/store" && storage.mode === "low" ? { ...info, bavail: 0n } : info;
+  });
+  // Production imports the named builtin export; update and restore that binding too.
+  syncBuiltinESMExports();
+  try { return await run(storage); }
+  finally { statfs.mock.restore(); syncBuiltinESMExports(); }
+}
+
 test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then reviewer in both layouts", async (t) => {
-  for (const layout of ["bold-fenced", "plain-inline"] as const) for (const scenario of ["success", "invalid-consumer", "initial-approval-missing", "final-source-drift", "final-daemon-outage", "final-receipt-drift", "final-budget-reset"] as const) await t.test(`${layout}/${scenario}`, () => withPiEnv(async (root) => {
+  for (const layout of ["bold-fenced", "plain-inline"] as const) for (const scenario of ["success", "invalid-consumer", "initial-approval-missing", "initial-storage-missing", "initial-storage-low", "final-source-drift", "final-daemon-outage", "final-receipt-drift", "final-budget-reset", "final-storage-missing", "final-storage-low"] as const) await t.test(`${layout}/${scenario}`, (context) => withPiEnv(async (root) => withNixosStorageFixture(context, root, async (storage) => {
     installProtectedReviewToolFixture(root);
     const authorizationId = "review-auth:423e4567-e89b-42d3-a456-426614174000";
     const deploymentId = scenario === "invalid-consumer" ? "d-nixos-fixture" : "d-236abc";
@@ -582,6 +609,8 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
     let runtimeStarts = 0;
     let completion: Promise<void> | undefined;
     let removedApproval = false;
+    if (scenario === "initial-storage-missing") storage.mode = "missing";
+    if (scenario === "initial-storage-low") storage.mode = "low";
     process.env["AMBIENT_SECRET"] = "must-not-inherit";
     const adapter = new PiAdapter({ cwd: candidate, env: process.env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
       supervision: { launchBackgroundRunner: ((_runnerPath, configPath) => {
@@ -600,6 +629,8 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
         if (scenario === "final-source-drift") writeFileSync(join(root, source), `${bytes}\n`);
         if (scenario === "final-daemon-outage") writeFileSync(join(bin, "nix"), readFileSync(join(bin, "nix"), "utf8").replace("'{\"url\":\"daemon\"}'", "'{\"url\":\"other\"}'"));
         if (scenario === "final-receipt-drift") getDb().prepare("UPDATE review_authorization_claims SET active = 0 WHERE deployment_id = ?").run(deploymentId);
+        if (scenario === "final-storage-missing") storage.mode = "missing";
+        if (scenario === "final-storage-low") storage.mode = "low";
         const reviewer = new BackgroundDeploymentProcess(99_002);
         completion = runPiBackgroundRunner(runnerConfig, { supervision: { spawnProcess: (() => reviewer as never) as never, onSpawn: () => {
           reviewers++; assert.equal(readFileSync(seed.markerPath, "utf8"), "validation-complete"); queueMicrotask(() => reviewer.emit("close", 0));
@@ -626,8 +657,9 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
       return;
     }
     assert.equal(result.deploymentId, deploymentId, result.reason);
-    if (scenario === "initial-approval-missing") {
-      assert.equal(result.status, "failed"); assert.match(result.reason ?? "", /durable approvals/);
+    if (scenario === "initial-approval-missing" || scenario === "initial-storage-missing" || scenario === "initial-storage-low") {
+      assert.equal(result.status, "failed"); assert.match(result.reason ?? "", scenario === "initial-approval-missing" ? /durable approvals/ : /Source: storage/);
+      if (scenario === "initial-storage-low") assert.match(result.reason ?? "", /below explicit approved free-byte threshold/);
       assert.equal(runtimeStarts, 0); assert.equal(reviewers, 0); assert.equal(existsSync(seed.markerPath), false);
       assert.equal(queryReviewAuthorizationClaims().length, 1, "failed observation preserves consumed one-use receipt");
       assert.equal(existsSync(path), false); return;
@@ -641,6 +673,8 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
       const summary = getDeploymentEvents(deploymentId).find((event) => event.event === "crashed")?.summary ?? "";
       for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(summary.includes(label));
       assert.ok(summary.length <= 2000); assert.doesNotMatch(summary, /review-auth:/);
+      if (scenario === "final-storage-missing" || scenario === "final-storage-low") assert.match(summary, /Source: storage/);
+      if (scenario === "final-storage-low") assert.match(summary, /below explicit approved free-byte threshold/);
       return;
     }
     assert.equal(reviewers, 1);
@@ -649,6 +683,7 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
     assert.doesNotMatch(ledger, /review-auth:|must-not-inherit/);
     assert.equal(JSON.parse(ledger).result, "passed");
     assert.ok(readFileSync(probeLog, "utf8").split("store ping").length >= 5, "initial and immediate final observations ran on both sides of protected handoff");
+    assert.ok(storage.calls.filter((location) => location === "/nix/store").length >= 4, "fixture store is probed initially and immediately before execution on both sides of handoff");
     assert.equal(existsSync(path), false);
     assert.equal(existsSync(repositoryReviewReservationPath(candidate)), false);
     assert.equal(createHash("sha256").update(extractMatrixAuthority(readFileSync(join(root, seed.matrixSource)))).digest("hex"), seed.matrixAuthoritySha256);
@@ -659,7 +694,7 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
     assert.equal(replay.status, "failed"); assert.match(replay.reason ?? "", /durable history/);
     assert.equal(runtimeStarts, 1); assert.equal(reviewers, 1);
     assert.deepEqual(getDeploymentEvents(deploymentId), beforeReplay, "same approved prospective ID never overwrites historical events");
-  }));
+  })));
 });
 
 function installProtectedReviewToolFixture(root: string): void {
