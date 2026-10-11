@@ -41,7 +41,7 @@ import {
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
-import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
+import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary, withPiNixosPrerequisites } from "./validation-launch.js";
 import { finalizePiReviewCandidate, rereadPiReviewCandidate } from "./deploy.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
@@ -239,6 +239,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
             writePiSupervisorOwnership(ownershipPath, ownership("active"));
           });
         },
+        revalidateNixosPrerequisites: (launch, execute) => withPiNixosPrerequisites(launch, execute,
+          () => rereadPiReviewCandidate(reviewReservation!.checkout)),
         beforeReviewer: (launch) => { assertPiMatrixStartedForLaunch(deployDir, launch); },
         startReviewer,
       });

@@ -9,7 +9,7 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
-import { assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
+import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
@@ -431,7 +431,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
-  const deploymentId = `d-${randomBytes(3).toString("hex")}`;
+  let deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   let team: TeamConfig;
@@ -443,6 +443,14 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   } catch (error) {
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
+  }
+  if (team.name === "requirements" && mode?.id === "review-auto" && request.background && !request.dryRun && !request.resume) {
+    try { deploymentId = approvedPiNixosDeploymentId(request) ?? deploymentId; }
+    catch (error) {
+      const raw = error instanceof Error ? error.message : "baseline allocation unavailable";
+      const reason = /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(raw) ? raw : reviewCandidateError("approved baseline deployment allocation", raw).message;
+      return { status: "failed", team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(reason, process.env, 2000) };
+    }
   }
   const deployDir = ensureDeployDir(deploymentId); const paths = getDeployPaths(deploymentId);
   const audit = new PiRedactionAudit(deploymentId, deployDir);
@@ -889,10 +897,11 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
     try {
       if (!activeReviewReservation || !plan.reviewCheckout) throw reviewCandidateError("protected launch", "runtime-selected reserved candidate is required");
-      protectedValidationLaunch = withPiReviewCandidateReservation(activeReviewReservation, () => ({
-        ...createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env }),
-        reservation: activeReviewReservation,
-      }), reviewSelectionDependencies);
+      // Serialize synchronous candidate admission, then probe without holding the repository mutex.
+      const launchPromise = withPiReviewCandidateReservation(activeReviewReservation,
+        () => createPiProtectedValidationLaunch({ deploymentId, deploymentDirectory: deployDir, request, plan, environment: env }), reviewSelectionDependencies);
+      protectedValidationLaunch = { ...await launchPromise, reservation: activeReviewReservation };
+      withPiReviewCandidateReservation(activeReviewReservation, () => undefined, reviewSelectionDependencies);
     } catch (error) {
       return completeFailure(error instanceof Error ? error.message : String(error));
     }

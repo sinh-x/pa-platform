@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
   VALIDATION_HANDOFF_SCHEMA_VERSION,
   VALIDATION_MANIFEST_SCHEMA_VERSION,
@@ -20,6 +20,7 @@ import {
 import {
   PI_PROTECTED_VALIDATION_SCHEMA_VERSION,
   piReviewerValidationPrompt,
+  parsePiProtectedValidationLaunch,
   readPiProtectedValidationLaunch,
   runPiValidationBeforeReviewer,
   writePiProtectedValidationLaunch,
@@ -27,6 +28,22 @@ import {
   type PiReviewerValidationContext,
 } from "../validation-supervisor.js";
 import { assertPiMatrixStartedForLaunch, piMatrixAttemptStatePath, writePiMatrixStartedEvent } from "../validation-launch.js";
+
+// This worker must never inherit the live parent/child task, registry or runtime identity.
+const inheritedRuntime = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+for (const key of Object.keys(inheritedRuntime)) delete process.env[key];
+const isolatedRuntime = mkdtempSync(resolve(tmpdir(), "pi-validation-runtime-"));
+process.env["PA_AI_USAGE_HOME"] = isolatedRuntime;
+process.env["PA_REGISTRY_DB"] = resolve(isolatedRuntime, "registry.db");
+process.env["PA_PLATFORM_CONFIG"] = resolve(isolatedRuntime, "config");
+mkdirSync(process.env["PA_PLATFORM_CONFIG"], { recursive: true });
+process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
+process.env["GIT_CONFIG_NOSYSTEM"] = "1";
+after(() => {
+  for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+  Object.assign(process.env, inheritedRuntime);
+  rmSync(isolatedRuntime, { recursive: true, force: true });
+});
 
 interface Fixture {
   root: string;
@@ -204,6 +221,36 @@ test("valid protected launch runs one unattended manifest before one reviewer wi
   } finally {
     cleanup(seed);
   }
+});
+
+test("PAP-236 protected transport cannot omit, mix or duplicate NixOS profile/baseline/budget authority", async () => {
+  const seed = fixture([]);
+  try {
+    const nixosClauses = [
+      `The trusted PPA builder launcher has authenticated the PAP-223 ticket checkout, created \`${seed.launch.review.branch}\` from approved base \`${seed.launch.review.featureSha}\`, persisted launch evidence, and produced a committed candidate with a clean worktree.`,
+      "Git, Bash, Python 3, ripgrep, Nix, and `ppa` are available in the authenticated checkout.",
+      "Every declared local-path flake input exists at its recorded Git top level, full HEAD, and expected complete status; Nix daemon, upstream sources, caches, storage, and configured builders are available.",
+      "The independent review launch has a valid one-use authorization, and no review is active for the same ticket and branch.",
+    ];
+    const nixos = { ...seed.launch, matrixProfile: "nixos", historicalBaseProvenance: "header", admission: { ...seed.launch.admission,
+      prerequisites: nixosClauses.map((text, index) => ({ text, sourceOrder: index + 1, status: "verified" })) } };
+    const reference = { source: "agent-teams/builder/artifacts/baseline.json", digest: "b".repeat(64), approvalEvidence: "c-20261010000000" };
+    for (const altered of [nixos, { ...nixos, matrixProfile: undefined }, { ...nixos, matrixProfile: "current" }, { ...nixos, nixosBaseline: reference },
+      { ...nixos, prerequisiteBudgetStartedMs: 1 }, { ...nixos, nixosBaseline: { source: reference.source }, prerequisiteBudgetStartedMs: 1 },
+      { ...nixos, nixosBaseline: { ...reference, extra: "not-approved" }, prerequisiteBudgetStartedMs: 1 }, { ...nixos, nixosBaseline: reference, prerequisiteBudgetStartedMs: NaN }]) {
+      assert.throws(() => parsePiProtectedValidationLaunch(altered));
+      let starts = 0;
+      const result = await runPiValidationBeforeReviewer(altered, { evidenceRoot: seed.evidenceRoot, ledgerPath: seed.ledgerPath,
+        execute: async () => { starts++; throw new Error("must not execute"); }, startReviewer: () => { starts++; } });
+      assert.equal(result.admitted, false); assert.equal(starts, 0); assert.equal(existsSync(seed.ledgerPath), false);
+      if (result.admitted) assert.fail("malformed transport admitted");
+      const diagnostic = result.diagnostic;
+      for (const field of ["condition", "source", "reason", "correction", "resumeAction"] as const) assert.ok(diagnostic[field]);
+    }
+    const path = resolve(seed.root, "duplicate-sidecar.json");
+    writeFileSync(path, JSON.stringify(seed.launch).replace('"deploymentId":', '"deploymentId":"d-forged","deploymentId":'), { mode: 0o600 });
+    assert.throws(() => readPiProtectedValidationLaunch(path), /duplicate/);
+  } finally { cleanup(seed); }
 });
 
 test("1 MiB output remains in exact mode-0600 logs while reviewer handback and events stay bounded", async () => {
