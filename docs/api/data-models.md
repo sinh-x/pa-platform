@@ -597,7 +597,7 @@ interface ReviewCheckoutCorrelationEvidence {
 | `leaseHolder` | Exactly `pa:<repoKey>:<ticket>`. |
 | `branch` | Exact non-empty bounded ticket feature branch, without whitespace/control characters. |
 | `branchState` | Exactly `materialized`; planned intent is not review evidence. |
-| `baseSha` | Immutable 40-lowercase-hex historical creation/materialization base, exactly matching the linked ticket and artifact historical-base header. |
+| `baseSha` | Immutable 40-lowercase-hex historical creation/materialization base, exactly matching the materialized ticket link and any explicit artifact historical-base header. With no historical header in either supported layout, exactly one canonical-repository explicit materialized link must match the branch and have `baseSha == Approved Base SHA`; no HEAD/other-branch inference. |
 | `approvedReference` | Separate current review reference authority pin: full lowercase `sha`, exact durable `matrixSource`, lowercase 64-hex `matrixAuthoritySha256` and `matrixApprovalEvidence`. Required for fresh production Pi reviews; absent only for historical identity compatibility. |
 | `headSha` | Exact 40-lowercase-hex candidate HEAD, equal to `featureSha`. |
 | `featureSha` | Exact 40-lowercase-hex authorized candidate commit. |
@@ -627,6 +627,33 @@ Its timestamp is propagated as `prerequisite_started_at`; terminal ledger
 Missing/malformed/conflicting start evidence rejects without migration/backdating.
 These start observations belong to protected reviewer metadata, not new public
 admission fields.
+
+PAP-236 supports lossless `bold-fenced` and `plain-inline` matrices with independent
+`current`/`nixos` prerequisite profiles. It does not add public registry, status or
+REST admission fields. The launcher-only `PiProtectedValidationLaunch` sidecar
+(source: `packages/pi-pa/src/validation-supervisor.ts`) additionally carries:
+
+| Protected field | Contract |
+|-----------------|----------|
+| `matrixProfile` | `current` or `nixos`, required for fresh production candidates and checked against prerequisite clauses. |
+| `historicalBaseProvenance` | `header` or `materialized-ticket-link`, required with a profile and reread from approved source/ticket evidence. |
+| `nixosBaseline` | Exactly `{ source, digest, approvalEvidence }`, all present only for NixOS; names a private immutable baseline and separate durable Sinh approval. |
+| `prerequisiteBudgetStartedMs` | Original nonnegative finite kernel-monotonic anchor, required with NixOS baseline and checked against private persisted launch evidence; never a wall-clock timestamp or resettable allowance. |
+
+These fields are not members of `ReviewCheckoutCorrelationEvidence`, public
+`RegistryEvent`/`DeploymentStatus`, or `/api/deploy/start` input. Private baseline
+schema `nixos-prerequisites/v1` binds the exact canonical/candidate/ticket/branch/
+Feature-SHA/matrix/authorization/consumer tuple, exact environment and complete
+input/tool/service/storage expectations. Separate approval schema
+`nixos-prerequisite-approval/v1` binds its raw source/digest and `tupleDigest`.
+Authorization-bearing raw records stay in mode-`0600` protected artifacts, never
+command environments or ordinary logs/ledgers. Fresh observations are separate
+from expectations; 30-second probe and shared 300-second total deadlines include
+immediate pre-execution revalidation across process handoff. Neither parsing nor
+baseline approval replaces one-use authorization or changes review accounting.
+For layouts, exact environments, failure guidance and the separately approved
+trusted-launcher activation prerequisite, see
+[supported review matrices](../pi-pa.md#supported-review-matrices-and-nixos-prerequisites).
 
 A trusted `started` event with review evidence must be Pi
 `requirements/review-auto`, with `ticket_id == ticket`, `repo_root == repoRoot`,

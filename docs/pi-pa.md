@@ -76,11 +76,16 @@ Use LF separators with no blank lines, duplicate authority labels, leading or
 trailing whitespace, CR characters, or trailing newline. Copy exact approved
 values; do not generate substitute approval evidence. The immutable historical
 base comes from the exact `Historical Materialization Base SHA` artifact header
-and materialized ticket link. The independent current reference comes from
-`Approved Base SHA`, which must equal the digest-approved matrix ancestry
-prerequisite. Both headers are required for a fresh production launch; neither is
-an additional objective clause or an ambient caller assertion. Keep the objective outside the candidate so its
-creation cannot dirty the checkout. Only after that durable authority exists is
+and materialized ticket link. If that header is absent in either supported layout,
+the launcher requires exactly one canonical-repository link in explicit
+`materialized` state, matching the branch, with full `baseSha` equal to
+`Approved Base SHA`. Missing, duplicate, conflicting, planned or legacy-incomplete
+links reject; HEAD or another branch never supplies a fallback. An explicit
+historical header preserves independent historical/current references, including
+both ancestry checks. `Approved Base SHA` remains required and must equal the
+digest-approved matrix ancestry prerequisite. Neither base is an additional
+objective clause or an ambient caller assertion. Keep the objective outside the
+candidate so its creation cannot dirty the checkout. Only after that durable authority exists is
 this canonical-root invocation supported:
 
 ```bash
@@ -168,6 +173,114 @@ installed independent review. PAP-232 Phase 4/AC7 still requires one authorized
 installed PPA independent `requirements/review-auto` deployment to pass the
 unchanged nine-command Full Validation Matrix and publish matching reviewer,
 ledger, and registry/status evidence. Rogue-one execution is not that proof.
+
+## Supported review matrices and NixOS prerequisites
+
+PAP-236 supports two evidenced layouts, not arbitrary Markdown. Both start at
+one exact `### Full Validation Matrix` heading and end immediately before
+`## Implementation Plan` (optionally numbered, e.g. `## 13. Implementation Plan`).
+The raw UTF-8 authority and extracted command contents/order are preserved;
+whitespace, line endings and approval digests are never normalized or rewritten.
+
+| Layout | Ordered section labels | Command shape |
+| --- | --- | --- |
+| `bold-fenced` | `**Matrix Source:**`, `**Prerequisites:**`, `**Environment:**`, `**Commands (run in this exact order):**`, `**Required Outputs and Artifacts:**`, `**Pass Criteria:**` | Numbered description followed by a Bash fence. |
+| `plain-inline` | `Matrix Source:`, `Matrix Authority:`, `Execution Owner:`, `Prerequisites:`, `Environment:`, `Commands (run in this exact order):`, `Pass Criteria:`, `Matrix Rules:` | Numbered command in one backtick span. |
+
+For example, the same inert command content can be represented as:
+
+````text
+1. Inert example:
+```bash
+printf '%s\n' fixture
+```
+````
+
+or `1. ` followed by the inline code span `` `printf '%s\n' fixture` ``.
+These are command-shape examples, not complete approved matrices. The unchanged
+NX-055 golden fixture tests nine exact commands without executing them. Duplicate,
+mixed, reordered, ambiguous or incomplete sections, malformed fences, unsupported
+headings and partial extraction reject. Text inside command fences is data.
+
+Layout and semantic profile are independent. The four evidenced prerequisite
+clauses select `current` or `nixos`; a ticket name or copied assertion never proves
+admission. Present-but-unsupported semantics produce an unsupported/unverifiable
+diagnostic, not an absent-section error. The current profile retains its existing
+prerequisite checks and exact environment. The NixOS profile additionally requires
+all three objective lines, copied exactly from independently approved evidence:
+
+```text
+Prerequisite Baseline Source: <persistent-agent-teams-artifact-path>
+Prerequisite Baseline SHA-256: <64-lowercase-hex-raw-baseline-digest>
+Prerequisite Baseline Approval Evidence: <durable-Sinh-comment-id>
+```
+
+They are all-or-none and permitted only for the NixOS profile. The canonical,
+bounded regular baseline artifact is mode `0600`, outside the candidate, with
+schema `nixos-prerequisites/v1`. It binds canonical key/root, candidate root,
+ticket, branch, Feature SHA, matrix source/digest/approval, one-use authorization
+and prospective review deployment ID. It supplies exact command environment,
+complete local-input path/Git-top-level/HEAD/status expectations, executable
+paths/versions for Git, Bash, Python 3, ripgrep, Nix and `ppa`, complete
+upstream/cache/builder/daemon/storage inventories, and explicit positive minimum
+free-byte thresholds. Empty inventories must be explicit and independently true;
+missing inventory or invented storage defaults reject.
+
+A separate durable Sinh comment is strict JSON with exactly `schemaVersion`,
+`source`, `digest` and `tupleDigest`; `schemaVersion` is
+`nixos-prerequisite-approval/v1`, and `tupleDigest` is computed with
+`nixosTupleDigest`. Matrix approval, baseline approval and review authorization
+are distinct. The prospective consumer must be `d-` plus six lowercase hexadecimal
+digits and have no prior deployment/authorization history or existing workspace;
+the launcher uses that approved identity, never substitutes a random consumer.
+Keep raw baseline/authorization in private artifacts and protected transport, not
+ordinary logs, ledger or ticket-comment prose.
+
+Fixed launcher-built probes independently check Git identity/HEAD/complete status,
+executable versions, Nix flake metadata/config without lock updates, daemon/cache/
+builder store pings, HTTPS HEAD or Git ls-remote upstream availability, and free
+bytes. No arbitrary shell probe, privileged build, lock/config repair or unapproved
+redirect is allowed. Discovered inventories must equal approved sets, not subsets.
+Initial observations and immediate pre-execution observations/authority rereads
+share one original monotonic budget across protected process handoff: **30 seconds
+per probe, 300 seconds total**, including revalidation; no retry resets it.
+Only successful observations mark clauses verified. Private
+`nixos-prerequisite-observations.jsonl` records bounded classifications/timing,
+separately from approved expectations and without authorization or raw service
+output. The existing prerequisite-start journal and executor/reviewer ordering
+remain unchanged; probe rejection starts zero matrix commands and zero reviewers.
+
+Both profiles pass exactly `PA_REPO`, `PA_TICKET_ID`, `PA_FEATURE_SHA`,
+`PA_MATRIX_SOURCE`, `PA_MATRIX_AUTHORITY_SHA256`, `PA_MATRIX_APPROVAL_EVIDENCE`,
+`CI`, `HOME=/home/sinh`, `LANG=C.UTF-8`, `TZ=UTC` and launcher-resolved `PATH`.
+Current uses `CI=1`. NixOS uses `CI=true` and adds only `PA_APPROVED_BASE_SHA`,
+`PA_EXPECTED_BRANCH` and `PA_WORKTREE_ROOT` bound to the approved reference,
+exact branch and authenticated candidate. Unknown/duplicate/conflicting variables,
+other ambient values and authorization leakage reject.
+
+For syntax, authority, observation or deadline failures, preserve the five-field
+diagnostic (`Condition`, `Source`, `Reason`, `Correction`, `Resume Action`, at most
+2,000 JavaScript characters) and originating private evidence. Reconcile the
+specific section, digest/comment/tuple, inventory/service/storage mismatch or
+budget/drift failure before requesting fresh **policy-eligible** authority. Never
+waive failed observations, fabricate verified status, reset accounting or retry
+an exhausted tuple. PAP-236 does not change NX-055's two recorded attempts, zero
+matrix cycles or exhausted unchanged-tuple recovery.
+
+### Separate trusted-launcher activation before independent review
+
+A source build does **not** activate the installed `ppa`. Before PAP-236 independent
+review, Sinh/operator must separately approve activation and durably record the
+corrected launcher's source revision equal to the latest committed candidate
+Feature SHA, absolute launcher path and launcher artifact SHA-256 in the ticket.
+Missing activation evidence or runtime drift blocks review. Reauthenticate the
+clean candidate and fresh launch intent after all commits; do not silently
+retarget old authority. Independent review owns the approved ten-command matrix,
+10/10 exit-zero ledger, zero Critical/Major findings and reasoned Minor dispositions,
+followed by separately gated UAT. Fixture/build success or rogue-one execution is
+not independent review, activation, merge, release or checkout-return authority.
+Future NixOS review still needs concrete separately approved baseline values and
+eligible review authority; no live NX-055 retry or history reset is authorized.
 
 ## Protected structured validation and review handoff
 
