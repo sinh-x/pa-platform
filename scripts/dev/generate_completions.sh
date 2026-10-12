@@ -102,4 +102,13 @@ perl \
   ' \
   "$PA_CORE" > "$PPA"
 
+printf '%s\n' \
+  '' \
+  '# Pi-only observational protected-review contract preflight' \
+  "complete -c ppa -n __fish_use_subcommand -a review -d 'Protected review preflight'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from preflight' -a preflight -d 'Static checks only; grants no authority'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l ticket -r -d 'Exact ticket ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'" \
+  >> "$PPA"
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

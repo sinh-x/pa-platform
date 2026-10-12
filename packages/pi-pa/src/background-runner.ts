@@ -56,6 +56,8 @@ const ACTIVITY_DIAGNOSTIC_MAX = 500;
 const TERMINAL_DIAGNOSTIC_MAX = 2_000;
 
 export interface PiBackgroundRunnerOptions {
+  /** Trusted fixture seam only; never supplied by runner config, environment or requests. */
+  reviewBoundary?: typeof withPiReviewCandidateAtMatrixBoundary;
   supervision?: PiSupervisionOptions;
   now?: () => Date;
   shutdownSignal?: AbortSignal;
@@ -80,6 +82,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   let finalState: PiSupervisorOwnership["state"] = "failed";
   let reviewReservation: RepositoryReviewReservation | undefined;
   let reviewExecutionTerminated = true;
+  let matrixExecutionTerminated = true;
 
   const ownership = (state: PiSupervisorOwnership["state"], extra: Partial<PiSupervisorOwnership> = {}): PiSupervisorOwnership => ({
     schemaVersion: 1,
@@ -192,6 +195,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         ...(options.supervision ?? {}),
         shutdownSignal: shutdown.signal,
         onSpawn: (pid) => {
+          reviewExecutionTerminated = false;
           childPid = pid;
           ready = true;
           writePiSupervisorOwnership(ownershipPath, ownership("active"));
@@ -229,23 +233,33 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         emit: (event) => appendValidationActivity(config.deploymentId, event, secrets),
         beforeExecute: (launch) => {
           assertPiMatrixStartedForLaunch(deployDir, launch);
-          withPiReviewCandidateAtMatrixBoundary({ launch, reservation: reviewReservation!,
+          (options.reviewBoundary ?? withPiReviewCandidateAtMatrixBoundary)({ launch, reservation: reviewReservation!,
             rereadCheckout: () => rereadPiReviewCandidate(reviewReservation!.checkout) }, () => {
             assertPiMatrixStartedForLaunch(deployDir, launch);
             // Readiness acknowledges protected matrix admission, not just handoff consumption.
             // Publish only after the serialized candidate reread so rejection cannot race a pending response.
-            reviewExecutionTerminated = false;
+            matrixExecutionTerminated = false;
             ready = true;
             writePiSupervisorOwnership(ownershipPath, ownership("active"));
           });
         },
+        onMatrixTerminationVerified: () => { matrixExecutionTerminated = true; },
         revalidateNixosPrerequisites: (launch, execute) => withPiNixosPrerequisites(launch, execute,
           () => rereadPiReviewCandidate(reviewReservation!.checkout)),
-        beforeReviewer: (launch) => { assertPiMatrixStartedForLaunch(deployDir, launch); },
+        beforeReviewer: (launch) => {
+          assertPiMatrixStartedForLaunch(deployDir, launch);
+          if (launch.review.matrixSource.startsWith("requirements:")) {
+            // A successful command exit cannot certify that the candidate stayed
+            // immutable. Reauthenticate after the matrix before exposing it to Pi.
+            (options.reviewBoundary ?? withPiReviewCandidateAtMatrixBoundary)({ launch, reservation: reviewReservation!,
+              rereadCheckout: () => rereadPiReviewCandidate(reviewReservation!.checkout) }, () => undefined);
+          }
+        },
         startReviewer,
       });
       if (!supervised.admitted) {
-        reviewExecutionTerminated = true; // admission rejection starts neither matrix nor reviewer
+        matrixExecutionTerminated = true; // explicit admission rejection starts no matrix
+        reviewExecutionTerminated = true; // no reviewer was started
         throw new Error(`runner-readiness: ${formatBoundedFiveFieldDiagnostic(supervised.diagnostic)}`);
       }
       result = supervised.reviewerResult;
@@ -332,7 +346,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     options.shutdownSignal?.removeEventListener("abort", onExternalShutdown);
     try {
       let authorityFailure: string | undefined;
-      if (reviewReservation && reviewExecutionTerminated) {
+      if (reviewReservation && matrixExecutionTerminated && reviewExecutionTerminated) {
         try { finalizePiReviewCandidate(reviewReservation, deployDir, true); }
         catch { authorityFailure = "Condition: review terminal finalization stopped. Source: trusted supervisor. Reason: durable matching final evidence could not be published; reservation retained. Correction: preserve checkout and lease custody. Resume Action: reconcile terminal evidence before another review."; }
       }

@@ -12,7 +12,14 @@ Historical bounded-section copies (commands are data, never executed):
 - `mvm-181-legacy.md`: 2026-10-02-mvm-181-sqlite-wal-reconciliation.md,
   requirements-prefixed generic source and backend/frontend declarations.
 
-Each corresponding `*-migrated.md` is a **new synthetic producer document** with
+- `pap-234-legacy.md`: 2026-10-01-ticket-worktree-selection.md, generic
+  prerequisites and numbered inline commands.
+- `dg-438-legacy.md`: 2026-10-11-delivery-address-selection.md, Flutter/Python/Nix
+  prerequisites and typed source but unversioned prose matrix.
+- `pap-240-legacy.md`: 2026-10-10-pap-240-opt-in-axi-packaging.md, Authority and owner,
+  distinct outputs and six AXI/Chrome prerequisites. Operator paths are isolated.
+
+The three originating incident copies' corresponding `*-migrated.md` is a **new synthetic producer document** with
 its own exact source/digest and synthetic selected approval comment. Its command
 is an inert marker replacing the old matrix, not a migration of historical
 execution authority. `producer-node-pnpm.md` copies the approved PAP-237 §12 JSON

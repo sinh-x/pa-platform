@@ -14,7 +14,7 @@ import {
   assertReviewContractAgreement, formatReviewContractDiagnostic, MAX_REVIEW_ARTIFACT_BYTES,
   MAX_REVIEW_OBJECTIVE_BYTES, parseReviewMatrix, parseReviewMatrixArtifact, parseReviewMatrixSource,
   parseReviewObjective, parseReviewReadinessBinding, readReviewMatrixArtifact, readReviewObjectiveFile,
-  ReviewContractError, type ReviewContractErrorCode, type ReviewMatrix, type ReviewMatrixApproval,
+  ReviewContractError, inspectReviewMatrix, inspectReviewObjective, type ReviewContractErrorCode, type ReviewMatrix, type ReviewMatrixApproval,
   type ReviewObjective,
 } from "../validation/review-contract.js";
 
@@ -85,6 +85,17 @@ test("formatting whitespace is permitted, shell whitespace is unchanged, authori
   for (const field of ["ticket", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence", "reviewAuthorizationId"] as const) {
     rejects(() => parseReviewObjective(JSON.stringify({ ...o, [field]: ` ${o[field]}` })), "REVIEW_FIELD");
   }
+});
+
+test("observational schema inspectors aggregate independent fields without partial authority", () => {
+  const o = objective();
+  assert.equal(parseReviewObjective(JSON.stringify({ ...o, ticket: "ALT-7", branch: "feature/ALT-7-generic" })).ticket, "ALT-7");
+  const bad = inspectReviewObjective(JSON.stringify({ ...o, ticket: "x".repeat(65), branch: "develop", featureSha: "BAD" }));
+  assert.equal(bad.objective, undefined); assert.equal(bad.errors.length, 3);
+  const m = artifact().matrix;
+  m.commands[0]!.cwd = "../escape"; m.commands[0]!.timeoutSeconds = 0; m.commands[0]!.maxOutputBytes = 1;
+  m.passCriteria.critical = 1 as 0;
+  assert.deepEqual(inspectReviewMatrix(JSON.stringify(m)).map((e) => e.diagnostic.source), ["matrix.commands[0].cwd", "matrix.commands[0].timeoutSeconds", "matrix.commands[0].maxOutputBytes", "matrix.passCriteria.critical"]);
 });
 
 test("strict objective fields, exact versions, identifiers, SHAs, digest and canonical UUIDv4", () => {
@@ -286,7 +297,7 @@ test("agreement rejects every mismatched header/objective/approval/ticket/reposi
 
 test("legacy incident copies reject with actionable migration diagnostics; no historical adoption", () => {
   const before = snapshot(fixtures);
-  for (const name of ["mvm-179", "nx-055", "mvm-181"]) {
+  for (const name of ["mvm-179", "nx-055", "mvm-181", "pap-234", "dg-438", "pap-240"]) {
     rejects(() => parseReviewMatrixArtifact(fixture(`${name}-legacy.md`), `requirements:agent-teams/requirements/artifacts/fixture-${name}-legacy.md`), "REVIEW_LEGACY_MIGRATION");
   }
   const e = rejects(() => parseReviewObjective(fixture("legacy-objective.md")), "REVIEW_LEGACY_MIGRATION");

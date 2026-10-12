@@ -23,7 +23,7 @@ export const REVIEW_LITERAL_ENVIRONMENT_NAMES = ["PA_TICKET_ID", "CI", "HOME", "
 
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
-const TICKET = /^[A-Z][A-Z0-9]*-[0-9]{3,}$/;
+const TICKET = /^(?=.{1,64}$)[A-Z][A-Z0-9]*-[0-9]+$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const COMMENT = /^c-[0-9]{17}$/;
 const TOOL_VERSION: Record<ReviewTool, RegExp> = {
@@ -107,10 +107,12 @@ export interface ReviewMatrixArtifact {
 export type ReviewContractErrorCode =
   | "REVIEW_SIZE" | "REVIEW_UTF8" | "REVIEW_JSON" | "REVIEW_DUPLICATE_KEY" | "REVIEW_FIELD"
   | "REVIEW_VERSION" | "REVIEW_LEGACY_MIGRATION" | "REVIEW_SOURCE" | "REVIEW_IO"
-  | "REVIEW_BOUNDARY" | "REVIEW_FENCE" | "REVIEW_BINDING" | "REVIEW_PROFILE";
+  | "REVIEW_BOUNDARY" | "REVIEW_FENCE" | "REVIEW_BINDING" | "REVIEW_PROFILE" | "REVIEW_SENSITIVE";
 
 export class ReviewContractError extends ValidationPreflightError {
   readonly code: ReviewContractErrorCode;
+  /** Additional independent schema defects for observational preflight, never partial executable authority. */
+  relatedErrors?: readonly ReviewContractError[];
   constructor(code: ReviewContractErrorCode, source: string, reason: string) {
     const diagnostic: ValidationDiagnostic = {
       condition: "protected review contract rejected", source, reason,
@@ -122,6 +124,7 @@ export class ReviewContractError extends ValidationPreflightError {
     super(diagnostic);
     this.name = "ReviewContractError";
     this.code = code;
+    this.message = formatReviewContractDiagnostic(this);
   }
 }
 export function formatReviewContractDiagnostic(error: ReviewContractError): string {
@@ -205,6 +208,10 @@ function json(input: string | Uint8Array, limit: number, path: string): unknown 
   const result = value(0, path); ws(); if (p !== s.length) return malformed();
   return result;
 }
+/** Existing evidence only; strict duplicate/UTF-8/bounds checks without initialization. */
+export function parseReviewEvidenceJson(input: Uint8Array, source: string): unknown {
+  return json(input, MAX_REVIEW_ARTIFACT_BYTES, source);
+}
 function object(input: unknown, path: string, keys?: readonly string[]): Row {
   if (input === null || typeof input !== "object" || Array.isArray(input)) fail("REVIEW_FIELD", path, "must be an object");
   const row = input as Row;
@@ -246,7 +253,7 @@ function absolutePath(input: unknown, path: string): string {
 }
 function branch(input: unknown, path: string, ticket?: string): string {
   const s = str(input, path, undefined, 512);
-  if (!/^feature\/[A-Z][A-Z0-9]*-[0-9]{3,}-[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(s)
+  if (!/^feature\/[A-Z][A-Z0-9]*-[0-9]+-[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(s)
     || s.includes("..") || s.includes("//") || s.endsWith("/") || s.split("/").some((part) => part.endsWith(".") || part.endsWith(".lock"))
     || (ticket !== undefined && !s.startsWith(`feature/${ticket}-`))) fail("REVIEW_FIELD", path, "must be an exact ticket-linked feature branch");
   return s;
@@ -281,11 +288,40 @@ export function parseReviewObjective(input: string | Uint8Array): ReviewObjectiv
     reviewAuthorizationId: str(r.reviewAuthorizationId, `${p}.reviewAuthorizationId`, AUTHORIZATION), prerequisiteEvidence,
   };
 }
+/** Collect independent objective field defects; malformed JSON blocks all dependent checks. */
+export function inspectReviewObjective(input: string | Uint8Array): { objective?: ReviewObjective; errors: ReviewContractError[] } {
+  const errors: ReviewContractError[] = [];
+  const check = (run: () => unknown): void => {
+    try { run(); } catch (error) { if (error instanceof ReviewContractError) errors.push(error); else throw error; }
+  };
+  let row: Row | undefined;
+  check(() => { row = object(json(input, MAX_REVIEW_OBJECTIVE_BYTES, "objective"), "objective"); });
+  if (!row) return { errors };
+  const r = row;
+  check(() => version(r.schemaVersion, "objective.schemaVersion", REVIEW_OBJECTIVE_SCHEMA_VERSION));
+  const fields = ["schemaVersion", "ticket", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence", "reviewAuthorizationId", "prerequisiteEvidence"];
+  if (Object.keys(r).some((key) => !fields.includes(key))) check(() => fail("REVIEW_FIELD", "objective", "contains an unknown field"));
+  check(() => str(r.ticket, "objective.ticket", TICKET));
+  check(() => branch(r.branch, "objective.branch", typeof r.ticket === "string" && TICKET.test(r.ticket) ? r.ticket : undefined));
+  check(() => str(r.featureSha, "objective.featureSha", SHA));
+  check(() => matrixSourceAt(r.matrixSource, "objective.matrixSource"));
+  check(() => str(r.matrixAuthoritySha256, "objective.matrixAuthoritySha256", DIGEST));
+  check(() => str(r.matrixApprovalEvidence, "objective.matrixApprovalEvidence", COMMENT));
+  check(() => str(r.reviewAuthorizationId, "objective.reviewAuthorizationId", AUTHORIZATION));
+  check(() => {
+    const evidence = object(r.prerequisiteEvidence, "objective.prerequisiteEvidence");
+    Object.entries(evidence).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).forEach(([id, comment], index) => {
+      check(() => str(id, `objective.prerequisiteEvidence[${index}].id`, ID));
+      check(() => str(comment, `objective.prerequisiteEvidence[${index}].commentId`, COMMENT));
+    });
+  });
+  return errors.length ? { errors } : { errors, objective: parseReviewObjective(input) };
+}
 function list(input: unknown, path: string, max = 1000): unknown[] {
   if (!Array.isArray(input) || input.length > max) fail("REVIEW_FIELD", path, `must be an array of at most ${max} entries`);
   return input;
 }
-function prerequisite(input: unknown, index: number): ReviewPrerequisite {
+export function parseReviewPrerequisite(input: unknown, index: number): ReviewPrerequisite {
   const p = `matrix.prerequisites[${index}]`; const r = object(input, p);
   switch (r.kind) {
     case "platform":
@@ -314,7 +350,7 @@ export function parseReviewMatrix(input: string | Uint8Array): ReviewMatrix {
   const repository = { key: str(repo.key, `${p}.repository.key`, /^[a-z0-9][a-z0-9-]*$/), root: absolutePath(repo.root, `${p}.repository.root`), baseSha: str(repo.baseSha, `${p}.repository.baseSha`, SHA), branch: branch(repo.branch, `${p}.repository.branch`) };
   if (!REVIEW_PROFILES.includes(r.profile as ReviewProfile)) fail("REVIEW_PROFILE", `${p}.profile`, "profile version is unsupported");
   const profile = r.profile as ReviewProfile;
-  const prerequisites = list(r.prerequisites, `${p}.prerequisites`).map(prerequisite);
+  const prerequisites = list(r.prerequisites, `${p}.prerequisites`).map(parseReviewPrerequisite);
   const identities = prerequisites.map((v) => v.kind === "tool" ? `tool:${v.name}` : v.kind === "dependency" ? `dependency:${v.root}:${v.name}` : v.kind === "operatorGate" ? `gate:${v.id}` : "platform");
   if (new Set(identities).size !== identities.length) fail("REVIEW_FIELD", `${p}.prerequisites`, "prerequisite identities must be unique");
   const tools = new Set(prerequisites.flatMap((v) => v.kind === "tool" ? [v.name] : []));
@@ -336,7 +372,7 @@ export function parseReviewMatrix(input: string | Uint8Array): ReviewMatrix {
   const commands = list(r.commands, `${p}.commands`, MAX_REVIEW_COMMANDS).map((v, i): ReviewCommand => {
     const cp = `${p}.commands[${i}]`; const c = object(v, cp, ["id", "command", "cwd", "timeoutSeconds", "maxOutputBytes"]);
     // Shell bytes are opaque: preserve whitespace and inline assignments; never infer extra launcher variables.
-    if (typeof c.command !== "string" || !c.command.trim() || c.command.includes("\0")) fail("REVIEW_FIELD", `${cp}.command`, "must be nonempty shell text without NUL");
+    if (typeof c.command !== "string" || !c.command.trim() || c.command.includes("\0") || c.command.includes("review-auth:")) fail("REVIEW_FIELD", `${cp}.command`, "must be nonempty shell text without NUL or protected review authorization");
     return { id: str(c.id, `${cp}.id`, ID), command: c.command, cwd: relativePath(c.cwd, `${cp}.cwd`), timeoutSeconds: integer(c.timeoutSeconds, `${cp}.timeoutSeconds`, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS), maxOutputBytes: integer(c.maxOutputBytes, `${cp}.maxOutputBytes`, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES) };
   });
   if (!commands.length || new Set(commands.map((c) => c.id)).size !== commands.length) fail("REVIEW_FIELD", `${p}.commands`, "requires 1–1000 commands with unique ordered IDs");
@@ -349,13 +385,69 @@ export function parseReviewMatrix(input: string | Uint8Array): ReviewMatrix {
   return { schemaVersion: REVIEW_MATRIX_SCHEMA_VERSION, source, repository, profile, prerequisites, environment, commands, commandCount, outputs, passCriteria };
 }
 
+/** Collect safely independent matrix fields. The fail-first parser remains the sole executable output. */
+export function inspectReviewMatrix(input: string | Uint8Array): ReviewContractError[] {
+  const errors: ReviewContractError[] = [];
+  const check = (run: () => unknown): void => {
+    try { run(); } catch (error) { if (error instanceof ReviewContractError) errors.push(error); else throw error; }
+  };
+  let row: Row | undefined;
+  check(() => { row = object(json(input, MAX_REVIEW_ARTIFACT_BYTES, "matrix"), "matrix"); });
+  if (!row) return errors;
+  const r = row;
+  check(() => version(r.schemaVersion, "matrix.schemaVersion", REVIEW_MATRIX_SCHEMA_VERSION));
+  const keys = ["schemaVersion", "source", "repository", "profile", "prerequisites", "environment", "commands", "commandCount", "outputs", "passCriteria"];
+  if (Object.keys(r).some((key) => !keys.includes(key))) check(() => fail("REVIEW_FIELD", "matrix", "contains an unknown field"));
+  check(() => matrixSourceAt(r.source, "matrix.source"));
+  check(() => {
+    const repo = object(r.repository, "matrix.repository", ["key", "root", "baseSha", "branch"]);
+    check(() => str(repo.key, "matrix.repository.key", /^[a-z0-9][a-z0-9-]*$/));
+    check(() => absolutePath(repo.root, "matrix.repository.root"));
+    check(() => str(repo.baseSha, "matrix.repository.baseSha", SHA));
+    check(() => branch(repo.branch, "matrix.repository.branch"));
+  });
+  check(() => { if (!REVIEW_PROFILES.includes(r.profile as ReviewProfile)) fail("REVIEW_PROFILE", "matrix.profile", "profile version is unsupported"); });
+  check(() => list(r.prerequisites, "matrix.prerequisites").forEach((p, index) => check(() => parseReviewPrerequisite(p, index))));
+  check(() => {
+    const env = object(r.environment, "matrix.environment");
+    const names = [...Object.keys(REVIEW_ENVIRONMENT_BINDINGS), ...REVIEW_LITERAL_ENVIRONMENT_NAMES];
+    if (Object.keys(env).some((key) => !names.includes(key))) check(() => fail("REVIEW_FIELD", "matrix.environment", "contains an unknown field"));
+    for (const [name, binding] of Object.entries(REVIEW_ENVIRONMENT_BINDINGS)) check(() => {
+      const value = object(env[name], `matrix.environment.${name}`, ["binding"]);
+      literal(value.binding, `matrix.environment.${name}.binding`, binding);
+    });
+    for (const name of REVIEW_LITERAL_ENVIRONMENT_NAMES) check(() => {
+      const value = object(env[name], `matrix.environment.${name}`, ["literal"]);
+      str(value.literal, `matrix.environment.${name}.literal`, name === "PA_TICKET_ID" ? TICKET : undefined);
+    });
+  });
+  check(() => list(r.commands, "matrix.commands", MAX_REVIEW_COMMANDS).forEach((input, index) => check(() => {
+    const path = `matrix.commands[${index}]`;
+    const c = object(input, path, ["id", "command", "cwd", "timeoutSeconds", "maxOutputBytes"]);
+    check(() => str(c.id, `${path}.id`, ID));
+    check(() => { if (typeof c.command !== "string" || !c.command.trim() || c.command.includes("\0") || c.command.includes("review-auth:")) fail("REVIEW_FIELD", `${path}.command`, "must be nonempty shell text without NUL or protected review authorization"); });
+    check(() => relativePath(c.cwd, `${path}.cwd`));
+    check(() => integer(c.timeoutSeconds, `${path}.timeoutSeconds`, MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS));
+    check(() => integer(c.maxOutputBytes, `${path}.maxOutputBytes`, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES));
+  })));
+  check(() => integer(r.commandCount, "matrix.commandCount", 1, MAX_REVIEW_COMMANDS));
+  check(() => list(r.outputs, "matrix.outputs").forEach((output, index) => check(() => str(output, `matrix.outputs[${index}]`))));
+  check(() => {
+    const pc = object(r.passCriteria, "matrix.passCriteria", ["completionPercent", "exitCode", "critical", "major", "minorRationaleRequired"]);
+    for (const [name, expected] of Object.entries({ completionPercent: 100, exitCode: 0, critical: 0, major: 0, minorRationaleRequired: true })) check(() => literal(pc[name], `matrix.passCriteria.${name}`, expected));
+  });
+  // Cross-field/profile/count uniqueness checks require the complete parsed fields.
+  if (!errors.length) check(() => parseReviewMatrix(input));
+  return errors;
+}
+
 export function parseReviewReadinessBinding(input: string | Uint8Array): ReviewReadinessBinding {
   const p = "readiness"; const r = object(json(input, MAX_REVIEW_OBJECTIVE_BYTES, p), p, ["gateId", "ticket", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "installedRuntime", "mergedConfigSha", "pap232Evidence", "pap235Evidence"]);
   const ticket = str(r.ticket, `${p}.ticket`, TICKET);
   const runtime = object(r.installedRuntime, `${p}.installedRuntime`, ["binary", "packageName", "packageVersion", "sourceSha"]);
   const binary = absolutePath(runtime.binary, `${p}.installedRuntime.binary`);
   if (!/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/ppa$/.test(binary)) fail("REVIEW_FIELD", `${p}.installedRuntime.binary`, "requires an exact installed PPA store binary, not a version label");
-  return { gateId: str(r.gateId, `${p}.gateId`, ID), ticket, branch: branch(r.branch, `${p}.branch`, ticket), featureSha: str(r.featureSha, `${p}.featureSha`, SHA), matrixSource: matrixSourceAt(r.matrixSource, `${p}.matrixSource`), matrixAuthoritySha256: str(r.matrixAuthoritySha256, `${p}.matrixAuthoritySha256`, DIGEST), installedRuntime: { binary, packageName: str(runtime.packageName, `${p}.installedRuntime.packageName`, ID), packageVersion: str(runtime.packageVersion, `${p}.installedRuntime.packageVersion`), sourceSha: str(runtime.sourceSha, `${p}.installedRuntime.sourceSha`, SHA) }, mergedConfigSha: str(r.mergedConfigSha, `${p}.mergedConfigSha`, SHA), pap232Evidence: str(r.pap232Evidence, `${p}.pap232Evidence`), pap235Evidence: str(r.pap235Evidence, `${p}.pap235Evidence`) };
+  return { gateId: str(r.gateId, `${p}.gateId`, ID), ticket, branch: branch(r.branch, `${p}.branch`, ticket), featureSha: str(r.featureSha, `${p}.featureSha`, SHA), matrixSource: matrixSourceAt(r.matrixSource, `${p}.matrixSource`), matrixAuthoritySha256: str(r.matrixAuthoritySha256, `${p}.matrixAuthoritySha256`, DIGEST), installedRuntime: { binary, packageName: str(runtime.packageName, `${p}.installedRuntime.packageName`, ID), packageVersion: str(runtime.packageVersion, `${p}.installedRuntime.packageVersion`), sourceSha: str(runtime.sourceSha, `${p}.installedRuntime.sourceSha`, SHA) }, mergedConfigSha: str(r.mergedConfigSha, `${p}.mergedConfigSha`, SHA), pap232Evidence: str(r.pap232Evidence, `${p}.pap232Evidence`, /^PAP-232\/c-[0-9]{17}$/), pap235Evidence: str(r.pap235Evidence, `${p}.pap235Evidence`, /^PAP-235\/c-[0-9]{17}$/) };
 }
 
 interface Line { text: string; start: number; end: number }
@@ -397,10 +489,16 @@ export function parseReviewMatrixArtifact(input: Uint8Array, source: string): Re
   const authorityBytes = Uint8Array.from(input.subarray(all[start]!.start, all[terminal]!.start));
   const section = all.slice(start + 1, terminal);
   const delimiters = section.map((line, i) => ({ line, i })).filter(({ line }) => /^ {0,3}(?:`{3,}|~{3,})/.test(line.text));
-  if (!delimiters.length) fail("REVIEW_LEGACY_MIGRATION", "artifact.matrix", "legacy prose/inline commands require a new versioned JSON matrix");
+  if (!delimiters.length || (!delimiters.some(({ line }) => line.text === "```json") && delimiters.some(({ line }) => /^```(?:bash|sh|shell)$/.test(line.text)))) fail("REVIEW_LEGACY_MIGRATION", "artifact.matrix", "legacy prose/inline/fenced-shell commands require a new versioned JSON matrix");
   if (delimiters.length !== 2 || delimiters[0]!.line.text !== "```json" || delimiters[1]!.line.text !== "```") fail("REVIEW_FENCE", "artifact.matrix", "requires exactly one unambiguous json fence");
   const open = delimiters[0]!.line; const close = delimiters[1]!.line;
-  const matrix = parseReviewMatrix(input.slice(open.end, close.start));
+  const payload = input.slice(open.end, close.start);
+  let matrix: ReviewMatrix;
+  try { matrix = parseReviewMatrix(payload); }
+  catch (error) {
+    if (error instanceof ReviewContractError) error.relatedErrors = inspectReviewMatrix(payload);
+    throw error;
+  }
   const sourceLines = section.filter((line) => /^(?:\*\*)?Matrix Source:/.test(line.text));
   if (sourceLines.length !== 1 || sourceLines[0]!.text !== `Matrix Source: ${source}`) fail("REVIEW_BINDING", "artifact.matrixSource", "matrix source line must agree exactly with the selected prefixed source");
   equal(matrix.source, source, "matrix.source");
@@ -444,7 +542,8 @@ export function assertReviewContractAgreement(objective: ReviewObjective, artifa
 }
 
 /** Reads at most limit+1 bytes, rejects rather than truncating, opens no writer and initializes no state. */
-function readBoundedRegularFile(path: string, limit: number, source: string): Uint8Array {
+export function readReviewEvidenceFile(path: string, limit: number, source: string): Uint8Array {
+  absolutePath(path, source);
   let fd: number | undefined;
   try {
     const before = lstatSync(path);
@@ -470,8 +569,35 @@ function readBoundedRegularFile(path: string, limit: number, source: string): Ui
 }
 export function readReviewObjectiveFile(path: string): ReviewObjective {
   absolutePath(path, "objectiveFile");
-  return parseReviewObjective(readBoundedRegularFile(path, MAX_REVIEW_OBJECTIVE_BYTES, "objectiveFile"));
+  return parseReviewObjective(readReviewEvidenceFile(path, MAX_REVIEW_OBJECTIVE_BYTES, "objectiveFile"));
 }
+/** Read-only producer/runtime pairing. Synthetic fixtures prove schemas, never live approvals. */
+export function readReviewProducerFixtures(configRoot: string): number {
+  absolutePath(configRoot, "paired.configRoot");
+  const manifest = object(parseReviewEvidenceJson(readReviewEvidenceFile(join(configRoot, "contracts/protected-review-v1.json"), MAX_REVIEW_ARTIFACT_BYTES, "paired.producers"), "paired.producers"), "paired.producers", ["schemaVersion", "fixtures"]);
+  literal(manifest.schemaVersion, "paired.producers.schemaVersion", "pa-review-producer-fixtures/v1");
+  const fixtures = list(manifest.fixtures, "paired.producers.fixtures", 3);
+  if (fixtures.length !== 3) fail("REVIEW_PROFILE", "paired.producers.fixtures", "requires exactly one producer fixture for each supported profile");
+  const profiles = new Set<string>();
+  for (const input of fixtures) {
+    const row = object(input, "paired.fixture", ["profile", "objective", "artifact"]);
+    if (!REVIEW_PROFILES.includes(row.profile as ReviewProfile) || profiles.has(String(row.profile))) fail("REVIEW_PROFILE", "paired.fixture.profile", "requires each supported profile exactly once");
+    const read = (key: string): Uint8Array => {
+      const relative = relativePath(row[key], "paired.fixture.path");
+      if (!relative.startsWith("contracts/fixtures/")) fail("REVIEW_SOURCE", "paired.fixture.path", "must be contained under contracts/fixtures");
+      return readReviewEvidenceFile(join(configRoot, relative), MAX_REVIEW_ARTIFACT_BYTES, "paired.fixture");
+    };
+    const objective = parseReviewObjective(read("objective"));
+    const artifact = parseReviewMatrixArtifact(read("artifact"), objective.matrixSource);
+    equal(artifact.matrix.profile, row.profile, "paired.fixture.profile");
+    assertReviewContractAgreement(objective, artifact, { ticket: objective.ticket, repository: artifact.matrix.repository,
+      approval: { commentId: objective.matrixApprovalEvidence, author: "sinh", ticket: objective.ticket, branch: objective.branch,
+        matrixSource: objective.matrixSource, matrixAuthoritySha256: objective.matrixAuthoritySha256 } });
+    profiles.add(String(row.profile));
+  }
+  return profiles.size;
+}
+
 export function readReviewMatrixArtifact(aiUsageRoot: string, source: string): ReviewMatrixArtifact {
   parseReviewMatrixSource(source);
   absolutePath(aiUsageRoot, "aiUsageRoot");
@@ -483,7 +609,7 @@ export function readReviewMatrixArtifact(aiUsageRoot: string, source: string): R
       if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(path) !== path) fail("REVIEW_SOURCE", "matrixSource", "source ancestors must be exact directories without symlink aliases");
     }
     path = join(path, parts[parts.length - 1]!);
-    return parseReviewMatrixArtifact(readBoundedRegularFile(path, MAX_REVIEW_ARTIFACT_BYTES, "matrixSource"), source);
+    return parseReviewMatrixArtifact(readReviewEvidenceFile(path, MAX_REVIEW_ARTIFACT_BYTES, "matrixSource"), source);
   } catch (error) {
     if (error instanceof ReviewContractError) throw error;
     return fail("REVIEW_IO", "matrixSource", "cannot read the existing requirements artifact beneath AI-usage");

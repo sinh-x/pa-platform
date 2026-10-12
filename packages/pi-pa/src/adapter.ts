@@ -854,10 +854,17 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
 }
 
 export function redactPiProtectedReviewPrimer(primer: string, authorizationId: string): string {
-  const count = occurrences(primer, authorizationId);
-  if (count === 0) throw new Error("protected reviewer primer does not contain the admitted authorization to redact");
-  const redacted = primer.split(authorizationId).join("[protected-review-authorization]");
-  if (redacted.includes(authorizationId)) throw new Error("protected reviewer primer authorization redaction could not be proven exact");
+  // A v1 objective may spell any ASCII token character with a JSON Unicode
+  // escape. Redact equivalent spellings too, without changing stored authority.
+  const spelling = [...authorizationId].map((character) => {
+    const literal = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return `(?:${literal}|\\\\u${character.charCodeAt(0).toString(16).padStart(4, "0")})`;
+  }).join("");
+  const pattern = new RegExp(spelling, "gi");
+  if (!pattern.test(primer)) throw new Error("protected reviewer primer does not contain the admitted authorization to redact");
+  pattern.lastIndex = 0;
+  const redacted = primer.replace(pattern, "[protected-review-authorization]");
+  if (pattern.test(redacted)) throw new Error("protected reviewer primer authorization redaction could not be proven exact");
   return redacted;
 }
 

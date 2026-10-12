@@ -1,6 +1,7 @@
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
+import { MAX_REVIEW_OBJECTIVE_BYTES } from "../validation/review-contract.js";
 import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
 
@@ -67,6 +68,8 @@ export interface SelfUpdateStartResult extends SelfUpdateStatusResult {
 }
 
 export interface CoreExecutionHooks {
+  /** Observational adapter gate before CLI repository authentication/state initialization. */
+  deployPreflight?(request: DeployRequest): Promise<{ reason: string } | undefined> | { reason: string } | undefined;
   deploy?(request: DeployRequest, diagnostics?: DeployDiagnostics): Promise<DeployHookResult> | DeployHookResult;
   serve?(action: "start" | "stop" | "restart" | "status"): Promise<{ status: string; message?: string }> | { status: string; message?: string };
   selfUpdate?(): Promise<SelfUpdateStartResult> | SelfUpdateStartResult;
@@ -86,7 +89,7 @@ export interface CoreExecutionHooks {
 
 export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks, cliDeployRuntime: ApiRuntimeName = "opencode"): CoreExecutionHooks {
   const cliDeployHooks = cliDeployRuntime === "pi" ? pi : opencode;
-  return { ...opencode, deploy: cliDeployHooks.deploy, runtimeHooks: { opencode, pi } };
+  return { ...opencode, deploy: cliDeployHooks.deploy, deployPreflight: cliDeployHooks.deployPreflight, runtimeHooks: { opencode, pi } };
 }
 
 export interface SanitizeResult {
@@ -104,7 +107,7 @@ export interface ValidateDeployResult {
   warnings?: string[];
 }
 
-export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string; warnings?: string[] } {
+export function validateDeployRequestFields(body: Record<string, unknown>, options: { objectiveFormat?: "protected-review-json" } = {}): ValidateDeployResult | { error: string; warnings?: string[] } {
   if (Object.prototype.hasOwnProperty.call(body, "ticketWorktree")) {
     return { error: formatBoundedFiveFieldDiagnostic({
       condition: "ticket-worktree invocation boundary rejected",
@@ -157,7 +160,14 @@ export function validateDeployRequestFields(body: Record<string, unknown>): Vali
   const warnings: string[] = [];
   let sanitizedObjective: string | undefined;
   let sanitizedCharsRemoved: number | undefined;
-  if (objective && objective.trim()) {
+  if (options.objectiveFormat === "protected-review-json" && objective !== undefined) {
+    if (Buffer.byteLength(objective, "utf8") > MAX_REVIEW_OBJECTIVE_BYTES) return { error: "protected review objective exceeds max length of 65536 bytes" };
+    // This trusted Pi CLI policy preserves authority, including BOM/control bytes
+    // for strict rejection. It is not a user/API option and never repairs JSON.
+    sanitizedObjective = objective;
+    try { assertNoSensitiveMatch("content", objective); }
+    catch { return { error: "protected review objective rejected by sensitive-input validation" }; }
+  } else if (objective && objective.trim()) {
     if (objective.length > 10000) return { error: "objective exceeds max length of 10000 characters" };
     const result = sanitizeTextInput(objective);
     if (result.removed > 0) {

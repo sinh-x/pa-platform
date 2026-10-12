@@ -1,12 +1,13 @@
-# Protected review v1 contract (PAP-237 Phase 1)
+# Protected review v1 contract (PAP-237)
 
-This shared pa-core contract is **observational**, not an executor, authority
-store, review authorization, reservation or evidence of a passing matrix.
-Pi launch/preflight/registry consumers are unchanged in this phase. OPA/CPA
-behavior is unchanged. Later phases must authenticate and reread all evidence,
-consume one-use authorization through the existing registry, preserve one active
-review per exact ticket/branch (including legacy reviews), and integrate
-PAP-232 candidate reservation and PAP-235 command-local assignments.
+The shared parser and Pi static preflight are **observational**, not execution,
+review authorization, reservations or evidence of a passing matrix. Pi protected
+launch repeats static checks and authenticates candidate/readiness evidence,
+uses PAP-232's existing-only selector/reservation and the existing executor,
+and consumes authorization through the registry. Command-local assignments remain
+opaque shell text; they do not extend launcher environment authority.
+OPA/CPA behavior is unchanged. Rollout requires separately approved producers,
+installation/readiness and an actual complete protected review, not source tests.
 
 ## APIs and failure model
 
@@ -50,9 +51,10 @@ Parsing is deterministic fail-first: byte/UTF-8/JSON structure first, version,
 required fields in schema order, unknown fields, then field semantics in fixed
 order. Duplicate keys include decoded escaped equivalents at **every** depth;
 known duplicate fields have field-specific locations, dynamic/unknown keys use
-`fields` without echoing the key. JSON nesting is limited to 64. The later
-preflight engine owns independent-defect aggregation and explicit deferred/blocked
-checks, not this parser.
+`fields` without echoing the key. JSON nesting is limited to 64. The
+preflight engine aggregates independent objective-field and binding defects and
+reports explicit deferred/blocked checks. Structurally invalid JSON/artifacts
+block dependent authority checks rather than using partially parsed authority.
 
 ## Common grammar and bounds
 
@@ -61,7 +63,7 @@ checks, not this parser.
 - One JSON object, UTF-8 with no BOM, malformed encoding or unpaired surrogates.
   JSON formatting whitespace is allowed. Duplicate and unknown keys reject.
 - SHA: exactly 40 lowercase hexadecimal characters. SHA-256: exactly 64.
-- Ticket: `[A-Z][A-Z0-9]*-[0-9]{3,}`. Comment ID: `c-` plus 17 decimal digits.
+- Ticket: `[A-Z][A-Z0-9]*-[0-9]+`, at most 64 characters (the core canonical grammar). Comment ID: `c-` plus 17 decimal digits.
 - ID: `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
 - Branch: a valid contained `feature/<ticket>-<topic>` spelling; objective/header/
   readiness branches must name their exact ticket. No Git ref aliases, traversal,
@@ -109,7 +111,8 @@ Exactly: `schemaVersion`, `source`, `repository`, `profile`, `prerequisites`,
 - `profile`: one of the three literals below.
 - `prerequisites`: array of the following strict tagged objects. Identities are
   unique: one platform, one declaration per tool, one per dependency root/name,
-  one per operator-gate ID. No arbitrary probe commands.
+  one per operator-gate ID. Production preflight requires the declared
+`paired-runtime-ready` operator gate. No arbitrary probe commands.
 
 | Kind | Exact keys | Semantics |
 | --- | --- | --- |
@@ -123,7 +126,9 @@ Version lines follow the fixed probes' forms: `vX.Y.Z` for Node; `X.Y.Z` for npm
 pnpm, Corepack and Pi; `git version X.Y.Z...`; `GNU bash, version X.Y.Z...`;
 `nix (Nix) X.Y.Z...`. Ranges, floating labels, multiline versions and guessed
 unsupported tools reject. Actual tool/package checks belong to authorized launch;
-pnpm uses Corepack. No installation or repair is implied.
+pnpm uses Corepack with network and automatic package-manager pinning disabled
+for fixed tool probes. Missing cached tooling fails; no installation or repair
+is allowed.
 
 | Profile | Required structural declarations |
 | --- | --- |
@@ -212,20 +217,30 @@ matrix operator gate, and gate/environment tickets must agree.
 
 ## Readiness binding shape
 
-The selected operator-gate comment must later be durably authored by Sinh with
-one unambiguous JSON object. Phase 1 defines only the following strict shape:
+The selected operator-gate comment must be durably authored by Sinh with
+one unambiguous JSON object:
 
 - `gateId`, `ticket`, `branch`, `featureSha`, `matrixSource`,
   `matrixAuthoritySha256` (same exact grammars as above).
 - `installedRuntime`: exactly `binary` (absolute `/nix/store/<32-char hash>-<name>/bin/ppa`),
   `packageName` (ID), `packageVersion` (nonempty), `sourceSha` (full SHA).
-- `mergedConfigSha`: full SHA, later compared with the candidate config pin.
-- `pap232Evidence`, `pap235Evidence`: nonempty durable evidence references.
+- `mergedConfigSha`: full SHA, later compared with the installed runtime's paired
+  config pin and the clean merged config checkout. For `pa-platform` self-review,
+  it must also equal the candidate's `.pa-platform-config.sha`.
+- `pap232Evidence`, `pap235Evidence`: durable `PAP-232/c-<17 digits>` and
+  `PAP-235/c-<17 digits>` references to Sinh comments on completed integration
+  tickets. The readiness approval binds the selected references explicitly.
 
 A version label or echo of expected SHA alone is not provenance. Actual
 store/package/source identity, merged pin and integration references must be
-independently authenticated and bound to the tuple at launch. Phase 1 does not
-claim a live store binary, dependency completion or reservation.
+independently authenticated and bound to the tuple at launch. The launcher
+compares its own physical module location against the selected store package and
+`review-runtime-provenance.json` packaged with `sourceSha` from the clean Git
+flake revision, package version and config pin. Runtime `sourceSha` is independent
+of an external project's target `featureSha`; external projects need no PA config
+pin file. Only `pa-platform` self-review additionally requires the runtime source
+to equal that candidate SHA and its config pin. Dirty/unversioned packages cannot
+pass readiness.
 
 ## Explicit migration only
 
@@ -240,6 +255,64 @@ counters/caps, or imply historical retry entitlement (including PAP-189).
 `packages/pa-core/src/__tests__/fixtures/protected-review-v1/README.md` records
 isolated MVM-179/NX-055/MVM-181 copied shapes and synthetic new producer fixtures.
 All use replaced identities and synthetic approval/readiness; they never migrate
-real historical authority. Phase 1 tests establish scoped AC-1/2/7 evidence only.
-Full acceptance remains unaccepted until the independent authorized matrix and
-all subsequent live worktree/readiness/integration gates pass.
+real historical authority. Source tests and isolated installed smoke are not
+actual protected-review acceptance. Full acceptance requires the independent
+approved matrix, paired producers and live worktree/readiness/integration gates.
+
+## Pi preflight and rollout
+
+```sh
+ppa review preflight --ticket PAP-237 --objective-file request.json
+ppa review preflight --ticket PAP-237 --objective-file request.json --json
+```
+
+Exit 0 is static-compatible, 1 incompatible, 2 usage/I/O failure. Reports use
+`pa-review-preflight/v1`, deterministic checks/diagnostics and deferred launch
+checks, without capability/token values. Preflight reads only existing regular
+files and configured registry metadata; it never constructs TicketStore or opens
+the SQLite registry. Missing state remains absent. No Git/tool/runtime/project
+probe, network call, deployment ID/workspace, claim, attempt or matrix start occurs.
+The same default gate runs before Pi protected deployment allocation, including
+`--dry-run`. The public PPA CLI calls the adapter's observational gate before
+repository/Git resolution or TicketStore construction and preserves raw JSON
+instead of generic prose sanitization/trimming. Decoded commands/literals are
+sensitive-checked as well as raw bytes, so JSON escaping cannot hide credentials.
+Compatible dry-run primers redact plain and JSON-escaped authorization IDs too.
+`deploy --validate` is only team configuration validation.
+
+Launch rereads artifact/ticket/approval, authenticates the distinct candidate,
+checks installed readiness, then preserves the durable matrix-start boundary
+before live prerequisite observations and atomic authorization consumption.
+Reservation-bound execution rereads source/profile/environment/readiness/receipt
+and exact tools/dependencies, including a post-matrix boundary reread before
+reviewer startup. Exit-zero commands cannot certify an unchanged candidate.
+Legacy active reviews remain exclusion evidence;
+uninterpretable running same-ticket authority conservatively blocks admission.
+Matrix and reviewer termination are tracked independently: post-matrix rejection
+with verified executor completion and no reviewer still publishes matching final
+candidate evidence and clears only its reservation. Arbitrary executor crashes or
+unresolved cleanup never imply termination. Terminal authority finalization does
+not return or alter the checkout.
+
+The config producer follow-up owns `contracts/protected-review-v1.json`:
+`schemaVersion: "pa-review-producer-fixtures/v1"` and `fixtures`, exactly three
+entries containing `profile`, `objective`, `artifact`. Paths must be contained
+under `contracts/fixtures/`; each profile must occur once. Strict source/digest/
+header/objective pairing is checked by `verify:paired-config -- --require-review-v1`
+on the exact clean merged config pin. Baseline `verify:paired-config` preserves
+existing CI compatibility; it does not prove v1 pairing. Protected launch always
+requires v1 pairing regardless of CLI flags. Missing pairing fails rollout; this
+repository never rewrites canonical producers or silently updates the config pin.
+
+Implementation-first merge is distinct from rollout: Sinh selected this scope
+for PAP-237 in rogue-one d-5318f0. PAPC-039 producers, separately completed
+PAP-235 evidence, durable installed readiness and actual authorized protected
+review/UAT remain deferred. No legacy review, failed matrix or rogue result is
+adopted as passing protected acceptance.
+
+`pap-237-installed-preflight-smoke.mjs` compares packaged provenance against the
+expected candidate and invokes the installed CLI on isolated synthetic evidence
+for all profiles and legacy rejection, trapping static writes/process/network
+calls. It never launches a real reviewer or consumes live authority. Historical
+executor regression tests use explicitly labeled trusted dependency seams; they
+are not v1 producer, installed or live-review proof.

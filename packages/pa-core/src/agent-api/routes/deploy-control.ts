@@ -69,7 +69,14 @@ async function parseDeployRequest(readJson: () => Promise<unknown>): Promise<{ r
     return { error: "Invalid JSON body" };
   }
 
-  return validateDeployRequestFields(body);
+  let protectedReview = false;
+  if (body.runtime === "pi" && typeof body.team === "string" && (!body.mode || body.mode === "review-auto")) {
+    try {
+      const team = loadTeamConfig(body.team);
+      protectedReview = team.name === "requirements" && (body.mode ?? team.default_mode) === "review-auto";
+    } catch { /* Preserve normal unknown-team diagnostics from the selected adapter. */ }
+  }
+  return validateDeployRequestFields(body, protectedReview ? { objectiveFormat: "protected-review-json" } : {});
 }
 
 function resolveControlOnlyResponse(request: DeployRequest): Record<string, unknown> | undefined {

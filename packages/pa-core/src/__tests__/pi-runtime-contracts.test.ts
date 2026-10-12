@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAgentApiApp, generatePrimer, modelMatchesProvider, parseTeamYamlContent, resolveRuntimeConfig, validateDeployRequestFields } from "../index.js";
 
 const baseConfig = `name: builder
@@ -157,6 +160,21 @@ test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawni
   assert.equal(opencodeCalls, 1);
   assert.equal(piCalls, 1);
   api.cleanup();
+});
+
+test("explicit Pi protected REST objectives retain raw authority while OpenCode keeps prose sanitization", async () => {
+  const teams = mkdtempSync(join(tmpdir(), "pap237-rest-"));
+  const prior = process.env.PA_PLATFORM_TEAMS; process.env.PA_PLATFORM_TEAMS = teams;
+  writeFileSync(join(teams, "requirements.yaml"), "name: requirements\ndescription: fixture\nobjective: fixture\nagents: []\ndefault_mode: review-auto\ndeploy_modes:\n  - id: review-auto\n    description: fixture\n");
+  let captured: string | undefined;
+  const api = createAgentApiApp({ hooks: { runtimeHooks: { pi: { deploy: (request) => { captured = request.objective; return { status: "pending" }; } }, opencode: { deploy: (request) => { captured = request.objective; return { status: "pending" }; } } } } });
+  try {
+    const objective = '\ufeff{"ticket":"FIX-237","escaped":"\\u0041"}' + " ".repeat(12_000);
+    const pi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runtime: "pi", team: "requirements", mode: "review-auto", objective }) });
+    assert.equal(pi.status, 202); assert.equal(captured, objective, "BOM/escapes must reach the strict adapter unchanged for rejection");
+    const opencode = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ runtime: "opencode", team: "requirements", mode: "review-auto", objective: "  Prose $value;  " }) });
+    assert.equal(opencode.status, 202); assert.equal(captured, "Prose value");
+  } finally { api.cleanup(); if (prior === undefined) delete process.env.PA_PLATFORM_TEAMS; else process.env.PA_PLATFORM_TEAMS = prior; rmSync(teams, { recursive: true, force: true }); }
 });
 
 test("Pi primers identify ppa and preserve runtime labels", () => {

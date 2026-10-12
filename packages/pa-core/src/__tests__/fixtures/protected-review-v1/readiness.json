@@ -12,6 +12,6 @@
     "sourceSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
   "mergedConfigSha": "cccccccccccccccccccccccccccccccccccccccc",
-  "pap232Evidence": "fixture-only:PAP-232",
-  "pap235Evidence": "fixture-only:PAP-235"
+  "pap232Evidence": "PAP-232/c-20000101000000000",
+  "pap235Evidence": "PAP-235/c-20000101000000000"
 }

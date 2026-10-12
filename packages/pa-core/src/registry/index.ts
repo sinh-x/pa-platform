@@ -7,6 +7,7 @@ import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js"
 import { formatBoundedFiveFieldDiagnostic, loadReposYaml } from "../repos.js";
 import { TicketStore } from "../tickets/store.js";
 import { isCanonicalTicketId } from "../tickets/validate.js";
+import { parseReviewObjective } from "../validation/review-contract.js";
 
 // Ported from PA registry.ts/registry-db.ts at frozen PA source on 2026-04-26; runtime/binary columns are additive for pa-platform.
 
@@ -211,7 +212,11 @@ export function claimReviewAuthorization(input: ReviewAuthorizationClaimInput): 
         AND start.deployment_id <> ?
       ORDER BY start.id
     `).all(input.ticketId, input.ticketId, input.deploymentId) as Array<{ deployment_id: string; objective: unknown }>;
-    if (legacyRunningReviews.some((review) => exactObjectiveField(review.objective, "Branch") === input.branch)) {
+    if (legacyRunningReviews.some((review) => {
+      const branch = exactObjectiveField(review.objective, "Branch");
+      // Uninterpretable historical authority cannot prove a different branch.
+      return branch === undefined || branch === input.branch;
+    })) {
       throw reviewClaimError("active-review", "another running requirements/review-auto deployment, including a legacy deployment without a claim, exists for the exact ticket and branch");
     }
     const claim: ReviewAuthorizationClaim = {
@@ -259,8 +264,16 @@ function validateReviewClaimInput(input: ReviewAuthorizationClaimInput): void {
     || !/^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.authorizationId)
     || !isCanonicalTicketId(input.ticketId) || !/^[0-9a-f]{40}$/.test(input.featureSha)
     || !/^[0-9a-f]{64}$/.test(input.matrixAuthoritySha256)
-    || typeof input.objective !== "string" || input.objective.length === 0 || input.objective.length > 65_536 || input.objective.includes("\r")) {
+    || typeof input.objective !== "string" || input.objective.length === 0 || Buffer.byteLength(input.objective, "utf8") > 65_536 || (input.objective.includes("\r") && !input.objective.trimStart().startsWith("{"))) {
     throw reviewClaimError("invalid-binding", "one or more review claim fields are malformed or contain authority-significant whitespace drift");
+  }
+  if (input.objective.trimStart().startsWith("{")) {
+    try {
+      const o = parseReviewObjective(input.objective);
+      if (o.ticket !== input.ticketId || o.branch !== input.branch || o.featureSha !== input.featureSha
+        || o.matrixSource !== input.matrixSource || o.matrixAuthoritySha256 !== input.matrixAuthoritySha256
+        || o.matrixApprovalEvidence !== input.matrixApprovalEvidence || o.reviewAuthorizationId !== input.authorizationId) throw new Error("binding mismatch");
+    } catch { throw reviewClaimError("invalid-binding", "versioned objective and exact registry claim tuple conflict"); }
   }
 }
 
@@ -275,7 +288,14 @@ function isExactAuthorityValue(value: string): boolean {
 }
 
 function exactObjectiveField(objective: unknown, label: string): string | undefined {
-  if (typeof objective !== "string" || objective.includes("\r")) return undefined;
+  if (typeof objective !== "string") return undefined;
+  if (objective.trimStart().startsWith("{")) {
+    try {
+      const parsed = parseReviewObjective(objective);
+      return label === "Branch" ? parsed.branch : undefined;
+    } catch { return undefined; }
+  }
+  if (objective.includes("\r")) return undefined;
   const prefix = `${label}: `;
   const matches = objective.split("\n").filter((line) => line.startsWith(prefix));
   if (matches.length !== 1) return undefined;

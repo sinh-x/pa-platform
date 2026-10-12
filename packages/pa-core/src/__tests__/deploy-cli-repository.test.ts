@@ -7,6 +7,28 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createAgentApiApp, DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
 
+import { parseDeployArgs } from "../cli/commands/deploy.js";
+
+test("Pi protected objective-file transport is bounded/fatal UTF-8 and preserves raw text without changing other adapters", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap237-cli-"));
+  const path = join(root, "request.json");
+  const args = ["requirements", "--mode", "review-auto", "--objective-file", path];
+  try {
+    const raw = '{\r\n  "schemaVersion": "pa-review-objective/v1"\r\n}\r\n';
+    writeFileSync(path, raw);
+    const parsed = parseDeployArgs(args, "ppa");
+    assert.ok("fields" in parsed); if ("fields" in parsed) assert.equal(parsed.fields.objective, raw);
+    writeFileSync(path, Buffer.alloc(65_537, 32));
+    const oversized = parseDeployArgs(args, "ppa"); assert.ok("error" in oversized);
+    if ("error" in oversized) assert.match(oversized.error, /65.?536 bytes/);
+    assert.ok("fields" in parseDeployArgs(args, "opa"));
+    writeFileSync(path, Buffer.from([0x7b, 0xff, 0x7d]));
+    const malformed = parseDeployArgs(args, "ppa"); assert.ok("error" in malformed);
+    if ("error" in malformed) assert.match(malformed.error, /UTF-8/);
+    assert.ok("fields" in parseDeployArgs(args, "cpa"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 const teamConfig: TeamConfig = {
   name: "builder",
   description: "Builder",

@@ -39,6 +39,8 @@ import {
 import { extractMatrixAuthority, parseMatrixCompatibility, type MatrixProfile } from "./matrix-compatibility.js";
 import { NixosPrerequisiteSession, NIXOS_TOOLS, NIXOS_APPROVAL_VERSION, nixosTupleDigest, createNixosPrerequisiteDependencies, parseNixosBaseline, parseNixosBaselineReference, parseNixosStrictJson, type NixosBaselineReference, type NixosTool } from "./nixos-prerequisites.js";
 
+import { assertVersionedReviewReference, authorizeVersionedReview, createVersionedValidationLaunch, isVersionedReviewObjective, revalidateVersionedReview } from "./review-v1-launch.js";
+
 const BASELINE_FIELDS = ["Prerequisite Baseline Source", "Prerequisite Baseline SHA-256", "Prerequisite Baseline Approval Evidence"] as const;
 const REVIEW_AUTHORIZATION = /^review-auth:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -161,7 +163,8 @@ export function withPiReviewCandidateAtMatrixBoundary<T>(input: {
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }, start: () => T): T {
   const { launch, reservation } = input;
-  if (launch.matrixProfile) {
+  const versioned = launch.review.matrixSource.startsWith("requirements:");
+  if (launch.matrixProfile && !versioned) {
     const fresh = readApprovedMatrix(launch.review.matrixSource);
     if (fresh.profile !== launch.matrixProfile || fresh.historicalBaseProvenance !== launch.historicalBaseProvenance) throw launchError("matrix profile/base provenance reread", "persisted semantic profile or historical-base provenance drifted");
   }
@@ -182,7 +185,10 @@ export function withPiReviewCandidateAtMatrixBoundary<T>(input: {
     || authority.repository.worktreeRoot !== checkout.worktreeRoot || authority.protectedEnvironment["PA_REPO"] !== checkout.worktreeRoot) {
     throw launchError("review reservation matrix boundary", "protected launch and exact reserved candidate binding do not agree");
   }
-  return withRepositoryReviewReservation(input, start);
+  return withRepositoryReviewReservation(input, () => {
+    if (versioned) revalidateVersionedReview(launch);
+    return start();
+  });
 }
 
 export function piMatrixAttemptStatePath(deploymentDirectory: string): string {
@@ -355,7 +361,7 @@ function fsyncDirectory(path: string): void {
 
 /** A separately approved baseline pins the prospective consumer; it never grants reuse of existing history. */
 export function approvedPiNixosDeploymentId(request: DeployRequest): string | undefined {
-  if (!request.objective?.includes("Prerequisite Baseline")) return undefined;
+  if (isVersionedReviewObjective(request.objective) || !request.objective?.includes("Prerequisite Baseline")) return undefined;
   const objective = parseReviewObjective(request.objective);
   const matrix = readApprovedMatrix(objective["Matrix Source"]);
   const reference = objectiveBaseline(objective, matrix.profile);
@@ -396,6 +402,7 @@ export function authorizePiReviewSelection(request: DeployRequest, repository: {
     approvedReference: NonNullable<ReviewCheckoutEvidence["approvedReference"]> };
   authorizationId: string;
 } {
+  if (isVersionedReviewObjective(request.objective)) return authorizeVersionedReview(request, repository);
   if (request.background !== true || request.resume) throw launchError("review launch mode", "review requires one fresh background deployment");
   const objective = parseReviewObjective(request.objective);
   const matrix = readApprovedMatrix(objective["Matrix Source"]);
@@ -424,6 +431,7 @@ export function authorizePiReviewSelection(request: DeployRequest, repository: {
 
 /** Reauthenticate the pinned reference from durable artifact bytes and Sinh's matrix approval on every protected reread. */
 export function assertPiApprovedReviewReference(binding: Pick<ReviewCheckoutEvidence, "repoKey" | "ticket" | "branch" | "baseSha" | "approvedReference">): void {
+  if (binding.approvedReference?.matrixSource.startsWith("requirements:")) return assertVersionedReviewReference(binding);
   const reference = binding.approvedReference;
   if (!reference || !GIT_SHA.test(reference.sha) || !GIT_SHA.test(binding.baseSha)) {
     throw launchError("approved review reference", "explicit full historical base and independently approved reference are required");
@@ -443,6 +451,7 @@ export function assertPiApprovedReviewReference(binding: Pick<ReviewCheckoutEvid
 }
 
 export async function createPiProtectedValidationLaunch(input: PiValidationLaunchInput): Promise<PiProtectedValidationLaunch> {
+  if (isVersionedReviewObjective(input.request.objective)) return createVersionedValidationLaunch(input);
   const { deploymentId, request, plan, environment } = input;
   if (!isPiProtectedReviewRequest(request, plan)) {
     throw launchError("production launch route", "protected validation launch construction was requested for a non-review deployment");

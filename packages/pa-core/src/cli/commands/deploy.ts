@@ -1,14 +1,16 @@
 import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
-import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
+import { readGuardedLocalTextFile, assertNoSensitiveMatch } from "../../sensitive-patterns.js";
+import { basename, resolve } from "node:path";
+import { readReviewEvidenceFile, MAX_REVIEW_OBJECTIVE_BYTES, ReviewContractError } from "../../validation/review-contract.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import { TicketStore } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
 
 const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
 
-export function parseDeployArgs(argv: string[]): { fields: Record<string, unknown> } | { error: string } {
+export function parseDeployArgs(argv: string[], binaryName = "pa-core"): { fields: Record<string, unknown> } | { error: string } {
   const [team, ...rest] = argv;
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
@@ -28,7 +30,23 @@ export function parseDeployArgs(argv: string[]): { fields: Record<string, unknow
     if (!value || value.startsWith("-")) return { error: `${arg} requires a value` };
     if (key === "objectiveFile") {
       try {
-        fields.objective = readGuardedLocalTextFile(value);
+        const modeIndex = rest.lastIndexOf("--mode");
+        let configuredTeam: ReturnType<typeof loadTeamConfig> | undefined;
+        if (binaryName === "ppa" && team !== "requirements") {
+          try { configuredTeam = loadTeamConfig(team); } catch { /* Runtime still rejects unknown/malformed teams. */ }
+        }
+        const protectedReview = binaryName === "ppa" && (team === "requirements" || configuredTeam?.name === "requirements")
+          && (modeIndex >= 0 ? rest[modeIndex + 1] === "review-auto" : (configuredTeam ?? loadTeamConfig(team)).default_mode === "review-auto");
+        if (protectedReview) {
+          const path = resolve(value);
+          assertNoSensitiveMatch("path", path); assertNoSensitiveMatch("filename", basename(path));
+          const bytes = readReviewEvidenceFile(path, MAX_REVIEW_OBJECTIVE_BYTES, "objectiveFile");
+          let objective: string;
+          try { objective = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+          catch { throw new ReviewContractError("REVIEW_UTF8", "objectiveFile", "must contain valid raw UTF-8 without replacement decoding"); }
+          assertNoSensitiveMatch("content", objective);
+          fields.objective = objective;
+        } else fields.objective = readGuardedLocalTextFile(value);
       } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
       }
@@ -199,7 +217,7 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     correction: "provide valid supported CLI fields without sensitive input; preserve existing checkout and authority evidence",
     resumeAction: "retry the corrected PPA CLI request with the same exact ticket and selection flag",
   }) : reason);
-  const parsed = parseDeployArgs(argv);
+  const parsed = parseDeployArgs(argv, binaryName);
   if ("error" in parsed) {
     reject(parsed.error);
     return 1;
@@ -207,7 +225,14 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   const ticketWorktree = parsed.fields["ticketWorktree"] === true;
   const sharedFields = { ...parsed.fields };
   delete sharedFields["ticketWorktree"];
-  const validated = validateDeployRequestFields(sharedFields);
+  let protectedReview = false;
+  if (binaryName === "ppa" && (!sharedFields.mode || sharedFields.mode === "review-auto")) {
+    try {
+      const team = loadTeamConfig(String(sharedFields.team));
+      protectedReview = team.name === "requirements" && (sharedFields.mode ?? team.default_mode) === "review-auto";
+    } catch { /* Unknown teams retain the existing configuration error path. */ }
+  }
+  const validated = validateDeployRequestFields(sharedFields, protectedReview ? { objectiveFormat: "protected-review-json" } : {});
   if ("error" in validated) {
     if (!selectionIntent) for (const warning of validated.warnings ?? []) io.stderr(warning);
     reject(validated.error);
@@ -248,6 +273,11 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     reject("Deployment execution requires an adapter hook");
     return 1;
   }
+
+  // Static Pi review admission must precede Git resolution and TicketStore's
+  // effectful constructor. Keep the adapter gate too for non-CLI callers/rereads.
+  const preflight = await hooks.deployPreflight?.(resolved.request);
+  if (preflight) { io.stderr(preflight.reason); return 1; }
 
   const originalCwd = process.cwd();
   const parentedSelector = isParentedPpaImplementSelector(binaryName, resolved.request);
