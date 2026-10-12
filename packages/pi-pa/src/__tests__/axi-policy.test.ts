@@ -490,6 +490,63 @@ test("same-deployment startup collision rejects the loser before reuse or termin
     await cleanupManagedBrowser(f.env); assert.equal(existsSync(state), false);
   } finally { try { await cleanupManagedBrowser(f.env); } catch { /* assertion captures failure */ } rmSync(root, { recursive: true, force: true }); }
 });
+test("Phase-4 installed smoke is separate, exact-CLI, complete-or-fail and has no source/fixture-success fallback", () => {
+  const root = new URL("../../../../", import.meta.url);
+  const shell = readFileSync(new URL("scripts/axi-nix-output-smoke.sh", root), "utf8");
+  const matrix = readFileSync(new URL("scripts/axi-smoke/matrix.py", root), "utf8");
+  const runtime = readFileSync(new URL("scripts/axi-smoke/runtime.mjs", root), "utf8");
+  assert.match(shell, /--system x86_64-linux --eval-system aarch64-linux --all-selections --chrome PATH --log-file PATH/);
+  assert.match(shell, /\$# -ne 9/);
+  assert.match(matrix, /self\.required == set\(self\.data\["cases"\]\)/);
+  assert.match(matrix, /len\(set\(self\.data\["nativeOutputs"\]\.values\(\)\)\) == 8/);
+  assert.match(matrix, /--option", "sandbox", "true"/);
+  assert.match(matrix, /--unshare-net/);
+  assert.match(matrix, /--unshare-pid/);
+  assert.match(matrix, /trace=process,network,openat/);
+  assert.match(runtime, /share\/pa-platform\/packages\/pi-pa\/dist/);
+  assert.match(runtime, /await import\(join\(modules, 'axi-browser\.js'\)\)/);
+  assert.match(runtime, /asyncCommand\(shim\(all, 'chrome-devtools-axi'\)/);
+  assert.doesNotMatch(shell + matrix + runtime, /PAP183_SMOKE_CAPTURE_FIXTURE|tsx|src\/axi-(?:policy|browser|quota)/);
+  // Syntax coverage for the coordinator/helpers without executing their matrix,
+  // importing production outputs, evaluating Nix, or launching Chrome.
+  const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", fileURLToPath(new URL("scripts/axi-smoke/matrix.py", root))], { encoding: "utf8", timeout: 5000 });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  for (const filename of ["runtime.mjs", "provider.mjs", "observe.cjs"]) {
+    const syntax = spawnSync(process.execPath, ["--check", fileURLToPath(new URL(`scripts/axi-smoke/${filename}`, root))], { encoding: "utf8", timeout: 5000 });
+    assert.equal(syntax.status, 0, syntax.stderr);
+  }
+});
+
+test("installed-smoke observer records actual credential/network/child attempts rather than assumed zero counters", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axi-smoke-observer-"));
+  const ledger = join(dir, "events.jsonl");
+  const profile = join(dir, "profiles", "codex");
+  mkdirSync(profile, { recursive: true });
+  const credential = join(profile, "synthetic.json");
+  writeFileSync(credential, "synthetic-only");
+  writeFileSync(ledger, "", { mode: 0o600 });
+  const observer = fileURLToPath(new URL("../../../../scripts/axi-smoke/observe.cjs", import.meta.url));
+  try {
+    const probe = spawnSync(process.execPath, ["--require", observer, "--input-type=module", "--eval", `
+      import { readFileSync } from 'node:fs';
+      import { readFile } from 'node:fs/promises';
+      import { request } from 'node:http';
+      import { spawn } from 'node:child_process';
+      readFileSync(process.env.PROBE_CREDENTIAL);
+      await readFile(process.env.PROBE_CREDENTIAL);
+      try { request('http://127.0.0.1:1/'); } catch {}
+      try { spawn('/forbidden'); } catch {}
+    `], { env: { AXI_SMOKE_ROOT: dir, AXI_SMOKE_LEDGER: ledger, PROBE_CREDENTIAL: credential }, encoding: "utf8", timeout: 5000 });
+    assert.equal(probe.status, 0, probe.stderr);
+    const events: { kind: string }[] = readFileSync(ledger, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { kind: string });
+    assert.equal(events.filter((row) => row.kind === "observerLoaded").length, 1);
+    assert.ok(events.filter((row) => row.kind === "credentialRead").length >= 2);
+    assert.equal(events.filter((row) => row.kind === "unexpectedNetwork").length, 1);
+    assert.equal(events.filter((row) => row.kind === "unexpectedSubprocess").length, 1);
+    assert.equal(probe.stdout, "");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("daemon notices actual deployment lifecycle exit independently of idle and cleans state/descendants", { timeout: 15000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "axi-browser-lifecycle-")); const f = fakeBrowser(root, "d-lifecycle");
   const lifecycle = spawn(process.execPath, ["-e", "process.stdin.resume(); process.stdin.once('data',()=>process.exit(0));"], { stdio: ["pipe", "ignore", "ignore"] });

@@ -80,7 +80,24 @@ outputs add only managed executable shims and their pinned dependencies to PPA
 PATH; OPA/CPA/DPA and pa-core added prefixes are unchanged. Inherited host PATH
 is not a sandbox prohibition. Pi's existing plugin selection and managed
 skill/extension discovery remain unchanged; no AXI skill or global hook is
-installed. PAPC-040 owns later selected skills; Lavish remains PAP-197/PAPC-020.
+installed. PAPC-040 owns later selected skills; Lavish 0.1.67 remains separately
+owned by PAP-197/PAPC-020. This integration makes no savings or live-provider
+correctness/availability claim.
+
+For example, select only quota (the existing Pi plugin options are independent):
+
+```nix
+pa-platform.lib.mkPaPlatform "x86_64-linux" {
+  enableGhAxi = false;
+  enableChromeDevtoolsAxi = false;
+  enableQuotaAxi = true;
+}
+```
+
+Strings, integers and null are rejected, not coerced. All default package aliases
+(`default`, `pa-platform`, `pa-core`, `opa`, `cpa`, `dpa`, `ppa`) and the default
+overlay keep all three tools disabled. Explicit standalone tool outputs exist on
+x86_64-linux and aarch64-linux; only x86_64-linux native execution is covered.
 
 | Managed executable | Pin | Selected dependencies / operator prerequisites |
 | --- | --- | --- |
@@ -98,40 +115,145 @@ recorded in [`nix/axi/README.md`](nix/axi/README.md). No runtime package downloa
 self-update, fallback npx bootstrap, credential provisioning or browser install
 is performed by managed admission.
 
-**Phase 2 behavior:** exact single-argument `--help`/`-h`/`help` and
+### Metadata, authentication and diagnostics
+
+Exact single-argument `--help`/`-h`/`help` and
 `--version`/`-v`/`-V`/`version` return managed metadata without authentication,
 credential reads or subprocesses. Explicit GitHub operations check the active
 operator gh authentication for the requested hostname, discard auth output,
-then use the pinned upstream entrypoint. `setup` (including hooks/skills) and
-unknown bootstrap/update commands are rejected. Exposing gh grants **no extra
-PA approval, merge, branch, secrets or workflow authority**; all existing action
-gates still apply. Installation, module import and deployment startup execute
-no GitHub action, authentication probe, browser or quota operation.
+then use the pinned upstream entrypoint. **Sinh/operator owns gh authentication**;
+PPA never logs in, copies credentials or provisions a token. `setup` (including
+hooks/skills) and bootstrap/update commands are rejected. Exposing gh grants
+**no extra PA approval, merge, branch, secrets or workflow authority**; existing
+action gates still apply. Installation, module import and deployment startup
+make **no GitHub mutation**, authentication probe, browser or quota operation.
+CLI availability is not action approval.
 
-Missing operational prerequisites return non-secret codes with no input paths,
-identities, credentials or raw auth errors: `AXI_GH_AUTH_REQUIRED`,
-`AXI_CHROME_REQUIRED`, `AXI_QUOTA_CONSENT_REQUIRED`. Unsupported operations or
-unsafe/malformed configuration return `AXI_POLICY_REJECTED` and exit nonzero.
-**Browser and quota operations stay fail-closed even with prerequisites present
-in Phase 2.** A consent path is not consent; this phase does not read it or any
-provider profile and makes no provider request. No placeholder successful quota
-result or browser session is returned.
+| Diagnostic (nonzero exit) | Operator action |
+| --- | --- |
+| `AXI_GH_AUTH_REQUIRED` | Configure operator-owned gh authentication outside the agent; retry only an already-approved action. |
+| `AXI_CHROME_REQUIRED` | Supply an existing absolute executable `PA_AXI_CHROME_EXECUTABLE`; no discovery/install/download fallback exists. |
+| `AXI_QUOTA_CONSENT_REQUIRED` | Supply explicit consent for this deployment; do not provision credentials through PA. |
+| `AXI_POLICY_REJECTED` | Correct invalid consent, deployment identity, ownership/collision or forbidden arguments/environment; never attach to or kill a foreign browser to recover. |
 
-**Phase 3 contract (not implemented/validated by Phase 2):** operator-owned,
-mode-0600 non-symlink consent JSON at `PA_AXI_QUOTA_CONSENT` must have exactly
-`version: 1`, `deploymentId` matching the current deployment, and `providers`,
-an array of unique `{ "id": "codex" | "claude", "profilePath": "/absolute/path" }`
-objects. Unknown fields/providers, duplicates, wrong ownership/mode or deployment
-must reject before credential/provider access. Each admitted provider must use
-profile-only, no-refresh JSON reads and allowlisted sanitized output; discovery,
-keychain/TUI, refresh, inference, telemetry and automatic routing stay forbidden.
-Browser policy must pin Node/MCP, disable MCP telemetry/update checks, use only
-isolated headless operator Chrome with deployment-owned profile/state and a
-loopback bridge, reject foreign/remote/shared attachments and override arguments,
-and supervise owned cleanup. Required bounds are readiness <=30s, idle=300s,
-deployment-end cleanup <=10s, without modifying foreign processes/profiles.
-Full consent/redaction/lifecycle enforcement belongs to Phase 3; installed-output
-selection/platform/lifecycle evidence belongs to Phase 4 and independent review.
+Diagnostics omit input paths, identities, credentials and raw errors. A missing
+prerequisite for one tool does not disable metadata or unrelated selected tools.
+Standalone upstream outputs do not promise these managed diagnostics/policies.
+
+### Owned local browser
+
+Before launching a selected PPA deployment, the operator supplies, for example:
+
+```bash
+export PA_AXI_CHROME_EXECUTABLE=/home/sinh/.nix-profile/bin/google-chrome-stable
+```
+
+Chrome is operator-owned, not bundled or provisioned. Managed commands are
+`start`, `stop`, `pages`, `open URL`, `newpage URL`, `snapshot`, `click UID`,
+`fill UID VALUE`, `press KEY`, `back`, `selectpage ID`, `closepage ID`.
+An operation starts the isolated headless browser on demand; deployment startup
+does not. The fixed shim uses flake-locked Node and MCP 1.10.1, disables MCP usage
+statistics/update checks and forwards the exact operator Chrome executable.
+Attach/shared/remote endpoints, personal profiles, headed/GPU launch options,
+extra flags and `CHROME_DEVTOOLS_AXI_*`/`CHROME_DEVTOOLS_MCP_ARGS` overrides are
+not admitted. Do not set upstream AXI environment overrides on a managed launch.
+
+PPA binds lifecycle identity to its own foreground/background supervisor (also
+on resume); operators do not invent `PA_AXI_LIFECYCLE_PID/START`. State lives at
+`$PA_DEPLOYMENT_DIR/axi-browser/`, with private profile/HOME/temp descendants
+(mode 0700), mode-0600 non-symlink ownership records, distinct Linux sessions and
+loopback-only bridges. Port/state collisions and foreign or reused process
+identities reject before reuse/termination. Owned cleanup runs on normal exit,
+cancellation and failure, independently of the 300000-ms idle shutdown.
+Readiness is bounded at 30000 ms; deployment-end cleanup at 10000 ms. Never
+remove a foreign profile or signal a PID merely because it appears in a file.
+
+### Explicit profile-only quota consent
+
+The managed public quota surface is only `quota-axi`, `quota-axi quota`,
+`quota-axi --json`, or `quota-axi quota --json`, plus metadata above. Before a
+read, the operator creates an absolute, operator-owned regular JSON file, exactly
+mode 0600 and not a symlink (maximum 65536 bytes), then supplies its path through
+`PA_AXI_QUOTA_CONSENT`. For **this exact deployment**, its complete schema is:
+
+```json
+{
+  "version": 1,
+  "deploymentId": "d-example",
+  "providers": [
+    { "id": "codex", "profilePath": "/absolute/operator-approved/codex-profile" },
+    { "id": "claude", "profilePath": "/absolute/operator-approved/claude-profile" }
+  ]
+}
+```
+
+Use the real deployment ID; copied consent from another deployment rejects.
+Select zero, one or both unique providers explicitly. Unknown fields/providers,
+duplicates, relative paths, wrong version/deployment/mode/ownership, symlinks and
+oversize/malformed JSON reject **before profile reads or provider requests**.
+A file path alone is not consent. PPA does not create consent or credentials.
+
+Each consented provider runs separately as
+`quota --provider codex|claude --profile-only --no-credential-refresh --json`,
+with only its exact `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. A positive child-environment
+allowlist removes other providers, operator HOME/PATH, API keys, proxy/discovery
+roots and Node injection options. Only codex/claude profiles are supported; no
+keychain, discovery, TUI, refresh, inference, automatic routing or public fixture
+endpoint override is allowed. `QUOTA_AXI_*` and provider endpoint/base-URL
+variables reject rather than becoming an escape hatch.
+
+JSON output is parsed and allowlisted: provider ID, status/reason enums,
+generated/refreshed timestamps, and window kind, percentages, spending/limits,
+window duration and start/reset timestamps. Tokens, account IDs/emails, paths,
+credential sources, raw errors, labels and remedy commands are omitted. Statuses
+`fresh`, `stale`, `expired`, `not-configured`, `unknown`, `rate-limited`, `error`
+remain distinct; missing/invalid readings never become zero usage or healthy
+availability. An expired profile needs operator handling outside PA; no refresh
+is delegated. Synthetic smoke proves policy boundaries, **not live-provider
+correctness, availability or measured savings**.
+
+### Installed-output evidence (independent review only)
+
+The separate fail-closed smoke has exactly this CLI; it does not replace or modify
+`scripts/nix-store-output-smoke.sh`:
+
+```bash
+bash scripts/axi-nix-output-smoke.sh --system x86_64-linux --eval-system aarch64-linux --all-selections --chrome /home/sinh/.nix-profile/bin/google-chrome-stable --log-file "$PA_DEPLOYMENT_DIR/evidence/pap-240-axi-smoke.log"
+```
+
+Run only under independently admitted review authority, after the approved
+software checks and unchanged baseline smoke. Prerequisites: x86_64-linux host,
+working Nix flakes/daemon/sandbox, Git submodules at their pins, Python 3, an
+operator Chrome supporting headless mode, and unprivileged bubblewrap network/PID
+namespaces with ptrace available for strace. The coordinator builds its strace
+and bubblewrap from the same locked nixpkgs. No namespace/ptrace fallback or
+success fixture is accepted. No real gh/provider credentials, personal browser,
+provider endpoints, npm cache or global skill/hooks are needed. Build fetches are
+integrity-pinned; runtime tests have no external network. The full idle case
+actually waits about five minutes; it is not an optional skip.
+
+The log path must be a **new** `.log` directly in the trusted deployment's
+`evidence/` directory; a same-basename `.json` is written alongside it. Existing
+files/symlinks reject to preserve prior evidence. Both are mode 0600. The real
+log is bounded to 2 MiB/10000 records and contains command start/end/exit/duration
+and output lengths/digests rather than raw auth/provider/browser stderr. JSON
+records candidate/lock SHA, exact derivation/store paths, resolved Chrome/version,
+all 8 native build/runs, 16 evaluations, 8 explicitly non-native dry-runs, all
+string/integer/null selector failures, aliases/overlay defaults, pins and
+installed lock/integrity/license digests/closures, selected-versus-inherited PATH,
+other-adapter prefixes, plugin defaults, measured real browser isolation/lifecycle
+and synthetic quota denial/status/redaction cases. Runtime effects are observed
+through strace and instrumented filesystem/subprocess/loopback HTTP boundaries;
+missing or failed cases exit nonzero, with incomplete/failure JSON retained.
+Raw traces, synthetic credentials and sentinel fixtures stay in a disposable
+private temporary root, not durable evidence. Provider simulation/ownership and
+port-race injection exist only in repository smoke helpers, never public runtime
+flags; installed shims/modules and real Chrome/MCP are exercised.
+
+Passing this smoke alone is **not final acceptance**. Independent review owns the
+complete approved matrix, four native Pi-plugin/binding baseline selections and
+software regressions; Sinh retains UAT/merge/return approval. PAPC-040 consumes
+this binary/operator contract later and installs no skills here.
 
 ## Dev server access from phone/Tailscale
 
