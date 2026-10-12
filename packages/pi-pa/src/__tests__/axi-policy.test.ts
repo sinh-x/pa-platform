@@ -373,6 +373,27 @@ test("exit, cancellation, failure, and daemon lifecycle polling always await cle
   }
 });
 
+test("default-disabled adapter cleanup needs no browser context when state is absent, but existing state stays fail-closed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "axi-disabled-cleanup-"));
+  // Ordinary adapter fixtures/deployments do not promise a browser-bound
+  // directory basename or lifecycle identity until a browser is started.
+  const env = { PA_DEPLOYMENT_ID: "ordinary-deployment", PA_DEPLOYMENT_DIR: root, PA_AXI_PATH: "" };
+  try {
+    await cleanupManagedBrowser(env);
+    const success = { status: 0, stdout: "unchanged", stderr: "" };
+    assert.equal(await finishBrowserLifecycle(Promise.resolve(success), env), success);
+    const failure = new Error("original adapter failure");
+    await assert.rejects(finishBrowserLifecycle(Promise.reject(failure), env), (error: unknown) => error === failure);
+    const state = join(root, "axi-browser");
+    mkdirSync(state, { mode: 0o700 });
+    writeFileSync(join(state, "owner.json"), "foreign-owner-sentinel", { mode: 0o600 });
+    // Neither an empty selection nor missing browser lifecycle can waive
+    // ownership validation if any browser state actually exists.
+    await assert.rejects(cleanupManagedBrowser(env), /AXI_POLICY_REJECTED/);
+    assert.equal(readFileSync(join(state, "owner.json"), "utf8"), "foreign-owner-sentinel");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 async function waitUntil(check: () => boolean, bound = 6000) {
   const deadline = performance.now() + bound;
   while (!check() && performance.now() < deadline) await new Promise((done) => setTimeout(done, 25));

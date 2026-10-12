@@ -127,8 +127,12 @@ export async function superviseBrowserLifetime(effects: BrowserSupervisionEffect
 }
 export async function cleanupManagedBrowser(env: NodeJS.ProcessEnv): Promise<void> {
   if (!env.PA_DEPLOYMENT_ID || !env.PA_DEPLOYMENT_DIR) return;
+  // Every Pi launch awaits cleanup, including default-disabled launches. Only
+  // absent state is a no-op: selection flags must never bypass ownership checks
+  // on existing state. Probe without acquiring browser-only lifecycle/binding
+  // requirements, then validate the full context before any read or mutation.
+  try { lstatSync(join(env.PA_DEPLOYMENT_DIR, "axi-browser")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   const context = browserContext(env, false);
-  try { lstatSync(statePath(context)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   const owner = readOwner(context);
   if (!sameProcess(owner)) {
     // An absent supervisor may have been killed abruptly. Only a recorded live
