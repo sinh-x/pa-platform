@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "pa-review-objective/v1",
+  "ticket": "FIX-237",
+  "branch": "feature/FIX-237-isolated-review",
+  "featureSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "matrixSource": "requirements:agent-teams/requirements/artifacts/fixture-mvm-179-migrated.md",
+  "matrixAuthoritySha256": "0e463e4251f0c51c982dc9b6f05b2c7718f8418ce8c4a802ad7b1a122e5a940d",
+  "matrixApprovalEvidence": "c-20000101000000000",
+  "reviewAuthorizationId": "review-auth:00000000-0000-4000-8000-000000000000",
+  "prerequisiteEvidence": {
+    "paired-runtime-ready": "c-20000101000000000"
+  }
+}
