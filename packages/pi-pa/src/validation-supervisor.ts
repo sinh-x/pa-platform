@@ -11,6 +11,7 @@ import {
 import { dirname } from "node:path";
 import {
   MAX_VALIDATION_EVENT_CHARACTERS,
+  REVIEW_PROFILES, parseReviewEvidenceJson, parseReviewPrerequisite, type ReviewProfile,
   parseRepositoryReviewReservation,
   validateReviewCheckoutCorrelationEvidence,
   type RepositoryReviewReservation,
@@ -80,7 +81,8 @@ export interface PiProtectedValidationLaunch {
   reservation?: RepositoryReviewReservation;
   /** All-or-none immutable reference; raw baseline/authorization stays in protected transport. */
   nixosBaseline?: NixosBaselineReference;
-  matrixProfile?: MatrixProfile;
+  matrixProfile?: MatrixProfile | ReviewProfile;
+  prerequisiteEvidence?: Record<string, string>;
   historicalBaseProvenance?: "header" | "materialized-ticket-link";
   prerequisiteBudgetStartedMs?: number;
 }
@@ -103,6 +105,8 @@ export interface PiValidationSupervisorOptions<T> {
   /** Phase 3 supplies the trusted session's fresh observation/authority revalidation. */
   revalidateNixosPrerequisites?: (launch: PiProtectedValidationLaunch, execute: () => Promise<ValidationExecutionResult>) => Promise<ValidationExecutionResult>;
   beforeReviewer?: (launch: PiProtectedValidationLaunch) => void;
+  /** Normal executor return with no unresolved process cleanup; independent of reviewer startup. */
+  onMatrixTerminationVerified?: () => void;
   execute?: typeof executeValidationHandoff;
   recover?: typeof finalizeValidationExecutorCrash;
   now?: () => Date;
@@ -131,6 +135,7 @@ export async function runPiValidationBeforeReviewer<T>(
     assertValidationAuthority(handoff, launch.authority);
     assertReviewBinding(launch, handoff);
     assertProfileEnvironment(launch, handoff);
+    if (REVIEW_PROFILES.includes(launch.matrixProfile as ReviewProfile) && (!launch.reservation || !launch.review.checkout || !options.beforeExecute || !options.beforeReviewer)) throw new Error("versioned protected candidate reservation and pre/post-matrix live boundary revalidation are required");
     if (launch.nixosBaseline && !options.revalidateNixosPrerequisites) throw new Error("NixOS protected prerequisite revalidation is required");
     await options.beforeExecute?.(launch);
   } catch (error) {
@@ -153,16 +158,22 @@ export async function runPiValidationBeforeReviewer<T>(
   const execute = options.execute ?? executeValidationHandoff;
   const recover = options.recover ?? finalizeValidationExecutorCrash;
   let validation: ValidationExecutionResult;
+  let executorReturned = false;
+  const runExecutor = async (): Promise<ValidationExecutionResult> => {
+    const result = await execute(launch.validationHandoff, executorOptions);
+    executorReturned = true;
+    return result;
+  };
   try {
     if (launch.nixosBaseline) {
       let executorStarted = false;
       try {
-        validation = await options.revalidateNixosPrerequisites!(launch, () => { executorStarted = true; return execute(launch.validationHandoff, executorOptions); });
+        validation = await options.revalidateNixosPrerequisites!(launch, () => { executorStarted = true; return runExecutor(); });
       } catch (error) {
         if (executorStarted) throw error;
         return { admitted: false, reviewerStarted: false, diagnostic: validationDiagnostic("pi.validation.admission", safeAdmissionReason(error)) };
       }
-    } else validation = await execute(launch.validationHandoff, executorOptions);
+    } else validation = await runExecutor();
   } catch {
     const recovered = await recover(launch.validationHandoff, executorOptions);
     const crashEvent: ValidationEvent = {
@@ -191,6 +202,9 @@ export async function runPiValidationBeforeReviewer<T>(
       diagnostic: validation.diagnostic ?? validationDiagnostic("pi.validation.preflight", "validation authority was rejected"),
     };
   }
+  if (executorReturned && validation.ledger && validation.ledger.result !== "executor_crash"
+    && validation.ledger.commands.every((command) => command.status !== "pending" && command.status !== "executor_crash"
+      && command.status !== "cleanup_failure" && command.processGroupVerifiedDead !== false)) options.onMatrixTerminationVerified?.();
   const ledger = (await recover(launch.validationHandoff, executorOptions)).ledger;
   const reviewerContext = reviewerContextFor(launch.review, ledger, options.evidenceRoot, options.ledgerPath);
   options.beforeReviewer?.(launch);
@@ -258,7 +272,7 @@ export function readPiProtectedValidationLaunch(path: string): PiProtectedValida
 }
 
 export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedValidationLaunch {
-  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation", "nixosBaseline", "matrixProfile", "historicalBaseProvenance", "prerequisiteBudgetStartedMs"]);
+  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation", "nixosBaseline", "matrixProfile", "historicalBaseProvenance", "prerequisiteBudgetStartedMs", "prerequisiteEvidence"]);
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
@@ -275,10 +289,20 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
   const provenance = row["historicalBaseProvenance"];
   const budget = row["prerequisiteBudgetStartedMs"];
   if (review.checkout?.approvedReference && profile === undefined) throw new Error("production protected candidate requires persisted matrix profile and historical provenance");
-  if (profile !== undefined) {
+  const versioned = REVIEW_PROFILES.includes(profile as ReviewProfile);
+  let prerequisiteEvidence: Record<string, string> | undefined;
+  if (versioned) {
+    if (!review.matrixSource.startsWith("requirements:") || provenance !== "header") throw new Error("versioned profile/source/provenance conflicts");
+    prerequisites.forEach((clause, index) => parseReviewPrerequisite(parseReviewEvidenceJson(Buffer.from(clause.text), "prerequisite"), index));
+    const selections = row["prerequisiteEvidence"];
+    if (!selections || typeof selections !== "object" || Array.isArray(selections)) throw new Error("versioned gate selections absent");
+    prerequisiteEvidence = selections as Record<string, string>;
+    if (Object.entries(prerequisiteEvidence).some(([id, comment]) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || typeof comment !== "string" || !/^c-[0-9]{17}$/.test(comment))) throw new Error("versioned gate selections malformed");
+  } else if (profile !== undefined) {
     if ((profile !== "current" && profile !== "nixos") || recognizeMatrixProfile(prerequisites.map((clause) => clause.text)) !== profile
       || (provenance !== "header" && provenance !== "materialized-ticket-link")) throw new Error("protected semantic profile or historical provenance conflicts");
   }
+  if (!versioned && row["prerequisiteEvidence"] !== undefined) throw new Error("legacy profile cannot carry versioned gate selections");
   const nixos = profile === "nixos" || prerequisites.some((clause) => clause.text.startsWith("Every declared local-path flake input"));
   if (nixos !== (row["nixosBaseline"] !== undefined) || nixos !== (budget !== undefined)
     || (nixos && (typeof budget !== "number" || !Number.isFinite(budget) || budget < 0))) throw new Error("NixOS baseline source/digest/approval and monotonic anchor are required together for exactly the NixOS profile");
@@ -293,7 +317,8 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       activeReview: "admitted",
       prerequisites,
     },
-    ...(profile === undefined ? {} : { matrixProfile: profile as MatrixProfile, historicalBaseProvenance: provenance as "header" | "materialized-ticket-link" }),
+    ...(profile === undefined ? {} : { matrixProfile: profile as MatrixProfile | ReviewProfile, historicalBaseProvenance: provenance as "header" | "materialized-ticket-link" }),
+    ...(prerequisiteEvidence ? { prerequisiteEvidence } : {}),
     ...(budget === undefined ? {} : { prerequisiteBudgetStartedMs: budget as number }),
     ...(row["reservation"] === undefined ? {} : { reservation: parseRepositoryReviewReservation(row["reservation"]) }),
     ...(row["nixosBaseline"] === undefined ? {} : { nixosBaseline: parseNixosBaselineReference(row["nixosBaseline"]) }),
@@ -389,6 +414,15 @@ function assertReviewBinding(launch: PiProtectedValidationLaunch, handoff: Valid
 function assertProfileEnvironment(launch: PiProtectedValidationLaunch, handoff: ValidationHandoff): void {
   if (!launch.matrixProfile) return; // Legacy executor handoffs retain their existing authority contract; production candidates require a profile above.
   const review = launch.review;
+  if (REVIEW_PROFILES.includes(launch.matrixProfile as ReviewProfile)) {
+    const env = handoff.manifest.environment;
+    const names = ["PA_REPO", "PA_TICKET_ID", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256", "PA_MATRIX_APPROVAL_EVIDENCE", "CI", "HOME", "LANG", "TZ", "PATH"];
+    const bindings = { PA_REPO: launch.authority.repository.worktreeRoot, PA_TICKET_ID: review.ticketId, PA_FEATURE_SHA: review.featureSha,
+      PA_MATRIX_SOURCE: review.matrixSource, PA_MATRIX_AUTHORITY_SHA256: review.matrixAuthoritySha256, PA_MATRIX_APPROVAL_EVIDENCE: review.matrixApprovalEvidence };
+    if (JSON.stringify(Object.keys(env).sort()) !== JSON.stringify(names.sort()) || Object.entries(bindings).some(([name, value]) => env[name] !== value)
+      || Object.values(env).some((value) => !value || value.includes("review-auth:"))) throw new Error("versioned profile concrete environment mismatched");
+    return;
+  }
   const expected = {
     PA_REPO: launch.authority.repository.worktreeRoot, PA_TICKET_ID: review.ticketId, PA_FEATURE_SHA: review.featureSha,
     PA_MATRIX_SOURCE: review.matrixSource, PA_MATRIX_AUTHORITY_SHA256: review.matrixAuthoritySha256, PA_MATRIX_APPROVAL_EVIDENCE: review.matrixApprovalEvidence,

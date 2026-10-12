@@ -340,6 +340,15 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
   });
 }
 
+// Historical PAP-223/232/236 downstream seams retain regression coverage, but do
+// not test production static admission: default CLI admission rejects these old
+// authority forms. review-preflight.test.ts exercises the real pre-allocation gate.
+function legacyDownstreamHooks(adapter: Parameters<typeof createPiHooks>[0], dependencies: PiDeployDependencies = {}) {
+  return createPiHooks(adapter, { ...dependencies, reviewPreflight: () => ({ readiness: [], report: {
+    schemaVersion: "pa-review-preflight/v1", status: "compatible", checks: [], diagnostics: [], deferredLaunchChecks: [],
+  } }) });
+}
+
 interface ProtectedReviewFixtureOptions {
   baseSha?: string;
   historicalMaterializationBaseSha?: string;
@@ -563,7 +572,7 @@ async function withNixosStorageFixture<T>(context: TestContext, root: string, ru
   finally { statfs.mock.restore(); syncBuiltinESMExports(); }
 }
 
-test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then reviewer in both layouts", async (t) => {
+test("PAP-236 historical isolated NixOS downstream sidecar runs probes, executor then reviewer in both layouts", async (t) => {
   for (const layout of ["bold-fenced", "plain-inline"] as const) for (const scenario of ["success", "invalid-consumer", "initial-approval-missing", "initial-storage-missing", "initial-storage-low", "final-source-drift", "final-daemon-outage", "final-receipt-drift", "final-budget-reset", "final-storage-missing", "final-storage-low"] as const) await t.test(`${layout}/${scenario}`, (context) => withPiEnv(async (root) => withNixosStorageFixture(context, root, async (storage) => {
     installProtectedReviewToolFixture(root);
     const authorizationId = "review-auth:423e4567-e89b-42d3-a456-426614174000";
@@ -637,7 +646,7 @@ test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then r
         } } });
         return new BackgroundDeploymentProcess(99_001) as never;
       }) as never } });
-    const hooks = createPiHooks(adapter, { observeReviewOperation: (operation) => {
+    const hooks = legacyDownstreamHooks(adapter, { observeReviewOperation: (operation) => {
       if (scenario === "initial-approval-missing" && operation === "ticket-read" && !removedApproval) {
         removedApproval = true; ticket.comments.pop(); writeFileSync(ticketPath, JSON.stringify(ticket));
       }
@@ -3083,7 +3092,7 @@ test("matrix-started journal is identity-bound, exactly once, durable before ret
   }
 });
 
-test("review-auto production path rejects candidate and boundary drift before commands", async (t) => {
+test("historical review downstream seam rejects candidate and boundary drift before commands", async (t) => {
   for (const scenario of ["missing lease", "duplicate lease", "canonical path", "ticket duplicate", "staged", "unstaged", "untracked", "active borrower",
     "missing reference", "malformed reference", "conflicting reference", "missing historical base", "conflicting historical base", "unapproved reference",
     "reference ancestry", "historical ancestry", "after-plan reference", "pre-launch reference", "after-plan lease", "pre-launch head", "matrix ticket", "matrix reference",
@@ -3179,7 +3188,7 @@ test("review-auto production path rejects candidate and boundary drift before co
           return new BackgroundDeploymentProcess(99_201) as never;
         }) as never },
       });
-      const hooks = createPiHooks(adapter, { treehouse, observeOperation: (operation) => operations.push(operation), observeReviewOperation: (operation) => operations.push(operation) });
+      const hooks = legacyDownstreamHooks(adapter, { treehouse, observeOperation: (operation) => operations.push(operation), observeReviewOperation: (operation) => operations.push(operation) });
       const result = await hooks.deploy!({ team: "requirements", mode: "review-auto", ticket: "PAP-198", repo: "pa-platform", background: true, objective: fixture.objective, timeout: 60 });
       if (completion) await completion;
       if (matrixRuntime) {
@@ -3202,7 +3211,7 @@ test("review-auto production path rejects candidate and boundary drift before co
   }
 });
 
-test("production Pi hook constructs protected validation before reviewer spawn and rejects absent, reused, mismatched, or duplicate authority", async () => {
+test("historical Pi downstream seam constructs validation before reviewer and rejects absent, reused, mismatched, duplicate authority", async () => {
   await withPiEnv(async (root) => {
     installProtectedReviewToolFixture(root);
     const repo = join(root, "candidate");
@@ -3262,7 +3271,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
         }) as never,
       },
     });
-    const hooks = createPiHooks(adapter);
+    const hooks = legacyDownstreamHooks(adapter);
 
     const absent = await hooks.deploy!({ team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true });
     assert.equal(absent.status, "failed");
@@ -3620,7 +3629,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
   });
 });
 
-test("review-auto concurrent protected contenders persist one authorization consumer and start one executor", async () => {
+test("historical review downstream contenders persist one authorization consumer and start one executor", async () => {
   await withPiEnv(async (root) => {
     installProtectedReviewToolFixture(root);
     const repo = join(root, "repo");
@@ -3662,7 +3671,7 @@ test("review-auto concurrent protected contenders persist one authorization cons
         }) as never,
       },
     });
-    const hooks = createPiHooks(adapter);
+    const hooks = legacyDownstreamHooks(adapter);
     const firstPromise = hooks.deploy!({
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
       objective: fixture.objective, timeout: 60,

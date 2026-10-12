@@ -11,6 +11,7 @@ import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCo
 import { TreehouseClient } from "./treehouse.js";
 import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
+import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha" | "approvedReference">;
@@ -222,6 +223,8 @@ export const piSessionCommand: SessionCommandBuilder = ({ model, prompt, session
 };
 
 export interface PiDeployDependencies {
+  /** Trusted embedding/test seam only; never populated from requests, CLI, environment or team config. */
+  readonly reviewPreflight?: typeof inspectReviewPreflight;
   readonly treehouse?: TreehouseClient;
   readonly observeReviewOperation?: (operation: PiReviewCandidateOperation) => void;
   readonly getProcessFingerprint?: (pid: number) => ProcessFingerprint | undefined;
@@ -421,7 +424,19 @@ function ticketWorktreeDiagnostic(error: unknown): string {
   });
 }
 
-export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), dependencies: PiDeployDependencies = {}): CoreExecutionHooks { return { deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics, dependencies), sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter) }; }
+export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), dependencies: PiDeployDependencies = {}): CoreExecutionHooks {
+  return {
+    deployPreflight: (request) => {
+      const team = loadTeamConfig(request.team);
+      const mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+      if (team.name !== "requirements" || mode?.id !== "review-auto") return undefined;
+      const { report } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
+      return report.status === "compatible" ? undefined : { reason: formatReviewPreflight(report) };
+    },
+    deploy: (request, diagnostics) => deployWithPi(request, adapter, diagnostics, dependencies),
+    sessionNormalizer: normalizePiEvent, sessionCommand: piSessionCommand, sessionPreflight: () => adapterPreflight(adapter),
+  };
+}
 export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHooks(); }
 
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
@@ -431,7 +446,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
-  let deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   let team: TeamConfig;
@@ -444,6 +458,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
   }
+  // Pure static gate precedes ID/workspace allocation, audits, registry and runtime probes.
+  // Dry-run is observational too and must not masquerade as successful review admission.
+  let staticReviewAuthorizationId: string | undefined;
+  if (team.name === "requirements" && mode?.id === "review-auto") {
+    const { report, objective } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
+    if (report.status !== "compatible") return { status: "failed", team: request.team, mode: mode.id, reason: formatReviewPreflight(report) };
+    staticReviewAuthorizationId = objective?.reviewAuthorizationId;
+  }
+  let deploymentId = `d-${randomBytes(3).toString("hex")}`;
   if (team.name === "requirements" && mode?.id === "review-auto" && request.background && !request.dryRun && !request.resume) {
     try { deploymentId = approvedPiNixosDeploymentId(request) ?? deploymentId; }
     catch (error) {
@@ -741,7 +764,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     observe("deploy-diagnostic", reason, env);
     return { status: "failed", team: request.team, mode: request.mode ?? null, deploymentId, reason };
   }
-  const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId?: string): void => {
+  const writePrimer = (currentPlan: ExecutionPlan, protectedAuthorizationId = staticReviewAuthorizationId): void => {
     const primer = generatePrimer({ runtime: "pi", teamConfig: team, mode: currentPlan.mode, objective: currentPlan.userObjectiveOverride, repository: { repoKey: currentPlan.repoKey, repoRoot: currentPlan.repoRoot, worktreeRoot: currentPlan.worktreeRoot }, repositoryAdmission: currentPlan.repositoryAdmission, treehouse: currentPlan.treehouse, ticketWorktreeSelection: currentPlan.ticketWorktreeSelection, toolReference, rogueOne: currentPlan.rogue_one, invocationChannel: currentPlan.invocation_channel, templateVars: { DEPLOY_ID: deploymentId, TEAM_NAME: team.name, TODAY: new Date().toISOString().slice(0, 10), ...(currentPlan.ticket ? { TICKET_ID: currentPlan.ticket } : {}) }, extraInstructions: `<deployment-context>\ndeployment_id: ${deploymentId}\nteam_name: ${team.name}\nmode: ${currentPlan.mode}\nticket_id: ${currentPlan.ticket ?? "none"}\ncwd: ${currentPlan.repositoryCwd}\nrepo: ${currentPlan.repositoryCwd}\nobjective: ${currentPlan.objective}\ntimeout_seconds: ${currentPlan.timeoutSeconds}\n${renderEnvVarsBlock(currentPlan.environment)}\n</deployment-context>` });
     const persistedPrimer = protectedAuthorizationId
       ? redactPiProtectedReviewPrimer(primer, protectedAuthorizationId)

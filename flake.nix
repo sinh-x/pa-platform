@@ -31,6 +31,15 @@
         let
           pkgs = pkgsFor system;
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
+          reviewProvenance = pkgs.writeText "review-runtime-provenance.json" (builtins.toJSON {
+            schemaVersion = "pa-review-runtime/v1";
+            sourceSha = self.rev or "unversioned-dirty-source";
+            configSha = pkgs.lib.removeSuffix "\n" (builtins.readFile ./.pa-platform-config.sha);
+            packageName = "pa-platform";
+            packageVersion = packageJson.version;
+            objectiveSchema = "pa-review-objective/v1";
+            matrixSchema = "pa-review-matrix/v1";
+          });
           pluginSelection = {
             "pi-vimmode" = requireBooleanOption "enablePiVimMode" enablePiVimMode;
             "proper-base" = requireBooleanOption "enableProperBase" enableProperBase;
@@ -113,6 +122,9 @@
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
+            install -Dm644 ${reviewProvenance} $share/review-runtime-provenance.json
+            install -Dm755 scripts/pap-237-installed-preflight-smoke.mjs $share/scripts/pap-237-installed-preflight-smoke.mjs
+            cp -r packages/pa-core/src/__tests__/fixtures/protected-review-v1 $share/protected-review-v1-fixtures
             install -Dm755 scripts/pap-167-pi-retry-smoke.mjs $share/scripts/pap-167-pi-retry-smoke.mjs
             cp packages/pa-core/package.json $share/packages/pa-core/package.json
             cp -r packages/pa-core/dist $share/packages/pa-core/dist

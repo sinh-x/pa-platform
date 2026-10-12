@@ -1,0 +1,17 @@
+{
+  "gateId": "paired-runtime-ready",
+  "ticket": "FIX-237",
+  "branch": "feature/FIX-237-isolated-review",
+  "featureSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "matrixSource": "requirements:agent-teams/requirements/artifacts/fixture-producer-node-pnpm.md",
+  "matrixAuthoritySha256": "0574220f66f75e853dc59c7800b6a8bcc89686c1d3624c76323ec14efd4744f1",
+  "installedRuntime": {
+    "binary": "/nix/store/00000000000000000000000000000000-fixture-ppa/bin/ppa",
+    "packageName": "pa-platform",
+    "packageVersion": "0.0.0-fixture",
+    "sourceSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "mergedConfigSha": "cccccccccccccccccccccccccccccccccccccccc",
+  "pap232Evidence": "PAP-232/c-20000101000000000",
+  "pap235Evidence": "PAP-235/c-20000101000000000"
+}

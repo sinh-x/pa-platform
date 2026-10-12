@@ -19,6 +19,37 @@ Both ordinary sessions configured this way and managed deployments load the same
 
 After editing skills or package metadata in the config checkout, run `/reload` in an active Pi session. New ordinary sessions discover the current files without reinstalling the packages.
 
+## Protected review v1 preflight
+
+```bash
+ppa review preflight --ticket PAP-237 --objective-file request.json [--json]
+```
+
+This Pi-only command checks existing evidence without writes, Git/tool probes,
+network calls, deployment allocation, authorization consumption or attempt/cycle
+effects. Exit 0 means static-compatible, **not launch authorization**; exit 1 is
+incompatible, exit 2 usage/I/O failure. It reports blocked/deferred checks and
+never prints authorization IDs. The same gate precedes protected review deploy
+allocation (including dry-run); `deploy --validate` remains team-config validation.
+
+Production review requires strict `pa-review-objective/v1` and
+`pa-review-matrix/v1` JSON, exact `requirements:` source/raw digest/ticket approval,
+three typed prerequisite profiles and a durable selected readiness binding.
+Legacy objectives/matrices require a new artifact/digest and explicit approval;
+no historical authority or accounting is rewritten. See
+[the shared contract](contracts/protected-review-v1.md) for schemas, migration,
+paired producer manifest and installed provenance gates. Existing downstream
+PAP-223/232/236 implementation descriptions below are historical compatibility
+machinery, not alternative production admission contracts.
+
+Source/isolated-package tests cannot satisfy actual protected-review acceptance.
+PAPC-039 producers, PAP-232/PAP-235 integration and separate installation/readiness
+approval gate rollout. Baseline CI pairing is not v1 producer proof; require
+`corepack pnpm verify:paired-config -- --require-origin-develop --require-review-v1`
+for rollout. Protected launch always checks producer pairing and readiness.
+Implementation-first merge does not assert live protected-review/UAT acceptance.
+No OPA/CPA review command or Treehouse claim is introduced.
+
 ## Managed Deployments
 
 `ppa deploy` is isolated from ordinary Pi discovery. Every managed Pi argv has one `--no-extensions`, exactly one `--extension` naming the trusted `pi-pa` entrypoint, and no discovered user or project extensions. A managed deployment receives only the selected PA skills through explicit resource arguments. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus question, todo, terminal status, safety interception, and the context UI below.
@@ -59,38 +90,39 @@ Feature SHA, both bases, approved matrix source/raw-byte SHA-256, durable Sinh
 approval comment evidence, and one unused exact-SHA Review Authorization ID.
 The guarded objective file must agree with that intent and the approved
 requirements header/ticket. Ticket and repository flags alone are insufficient.
-For example, the operator-prepared file has these seven exact authority lines
+For example, the operator-prepared v1 file has these exact fields
 (placeholders are explanatory, not valid launch values):
 
-```text
-Ticket: PAP-232
-Branch: feature/PAP-232-review-auto-candidate-binding
-Feature SHA: <exact-40-lowercase-hex-candidate-HEAD>
-Matrix Source: agent-teams/requirements/artifacts/2026-10-02-pap-232-review-auto-candidate-binding.md
-Matrix Authority SHA-256: <approved-64-lowercase-hex-raw-matrix-digest>
-Matrix Approval Evidence: <exact-approved-header-evidence-naming-one-durable-Sinh-comment>
-Review Authorization ID: review-auth:<fresh-lowercase-canonical-UUIDv4>
+```json
+{
+  "schemaVersion": "pa-review-objective/v1",
+  "ticket": "PAP-237",
+  "branch": "feature/PAP-237-versioned-review-contract",
+  "featureSha": "<exact-40-lowercase-hex-candidate-HEAD>",
+  "matrixSource": "requirements:agent-teams/requirements/artifacts/<new-approved-v1-artifact>.md",
+  "matrixAuthoritySha256": "<approved-64-lowercase-hex-raw-matrix-digest>",
+  "matrixApprovalEvidence": "<selected-durable-Sinh-comment-ID>",
+  "reviewAuthorizationId": "review-auth:<fresh-lowercase-canonical-UUIDv4>",
+  "prerequisiteEvidence": {
+    "paired-runtime-ready": "<separate-durable-Sinh-readiness-comment-ID>"
+  }
+}
 ```
 
-Use LF separators with no blank lines, duplicate authority labels, leading or
-trailing whitespace, CR characters, or trailing newline. Copy exact approved
-values; do not generate substitute approval evidence. The immutable historical
-base comes from the exact `Historical Materialization Base SHA` artifact header
-and materialized ticket link. If that header is absent in either supported layout,
-the launcher requires exactly one canonical-repository link in explicit
-`materialized` state, matching the branch, with full `baseSha` equal to
-`Approved Base SHA`. Missing, duplicate, conflicting, planned or legacy-incomplete
-links reject; HEAD or another branch never supplies a fallback. An explicit
-historical header preserves independent historical/current references, including
-both ancestry checks. `Approved Base SHA` remains required and must equal the
-digest-approved matrix ancestry prerequisite. Neither base is an additional
-objective clause or an ambient caller assertion. Keep the objective outside the
-candidate so its creation cannot dirty the checkout. Only after that durable authority exists is
-this canonical-root invocation supported:
+JSON formatting whitespace (including CRLF) is allowed, but duplicate/unknown
+keys and whitespace drift within authority values reject. Copy exact approved
+values; do not generate substitute approval evidence. V1's `repository.baseSha`,
+`Approved Base SHA` header and materialized ticket link must agree; HEAD or
+another branch never supplies a fallback. Historical PAP-232/PAP-236 prose
+objectives and two-base headers are not alternate v1 admission forms: migrate
+with a new persistent artifact/source/digest and durable approval. Keep the
+objective outside the candidate so its creation cannot dirty the checkout.
+Only after that durable authority and selected readiness exist is this
+canonical-root invocation supported:
 
 ```bash
 cd /home/sinh/git-repos/sinh-x/tools/pa-platform
-ppa deploy requirements --mode review-auto --ticket PAP-232 --repo pa-platform --background --objective-file /absolute/private/operator-prepared-review-objective.txt
+ppa deploy requirements --mode review-auto --ticket PAP-237 --repo pa-platform --background --objective-file /absolute/private/operator-prepared-review-objective.json
 ```
 
 The launcher requires exactly one canonical-repository ticket linked branch in
@@ -98,7 +130,7 @@ The launcher requires exactly one canonical-repository ticket linked branch in
 HEAD equal to the approved Feature SHA. It reads bounded Treehouse v2.3.0 status
 (15,000 ms timeout, 1 MiB stdout maximum) and selects exactly one existing lease
 whose holder is `pa:<repoKey>:<ticket>`—for this example,
-`pa:pa-platform:PAP-232`. Missing/duplicate leases or planned/stale/conflicting
+`pa:pa-platform:PAP-237`. Missing/duplicate leases or planned/stale/conflicting
 branch evidence reject; review-auto never acquires a checkout or refreshes the
 link. The lease must identify the exact physical, registered linked-worktree
 root, distinct from the canonical root, with matching top-level, Git dir,
@@ -106,7 +138,7 @@ common dir, and registered membership. Symlink aliases, nested paths, primary
 roots, wrong repositories, and unregistered checkouts reject. The candidate must
 be on the exact branch with `HEAD == local branch ref == Feature SHA`, descended
 from **both** the historical materialization base and independently approved
-current reference (these may differ), with zero
+current reference (v1 binds both to `repository.baseSha`), with zero
 staged, unstaged, and untracked records in the complete NUL-safe porcelain-v2
 snapshot.
 

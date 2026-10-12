@@ -247,6 +247,37 @@ test("review authorization claim rejects legacy running exact-ticket branches, e
   }
 });
 
+test("v1 JSON objectives retain exact one-use binding and conservative legacy/new active-review exclusion", () => {
+  withAssociationFixture(() => {
+    const o = { schemaVersion: "pa-review-objective/v1", ticket: "PAP-223", branch: "feature/PAP-223-v1", featureSha: "a".repeat(40),
+      matrixSource: "requirements:agent-teams/requirements/artifacts/isolated.json.md", matrixAuthoritySha256: "b".repeat(64),
+      matrixApprovalEvidence: "c-20000101000000000", reviewAuthorizationId: "review-auth:00000000-0000-4000-8000-000000000000", prerequisiteEvidence: {} };
+    const start = (id: string, objective: string) => appendRegistryEvent({ deployment_id: id, team: "requirements", mode: "review-auto", runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(), ticket_id: o.ticket, objective });
+    const finish = (id: string) => appendRegistryEvent({ deployment_id: id, team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: "failed" });
+    const objective = JSON.stringify(o, null, 2).replace(/\n/g, "\r\n");
+    const input = { deploymentId: "d-v1", authorizationId: o.reviewAuthorizationId, ticketId: o.ticket, branch: o.branch,
+      featureSha: o.featureSha, matrixSource: o.matrixSource, matrixAuthoritySha256: o.matrixAuthoritySha256, matrixApprovalEvidence: o.matrixApprovalEvidence, objective };
+    start(input.deploymentId, objective);
+    assert.throws(() => claimReviewAuthorization({ ...input, featureSha: "c".repeat(40) }), (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === "invalid-binding");
+    let otherIndex = 0;
+    for (const otherObjective of [JSON.stringify(o), `Branch: ${o.branch}`, '{"schemaVersion":"pa-review-objective/v1","branch":"other","branch":"duplicate"}']) {
+      const otherId = `d-other-${otherIndex++}`;
+      start(otherId, otherObjective);
+      assert.throws(() => claimReviewAuthorization(input), (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === "active-review");
+      assert.equal(queryReviewAuthorizationClaims().length, 0);
+      finish(otherId);
+    }
+    // A well-formed other-branch JSON review does not block the exact branch.
+    start("d-independent", JSON.stringify({ ...o, branch: "feature/PAP-223-other" }));
+    const claim = claimReviewAuthorization(input);
+    assert.equal(claim.active, true); assert.equal(queryReviewAuthorizationClaims().length, 1);
+    finish("d-v1"); assert.equal(queryReviewAuthorizationClaim(o.reviewAuthorizationId)?.active, false);
+    start("d-replay", objective);
+    assert.throws(() => claimReviewAuthorization({ ...input, deploymentId: "d-replay" }), (error: unknown) => error instanceof ReviewAuthorizationClaimError && error.code === "authorization-consumed");
+    assert.equal(getDeploymentEvents("d-v1")[0]?.objective, objective, "raw CRLF JSON remains immutable authority");
+  });
+});
+
 test("retained terminal reconciliation deactivates only the matching review claim without rewriting stable history", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-core-retained-terminal-claim-"));
   const previous = process.env["PA_REGISTRY_DB"];

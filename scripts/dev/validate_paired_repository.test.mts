@@ -3,8 +3,36 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { validatePairedRepository } from "./validate_paired_repository.mts";
+import { validatePairedRepository, validateReviewProducerFixtures } from "./validate_paired_repository.mts";
+
+test("v1 paired producer fixtures require exact three-profile manifest, shared parser and digest agreement", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap237-paired-"));
+  const source = fileURLToPath(new URL("../../packages/pa-core/src/__tests__/fixtures/protected-review-v1/", import.meta.url));
+  try {
+    assert.throws(() => validateReviewProducerFixtures(root), /cannot read/);
+    mkdirSync(join(root, "contracts/fixtures"), { recursive: true });
+    const fixtures = [
+      ["producer-node-pnpm", "node-pnpm/v1"], ["mvm-179-migrated", "npm-subprojects/v1"], ["nx-055-migrated", "non-node-nix/v1"],
+    ].map(([name, profile]) => {
+      const objective = `contracts/fixtures/${name}.objective.json`; const artifact = `contracts/fixtures/${name}.md`;
+      writeFileSync(join(root, objective), readFileSync(join(source, `${name}.objective.json`)));
+      writeFileSync(join(root, artifact), readFileSync(join(source, `${name}.md`)));
+      return { objective, artifact, profile };
+    });
+    const manifest = { schemaVersion: "pa-review-producer-fixtures/v1", fixtures };
+    const path = join(root, "contracts/protected-review-v1.json"); writeFileSync(path, JSON.stringify(manifest));
+    assert.equal(validateReviewProducerFixtures(root), 3);
+    writeFileSync(path, JSON.stringify({ ...manifest, fixtures: [fixtures[0], fixtures[0], fixtures[2]] }));
+    assert.throws(() => validateReviewProducerFixtures(root), /profile/);
+    writeFileSync(path, JSON.stringify({ ...manifest, fixtures: [{ ...fixtures[0], artifact: "contracts/fixtures/../escape.md" }, fixtures[1], fixtures[2]] }));
+    assert.throws(() => validateReviewProducerFixtures(root), /contained/);
+    writeFileSync(path, JSON.stringify(manifest));
+    writeFileSync(join(root, fixtures[0]!.artifact), readFileSync(join(root, fixtures[0]!.artifact), "utf8").replace("Policy: parser", "Policy: changed"));
+    assert.throws(() => validateReviewProducerFixtures(root), /binding|agree/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -149,6 +177,15 @@ test("paired repository gate accepts the exact clean 10-team/59-mode checkout", 
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("implementation-first baseline compatibility does not certify v1 rollout pairing", () => {
+  const fixture = createFixture();
+  try {
+    const baseline = validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha });
+    assert.ok(!baseline.some((line) => line.startsWith("REVIEW_V1_PRODUCER_PROFILES=")));
+    assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha, requireReviewV1: true }), /cannot read/);
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
 });
 
 test("paired repository gate rejects requirements-time checkout prerequisites", () => {

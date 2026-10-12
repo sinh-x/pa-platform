@@ -1,12 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences } from "../../packages/pa-core/src/index.js";
+import { classifyRepositoryAccess, generatePrimer, modelMatchesProvider, parseTeamYamlContent, validateTeamSkillReferences, readReviewProducerFixtures } from "../../packages/pa-core/src/index.js";
 
 export interface PairedValidationOptions {
   configRoot: string;
   expectedSha: string;
   requireOriginDevelop?: boolean;
+  requireReviewV1?: boolean;
 }
 
 function git(root: string, args: string[]): string {
@@ -156,6 +157,11 @@ function validateRepositoryContracts(configRoot: string): number {
   return validatePlanFirstRequirementsContracts(configRoot);
 }
 
+/** Producer-owned read-only manifest; missing pairing is a rollout blocker, never inferred from template prose. */
+export function validateReviewProducerFixtures(configRoot: string): number {
+  return readReviewProducerFixtures(resolve(configRoot));
+}
+
 export function validatePairedRepository(options: PairedValidationOptions): string[] {
   const configRoot = resolve(options.configRoot);
   const expectedSha = options.expectedSha.trim();
@@ -168,6 +174,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
     const result = spawnSync("git", ["-C", configRoot, "merge-base", "--is-ancestor", expectedSha, "origin/develop"], { stdio: "ignore" });
     if (result.status !== 0) throw new Error(`pa-platform-config ${expectedSha} is not contained in origin/develop; merge the config prerequisite first`);
   }
+  const reviewProducerCount = options.requireReviewV1 ? validateReviewProducerFixtures(configRoot) : undefined;
   const planFirstPrimerCount = validateRepositoryContracts(configRoot);
 
   const teamFiles = readdirSync(resolve(configRoot, "teams"))
@@ -217,6 +224,7 @@ export function validatePairedRepository(options: PairedValidationOptions): stri
 
   return [
     `CONFIG_SHA=${actualSha}`,
+    ...(reviewProducerCount === undefined ? [] : [`REVIEW_V1_PRODUCER_PROFILES=${reviewProducerCount}/3`]),
     "CONFIG_CLEAN=true",
     `TEAMS_VALID=${teamFiles.length}/10`,
     `MODES_VALID=${modeCount}/59`,
@@ -241,5 +249,5 @@ if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
   const configRoot = process.env["PA_PHASE5_CONFIG_ROOT"];
   if (!configRoot) throw new Error("PA_PHASE5_CONFIG_ROOT is required");
   const expectedSha = readFileSync(resolve(process.cwd(), ".pa-platform-config.sha"), "utf8").trim();
-  for (const line of validatePairedRepository({ configRoot, expectedSha, requireOriginDevelop: process.argv.includes("--require-origin-develop") })) console.log(line);
+  for (const line of validatePairedRepository({ configRoot, expectedSha, requireOriginDevelop: process.argv.includes("--require-origin-develop"), requireReviewV1: process.argv.includes("--require-review-v1") })) console.log(line);
 }

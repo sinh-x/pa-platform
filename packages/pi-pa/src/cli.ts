@@ -8,13 +8,16 @@ import { createDefaultPiHooks } from "./deploy.js";
 import { removePi, setupPi, statusPi } from "./setup.js";
 import { PiAdapter } from "./adapter.js";
 import { probePiNativeRegistryAddon, runPiManagedToolSmoke } from "./native-host.js";
+import { runReviewPreflightCommand } from "./review-preflight.js";
 
 if (process.argv.includes("--version") || process.argv.includes("-V")) {
   const pkg = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8")) as { version: string };
   process.stdout.write(`ppa ${pkg.version}\n`);
   process.exit(0);
 }
-if (process.argv[2] === "pi" && ["setup", "status", "remove", "preflight", "smoke-tools", "teardown-smoke"].includes(process.argv[3] ?? "")) {
+if (process.argv[2] === "review") {
+  process.exitCode = runReviewPreflightCommand(process.argv.slice(3));
+} else if (process.argv[2] === "pi" && ["setup", "status", "remove", "preflight", "smoke-tools", "teardown-smoke"].includes(process.argv[3] ?? "")) {
   const local = process.argv.includes("--local");
   const action = process.argv[3];
   process.exitCode = await (action === "setup"
@@ -31,6 +34,7 @@ if (process.argv[2] === "pi" && ["setup", "status", "remove", "preflight", "smok
   ).then(() => 0).catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); return 1; });
 } else {
 process.exitCode = await runCoreCommand(process.argv.slice(2), { hooks: createDefaultPiHooks(), binaryName: "ppa" });
+if (process.argv.length === 2 || process.argv[2] === "--help") process.stdout.write("\nPi-only: review preflight --ticket <ID> --objective-file <request.json> [--json]\n");
 }
 
 function runTeardownSmoke(args: string[]): void {
