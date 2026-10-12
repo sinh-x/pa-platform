@@ -11,6 +11,11 @@ import {
   MAX_GIT_STATUS_SUMMARY_CHARS,
   MAX_REPOSITORY_LEASE_BYTES,
   acquireRepositoryMutationLease,
+  reserveRepositoryReview,
+  finalizeRepositoryReview,
+  repositoryReviewReservationPath,
+  withRepositoryReviewReservation,
+  type ReviewCheckoutEvidence,
   assertRepositoryGitIdentity,
   captureRepositoryGitSnapshot,
   classifyRepositoryAccess,
@@ -144,6 +149,130 @@ function acquire(root: string, owner: ProcessFingerprint, extra: { force?: boole
     dependencies: deps,
   });
 }
+
+function reviewReservationFixture() {
+  const prior = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+  for (const key of Object.keys(prior)) delete process.env[key];
+  const dir = mkdtempSync(join(tmpdir(), "pa-review-reservation-"));
+  const repo = join(dir, "repo"); const worktree = join(dir, "candidate"); mkdirSync(repo);
+  git(["init", "-b", "develop"], repo); git(["config", "user.email", "test@example.com"], repo); git(["config", "user.name", "Test"], repo);
+  git(["commit", "--allow-empty", "-m", "initial"], repo);
+  const branch = "feature/ALT-7-candidate";
+  git(["worktree", "add", "-b", branch, worktree, "HEAD"], repo);
+  const head = git(["rev-parse", "HEAD"], worktree);
+  const checkout: ReviewCheckoutEvidence = {
+    kind: "existing-review-checkout", repoKey: "generic-repo", repoRoot: repo, worktreeRoot: worktree,
+    ticket: "ALT-7", branch, branchState: "materialized", baseSha: head, headSha: head, featureSha: head,
+    approvedReference: { sha: head, matrixSource: "agent-teams/requirements/artifacts/approved.md",
+      matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "ALT-7 comment c-approved by sinh" },
+    leaseId: "lease-7", leaseHolder: "pa:generic-repo:ALT-7",
+    repositoryGitDir: git(["rev-parse", "--absolute-git-dir"], worktree), repositoryGitCommonDir: join(repo, ".git"),
+    gitSnapshot: captureRepositoryGitSnapshot(worktree),
+  };
+  return { dir, repo, worktree, checkout, cleanup: () => {
+    rmSync(dir, { recursive: true, force: true });
+    for (const key of Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key))) delete process.env[key];
+    for (const [key, value] of Object.entries(prior)) if (value !== undefined) process.env[key] = value;
+  } };
+}
+
+const reviewAuthorization = "review-auth:11111111-1111-4111-8111-111111111111";
+
+test("review reservation finalizes only matching terminal evidence", () => {
+  const f = reviewReservationFixture();
+  try {
+    const reserve = () => reserveRepositoryReview({ checkout: f.checkout, deploymentId: "d-abcdef", authorizationId: reviewAuthorization, rereadCheckout: () => f.checkout });
+    const reservation = reserve(); const path = repositoryReviewReservationPath(f.worktree);
+    const bytes = readFileSync(path);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.throws(reserve, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    let publications = 0;
+    const finalize = (value = reservation, terminal = true) => finalizeRepositoryReview({ reservation: value, verifyTerminal: () => terminal,
+      publishFinalEvidence: (evidence) => { publications++; assert.equal(evidence.leaseDisposition, "retained"); assert.deepEqual(evidence.checkout, f.checkout); assert.deepEqual(evidence.finalGitSnapshot, f.checkout.gitSnapshot); assert.equal("reservationToken" in evidence, false); assert.equal("authorizationId" in evidence, false); } });
+    for (const value of [
+      { ...reservation, reservationToken: "wrong" }, { ...reservation, deploymentId: "d-123456" },
+      { ...reservation, authorizationId: "review-auth:22222222-2222-4222-8222-222222222222" },
+      { ...reservation, checkout: { ...f.checkout, leaseId: "other" } },
+    ]) { assert.equal(finalize(value), "mismatch"); assert.deepEqual(readFileSync(path), bytes); }
+    assert.equal(finalize(reservation, false), "not-terminal"); assert.equal(publications, 0);
+    assert.throws(() => finalizeRepositoryReview({ reservation, verifyTerminal: () => true, publishFinalEvidence: () => { throw new Error("publication failed"); } }), /finalization failed/);
+    assert.deepEqual(readFileSync(path), bytes);
+    let starts = 0;
+    for (const field of ["sha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence"] as const) {
+      const drifted = { ...f.checkout, approvedReference: { ...f.checkout.approvedReference!,
+        [field]: field === "sha" ? "c".repeat(40) : field === "matrixAuthoritySha256" ? "b".repeat(64) : "changed" } };
+      assert.throws(() => withRepositoryReviewReservation({ reservation, rereadCheckout: () => drifted }, () => { starts++; }), /protected reread/);
+      assert.equal(finalize({ ...reservation, checkout: drifted }), "mismatch");
+      assert.deepEqual(readFileSync(path), bytes, "reference drift cannot rewrite reservation");
+    }
+    const { approvedReference: _reference, ...missingReference } = f.checkout;
+    assert.throws(() => withRepositoryReviewReservation({ reservation, rereadCheckout: () => missingReference }, () => { starts++; }), /protected reread/);
+    assert.equal(starts, 0, "changed or omitted reference starts zero work");
+    assert.equal(withRepositoryReviewReservation({ reservation, rereadCheckout: () => f.checkout }, () => "admitted"), "admitted");
+    assert.equal(finalize(), "finalized"); assert.equal(publications, 1); assert.equal(finalize(), "absent");
+    const replacement = reserve(); const replacementBytes = readFileSync(path);
+    assert.equal(finalize(), "mismatch"); assert.deepEqual(readFileSync(path), replacementBytes);
+    assert.equal(finalize(replacement), "finalized");
+    assert.equal(git(["rev-parse", "HEAD"], f.worktree), f.checkout.featureSha);
+    assert.equal(existsSync(repositoryMutationLeasePath(f.worktree)), false);
+    assert.equal(existsSync(repositoryMutationLeasePath(f.worktree, "implement")), false);
+  } finally { f.cleanup(); }
+});
+
+test("review reservation serializes cross-process borrowers and owners", async () => {
+  const moduleUrl = new URL("../deploy/repository-admission.ts", import.meta.url).href;
+  for (const mode of ["borrower", "owner"] as const) {
+    const f = reviewReservationFixture();
+    try {
+      let capability: string | undefined;
+      if (mode === "borrower") {
+        const acquired = acquireRepositoryMutationLease({ canonicalRepoKey: f.checkout.repoKey, canonicalRepoRoot: f.repo, worktreeRoot: f.worktree,
+          expectedGitDir: f.checkout.repositoryGitDir, expectedGitCommonDir: f.checkout.repositoryGitCommonDir,
+          deploymentId: "d-111111", deploymentDirectory: f.dir, runtime: "pi", team: "builder", mode: "orchestrator", ticket: "ALT-7" });
+        assert.equal(acquired.status, "acquired"); if (acquired.status !== "acquired") assert.fail("parent missing");
+        capability = acquired.lease.ownershipToken;
+      }
+      const script = `
+        import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+        import { reserveRepositoryReview, registerRepositoryMutationBorrower, acquireRepositoryMutationLease } from ${JSON.stringify(moduleUrl)};
+        const f = ${JSON.stringify({ dir: f.dir, repo: f.repo, worktree: f.worktree, checkout: f.checkout })};
+        const kind = process.argv[1];
+        writeFileSync(f.dir + '/' + kind + '.ready', 'ready');
+        while (!existsSync(f.dir + '/go')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+        let accepted = false;
+        try {
+          if (kind === 'review') { reserveRepositoryReview({ checkout: f.checkout, deploymentId: 'd-222222', authorizationId: ${JSON.stringify(reviewAuthorization)}, rereadCheckout: () => f.checkout, dependencies: { isDeploymentRunning: () => true } }); accepted = true; }
+          else {
+            const options = { canonicalRepoKey: f.checkout.repoKey, canonicalRepoRoot: f.repo, worktreeRoot: f.worktree, expectedGitDir: f.checkout.repositoryGitDir, expectedGitCommonDir: f.checkout.repositoryGitCommonDir, deploymentId: 'd-333333', deploymentDirectory: f.dir, runtime: 'pi', team: 'builder', mode: 'implement', launchMode: 'background', ticket: 'ALT-7', branch: f.checkout.branch, parentDeploymentId: 'd-111111', capability: ${JSON.stringify(capability) ?? "undefined"}, timeoutSeconds: 60, dependencies: { isDeploymentRunning: () => true } };
+            const result = ${mode === "borrower" ? "registerRepositoryMutationBorrower" : "acquireRepositoryMutationLease"}(options);
+            accepted = result.status === 'registered' || result.status === 'acquired';
+          }
+        } catch (error) { if (!/Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(error.message)) throw error; }
+        process.stdout.write(JSON.stringify({ accepted }) + '\\n');
+      `;
+      const attempts = ["review", "builder"].map((kind) => new Promise<boolean>((accept, reject) => {
+        const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, kind], {
+          cwd: process.cwd(), env: { PATH: process.env["PATH"], HOME: f.dir }, stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = ""; let stderr = "";
+        child.stdout.on("data", (chunk: Buffer) => { stdout += chunk; }); child.stderr.on("data", (chunk: Buffer) => { stderr += chunk; });
+        child.on("error", reject); child.on("close", (code) => {
+          if (code !== 0) reject(new Error(`reservation contender exited ${code}: ${stderr}`));
+          else { try { accept((JSON.parse(stdout) as { accepted: boolean }).accepted); } catch (error) { reject(error); } }
+        });
+      }));
+      const deadline = Date.now() + 15_000;
+      while (!["review", "builder"].every((kind) => existsSync(join(f.dir, `${kind}.ready`)))) {
+        if (Date.now() > deadline) throw new Error("reservation contenders did not become ready");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      writeFileSync(join(f.dir, "go"), "go");
+      const results = await Promise.all(attempts);
+      assert.equal(results.filter(Boolean).length, 1, `${mode}: reservation and mutation admission cannot both win`);
+      if (mode === "borrower") assert.equal(inspectRepositoryMutationLease(f.repo, { worktreeRoot: f.worktree, getProcessFingerprint: readProcessFingerprint }).state, "live");
+    } finally { f.cleanup(); }
+  }
+});
 
 test("repository access classification is deterministic and requirements need no Git or lease operation", () => {
   assert.equal(classifyRepositoryAccess("requirements", "analyze"), "read-only");

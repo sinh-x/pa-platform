@@ -85,6 +85,42 @@ function resolveRepoPlan(repo: string | undefined, fixture: ExecutionRepoFixture
   });
 }
 
+test("selection-only plans freeze dual-root evidence and exclude protected builder environment", () => {
+  const fixture = createFixture("selection");
+  try {
+    withPlatformConfig(fixture.config, () => {
+      const evidence = {
+        repoKey: "registered", repoRoot: fixture.repo, ticket: "PAP-234", worktreeRoot: fixture.linked,
+        gitDir: git(["rev-parse", "--path-format=absolute", "--git-dir"], fixture.linked),
+        gitCommonDir: git(["rev-parse", "--path-format=absolute", "--git-common-dir"], fixture.linked),
+        leaseId: "lease-234", leaseHolder: "pa:registered:PAP-234", branch: "feature/selection",
+        baseSha: git(["rev-parse", "HEAD"], fixture.linked), headSha: git(["rev-parse", "HEAD"], fixture.linked),
+      };
+      const options = {
+        request: { team: "requirements", ticket: "PAP-234", ticketWorktree: true },
+        teamConfig: { ...team(), name: "requirements" }, runtime: "pi" as const, deploymentId: "d-aabbcc",
+        deploymentDir: fixture.root, activityLogPath: join(fixture.root, "activity.jsonl"), timeoutSeconds: 60,
+        cwd: fixture.linked, ticketWorktreeSelection: evidence,
+        environment: { PA_REPO: "/wrong", PA_TICKET_SLOT: "inherited-slot", PA_REPOSITORY_PERMIT: "2" },
+      };
+      const plan = resolveExecutionPlan(options);
+      assert.equal(Object.isFrozen(plan.ticketWorktreeSelection), true);
+      assert.equal(plan.repoRoot, fixture.repo);
+      for (const path of [plan.worktreeRoot, plan.repositoryCwd, plan.memoryDocumentRoot, plan.environment.PA_REPO, plan.environment.PA_WORKTREE_ROOT]) assert.equal(path, fixture.linked);
+      assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+      assert.equal(plan.treehouse, undefined);
+      for (const key of ["PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"] as const) assert.equal(plan.environment[key], "");
+      evidence.headSha = "0".repeat(40);
+      assert.notEqual(plan.ticketWorktreeSelection?.headSha, evidence.headSha);
+      assert.throws(() => resolveExecutionPlan({ ...options, ticketWorktreeSelection: undefined }), /requires authenticated/);
+      for (const override of [{ repoRoot: fixture.linked }, { worktreeRoot: fixture.repo }, { gitDir: "/wrong" }, { ticket: "PAP-235" }, { leaseHolder: "pa:other:PAP-234" }, { baseSha: "short" }]) {
+        assert.throws(() => resolveExecutionPlan({ ...options, ticketWorktreeSelection: { ...evidence, ...override } }), /selection-only evidence/);
+      }
+      assert.throws(() => resolveExecutionPlan({ ...options, request: { ...options.request, invocationChannel: "agent-api" } }), /selection-only evidence/);
+    });
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
 test("execution plans are immutable and resolve selected skill paths", () => {
   const fixture = createFixture("immutable");
   const skillPath = join(fixture.root, "pa-cli", "SKILL.md");

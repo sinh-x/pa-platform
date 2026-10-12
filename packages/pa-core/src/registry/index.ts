@@ -134,6 +134,12 @@ export function validateRegistryEvent(event: RegistryEvent): void {
   for (const field of ["deployment_id", "team", "event", "timestamp"] as const) {
     if (!event[field]) throw new Error(`Registry event missing required field: ${field}`);
   }
+  if (event.review_checkout && event.event === "started"
+    && (event.team !== "requirements" || event.mode !== "review-auto" || event.runtime !== "pi"
+      || event.repo !== event.review_checkout.worktreeRoot || event.worktree_root !== event.review_checkout.worktreeRoot
+      || event.repo_root !== event.review_checkout.repoRoot || event.ticket_id !== event.review_checkout.ticket)) {
+    throw new Error(correlationConflictDiagnostic("review candidate must match the exact Pi review start roots and ticket"));
+  }
   validateDeploymentCorrelationEvidence(correlationToValidationInput(event), {
     ticketId: event.ticket_id,
     worktreeRoot: event.worktree_root,
@@ -634,17 +640,17 @@ function insertRegistryEvent(db: ReturnType<typeof getDb>, event: RegistryEvent)
   const row = toRow(event);
   db.prepare(`
     INSERT INTO registry_events (
-      deployment_id, team, event, timestamp, pid, status, summary, log_file,
+      review_checkout, deployment_id, team, event, timestamp, pid, status, summary, log_file,
       primer, agents, models, error, exit_code, ticket_id, previous_ticket_id, actor, reason, provider, rating,
       objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
       treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
-      mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel
+      mode, fallback, resumed_from_deployment_id, note, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection
     ) VALUES (
-      @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
+      @review_checkout, @deployment_id, @team, @event, @timestamp, @pid, @status, @summary, @log_file,
       @primer, @agents, @models, @error, @exit_code, @ticket_id, @previous_ticket_id, @actor, @reason, @provider, @rating,
       @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
       @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
-      @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel
+      @mode, @fallback, @resumed_from_deployment_id, @note, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection
     )
   `).run(row);
 }
@@ -727,6 +733,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
     const currentBranch = [...deploymentEvents].reverse().find((event) => event.branch_state !== undefined || event.branch_base_sha !== undefined || event.branch_head_sha !== undefined);
     const currentTicket = [...deploymentEvents].reverse().find((event) => event.event === "ticket-associated");
     return {
+      ...(started?.review_checkout ? { review_checkout: started.review_checkout } : {}),
       deploy_id: deployId,
       team: started?.team ?? deploymentEvents[0]?.team ?? "",
       status: (completed?.status ?? (crashed ? "crashed" : started ? "running" : "unknown")) as DeploymentStatus["status"],
@@ -744,6 +751,7 @@ export function computeDeploymentStatuses(events: RegistryEvent[]): DeploymentSt
       repo: started?.repo,
       repo_root: started?.repo_root,
       worktree_root: started?.worktree_root,
+      ...(started?.ticket_worktree_selection !== undefined ? { ticket_worktree_selection: started.ticket_worktree_selection } : {}),
       repository_slot: started?.repository_slot,
       parent_deployment_id: started?.parent_deployment_id,
       builder_authority: started?.builder_authority,
@@ -776,16 +784,17 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
   if (event.event === "started") {
     db.prepare(`
       INSERT INTO deployments (
-        deployment_id, team, status, started_at, pid, primer, agents, models,
+        review_checkout, deployment_id, team, status, started_at, pid, primer, agents, models,
         ticket_id, objective, repo, repo_root, worktree_root, repository_slot, parent_deployment_id, builder_authority,
         treehouse_path, treehouse_lease_id, treehouse_lease_holder, branch_state, branch_base_sha, branch_head_sha, ticket_slot_id, repository_permit,
-        mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel
+        mode, provider, resumed_from_deployment_id, runtime, binary, effective_timeout_seconds, rogue_one, invocation_channel, ticket_worktree_selection
       ) VALUES (
-        @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
+        @review_checkout, @deployment_id, @team, 'running', @timestamp, @pid, @primer, @agents, @models,
         @ticket_id, @objective, @repo, @repo_root, @worktree_root, @repository_slot, @parent_deployment_id, @builder_authority,
         @treehouse_path, @treehouse_lease_id, @treehouse_lease_holder, @branch_state, @branch_base_sha, @branch_head_sha, @ticket_slot_id, @repository_permit,
-        @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel
+        @mode, @provider, @resumed_from_deployment_id, @runtime, @binary, @effective_timeout_seconds, @rogue_one, @invocation_channel, @ticket_worktree_selection
       ) ON CONFLICT(deployment_id) DO UPDATE SET
+        review_checkout = excluded.review_checkout,
         status = excluded.status,
         started_at = excluded.started_at,
         pid = excluded.pid,
@@ -797,6 +806,7 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
         repo = excluded.repo,
         repo_root = excluded.repo_root,
         worktree_root = excluded.worktree_root,
+        ticket_worktree_selection = excluded.ticket_worktree_selection,
         repository_slot = excluded.repository_slot,
         parent_deployment_id = excluded.parent_deployment_id,
         builder_authority = excluded.builder_authority,
@@ -843,7 +853,7 @@ function upsertDeployment(db: ReturnType<typeof getDb>, event: RegistryEvent): v
 }
 
 function withTerminalCorrelation(existing: RegistryEvent, requested: RegistryEvent): RegistryEvent {
-  const fields = ["parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"] as const;
+  const fields = ["review_checkout", "parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit"] as const;
   if (!fields.some((field) => requested[field] !== undefined && requested[field] !== existing[field])) return existing;
   const merged: RegistryEvent = { ...existing };
   for (const field of fields) {
@@ -858,15 +868,17 @@ function isFailedTerminal(event: RegistryEvent): boolean {
 }
 
 const START_IDENTITY_COLUMNS = [
+  "review_checkout",
   "team", "pid", "status", "summary", "log_file", "primer", "agents", "models", "error", "exit_code", "ticket_id", "provider", "rating",
   "objective", "repo", "repo_root", "worktree_root", "repository_slot", "parent_deployment_id", "builder_authority", "treehouse_path",
   "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "branch_head_sha", "ticket_slot_id", "repository_permit",
-  "mode", "fallback", "resumed_from_deployment_id", "note", "runtime", "binary", "effective_timeout_seconds", "rogue_one", "invocation_channel",
+  "mode", "fallback", "resumed_from_deployment_id", "note", "runtime", "binary", "effective_timeout_seconds", "rogue_one", "invocation_channel", "ticket_worktree_selection",
 ] as const;
 
 const IMMUTABLE_CORRELATION_FIELDS = [
+  "review_checkout",
   "parent_deployment_id", "builder_authority", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder",
-  "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit",
+  "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit", "ticket_worktree_selection",
 ] as const;
 
 function assertExactStartedReplay(existingRow: Record<string, unknown>, requested: RegistryEvent): void {
@@ -898,6 +910,7 @@ function assertEventMatchesStartedIdentity(db: ReturnType<typeof getDb>, request
 
 function correlationToValidationInput(event: RegistryEvent): Record<string, unknown> {
   return {
+    reviewCheckout: event.review_checkout,
     parentDeploymentId: event.parent_deployment_id,
     builderAuthority: event.builder_authority,
     treehousePath: event.treehouse_path,
@@ -911,6 +924,8 @@ function correlationToValidationInput(event: RegistryEvent): Record<string, unkn
   };
 }
 
+// Branch/root evidence alone is safe for a non-builder ticket-worktree selection.
+// Lease/authority/slot fields remain the indivisible protected builder binding.
 function hasTreehouseBinding(event: RegistryEvent): boolean {
   return event.builder_authority !== undefined || event.parent_deployment_id !== undefined || event.treehouse_path !== undefined
     || event.treehouse_lease_id !== undefined || event.treehouse_lease_holder !== undefined || event.ticket_slot_id !== undefined
@@ -918,7 +933,7 @@ function hasTreehouseBinding(event: RegistryEvent): boolean {
 }
 
 function hasAnyCorrelation(event: RegistryEvent): boolean {
-  return hasTreehouseBinding(event) || event.branch_state !== undefined || event.branch_base_sha !== undefined || event.branch_head_sha !== undefined;
+  return event.review_checkout !== undefined || hasTreehouseBinding(event) || event.branch_state !== undefined || event.branch_base_sha !== undefined || event.branch_head_sha !== undefined;
 }
 
 function startConflictDiagnostic(reason: string): string {
@@ -935,6 +950,7 @@ function nullableValue(value: unknown): unknown {
 
 function toRow(event: RegistryEvent): Record<string, unknown> {
   return {
+    review_checkout: event.review_checkout ? JSON.stringify(event.review_checkout) : null,
     deployment_id: event.deployment_id,
     team: event.team,
     event: event.event,
@@ -958,6 +974,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
     repo: event.repo ?? null,
     repo_root: event.repo_root ?? null,
     worktree_root: event.worktree_root ?? null,
+    ticket_worktree_selection: event.ticket_worktree_selection ?? null,
     repository_slot: event.repository_slot ?? null,
     parent_deployment_id: event.parent_deployment_id ?? null,
     builder_authority: event.builder_authority ?? null,
@@ -984,6 +1001,7 @@ function toRow(event: RegistryEvent): Record<string, unknown> {
 function fromRow(row: Record<string, unknown>): RegistryEvent {
   return {
     deployment_id: String(row["deployment_id"]),
+    ...(row["ticket_worktree_selection"] != null ? { ticket_worktree_selection: String(row["ticket_worktree_selection"]) } : {}),
     team: String(row["team"]),
     event: row["event"] as RegistryEvent["event"],
     timestamp: normalizeTimestamp(row["timestamp"]),
@@ -1025,6 +1043,7 @@ function fromRow(row: Record<string, unknown>): RegistryEvent {
 function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
   return {
     deploy_id: String(row["deployment_id"]),
+    ...(row["ticket_worktree_selection"] != null ? { ticket_worktree_selection: String(row["ticket_worktree_selection"]) } : {}),
     team: String(row["team"]),
     status: row["status"] as DeploymentStatus["status"],
     started_at: normalizeTimestamp(row["started_at"]),
@@ -1056,10 +1075,11 @@ function deploymentFromRow(row: Record<string, unknown>): DeploymentStatus {
 
 function correlationFromRow(row: Record<string, unknown>): Pick<DeploymentStatus,
   "parent_deployment_id" | "builder_authority" | "treehouse_path" | "treehouse_lease_id" | "treehouse_lease_holder" |
-  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit"
+  "branch_state" | "branch_base_sha" | "branch_head_sha" | "ticket_slot_id" | "repository_permit" | "review_checkout"
 > {
   try {
     const evidence = validateDeploymentCorrelationEvidence({
+      reviewCheckout: parseJson(row["review_checkout"]),
       parentDeploymentId: nullableValue(row["parent_deployment_id"]),
       builderAuthority: nullableValue(row["builder_authority"]),
       treehousePath: nullableValue(row["treehouse_path"]),
@@ -1072,6 +1092,7 @@ function correlationFromRow(row: Record<string, unknown>): Pick<DeploymentStatus
       repositoryPermit: nullableValue(row["repository_permit"]),
     }, { ticketId: nullableValue(row["ticket_id"]), worktreeRoot: nullableValue(row["worktree_root"]), requireWorktreeMatch: row["treehouse_path"] != null && row["worktree_root"] != null });
     return {
+      ...(evidence.reviewCheckout ? { review_checkout: evidence.reviewCheckout } : {}),
       parent_deployment_id: evidence.parentDeploymentId,
       builder_authority: evidence.builderAuthority,
       treehouse_path: evidence.treehousePath,

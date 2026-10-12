@@ -1,4 +1,5 @@
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
+import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import type { SessionCommandBuilder, SessionEventNormalizer } from "../agent-api/ws/session-hub.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
@@ -30,6 +31,8 @@ export interface DeployRequest {
   autonomy?: AutonomyLevel;
   listModes?: boolean;
   validate?: boolean;
+  /** Trusted PPA CLI-only selection intent; the Agent API never accepts this field. */
+  ticketWorktree?: boolean;
   sanitizedCharsRemoved?: number;
   /** Trusted internal provenance; API/CLI parsers never accept this from user fields. */
   invocationChannel?: DeploymentInvocationChannel;
@@ -102,6 +105,15 @@ export interface ValidateDeployResult {
 }
 
 export function validateDeployRequestFields(body: Record<string, unknown>): ValidateDeployResult | { error: string; warnings?: string[] } {
+  if (Object.prototype.hasOwnProperty.call(body, "ticketWorktree")) {
+    return { error: formatBoundedFiveFieldDiagnostic({
+      condition: "ticket-worktree invocation boundary rejected",
+      source: "Agent API deploy request fields",
+      reason: "ticketWorktree is a trusted PPA CLI-only request intent and is not an Agent API capability",
+      correction: "remove ticketWorktree from the API request and invoke ppa deploy with --ticket-worktree from the canonical repository when operator-authorized",
+      resumeAction: "retry only through the PPA CLI with an exact --ticket and an eligible non-builder team",
+    }) };
+  }
   const team = stringField(body, "team");
   const runtime = stringField(body, "runtime");
   const mode = stringField(body, "mode");

@@ -229,12 +229,17 @@ export class PiAdapter implements RuntimeAdapter {
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
     const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    if (plan?.reviewCheckout) {
+      delete env["PA_TICKET_SLOT"];
+      delete env["PA_REPOSITORY_PERMIT"];
+    }
     const protectedValidationLaunch = this.protectedValidationLaunches.get(opts.deployId);
     this.protectedValidationLaunches.delete(opts.deployId);
     const protectedAuthority = [
       opts.repositoryLease?.ownershipToken,
       opts.repositoryBorrower?.borrowerToken,
       protectedValidationLaunch?.review.authorizationId,
+      protectedValidationLaunch?.reservation?.reservationToken,
     ].filter((value): value is string => Boolean(value));
     const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));

@@ -3,6 +3,7 @@ import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile } from "../../sensitive-patterns.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
+import { TicketStore } from "../../tickets/index.js";
 import type { CliIo } from "../utils.js";
 
 const STATUS_WAIT_OVERRIDE_ENV = "PA_STATUS_WAIT_TIMEOUT";
@@ -12,7 +13,7 @@ export function parseDeployArgs(argv: string[]): { fields: Record<string, unknow
   if (!team || team.startsWith("-")) return { error: "team is required" };
   const fields: Record<string, unknown> = { team };
   const flagMap: Record<string, keyof DeployRequest | "objectiveFile"> = { "--mode": "mode", "--objective": "objective", "--objective-file": "objectiveFile", "--evaluate-deployment": "evaluateDeployment", "--repo": "repo", "--ticket": "ticket", "--timeout": "timeout", "--provider": "provider", "--model": "model", "--team-model": "teamModel", "--agent-model": "agentModel", "--resume": "resume", "--autonomy": "autonomy" };
-  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--force": "force", "--list-modes": "listModes", "--validate": "validate" };
+  const booleanMap: Record<string, keyof DeployRequest> = { "--dry-run": "dryRun", "--background": "background", "--force": "force", "--list-modes": "listModes", "--validate": "validate", "--ticket-worktree": "ticketWorktree" };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]!;
     const booleanKey = booleanMap[arg];
@@ -50,10 +51,19 @@ export function printDeployModes(team: string, io: Required<CliIo>): number {
   return 0;
 }
 
-export function validateDeployConfig(team: string, io: Required<CliIo>, binaryName = "opa"): number {
+export function validateDeployConfig(team: string, io: Required<CliIo>, binaryName = "opa", ticketWorktree = false): number {
   const config = loadTeamConfig(team);
   const missingReferences = validateTeamSkillReferences().filter((reference) => reference.team === config.name);
   if (missingReferences.length > 0) {
+    if (ticketWorktree) {
+      io.stderr(ticketWorktreeDiagnostic({
+        source: "resolved team config managed-reference validation",
+        reason: `team config validation failed: ${missingReferences.length} missing referenced file(s)`,
+        correction: "fix the missing managed paths or team references; preserve checkout and authority evidence",
+        resumeAction: "rerun the same PPA selection request with --validate after correcting the team config",
+      }));
+      return 1;
+    }
     io.stderr(`Team config validation failed: ${missingReferences.length} missing referenced file(s) for ${config.name}.`);
     for (const reference of missingReferences) {
       io.stderr(`- ${reference.reference} (${reference.context}; ${reference.kind})`);
@@ -138,6 +148,12 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
     io.stdout("                      Omit to infer the exact configured root from CWD");
   }
   io.stdout("  --ticket <id>       Associate deployment with a ticket");
+  if (binaryName === "ppa") {
+    io.stdout("  --ticket-worktree   Select the ticket's existing authenticated worktree (non-builder; requires --ticket)");
+    io.stdout("                     PPA CLI only, from canonical CWD; status-only selection, no new authority or return rights.");
+    io.stdout("                     Dry-run authenticates without spawning; resume requires the same ticket and physical checkout.");
+    io.stdout("                     Excluded from builder, other binaries and Agent API; eligible mode rollout requires paired config validation (PAPC-038).");
+  }
   if (binaryName !== "cpa" && binaryName !== "dpa") {
     io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
   }
@@ -174,33 +190,62 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
     printDeployHelp(io, binaryName);
     return 0;
   }
+  // Detect raw intent before parsing: earlier invalid fields/options must not
+  // escape the selection diagnostic boundary, regardless of flag order.
+  const selectionIntent = argv.some((arg) => arg === "--ticket-worktree" || arg.startsWith("--ticket-worktree="));
+  const reject = (reason: string): void => io.stderr(selectionIntent ? ticketWorktreeDiagnostic({
+    source: "CLI deploy argument parsing and validation",
+    reason: reason.startsWith("Unsupported deploy option:") ? "unsupported deploy option" : reason,
+    correction: "provide valid supported CLI fields without sensitive input; preserve existing checkout and authority evidence",
+    resumeAction: "retry the corrected PPA CLI request with the same exact ticket and selection flag",
+  }) : reason);
   const parsed = parseDeployArgs(argv);
   if ("error" in parsed) {
-    io.stderr(parsed.error);
+    reject(parsed.error);
     return 1;
   }
-  const validated = validateDeployRequestFields(parsed.fields);
+  const ticketWorktree = parsed.fields["ticketWorktree"] === true;
+  const sharedFields = { ...parsed.fields };
+  delete sharedFields["ticketWorktree"];
+  const validated = validateDeployRequestFields(sharedFields);
   if ("error" in validated) {
-    for (const warning of validated.warnings ?? []) io.stderr(warning);
-    io.stderr(validated.error);
+    if (!selectionIntent) for (const warning of validated.warnings ?? []) io.stderr(warning);
+    reject(validated.error);
     return 1;
   }
-  if (validated.warnings) {
+  if (validated.warnings && !selectionIntent) {
     for (const warning of validated.warnings) io.stderr(warning);
+  }
+  if (ticketWorktree) {
+    validated.request.ticketWorktree = true;
+    validated.request.invocationChannel = "cli";
+    const boundaryError = ticketWorktreeBoundaryError(binaryName, validated.request);
+    if (boundaryError) {
+      io.stderr(boundaryError);
+      return 1;
+    }
   }
   if ((binaryName === "cpa" || binaryName === "dpa") && validated.request.force) {
     io.stderr(`${binaryName}: --force is unsupported because this adapter does not execute exclusive builder deployments; use ppa or opa for builder ownership enforcement`);
     return 1;
   }
-  if (validated.request.listModes) return printDeployModes(validated.request.team, io);
-  if (validated.request.validate) return validateDeployConfig(validated.request.team, io, binaryName);
+  if (validated.request.listModes || validated.request.validate) {
+    try {
+      const actual = loadTeamConfig(validated.request.team);
+      if (ticketWorktree && actual.name === "builder") { reject("resolved builder team cannot request selection-only intent"); return 1; }
+      return validated.request.listModes ? printDeployModes(validated.request.team, io) : validateDeployConfig(validated.request.team, io, binaryName, ticketWorktree);
+    } catch (error) {
+      if (!selectionIntent) throw error;
+      reject(error instanceof Error ? error.message : String(error)); return 1;
+    }
+  }
   const resolved = withResolvedDeployTimeout(validated.request);
   if ("error" in resolved) {
-    io.stderr(resolved.error);
+    reject(resolved.error);
     return 1;
   }
   if (!hooks.deploy) {
-    io.stderr("Deployment execution requires an adapter hook");
+    reject("Deployment execution requires an adapter hook");
     return 1;
   }
 
@@ -264,32 +309,110 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
       canonicalRepoRoot = selector.repoRoot;
     } else {
       repository = resolveRepoExecutionPath(resolved.request.repo, originalCwd, {
-        allowLinkedWorktreeCwd: binaryName === "ppa" && resolved.request.repo === undefined,
+        allowLinkedWorktreeCwd: binaryName === "ppa" && resolved.request.repo === undefined && !resolved.request.ticketWorktree,
       });
       canonicalRepoRoot = repository.repoRoot;
     }
   } catch (error) {
-    io.stderr(error instanceof Error ? error.message : String(error));
+    const reason = error instanceof Error ? error.message : String(error);
+    io.stderr(resolved.request.ticketWorktree ? ticketWorktreeDiagnostic({
+      source: "registered canonical repository resolver",
+      reason,
+      correction: "invoke from the exact registered canonical root or pass only its registered key or exact canonical root; never pass a linked-worktree path",
+      resumeAction: "retry after the canonical repository selector and invocation CWD resolve to one registered repository",
+    }) : reason);
     return 1;
+  }
+
+  if (resolved.request.ticketWorktree) {
+    const ticketId = resolved.request.ticket!;
+    let ticket: ReturnType<TicketStore["get"]>;
+    try {
+      ticket = new TicketStore().get(ticketId);
+    } catch (error) {
+      io.stderr(ticketWorktreeDiagnostic({
+        source: "ticket store read",
+        reason: error instanceof Error ? error.message : String(error),
+        correction: "restore readable canonical ticket evidence without changing the ticket through selection admission",
+        resumeAction: "retry after the exact ticket can be read and matched to the canonical repository",
+      }));
+      return 1;
+    }
+    if (!ticket || ticket.id !== ticketId) {
+      io.stderr(ticketWorktreeDiagnostic({
+        source: "exact ticket lookup",
+        reason: `ticket ${ticketId} did not resolve to an exact canonical ticket record`,
+        correction: "pass one existing canonical ticket ID with --ticket; aliases and missing tickets are not eligible",
+        resumeAction: "retry after the exact ticket record exists and remains assigned to this work item",
+      }));
+      return 1;
+    }
+    if (ticket.project !== repository.repoKey) {
+      io.stderr(ticketWorktreeDiagnostic({
+        source: "ticket project and canonical repository registry",
+        reason: `ticket ${ticket.id} belongs to project ${ticket.project}, but the canonical selector resolved ${repository.repoKey} at ${repository.repoRoot}`,
+        correction: "invoke from or select the canonical repository registered for the ticket project",
+        resumeAction: "retry only after the exact ticket project and canonical repository key agree",
+      }));
+      return 1;
+    }
   }
 
   let result: Awaited<ReturnType<NonNullable<CoreExecutionHooks["deploy"]>>>;
   try {
     process.chdir(repository.repositoryCwd);
-    const adapterRequest = binaryName === "ppa" && resolved.request.repo === undefined
+    const adapterRequest = binaryName === "ppa" && resolved.request.repo === undefined && !resolved.request.ticketWorktree
       ? resolved.request
       : { ...resolved.request, repo: canonicalRepoRoot };
     result = await hooks.deploy(adapterRequest, { stderr: io.stderr });
+  } catch (error) {
+    if (!selectionIntent) throw error;
+    reject(error instanceof Error ? error.message : String(error)); return 1;
   } finally {
     process.chdir(originalCwd);
   }
   if (result.status === "failed") {
-    io.stderr(result.reason ?? "Deployment failed");
+    reject(result.reason ?? "Deployment failed");
     return 1;
   }
   const label = result.status === "success" ? "completed" : "pending";
   io.stdout(`Deployment ${label}: ${result.deploymentId ?? "(adapter-managed)"}`);
   return 0;
+}
+
+function ticketWorktreeBoundaryError(binaryName: string, request: DeployRequest): string | undefined {
+  if (binaryName !== "ppa" || request.invocationChannel !== "cli") {
+    return ticketWorktreeDiagnostic({
+      source: "CLI binary and trusted invocation channel",
+      reason: `--ticket-worktree is available only to ppa deploy through the CLI; observed binary=${binaryName} channel=${request.invocationChannel ?? "unset"}`,
+      correction: "use ppa deploy from Pi; opa, cpa, dpa, direct pa-core, and Agent API invocations are unsupported",
+      resumeAction: "retry through the PPA CLI without changing adapter or API permissions",
+    });
+  }
+  if (!request.ticket) {
+    return ticketWorktreeDiagnostic({
+      source: "PPA CLI request fields",
+      reason: "--ticket-worktree requires one exact --ticket value",
+      correction: "add the canonical ticket ID with --ticket",
+      resumeAction: "retry after confirming the ticket identifies this exact work item",
+    });
+  }
+  if (request.team === "builder") {
+    return ticketWorktreeDiagnostic({
+      source: "existing builder authority policy",
+      reason: "builder deployments use their existing authenticated Treehouse admission and cannot request selection-only ticket-worktree intent",
+      correction: "remove --ticket-worktree for builder or choose an eligible non-builder team without changing its mode permissions",
+      resumeAction: "retry only through the existing builder workflow or an operator-authorized non-builder PPA request",
+    });
+  }
+  return undefined;
+}
+
+function ticketWorktreeDiagnostic(input: { source: string; reason: string; correction: string; resumeAction: string }): string {
+  return formatBoundedFiveFieldDiagnostic({
+    condition: "ticket-worktree invocation boundary rejected",
+    ...input,
+  });
 }
 
 function isParentedPpaImplementSelector(binaryName: string, request: DeployRequest): boolean {

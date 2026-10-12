@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
-import { createPiHooks, deployWithPi, type PiDeployDependencies } from "../deploy.js";
-import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
+import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, TicketStore, type DeployRequest, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, selectPiReviewCandidateBeforePlanning, type PiDeployDependencies, type PiReviewCandidateBinding, type PiReviewCandidateOperation } from "../deploy.js";
+import { validateDeploymentCorrelationEvidence, validateReviewCheckoutCorrelationEvidence, type RuntimeName } from "@pa-platform/pa-core";
+import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
   const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(typeof stdout === "string" ? stdout : JSON.stringify(stdout));
@@ -25,6 +26,170 @@ function initializeRepo(path: string): void {
   git(["add", "README.md"], path);
   git(["commit", "-m", "initial"], path);
 }
+
+test("review-auto selects the exact existing candidate", async (t) => {
+  // No fixture may inherit deployment/task, checkout, registry, or Git redirection paths.
+  const isolatedKeys = Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key));
+  const prior = Object.fromEntries(isolatedKeys.map((key) => [key, process.env[key]]));
+  for (const key of isolatedKeys) delete process.env[key];
+  const root = mkdtempSync(join(tmpdir(), "pi-review-existing-"));
+  const operations: PiReviewCandidateOperation[] = ["ticket-read", "treehouse-status", "physical-authentication", "git-read", "checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease", "matrix-start", "reviewer-start"];
+  const prohibited = operations.filter((operation) => !["ticket-read", "treehouse-status", "physical-authentication", "git-read"].includes(operation));
+  type Fixture = {
+    dir: string; repo: string; worktree: string; ticketPath: string;
+    request: DeployRequest; binding: PiReviewCandidateBinding;
+    linked: Record<string, unknown>; ticket: Record<string, unknown>;
+    rows: Array<Record<string, unknown>>; output?: TreehouseCommandResult;
+  };
+  const snapshotFiles = (dir: string): Record<string, string> => {
+    const snapshot: Record<string, string> = {};
+    const walk = (path: string): void => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) walk(child);
+        else snapshot[child] = entry.isSymbolicLink() ? `symlink:${readlinkSync(child)}` : readFileSync(child).toString("base64");
+      }
+    };
+    walk(dir);
+    return snapshot;
+  };
+  const cases: Array<{ name: string; change?: (fixture: Fixture) => void; source?: RegExp }> = [
+    { name: "distinct exact candidate" },
+    { name: "exact canonical-path selector", change: (f) => { f.request.repo = f.repo; } },
+    { name: "implicit canonical selector", change: (f) => { delete f.request.repo; } },
+    { name: "absent exact ticket", change: (f) => { delete f.request.ticket; }, source: /authorized feature binding/ },
+    { name: "absent ticket file", change: (f) => { f.ticketPath = join(f.dir, "other-ticket.json"); }, source: /durable ticket read/ },
+    { name: "missing ticket", change: (f) => { f.ticket.id = "ALT-99"; }, source: /durable ticket read/ },
+    { name: "malformed ticket file", change: (f) => { f.ticket.linkedBranches = "not-an-array"; }, source: /durable ticket read/ },
+    { name: "missing branch", change: (f) => { f.ticket.linkedBranches = []; }, source: /linked branch/ },
+    { name: "duplicate repository branches", change: (f) => { f.ticket.linkedBranches = [f.linked, { ...f.linked, branch: "feature/ALT-7-other" }]; }, source: /linked branch/ },
+    { name: "wrong repository", change: (f) => { f.linked.repo = "other"; }, source: /linked branch/ },
+    { name: "wrong ticket project", change: (f) => { f.ticket.project = "other"; }, source: /linked branch/ },
+    { name: "planned branch", change: (f) => { f.linked.state = "planned"; }, source: /linked branch/ },
+    { name: "malformed branch state", change: (f) => { f.linked.state = "invented"; }, source: /durable ticket read/ },
+    { name: "wrong ticket branch", change: (f) => { f.linked.branch = "feature/ALT-77-candidate"; }, source: /linked branch/ },
+    { name: "different exact branch", change: (f) => { f.linked.branch = "feature/ALT-7-other"; }, source: /feature binding/ },
+    { name: "missing immutable base", change: (f) => { delete f.linked.baseSha; }, source: /feature binding/ },
+    { name: "uppercase base", change: (f) => { f.linked.baseSha = "A".repeat(40); }, source: /feature binding/ },
+    { name: "malformed HEAD", change: (f) => { f.linked.headSha = "abc"; }, source: /feature binding/ },
+    { name: "legacy-only HEAD", change: (f) => { delete f.linked.headSha; }, source: /linked branch/ },
+    { name: "stale ticket HEAD", change: (f) => { f.linked.headSha = f.binding.baseSha; }, source: /feature binding/ },
+    { name: "conflicting legacy alias", change: (f) => { f.linked.sha = f.binding.baseSha; }, source: /feature binding/ },
+    { name: "missing lease", change: (f) => { f.rows = []; }, source: /Treehouse/ },
+    { name: "duplicate deterministic leases", change: (f) => { f.rows.push({ ...f.rows[0], path: join(f.dir, "another"), lease_id: "lease-2" }); }, source: /Treehouse/ },
+    { name: "wrong ticket holder", change: (f) => { f.rows[0]!.lease_holder = "pa:generic-repo:ALT-77"; }, source: /Treehouse/ },
+    { name: "wrong repository holder", change: (f) => { f.rows[0]!.lease_holder = "pa:other:ALT-7"; }, source: /Treehouse/ },
+    { name: "stale free lease", change: (f) => { f.rows[0]!.status = "free"; }, source: /Treehouse/ },
+    { name: "missing lease identity", change: (f) => { delete f.rows[0]!.lease_id; }, source: /Treehouse/ },
+    { name: "primary-root lease", change: (f) => { f.rows[0]!.path = f.repo; }, source: /linked worktree/ },
+    { name: "nested lease path", change: (f) => { const nested = join(f.worktree, "nested"); mkdirSync(nested); f.rows[0]!.path = nested; }, source: /linked worktree/ },
+    { name: "registered worktree nested in canonical root", change: (f) => { const nested = join(f.repo, "nested-tree"); git(["worktree", "add", "--detach", nested, "HEAD"], f.repo); f.rows[0]!.path = nested; }, source: /linked worktree/ },
+    { name: "symlink lease path", change: (f) => { const alias = join(f.dir, "alias"); symlinkSync(f.worktree, alias, "dir"); f.rows[0]!.path = alias; }, source: /linked worktree/ },
+    { name: "symlink dot-git", change: (f) => { const dotGit = join(f.worktree, ".git"); const pointer = readFileSync(dotGit); const alias = join(f.dir, "dot-git-target"); writeFileSync(alias, pointer); rmSync(dotGit); symlinkSync(alias, dotGit); }, source: /linked worktree/ },
+    { name: "wrong common directory", change: (f) => { const other = join(f.dir, "other-repo"); initializeRepo(other); const otherTree = join(f.dir, "other-tree"); git(["worktree", "add", "--detach", otherTree, "HEAD"], other); f.rows[0]!.path = otherTree; }, source: /linked worktree/ },
+    { name: "unregistered forged worktree", change: (f) => { const forged = join(f.dir, "forged"); mkdirSync(forged); writeFileSync(join(forged, "README.md"), "candidate\n"); const gitDir = git(["rev-parse", "--absolute-git-dir"], f.worktree); writeFileSync(join(forged, ".git"), `gitdir: ${gitDir}\n`); f.rows[0]!.path = forged; }, source: /linked worktree/ },
+    { name: "detached candidate", change: (f) => { git(["checkout", "--detach", "HEAD"], f.worktree); }, source: /Git snapshot/ },
+    { name: "wrong current branch", change: (f) => { git(["checkout", "-b", "feature/ALT-7-other"], f.worktree); }, source: /Git snapshot/ },
+    { name: "drifted HEAD", change: (f) => { git(["commit", "--allow-empty", "-m", "drift"], f.worktree); }, source: /Git snapshot/ },
+    { name: "staged record", change: (f) => { writeFileSync(join(f.worktree, "README.md"), "staged\n"); git(["add", "README.md"], f.worktree); }, source: /Git snapshot/ },
+    { name: "unstaged record", change: (f) => { writeFileSync(join(f.worktree, "README.md"), "unstaged\n"); }, source: /Git snapshot/ },
+    { name: "untracked NUL-safe record", change: (f) => { writeFileSync(join(f.worktree, "new\nname with spaces.txt"), "preserved\n"); }, source: /Git snapshot/ },
+    { name: "non-ancestor immutable base", change: (f) => { git(["commit", "--allow-empty", "-m", "canonical later"], f.repo); const later = git(["rev-parse", "HEAD"], f.repo); f.binding = { ...f.binding, baseSha: later }; f.linked.baseSha = later; }, source: /base ancestry/ },
+    { name: "base is a blob not a commit", change: (f) => { const blob = git(["rev-parse", "HEAD:README.md"], f.repo); f.binding = { ...f.binding, baseSha: blob }; f.linked.baseSha = blob; }, source: /base ancestry/ },
+    { name: "missing base object", change: (f) => { f.binding = { ...f.binding, baseSha: "f".repeat(40) }; f.linked.baseSha = f.binding.baseSha; }, source: /base ancestry/ },
+    { name: "authorized ticket mismatch", change: (f) => { f.binding = { ...f.binding, ticket: "ALT-77" }; }, source: /authorized feature binding/ },
+    { name: "authorized canonical mismatch", change: (f) => { f.binding = { ...f.binding, repoRoot: f.worktree }; }, source: /canonical repository binding/ },
+    { name: "authorized uppercase Feature SHA", change: (f) => { f.binding = { ...f.binding, featureSha: "A".repeat(40) }; }, source: /authorized feature binding/ },
+    { name: "oversized stdout", change: (f) => { f.output = result(Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1, 0x20)); }, source: /Treehouse/ },
+    { name: "malformed JSON", change: (f) => { f.output = result("["); }, source: /Treehouse/ },
+    { name: "truncated UTF-8", change: (f) => { f.output = result(Buffer.from([0x5b, 0xc3, 0x28, 0x5d])); }, source: /Treehouse/ },
+    { name: "subprocess timeout", change: (f) => { f.output = { ...result("", 1), error: new Error("spawn ETIMEDOUT PRIVATE-STDERR") }; }, source: /Treehouse/ },
+    { name: "oversized/control diagnostic input", change: (f) => { f.linked.branch = "feature/ALT-7-" + "x".repeat(10_000) + "\ncontrol"; }, source: /linked branch|feature binding/ },
+  ];
+  try {
+    assert.equal(TREEHOUSE_TIMEOUT_MS, 15_000);
+    assert.equal(MAX_TREEHOUSE_JSON_BYTES, 1024 * 1024);
+    for (const [index, scenario] of cases.entries()) await t.test(scenario.name, () => {
+      const dir = join(root, String(index)); mkdirSync(dir);
+      const repo = join(dir, "repo"); const worktree = join(dir, "candidate");
+      const config = join(dir, "config"); const tickets = join(dir, "tickets"); mkdirSync(config); mkdirSync(tickets);
+      initializeRepo(repo);
+      const baseSha = git(["rev-parse", "HEAD"], repo);
+      const branch = "feature/ALT-7-candidate";
+      git(["worktree", "add", "-b", branch, worktree, baseSha], repo);
+      writeFileSync(join(worktree, "README.md"), "candidate\n"); git(["add", "README.md"], worktree); git(["commit", "-m", "candidate"], worktree);
+      const featureSha = git(["rev-parse", "HEAD"], worktree);
+      writeFileSync(join(config, "config.yaml"), `config_dir: ${dir}\nrepos:\n  generic-repo:\n    path: ${repo}\n    prefix: ALT\n`);
+      process.env["PA_PLATFORM_CONFIG"] = config; process.env["PA_AI_USAGE_HOME"] = dir; process.env["PA_REGISTRY_DB"] = join(dir, "registry.db");
+      assert.equal(process.env["PA_DEPLOYMENT_DIR"], undefined);
+      const linked = { repo: "generic-repo", branch, state: "materialized", baseSha, headSha: featureSha, sha: featureSha };
+      const ticket = { id: "ALT-7", project: "generic-repo", linkedBranches: [linked] };
+      const fixture: Fixture = { dir, repo, worktree, linked, ticket, ticketPath: join(tickets, "ALT-7.json"),
+        request: { team: "requirements", mode: "review-auto", ticket: "ALT-7", repo: "generic-repo" },
+        binding: { repoKey: "generic-repo", repoRoot: repo, ticket: "ALT-7", branch, baseSha, featureSha },
+        rows: [{ name: "1", path: worktree, status: "leased", flavor: "git", lease_id: "lease-1", lease_holder: "pa:generic-repo:ALT-7", leased_at: "2026-10-02T00:00:00Z", processes: [] }],
+      };
+      scenario.change?.(fixture);
+      writeFileSync(fixture.ticketPath, JSON.stringify(fixture.ticket));
+      const before = snapshotFiles(dir);
+      const counts = Object.fromEntries(operations.map((operation) => [operation, 0])) as Record<PiReviewCandidateOperation, number>;
+      const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+      const treehouse = new TreehouseClient({ run: (args, cwd) => {
+        calls.push({ args: [...args], cwd });
+        if (args[0] !== "status") { counts.checkout += 1; throw new Error("selection attempted checkout lifecycle"); }
+        return fixture.output ?? result(fixture.rows);
+      } });
+      const select = () => selectPiReviewCandidateBeforePlanning({ request: fixture.request, runtime: "pi", cwd: repo, authorizedBinding: fixture.binding }, { treehouse, observeOperation: (operation) => { counts[operation] += 1; } });
+      if (scenario.source) {
+        assert.throws(select, (error: unknown) => {
+          assert.ok(error instanceof Error); assert.match(error.message, scenario.source!);
+          assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+          assert.ok(error.message.length <= 2_000); assert.doesNotMatch(error.message, /PRIVATE-STDERR|[\u0000-\u001f\u007f-\u009f]/);
+          return true;
+        });
+      } else {
+        const selected = select(); assert.ok(selected);
+        assert.equal(selected.planningCwd, worktree); assert.equal(selected.planningRequest.repo, undefined);
+        assert.equal(selected.reviewCheckout.repoRoot, repo); assert.notEqual(selected.planningCwd, repo);
+        assert.equal(selected.reviewCheckout.featureSha, featureSha); assert.equal(selected.reviewCheckout.headSha, featureSha);
+        assert.equal(selected.reviewCheckout.baseSha, baseSha); assert.equal(selected.reviewCheckout.branch, branch);
+        assert.equal(selected.reviewCheckout.leaseId, "lease-1"); assert.equal(selected.reviewCheckout.leaseHolder, "pa:generic-repo:ALT-7");
+        assert.equal(selected.reviewCheckout.gitSnapshot.statusPorcelainV2Base64, "");
+        assert.equal(selected.reviewCheckout.gitSnapshot.statusRecordCount, 0);
+        assert.equal(selected.reviewCheckout.repositoryGitCommonDir, join(repo, ".git"));
+        assert.notEqual(selected.reviewCheckout.repositoryGitDir, selected.reviewCheckout.repositoryGitCommonDir);
+        assert.ok(Object.isFrozen(selected)); assert.ok(Object.isFrozen(selected.reviewCheckout)); assert.ok(Object.isFrozen(selected.reviewCheckout.gitSnapshot));
+        assert.equal("ticketSlotId" in selected.reviewCheckout, false); assert.equal("repositoryPermit" in selected.reviewCheckout, false); assert.equal("authority" in selected.reviewCheckout, false);
+        assert.equal(git(["branch", "--show-current"], repo), "develop"); assert.equal(git(["rev-parse", "HEAD"], repo), baseSha); assert.notEqual(baseSha, featureSha);
+        assert.equal(counts["ticket-read"], 1); assert.equal(counts["treehouse-status"], 1); assert.equal(counts["physical-authentication"], 1); assert.equal(counts["git-read"], 5);
+        process.env["GIT_DIR"] = join(repo, ".git");
+        try { assert.throws(select, /Git invocation environment/); } finally { delete process.env["GIT_DIR"]; }
+        const { repositoryGitDir: _gitDir, repositoryGitCommonDir: _common, gitSnapshot: _snapshot, ...correlation } = selected.reviewCheckout;
+        assert.deepEqual(validateReviewCheckoutCorrelationEvidence(correlation), correlation);
+        assert.throws(() => validateReviewCheckoutCorrelationEvidence({ ...correlation, repositoryPermit: 1 }), /cannot contain builder/);
+        assert.throws(() => validateDeploymentCorrelationEvidence({ treehousePath: worktree, treehouseLeaseId: "lease-1", treehouseLeaseHolder: "pa:generic-repo:ALT-7", branchState: "materialized", branchHeadSha: featureSha }), /requires authority/);
+        assert.deepEqual(validateDeploymentCorrelationEvidence({}), {}, "legacy builder correlation remains readable");
+        for (const route of [
+          { runtime: "opencode" }, { runtime: "claude" }, { runtime: "droid" },
+          { request: { ...fixture.request, dryRun: true } }, { request: { ...fixture.request, resume: "d-abcdef" } },
+          { request: { ...fixture.request, team: "builder" } }, { request: { ...fixture.request, mode: "review" } },
+        ] as Array<{ runtime?: RuntimeName; request?: DeployRequest }>) {
+          const beforeCounts = { ...counts };
+          assert.equal(selectPiReviewCandidateBeforePlanning({ request: route.request ?? fixture.request, runtime: route.runtime ?? "pi", cwd: repo, authorizedBinding: fixture.binding }, { treehouse, observeOperation: (operation) => { counts[operation] += 1; } }), undefined);
+          assert.deepEqual(counts, beforeCounts, "other routes perform no selection");
+        }
+      }
+      for (const operation of prohibited) assert.equal(counts[operation], 0, `${scenario.name}: zero ${operation}`);
+      assert.ok(calls.every((call) => call.cwd === repo && call.args.join(" ") === "status --json"));
+      assert.ok(calls.length <= 1, "one bounded status query at most, no retries");
+      assert.deepEqual(snapshotFiles(dir), before, `${scenario.name}: ticket, project, Git index/refs, task and authority files remain byte-identical`);
+    });
+  } finally {
+    for (const key of Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key))) delete process.env[key];
+    for (const [key, value] of Object.entries(prior)) if (value !== undefined) process.env[key] = value;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Treehouse JSON boundary acquires from an exact v2.3.0 free row, reuses one lease, and rejects malformed evidence", () => {
   const calls: string[][] = [];
@@ -91,6 +256,432 @@ test("Treehouse JSON boundary acquires from an exact v2.3.0 free row, reuses one
     });
   }
   assert.equal(calls.some((args) => ["return", "prune", "destroy", "force"].includes(args[0] ?? "")), false, "PA never invokes destructive Treehouse lifecycle commands");
+});
+
+function assertSelectionDiagnostic(value: string): void {
+  assert.ok(value.length <= 2_000);
+  assert.match(value, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+  assert.doesNotMatch(value, /[\u0000-\u001f\u007f-\u009f]/);
+}
+
+function selectionFixture() {
+  const root = mkdtempSync(join(tmpdir(), "pi-selection-"));
+  const repo = join(root, "repo");
+  const worktree = join(root, "leased");
+  const config = join(root, "config");
+  const teams = join(root, "teams");
+  const tickets = join(root, "tickets");
+  for (const dir of [config, teams, tickets]) mkdirSync(dir);
+  initializeRepo(repo);
+  const head = git(["rev-parse", "HEAD"], repo);
+  const branch = "feature/PAP-1-work";
+  git(["worktree", "add", "-b", branch, worktree, head], repo);
+  writeFileSync(join(config, "config.yaml"), `config_dir: ${root}\nrepos:\n  registered:\n    path: ${repo}\n    prefix: PAP\n`);
+  for (const team of ["requirements", "learner"]) {
+    writeFileSync(join(teams, `${team}.yaml`), `name: ${team}\ndescription: Fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: inspect\n    label: Inspect\n    require_ticket: true\n`);
+  }
+  const link = { repo: "registered", branch, state: "materialized", baseSha: head, headSha: head, linkedAt: "2026-09-17T00:00:00Z", linkedBy: "fixture" };
+  const ticketPath = join(tickets, "PAP-1.json");
+  const writeTicket = (links: readonly unknown[] = [link], project = "registered") =>
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-1", project, title: "fixture", linkedBranches: links }));
+  writeTicket();
+  const lease = { path: worktree, status: "leased", lease_id: "lease-1", lease_holder: "pa:registered:PAP-1" };
+  let rows: unknown = [lease];
+  const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+  const treehouse = new TreehouseClient({ run: (args, cwd) => { calls.push({ args: [...args], cwd }); return result(rows); } });
+  const keys = ["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const previousCwd = process.cwd();
+  Object.assign(process.env, { PA_PLATFORM_CONFIG: config, PA_PLATFORM_TEAMS: teams, PA_AI_USAGE_HOME: root, PA_REGISTRY_DB: join(root, "registry.db") });
+  process.chdir(repo);
+  const operations: string[] = [];
+  const originalUpdate = TicketStore.prototype.update;
+  const originalComment = TicketStore.prototype.comment;
+  const originalGet = TreehouseClient.prototype.getLease;
+  TicketStore.prototype.update = function () { operations.push("ticket-write"); throw new Error("ticket writes forbidden during selection"); };
+  TicketStore.prototype.comment = function () { operations.push("ticket-write"); throw new Error("ticket writes forbidden during selection"); };
+  TreehouseClient.prototype.getLease = function () { operations.push("checkout"); throw new Error("allocation forbidden during selection"); };
+  const dependencies: PiDeployDependencies = { treehouse, observeOperation: (operation) => operations.push(operation) };
+  const request: DeployRequest = { team: "requirements", mode: "inspect", ticket: "PAP-1", ticketWorktree: true, repo: "registered", timeout: 60 };
+  const authenticate = (override: Partial<DeployRequest> = {}, extra: PiDeployDependencies = {}) =>
+    authenticateTicketWorktreeSelection({ ...request, ...override }, "inspect", repo, { ...dependencies, ...extra });
+  const snapshot = () => ({
+    canonical: captureRepositoryGitSnapshot(repo), selected: captureRepositoryGitSnapshot(worktree),
+    ticket: readFileSync(ticketPath).toString("base64"), files: readdirSync(worktree).sort(),
+    readme: readFileSync(join(worktree, "README.md"), "utf8"),
+  });
+  let preflights = 0;
+  let spawns = 0;
+  const adapter: RuntimeAdapter & { preflight(): void } = {
+    name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt",
+    preflight() { preflights += 1; }, installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "stub" }), extractActivity: () => [],
+    spawn(opts) { spawns += 1; return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
+    resume(opts) { spawns += 1; return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
+  };
+  const assertNeutral = () => {
+    assert.deepEqual(operations.filter((value) => value !== "runtime-spawn"), []);
+    assert.ok(calls.every((call) => call.cwd === repo && call.args.join(" ") === "status --json"));
+    assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-1")), false);
+  };
+  return { root, repo, worktree, head, branch, link, lease, ticketPath, calls, request, dependencies, adapter,
+    writeTicket, setRows: (value: unknown) => { rows = value; }, authenticate, snapshot, assertNeutral,
+    counts: () => ({ preflights, spawns }),
+    dispose: () => {
+      TicketStore.prototype.update = originalUpdate; TicketStore.prototype.comment = originalComment; TreehouseClient.prototype.getLease = originalGet;
+      process.chdir(previousCwd); closeDb();
+      for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("ticket selection authenticates only existing status and returns immutable selection-only evidence without writes", () => {
+  const fixture = selectionFixture();
+  const before = fixture.snapshot();
+  const originalUpdate = TicketStore.prototype.update;
+  const originalComment = TicketStore.prototype.comment;
+  const originalGetLease = TreehouseClient.prototype.getLease;
+  let writes = 0;
+  let allocations = 0;
+  TicketStore.prototype.update = function () { writes += 1; throw new Error("ticket update forbidden"); };
+  TicketStore.prototype.comment = function () { writes += 1; throw new Error("ticket comment forbidden"); };
+  TreehouseClient.prototype.getLease = function () { allocations += 1; throw new Error("allocation forbidden"); };
+  try {
+    for (const repo of [undefined, "registered", fixture.repo]) {
+      const selection = fixture.authenticate({ repo });
+      assert.equal(selection.evidence.worktreeRoot, fixture.worktree);
+      assert.equal(selection.evidence.repoRoot, fixture.repo);
+      assert.equal(selection.evidence.branch, fixture.branch);
+      assert.equal(selection.evidence.headSha, fixture.head);
+      assert.equal(Object.isFrozen(selection), true);
+      assert.equal(Object.isFrozen(selection.evidence), true);
+      for (const forbidden of ["authority", "ticketSlotId", "repositoryPermit", "lineage", "borrowerToken", "ownershipToken"]) {
+        assert.equal(forbidden in selection.evidence, false);
+      }
+      selection.reread();
+    }
+    assert.equal(fixture.calls.length, 6);
+    assert.equal(TREEHOUSE_TIMEOUT_MS, 15_000);
+    assert.equal(MAX_TREEHOUSE_JSON_BYTES, 1_048_576);
+    assert.equal(writes, 0);
+    assert.equal(allocations, 0);
+    assert.deepEqual(fixture.snapshot(), before);
+    fixture.assertNeutral();
+  } finally {
+    TicketStore.prototype.update = originalUpdate; TicketStore.prototype.comment = originalComment;
+    TreehouseClient.prototype.getLease = originalGetLease; fixture.dispose();
+  }
+});
+
+test("ticket selection rejects missing, duplicate, planned, legacy, malformed and wrong-repository links before preflight", async () => {
+  const fixture = selectionFixture();
+  try {
+    const variants: Array<readonly [string, readonly unknown[], string?]> = [
+      ["missing", []], ["duplicate", [fixture.link, fixture.link]],
+      ["planned", [{ ...fixture.link, state: "planned", baseSha: undefined, headSha: undefined }]],
+      ["legacy", [{ ...fixture.link, state: undefined, baseSha: undefined, headSha: undefined, sha: fixture.head }]],
+      ["missing-state", [{ ...fixture.link, state: undefined }]],
+      ["missing-head", [{ ...fixture.link, headSha: undefined, sha: fixture.head }]],
+      ["uppercase-base", [{ ...fixture.link, baseSha: "A".repeat(40) }]],
+      ["short-head", [{ ...fixture.link, headSha: "abc" }]],
+      ["conflicting-sha", [{ ...fixture.link, sha: "0".repeat(40) }]],
+      ["wrong-ticket-branch", [{ ...fixture.link, branch: "feature/PAP-2-work" }]],
+      ["wrong-project", [fixture.link], "other"],
+      ["wrong-link-repo", [{ ...fixture.link, repo: "other" }]],
+      ["hostile-branch", [{ ...fixture.link, branch: "hostile\n".repeat(2_000) }]],
+      ["head-drift", [{ ...fixture.link, headSha: "0".repeat(40) }]],
+    ];
+    for (const [name, links, project] of variants) {
+      fixture.writeTicket(links, project);
+      const before = fixture.snapshot();
+      const deployment = await deployWithPi(fixture.request, fixture.adapter, undefined, fixture.dependencies);
+      assert.equal(deployment.status, "failed", name);
+      assertSelectionDiagnostic(deployment.reason ?? "");
+      assert.deepEqual(fixture.snapshot(), before, name);
+    }
+    fixture.writeTicket();
+    rmSync(fixture.ticketPath);
+    assert.throws(() => fixture.authenticate(), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; });
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+    fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("ticket selection rejects absent, duplicate, contradictory and bounded-invalid leases with status-only calls", async () => {
+  const fixture = selectionFixture();
+  try {
+    const variants: unknown[] = [
+      [], [{ ...fixture.lease, lease_holder: "pa:registered:PAP-2" }],
+      [fixture.lease, { ...fixture.lease, path: join(fixture.root, "second"), lease_id: "lease-2" }],
+      [fixture.lease, fixture.lease], [{ ...fixture.lease, lease_id: undefined }],
+      [{ ...fixture.lease, leased: false }], [{ ...fixture.lease, path: "relative" }],
+      [{ ...fixture.lease, path: `${fixture.worktree}/../leased` }],
+      [{ ...fixture.lease, path: "/" + "x".repeat(4_095) }],
+      "[", Buffer.from([0xc3, 0x28]), Buffer.from("[]\0"), Buffer.alloc(MAX_TREEHOUSE_JSON_BYTES + 1),
+    ];
+    for (const rows of variants) {
+      fixture.setRows(rows);
+      const before = fixture.snapshot();
+      const deployment = await deployWithPi(fixture.request, fixture.adapter, undefined, fixture.dependencies);
+      assert.equal(deployment.status, "failed");
+      assertSelectionDiagnostic(deployment.reason ?? "");
+      assert.deepEqual(fixture.snapshot(), before);
+    }
+    const failing = new TreehouseClient({ run: () => ({ ...result(""), status: null, error: new Error("timeout\n".repeat(2_000)) }) });
+    assert.throws(() => fixture.authenticate({}, { treehouse: failing }), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; });
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+    fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("ticket selection authenticates forward/reverse Git metadata, physical common dir and membership, never aliases or substitutes", async () => {
+  const fixture = selectionFixture();
+  const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"], fixture.worktree);
+  const reverse = join(gitDir, "gitdir");
+  const common = join(gitDir, "commondir");
+  const dotGit = join(fixture.worktree, ".git");
+  try {
+    const alias = join(fixture.root, "alias");
+    symlinkSync(fixture.worktree, alias);
+    const clone = join(fixture.root, "clone");
+    git(["clone", "--local", fixture.repo, clone], fixture.root);
+    const nested = join(fixture.worktree, "nested"); mkdirSync(nested);
+    const paths = [alias, clone, fixture.repo, nested, join(fixture.root, "missing")];
+    for (const path of paths) {
+      fixture.setRows([{ ...fixture.lease, path }]);
+      const deployment = await deployWithPi(fixture.request, fixture.adapter, undefined, fixture.dependencies);
+      assert.equal(deployment.status, "failed", path); assertSelectionDiagnostic(deployment.reason ?? "");
+    }
+    fixture.setRows([fixture.lease]);
+    for (const [path, value] of [[reverse, join(fixture.repo, ".git")], [common, join(clone, ".git")], [dotGit, `gitdir: ${join(clone, ".git")}`]] as const) {
+      const original = readFileSync(path);
+      writeFileSync(path, value + "\n");
+      try { assert.throws(() => fixture.authenticate(), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; }); }
+      finally { writeFileSync(path, original); }
+    }
+    const savedDotGit = join(fixture.root, "saved-dot-git"); renameSync(dotGit, savedDotGit); symlinkSync(savedDotGit, dotGit);
+    try { assert.throws(() => fixture.authenticate()); } finally { rmSync(dotGit); renameSync(savedDotGit, dotGit); }
+    const originalDotGit = readFileSync(dotGit);
+    const substituted = join(fixture.root, "substituted-admin"); cpSync(gitDir, substituted, { recursive: true });
+    writeFileSync(join(substituted, "commondir"), `${join(fixture.repo, ".git")}\n`);
+    writeFileSync(dotGit, `gitdir: ${substituted}\n`);
+    try { assert.throws(() => fixture.authenticate(), /exact physical registered linked worktree/); } finally { writeFileSync(dotGit, originalDotGit); }
+    const duplicateRegistration = join(gitDir, "..", "duplicate-registration"); cpSync(gitDir, duplicateRegistration, { recursive: true });
+    try { assert.throws(() => fixture.authenticate(), /exactly one canonical Git worktree registration/); } finally { rmSync(duplicateRegistration, { recursive: true, force: true }); }
+    const savedReverse = join(fixture.root, "saved-reverse"); renameSync(reverse, savedReverse); symlinkSync(savedReverse, reverse);
+    try { assert.throws(() => fixture.authenticate(), /exact physical file/); } finally { rmSync(reverse); renameSync(savedReverse, reverse); }
+    const hidden = join(fixture.root, "hidden-registration"); renameSync(gitDir, hidden);
+    try { assert.throws(() => fixture.authenticate()); } finally { renameSync(hidden, gitDir); }
+    git(["checkout", "--detach", fixture.head], fixture.worktree);
+    try { assert.throws(() => fixture.authenticate(), /branch\/HEAD/); } finally { git(["checkout", fixture.branch], fixture.worktree); }
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 }); fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+function selectionOwner(fixture: ReturnType<typeof selectionFixture>, mode: "orchestrator" | "implement" = "orchestrator") {
+  const deploymentId = mode === "orchestrator" ? "d-aabbcc" : "d-ddeeff";
+  const deploymentDirectory = join(fixture.root, "deployments", deploymentId); mkdirSync(deploymentDirectory, { recursive: true });
+  const acquired = acquireRepositoryMutationLease({ canonicalRepoKey: "registered", canonicalRepoRoot: fixture.repo, worktreeRoot: fixture.worktree,
+    deploymentId, deploymentDirectory, runtime: "pi", team: "builder", mode, launchMode: "foreground", ticket: "PAP-1" });
+  assert.equal(acquired.status, "acquired");
+  if (acquired.status !== "acquired") throw new Error(acquired.diagnostic);
+  appendRegistryEvent({ deployment_id: deploymentId, team: "builder", mode, runtime: "pi", event: "started", timestamp: new Date().toISOString(),
+    ticket_id: "PAP-1", repo: fixture.worktree, repo_root: fixture.repo, worktree_root: fixture.worktree });
+  return acquired;
+}
+
+test("process-verified live owners and direct borrowers permit read-only selection, block non-locking and never confer authority", async () => {
+  const fixture = selectionFixture();
+  try {
+    const owner = selectionOwner(fixture);
+    const ownerBytes = readFileSync(owner.leasePath);
+    const borrowerPath = repositoryMutationBorrowerPath(fixture.worktree);
+    fixture.authenticate().reread();
+    const readOnly = await deployWithPi({ ...fixture.request, dryRun: true }, fixture.adapter, undefined, fixture.dependencies);
+    assert.equal(readOnly.status, "pending", readOnly.reason);
+    const deployment = await deployWithPi({ ...fixture.request, team: "learner", force: true }, fixture.adapter, undefined, fixture.dependencies);
+    assert.equal(deployment.status, "failed"); assert.match(deployment.reason ?? "", /non-locking/); assertSelectionDiagnostic(deployment.reason ?? "");
+    const fingerprint = readProcessFingerprint(process.pid)!;
+    const borrower: RepositoryMutationBorrower = {
+      schemaVersion: 1, borrowerToken: "private-child-token", canonicalRepoKey: "registered", canonicalRepoRoot: fixture.repo, worktreeRoot: fixture.worktree,
+      parentDeploymentId: owner.lease.deploymentId, parentProcessFingerprint: owner.lease.processFingerprint,
+      deploymentId: "d-112233", deploymentDirectory: join(fixture.root, "deployments", "d-112233"), runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+      ticket: "PAP-1", branch: fixture.branch, processFingerprint: fingerprint, registeredAt: new Date().toISOString(), timeoutSeconds: 60,
+      launchGitSnapshot: captureRepositoryGitSnapshot(fixture.worktree),
+    };
+    appendRegistryEvent({ deployment_id: borrower.deploymentId, team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: new Date().toISOString(),
+      ticket_id: "PAP-1", repo: fixture.worktree, repo_root: fixture.repo, worktree_root: fixture.worktree });
+    writeFileSync(borrowerPath, JSON.stringify(borrower));
+    const borrowerBytes = readFileSync(borrowerPath);
+    fixture.authenticate().reread();
+    assert.throws(() => fixture.authenticate({ team: "learner", force: true }), /non-locking/);
+    assert.deepEqual(readFileSync(owner.leasePath), ownerBytes); assert.deepEqual(readFileSync(borrowerPath), borrowerBytes);
+    rmSync(owner.leasePath); // A live admitted child retains custody even after parent exit.
+    fixture.authenticate().reread();
+    assert.throws(() => fixture.authenticate({ team: "learner" }), /non-locking/);
+    rmSync(borrowerPath);
+    const standalone = selectionOwner(fixture, "implement");
+    const standaloneBytes = readFileSync(standalone.leasePath);
+    fixture.authenticate().reread();
+    assert.throws(() => fixture.authenticate({ team: "learner" }), /non-locking/);
+    assert.deepEqual(readFileSync(standalone.leasePath), standaloneBytes);
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 }); fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("selection fails closed on stale, malformed-live, oversized, registry-conflicting and ambiguous builder evidence without repair", () => {
+  const fixture = selectionFixture();
+  try {
+    const owner = selectionOwner(fixture);
+    const ownerBytes = readFileSync(owner.leasePath);
+    const defects: unknown[] = [
+      "{", { ...owner.lease, ownershipToken: undefined },
+      { ...owner.lease, canonicalRepoRoot: join(fixture.root, "other") },
+      { ...owner.lease, worktreeRoot: fixture.repo }, { ...owner.lease, canonicalRepoKey: "other" },
+      { ...owner.lease, ticket: "PAP-2" }, { ...owner.lease, team: "learner" },
+      { ...owner.lease, repositoryGitDir: join(fixture.repo, ".git"), repositoryGitCommonDir: join(fixture.repo, ".git") },
+      Buffer.alloc(65_537, 0x20),
+    ];
+    for (const defect of defects) {
+      writeFileSync(owner.leasePath, Buffer.isBuffer(defect) ? defect : typeof defect === "string" ? defect : JSON.stringify(defect));
+      const before = readFileSync(owner.leasePath);
+      for (const force of [false, true]) assert.throws(() => fixture.authenticate({ force }), (error: unknown) => {
+        assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true;
+      });
+      assert.deepEqual(readFileSync(owner.leasePath), before);
+    }
+    writeFileSync(owner.leasePath, ownerBytes);
+    for (const dependencies of [
+      { getProcessFingerprint: () => undefined },
+      { getProcessFingerprint: (pid: number) => { const value = readProcessFingerprint(pid); return value ? { ...value, startTimeTicks: "replacement" } : undefined; } },
+      { queryParentDeploymentStatus: () => undefined },
+      { queryParentDeploymentStatus: (id: string) => { const status = queryDeploymentStatus(id); return status ? { ...status, status: "failed" as const } : undefined; } },
+    ]) assert.throws(() => fixture.authenticate({ force: true }, dependencies), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; });
+    const borrowerPath = repositoryMutationBorrowerPath(fixture.worktree);
+    writeFileSync(borrowerPath, JSON.stringify({ processFingerprint: owner.lease.processFingerprint }));
+    const malformedBorrowerBytes = readFileSync(borrowerPath);
+    assert.throws(() => fixture.authenticate(), /borrower evidence/);
+    assert.deepEqual(readFileSync(borrowerPath), malformedBorrowerBytes);
+    const validBorrower: RepositoryMutationBorrower = {
+      schemaVersion: 1, borrowerToken: "child-token", canonicalRepoKey: "registered", canonicalRepoRoot: fixture.repo, worktreeRoot: fixture.worktree,
+      parentDeploymentId: owner.lease.deploymentId, parentProcessFingerprint: owner.lease.processFingerprint,
+      deploymentId: "d-112233", deploymentDirectory: join(fixture.root, "deployments", "d-112233"), runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+      ticket: "PAP-1", branch: fixture.branch, processFingerprint: owner.lease.processFingerprint,
+      registeredAt: new Date().toISOString(), timeoutSeconds: 60, launchGitSnapshot: captureRepositoryGitSnapshot(fixture.worktree),
+    };
+    appendRegistryEvent({ deployment_id: validBorrower.deploymentId, team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: new Date().toISOString(),
+      ticket_id: "PAP-1", repo: fixture.worktree, repo_root: fixture.repo, worktree_root: fixture.worktree });
+    const borrowerDefects: unknown[] = [
+      { ...validBorrower, parentDeploymentId: "d-999999" }, { ...validBorrower, ticket: "PAP-2" },
+      { ...validBorrower, branch: "feature/PAP-2-work" }, { ...validBorrower, worktreeRoot: fixture.repo },
+      { ...validBorrower, parentProcessFingerprint: { ...validBorrower.parentProcessFingerprint, startTimeTicks: "reused" } },
+      { ...validBorrower, processFingerprint: { ...validBorrower.processFingerprint, startTimeTicks: "reused" } },
+      { ...validBorrower, finalizationState: "finalizing", finalizationAttemptedAt: new Date().toISOString() },
+      { ...validBorrower, mode: "worker" }, Buffer.alloc(65_537, 0x20),
+    ];
+    for (const defect of borrowerDefects) {
+      writeFileSync(borrowerPath, Buffer.isBuffer(defect) ? defect : JSON.stringify(defect));
+      const before = readFileSync(borrowerPath);
+      assert.throws(() => fixture.authenticate({ force: true }), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; });
+      assert.deepEqual(readFileSync(borrowerPath), before);
+    }
+    rmSync(borrowerPath);
+    selectionOwner(fixture, "implement");
+    assert.throws(() => fixture.authenticate(), /ambiguous builder owners/);
+    assert.deepEqual(readFileSync(owner.leasePath), ownerBytes);
+    fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("selection rejects dangling/resolved symlinks, directories and unreadable owner/borrower entries without any operations", async () => {
+  const fixture = selectionFixture();
+  try {
+    const before = fixture.snapshot();
+    const target = join(fixture.root, "target"); writeFileSync(target, "{}", { mode: 0o600 });
+    for (const path of [repositoryMutationLeasePath(fixture.worktree), repositoryMutationLeasePath(fixture.worktree, "implement"), repositoryMutationBorrowerPath(fixture.worktree)]) {
+      for (const shape of ["dangling", "resolved", "directory", "unreadable"]) {
+        if (shape === "directory") mkdirSync(path);
+        else if (shape === "unreadable") { writeFileSync(path, "{}"); chmodSync(path, 0); }
+        else symlinkSync(shape === "dangling" ? join(fixture.root, "absent") : target, path);
+        const prior = lstatSync(path); const link = prior.isSymbolicLink() ? readlinkSync(path) : undefined;
+        const result = await deployWithPi({ ...fixture.request, team: "learner", force: true }, fixture.adapter, undefined, fixture.dependencies);
+        assert.equal(result.status, "failed"); assertSelectionDiagnostic(result.reason!);
+        assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+        assert.equal(lstatSync(path).ino, prior.ino); if (link) assert.equal(readlinkSync(path), link);
+        fixture.assertNeutral(); assert.deepEqual(fixture.snapshot(), before);
+        rmSync(path, { recursive: true });
+      }
+    }
+  } finally { fixture.dispose(); }
+});
+
+test("selection rejects a resolved builder filename alias before capacity, ticket writes or native preflight", async () => {
+  const fixture = selectionFixture();
+  try {
+    const before = fixture.snapshot();
+    writeFileSync(join(fixture.root, "teams", "requirements.yaml"), "name: builder\ndescription: Alias\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+    const result = await deployWithPi({ ...fixture.request, mode: "orchestrator" }, fixture.adapter, undefined, fixture.dependencies);
+    assert.equal(result.status, "failed"); assert.match(result.reason!, /resolved builder/); assertSelectionDiagnostic(result.reason!);
+    assert.throws(() => fixture.authenticate(), /non-builder/);
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 }); assert.equal(fixture.calls.length, 0);
+    fixture.assertNeutral(); assert.deepEqual(fixture.snapshot(), before);
+  } finally { fixture.dispose(); }
+});
+
+test("selection reread rejects ticket, lease, physical and builder drift even when replacement evidence is individually valid", () => {
+  const fixture = selectionFixture();
+  try {
+    const selected = fixture.authenticate();
+    for (const override of [{ ticket: undefined }, { team: "builder" }, { repo: fixture.worktree }, { invocationChannel: "agent-api" as const }]) {
+      assert.throws(() => fixture.authenticate(override), (error: unknown) => { assert.ok(error instanceof Error); assertSelectionDiagnostic(error.message); return true; });
+    }
+    fixture.setRows([{ ...fixture.lease, lease_id: "replacement" }]);
+    assert.throws(selected.reread, /changed after selection/);
+    fixture.setRows([{ ...fixture.lease, lease_holder: "pa:registered:PAP-2" }]);
+    assert.throws(selected.reread);
+    fixture.setRows([fixture.lease]);
+    fixture.writeTicket([{ ...fixture.link, baseSha: "0".repeat(40) }]);
+    assert.throws(selected.reread, /changed after selection/);
+    fixture.writeTicket();
+    const dotGit = join(fixture.worktree, ".git"); const bytes = readFileSync(dotGit);
+    writeFileSync(dotGit, "gitdir: /missing\n");
+    try { assert.throws(selected.reread); } finally { writeFileSync(dotGit, bytes); }
+    const owner = selectionOwner(fixture);
+    assert.throws(selected.reread, /changed after selection/);
+    rmSync(owner.leasePath);
+    const gitSelection = fixture.authenticate();
+    git(["commit", "--allow-empty", "-m", "external advance"], fixture.worktree);
+    assert.throws(gitSelection.reread, /branch\/HEAD/);
+    fixture.writeTicket([{ ...fixture.link, headSha: git(["rev-parse", "HEAD"], fixture.worktree) }]);
+    assert.throws(gitSelection.reread, /changed after selection/);
+    fixture.assertNeutral();
+  } finally { fixture.dispose(); }
+});
+
+test("deploy selection rereads before native preflight and immediately before spawn; dry-run rereads without spawning", async () => {
+  const fixture = selectionFixture();
+  try {
+    const before = fixture.snapshot();
+    const hooksRace = { ...fixture.adapter, installHooks() { fixture.setRows([]); } };
+    const beforePreflight = await deployWithPi(fixture.request, hooksRace, undefined, fixture.dependencies);
+    assert.equal(beforePreflight.status, "failed"); assertSelectionDiagnostic(beforePreflight.reason ?? "");
+    assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+    fixture.setRows([fixture.lease]);
+    let preflights = 0;
+    const preflightRace = { ...fixture.adapter, preflight() { preflights += 1; fixture.setRows([{ ...fixture.lease, lease_id: "replacement" }]); } };
+    const beforeSpawn = await deployWithPi(fixture.request, preflightRace, undefined, fixture.dependencies);
+    assert.equal(beforeSpawn.status, "failed"); assertSelectionDiagnostic(beforeSpawn.reason ?? "");
+    assert.equal(preflights, 1); assert.equal(fixture.counts().spawns, 0);
+    let reads = 0;
+    const dryRunTreehouse = new TreehouseClient({ run: () => result(++reads === 1 ? [fixture.lease] : []) });
+    const dryRun = await deployWithPi({ ...fixture.request, dryRun: true }, fixture.adapter, undefined, { ...fixture.dependencies, treehouse: dryRunTreehouse });
+    assert.equal(dryRun.status, "failed"); assertSelectionDiagnostic(dryRun.reason ?? "");
+    assert.equal(reads, 2); assert.deepEqual(fixture.counts(), { preflights: 0, spawns: 0 });
+    fixture.setRows([fixture.lease]);
+    const permitted = await deployWithPi({ ...fixture.request, team: "learner", dryRun: true }, fixture.adapter, undefined, fixture.dependencies);
+    assert.equal(permitted.status, "pending", permitted.reason);
+    assert.deepEqual(fixture.snapshot(), before); fixture.assertNeutral();
+  } finally { fixture.dispose(); }
 });
 
 test("ticketed orchestrator acquires an exact free row and materializes the planned branch before spawn", async () => {

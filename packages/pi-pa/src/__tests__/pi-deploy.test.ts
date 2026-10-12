@@ -3,16 +3,23 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
+import { acquireRepositoryMutationLease, advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, claimReviewAuthorization, closeDb, composeRuntimeHooks, createAgentApiApp, finalizeRepositoryMutationBorrower, getDb, getDeployPaths, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, queryDeploymentStatuses, queryReviewAuthorizationClaims, readActivityEvents, readProcessFingerprint, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryGitSnapshotsEqual, repositoryMutationBorrowerPath, repositoryMutationLeasePath, runCoreCommand, transferRepositoryMutationBorrower, TicketStore, type RepositoryMutationLease, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts, type SpawnResult } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiBackgroundArgs, readPiBackgroundConfig, readPiRepositoryHandoff, redactPiProtectedReviewPrimer, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { createPiHooks, deployWithPi, piSessionCommand } from "../deploy.js";
-import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent } from "../validation-launch.js";
+import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, selectPiReviewCandidateBeforePlanning, reservePiReviewCandidate, rereadPiReviewCandidate, withPiReviewCandidateReservation, type PiDeployDependencies, type PiReviewCandidateOperation } from "../deploy.js";
+import { finalizeRepositoryReview, repositoryReviewReservationPath, resolveExecutionPlan, type RepositoryReviewFinalEvidence } from "@pa-platform/pa-core";
+import { TreehouseClient, TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
+import { PI_VALIDATION_HANDOFF_FILE, type PiProtectedValidationLaunch } from "../validation-supervisor.js";
+import { extractMatrixAuthority } from "../matrix-compatibility.js";
+import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTupleDigest, type NixosBaseline, type NixosLaunchTuple } from "../nixos-prerequisites.js";
+import { authorizePiReviewSelection, piMatrixAttemptStatePath, readPiMatrixStartedEvent, writePiMatrixStartedEvent, withPiReviewCandidateAtMatrixBoundary } from "../validation-launch.js";
 import { deployWithOpencode } from "../../../opencode-pa/src/deploy.js";
 import { resolvePiRuntimeConfig } from "../runtime-normalization.js";
 import { collectContext, initialContextSnapshot } from "../pi-extension/context-state.js";
@@ -26,6 +33,7 @@ function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()
 const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 const REAL_NODE = process.execPath;
 const REAL_BASH = execFileSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).trim();
+const REAL_FLOCK = execFileSync("sh", ["-c", "command -v flock"], { encoding: "utf8" }).trim();
 const PROTECTED_REVIEW_NODE_VERSION = "v22.23.2";
 const PROTECTED_REVIEW_PNPM_VERSION = "10.28.0";
 const PROTECTED_REVIEW_PI_VERSION = "0.84.4";
@@ -57,6 +65,168 @@ function initializeGitRepo(path: string): void {
   git(["add", "README.md"], path);
   git(["commit", "-m", "initial"], path);
 }
+
+test("review-auto rejects candidate binding drift and concurrent borrowers", async (t) => {
+  const prior = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+  for (const key of Object.keys(prior)) delete process.env[key];
+  const root = mkdtempSync(join(tmpdir(), "pi-review-reservation-"));
+  const authorityId = "review-auth:11111111-1111-4111-8111-111111111111";
+  const snapshotFiles = (dir: string): Record<string, string> => {
+    const files: Record<string, string> = {};
+    const walk = (path: string): void => {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory()) walk(child);
+        else files[child] = `${statSync(child).mode}:${readFileSync(child).toString("base64")}`;
+      }
+    };
+    walk(dir); return files;
+  };
+  const driftCases = ["lease-id", "lease-holder", "lease-path", "ticket-head", "ticket-base", "ticket-branch", "ticket-duplicate", "registry-root", "branch", "head", "staged", "unstaged", "untracked", "git-dir", "common-dir", "reservation-token", "reservation-missing", "reservation-insecure", "authorization", "deployment"];
+  const cases = ["zero owner", "idle parent", "active borrower", "standalone implement", "wrong-ticket parent", "wrong-path parent", "terminal parent", "stale parent",
+    ...driftCases.map((drift) => `after-plan:${drift}`), ...driftCases.map((drift) => `matrix:${drift}`)];
+  try {
+    assert.equal(TREEHOUSE_TIMEOUT_MS, 15_000); assert.equal(MAX_TREEHOUSE_JSON_BYTES, 1024 * 1024);
+    for (const [index, scenario] of cases.entries()) await t.test(scenario, () => {
+      const dir = join(root, String(index)); mkdirSync(dir);
+      const repo = join(dir, "repo"); const worktree = join(dir, "candidate"); initializeGitRepo(repo);
+      const baseSha = git(["rev-parse", "HEAD"], repo); const branch = "feature/ALT-7-candidate";
+      git(["worktree", "add", "-b", branch, worktree, baseSha], repo);
+      git(["commit", "--allow-empty", "-m", "candidate"], worktree);
+      const featureSha = git(["rev-parse", "HEAD"], worktree);
+      const config = join(dir, "config"); const tickets = join(dir, "tickets"); mkdirSync(config); mkdirSync(tickets);
+      const configBody = `config_dir: ${dir}\nrepos:\n  generic-repo:\n    path: ${repo}\n    prefix: ALT\n`;
+      writeFileSync(join(config, "config.yaml"), configBody);
+      process.env["PA_PLATFORM_CONFIG"] = config; process.env["PA_AI_USAGE_HOME"] = dir; process.env["PA_REGISTRY_DB"] = join(dir, "registry.db");
+      const taskPath = join(dir, "deployment-tasks.json"); writeFileSync(taskPath, "fixture-task-sentinel");
+      assert.equal(process.env["PA_DEPLOYMENT_DIR"], undefined); assert.equal(process.env["PI_SESSION_ID"], undefined);
+      const linked = { repo: "generic-repo", branch, state: "materialized", baseSha, headSha: featureSha, sha: featureSha };
+      const ticket = { id: "ALT-7", project: "generic-repo", linkedBranches: [linked] };
+      const ticketPath = join(tickets, "ALT-7.json"); writeFileSync(ticketPath, JSON.stringify(ticket));
+      const row = { name: "1", path: worktree, status: "leased", flavor: "git", lease_id: "lease-7", lease_holder: "pa:generic-repo:ALT-7", leased_at: "2026-10-02T00:00:00Z", processes: [] };
+      const operations: PiReviewCandidateOperation[] = [];
+      const treehouse = new TreehouseClient({ run: (args, cwd) => {
+        assert.deepEqual(args, ["status", "--json"]); assert.equal(cwd, repo);
+        return { status: 0, stdout: Buffer.from(JSON.stringify([row])), stderr: Buffer.alloc(0) };
+      } });
+      const admission = { isDeploymentRunning: () => scenario !== "terminal parent" };
+      const deps = { treehouse, admission, observeOperation: (operation: PiReviewCandidateOperation) => { operations.push(operation); } };
+      const selected = selectPiReviewCandidateBeforePlanning({ request: { team: "requirements", mode: "review-auto", ticket: "ALT-7", repo: "generic-repo" }, runtime: "pi", cwd: repo,
+        authorizedBinding: { repoKey: "generic-repo", repoRoot: repo, ticket: "ALT-7", branch, baseSha, featureSha } }, deps)!;
+      const checkout = selected.reviewCheckout;
+      let parentBytes: Buffer | undefined;
+      let capability: string | undefined;
+      const borrowerOptions = () => ({ canonicalRepoKey: "generic-repo", canonicalRepoRoot: repo, worktreeRoot: worktree,
+        expectedGitDir: checkout.repositoryGitDir, expectedGitCommonDir: checkout.repositoryGitCommonDir,
+        capability, parentDeploymentId: "d-111111", deploymentId: "d-333333", deploymentDirectory: dir,
+        runtime: "pi" as const, team: "builder", mode: "implement", launchMode: "background" as const, ticket: "ALT-7", branch, timeoutSeconds: 60,
+        dependencies: admission });
+      if (scenario !== "zero owner" && scenario !== "standalone implement") {
+        const owner = acquireRepositoryMutationLease({ ...borrowerOptions(), deploymentId: "d-111111", mode: "orchestrator" });
+        assert.equal(owner.status, "acquired"); if (owner.status !== "acquired") assert.fail("parent not admitted"); capability = owner.lease.ownershipToken;
+        const path = repositoryMutationLeasePath(worktree);
+        if (scenario === "wrong-ticket parent" || scenario === "wrong-path parent" || scenario === "stale parent") {
+          const data = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+          if (scenario === "wrong-ticket parent") data["ticket"] = "ALT-8";
+          if (scenario === "wrong-path parent") data["worktreeRoot"] = repo;
+          if (scenario === "stale parent") data["processFingerprint"] = { pid: process.pid, startTimeTicks: "wrong", bootId: "wrong" };
+          writeFileSync(path, JSON.stringify(data));
+        }
+        parentBytes = readFileSync(path);
+      }
+      if (scenario === "active borrower") assert.equal(registerRepositoryMutationBorrower(borrowerOptions()).status, "registered");
+      if (scenario === "standalone implement") assert.equal(acquireRepositoryMutationLease(borrowerOptions()).status, "acquired");
+      let matrixStarts = 0; let reviewerStarts = 0;
+      const reject = (action: () => unknown) => assert.throws(action, (error: unknown) => {
+        assert.ok(error instanceof Error); assert.ok(error.message.length <= 2000);
+        assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.doesNotMatch(error.message, /review-auth:|reservationToken/); return true;
+      });
+      const reserve = () => reservePiReviewCandidate({ checkout, deploymentId: "d-222222", authorizationId: authorityId }, deps);
+      const blocked = ["active borrower", "standalone implement", "wrong-ticket parent", "wrong-path parent", "terminal parent", "stale parent"].includes(scenario);
+      if (blocked) {
+        const ticketBefore = readFileSync(ticketPath); const gitBefore = captureRepositoryGitSnapshot(worktree);
+        const filesBefore = snapshotFiles(dir);
+        reject(reserve); assert.deepEqual(snapshotFiles(dir), filesBefore, "rejection preserves all candidate, ticket, task and authority bytes");
+        assert.deepEqual(readFileSync(ticketPath), ticketBefore); assert.deepEqual(captureRepositoryGitSnapshot(worktree), gitBefore);
+        assert.equal(existsSync(repositoryReviewReservationPath(worktree)), false);
+      } else {
+        const reservation = reserve(); const reservationPath = repositoryReviewReservationPath(worktree);
+        assert.equal(statSync(reservationPath).mode & 0o777, 0o600);
+        const plan = resolveExecutionPlan({ request: selected.planningRequest, cwd: selected.planningCwd, runtime: "pi",
+          teamConfig: { name: "requirements", description: "fixture", objective: "fixture", agents: [], default_mode: "review-auto" },
+          deploymentId: "d-222222", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), environment: {}, timeoutSeconds: 60 });
+        assert.equal(plan.worktreeRoot, worktree); assert.equal(plan.repoRoot, repo); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+        const launch: PiProtectedValidationLaunch = { schemaVersion: "pi-protected-validation/v1", deploymentId: "d-222222",
+          admission: { authorization: "consumed", matrixDigest: "verified", featureSha: "verified", approval: "verified", activeReview: "admitted", prerequisites: [] },
+          validationHandoff: {}, // This test exercises only the candidate seam, not a fabricated matrix authorization.
+          authority: { ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture",
+            repository: { repoKey: "generic-repo", canonicalRoot: repo, worktreeRoot: worktree }, protectedEnvironment: { PA_REPO: worktree } },
+          review: { reviewDeploymentId: "d-222222", candidateHead: featureSha, prerequisiteStartedAt: "2020-01-01T00:00:00.000Z", authorizationId: authorityId, ticketId: "ALT-7", branch, featureSha, matrixSource: "fixture", matrixAuthoritySha256: "a".repeat(64), matrixApprovalEvidence: "fixture" } };
+        const boundary = () => withPiReviewCandidateAtMatrixBoundary({ launch, reservation, rereadCheckout: () => rereadPiReviewCandidate(checkout, deps), dependencies: admission }, () => { matrixStarts++; reviewerStarts++; });
+        if (scenario.startsWith("matrix:")) withPiReviewCandidateReservation(reservation, () => undefined, deps);
+        const drift = scenario.split(":")[1];
+        if (drift === "lease-id") row.lease_id = "replacement";
+        if (drift === "lease-holder") row.lease_holder = "pa:generic-repo:ALT-8";
+        if (drift === "lease-path") row.path = repo;
+        if (drift === "ticket-head") { linked.headSha = baseSha; linked.sha = baseSha; }
+        if (drift === "ticket-base") linked.baseSha = featureSha;
+        if (drift === "ticket-branch") linked.branch = "feature/ALT-7-other";
+        if (drift === "ticket-duplicate") ticket.linkedBranches.push({ ...linked });
+        if (drift?.startsWith("ticket-")) writeFileSync(ticketPath, JSON.stringify(ticket));
+        if (drift === "registry-root") writeFileSync(join(config, "config.yaml"), configBody.replace(repo, worktree));
+        if (["branch", "head", "staged", "unstaged", "untracked"].includes(drift ?? "")) applyPreflightGitDrift(worktree, drift as PreflightGitDrift);
+        if (drift === "git-dir" || drift === "common-dir") preparePreflightMetadataDrift(dir, worktree, drift).apply();
+        if (drift === "reservation-token") { const data = JSON.parse(readFileSync(reservationPath, "utf8")) as Record<string, unknown>; data["reservationToken"] = "replacement"; writeFileSync(reservationPath, JSON.stringify(data)); }
+        if (drift === "reservation-missing") rmSync(reservationPath);
+        if (drift === "reservation-insecure") chmodSync(reservationPath, 0o644);
+        if (drift === "authorization") launch.review.authorizationId = "review-auth:22222222-2222-4222-8222-222222222222";
+        if (drift === "deployment") launch.deploymentId = "d-444444";
+        const ticketBefore = readFileSync(ticketPath); const projectBefore = readFileSync(join(worktree, "README.md"));
+        const reservedBefore = existsSync(reservationPath) ? readFileSync(reservationPath) : undefined;
+        if (drift) {
+          // Authorization/deployment are checked specifically at the protected matrix boundary.
+          const filesBefore = snapshotFiles(dir);
+          if (scenario.startsWith("after-plan:") && drift !== "authorization" && drift !== "deployment") reject(() => {
+            withPiReviewCandidateReservation(reservation, () => undefined, deps);
+            boundary();
+          });
+          else reject(boundary);
+          assert.deepEqual(snapshotFiles(dir), filesBefore, "drift rejects without changing any fixture bytes or modes");
+          assert.deepEqual(existsSync(reservationPath) ? readFileSync(reservationPath) : undefined, reservedBefore);
+          assert.deepEqual(readFileSync(ticketPath), ticketBefore); assert.deepEqual(readFileSync(join(worktree, "README.md")), projectBefore);
+        } else {
+          const denied = registerRepositoryMutationBorrower({ ...borrowerOptions(), force: true });
+          assert.equal(denied.status, "rejected"); if (denied.status === "rejected") assert.equal(denied.category, "review-reservation");
+          assert.equal(acquireRepositoryMutationLease({ ...borrowerOptions(), force: true }).status, "rejected");
+          reject(reserve);
+          withPiReviewCandidateReservation(reservation, () => undefined, deps);
+          boundary();
+          assert.equal(matrixStarts, 1); assert.equal(reviewerStarts, 1);
+          const published: RepositoryReviewFinalEvidence[] = [];
+          const finalOptions = { reservation, verifyTerminal: () => true, publishFinalEvidence: (evidence: RepositoryReviewFinalEvidence) => { published.push(evidence); } };
+          assert.equal(finalizeRepositoryReview({ ...finalOptions, reservation: { ...reservation, reservationToken: "wrong" } }), "mismatch");
+          assert.equal(finalizeRepositoryReview(finalOptions), "finalized"); assert.equal(finalizeRepositoryReview(finalOptions), "absent");
+          assert.equal(published.length, 1); assert.deepEqual(published[0]?.finalGitSnapshot, checkout.gitSnapshot);
+          assert.equal(published[0]?.leaseDisposition, "retained"); assert.equal(row.lease_id, "lease-7");
+          if (capability) assert.equal(registerRepositoryMutationBorrower(borrowerOptions()).status, "registered", "matching review finalization unblocks the idle parent's next child");
+        }
+      }
+      if (blocked || scenario.includes(":")) { assert.equal(matrixStarts, 0); assert.equal(reviewerStarts, 0); }
+      if (parentBytes) assert.deepEqual(readFileSync(repositoryMutationLeasePath(worktree)), parentBytes, "parent custody remains byte-identical");
+      assert.equal(readFileSync(taskPath, "utf8"), "fixture-task-sentinel");
+      assert.equal(git(["branch", "--show-current"], repo), "develop"); assert.equal(git(["rev-parse", "HEAD"], repo), baseSha);
+      for (const operation of ["checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease", "matrix-start", "reviewer-start"]) {
+        assert.equal(operations.filter((observed) => observed === operation).length, 0, `selector/rereads: zero ${operation}`);
+      }
+      closeDb();
+    });
+  } finally {
+    closeDb(); rmSync(root, { recursive: true, force: true });
+    for (const key of Object.keys(process.env).filter((key) => /^(PA_|PI_|GIT_)/.test(key))) delete process.env[key];
+    for (const [key, value] of Object.entries(prior)) if (value !== undefined) process.env[key] = value;
+  }
+});
 
 type PreflightGitDrift = "branch" | "head" | "staged" | "unstaged" | "untracked";
 type PreflightMetadataDrift = "git-dir" | "common-dir";
@@ -108,6 +278,10 @@ function preparePreflightMetadataDrift(root: string, worktree: string, drift: Pr
 }
 
 function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<void>): Promise<void> {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+  for (const key of Object.keys(inherited)) delete process.env[key];
+  process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
+  process.env["GIT_CONFIG_NOSYSTEM"] = "1";
   const root = mkdtempSync(join(tmpdir(), "ppa-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -160,16 +334,22 @@ function withPiEnv(fn: (root: string, gitState: GitStateRecorder) => Promise<voi
     process.chdir(previousCwd);
     closeDb();
     for (const [key, value] of Object.entries(previous)) restore(key, value);
+    for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+    Object.assign(process.env, inherited);
     rmSync(root, { recursive: true, force: true });
   });
 }
 
 interface ProtectedReviewFixtureOptions {
   baseSha?: string;
+  historicalMaterializationBaseSha?: string;
   canonicalRepoKey?: string;
   environmentSection?: string;
   expectedDependencyVersion?: string;
   nodeVersion?: string;
+  profile?: "current" | "nixos";
+  layout?: "bold-fenced" | "plain-inline";
+  omitHistoricalHeader?: boolean;
 }
 
 function prepareProtectedReview(root: string, authorizationId: string, options: ProtectedReviewFixtureOptions = {}): {
@@ -181,10 +361,11 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   branch: string;
   featureSha: string;
 } {
-  const repo = join(root, "repo");
+  const primary = join(root, "repo");
+  const repo = join(root, "candidate");
   const branch = "feature/PAP-198-protected-review";
-  if (git(["branch", "--list", branch], repo)) git(["switch", branch], repo);
-  else git(["switch", "-c", branch], repo);
+  if (!existsSync(repo)) git(["worktree", "add", "-b", branch, repo], primary);
+  writeFileSync(join(root, "treehouse-status.json"), JSON.stringify([{ path: repo, leased: true, lease_id: "review-lease", lease_holder: "pa:pa-platform:PAP-198" }]));
   if (!existsSync(join(repo, ".gitignore"))) {
     writeFileSync(join(repo, ".gitignore"), "node_modules/\nvalidation-completed.txt\n");
     git(["add", ".gitignore"], repo);
@@ -197,14 +378,23 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   const markerPath = join(repo, "validation-completed.txt");
   const matrixSource = "agent-teams/requirements/artifacts/protected-review.md";
   const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`if(process.env.PA_REVIEW_AUTHORIZATION_ID)process.exit(91);require('node:fs').writeFileSync(${JSON.stringify(markerPath)},'validation-complete')`)}`;
-  const environmentSection = options.environmentSection ?? APPROVED_MATRIX_ENVIRONMENT_SECTION;
-  const prerequisites = [
+  const environmentSection = (options.environmentSection ?? (options.profile === "nixos" ? ["**Environment:**",
+    `- \`PA_APPROVED_BASE_SHA=${baseSha}\` — exact approved baseline.`, `- \`PA_EXPECTED_BRANCH=${branch}\` — exact branch.`,
+    "- `PA_WORKTREE_ROOT` — authenticated candidate root.", "- `CI=true` — noninteractive checks."].join("\n") : APPROVED_MATRIX_ENVIRONMENT_SECTION))
+      .replace("PA_TICKET_ID=PAP-223", "PA_TICKET_ID=PAP-198")
+      .replace("PA_MATRIX_SOURCE=agent-teams/requirements/artifacts/2026-09-23-pap-223-structured-validation-executor.md", `PA_MATRIX_SOURCE=${matrixSource}`);
+  const prerequisites = options.profile === "nixos" ? [
+    `- The trusted PPA builder launcher has authenticated the PAP-198 ticket checkout, created \`${branch}\` from approved base \`${baseSha}\`, persisted launch evidence, and produced a committed candidate with a clean worktree.`,
+    "- Git, Bash, Python 3, ripgrep, Nix, and `ppa` are available in the authenticated checkout.",
+    "- Every declared local-path flake input exists at its recorded Git top level, full HEAD, and expected complete status; Nix daemon, upstream sources, caches, storage, and configured builders are available.",
+    "- The independent review launch has a valid one-use authorization, and no review is active for the same ticket and branch.",
+  ].join("\n") : [
     `- Linux \`x86_64\`; canonical repository \`${options.canonicalRepoKey ?? "pa-platform"}\`; authenticated ticket checkout on \`${branch}\`; clean tracked and untracked state; \`HEAD\` equals the launch-intent Feature SHA and descends from \`${baseSha}\`.`,
     `- Node.js \`${options.nodeVersion ?? PROTECTED_REVIEW_NODE_VERSION}\`, pnpm \`${PROTECTED_REVIEW_PNPM_VERSION}\` through Corepack, Pi \`${PROTECTED_REVIEW_PI_VERSION}\`, Git, Bash, Nix, and the repository's existing installed dependencies including \`better-sqlite3@${options.expectedDependencyVersion ?? "13.0.3"}\`.`,
     `- The approved requirements artifact exists at \`${join(root, matrixSource)}\` and its header, durable PAP-198 approval comment, launch intent, and recomputed raw matrix digest agree exactly.`,
     "- The trusted launcher has atomically consumed the one-use review authorization, rejected duplicate active review lineage, and supplied the complete explicit command environment. The authorization ID is excluded from command child environments, logs, activity progress, and ledger artifacts; it is supplied separately to the reviewer for exact objective, report, and registry agreement. No project command starts before these checks pass.",
   ].join("\n");
-  const authority = [
+  let authority = [
     "### Full Validation Matrix",
     "",
     `**Matrix Source:** \`${matrixSource}\``,
@@ -228,9 +418,16 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
     "- The command exits zero before reviewer spawn.",
     "",
   ].join("\n");
+  if (options.layout === "plain-inline") {
+    authority = authority.replace(`**Matrix Source:** \`${matrixSource}\``, `Matrix Source:\n- \`${matrixSource}\`\n\nMatrix Authority:\n- Raw approved bytes.\n\nExecution Owner:\n- Sole independent reviewer.`)
+      .replace(/\*\*([^*]+):\*\*/g, "$1:")
+      .replace(`1. Production launch ordering fixture:\n\`\`\`bash\n${command}\n\`\`\``, `1. \`${command}\``)
+      .replace("Required Outputs and Artifacts:\n- One terminal validation ledger.\n\n", "")
+      + "Matrix Rules:\n- Stop on first failure.\n\n";
+  }
   const matrixAuthoritySha256 = createHash("sha256").update(Buffer.from(authority, "utf8")).digest("hex");
   const approvalCommentId = "c-20260928124221490";
-  const matrixApprovalEvidence = `PAP-198 comment ${approvalCommentId} by sinh names the exact Matrix Source and revised digest`;
+  const matrixApprovalEvidence = options.profile === "nixos" ? approvalCommentId : `PAP-198 comment ${approvalCommentId} by sinh names the exact Matrix Source and revised digest`;
   const matrixPath = join(root, matrixSource);
   mkdirSync(join(matrixPath, ".."), { recursive: true });
   writeFileSync(
@@ -240,6 +437,7 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
       "> Repository Key: pa-platform",
       "> Ticket: PAP-198",
       `> Approved Base SHA: ${baseSha}`,
+      ...(options.omitHistoricalHeader ? [] : [`> Historical Materialization Base SHA: ${options.historicalMaterializationBaseSha ?? baseSha}`]),
       `> Feature Branch: ${branch}`,
       `> Matrix Authority SHA-256: ${matrixAuthoritySha256}`,
       `> Matrix Approval Evidence: ${matrixApprovalEvidence}`,
@@ -253,7 +451,7 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   const ticketPath = join(root, "tickets", "PAP-198.json");
   const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as Record<string, unknown>;
   ticket["linkedBranches"] = [{
-    repo: "pa-platform", branch, state: "materialized", headSha: featureSha,
+    repo: "pa-platform", branch, state: "materialized", baseSha: options.historicalMaterializationBaseSha ?? baseSha, headSha: featureSha,
     linkedAt: "2026-09-28T00:00:00.000Z", linkedBy: "test",
   }];
   ticket["comments"] = [{
@@ -275,6 +473,230 @@ function prepareProtectedReview(root: string, authorizationId: string, options: 
   return { objective, markerPath, matrixSource, matrixAuthoritySha256, matrixApprovalEvidence, branch, featureSha };
 }
 
+test("PAP-236 both layouts resolve only unique canonical explicit materialized base provenance", async (t) => {
+  for (const layout of ["bold-fenced", "plain-inline"] as const) for (const profile of ["current", "nixos"] as const) {
+    await t.test(`${layout}/${profile}`, () => withPiEnv(async (root) => {
+      const authorization = "review-auth:323e4567-e89b-42d3-a456-426614174000";
+      const fixture = prepareProtectedReview(root, authorization, { layout, profile, omitHistoricalHeader: true });
+      const baselineTransport = profile === "nixos" ? "\nPrerequisite Baseline Source: agent-teams/builder/artifacts/baseline.json\nPrerequisite Baseline SHA-256: " + "a".repeat(64) + "\nPrerequisite Baseline Approval Evidence: c-20261010000000" : "";
+      const request = { team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true, objective: fixture.objective + baselineTransport };
+      const repository = { repoKey: "pa-platform", repoRoot: join(root, "repo") };
+      const approved = authorizePiReviewSelection(request, repository);
+      assert.equal(approved.binding.baseSha, fixture.featureSha);
+      const ticketPath = join(root, "tickets", "PAP-198.json");
+      const original = readFileSync(ticketPath);
+      const ticket = JSON.parse(original.toString()) as { linkedBranches: Array<Record<string, unknown>> };
+      for (const links of [[], [...ticket.linkedBranches, ...ticket.linkedBranches], [{ ...ticket.linkedBranches[0], branch: "feature/PAP-198-other" }],
+        [{ ...ticket.linkedBranches[0], state: "planned" }], [{ ...ticket.linkedBranches[0], state: undefined }], [{ ...ticket.linkedBranches[0], baseSha: "a".repeat(40) }],
+        [{ ...ticket.linkedBranches[0], repo: "other" }], [...ticket.linkedBranches, { ...ticket.linkedBranches[0], branch: "feature/PAP-198-other" }]]) {
+        writeFileSync(ticketPath, JSON.stringify({ ...ticket, linkedBranches: links }));
+        assert.throws(() => authorizePiReviewSelection(request, repository), /historical base provenance/);
+      }
+      writeFileSync(ticketPath, original);
+      assert.equal(queryReviewAuthorizationClaims().length, 0);
+      assert.equal(existsSync(fixture.markerPath), false);
+      installProtectedReviewToolFixture(root);
+      const historical = git(["rev-parse", "HEAD"], join(root, "repo"));
+      const explicit = prepareProtectedReview(root, authorization, { layout, profile, historicalMaterializationBaseSha: historical });
+      const explicitRequest = { ...request, objective: explicit.objective + baselineTransport };
+      const explicitAuthority = authorizePiReviewSelection(explicitRequest, repository);
+      assert.equal(explicitAuthority.binding.baseSha, historical);
+      assert.equal(explicitAuthority.binding.approvedReference.sha, explicit.featureSha);
+      assert.notEqual(historical, explicit.featureSha);
+      assert.ok(selectPiReviewCandidateBeforePlanning({ request: explicitRequest, runtime: "pi", cwd: join(root, "repo"), authorizedBinding: explicitAuthority.binding }));
+      git(["commit", "--allow-empty", "-m", "unrelated fixture base"], join(root, "repo"));
+      const unrelated = git(["rev-parse", "HEAD"], join(root, "repo"));
+      for (const options of [{ historicalMaterializationBaseSha: unrelated }, { baseSha: unrelated, historicalMaterializationBaseSha: historical }]) {
+        const invalid = prepareProtectedReview(root, authorization, { layout, profile, ...options });
+        const invalidRequest = { ...request, objective: invalid.objective + baselineTransport };
+        const authority = authorizePiReviewSelection(invalidRequest, repository);
+        assert.throws(() => selectPiReviewCandidateBeforePlanning({ request: invalidRequest, runtime: "pi", cwd: join(root, "repo"), authorizedBinding: authority.binding }), /ancestry/);
+      }
+    }));
+  }
+});
+
+test("PAP-236 legacy exact values, unknown/duplicate variables and all-or-none transport reject before launch", async () => {
+  await withPiEnv(async (root) => {
+    const seed = prepareProtectedReview(root, "review-auth:523e4567-e89b-42d3-a456-426614174000", { profile: "nixos" });
+    const repository = { repoKey: "pa-platform", repoRoot: join(root, "repo") };
+    const transport = "\nPrerequisite Baseline Source: agent-teams/builder/artifacts/baseline.json\nPrerequisite Baseline SHA-256: " + "a".repeat(64) + "\nPrerequisite Baseline Approval Evidence: c-20261010000000";
+    const baseRequest = { team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true, objective: seed.objective + transport };
+    for (const suffix of ["", ...transport.trim().split("\n").map((line) => `\n${line}`), transport + "\nPrerequisite Baseline SHA-256: " + "a".repeat(64)]) {
+      assert.throws(() => authorizePiReviewSelection({ ...baseRequest, objective: seed.objective + suffix }, repository), /baseline transport|review objective/);
+    }
+    for (const replacement of ["- `CI=1`.", "- `PA_APPROVED_BASE_SHA=" + "b".repeat(40) + "`.", "- `PA_EXPECTED_BRANCH=feature/PAP-198-other`.",
+      "- `NODE_ENV=test`.", "- `CI`.", "- `UNKNOWN`.", "- `PA_REVIEW_AUTHORIZATION_ID=review-auth:523e4567-e89b-42d3-a456-426614174000`.", "- `HOME=/tmp`.", "- `LANG=other`.", "- `TZ=other`."]) {
+      const environmentSection = ["**Environment:**", `- \`PA_APPROVED_BASE_SHA=${seed.featureSha}\`.`, `- \`PA_EXPECTED_BRANCH=${seed.branch}\`.`, "- `PA_WORKTREE_ROOT`.", "- `CI=true`.", replacement].join("\n");
+      const invalid = prepareProtectedReview(root, "review-auth:523e4567-e89b-42d3-a456-426614174000", { profile: "nixos", environmentSection });
+      assert.throws(() => authorizePiReviewSelection({ ...baseRequest, objective: invalid.objective + transport }, repository), (error: Error) => {
+        for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(error.message.includes(label));
+        assert.ok(error.message.length <= 2000); assert.doesNotMatch(error.message, /review-auth:/); return /environment/.test(error.message);
+      });
+    }
+    assert.equal(queryReviewAuthorizationClaims().length, 0); assert.equal(existsSync(seed.markerPath), false);
+  });
+});
+
+interface NixosStorageFixture {
+  mode: "available" | "missing" | "low";
+  calls: string[];
+}
+
+async function withNixosStorageFixture<T>(context: TestContext, root: string, run: (storage: NixosStorageFixture) => Promise<T>): Promise<T> {
+  const storage: NixosStorageFixture = { mode: "available", calls: [] };
+  const realStatfs = fsPromises.statfs;
+  // Keep the approved /nix/store inventory and the production statfs/threshold path,
+  // but service its I/O from a disposable fixture, never the host's Nix filesystem.
+  const statfs = context.mock.method(fsPromises, "statfs", async (...args: Parameters<typeof fsPromises.statfs>) => {
+    const location = String(args[0]);
+    assert.ok([root, join(root, "candidate"), "/nix/store"].includes(location), `unexpected storage probe: ${location}`);
+    assert.equal(args[1]?.bigint, true);
+    storage.calls.push(location);
+    if (location === "/nix/store" && storage.mode === "missing") throw Object.assign(new Error("fixture store unavailable"), { code: "ENOENT" });
+    const info = await realStatfs(location === "/nix/store" ? root : args[0], args[1]);
+    return location === "/nix/store" && storage.mode === "low" ? { ...info, bavail: 0n } : info;
+  });
+  // Production imports the named builtin export; update and restore that binding too.
+  syncBuiltinESMExports();
+  try { return await run(storage); }
+  finally { statfs.mock.restore(); syncBuiltinESMExports(); }
+}
+
+test("PAP-236 isolated NixOS protected sidecar runs real probes, executor then reviewer in both layouts", async (t) => {
+  for (const layout of ["bold-fenced", "plain-inline"] as const) for (const scenario of ["success", "invalid-consumer", "initial-approval-missing", "initial-storage-missing", "initial-storage-low", "final-source-drift", "final-daemon-outage", "final-receipt-drift", "final-budget-reset", "final-storage-missing", "final-storage-low"] as const) await t.test(`${layout}/${scenario}`, (context) => withPiEnv(async (root) => withNixosStorageFixture(context, root, async (storage) => {
+    installProtectedReviewToolFixture(root);
+    const authorizationId = "review-auth:423e4567-e89b-42d3-a456-426614174000";
+    const deploymentId = scenario === "invalid-consumer" ? "d-nixos-fixture" : "d-236abc";
+    const seed = prepareProtectedReview(root, authorizationId, { profile: "nixos", layout, omitHistoricalHeader: true });
+    const candidate = join(root, "candidate");
+    const bin = join(root, "protected-review-bin");
+    const metadata = { locks: { root: "root", nodes: { root: { inputs: {} } } } };
+    const config = { substituters: { value: [] }, builders: { value: "" }, store: { value: "daemon" }, "build-dir": { value: root } };
+    const probeLog = join(root, "probe-calls");
+    for (const [name, version] of [["python3", "Python fixture"], ["rg", "ripgrep fixture"], ["ppa", "ppa fixture"]]) {
+      writeFileSync(join(bin, name!), `#!/bin/sh\n[ "$*" = --version ] || exit 64\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
+    }
+    writeFileSync(join(bin, "nix"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(probeLog)}\ncase "$*" in\n--version) printf '%s\\n' 'nix (Nix) fixture';;\n'flake metadata --json --no-update-lock-file --no-write-lock-file '*) printf '%s\\n' '${JSON.stringify(metadata)}';;\n'config show --json') printf '%s\\n' '${JSON.stringify(config)}';;\n'store ping --store daemon --json') printf '%s\\n' '{"url":"daemon"}';;\n*) exit 64;;\nesac\n`, { mode: 0o755 });
+    const tuple: NixosLaunchTuple = { repoKey: "pa-platform", canonicalRoot: join(root, "repo"), worktreeRoot: candidate,
+      ticket: "PAP-198", branch: seed.branch, featureSha: seed.featureSha, matrixSource: seed.matrixSource,
+      matrixDigest: seed.matrixAuthoritySha256, matrixApprovalEvidence: seed.matrixApprovalEvidence, authorizationId, reviewDeploymentId: deploymentId };
+    const environment = { PA_REPO: candidate, PA_WORKTREE_ROOT: candidate, PA_APPROVED_BASE_SHA: seed.featureSha, PA_EXPECTED_BRANCH: seed.branch,
+      PA_TICKET_ID: "PAP-198", PA_FEATURE_SHA: seed.featureSha, PA_MATRIX_SOURCE: seed.matrixSource, PA_MATRIX_AUTHORITY_SHA256: seed.matrixAuthoritySha256,
+      PA_MATRIX_APPROVAL_EVIDENCE: seed.matrixApprovalEvidence, CI: "true", HOME: "/home/sinh", LANG: "C.UTF-8", TZ: "UTC", PATH: bin };
+    const versions: Record<string, string> = { git: execFileSync(REAL_GIT, ["--version"], { encoding: "utf8" }).trim(), bash: "GNU bash, fixture",
+      python3: "Python fixture", rg: "ripgrep fixture", nix: "nix (Nix) fixture", ppa: "ppa fixture" };
+    const storagePaths = [candidate, "/nix/store", root].sort();
+    const baseline: NixosBaseline = { schemaVersion: NIXOS_BASELINE_VERSION, tuple, environment, localInputs: [],
+      tools: NIXOS_TOOLS.map((name) => ({ name, executable: join(bin, name), version: versions[name]! })),
+      inventory: { localInputs: [], upstreams: [], caches: [], builders: [], daemon: "daemon", storage: storagePaths },
+      storage: storagePaths.map((path) => ({ path, minimumFreeBytes: 1 })) };
+    const source = "agent-teams/builder/artifacts/nixos-baseline.json";
+    mkdirSync(join(root, "agent-teams/builder/artifacts"), { recursive: true });
+    const bytes = JSON.stringify(baseline);
+    writeFileSync(join(root, source), bytes, { mode: 0o600 });
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const approvalEvidence = "c-20261010000000";
+    const ticketPath = join(root, "tickets/PAP-198.json");
+    const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as { comments: Array<Record<string, string>> };
+    ticket.comments.push({ id: approvalEvidence, author: "sinh", timestamp: "2026-10-10T00:00:00.000Z", content: JSON.stringify({ schemaVersion: NIXOS_APPROVAL_VERSION, source, digest, tupleDigest: nixosTupleDigest(tuple) }) });
+    writeFileSync(ticketPath, JSON.stringify(ticket));
+    const request = { team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
+      objective: `${seed.objective}\nPrerequisite Baseline Source: ${source}\nPrerequisite Baseline SHA-256: ${digest}\nPrerequisite Baseline Approval Evidence: ${approvalEvidence}` };
+    const deployDir = getDeployPaths(deploymentId).deployDir;
+    const path = join(deployDir, PI_VALIDATION_HANDOFF_FILE);
+    let reviewers = 0;
+    let runtimeStarts = 0;
+    let completion: Promise<void> | undefined;
+    let removedApproval = false;
+    if (scenario === "initial-storage-missing") storage.mode = "missing";
+    if (scenario === "initial-storage-low") storage.mode = "low";
+    process.env["AMBIENT_SECRET"] = "must-not-inherit";
+    const adapter = new PiAdapter({ cwd: candidate, env: process.env, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+      supervision: { launchBackgroundRunner: ((_runnerPath, configPath) => {
+        runtimeStarts++;
+        const runnerConfig = readPiBackgroundConfig(configPath);
+        assert.equal(runnerConfig.deploymentId, deploymentId, "separately approved prospective consumer is used, not a random substitute");
+        const launch = JSON.parse(readFileSync(path, "utf8")) as PiProtectedValidationLaunch;
+        assert.deepEqual((launch.validationHandoff as { manifest: { environment: unknown } }).manifest.environment, environment);
+        assert.equal(launch.historicalBaseProvenance, "materialized-ticket-link");
+        assert.equal(launch.admission.prerequisites.every((clause) => clause.status === "verified"), true);
+        assert.equal(existsSync(seed.markerPath), false);
+        assert.equal(statSync(path).mode & 0o777, 0o600);
+        assert.doesNotMatch(readFileSync(configPath, "utf8"), /review-auth:/);
+        process.env["PA_REPO"] = candidate; process.env["PA_WORKTREE_ROOT"] = candidate;
+        if (scenario === "final-budget-reset") writeFileSync(path, JSON.stringify({ ...launch, prerequisiteBudgetStartedMs: Number(process.hrtime.bigint() / 1_000_000n) }));
+        if (scenario === "final-source-drift") writeFileSync(join(root, source), `${bytes}\n`);
+        if (scenario === "final-daemon-outage") writeFileSync(join(bin, "nix"), readFileSync(join(bin, "nix"), "utf8").replace("'{\"url\":\"daemon\"}'", "'{\"url\":\"other\"}'"));
+        if (scenario === "final-receipt-drift") getDb().prepare("UPDATE review_authorization_claims SET active = 0 WHERE deployment_id = ?").run(deploymentId);
+        if (scenario === "final-storage-missing") storage.mode = "missing";
+        if (scenario === "final-storage-low") storage.mode = "low";
+        const reviewer = new BackgroundDeploymentProcess(99_002);
+        completion = runPiBackgroundRunner(runnerConfig, { supervision: { spawnProcess: (() => reviewer as never) as never, onSpawn: () => {
+          reviewers++; assert.equal(readFileSync(seed.markerPath, "utf8"), "validation-complete"); queueMicrotask(() => reviewer.emit("close", 0));
+        } } });
+        return new BackgroundDeploymentProcess(99_001) as never;
+      }) as never } });
+    const hooks = createPiHooks(adapter, { observeReviewOperation: (operation) => {
+      if (scenario === "initial-approval-missing" && operation === "ticket-read" && !removedApproval) {
+        removedApproval = true; ticket.comments.pop(); writeFileSync(ticketPath, JSON.stringify(ticket));
+      }
+    } });
+    const result = await hooks.deploy!({ ...request, timeout: 60 });
+    if (completion) await completion;
+    delete process.env["AMBIENT_SECRET"];
+    if (scenario === "invalid-consumer") {
+      assert.equal(result.status, "failed");
+      assert.equal(result.deploymentId, undefined);
+      assert.match(result.reason ?? "", /reservation identity d- followed by six lowercase hexadecimal characters/);
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(result.reason?.includes(label));
+      assert.ok(result.reason!.length <= 2000); assert.doesNotMatch(result.reason!, /review-auth:/);
+      assert.equal(runtimeStarts, 0); assert.equal(reviewers, 0); assert.equal(existsSync(seed.markerPath), false);
+      assert.equal(existsSync(deployDir), false); assert.equal(existsSync(repositoryReviewReservationPath(candidate)), false);
+      assert.equal(queryReviewAuthorizationClaims().length, 0); assert.deepEqual(getDeploymentEvents(deploymentId), []);
+      return;
+    }
+    assert.equal(result.deploymentId, deploymentId, result.reason);
+    if (scenario === "initial-approval-missing" || scenario === "initial-storage-missing" || scenario === "initial-storage-low") {
+      assert.equal(result.status, "failed"); assert.match(result.reason ?? "", scenario === "initial-approval-missing" ? /durable approvals/ : /Source: storage/);
+      if (scenario === "initial-storage-low") assert.match(result.reason ?? "", /below explicit approved free-byte threshold/);
+      assert.equal(runtimeStarts, 0); assert.equal(reviewers, 0); assert.equal(existsSync(seed.markerPath), false);
+      assert.equal(queryReviewAuthorizationClaims().length, 1, "failed observation preserves consumed one-use receipt");
+      assert.equal(existsSync(path), false); return;
+    }
+    assert.equal(runtimeStarts, 1, result.reason);
+    if (scenario !== "success") {
+      assert.equal(reviewers, 0); assert.equal(existsSync(seed.markerPath), false);
+      assert.equal(queryDeploymentStatus(deploymentId)?.status, "crashed");
+      assert.equal(existsSync(join(deployDir, "validation-evidence/ledger.json")), false);
+      assert.equal(existsSync(path), false);
+      const summary = getDeploymentEvents(deploymentId).find((event) => event.event === "crashed")?.summary ?? "";
+      for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(summary.includes(label));
+      assert.ok(summary.length <= 2000); assert.doesNotMatch(summary, /review-auth:/);
+      if (scenario === "final-storage-missing" || scenario === "final-storage-low") assert.match(summary, /Source: storage/);
+      if (scenario === "final-storage-low") assert.match(summary, /below explicit approved free-byte threshold/);
+      return;
+    }
+    assert.equal(reviewers, 1);
+    assert.equal(queryDeploymentStatus(deploymentId)?.status, "success");
+    const ledger = readFileSync(join(deployDir, "validation-evidence/ledger.json"), "utf8");
+    assert.doesNotMatch(ledger, /review-auth:|must-not-inherit/);
+    assert.equal(JSON.parse(ledger).result, "passed");
+    assert.ok(readFileSync(probeLog, "utf8").split("store ping").length >= 5, "initial and immediate final observations ran on both sides of protected handoff");
+    assert.ok(storage.calls.filter((location) => location === "/nix/store").length >= 4, "fixture store is probed initially and immediately before execution on both sides of handoff");
+    assert.equal(existsSync(path), false);
+    assert.equal(existsSync(repositoryReviewReservationPath(candidate)), false);
+    assert.equal(createHash("sha256").update(extractMatrixAuthority(readFileSync(join(root, seed.matrixSource)))).digest("hex"), seed.matrixAuthoritySha256);
+    const observations = readFileSync(join(deployDir, "nixos-prerequisite-observations.jsonl"), "utf8");
+    assert.doesNotMatch(observations, /review-auth:|authorizationId|must-not-inherit/);
+    const beforeReplay = getDeploymentEvents(deploymentId);
+    const replay = await hooks.deploy!({ ...request, timeout: 60 });
+    assert.equal(replay.status, "failed"); assert.match(replay.reason ?? "", /durable history/);
+    assert.equal(runtimeStarts, 1); assert.equal(reviewers, 1);
+    assert.deepEqual(getDeploymentEvents(deploymentId), beforeReplay, "same approved prospective ID never overwrites historical events");
+  })));
+});
+
 function installProtectedReviewToolFixture(root: string): void {
   const bin = join(root, "protected-review-bin");
   mkdirSync(bin, { recursive: true });
@@ -283,8 +705,10 @@ function installProtectedReviewToolFixture(root: string): void {
     corepack: `#!/bin/sh\nif [ "$#" -eq 2 ] && [ "$1" = pnpm ] && [ "$2" = --version ]; then printf '%s\\n' '${PROTECTED_REVIEW_PNPM_VERSION}'; exit 0; fi\nexit 64\n`,
     pi: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' '${PROTECTED_REVIEW_PI_VERSION}'; exit 0; fi\nexit 64\n`,
     git: `#!/bin/sh\nexec ${JSON.stringify(REAL_GIT)} "$@"\n`,
+    flock: `#!/bin/sh\nexec ${JSON.stringify(REAL_FLOCK)} "$@"\n`,
     bash: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' 'GNU bash, fixture'; exit 0; fi\nexec ${JSON.stringify(REAL_BASH)} "$@"\n`,
     nix: "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = --version ]; then printf '%s\\n' 'nix (Nix) fixture'; exit 0; fi\nexit 64\n",
+    treehouse: `#!/bin/sh\n[ "$*" = "status --json" ] || exit 64\nexec ${JSON.stringify(REAL_NODE)} -e ${JSON.stringify(`const fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(join(root, "treehouse-calls"))},'status\\n'); process.stdout.write(fs.readFileSync(${JSON.stringify(join(root, "treehouse-status.json"))}))`)}\n`,
   };
   for (const [name, script] of Object.entries(scripts)) {
     const path = join(bin, name);
@@ -2010,6 +2434,256 @@ test("PPA and OPA builders hold different canonical repositories independently",
   });
 });
 
+async function withSelectionAliasFixture(holder: "owner" | "borrower" | "absent", callback: (fixture: {
+  root: string; canonical: string; selected: string; dependencies: PiDeployDependencies;
+  statusCalls: string[][]; setTeam: (name: string, filename?: string) => void;
+}) => Promise<void>): Promise<void> {
+  await withPiEnv(async (root, gitState) => {
+    const canonical = join(root, "repo"); const selected = join(root, "selected");
+    const branch = "feature/PAP-234-alias";
+    execFileSync(REAL_GIT, ["worktree", "add", "-b", branch, selected], { cwd: canonical, stdio: "ignore" });
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "alias", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
+    const setTeam = (name: string, filename = "requirements") => writeFileSync(join(root, "teams", `${filename}.yaml`), `name: ${name}\ndescription: Alias fixture\nobjective: Inspect\nagents: []\ndeploy_modes:\n  - id: analyze\n    label: Analyze\n    require_ticket: true\n`);
+    setTeam("requirements"); setTeam("learner", "learner");
+    const snapshot = captureRepositoryGitSnapshot(selected);
+    const fingerprint = readProcessFingerprint(process.pid)!;
+    const gitDir = git(["rev-parse", "--absolute-git-dir"], selected);
+    const gitCommonDir = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], selected);
+    const authorityPath = holder === "owner" ? repositoryMutationLeasePath(selected) : repositoryMutationBorrowerPath(selected);
+    // Synthetic fixture-only evidence: no acquisition API or production authority.
+    if (holder !== "absent") {
+      const deploymentId = holder === "owner" ? "d-aabbcc" : "d-ddeeff";
+      const mode = holder === "owner" ? "orchestrator" : "implement";
+      appendRegistryEvent({ deployment_id: deploymentId, team: "builder", mode, runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(), ticket_id: "PAP-234", repo: selected, repo_root: canonical, worktree_root: selected });
+      const identity = { schemaVersion: 1 as const, canonicalRepoKey: "pa-platform", canonicalRepoRoot: canonical, worktreeRoot: selected, deploymentId, deploymentDirectory: join(root, "deployments", deploymentId), runtime: "pi" as const, team: "builder" as const, ticket: "PAP-234", processFingerprint: fingerprint };
+      const authority: RepositoryMutationLease | RepositoryMutationBorrower = holder === "owner"
+        ? { ...identity, mode: "orchestrator", slot: "orchestrator", launchMode: "foreground", ownershipToken: "fixture-owner", acquiredAt: new Date().toISOString(), preLaunchGitSnapshot: snapshot, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir }
+        : { ...identity, mode: "implement", launchMode: "background", borrowerToken: "fixture-borrower", parentDeploymentId: "d-aabbcc", parentProcessFingerprint: fingerprint, branch, registeredAt: new Date().toISOString(), timeoutSeconds: 60, launchGitSnapshot: snapshot };
+      writeFileSync(authorityPath, JSON.stringify(authority));
+      const inspection = { getProcessFingerprint: readProcessFingerprint, worktreeRoot: selected, repositoryGitDir: gitDir };
+      assert.equal(holder === "owner" ? inspectRepositoryMutationLease(canonical, inspection).state : inspectRepositoryMutationBorrower(canonical, inspection).state, "live");
+    }
+    const authorityBytes = holder === "absent" ? undefined : readFileSync(authorityPath);
+    const ticketBytes = readFileSync(ticketPath); const projectBytes = readFileSync(join(selected, "README.md"));
+    const operations: string[] = []; const statusCalls: string[][] = [];
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      assert.equal(cwd, canonical); statusCalls.push([...args]); assert.deepEqual(args, ["status", "--json"]);
+      return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: selected, status: "leased", lease_id: "lease-234", lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) };
+    } });
+    const originalUpdate = TicketStore.prototype.update; const originalComment = TicketStore.prototype.comment; const originalGet = TreehouseClient.prototype.getLease;
+    TicketStore.prototype.update = function () { operations.push("ticket-write"); throw new Error("forbidden ticket write"); };
+    TicketStore.prototype.comment = function () { operations.push("ticket-write"); throw new Error("forbidden ticket comment"); };
+    TreehouseClient.prototype.getLease = function () { operations.push("allocation"); throw new Error("forbidden allocation"); };
+    try {
+      await callback({ root, canonical, selected, dependencies: { treehouse, observeOperation: (op) => operations.push(op) }, statusCalls, setTeam });
+      assert.deepEqual(operations.filter((op) => op !== "runtime-spawn"), [], "zero checkout/branch/slot/permit/lineage/ticket writes");
+      assert.deepEqual(captureRepositoryGitSnapshot(selected), snapshot);
+      assert.deepEqual(readFileSync(ticketPath), ticketBytes); assert.deepEqual(readFileSync(join(selected, "README.md")), projectBytes);
+      if (authorityBytes) assert.deepEqual(readFileSync(authorityPath), authorityBytes, "selection preserves live authority bytes");
+      else for (const path of [repositoryMutationLeasePath(selected), repositoryMutationLeasePath(selected, "implement"), repositoryMutationBorrowerPath(selected)]) assert.equal(existsSync(path), false);
+      assert.ok(gitState.readOperations().every((args) => args[0] === "worktree" && args[1] === "list"), "zero branch or checkout lifecycle actions");
+    } finally {
+      TicketStore.prototype.update = originalUpdate; TicketStore.prototype.comment = originalComment; TreehouseClient.prototype.getLease = originalGet;
+    }
+  });
+}
+
+for (const holder of ["owner", "borrower"] as const) test(`ticket-worktree resolved non-locking alias rejects alongside live builder ${holder}`, async () => {
+  await withSelectionAliasFixture(holder, async ({ selected, dependencies, setTeam, statusCalls }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    let preflights = 0; const spawned: SpawnOpts[] = []; const resumed: SpawnOpts[] = [];
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts), onResume: (opts) => resumed.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "requirements");
+    assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "read-only");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    setTeam("learner");
+    for (const extra of [{}, { background: true }, { dryRun: true }, { resume: allowed.deploymentId! }]) {
+      const rejected = await deployWithPi({ ...request, ...extra }, adapter, undefined, dependencies);
+      assert.equal(rejected.status, "failed"); assert.match(rejected.reason ?? "", /non-locking access cannot coexist/);
+      assert.match(rejected.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((rejected.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1); assert.equal(resumed.length, 0);
+    // Actual read-only identity remains allowed even with a non-locking filename.
+    setTeam("requirements", "learner");
+    const reverseAlias = await deployWithPi({ ...request, team: "learner" }, adapter, undefined, dependencies);
+    assert.equal(reverseAlias.status, "success", reverseAlias.reason);
+    assert.equal(spawned.at(-1)?.executionPlan?.team, "requirements");
+    assert.equal(spawned.at(-1)?.executionPlan?.repositoryAdmission.access, "read-only");
+    setTeam("builder"); const reads = statusCalls.length;
+    const builder = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(builder.status, "failed"); assert.match(builder.reason ?? "", /resolved builder team/);
+    assert.equal(statusCalls.length, reads, "resolved builder still rejects before any status/capacity action");
+    assert.equal(preflights, 2); assert.equal(spawned.length, 2);
+  });
+});
+
+test("ticket-worktree alias plan/access consistency and resolved-identity rereads reject drift", async () => {
+  await withSelectionAliasFixture("absent", async ({ canonical, selected, dependencies, setTeam }) => {
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, timeout: 60 };
+    setTeam("learner");
+    const spawned: SpawnOpts[] = []; let preflights = 0;
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
+    const allowed = await deployWithPi(request, adapter, undefined, dependencies);
+    assert.equal(allowed.status, "success", allowed.reason);
+    assert.equal(spawned[0]?.executionPlan?.team, "learner"); assert.equal(spawned[0]?.executionPlan?.repositoryAdmission.access, "non-locking");
+    assert.equal(spawned[0]?.executionPlan?.repositoryCwd, selected);
+    // Same access classification is insufficient: bind the resolved team name.
+    const authentication = authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies);
+    setTeam("planner");
+    assert.throws(() => authentication.reread(), /changed after selection/);
+    assert.throws(() => authenticateTicketWorktreeSelection(request, "analyze", canonical, dependencies, "learner"), /resolved team identity changed/);
+    for (const dryRun of [false, true]) {
+      setTeam("learner");
+      const changed = await deployWithPi({ ...request, dryRun }, stubAdapter({
+        onDescribe: () => setTeam("planner"), preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts),
+      }), undefined, dependencies);
+      assert.equal(changed.status, "failed"); assert.match(changed.reason ?? "", /resolved team identity changed/);
+      assert.match(changed.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok((changed.reason?.length ?? 0) <= 2_000);
+    }
+    assert.equal(preflights, 1); assert.equal(spawned.length, 1);
+    setTeam("requirements");
+    const preflightDrift = await deployWithPi({ ...request, resume: allowed.deploymentId! }, stubAdapter({
+      preflight: async () => { preflights += 1; setTeam("learner"); }, onResume: (opts) => spawned.push(opts),
+    }), undefined, dependencies);
+    assert.equal(preflightDrift.status, "failed"); assert.match(preflightDrift.reason ?? "", /resolved team identity changed/);
+    assert.equal(preflights, 2); assert.equal(spawned.length, 1, "post-preflight reread blocks resume");
+  });
+});
+
+test("explicit ticket selection projects foreground/background/dry-run roots without acquiring or mutating authority", async () => {
+  await withPiEnv(async (root) => {
+    const canonical = join(root, "repo");
+    const selected = join(root, "selected");
+    const branch = "feature/PAP-234-selection";
+    git(["worktree", "add", "-b", branch, selected], canonical);
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    writeFileSync(ticketPath, JSON.stringify({ id: "PAP-234", project: "pa-platform", title: "selection", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] }));
+    writeFileSync(join(selected, "README.md"), "dirty inspection checkout\n");
+    const before = captureRepositoryGitSnapshot(selected);
+    const ticketBefore = readFileSync(ticketPath);
+    const calls: string[][] = [];
+    const operations: string[] = [];
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      calls.push([...args]); assert.equal(cwd, canonical);
+      return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: selected, status: "leased", lease_id: "lease-234", lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) };
+    } });
+    const spawned: SpawnOpts[] = [];
+    let preflights = 0;
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onSpawn: (opts) => spawned.push(opts) });
+    for (const background of [false, true]) {
+      const result = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, repo: "pa-platform", background }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
+      assert.equal(result.status, "success", result.reason);
+      const opts = spawned.at(-1)!; const plan = opts.executionPlan!;
+      assert.equal(plan.repositoryCwd, selected); assert.equal(opts.mode, background ? "background" : "foreground");
+      assert.equal(plan.repoRoot, canonical);
+      for (const path of [plan.worktreeRoot, plan.repositoryCwd, plan.memoryDocumentRoot, plan.environment.PA_REPO, plan.environment.PA_WORKTREE_ROOT, opts.env?.["PA_REPO"], opts.env?.["PA_WORKTREE_ROOT"]]) assert.equal(path, selected);
+      assert.equal(plan.ticketWorktreeSelection?.branch, branch); assert.equal(Object.isFrozen(plan.ticketWorktreeSelection), true);
+      assert.equal(plan.treehouse, undefined); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+      for (const key of ["PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"] as const) assert.equal(plan.environment[key], "");
+      const primer = readFileSync(opts.primerPath, "utf8");
+      assert.match(primer, /Immutable Ticket Worktree Selection Evidence/);
+      assert.match(primer, new RegExp(`^repo_root: ${escapeRegExp(canonical)}$`, "m"));
+      for (const field of ["cwd", "repo", "worktree_root"]) assert.match(primer, new RegExp(`^${field}: ${escapeRegExp(selected)}$`, "m"));
+      assert.doesNotMatch(primer, /Authority:|ticket_slot=|treehouse return --/);
+      const status = queryDeploymentStatus(result.deploymentId!)!;
+      assert.equal(status.repo_root, canonical); assert.equal(status.repo, selected); assert.equal(status.worktree_root, selected);
+      assert.equal(status.ticket_id, "PAP-234"); assert.equal(status.branch_head_sha, head); assert.equal(status.branch_base_sha, head);
+      for (const key of ["builder_authority", "treehouse_path", "treehouse_lease_id", "ticket_slot_id", "repository_permit", "repository_slot"] as const) assert.equal(status[key], undefined);
+    }
+    const dry = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, dryRun: true }, adapter, undefined, { treehouse, observeOperation: (op) => operations.push(op) });
+    assert.equal(dry.status, "pending", dry.reason);
+    const preview = readFileSync(join(getDeployPaths(dry.deploymentId!).deployDir, "primer.md"), "utf8");
+    assert.match(preview, /Immutable Ticket Worktree Selection Evidence/);
+    assert.match(preview, new RegExp(`^cwd: ${escapeRegExp(selected)}$`, "m"));
+    assert.equal(preflights, 2); assert.equal(spawned.length, 2);
+    assert.deepEqual(operations, ["runtime-spawn", "runtime-spawn"]);
+    assert.ok(calls.every((args) => args.join(" ") === "status --json"));
+    assert.deepEqual(captureRepositoryGitSnapshot(selected), before); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
+    const runtimeRoots: string[] = [];
+    const realAdapter = new PiAdapter({
+      cwd: canonical, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
+      runCommand: (_args, opts) => {
+        runtimeRoots.push(opts.cwd, opts.env["PA_REPO"]!, opts.env["PA_WORKTREE_ROOT"]!);
+        assert.equal(execFileSync(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { cwd: opts.cwd, env: opts.env, encoding: "utf8" }), selected);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    for (const background of [false, true]) {
+      const runtime = await deployWithPi({ team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true, background }, realAdapter, undefined, { treehouse });
+      assert.equal(runtime.status, "success", runtime.reason);
+    }
+    assert.equal(runtimeRoots.length, 6); assert.ok(runtimeRoots.every((path) => path === selected));
+    assert.deepEqual(captureRepositoryGitSnapshot(selected), before); assert.deepEqual(readFileSync(ticketPath), ticketBefore);
+  });
+});
+
+test("ticket-selection resume reauthenticates the same canonical/ticket/physical checkout before preflight", async () => {
+  await withPiEnv(async (root) => {
+    const canonical = join(root, "repo"); const selected = join(root, "selected"); const branch = "feature/PAP-234-selection";
+    git(["worktree", "add", "-b", branch, selected], canonical);
+    const head = git(["rev-parse", "HEAD"], selected);
+    const ticketPath = join(root, "tickets", "PAP-234.json");
+    const ticket = { id: "PAP-234", project: "pa-platform", title: "selection", linkedBranches: [{ repo: "pa-platform", branch, state: "materialized", baseSha: head, headSha: head }] };
+    writeFileSync(ticketPath, JSON.stringify(ticket));
+    let leasePath = selected; let leaseId = "lease-234";
+    const treehouse = new TreehouseClient({ run() { return { status: 0, stdout: Buffer.from(JSON.stringify([{ path: leasePath, status: "leased", lease_id: leaseId, lease_holder: "pa:pa-platform:PAP-234" }])), stderr: Buffer.alloc(0) }; } });
+    let preflights = 0; const resumed: SpawnOpts[] = [];
+    const adapter = stubAdapter({ preflight: async () => { preflights += 1; }, onResume: (opts) => resumed.push(opts) });
+    const request = { team: "requirements", mode: "analyze", ticket: "PAP-234", ticketWorktree: true };
+    const initial = await deployWithPi(request, adapter, undefined, { treehouse });
+    assert.equal(initial.status, "success", initial.reason);
+    const resume = { ...request, resume: initial.deploymentId! };
+    const success = await deployWithPi(resume, adapter, undefined, { treehouse });
+    assert.equal(success.status, "success", success.reason); assert.equal(resumed[0]?.executionPlan?.repositoryCwd, selected);
+    assert.equal(resumed[0]?.sessionId, "authoritative-session-id");
+    const beforePreflights = preflights;
+    const assertRejected = async (override: Partial<typeof resume> = {}) => {
+      const failure = await deployWithPi({ ...resume, ...override }, adapter, undefined, { treehouse });
+      assert.equal(failure.status, "failed"); assert.ok((failure.reason?.length ?? 0) <= 2_000);
+      assert.match(failure.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.equal(preflights, beforePreflights); assert.equal(resumed.length, 1);
+    };
+    await assertRejected({ ticketWorktree: false });
+    await assertRejected({ ticket: undefined });
+    await assertRejected({ resume: "d-ffffff" });
+    const evidencePath = join(getDeployPaths(initial.deploymentId!).deployDir, "ticket-worktree-selection.json");
+    const bytes = readFileSync(evidencePath); const evidence = JSON.parse(bytes.toString()) as Record<string, unknown>;
+    const context = queryDeploymentStatus(initial.deploymentId!)!.ticket_worktree_selection;
+    assert.equal(context, bytes.toString());
+    rmSync(evidencePath);
+    await assertRejected(); await assertRejected({ ticketWorktree: false });
+    for (const malformed of ["{", "null", "[]", "{}", JSON.stringify({ ...evidence, ticket: "PAP-999" })]) {
+      writeFileSync(evidencePath, malformed); await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    writeFileSync(evidencePath, bytes);
+    // The canonical registry is an independent immutable discriminator. Missing,
+    // malformed or substituted context cannot be repaired from the sidecar.
+    for (const metadata of [null, "{", "null", "{}", JSON.stringify({ ...evidence, worktreeRoot: canonical })]) {
+      getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(metadata, initial.deploymentId!);
+      await assertRejected(); await assertRejected({ ticketWorktree: false });
+    }
+    getDb().prepare("UPDATE deployments SET ticket_worktree_selection = ? WHERE deployment_id = ?").run(context, initial.deploymentId!);
+    for (const field of ["repoRoot", "repoKey", "ticket", "worktreeRoot", "gitDir", "gitCommonDir"]) {
+      writeFileSync(evidencePath, JSON.stringify({ ...evidence, [field]: "/wrong" })); await assertRejected();
+    }
+    writeFileSync(evidencePath, bytes);
+    writeFileSync(ticketPath, JSON.stringify({ ...ticket, linkedBranches: [{ ...ticket.linkedBranches[0], headSha: "0".repeat(40) }] })); await assertRejected();
+    writeFileSync(ticketPath, JSON.stringify(ticket));
+    const replacement = join(root, "replacement"); git(["worktree", "add", "--force", replacement, branch], canonical);
+    leasePath = replacement; await assertRejected(); leasePath = selected;
+    const raceAdapter = stubAdapter({ preflight: async () => { leaseId = "replacement"; }, onResume: (opts) => resumed.push(opts) });
+    const race = await deployWithPi(resume, raceAdapter, undefined, { treehouse });
+    assert.equal(race.status, "failed"); assert.match(race.reason ?? "", /changed after selection/); assert.equal(resumed.length, 1);
+  });
+});
+
 test("PPA CWD-inferred linked worktrees preserve dirty state and carry dual-root evidence through foreground and background", async () => {
   await withPiEnv(async (root, gitState) => {
     const primary = join(root, "repo");
@@ -2276,6 +2950,9 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
   };
   const reviewerContext = {
     reviewDeploymentId: config.deploymentId,
+    candidateHead: "a".repeat(40),
+    prerequisiteStartedAt: "2026-09-29T09:35:57.263Z",
+    executorStartedAt: "2026-09-29T09:36:00.000Z",
     authorizationId,
     ticketId: "PAP-223",
     branch: "feature/PAP-223-validation",
@@ -2311,7 +2988,7 @@ test("protected reviewer input fails closed on ordinary authorization exposure a
   }
 });
 
-test("matrix-start journal is identity-bound, exactly once, durable before return, and fail-closed across crash recovery", () => {
+test("matrix-started journal is identity-bound, exactly once, durable before return, and fail-closed across crash recovery", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-matrix-start-"));
   const deploymentDirectory = join(root, "deployments", "d-matrix-start");
   mkdirSync(deploymentDirectory, { recursive: true, mode: 0o700 });
@@ -2321,6 +2998,7 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
     ticketId: "PAP-223",
     branch: "feature/PAP-223-structured-validation-executor",
     featureSha: "a".repeat(40),
+    candidateHead: "a".repeat(40),
     matrixSource: "agent-teams/requirements/artifacts/pap-223.md",
     matrixAuthoritySha256: "b".repeat(64),
     matrixApprovalEvidence: "PAP-223 comment c-20260928124221490 by sinh names the exact Matrix Source and revised digest",
@@ -2358,7 +3036,7 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
     assert.deepEqual(reconciled, event, "recovery preserves the one original identity-bound event");
     assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 1);
     assert.throws(
-      () => writePiMatrixStartedEvent({ deploymentDirectory, event: { ...identity, featureSha: "c".repeat(40) } }),
+      () => writePiMatrixStartedEvent({ deploymentDirectory, event: { ...identity, featureSha: "c".repeat(40), candidateHead: "c".repeat(40) } }),
       /recovery identity does not match/,
     );
 
@@ -2372,21 +3050,162 @@ test("matrix-start journal is identity-bound, exactly once, durable before retur
       ),
       /simulated crash/,
     );
+    const crashPath = piMatrixAttemptStatePath(crashDirectory);
+    const crashBytes = readFileSync(crashPath);
+    assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory: crashDirectory,
+      event: { ...crashIdentity, candidateHead: "c".repeat(40), featureSha: "c".repeat(40) } }), /recovery identity/);
+    assert.deepEqual(readFileSync(crashPath), crashBytes, "conflicting recovery never rewrites old journal");
     const recovered = writePiMatrixStartedEvent({ deploymentDirectory: crashDirectory, event: crashIdentity });
     assert.equal(recovered.deploymentId, "d-crash-boundary");
     assert.equal(readFileSync(piMatrixAttemptStatePath(crashDirectory), "utf8").split("\n").filter(Boolean).length, 1);
 
-    writeFileSync(path, `${readFileSync(path, "utf8")}{}\n`, { mode: 0o600 });
+    for (const candidateHead of [undefined, "short", "A".repeat(40), "c".repeat(40)]) {
+      const freshDirectory = join(root, `invalid-${candidateHead ?? "missing"}`);
+      assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory: freshDirectory,
+        event: { ...identity, candidateHead } as typeof identity }), /candidateHead|authority format/);
+      assert.equal(existsSync(piMatrixAttemptStatePath(freshDirectory)), false, "invalid writer input publishes no event");
+      const invalid: Record<string, unknown> = { ...event, candidateHead };
+      if (candidateHead === undefined) delete invalid["candidateHead"];
+      const bytes = Buffer.from(`${JSON.stringify(invalid)}\n`);
+      writeFileSync(path, bytes);
+      assert.throws(() => readPiMatrixStartedEvent(path), /schema|authority format/);
+      assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }), /schema|authority format/);
+      assert.deepEqual(readFileSync(path), bytes, "invalid historical evidence stays byte-identical");
+    }
+    writeFileSync(path, `${JSON.stringify(event)}\n`);
+    assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }, {
+      afterParentFsync: () => { writeFileSync(path, `${JSON.stringify({ ...event, candidateHead: "c".repeat(40), featureSha: "c".repeat(40) })}\n`); },
+    }), /recovery readback/);
+    writeFileSync(path, `${JSON.stringify(event)}\n{}\n`, { mode: 0o600 });
     assert.throws(() => writePiMatrixStartedEvent({ deploymentDirectory, event: identity }), /exactly one complete event/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
+test("review-auto production path rejects candidate and boundary drift before commands", async (t) => {
+  for (const scenario of ["missing lease", "duplicate lease", "canonical path", "ticket duplicate", "staged", "unstaged", "untracked", "active borrower",
+    "missing reference", "malformed reference", "conflicting reference", "missing historical base", "conflicting historical base", "unapproved reference",
+    "reference ancestry", "historical ancestry", "after-plan reference", "pre-launch reference", "after-plan lease", "pre-launch head", "matrix ticket", "matrix reference",
+    "matrix journal missing candidate", "matrix journal malformed candidate", "matrix journal conflicting candidate", "matrix journal identity drift"] as const) {
+    await t.test(scenario, async () => withPiEnv(async (root) => {
+      installProtectedReviewToolFixture(root);
+      const initialBase = git(["rev-parse", "HEAD"], join(root, "repo"));
+      const fixture = prepareProtectedReview(root, "review-auth:923e4567-e89b-42d3-a456-426614174020", { historicalMaterializationBaseSha: initialBase });
+      if (scenario === "reference ancestry" || scenario === "historical ancestry") {
+        git(["commit", "--allow-empty", "-m", "develop-only reference"], join(root, "repo"));
+        const later = git(["rev-parse", "HEAD"], join(root, "repo"));
+        Object.assign(fixture, prepareProtectedReview(root, "review-auth:923e4567-e89b-42d3-a456-426614174020", {
+          baseSha: scenario === "reference ancestry" ? later : fixture.featureSha,
+          historicalMaterializationBaseSha: scenario === "historical ancestry" ? later : initialBase,
+        }));
+      }
+      const matrixRuntime = scenario.startsWith("matrix ");
+      const candidate = join(root, "candidate");
+      const ticketPath = join(root, "tickets", "PAP-198.json");
+      const leasePath = join(root, "treehouse-status.json");
+      let changed = false;
+      const mutate = () => {
+        if (changed) return;
+        changed = true;
+        const leases = JSON.parse(readFileSync(leasePath, "utf8")) as Array<Record<string, unknown>>;
+        if (scenario === "missing lease") writeFileSync(leasePath, "[]");
+        if (scenario === "duplicate lease") writeFileSync(leasePath, JSON.stringify([...leases, { ...leases[0], path: join(root, "other"), lease_id: "other" }]));
+        if (scenario === "canonical path") writeFileSync(leasePath, JSON.stringify([{ ...leases[0], path: join(root, "repo") }]));
+        if (scenario === "after-plan lease") writeFileSync(leasePath, JSON.stringify([{ ...leases[0], lease_id: "changed" }]));
+        if (scenario === "ticket duplicate" || scenario === "matrix ticket") {
+          const ticket = JSON.parse(readFileSync(ticketPath, "utf8")) as { linkedBranches: Array<Record<string, unknown>> };
+          if (scenario === "ticket duplicate") ticket.linkedBranches.push({ ...ticket.linkedBranches[0] });
+          else ticket.linkedBranches[0]!["headSha"] = "b".repeat(40);
+          writeFileSync(ticketPath, JSON.stringify(ticket));
+        }
+        const matrixPath = join(root, fixture.matrixSource);
+        let artifact = readFileSync(matrixPath, "utf8");
+        if (scenario === "missing reference") artifact = artifact.replace(/^> Approved Base SHA:.*\n/m, "");
+        if (scenario === "malformed reference") artifact = artifact.replace(/^> Approved Base SHA:.*$/m, "> Approved Base SHA: short");
+        if (["conflicting reference", "after-plan reference", "pre-launch reference", "matrix reference"].includes(scenario)) {
+          artifact = artifact.replace(/^> Approved Base SHA:.*$/m, `> Approved Base SHA: ${initialBase}`);
+        }
+        if (scenario === "missing historical base") {
+          artifact = artifact.replace(/^> Historical Materialization Base SHA:.*\n/m, "");
+          const ticketPath = join(root, "tickets", "PAP-198.json");
+          const raw = JSON.parse(readFileSync(ticketPath, "utf8")) as { linkedBranches: Array<{ baseSha: string }> };
+          raw.linkedBranches[0]!.baseSha = "b".repeat(40);
+          writeFileSync(ticketPath, JSON.stringify(raw));
+        }
+        if (scenario === "conflicting historical base") artifact = artifact.replace(/^> Historical Materialization Base SHA:.*$/m, `> Historical Materialization Base SHA: ${fixture.featureSha}`);
+        if (artifact !== readFileSync(matrixPath, "utf8")) writeFileSync(matrixPath, artifact);
+        if (scenario === "unapproved reference") {
+          const ticket = JSON.parse(readFileSync(ticketPath, "utf8")); ticket.comments[0].author = "not-sinh";
+          writeFileSync(ticketPath, JSON.stringify(ticket));
+        }
+        if (scenario === "active borrower") writeFileSync(repositoryMutationBorrowerPath(candidate), "unresolved borrower", { mode: 0o600 });
+        if (scenario === "staged" || scenario === "unstaged" || scenario === "untracked") applyPreflightGitDrift(candidate, scenario);
+        if (scenario === "pre-launch head") git(["commit", "--allow-empty", "-m", "external candidate drift"], candidate);
+      };
+      if (!scenario.startsWith("after-plan") && !scenario.startsWith("pre-launch") && !scenario.startsWith("matrix")) mutate();
+      let statusReads = 0;
+      let reviewerStarts = 0;
+      let runtimeStarts = 0;
+      let completion: Promise<void> | undefined;
+      const operations: string[] = [];
+      const treehouse = new TreehouseClient({ run: (args) => {
+        assert.deepEqual(args, ["status", "--json"]);
+        if (++statusReads === 3 && (scenario === "after-plan lease" || scenario === "after-plan reference")) mutate();
+        return { status: 0, stdout: readFileSync(leasePath), stderr: Buffer.alloc(0) };
+      } });
+      const adapter = new PiAdapter({ cwd: join(root, "repo"), env: process.env,
+        versionProbe: () => { if (scenario === "pre-launch head" || scenario === "pre-launch reference") mutate(); return "0.84.4"; }, nativeRegistryProbe: () => undefined,
+        supervision: { launchBackgroundRunner: ((_runner, configPath) => {
+          runtimeStarts++;
+          assert.ok(matrixRuntime);
+          const config = readPiBackgroundConfig(configPath);
+          if (scenario.startsWith("matrix journal")) {
+            const path = piMatrixAttemptStatePath(getDeployPaths(config.deploymentId).deployDir);
+            const event = JSON.parse(readFileSync(path, "utf8"));
+            if (scenario === "matrix journal missing candidate") delete event.candidateHead;
+            if (scenario === "matrix journal malformed candidate") event.candidateHead = "A".repeat(40);
+            if (scenario === "matrix journal conflicting candidate") event.candidateHead = "b".repeat(40);
+            if (scenario === "matrix journal identity drift") { event.candidateHead = "b".repeat(40); event.featureSha = event.candidateHead; }
+            writeFileSync(path, `${JSON.stringify(event)}\n`);
+          }
+          process.env["PA_REPO"] = config.cwd;
+          process.env["PA_WORKTREE_ROOT"] = config.cwd;
+          mutate();
+          completion = runPiBackgroundRunner(config, { supervision: { spawnProcess: (() => {
+            reviewerStarts++;
+            throw new Error("rejected review must not start a reviewer");
+          }) as never } });
+          return new BackgroundDeploymentProcess(99_201) as never;
+        }) as never },
+      });
+      const hooks = createPiHooks(adapter, { treehouse, observeOperation: (operation) => operations.push(operation), observeReviewOperation: (operation) => operations.push(operation) });
+      const result = await hooks.deploy!({ team: "requirements", mode: "review-auto", ticket: "PAP-198", repo: "pa-platform", background: true, objective: fixture.objective, timeout: 60 });
+      if (completion) await completion;
+      if (matrixRuntime) {
+        assert.equal(runtimeStarts, 1, `matrix-boundary fixture must reach the runner: ${result.reason}`);
+        assert.ok(completion, "matrix-boundary fixture must await runner completion");
+        const ownership = JSON.parse(readFileSync(join(getDeployPaths(result.deploymentId!).deployDir, PI_SUPERVISOR_FILE), "utf8")) as { ready: boolean; state: string };
+        assert.equal(ownership.ready, false, "matrix-boundary rejection never acknowledges readiness");
+        assert.equal(ownership.state, "failed");
+        assert.equal(queryDeploymentStatus(result.deploymentId!)?.status, "crashed");
+      }
+      assert.equal(result.status, "failed", result.reason);
+      assert.ok((result.reason?.length ?? 0) <= 2000);
+      assert.match(result.reason ?? "", /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.equal(runtimeStarts, matrixRuntime ? 1 : 0);
+      assert.equal(reviewerStarts, 0);
+      assert.equal(existsSync(fixture.markerPath), false, "zero matrix command starts");
+      assert.equal(operations.some((operation) => ["checkout", "branch", "linked-branch-write", "project-file-write", "slot", "permit", "mutation-lease"].includes(operation)), false);
+      assert.equal(git(["branch", "--show-current"], join(root, "repo")), "develop", "canonical branch was never selected for review");
+    }));
+  }
+});
+
 test("production Pi hook constructs protected validation before reviewer spawn and rejects absent, reused, mismatched, or duplicate authority", async () => {
   await withPiEnv(async (root) => {
     installProtectedReviewToolFixture(root);
-    const repo = join(root, "repo");
+    const repo = join(root, "candidate");
     let launches = 0;
     let reviewerStarts = 0;
     let runnerCompletion: Promise<void> | undefined;
@@ -2406,11 +3225,25 @@ test("production Pi hook constructs protected validation before reviewer spawn a
           capturedConfig = config;
           assert.ok(config.validationHandoffPath);
           assert.doesNotMatch(readFileSync(configPath, "utf8"), /review-auth:/);
+          const protectedLaunch = JSON.parse(readFileSync(config.validationHandoffPath!, "utf8")) as PiProtectedValidationLaunch;
+          const review = protectedLaunch.review;
+          assert.deepEqual((protectedLaunch.validationHandoff as { manifest: { environment: unknown } }).manifest.environment, {
+            PA_REPO: repo, PA_TICKET_ID: "PAP-198", PA_FEATURE_SHA: review.featureSha, PA_MATRIX_SOURCE: review.matrixSource,
+            PA_MATRIX_AUTHORITY_SHA256: review.matrixAuthoritySha256, PA_MATRIX_APPROVAL_EVIDENCE: review.matrixApprovalEvidence,
+            CI: "1", HOME: "/home/sinh", LANG: "C.UTF-8", TZ: "UTC", PATH: process.env["PATH"],
+          });
           if (removeMatrixStartBeforeRunner) {
             removeMatrixStartBeforeRunner = false;
             rmSync(piMatrixAttemptStatePath(getDeployPaths(config.deploymentId).deployDir));
           }
           const reviewer = new BackgroundDeploymentProcess(99_002);
+          assert.equal(config.cwd, repo);
+          assert.equal(config.worktreeRoot, repo);
+          assert.equal(config.repoRoot, join(root, "repo"));
+          const savedRepo = process.env["PA_REPO"];
+          const savedWorktree = process.env["PA_WORKTREE_ROOT"];
+          process.env["PA_REPO"] = repo;
+          process.env["PA_WORKTREE_ROOT"] = repo;
           runnerCompletion = runPiBackgroundRunner(config, { supervision: {
             spawnProcess: ((_command: string, args: readonly string[]) => {
               reviewerInput = args.at(-1) ?? "";
@@ -2424,7 +3257,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
               assert.equal(ledger["result"], "passed");
               queueMicrotask(() => reviewer.emit("close", 0));
             },
-          } });
+          } }).finally(() => { restore("PA_REPO", savedRepo); restore("PA_WORKTREE_ROOT", savedWorktree); });
           return launcher as never;
         }) as never,
       },
@@ -2455,7 +3288,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
         name: "duplicate matrix boundary",
         authorization: "review-auth:823e4567-e89b-42d3-a456-426614174022",
         mutate: (path: string) => writeFileSync(path, readFileSync(path, "utf8").replace("### Full Validation Matrix", "### Full Validation Matrix\n### Full Validation Matrix")),
-        reason: /heading is absent or duplicated/,
+        reason: /duplicate or ambiguous Full Validation Matrix headings/
       },
     ] as const;
     for (const failure of matrixParseFailures) {
@@ -2519,7 +3352,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
         timeout: 60,
       });
       assert.equal(rejected.status, "failed", name);
-      assert.match(rejected.reason ?? "", /header, objective, or launch binding does not agree byte-for-byte/, name);
+      assert.match(rejected.reason ?? "", /approved matrix header\/digest and durable approval do not agree/, name);
       assert.equal(launches, 0, `${name} started zero matrix commands`);
       assert.equal(reviewerStarts, 0, `${name} started zero reviewers`);
       assert.equal(existsSync(fixture.markerPath), false, `${name} did not run command 1`);
@@ -2532,12 +3365,10 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       timeout: 60,
     });
     assert.equal(dirty.status, "failed");
-    assert.match(dirty.reason ?? "", /authenticated clean checkout/);
+    assert.match(dirty.reason ?? "", /complete zero-record porcelain-v2 snapshot/);
     assert.ok(dirty.deploymentId);
     const dirtyMatrixStartPath = piMatrixAttemptStatePath(getDeployPaths(dirty.deploymentId!).deployDir);
-    const dirtyMatrixStart = readPiMatrixStartedEvent(dirtyMatrixStartPath);
-    assert.equal(dirtyMatrixStart.deploymentId, dirty.deploymentId, "prerequisite 1 cannot precede durable matrix-start identity");
-    assert.equal(readFileSync(dirtyMatrixStartPath, "utf8").split("\n").filter(Boolean).length, 1, "prerequisite 1 failure retains exactly one start boundary");
+    assert.equal(existsSync(dirtyMatrixStartPath), false, "candidate rejection precedes protected matrix construction");
     assert.equal(queryReviewAuthorizationClaims().length, 0, "prerequisite 1 failure occurs before authorization claim");
     assert.equal(launches, 0, "dirty prerequisite started zero matrix commands");
     assert.equal(reviewerStarts, 0, "dirty prerequisite started zero reviewers");
@@ -2545,7 +3376,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
 
     const prerequisiteFailures: Array<{ name: string; authorization: string; options: ProtectedReviewFixtureOptions; reason: RegExp }> = [
       { name: "canonical repository", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174004", options: { canonicalRepoKey: "wrong-repository" }, reason: /canonical repository/ },
-      { name: "base ancestry", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174005", options: { baseSha: "b".repeat(40) }, reason: /base commit/ },
+      { name: "base ancestry", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174005", options: { baseSha: "b".repeat(40) }, reason: /base must be a commit ancestor/ },
       { name: "tool version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174006", options: { nodeVersion: "v0.0.0" }, reason: /tool versions/ },
       { name: "dependency version", authorization: "review-auth:123e4567-e89b-42d3-a456-426614174007", options: { expectedDependencyVersion: "0.0.0" }, reason: /installed dependency/ },
       {
@@ -2558,7 +3389,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
         name: "duplicate bare and assigned environment representations",
         authorization: "review-auth:123e4567-e89b-42d3-a456-426614174009",
         options: { environmentSection: `${APPROVED_MATRIX_ENVIRONMENT_SECTION}\n- \`CI\` is duplicated.` },
-        reason: /required environment value exactly once/,
+        reason: /required environment value exactly once|static approved environment values require exact assignments/,
       },
       {
         name: "environment name prefix collision",
@@ -2584,6 +3415,11 @@ test("production Pi hook constructs protected validation before reviewer spawn a
         options: { environmentSection: APPROVED_MATRIX_ENVIRONMENT_SECTION.replace("`PATH`", "`PATH") },
         reason: /malformed backtick code spans/,
       },
+      ...[ ["CI=1", "CI=true"], ["HOME=/home/sinh", "HOME=/tmp"], ["LANG=C.UTF-8", "LANG=en_US"], ["TZ=UTC", "TZ=local"],
+        ["PA_TICKET_ID=PAP-223", "PA_TICKET_ID=PAP-999"], ["PA_MATRIX_SOURCE=agent-teams/requirements/artifacts/2026-09-23-pap-223-structured-validation-executor.md", "PA_MATRIX_SOURCE=agent-teams/requirements/artifacts/other.md"] ].map(([from, to], index) => ({
+        name: `conflicting assignment ${from}`, authorization: `review-auth:123e4567-e89b-42d3-a456-4266141740${String(30 + index).padStart(2, "0")}`,
+        options: { environmentSection: APPROVED_MATRIX_ENVIRONMENT_SECTION.replace(from!, to!) }, reason: /assignment value conflicts/,
+      })),
       {
         name: "empty environment span",
         authorization: "review-auth:123e4567-e89b-42d3-a456-426614174014",
@@ -2620,7 +3456,39 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     assert.equal(existsSync(crashBoundaryFixture.markerPath), false, "crash after launch admission starts zero matrix commands");
     assert.equal(reviewerStarts, 0, "crash after launch admission starts zero reviewers");
 
-    fixture = prepareProtectedReview(root, authorization);
+    const historicalBase = git(["rev-parse", "HEAD"], join(root, "repo"));
+    const approvedReference = git(["rev-parse", "HEAD"], repo);
+    git(["commit", "--allow-empty", "-m", "latest implementation candidate"], repo);
+    fixture = prepareProtectedReview(root, authorization, { baseSha: approvedReference, historicalMaterializationBaseSha: historicalBase, layout: "plain-inline" });
+    markParentRunning("d-112233");
+    const parent = acquireRepositoryMutationLease({ canonicalRepoKey: "pa-platform", canonicalRepoRoot: join(root, "repo"), worktreeRoot: repo,
+      expectedGitDir: git(["rev-parse", "--path-format=absolute", "--git-dir"], repo),
+      expectedGitCommonDir: git(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo),
+      deploymentId: "d-112233", deploymentDirectory: root, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "background",
+      ticket: "PAP-198" });
+    assert.equal(parent.status, "acquired");
+    const parentBytes = readFileSync(repositoryMutationLeasePath(repo));
+    adapter.installHooks = (_directory, config) => {
+      const plan = config.executionPlan!;
+      assert.equal(Object.isFrozen(plan), true);
+      assert.equal(plan.repositoryCwd, repo);
+      assert.equal(plan.memoryDocumentRoot, repo);
+      assert.equal(plan.environment.PA_REPO, repo);
+      assert.equal(plan.environment.PA_WORKTREE_ROOT, repo);
+      assert.equal(plan.environment.PA_REPO_ROOT, join(root, "repo"));
+      assert.equal(plan.reviewCheckout?.featureSha, fixture.featureSha);
+      assert.equal(plan.reviewCheckout?.baseSha, historicalBase);
+      assert.equal(plan.reviewCheckout?.approvedReference?.sha, approvedReference);
+      assert.notEqual(plan.reviewCheckout?.approvedReference?.sha, fixture.featureSha);
+      assert.notEqual(plan.reviewCheckout?.baseSha, plan.reviewCheckout?.approvedReference?.sha);
+      assert.equal(plan.treehouse, undefined);
+      assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
+      assert.doesNotMatch(JSON.stringify(plan), /reservationToken/);
+      const implement = acquireRepositoryMutationLease({ canonicalRepoKey: "pa-platform", canonicalRepoRoot: join(root, "repo"), worktreeRoot: repo,
+        deploymentId: "d-223344", deploymentDirectory: root, runtime: "pi", team: "builder", mode: "implement", launchMode: "background",
+        ticket: "PAP-198" });
+      assert.equal(implement.status, "rejected", "production reservation blocks new implement admission");
+    };
     const deployed = await hooks.deploy!({
       team: "requirements",
       mode: "review-auto",
@@ -2650,13 +3518,45 @@ test("production Pi hook constructs protected validation before reviewer spawn a
     const durableClaim = queryReviewAuthorizationClaims().find((claim) => claim.authorizationId === authorization);
     assert.equal(matrixStart.deploymentId, deployed.deploymentId);
     assert.equal(matrixStart.authorizationId, authorization);
+    assert.equal(matrixStart.candidateHead, fixture.featureSha);
+    assert.equal(matrixStart.candidateHead, git(["rev-parse", "HEAD"], repo));
+    assert.equal(matrixStart.candidateHead, git(["rev-parse", `refs/heads/${fixture.branch}`], repo));
     assert.ok(durableClaim);
     assert.ok(matrixStart.timestamp <= durableClaim.claimedAt, "durable matrix-start precedes authorization claim");
     assert.equal(readFileSync(piMatrixAttemptStatePath(deployDir), "utf8").split("\n").filter(Boolean).length, 1);
     const ledgerBody = readFileSync(join(deployDir, "validation-evidence", "ledger.json"), "utf8");
     assert.doesNotMatch(ledgerBody, /review-auth:/);
+    const executorStartedAt = JSON.parse(ledgerBody).startedAt;
+    assert.ok(matrixStart.timestamp < executorStartedAt, "journal prerequisite start is an earlier boundary than executor start");
+    assert.ok(reviewerInput.includes(`candidate_head: ${fixture.featureSha}`));
+    assert.ok(reviewerInput.includes(`prerequisite_started_at: ${matrixStart.timestamp}`));
+    assert.ok(reviewerInput.includes(`executor_started_at: ${executorStartedAt}`));
+    assert.ok(reviewerInput.includes(`historical_materialization_base_sha: ${historicalBase}`));
+    assert.ok(reviewerInput.includes(`approved_reference_sha: ${approvedReference}`));
     assert.doesNotMatch(JSON.stringify(readActivityEvents(getDeployPaths(deployed.deploymentId!).activityLogPath)), /review-auth:/);
-    assert.equal(queryDeploymentStatus(deployed.deploymentId!)?.status, "success");
+    const status = queryDeploymentStatus(deployed.deploymentId!)!;
+    assert.equal(status.status, "success");
+    assert.equal(status.repo, repo);
+    assert.equal(status.repo_root, join(root, "repo"));
+    assert.equal(status.review_checkout?.worktreeRoot, repo);
+    assert.equal(status.review_checkout?.featureSha, fixture.featureSha);
+    assert.equal(status.review_checkout?.baseSha, historicalBase);
+    assert.equal(status.review_checkout?.approvedReference?.sha, approvedReference);
+    assert.equal(status.repository_permit, undefined);
+    assert.equal(status.builder_authority, undefined);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(repo)), parentBytes, "matching idle parent custody is byte-stable after review");
+    const api = createAgentApiApp().app;
+    const apiResponse = await api.request(`/api/deploy/status/${deployed.deploymentId}`);
+    assert.equal(apiResponse.status, 200);
+    const apiBody = await apiResponse.json() as { status: { review_checkout?: unknown } };
+    assert.deepEqual(apiBody.status.review_checkout, status.review_checkout);
+    assert.match(reviewerInput, new RegExp(`worktree_root: ${escapeRegExp(repo)}`));
+    assert.equal(existsSync(repositoryReviewReservationPath(repo)), false);
+    const finalEvidence = JSON.parse(readFileSync(join(deployDir, "review-final-evidence.json"), "utf8")) as RepositoryReviewFinalEvidence;
+    assert.equal(finalEvidence.leaseDisposition, "retained");
+    assert.equal(finalEvidence.finalGitSnapshot.statusPorcelainV2Base64, "");
+    assert.equal(finalEvidence.checkout.featureSha, fixture.featureSha);
+    assert.equal(getDeploymentEvents(deployed.deploymentId!).find((event) => event.event === "completed")?.review_checkout?.worktreeRoot, repo);
 
     const replay = await hooks.deploy!({
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
@@ -2677,7 +3577,7 @@ test("production Pi hook constructs protected validation before reviewer spawn a
       timeout: 60,
     });
     assert.equal(mismatched.status, "failed");
-    assert.match(mismatched.reason ?? "", /branch, HEAD, or durable ticket binding is unmet/);
+    assert.match(mismatched.reason ?? "", /materialized exact branch, immutable base, and HEAD/);
     assert.equal(launches, 2);
 
     const duplicateAuthorization = "review-auth:323e4567-e89b-42d3-a456-426614174002";
@@ -2720,13 +3620,13 @@ test("production Pi hook constructs protected validation before reviewer spawn a
   });
 });
 
-test("concurrent protected review contenders persist one authorization consumer and start one executor", async () => {
+test("review-auto concurrent protected contenders persist one authorization consumer and start one executor", async () => {
   await withPiEnv(async (root) => {
     installProtectedReviewToolFixture(root);
     const repo = join(root, "repo");
     const authorization = "review-auth:523e4567-e89b-42d3-a456-426614174004";
     const differentAuthorization = "review-auth:623e4567-e89b-42d3-a456-426614174005";
-    const fixture = prepareProtectedReview(root, authorization);
+    const fixture = prepareProtectedReview(root, authorization, { omitHistoricalHeader: true });
     let releasePreflight!: () => void;
     let markPreflightEntered!: () => void;
     const preflightGate = new Promise<void>((resolveGate) => { releasePreflight = resolveGate; });
@@ -2749,6 +3649,8 @@ test("concurrent protected review contenders persist one authorization consumer 
           const config = readPiBackgroundConfig(configPath);
           const launcher = new BackgroundDeploymentProcess(99_101);
           const reviewer = new BackgroundDeploymentProcess(99_102);
+          process.env["PA_REPO"] = config.cwd;
+          process.env["PA_WORKTREE_ROOT"] = config.cwd;
           runnerCompletion = runPiBackgroundRunner(config, { supervision: {
             spawnProcess: (() => reviewer as never) as never,
             onSpawn: () => {
@@ -2765,14 +3667,17 @@ test("concurrent protected review contenders persist one authorization consumer 
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
       objective: fixture.objective, timeout: 60,
     });
-    await preflightEntered;
+    await Promise.race([
+      preflightEntered,
+      firstPromise.then((result) => assert.fail(`winner rejected before the preflight barrier: ${result.reason}`)),
+    ]);
 
     const sameAuthorizationLoser = await hooks.deploy!({
       team: "requirements", mode: "review-auto", ticket: "PAP-198", background: true,
       objective: fixture.objective, timeout: 60,
     });
     assert.equal(sameAuthorizationLoser.status, "failed");
-    assert.match(sameAuthorizationLoser.reason ?? "", /already has a durable registry consumer/);
+    assert.match(sameAuthorizationLoser.reason ?? "", /reservation admission failed/);
     assert.equal(executorStarts, 0, "same-authorization loser starts zero executors while the winner is barrier-held");
     assert.equal(reviewerStarts, 0, "same-authorization loser starts zero reviewers while the winner is barrier-held");
     assert.equal(existsSync(fixture.markerPath), false, "same-authorization loser starts zero matrix commands");
@@ -2782,7 +3687,7 @@ test("concurrent protected review contenders persist one authorization consumer 
       objective: fixture.objective.replace(authorization, differentAuthorization), timeout: 60,
     });
     assert.equal(differentAuthorizationLoser.status, "failed");
-    assert.match(differentAuthorizationLoser.reason ?? "", /another durable active review claim/);
+    assert.match(differentAuthorizationLoser.reason ?? "", /reservation admission failed/);
     assert.equal(executorStarts, 0, "different-authorization duplicate lineage starts zero executors");
     assert.equal(reviewerStarts, 0, "different-authorization duplicate lineage starts zero reviewers");
 

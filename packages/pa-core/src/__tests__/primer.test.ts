@@ -1076,6 +1076,25 @@ test("generatePrimer renders Treehouse PA_REPO as the execution worktree while r
   assert.doesNotMatch(primer, /^  PA_REPO: \/registered\/project$/m);
 });
 
+test("selection primer projects immutable branch and roots without builder or return authority", () => {
+  const primer = generatePrimer({
+    runtime: "pi", teamConfig: team, mode: "plan",
+    repository: { repoKey: "registered", repoRoot: "/canonical/repo", worktreeRoot: "/selected/repo" },
+    ticketWorktreeSelection: {
+      repoKey: "registered", repoRoot: "/canonical/repo", worktreeRoot: "/selected/repo", ticket: "PAP-234",
+      gitDir: "/canonical/repo/.git/worktrees/selected", gitCommonDir: "/canonical/repo/.git",
+      leaseId: "lease-234", leaseHolder: "pa:registered:PAP-234", branch: "feature/PAP-234-selection",
+      baseSha: "a".repeat(40), headSha: "b".repeat(40),
+    },
+  });
+  assert.match(primer, /Immutable Ticket Worktree Selection Evidence/);
+  assert.match(primer, /state=materialized, base=a{40}, head=b{40}/);
+  assert.match(primer, /no builder authority, ticket slot, repository permit, lineage, mutation lease, borrowing or return rights/);
+  assert.match(primer, /Never return the selected checkout/);
+  assert.match(primer, /neither filesystem sandboxing nor an immutable post-spawn snapshot/);
+  assert.doesNotMatch(primer, /Authority:|Concurrency:|Explicit Treehouse Return Contract|treehouse return --/);
+});
+
 test("generatePrimer renders automatic PA finalization and Sinh-approved identity-fenced Treehouse return", () => {
   const primer = generatePrimer({
     runtime: "pi", teamConfig: team, mode: "plan", templateVars: { TICKET_ID: "PAP-189" },

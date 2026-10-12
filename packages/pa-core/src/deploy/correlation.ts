@@ -10,6 +10,7 @@ const HOLDER_PATTERN = /^pa:([A-Za-z0-9][A-Za-z0-9._-]*):([A-Z][A-Z0-9]*-\d+)$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 export interface DeploymentCorrelationEvidence {
+  reviewCheckout?: ReviewCheckoutCorrelationEvidence;
   parentDeploymentId?: string;
   builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
   treehousePath?: string;
@@ -20,6 +21,72 @@ export interface DeploymentCorrelationEvidence {
   branchHeadSha?: string;
   ticketSlotId?: string;
   repositoryPermit?: 1 | 2 | 3 | 4;
+}
+
+/** Read-only candidate identity, deliberately separate from builder capacity/ownership. */
+export interface ReviewCheckoutCorrelationEvidence {
+  readonly kind: "existing-review-checkout";
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly branch: string;
+  readonly branchState: "materialized";
+  /** Immutable creation/materialization provenance, not the current review reference. */
+  readonly baseSha: string;
+  /** Optional only for historical registry compatibility; fresh Pi reviews require this authority pin. */
+  readonly approvedReference?: {
+    readonly sha: string;
+    readonly matrixSource: string;
+    readonly matrixAuthoritySha256: string;
+    readonly matrixApprovalEvidence: string;
+  };
+  readonly headSha: string;
+  readonly featureSha: string;
+}
+
+/** This validates identity only; it neither grants review authority nor reserves a checkout. */
+export function validateReviewCheckoutCorrelationEvidence(input: Record<string, unknown>): ReviewCheckoutCorrelationEvidence {
+  const fields = ["kind", "repoKey", "repoRoot", "worktreeRoot", "ticket", "leaseId", "leaseHolder", "branch", "branchState", "baseSha", "headSha", "featureSha"];
+  if (Object.keys(input).some((key) => !fields.includes(key) && key !== "approvedReference") || fields.some((key) => input[key] === undefined)) {
+    fail("review checkout requires its complete identity tuple and cannot contain builder slot, permit, or authority evidence");
+  }
+  const repoKey = input["repoKey"];
+  const ticket = input["ticket"];
+  if (typeof repoKey !== "string" || repoKey.length > MAX_DEPLOYMENT_CORRELATION_ID_CHARS || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoKey)
+    || !isCanonicalTicketId(ticket)) fail("review checkout repository key or ticket is not canonical");
+  const repoRoot = requiredCanonicalPath(input["repoRoot"], "repoRoot");
+  const worktreeRoot = requiredCanonicalPath(input["worktreeRoot"], "worktreeRoot");
+  const leaseId = optionalCanonicalId(input["leaseId"], "leaseId")!;
+  const leaseHolder = optionalHolder(input["leaseHolder"], "leaseHolder")!;
+  const baseSha = optionalSha(input["baseSha"], "baseSha")!;
+  const headSha = optionalSha(input["headSha"], "headSha")!;
+  const featureSha = optionalSha(input["featureSha"], "featureSha")!;
+  const reference = input["approvedReference"];
+  let approvedReference: ReviewCheckoutCorrelationEvidence["approvedReference"];
+  if (reference !== undefined) {
+    if (!reference || typeof reference !== "object" || Array.isArray(reference)) fail("approved review reference is malformed");
+    const row = reference as Record<string, unknown>;
+    if (Object.keys(row).sort().join(",") !== "matrixApprovalEvidence,matrixAuthoritySha256,matrixSource,sha"
+      || typeof row["sha"] !== "string" || !SHA_PATTERN.test(row["sha"])
+      || typeof row["matrixAuthoritySha256"] !== "string" || !/^[0-9a-f]{64}$/.test(row["matrixAuthoritySha256"])
+      || ["matrixSource", "matrixApprovalEvidence"].some((key) => typeof row[key] !== "string" || (row[key] as string).length === 0
+        || (row[key] as string).length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS || /[\u0000-\u001f\u007f-\u009f]/.test(row[key] as string))) {
+      fail("approved review reference requires exact SHA and complete matrix authority evidence");
+    }
+    approvedReference = Object.freeze({ sha: row["sha"] as string, matrixSource: row["matrixSource"] as string,
+      matrixAuthoritySha256: row["matrixAuthoritySha256"] as string, matrixApprovalEvidence: row["matrixApprovalEvidence"] as string });
+  }
+  const branch = input["branch"];
+  if (input["kind"] !== "existing-review-checkout" || input["branchState"] !== "materialized"
+    || repoRoot === worktreeRoot || leaseHolder !== `pa:${repoKey}:${ticket}` || headSha !== featureSha
+    || typeof branch !== "string" || branch.length === 0 || branch.length > MAX_DEPLOYMENT_CORRELATION_PATH_CHARS
+    || /[\u0000-\u0020\u007f-\u009f]/.test(branch)) {
+    fail("review checkout must be distinct, materialized, and bound to the exact ticket holder, branch, and Feature SHA");
+  }
+  return Object.freeze({ kind: "existing-review-checkout", repoKey, repoRoot, worktreeRoot, ticket, leaseId, leaseHolder, branch, branchState: "materialized", baseSha, ...(approvedReference ? { approvedReference } : {}), headSha, featureSha });
 }
 
 export interface DeploymentCorrelationValidationContext {
@@ -38,6 +105,8 @@ export function validateDeploymentCorrelationEvidence(
   input: Record<string, unknown>,
   context: DeploymentCorrelationValidationContext = {},
 ): DeploymentCorrelationEvidence {
+  const reviewCheckout = input["reviewCheckout"] === undefined ? undefined
+    : validateReviewCheckoutCorrelationEvidence(input["reviewCheckout"] as Record<string, unknown>);
   const parentDeploymentId = optionalDeploymentId(input["parentDeploymentId"], "parentDeploymentId");
   const builderAuthority = optionalEnum(input["builderAuthority"], ["orchestrator", "parented-implement", "standalone-implement"] as const, "builderAuthority");
   const treehousePath = optionalCanonicalPath(input["treehousePath"], "treehousePath");
@@ -55,6 +124,10 @@ export function validateDeploymentCorrelationEvidence(
 
   const hasBinding = [parentDeploymentId, builderAuthority, treehousePath, treehouseLeaseId, treehouseLeaseHolder, ticketSlotId, repositoryPermit]
     .some((value) => value !== undefined);
+  if (reviewCheckout && (hasBinding || (context.ticketId !== undefined && reviewCheckout.ticket !== context.ticketId)
+    || (context.worktreeRoot !== undefined && reviewCheckout.worktreeRoot !== context.worktreeRoot))) {
+    fail("review checkout cannot carry builder authority or mismatched ticket/execution roots");
+  }
   if (hasBinding) {
     if (!builderAuthority || !treehousePath || !treehouseLeaseId || !treehouseLeaseHolder || !ticketSlotId || !repositoryPermit) {
       fail("Treehouse binding requires authority, canonical path, lease ID/holder, ticket slot, and repository permit together");
@@ -76,6 +149,7 @@ export function validateDeploymentCorrelationEvidence(
   }
 
   return {
+    ...(reviewCheckout ? { reviewCheckout } : {}),
     ...(parentDeploymentId ? { parentDeploymentId } : {}),
     ...(builderAuthority ? { builderAuthority } : {}),
     ...(treehousePath ? { treehousePath } : {}),

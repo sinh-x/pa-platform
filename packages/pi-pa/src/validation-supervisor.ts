@@ -11,6 +11,10 @@ import {
 import { dirname } from "node:path";
 import {
   MAX_VALIDATION_EVENT_CHARACTERS,
+  parseRepositoryReviewReservation,
+  validateReviewCheckoutCorrelationEvidence,
+  type RepositoryReviewReservation,
+  type ReviewCheckoutCorrelationEvidence,
   assertValidationAuthority,
   executeValidationHandoff,
   finalizeValidationExecutorCrash,
@@ -25,6 +29,10 @@ import {
   type ValidationLedger,
   type ValidationLedgerResult,
 } from "@pa-platform/pa-core";
+
+import { parseNixosBaselineReference, parseNixosStrictJson, type NixosBaselineReference } from "./nixos-prerequisites.js";
+
+import { recognizeMatrixProfile, type MatrixProfile } from "./matrix-compatibility.js";
 
 export const PI_PROTECTED_VALIDATION_SCHEMA_VERSION = "pi-protected-validation/v1" as const;
 export const PI_VALIDATION_HANDOFF_FILE = "pi-validation-handoff.json";
@@ -48,7 +56,11 @@ export interface PiValidationAdmissionEvidence {
 }
 
 export interface PiProtectedReviewMetadata {
+  checkout?: ReviewCheckoutCorrelationEvidence;
   reviewDeploymentId: string;
+  candidateHead: string;
+  /** Trusted journal observation before prerequisite evaluation, not executor ledger start. */
+  prerequisiteStartedAt: string;
   authorizationId: string;
   ticketId: string;
   branch: string;
@@ -65,9 +77,16 @@ export interface PiProtectedValidationLaunch {
   validationHandoff: unknown;
   authority: ValidationAuthorityBinding;
   review: PiProtectedReviewMetadata;
+  reservation?: RepositoryReviewReservation;
+  /** All-or-none immutable reference; raw baseline/authorization stays in protected transport. */
+  nixosBaseline?: NixosBaselineReference;
+  matrixProfile?: MatrixProfile;
+  historicalBaseProvenance?: "header" | "materialized-ticket-link";
+  prerequisiteBudgetStartedMs?: number;
 }
 
 export interface PiReviewerValidationContext extends PiProtectedReviewMetadata {
+  executorStartedAt: string;
   validationResult: ValidationLedgerResult;
   validationLedgerPath: string;
   validationLedgerSha256: string;
@@ -80,6 +99,10 @@ export interface PiValidationSupervisorOptions<T> {
   statePath?: string;
   emit?: (event: ValidationEvent) => void | Promise<void>;
   startReviewer: (context: PiReviewerValidationContext) => T | Promise<T>;
+  beforeExecute?: (launch: PiProtectedValidationLaunch) => void | Promise<void>;
+  /** Phase 3 supplies the trusted session's fresh observation/authority revalidation. */
+  revalidateNixosPrerequisites?: (launch: PiProtectedValidationLaunch, execute: () => Promise<ValidationExecutionResult>) => Promise<ValidationExecutionResult>;
+  beforeReviewer?: (launch: PiProtectedValidationLaunch) => void;
   execute?: typeof executeValidationHandoff;
   recover?: typeof finalizeValidationExecutorCrash;
   now?: () => Date;
@@ -107,6 +130,9 @@ export async function runPiValidationBeforeReviewer<T>(
     handoff = parseValidationHandoff(launch.validationHandoff);
     assertValidationAuthority(handoff, launch.authority);
     assertReviewBinding(launch, handoff);
+    assertProfileEnvironment(launch, handoff);
+    if (launch.nixosBaseline && !options.revalidateNixosPrerequisites) throw new Error("NixOS protected prerequisite revalidation is required");
+    await options.beforeExecute?.(launch);
   } catch (error) {
     return {
       admitted: false,
@@ -128,7 +154,15 @@ export async function runPiValidationBeforeReviewer<T>(
   const recover = options.recover ?? finalizeValidationExecutorCrash;
   let validation: ValidationExecutionResult;
   try {
-    validation = await execute(launch.validationHandoff, executorOptions);
+    if (launch.nixosBaseline) {
+      let executorStarted = false;
+      try {
+        validation = await options.revalidateNixosPrerequisites!(launch, () => { executorStarted = true; return execute(launch.validationHandoff, executorOptions); });
+      } catch (error) {
+        if (executorStarted) throw error;
+        return { admitted: false, reviewerStarted: false, diagnostic: validationDiagnostic("pi.validation.admission", safeAdmissionReason(error)) };
+      }
+    } else validation = await execute(launch.validationHandoff, executorOptions);
   } catch {
     const recovered = await recover(launch.validationHandoff, executorOptions);
     const crashEvent: ValidationEvent = {
@@ -159,11 +193,17 @@ export async function runPiValidationBeforeReviewer<T>(
   }
   const ledger = (await recover(launch.validationHandoff, executorOptions)).ledger;
   const reviewerContext = reviewerContextFor(launch.review, ledger, options.evidenceRoot, options.ledgerPath);
+  options.beforeReviewer?.(launch);
   const reviewerResult = await options.startReviewer(reviewerContext);
   return { admitted: true, reviewerStarted: true, validation: { ...validation, ledger, ledgerPath: options.ledgerPath }, reviewerContext, reviewerResult };
 }
 
 export function piReviewerValidationPrompt(context: PiReviewerValidationContext): string {
+  if (!/^[0-9a-f]{40}$/.test(context.candidateHead) || context.candidateHead !== context.featureSha
+    || !validObservationTimestamp(context.prerequisiteStartedAt) || !validObservationTimestamp(context.executorStartedAt)
+    || Date.parse(context.executorStartedAt) < Date.parse(context.prerequisiteStartedAt)) {
+    throw new Error("protected reviewer candidate HEAD or distinct start observations are invalid");
+  }
   const prompt = [
     "<protected-review-metadata>",
     `review_deployment_id: ${context.reviewDeploymentId}`,
@@ -171,6 +211,13 @@ export function piReviewerValidationPrompt(context: PiReviewerValidationContext)
     `ticket_id: ${context.ticketId}`,
     `branch: ${context.branch}`,
     `feature_sha: ${context.featureSha}`,
+    `candidate_head: ${context.candidateHead}`,
+    `prerequisite_started_at: ${context.prerequisiteStartedAt}`,
+    `executor_started_at: ${context.executorStartedAt}`,
+    ...(context.checkout ? [`repo_root: ${context.checkout.repoRoot}`, `worktree_root: ${context.checkout.worktreeRoot}`,
+      `treehouse_lease_id: ${context.checkout.leaseId}`, `treehouse_lease_holder: ${context.checkout.leaseHolder}`,
+      `historical_materialization_base_sha: ${context.checkout.baseSha}`,
+      ...(context.checkout.approvedReference ? [`approved_reference_sha: ${context.checkout.approvedReference.sha}`] : [])] : []),
     `matrix_source: ${context.matrixSource}`,
     `matrix_authority_sha256: ${context.matrixAuthoritySha256}`,
     `matrix_approval_evidence: ${context.matrixApprovalEvidence}`,
@@ -178,7 +225,7 @@ export function piReviewerValidationPrompt(context: PiReviewerValidationContext)
     `validation_ledger_path: ${context.validationLedgerPath}`,
     `validation_ledger_sha256: ${context.validationLedgerSha256}`,
     `validation_evidence_root: ${context.validationEvidenceRoot}`,
-    "Raw validation output is intentionally excluded. Inspect only the bounded ledger and evidence references.",
+    "Inspect bounded ledger/evidence references; raw output is excluded.",
     "</protected-review-metadata>",
   ].join("\n");
   if (prompt.length > MAX_VALIDATION_EVENT_CHARACTERS) throw new Error("protected reviewer metadata exceeds 2000 JavaScript characters");
@@ -207,11 +254,11 @@ export function readPiProtectedValidationLaunch(path: string): PiProtectedValida
   if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || (file.mode & 0o777) !== 0o600 || file.size > MAX_PROTECTED_HANDOFF_BYTES) {
     throw new Error("Pi validation handoff is insecure or oversized");
   }
-  return parsePiProtectedValidationLaunch(JSON.parse(readFileSync(path, "utf8")) as unknown);
+  return parsePiProtectedValidationLaunch(parseNixosStrictJson(readFileSync(path)));
 }
 
 export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedValidationLaunch {
-  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"]);
+  const row = strictRecord(input, "Pi validation handoff", ["schemaVersion", "deploymentId", "admission", "validationHandoff", "authority", "review"], ["reservation", "nixosBaseline", "matrixProfile", "historicalBaseProvenance", "prerequisiteBudgetStartedMs"]);
   if (row["schemaVersion"] !== PI_PROTECTED_VALIDATION_SCHEMA_VERSION) throw new Error("Pi validation handoff schema is invalid");
   const deploymentId = requiredString(row["deploymentId"], "deploymentId");
   if (!DEPLOYMENT_ID.test(deploymentId)) throw new Error("Pi validation deployment identity is invalid");
@@ -224,6 +271,17 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
   const prerequisites = parsePrerequisites(admission["prerequisites"]);
   const authority = parseAuthority(row["authority"]);
   const review = parseReview(row["review"]);
+  const profile = row["matrixProfile"];
+  const provenance = row["historicalBaseProvenance"];
+  const budget = row["prerequisiteBudgetStartedMs"];
+  if (review.checkout?.approvedReference && profile === undefined) throw new Error("production protected candidate requires persisted matrix profile and historical provenance");
+  if (profile !== undefined) {
+    if ((profile !== "current" && profile !== "nixos") || recognizeMatrixProfile(prerequisites.map((clause) => clause.text)) !== profile
+      || (provenance !== "header" && provenance !== "materialized-ticket-link")) throw new Error("protected semantic profile or historical provenance conflicts");
+  }
+  const nixos = profile === "nixos" || prerequisites.some((clause) => clause.text.startsWith("Every declared local-path flake input"));
+  if (nixos !== (row["nixosBaseline"] !== undefined) || nixos !== (budget !== undefined)
+    || (nixos && (typeof budget !== "number" || !Number.isFinite(budget) || budget < 0))) throw new Error("NixOS baseline source/digest/approval and monotonic anchor are required together for exactly the NixOS profile");
   return {
     schemaVersion: PI_PROTECTED_VALIDATION_SCHEMA_VERSION,
     deploymentId,
@@ -235,6 +293,10 @@ export function parsePiProtectedValidationLaunch(input: unknown): PiProtectedVal
       activeReview: "admitted",
       prerequisites,
     },
+    ...(profile === undefined ? {} : { matrixProfile: profile as MatrixProfile, historicalBaseProvenance: provenance as "header" | "materialized-ticket-link" }),
+    ...(budget === undefined ? {} : { prerequisiteBudgetStartedMs: budget as number }),
+    ...(row["reservation"] === undefined ? {} : { reservation: parseRepositoryReviewReservation(row["reservation"]) }),
+    ...(row["nixosBaseline"] === undefined ? {} : { nixosBaseline: parseNixosBaselineReference(row["nixosBaseline"]) }),
     validationHandoff: row["validationHandoff"],
     authority,
     review,
@@ -280,12 +342,19 @@ function parseAuthority(input: unknown): ValidationAuthorityBinding {
 
 function parseReview(input: unknown): PiProtectedReviewMetadata {
   const row = strictRecord(input, "Pi protected review metadata", [
-    "reviewDeploymentId", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence",
-  ]);
+    "reviewDeploymentId", "candidateHead", "prerequisiteStartedAt", "authorizationId", "ticketId", "branch", "featureSha", "matrixSource", "matrixAuthoritySha256", "matrixApprovalEvidence",
+  ], ["checkout"]);
+  const candidateHead = requiredString(row["candidateHead"], "review.candidateHead");
+  const prerequisiteStartedAt = requiredString(row["prerequisiteStartedAt"], "review.prerequisiteStartedAt");
+  if (!/^[0-9a-f]{40}$/.test(candidateHead) || candidateHead !== row["featureSha"]
+    || !validObservationTimestamp(prerequisiteStartedAt)) throw new Error("Pi candidate HEAD or prerequisite start evidence is invalid");
   const authorizationId = requiredString(row["authorizationId"], "review.authorizationId");
   if (!REVIEW_AUTHORIZATION.test(authorizationId)) throw new Error("Pi review authorization is not a canonical one-use identifier");
   return {
+    ...(row["checkout"] === undefined ? {} : { checkout: validateReviewCheckoutCorrelationEvidence(row["checkout"] as Record<string, unknown>) }),
     reviewDeploymentId: requiredString(row["reviewDeploymentId"], "review.reviewDeploymentId"),
+    candidateHead,
+    prerequisiteStartedAt,
     authorizationId,
     ticketId: requiredString(row["ticketId"], "review.ticketId"),
     branch: requiredString(row["branch"], "review.branch"),
@@ -299,6 +368,15 @@ function parseReview(input: unknown): PiProtectedReviewMetadata {
 function assertReviewBinding(launch: PiProtectedValidationLaunch, handoff: ValidationHandoff): void {
   const review = launch.review;
   const authority = launch.authority;
+  if (review.checkout && (review.checkout.ticket !== review.ticketId || review.checkout.branch !== review.branch
+    || review.checkout.featureSha !== review.featureSha || review.checkout.worktreeRoot !== authority.repository.worktreeRoot
+    || review.checkout.repoRoot !== authority.repository.canonicalRoot || review.checkout.repoKey !== authority.repository.repoKey
+    || review.checkout.headSha !== review.candidateHead
+    || (review.checkout.approvedReference && (review.checkout.approvedReference.matrixSource !== review.matrixSource
+      || review.checkout.approvedReference.matrixAuthoritySha256 !== review.matrixAuthoritySha256
+      || review.checkout.approvedReference.matrixApprovalEvidence !== review.matrixApprovalEvidence)))) {
+    throw new Error("Pi protected candidate metadata does not match validation authority");
+  }
   if (review.reviewDeploymentId !== launch.deploymentId || review.ticketId !== authority.ticketId
     || review.branch !== authority.branch || review.featureSha !== authority.featureSha
     || review.matrixSource !== authority.matrixSource || review.matrixAuthoritySha256 !== authority.matrixAuthoritySha256
@@ -308,15 +386,35 @@ function assertReviewBinding(launch: PiProtectedValidationLaunch, handoff: Valid
   }
 }
 
+function assertProfileEnvironment(launch: PiProtectedValidationLaunch, handoff: ValidationHandoff): void {
+  if (!launch.matrixProfile) return; // Legacy executor handoffs retain their existing authority contract; production candidates require a profile above.
+  const review = launch.review;
+  const expected = {
+    PA_REPO: launch.authority.repository.worktreeRoot, PA_TICKET_ID: review.ticketId, PA_FEATURE_SHA: review.featureSha,
+    PA_MATRIX_SOURCE: review.matrixSource, PA_MATRIX_AUTHORITY_SHA256: review.matrixAuthoritySha256, PA_MATRIX_APPROVAL_EVIDENCE: review.matrixApprovalEvidence,
+    ...(launch.matrixProfile === "nixos" ? { PA_APPROVED_BASE_SHA: review.checkout?.approvedReference?.sha, PA_EXPECTED_BRANCH: review.branch, PA_WORKTREE_ROOT: launch.authority.repository.worktreeRoot } : {}),
+    CI: launch.matrixProfile === "current" ? "1" : "true", HOME: "/home/sinh", LANG: "C.UTF-8", TZ: "UTC", PATH: process.env["PATH"],
+  };
+  const env = handoff.manifest.environment;
+  if (JSON.stringify(Object.keys(env).sort()) !== JSON.stringify(Object.keys(expected).sort())
+    || Object.entries(expected).some(([key, value]) => !value || env[key] !== value)
+    || Object.values(env).some((value) => value.includes("review-auth:"))) throw new Error("complete exact profile environment is mismatched or leaks authorization");
+}
+
 function reviewerContextFor(
   review: PiProtectedReviewMetadata,
   ledger: ValidationLedger,
   evidenceRoot: string,
   ledgerPath: string,
 ): PiReviewerValidationContext {
+  if (!validObservationTimestamp(ledger.startedAt)
+    || Date.parse(ledger.startedAt) < Date.parse(review.prerequisiteStartedAt)) {
+    throw new Error("executor start observation precedes prerequisite start or is malformed");
+  }
   const bytes = readFileSync(ledgerPath);
   const context: PiReviewerValidationContext = {
     ...review,
+    executorStartedAt: ledger.startedAt,
     validationResult: ledger.result,
     validationLedgerPath: ledgerPath,
     validationLedgerSha256: createHash("sha256").update(bytes).digest("hex"),
@@ -326,10 +424,15 @@ function reviewerContextFor(
   return context;
 }
 
-function strictRecord(input: unknown, label: string, keys: string[]): Record<string, unknown> {
+function validObservationTimestamp(input: string): boolean {
+  const time = Date.parse(input);
+  return Number.isFinite(time) && new Date(time).toISOString() === input;
+}
+
+function strictRecord(input: unknown, label: string, keys: string[], optional: string[] = []): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error(`${label} is malformed`);
   const row = input as Record<string, unknown>;
-  if (Object.keys(row).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
+  if (Object.keys(row).some((key) => !keys.includes(key) && !optional.includes(key)) || keys.some((key) => !Object.prototype.hasOwnProperty.call(row, key))) {
     throw new Error(`${label} is malformed`);
   }
   return row;
@@ -351,7 +454,8 @@ function stringMap(input: unknown, label: string): Record<string, string> {
 }
 
 function safeAdmissionReason(error: unknown): string {
-  if (error instanceof Error && error.name === "ValidationPreflightError") return error.message;
+  if (error instanceof Error && (["ValidationPreflightError", "NixosPrerequisiteError", "MatrixCompatibilityError"].includes(error.name)
+    || /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s.test(error.message))) return error.message.replace(/review-auth:[0-9a-f-]+/g, "[protected authorization]");
   return "launcher-protected review admission or validation authority evidence is invalid";
 }
 

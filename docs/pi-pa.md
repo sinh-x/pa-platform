@@ -29,6 +29,259 @@ Print, JSON, and RPC execution loads the same extension and commands but does no
 
 The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
 
+## Protected Pi review-auto existing-candidate selection
+
+A fresh, non-dry-run Pi `requirements/review-auto` launch selects its candidate
+**before immutable planning**. This is an existing-only, read-only route, not
+builder checkout preparation. Other teams/modes, non-Pi adapters, dry-runs, and
+resume routing are unchanged; resume is not a supported protected review launch.
+
+Immediately before **each new intent**, the orchestrator authenticates the retained
+physical leased ticket worktree and resolves its latest clean full lowercase-hex
+`HEAD` and exact local `refs/heads/<ticket-branch>` tip. Both must be equal, with
+zero staged/unstaged/untracked porcelain-v2 records. Do this after all integration
+and implementation commits, not from a remembered implementation SHA or canonical
+`develop`. Outside review, use the supported `refreshTicketLinkedBranchHead`
+pa-core operation with the exact canonical key/root, worktree root and ticket ID;
+reread its result and require matching HEAD while preserving immutable `baseSha`.
+An incompatible refresh is a stop condition, not permission to hand-edit storage,
+remove/recreate a link, or retarget the review selector.
+
+Before implementation and every new review, compare local `develop`, cached
+`origin/develop` and freshly read live remote `refs/heads/develop` against the
+recorded approved reference. Drift, conflict or unknown remote state requires
+Sinh's decision naming exact old/current SHAs and action. Never fetch/substitute a
+reference or rebase/reset silently. An approved integration preserves historical
+creation/materialization provenance separately from the approved current reference.
+
+Only then persist a fresh exact launch intent binding ticket, branch, that latest
+Feature SHA, both bases, approved matrix source/raw-byte SHA-256, durable Sinh
+approval comment evidence, and one unused exact-SHA Review Authorization ID.
+The guarded objective file must agree with that intent and the approved
+requirements header/ticket. Ticket and repository flags alone are insufficient.
+For example, the operator-prepared file has these seven exact authority lines
+(placeholders are explanatory, not valid launch values):
+
+```text
+Ticket: PAP-232
+Branch: feature/PAP-232-review-auto-candidate-binding
+Feature SHA: <exact-40-lowercase-hex-candidate-HEAD>
+Matrix Source: agent-teams/requirements/artifacts/2026-10-02-pap-232-review-auto-candidate-binding.md
+Matrix Authority SHA-256: <approved-64-lowercase-hex-raw-matrix-digest>
+Matrix Approval Evidence: <exact-approved-header-evidence-naming-one-durable-Sinh-comment>
+Review Authorization ID: review-auth:<fresh-lowercase-canonical-UUIDv4>
+```
+
+Use LF separators with no blank lines, duplicate authority labels, leading or
+trailing whitespace, CR characters, or trailing newline. Copy exact approved
+values; do not generate substitute approval evidence. The immutable historical
+base comes from the exact `Historical Materialization Base SHA` artifact header
+and materialized ticket link. If that header is absent in either supported layout,
+the launcher requires exactly one canonical-repository link in explicit
+`materialized` state, matching the branch, with full `baseSha` equal to
+`Approved Base SHA`. Missing, duplicate, conflicting, planned or legacy-incomplete
+links reject; HEAD or another branch never supplies a fallback. An explicit
+historical header preserves independent historical/current references, including
+both ancestry checks. `Approved Base SHA` remains required and must equal the
+digest-approved matrix ancestry prerequisite. Neither base is an additional
+objective clause or an ambient caller assertion. Keep the objective outside the
+candidate so its creation cannot dirty the checkout. Only after that durable authority exists is
+this canonical-root invocation supported:
+
+```bash
+cd /home/sinh/git-repos/sinh-x/tools/pa-platform
+ppa deploy requirements --mode review-auto --ticket PAP-232 --repo pa-platform --background --objective-file /absolute/private/operator-prepared-review-objective.txt
+```
+
+The launcher requires exactly one canonical-repository ticket linked branch in
+`materialized` state with the exact branch, immutable 40-lowercase-hex base, and
+HEAD equal to the approved Feature SHA. It reads bounded Treehouse v2.3.0 status
+(15,000 ms timeout, 1 MiB stdout maximum) and selects exactly one existing lease
+whose holder is `pa:<repoKey>:<ticket>`—for this example,
+`pa:pa-platform:PAP-232`. Missing/duplicate leases or planned/stale/conflicting
+branch evidence reject; review-auto never acquires a checkout or refreshes the
+link. The lease must identify the exact physical, registered linked-worktree
+root, distinct from the canonical root, with matching top-level, Git dir,
+common dir, and registered membership. Symlink aliases, nested paths, primary
+roots, wrong repositories, and unregistered checkouts reject. The candidate must
+be on the exact branch with `HEAD == local branch ref == Feature SHA`, descended
+from **both** the historical materialization base and independently approved
+current reference (these may differ), with zero
+staged, unstaged, and untracked records in the complete NUL-safe porcelain-v2
+snapshot.
+
+Before runtime spawn, PA persists a token-bound **read-only review reservation**
+for the exact deployment/ticket/branch/Feature-SHA/checkout/lease/authorization
+tuple. Zero builder owners or one live idle same-ticket, same-checkout
+orchestrator may coexist. An active implement borrower rejects review; the
+active review reservation excludes every new implement borrower for that
+checkout. The orchestrator retains custody, not concurrent mutation authority.
+Selection performs zero branch operations, Treehouse acquisition/return calls,
+ticket linked-branch writes, project-file writes, or builder mutation
+lease/ticket-slot/repository-permit acquisitions. PA reservation and deployment
+metadata publication are not project-file writes or Treehouse lease changes.
+
+Canonical `repo_root`/plan `repoRoot` remains the registered trust anchor.
+Plan repository CWD, process CWD, `PA_REPO`, `PA_WORKTREE_ROOT`, project/memory
+root, Git top-level, registry `repo`/`worktree_root`, protected launch repository,
+every matrix command cwd, and reviewer candidate metadata instead identify the
+same selected linked checkout. No execution path falls back to canonical
+`develop`. Ticket, Treehouse lease, reservation, registered Git identity, branch,
+HEAD/ref, complete status, and the pinned approved-reference artifact/digest/comment
+are reread after planning, immediately before protected launch, and at the
+matrix-start boundary. The plan, reservation, registry and reviewer evidence carry
+`baseSha` as immutable historical provenance and separate `approvedReference`
+authority. Drift rejects without repair. A newer clean commit after intent creation
+requires a fresh exact-SHA authorization, never automatic retargeting.
+
+The trusted mode-0600 `team-manager/review-attempt-state.jsonl` start event strictly
+requires explicit full lowercase-SHA `candidateHead`, captured from authenticated
+actual Git HEAD and verified against branch ref, selected tip and Feature SHA.
+Writing, crash recovery, serialization and rereads reject absent, malformed or
+conflicting fields; historical failed journals/reports remain unchanged and are
+not migrated or accepted by inference. The event's `timestamp` observes
+**prerequisite start**, before prerequisite evaluation/authorization consumption.
+Protected reviewer metadata names it `prerequisite_started_at` separately from
+`executor_started_at`, taken from the later validated terminal ledger `startedAt`.
+Do not label ledger start as journal start, backdate, or require the two boundaries
+to be equal. The runner rereads the journal before commands and before reviewer
+handoff; invalid evidence cannot start the next phase.
+
+PAP-223 matrix authority is unchanged: exact raw digest and approval comment,
+one-use authorization, active-review exclusion, complete explicit environment,
+ordered executor, terminal ledger, and independent reviewer handoff remain
+mandatory. Rejection emits at most 2,000 JavaScript characters containing
+`Condition`, `Source`, `Reason`, `Correction`, and `Resume Action`, with zero
+matrix-command and reviewer starts. Correct originating evidence outside the
+failed launch and obtain a fresh authorized launch; do not switch/reset/clean,
+refresh the ticket, replay authority, or use `--force` as a review bypass.
+
+Registry events and GET status expose optional `review_checkout` identity (see
+[the data shape](api/data-models.md#reviewcheckoutcorrelationevidence)). Default
+status detail adds exactly `Review Candidate`, `Review Branch` (base/Feature SHA),
+and `Review Lease` (ID/holder) lines; Team remains `requirements/review-auto`.
+There is no builder mutation slot/permit line. Old/ordinary rows omit this
+optional evidence rather than inventing a candidate. Terminal publication
+preserves the exact candidate tuple. Verified terminal handling finalizes only
+its matching PA review reservation, never returns or alters the Treehouse lease,
+and never releases an unrelated reservation or retained orchestrator custody.
+Uncertain crash/cleanup evidence remains blocking for operator inspection;
+retain the checkout and lease rather than infer cleanup success.
+
+These contracts and regressions are preparation, not evidence of a successful
+installed independent review. PAP-232 Phase 4/AC7 still requires one authorized
+installed PPA independent `requirements/review-auto` deployment to pass the
+unchanged nine-command Full Validation Matrix and publish matching reviewer,
+ledger, and registry/status evidence. Rogue-one execution is not that proof.
+
+## Supported review matrices and NixOS prerequisites
+
+PAP-236 supports two evidenced layouts, not arbitrary Markdown. Both start at
+one exact `### Full Validation Matrix` heading and end immediately before
+`## Implementation Plan` (optionally numbered, e.g. `## 13. Implementation Plan`).
+The raw UTF-8 authority and extracted command contents/order are preserved;
+whitespace, line endings and approval digests are never normalized or rewritten.
+
+| Layout | Ordered section labels | Command shape |
+| --- | --- | --- |
+| `bold-fenced` | `**Matrix Source:**`, `**Prerequisites:**`, `**Environment:**`, `**Commands (run in this exact order):**`, `**Required Outputs and Artifacts:**`, `**Pass Criteria:**` | Numbered description followed by a Bash fence. |
+| `plain-inline` | `Matrix Source:`, `Matrix Authority:`, `Execution Owner:`, `Prerequisites:`, `Environment:`, `Commands (run in this exact order):`, `Pass Criteria:`, `Matrix Rules:` | Numbered command in one backtick span. |
+
+For example, the same inert command content can be represented as:
+
+````text
+1. Inert example:
+```bash
+printf '%s\n' fixture
+```
+````
+
+or `1. ` followed by the inline code span `` `printf '%s\n' fixture` ``.
+These are command-shape examples, not complete approved matrices. The unchanged
+NX-055 golden fixture tests nine exact commands without executing them. Duplicate,
+mixed, reordered, ambiguous or incomplete sections, malformed fences, unsupported
+headings and partial extraction reject. Text inside command fences is data.
+
+Layout and semantic profile are independent. The four evidenced prerequisite
+clauses select `current` or `nixos`; a ticket name or copied assertion never proves
+admission. Present-but-unsupported semantics produce an unsupported/unverifiable
+diagnostic, not an absent-section error. The current profile retains its existing
+prerequisite checks and exact environment. The NixOS profile additionally requires
+all three objective lines, copied exactly from independently approved evidence:
+
+```text
+Prerequisite Baseline Source: <persistent-agent-teams-artifact-path>
+Prerequisite Baseline SHA-256: <64-lowercase-hex-raw-baseline-digest>
+Prerequisite Baseline Approval Evidence: <durable-Sinh-comment-id>
+```
+
+They are all-or-none and permitted only for the NixOS profile. The canonical,
+bounded regular baseline artifact is mode `0600`, outside the candidate, with
+schema `nixos-prerequisites/v1`. It binds canonical key/root, candidate root,
+ticket, branch, Feature SHA, matrix source/digest/approval, one-use authorization
+and prospective review deployment ID. It supplies exact command environment,
+complete local-input path/Git-top-level/HEAD/status expectations, executable
+paths/versions for Git, Bash, Python 3, ripgrep, Nix and `ppa`, complete
+upstream/cache/builder/daemon/storage inventories, and explicit positive minimum
+free-byte thresholds. Empty inventories must be explicit and independently true;
+missing inventory or invented storage defaults reject.
+
+A separate durable Sinh comment is strict JSON with exactly `schemaVersion`,
+`source`, `digest` and `tupleDigest`; `schemaVersion` is
+`nixos-prerequisite-approval/v1`, and `tupleDigest` is computed with
+`nixosTupleDigest`. Matrix approval, baseline approval and review authorization
+are distinct. The prospective consumer must be `d-` plus six lowercase hexadecimal
+digits and have no prior deployment/authorization history or existing workspace;
+the launcher uses that approved identity, never substitutes a random consumer.
+Keep raw baseline/authorization in private artifacts and protected transport, not
+ordinary logs, ledger or ticket-comment prose.
+
+Fixed launcher-built probes independently check Git identity/HEAD/complete status,
+executable versions, Nix flake metadata/config without lock updates, daemon/cache/
+builder store pings, HTTPS HEAD or Git ls-remote upstream availability, and free
+bytes. No arbitrary shell probe, privileged build, lock/config repair or unapproved
+redirect is allowed. Discovered inventories must equal approved sets, not subsets.
+Initial observations and immediate pre-execution observations/authority rereads
+share one original monotonic budget across protected process handoff: **30 seconds
+per probe, 300 seconds total**, including revalidation; no retry resets it.
+Only successful observations mark clauses verified. Private
+`nixos-prerequisite-observations.jsonl` records bounded classifications/timing,
+separately from approved expectations and without authorization or raw service
+output. The existing prerequisite-start journal and executor/reviewer ordering
+remain unchanged; probe rejection starts zero matrix commands and zero reviewers.
+
+Both profiles pass exactly `PA_REPO`, `PA_TICKET_ID`, `PA_FEATURE_SHA`,
+`PA_MATRIX_SOURCE`, `PA_MATRIX_AUTHORITY_SHA256`, `PA_MATRIX_APPROVAL_EVIDENCE`,
+`CI`, `HOME=/home/sinh`, `LANG=C.UTF-8`, `TZ=UTC` and launcher-resolved `PATH`.
+Current uses `CI=1`. NixOS uses `CI=true` and adds only `PA_APPROVED_BASE_SHA`,
+`PA_EXPECTED_BRANCH` and `PA_WORKTREE_ROOT` bound to the approved reference,
+exact branch and authenticated candidate. Unknown/duplicate/conflicting variables,
+other ambient values and authorization leakage reject.
+
+For syntax, authority, observation or deadline failures, preserve the five-field
+diagnostic (`Condition`, `Source`, `Reason`, `Correction`, `Resume Action`, at most
+2,000 JavaScript characters) and originating private evidence. Reconcile the
+specific section, digest/comment/tuple, inventory/service/storage mismatch or
+budget/drift failure before requesting fresh **policy-eligible** authority. Never
+waive failed observations, fabricate verified status, reset accounting or retry
+an exhausted tuple. PAP-236 does not change NX-055's two recorded attempts, zero
+matrix cycles or exhausted unchanged-tuple recovery.
+
+### Separate trusted-launcher activation before independent review
+
+A source build does **not** activate the installed `ppa`. Before PAP-236 independent
+review, Sinh/operator must separately approve activation and durably record the
+corrected launcher's source revision equal to the latest committed candidate
+Feature SHA, absolute launcher path and launcher artifact SHA-256 in the ticket.
+Missing activation evidence or runtime drift blocks review. Reauthenticate the
+clean candidate and fresh launch intent after all commits; do not silently
+retarget old authority. Independent review owns the approved ten-command matrix,
+10/10 exit-zero ledger, zero Critical/Major findings and reasoned Minor dispositions,
+followed by separately gated UAT. Fixture/build success or rogue-one execution is
+not independent review, activation, merge, release or checkout-return authority.
+Future NixOS review still needs concrete separately approved baseline values and
+eligible review authority; no live NX-055 retry or history reset is authorized.
+
 ## Protected structured validation and review handoff
 
 PPA review deployments can receive a launcher-only structured validation handoff. The handoff is not a public CLI input and is never accepted from model output. Before the background runner starts, the trusted launcher consumes the one-use review authorization and binds the ticket, branch, Feature SHA, matrix source and digest, approval evidence, canonical repository identity, authenticated worktree, complete child environment, ordered commands, limits, and exact artifact paths. It writes the protected sidecar atomically with mode `0600`; the runner verifies its deployment identity, rejects hard-linked/symlinked/malformed evidence, reads it once, and unlinks it. The authorization identifier is separate protected review metadata, not a manifest environment variable.
@@ -71,6 +324,59 @@ If the executor throws or the supervisor is interrupted after admission, the sup
 - For `artifact_failure`, verify the declared path is normalized, inside the authenticated worktree, and an exact regular file. Do not replace it with a symlink, directory, or glob and do not waive a checksum mismatch.
 - For `executor_crash`, compare `ledger.json.state` and the terminal ledger to confirm completed commands retained evidence and all untouched commands are skipped. Preserve both files for diagnosis; never synthesize a passing ledger.
 - Treat missing, non-`0600`, partial, aliased, checksum-mismatched, or non-terminal evidence as invalid. Preserve the deployment directory and relaunch only after correcting the originating authority or persistence problem.
+
+## Opt-in existing ticket worktree selection (PPA CLI only)
+
+From the registered canonical repository, a non-builder deployment can explicitly
+select a ticket's existing authenticated Treehouse checkout:
+
+```bash
+cd /registered/canonical/repository
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --dry-run
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --background
+ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --resume d-abcdef
+```
+
+Optional `--repo` accepts only a registered key or exact canonical root, never a
+linked-worktree path. The exact ticket project must match that repository and
+have exactly one explicit `materialized` linked branch with full lowercase
+40-character `baseSha` and `headSha`. Planned, duplicate, legacy-incomplete or
+conflicting evidence rejects; selection never refreshes ticket evidence.
+
+PPA runs **status only**, with Treehouse v2.3.0's 15-second timeout and 1-MiB
+stdout cap. Exactly one leased row must have holder `pa:<repo-key>:<ticket>`.
+Its physical path, forward/reverse `.git` metadata, common directory, registered
+worktree membership, branch and HEAD must agree. No `get`, return, checkout
+lifecycle operation, Git branch action, ticket write, slot, permit, lineage,
+mutation lease or borrower acquisition is performed by selection.
+
+Canonical plan `repoRoot` and registry/deployment-context `repo_root` remain the
+registered root. `worktreeRoot`, `repositoryCwd`, memory/project root, Pi CWD,
+`PA_REPO`, `PA_WORKTREE_ROOT`, deployment-context `cwd`/`repo` and registry `repo`
+use the exact selected checkout. Immutable selection evidence is separate from
+builder authority; its primer and registry project only safe branch/root
+context. It grants no new write permissions or return rights.
+
+Ticket, lease, physical Git and process-verified owner/borrower evidence are
+reread before native preflight, immediately before spawn and before dry-run
+finalization. A live builder on that exact checkout permits existing `read-only`
+access (`requirements/*`), but blocks `non-locking` teams. Stale, malformed or
+ambiguous ownership rejects without repair; `--force` does not override this.
+Dry-run authenticates and previews the dual-root primer without spawning Pi.
+Resume requires the same flag and ticket, the prior canonical repository and
+same physical checkout path/Git identity, plus fresh current authentication.
+Every selection rejection precedes preflight/spawn and is bounded to 2,000
+characters with Condition, Source, Reason, Correction and Resume Action.
+
+The flag is excluded from builder deployments, OPA, CPA, DPA, direct `pa-core`
+and the Agent API (no request field). Existing builder and omitted-flag behavior
+is unchanged. Selection is neither filesystem sandboxing nor an immutable
+post-spawn snapshot. **Paired rollout ticket PAPC-038** owns eligible non-builder
+mode root contracts in `pa-platform-config`; runtime support does not establish
+broad mode availability before paired validation. PAPC-037 owns worktree-local
+dependency and late canonical-reconciliation guidance; PAPC-031/PAPC-036 own
+related integration policy.
 
 ## Treehouse-backed builder ticket checkouts
 
@@ -118,7 +424,7 @@ PPA atomically reserves the ticket and one of four repository permits before it
 calls Treehouse. It derives holder `pa:pa-platform:PAP-189`, reuses exactly one
 matching lease or runs bounded `treehouse get --lease --lease-holder ... --json`,
 authenticates the returned physical linked worktree, and materializes or selects
-the ticket branch there. For this authenticated Treehouse builder flow only,
+the ticket branch there. For this authenticated Treehouse builder flow,
 Pi's CWD, `PA_REPO`, and `PA_WORKTREE_ROOT` are that exact checkout. Canonical
 identity remains separately available as immutable plan `repoRoot`, deployment
 and registry `repo_root`, and repository lease evidence. Canonical branch, HEAD,
@@ -178,8 +484,9 @@ explicit keys, paths, and canonical-root execution still reject. OPA/OpenCode
 and CPA/Claude Code behavior is unchanged and makes no Treehouse claim.
 Canonical-root, wrong-checkout, duplicate-ticket, fifth-ticket, or
 mismatched-parent attempts fail before Pi spawn. Requirements and non-builder
-modes retain their existing canonical/linked CWD behavior and do not enter this
-ticket-checkout acquisition flow.
+modes do not enter this ticket-checkout acquisition flow. Protected Pi
+`requirements/review-auto` uses the existing-only candidate-selection exception
+above; all other routes retain their existing canonical/linked CWD behavior.
 
 Verified success, failure, or crash handling refreshes authenticated `headSha`
 and finalizes PA ticket/worktree slots, permits, mutation leases, and borrowers.
@@ -381,15 +688,17 @@ different identity domains:
   key/root pair. Runtime evidence is compared only with authenticated
   `worktree_root`; the two roots are not required to be the same path.
 - Explicit `--repo <registered-key-or-primary-path>` ordinarily executes at the
-  primary root, even when invoked from a linked worktree. The sole exception is
-  the authenticated direct background PPA `builder/implement` path described
-  above: key or exact canonical root identifies the protected parent repository,
-  while execution remains exclusively in the parent's worktree. Explicit
-  worktree paths remain invalid, and this exception creates no canonical
-  execution mode.
+  primary root, even when invoked from a linked worktree. Authenticated direct
+  background PPA `builder/implement` instead uses the protected parent's
+  worktree; protected Pi `requirements/review-auto` instead selects the sole
+  existing ticket candidate before planning, as described above. In both
+  exceptions a key or exact canonical root identifies canonical identity only.
+  Explicit worktree paths remain invalid, and neither exception creates a
+  canonical execution mode.
 
-Authenticated linked worktrees may be dirty for foreground or background PPA
-launches. Admission records branch, full HEAD, and staged/unstaged/untracked
+Ordinary authenticated linked worktrees may be dirty for foreground or
+background PPA launches; protected Pi review-auto requires a clean exact
+candidate instead. Admission records branch, full HEAD, and staged/unstaged/untracked
 state without changing files. Ownership evidence is stored under the physical
 per-worktree Git directory, never beneath the worktree's `.git` file. One live
 `builder/orchestrator` and one live implement-slot deployment may coexist in an

@@ -393,6 +393,9 @@ A single event in a deployment's lifecycle, appended to the `registry_events` ta
 
 ```typescript
 interface RegistryEvent {
+  review_checkout?: ReviewCheckoutCorrelationEvidence;
+  repo_root?: string;
+  worktree_root?: string;
   deployment_id: string;
   team: string;
   event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated" | "ticket-associated";
@@ -429,6 +432,9 @@ interface RegistryEvent {
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `deployment_id` | `string` | yes | The deployment id (e.g. `d-443e6d`). |
+| `review_checkout` | [`ReviewCheckoutCorrelationEvidence`](#reviewcheckoutcorrelationevidence) | no | Complete read-only candidate identity from trusted Pi review start; matching terminal events may retain it. |
+| `repo_root` | `string` | no | Canonical registered repository trust anchor. |
+| `worktree_root` | `string` | no | Authenticated execution root; matches `repo` and the review candidate when admitted. |
 | `team` | `string` | yes | Team name (e.g. `builder`). |
 | `event` | `string` | yes | Event kind: `started`, `pid`, `completed`, `crashed`, `amended`, `updated`, `ticket-associated`. |
 | `timestamp` | `string` | yes | ISO 8601 timestamp of the event. |
@@ -492,6 +498,9 @@ The computed current status of a deployment, materialized in the `deployments` t
 
 ```typescript
 interface DeploymentStatus {
+  review_checkout?: ReviewCheckoutCorrelationEvidence;
+  repo_root?: string;
+  worktree_root?: string;
   deploy_id: string;
   team: string;
   status: "running" | "success" | "partial" | "failed" | "crashed" | "dead" | "unknown";
@@ -521,6 +530,9 @@ interface DeploymentStatus {
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `deploy_id` | `string` | yes | The deployment id. |
+| `review_checkout` | [`ReviewCheckoutCorrelationEvidence`](#reviewcheckoutcorrelationevidence) | no | Exact start-bound candidate, preserved through completion/failure/crash and exposed by GET `/api/deploy/status/:id`. |
+| `repo_root` | `string` | no | Canonical registered repository identity, not matrix execution cwd. |
+| `worktree_root` | `string` | no | Authenticated execution root; distinct from `repo_root` for admitted review. |
 | `team` | `string` | yes | Team name. |
 | `status` | `string` | yes | Computed status: `running`, `success`, `partial`, `failed`, `crashed`, `dead`, `unknown`. |
 | `started_at` | `string` | yes | ISO 8601 timestamp of the `started` event. |
@@ -543,6 +555,127 @@ interface DeploymentStatus {
 | `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
 | `rogue_one` | `boolean` | no | True for rogue-one deployment evidence. |
 | `invocation_channel` | `"cli" \| "agent-api"` | no | Rogue-one invocation channel. |
+
+### `ReviewCheckoutCorrelationEvidence`
+
+Optional `RegistryEvent.review_checkout` and `DeploymentStatus.review_checkout`
+use the same complete discriminated identity object. Source:
+`packages/pa-core/src/deploy/correlation.ts`. Outer registry/status keys remain
+snake_case; the nested object's keys are camelCase exactly as implemented.
+
+```typescript
+interface ReviewCheckoutCorrelationEvidence {
+  readonly kind: "existing-review-checkout";
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly branch: string;
+  readonly branchState: "materialized";
+  readonly baseSha: string;
+  readonly approvedReference?: {
+    readonly sha: string;
+    readonly matrixSource: string;
+    readonly matrixAuthoritySha256: string;
+    readonly matrixApprovalEvidence: string;
+  };
+  readonly headSha: string;
+  readonly featureSha: string;
+}
+```
+
+| Field | Contract |
+|-------|----------|
+| `kind` | Exact discriminator `existing-review-checkout`. |
+| `repoKey` | Canonical bounded registered repository key, e.g. `pa-platform`. |
+| `repoRoot` | Normalized absolute canonical trust-anchor path. |
+| `worktreeRoot` | Normalized absolute selected execution root, distinct from `repoRoot`. |
+| `ticket` | Canonical exact ticket ID, e.g. `PAP-232`. |
+| `leaseId` | Existing bounded canonical Treehouse lease ID. |
+| `leaseHolder` | Exactly `pa:<repoKey>:<ticket>`. |
+| `branch` | Exact non-empty bounded ticket feature branch, without whitespace/control characters. |
+| `branchState` | Exactly `materialized`; planned intent is not review evidence. |
+| `baseSha` | Immutable 40-lowercase-hex historical creation/materialization base, exactly matching the materialized ticket link and any explicit artifact historical-base header. With no historical header in either supported layout, exactly one canonical-repository explicit materialized link must match the branch and have `baseSha == Approved Base SHA`; no HEAD/other-branch inference. |
+| `approvedReference` | Separate current review reference authority pin: full lowercase `sha`, exact durable `matrixSource`, lowercase 64-hex `matrixAuthoritySha256` and `matrixApprovalEvidence`. Required for fresh production Pi reviews; absent only for historical identity compatibility. |
+| `headSha` | Exact 40-lowercase-hex candidate HEAD, equal to `featureSha`. |
+| `featureSha` | Exact 40-lowercase-hex authorized candidate commit. |
+
+The original twelve fields remain required when the object is present. The
+additive `approvedReference` object, when present, requires exactly its four fields;
+unknown keys and builder slot/permit/authority fields inside either object reject.
+Historical rows without it remain readable without fabricated reference evidence.
+A fresh production Pi launch cannot omit it or substitute ambient `develop`.
+`approvedReference.sha` may differ from `baseSha`: candidates must descend from
+both. The reference is authenticated against the durable artifact's Approved Base
+SHA, hashed matrix ancestry prerequisite and exact Sinh source/digest approval,
+then pinned through plan, reservation, protected rereads, terminal projections
+and reviewer evidence. Artifact/reference drift rejects rather than rewriting
+historical ticket/lease provenance. It carries no reservation
+token, authorization ID, raw Git status, or builder mutation capacity. The
+correlation validator validates identity only: this object alone neither grants
+review authority nor reserves/authenticates a physical checkout. The protected
+Pi launcher separately proves the physical registered linked worktree, clean
+snapshot and local branch-ref equality, both-base ancestry, approved matrix
+authority, and matching reservation.
+
+The trusted Pi matrix-start journal (not a public registry/API input) also requires
+explicit `candidateHead == featureSha == authenticated HEAD == selected branch tip`.
+Its timestamp is propagated as `prerequisite_started_at`; terminal ledger
+`startedAt` is separately validated and propagated as `executor_started_at`.
+Missing/malformed/conflicting start evidence rejects without migration/backdating.
+These start observations belong to protected reviewer metadata, not new public
+admission fields.
+
+PAP-236 supports lossless `bold-fenced` and `plain-inline` matrices with independent
+`current`/`nixos` prerequisite profiles. It does not add public registry, status or
+REST admission fields. The launcher-only `PiProtectedValidationLaunch` sidecar
+(source: `packages/pi-pa/src/validation-supervisor.ts`) additionally carries:
+
+| Protected field | Contract |
+|-----------------|----------|
+| `matrixProfile` | `current` or `nixos`, required for fresh production candidates and checked against prerequisite clauses. |
+| `historicalBaseProvenance` | `header` or `materialized-ticket-link`, required with a profile and reread from approved source/ticket evidence. |
+| `nixosBaseline` | Exactly `{ source, digest, approvalEvidence }`, all present only for NixOS; names a private immutable baseline and separate durable Sinh approval. |
+| `prerequisiteBudgetStartedMs` | Original nonnegative finite kernel-monotonic anchor, required with NixOS baseline and checked against private persisted launch evidence; never a wall-clock timestamp or resettable allowance. |
+
+These fields are not members of `ReviewCheckoutCorrelationEvidence`, public
+`RegistryEvent`/`DeploymentStatus`, or `/api/deploy/start` input. Private baseline
+schema `nixos-prerequisites/v1` binds the exact canonical/candidate/ticket/branch/
+Feature-SHA/matrix/authorization/consumer tuple, exact environment and complete
+input/tool/service/storage expectations. Separate approval schema
+`nixos-prerequisite-approval/v1` binds its raw source/digest and `tupleDigest`.
+Authorization-bearing raw records stay in mode-`0600` protected artifacts, never
+command environments or ordinary logs/ledgers. Fresh observations are separate
+from expectations; 30-second probe and shared 300-second total deadlines include
+immediate pre-execution revalidation across process handoff. Neither parsing nor
+baseline approval replaces one-use authorization or changes review accounting.
+For layouts, exact environments, failure guidance and the separately approved
+trusted-launcher activation prerequisite, see
+[supported review matrices](../pi-pa.md#supported-review-matrices-and-nixos-prerequisites).
+
+A trusted `started` event with review evidence must be Pi
+`requirements/review-auto`, with `ticket_id == ticket`, `repo_root == repoRoot`,
+and both `repo` and `worktree_root == worktreeRoot`. Builder Treehouse authority,
+mutation ticket slot and repository permit evidence cannot be combined with
+review evidence. Lifecycle events cannot replace the immutable start binding;
+terminal events may omit it without erasing the materialized status candidate.
+Matching terminal publication can retain the same complete object.
+
+The existing authenticated REST `/api/deploy/start` body does **not** accept
+`reviewCheckout` or `review_checkout`; it is not a public admission-authority
+input. Trusted launcher registry events seed this evidence. The existing public
+GET status route returns it as part of the status projection, including terminal
+status. Registry schema migration adds nullable `review_checkout` TEXT storage
+to events and deployments; databases/rows created without it remain readable.
+Missing evidence is SQL `NULL` and an absent optional object in event/status
+projections and JSON, never a fabricated candidate or builder slot/permit.
+Non-review rows retain their existing projection behavior.
+
+For operator selection, supported invocation, and custody boundaries, see
+[protected Pi review-auto](../pi-pa.md#protected-pi-review-auto-existing-candidate-selection).
+These data contracts do not assert successful installed independent review proof.
 
 ### `Rating`
 

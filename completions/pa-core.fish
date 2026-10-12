@@ -405,6 +405,7 @@ complete -c pa-core -f -n __pa_core_deploy_completing -l agent-model -d 'Unsuppo
 complete -c pa-core -n __pa_core_deploy_completing -l background -d 'Run detached/headless'
 complete -c pa-core -n __pa_core_deploy_completing -l dry-run -d 'Generate primer without invoking runtime'
 complete -c pa-core -n __pa_core_deploy_completing -l force -d 'Recover stale or malformed builder ownership evidence'
+# PPA_ONLY_DEPLOY_OPTION ticket-worktree
 complete -c pa-core -f -n __pa_core_deploy_completing -l repo -d 'Registered key or primary path; PPA omission may infer authenticated linked-worktree CWD' -r -a '(__pa_core_projects)'
 complete -c pa-core -f -n __pa_core_deploy_completing -l ticket -d 'Ticket ID' -r -a '(__pa_core_ticket_ids)'
 complete -c pa-core -n __pa_core_deploy_completing -l timeout -d 'Timeout seconds' -r

@@ -25,13 +25,49 @@ registered primary repository, and its `.git` forward/reverse metadata is consis
 snapshots, registry `repo`, and Pi process CWD use the authenticated linked
 worktree. Canonical evidence is compared only with the registered key/root pair;
 runtime evidence is compared only with `worktree_root`. Explicit `--repo` key or
-primary-path input still selects the primary root. Symlink aliases, malformed or
+primary-path input still selects the primary root unless PPA explicitly requests
+selection-only `--ticket-worktree` as described below. Symlink aliases, malformed or
 forged metadata, independent clones, stale worktree entries, ambiguous
 common-directory matches, and unrelated repositories remain rejected. OPA,
 CPA, and DPA do not gain this
 exception.
 
-Authenticated Treehouse ticket launches add lease, ticket, branch, lineage,
+### PPA selection-only ticket worktrees
+
+`ppa deploy <non-builder-team> --ticket <id> --ticket-worktree` opts into an
+existing checkout from canonical repository CWD. Optional `--repo` is a
+registered key or exact canonical-root identifier, not a worktree path. The
+ticket project, exactly one full `materialized` branch/base/HEAD tuple, one
+existing deterministic-holder Treehouse lease, and physical linked Git identity
+must agree. Status inspection retains the 15-second/1-MiB bounds. Selection
+performs no allocation/return, branch action, ticket write or protected
+slot/permit/lineage/mutation/borrower acquisition.
+
+Immutable `ticketWorktreeSelection` is separate from `TreehouseLaunchEvidence`.
+It preserves canonical `repoKey`/`repoRoot` while all execution, project/memory,
+Pi CWD, `PA_REPO`/`PA_WORKTREE_ROOT`, deployment-context `cwd`/`repo` and registry
+`repo` roots use the exact worktree; registry `repo_root` remains canonical.
+Registry branch state/base/HEAD evidence does not imply builder correlation.
+There are no builder authority or return rights and no new team/tool permissions.
+
+This explicit option adds read-only ticket/lease/Git/owner inspection even for
+`requirements/*`; ordinary omitted-flag requirements admission is unchanged.
+Process-verified live builders on the selected checkout allow existing
+`read-only` readers but block `non-locking` access. Stale, malformed or ambiguous
+owners/borrowers reject without repair, including under `--force`. All evidence
+is reread before native preflight/spawn and dry-run finalization. Dry-run spawns
+nothing; resume requires the same flag, ticket, prior canonical repository and
+physical checkout with fresh current authentication. Selection rejections use
+one five-field diagnostic bounded to 2,000 characters. No post-spawn immutable
+snapshot or filesystem sandbox is promised.
+
+This is PPA CLI only: builder, OPA/CPA/DPA, direct `pa-core` and Agent API inputs
+are excluded. PAPC-038 separately aligns eligible non-builder mode root contracts
+in `pa-platform-config`; do not claim broad mode availability until paired
+validation passes. PAPC-037 owns worktree-local dependencies/late canonical
+reconciliation, with PAPC-031/PAPC-036 related integration policy.
+
+Authenticated Treehouse **builder** ticket launches add lease, ticket, branch, lineage,
 slot, and permit evidence to that Pi-only linked-worktree identity contract.
 Runtime `PA_REPO`, `PA_WORKTREE_ROOT`, `repositoryCwd`, and the authenticated
 Treehouse path all equal the execution worktree. Canonical identity remains
@@ -41,7 +77,7 @@ stale, or conflicting Treehouse path evidence before Pi/native-host preflight
 or runtime/child spawn. Non-Pi adapters do not gain linked-worktree admission.
 
 Repository admission is mode-aware. Every `requirements/*` mode is `read-only`:
-it bypasses Git status and repository-lease access even when the checkout is dirty
+ordinary omitted-flag admission bypasses Git status and repository-lease access even when the checkout is dirty
 or a builder owns the same canonical root. Every `builder/*` mode is
 `exclusive-builder`. Registered-primary execution retains the existing single
 process-verified owner across ppa and opa. Each authenticated PPA linked
