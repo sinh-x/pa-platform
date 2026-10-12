@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 
 export type QuotaProvider = "codex" | "claude";
 export interface QuotaConsent { version: 1; deploymentId: string; providers: { id: QuotaProvider; profilePath: string }[] }
@@ -28,17 +28,23 @@ export function parseQuotaConsent(value: unknown, deploymentId: string): QuotaCo
 }
 /** The only pre-consent read is this bounded operator-owned file. Open with
  * O_NOFOLLOW and compare inode/device to defeat a symlink/replacement race. */
+export function validConsentFile(stat: { isFile: () => boolean; uid: number; mode: number; size: number }, uid = process.getuid?.()): boolean {
+  return stat.isFile() && stat.uid === uid && (stat.mode & 0o7777) === 0o600 && stat.size <= 65536;
+}
 export function readQuotaConsent(path: string, deploymentId: string): QuotaConsent {
   if (!isAbsolute(path)) return rejected();
   const before = lstatSync(path);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || before.isSymbolicLink() || stat.ino !== before.ino || stat.dev !== before.dev || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o600 || stat.size > 65536) return rejected();
+    if (before.isSymbolicLink() || stat.ino !== before.ino || stat.dev !== before.dev || !validConsentFile(stat)) return rejected();
     return parseQuotaConsent(JSON.parse(readFileSync(fd, "utf8")) as unknown, deploymentId);
   } finally { closeSync(fd); }
 }
 
+export function quotaEnvironmentAllowed(env: NodeJS.ProcessEnv): boolean {
+  return !Object.keys(env).some((key) => key.startsWith("QUOTA_AXI_") || /^(OPENAI|ANTHROPIC|CODEX|CLAUDE).*(BASE_URL|ENDPOINT|API_URL)$/.test(key));
+}
 export function quotaReadArguments(args: readonly string[]): boolean {
   return args.length === 0 || (args.length === 1 && ["quota", "--json"].includes(args[0]!)) || (args.length === 2 && args[0] === "quota" && args[1] === "--json");
 }
@@ -74,7 +80,7 @@ export function sanitizeQuotaResult(raw: string, provider: QuotaProvider): SafeQ
   const invalid: SafeQuota[] = [{ provider, status: "unknown", reason: "invalid-response", windows: [] }];
   try {
     const root = record(JSON.parse(raw) as unknown);
-    if (![5, 6].includes(Number(root.schemaVersion)) || !Array.isArray(root.providers) || !root.providers.length || root.providers.length > 32) return invalid;
+    if ((root.schemaVersion !== 5 && root.schemaVersion !== 6) || !Array.isArray(root.providers) || !root.providers.length || root.providers.length > 32) return invalid;
     return root.providers.map((entry: unknown): SafeQuota => {
       const row = record(entry);
       if (row.provider !== provider || !Array.isArray(row.windows) || row.windows.length > 64) return rejected();
@@ -120,11 +126,11 @@ export function runManagedQuota(input: { node: string; entrypoint: string; args:
   if (!quotaReadArguments(input.args)) return rejected();
   const { PA_AXI_QUOTA_CONSENT: path, PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir } = input.env;
   if (!path) throw new Error("AXI_QUOTA_CONSENT_REQUIRED");
-  if (!id || !dir || !isAbsolute(dir) || !isAbsolute(input.node) || !isAbsolute(input.entrypoint)) return rejected();
+  if (!id || !dir || !isAbsolute(dir) || resolve(dir) !== dir || basename(dir) !== id || !isAbsolute(input.node) || !isAbsolute(input.entrypoint) || !quotaEnvironmentAllowed(input.env)) return rejected();
   const consent = effects.consent(path, id);
   // Revalidate injected effects too; no profile operation before all consent is valid.
-  parseQuotaConsent(consent, id);
-  return consent.providers.flatMap((provider) => {
+  const validated = parseQuotaConsent(consent, id);
+  return validated.providers.flatMap((provider) => {
     try {
       const result = effects.run(input.node, [input.entrypoint, "quota", "--provider", provider.id, "--profile-only", "--no-credential-refresh", "--json"], quotaProviderEnvironment(provider, dir));
       if (result.failed) return [{ provider: provider.id, status: "unknown" as const, reason: "provider-error" as const, windows: [] }];

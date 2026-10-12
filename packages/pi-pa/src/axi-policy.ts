@@ -3,7 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserArgumentsAllowed } from "./axi-browser.js";
-import { quotaReadArguments, runManagedQuota, type QuotaEffects } from "./axi-quota.js";
+import { quotaEnvironmentAllowed, quotaReadArguments, runManagedQuota, type QuotaEffects } from "./axi-quota.js";
 
 export const AXI_VERSIONS = {
   "gh-axi": "0.1.35",
@@ -105,7 +105,7 @@ export function runManagedAxi(input: ManagedAxiInvocation, effects: AxiPolicyEff
     } catch { return deny("AXI_POLICY_REJECTED"); }
   }
   if (input.tool === "quota-axi") {
-    if (!quotaReadArguments(input.args)) return deny("AXI_POLICY_REJECTED");
+    if (!quotaReadArguments(input.args) || !quotaEnvironmentAllowed(input.env)) return deny("AXI_POLICY_REJECTED");
     if (!input.env["PA_AXI_QUOTA_CONSENT"]) return deny("AXI_QUOTA_CONSENT_REQUIRED");
     try { effects.stdout(`${JSON.stringify({ providers: runManagedQuota(input, effects.quota) })}\n`); return 0; }
     catch { return deny("AXI_POLICY_REJECTED"); }

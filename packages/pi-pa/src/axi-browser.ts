@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -20,12 +20,12 @@ function privateDirectory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || realpathSync(path) !== path) fail();
 }
-export function browserContext(env: NodeJS.ProcessEnv): BrowserContext {
+export function browserContext(env: NodeJS.ProcessEnv, requireLive = true): BrowserContext {
   const id = env.PA_DEPLOYMENT_ID;
   const dir = env.PA_DEPLOYMENT_DIR;
   const lifecyclePid = Number(env.PA_AXI_LIFECYCLE_PID);
   const lifecycleStart = env.PA_AXI_LIFECYCLE_START;
-  if (!id || !/^d-[a-z0-9]+$/.test(id) || !dir || !isAbsolute(dir) || resolve(dir) !== dir || dirname(dir) === dir || dir.split("/").at(-1) !== id || !Number.isSafeInteger(lifecyclePid) || lifecyclePid <= 1 || !lifecycleStart || processIdentity(lifecyclePid) !== lifecycleStart) return fail();
+  if (!id || !/^d-[a-z0-9]+$/.test(id) || !dir || !isAbsolute(dir) || resolve(dir) !== dir || dirname(dir) === dir || dir.split("/").at(-1) !== id || !Number.isSafeInteger(lifecyclePid) || lifecyclePid <= 1 || !lifecycleStart || !/^\d+$/.test(lifecycleStart) || (requireLive && processIdentity(lifecyclePid) !== lifecycleStart)) return fail();
   // Deployment directories predate this feature and need not be mode 0700;
   // browser-owned descendants are strictly private. Never create the deployment.
   const stat = lstatSync(dir);
@@ -52,6 +52,7 @@ export interface BrowserOwner extends BrowserContext {
   token: string; pid: number; start: string; port: number;
   node: string; entrypoint: string; mcp: string; chrome: string;
   inode: number; device: number;
+  descendants?: ProcessIdentity[];
 }
 function statePath(context: BrowserContext): string { return join(context.dir, "axi-browser"); }
 function ownerFile(context: BrowserContext): string { return join(statePath(context), "owner.json"); }
@@ -63,10 +64,18 @@ function readOwner(context: BrowserContext): BrowserOwner {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o600 || stat.size > 65536) return fail();
     const value = JSON.parse(readFileSync(fd, "utf8")) as BrowserOwner;
+    if (!value || typeof value !== "object") return fail();
     const directory = lstatSync(state);
-    if (value.id !== context.id || value.dir !== context.dir || value.lifecyclePid !== context.lifecyclePid || value.lifecycleStart !== context.lifecycleStart || value.inode !== directory.ino || value.device !== directory.dev || typeof value.token !== "string" || !/^[a-f0-9-]{36}$/.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid <= 1 || !Number.isSafeInteger(value.port) || value.port <= 0 || value.port > 65535 || !value.start || ![value.node, value.entrypoint, value.mcp, value.chrome].every((path) => typeof path === "string" && isAbsolute(path))) return fail();
+    if (value.id !== context.id || value.dir !== context.dir || value.lifecyclePid !== context.lifecyclePid || value.lifecycleStart !== context.lifecycleStart || value.inode !== directory.ino || value.device !== directory.dev || typeof value.token !== "string" || !/^[a-f0-9-]{36}$/.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid <= 1 || !Number.isSafeInteger(value.port) || value.port <= 0 || value.port > 65535 || !/^\d+$/.test(value.start) || ![value.node, value.entrypoint, value.mcp, value.chrome].every((path) => typeof path === "string" && isAbsolute(path))) return fail();
     return value;
   } finally { closeSync(fd); }
+}
+function writeOwner(owner: BrowserOwner): void {
+  const previous = readOwner(owner);
+  if (previous.token !== owner.token || previous.pid !== owner.pid || previous.start !== owner.start) fail();
+  const temporary = join(statePath(owner), `owner-${randomUUID()}.tmp`);
+  writeFileSync(temporary, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
+  renameSync(temporary, ownerFile(owner));
 }
 function sameProcess(owner: BrowserOwner): boolean {
   if (processIdentity(owner.pid) !== owner.start) return false;
@@ -74,7 +83,7 @@ function sameProcess(owner: BrowserOwner): boolean {
 }
 /** Verify the listener's kernel socket inode belongs to this exact supervisor,
  * not merely that an unauthenticated foreign /health returns a plausible id. */
-function ownsListener(owner: BrowserOwner): boolean {
+export function ownsListener(owner: Pick<BrowserOwner, "pid" | "port">): boolean {
   try {
     const sockets = new Set(readdirSync(`/proc/${owner.pid}/fd`).map((fd) => { try { return readlinkSync(`/proc/${owner.pid}/fd/${fd}`); } catch { return ""; } }));
     return readFileSync("/proc/net/tcp", "utf8").split("\n").some((line) => {
@@ -118,10 +127,18 @@ export async function superviseBrowserLifetime(effects: BrowserSupervisionEffect
 }
 export async function cleanupManagedBrowser(env: NodeJS.ProcessEnv): Promise<void> {
   if (!env.PA_DEPLOYMENT_ID || !env.PA_DEPLOYMENT_DIR) return;
-  const context = browserContext(env);
+  const context = browserContext(env, false);
   try { lstatSync(statePath(context)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   const owner = readOwner(context);
-  if (!sameProcess(owner)) return fail(); // Never trust a PID file or kill a reused PID.
+  if (!sameProcess(owner)) {
+    // An absent supervisor may have been killed abruptly. Only a recorded live
+    // descendant can anchor its still-reserved Linux session; a reused leader
+    // or witness rejects without signals or state removal.
+    if (processIdentity(owner.pid) !== undefined) return fail();
+    await cleanupBrowserSession(owner, owner.descendants ?? []);
+    removeOwnedState(owner);
+    return;
+  }
   process.kill(owner.pid, "SIGTERM");
   const deadline = performance.now() + BROWSER_CLEANUP_MS;
   while (performance.now() < deadline) {
@@ -142,53 +159,135 @@ function bridgeEnvironment(owner: BrowserOwner): NodeJS.ProcessEnv {
 async function daemon(configPath: string): Promise<void> {
   // Daemon starts with only deployment/lifecycle identity; it never reads a
   // caller-selected arbitrary config outside that exact deployment directory.
-  const context = browserContext(process.env);
+  const context = browserContext(process.env, false);
   if (configPath !== ownerFile(context)) return fail();
   const owner = readOwner(context);
   if (owner.pid !== process.pid || owner.start !== processIdentity(process.pid)) return fail();
-  const state = statePath(owner);
-  const env = bridgeEnvironment(owner);
-  const expected = [`--userDataDir=${join(state, "profile")}`, "--headless", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"];
+  const witnesses: ProcessIdentity[] = [];
+  let completion: Promise<void> | undefined;
+  const cleanup = (): Promise<void> => {
+    // One shared bounded attempt across startup failure, signals and the final
+    // lifetime guard. A failed cleanup must not restart another 10-second bound.
+    completion ??= (async () => {
+      const current = readOwner(owner);
+      if (current.token !== owner.token || current.pid !== owner.pid || current.start !== owner.start) return fail();
+      await cleanupBrowserSession(owner, witnesses);
+      removeOwnedState(owner);
+    })();
+    return completion;
+  };
+  try {
+    if (processIdentity(owner.lifecyclePid) === owner.lifecycleStart) await launchBridge(owner, witnesses, cleanup);
+  } finally { await cleanup(); }
+}
+/** Puppeteer defaults to detached Chrome. The approved managed launcher must
+ * override that spawn seam, or Chrome escapes the owned daemon session. Guard
+ * upstream cleanup too: it may not issue group signals or signal stale children.
+ * This preload is fixed generated code, not an operator NODE_OPTIONS surface. */
+export function managedProcessPreload(): string {
+  const source = `import {createRequire,syncBuiltinESMExports} from 'node:module'; const require=createRequire(process.cwd()+'/managed.cjs'); const cp=require('node:child_process'); const fs=require('node:fs'); const identity=pid=>{try{const s=fs.readFileSync('/proc/'+pid+'/stat','utf8');return s.slice(s.lastIndexOf(')')+2).split(' ')[19]}catch{return undefined}}; const owned=new Map([[process.pid,identity(process.pid)]]); const spawn=cp.spawn; cp.spawn=(command,args,options)=>{if(!Array.isArray(args)){options=args;args=[]} const child=spawn(command,args,{...options,detached:false}); const start=identity(child.pid); if(start)owned.set(child.pid,start); return child}; syncBuiltinESMExports(); const kill=process.kill.bind(process); process.kill=(pid,signal)=>{if(pid<=0||!owned.has(pid)||identity(pid)!==owned.get(pid)){const e=new Error('AXI_POLICY_REJECTED');e.code='ESRCH';throw e}return kill(pid,signal)};`;
+  return `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+}
+export function managedMcpShim(node: string, mcp: string, chrome: string, profile: string): string {
+  if (!isAbsolute(node)) return fail();
+  const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"];
   // AXI 0.1.38 cannot forward executablePath. The approved shim validates its
   // upstream argv, then replaces it with fixed pinned MCP/Chrome policy argv.
-  const source = `const {spawn}=require('node:child_process'); const expected=${JSON.stringify(expected)}; if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(expected)) process.exit(1); const child=spawn(${JSON.stringify(owner.node)},${JSON.stringify(pinnedMcpArguments(owner.mcp, owner.chrome, join(state, "profile")))},{env:process.env,stdio:['inherit','inherit','ignore']}); child.on('error',()=>process.exit(1)); child.on('exit',code=>process.exit(code??1));`;
-  writeFileSync(join(state, "mcp.cjs"), source, { mode: 0o600, flag: "wx" });
+  return `const {spawn}=require('node:child_process'); const expected=${JSON.stringify(expected)}; if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(expected)) process.exit(1); const child=spawn(${JSON.stringify(node)},${JSON.stringify(["--import", managedProcessPreload(), ...pinnedMcpArguments(mcp, chrome, profile)])},{env:process.env,stdio:['inherit','inherit','ignore']}); child.on('error',()=>process.exit(1)); child.on('exit',code=>process.exit(code??1));`;
+}
+async function launchBridge(owner: BrowserOwner, witnesses: ProcessIdentity[], cleanup: () => Promise<void>): Promise<void> {
+  const state = statePath(owner);
+  const env = bridgeEnvironment(owner);
+  writeFileSync(join(state, "mcp.cjs"), managedMcpShim(owner.node, owner.mcp, owner.chrome, join(state, "profile")), { mode: 0o600, flag: "wx" });
   const bridge = join(dirname(owner.entrypoint), "chrome-devtools-axi-bridge.js");
   // Start the pinned bridge ourselves, not the upstream CLI's detached
   // auto-restart/weak-PID lifecycle. It binds only 127.0.0.1.
-  const child = spawn(owner.node, [bridge], { env, cwd: state, stdio: "ignore", detached: true });
-  await superviseBridge(owner, child, owner.port);
+  // Keep every bridge/MCP/Chrome child in the daemon's private Linux session.
+  // The fixed preload also denies upstream exit-time group signals and stale
+  // direct-child PIDs; the daemon handles verified descendant cleanup instead.
+  const child = spawn(owner.node, ["--import", managedProcessPreload(), bridge], { env, cwd: state, stdio: "ignore" });
+  await superviseBridge(owner, child, witnesses, cleanup);
 }
 
-async function superviseBridge(owner: BrowserOwner, child: ChildProcess, port: number): Promise<void> {
-  if (!child.pid) return fail();
-  const pid = child.pid; const start = processIdentity(pid); let closed = false; let stopping = false;
-  child.once("exit", () => { closed = true; }); child.once("error", () => { closed = true; });
-  // Proxying only our internal /health and /call is unnecessary: use the owned
-  // bridge port directly, proven by recorded child identity and kernel inode.
-  const updated = { ...owner, port, bridgePid: pid, bridgeStart: start };
-  writeFileSync(ownerFile(owner), JSON.stringify(updated), { mode: 0o600 });
-  const cleanup = async (): Promise<void> => {
-    if (stopping) return; stopping = true;
-    for (const signal of ["SIGTERM", "SIGKILL"] as const) {
-      const current = processIdentity(pid);
-      // Missing identity is not permission to signal a potentially reused group.
-      if (!start || current !== start) return fail();
-      try { process.kill(-pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      if (signal === "SIGTERM") await sleep(300);
+export interface ProcessIdentity { pid: number; start: string; session: number; uid: number; zombie: boolean }
+export function inspectProcess(pid: number): ProcessIdentity | undefined {
+  try {
+    const path = `/proc/${pid}`;
+    const text = readFileSync(`${path}/stat`, "utf8");
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    return { pid, start: fields[19]!, session: Number(fields[3]), uid: lstatSync(path).uid, zombie: fields[0] === "Z" };
+  } catch { return undefined; }
+}
+export interface BrowserProcessEffects {
+  list: () => ProcessIdentity[];
+  inspect: (pid: number) => ProcessIdentity | undefined;
+  signal: (pid: number, signal: NodeJS.Signals) => void;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+}
+const processEffects: BrowserProcessEffects = {
+  list: () => readdirSync("/proc").filter((name) => /^\d+$/.test(name)).flatMap((name) => { const row = inspectProcess(Number(name)); return row ? [row] : []; }),
+  inspect: inspectProcess, signal: (pid, signal) => { process.kill(pid, signal); }, now: () => performance.now(), sleep,
+};
+function sameIdentity(a: ProcessIdentity | undefined, b: ProcessIdentity): boolean {
+  return !!a && a.pid === b.pid && a.start === b.start && a.session === b.session && a.uid === b.uid;
+}
+/** Linux session IDs remain reserved while any member exists. A live exact
+ * leader or recorded descendant is required before discovering session members.
+ * An unrelated process cannot join this detached session. Signal only individual
+ * reverified identities, never a PID file blindly or a process group. */
+export function ownedSessionProcesses(owner: Pick<BrowserOwner, "pid" | "start">, witnesses: ProcessIdentity[], effects: BrowserProcessEffects = processEffects): ProcessIdentity[] {
+  const leader = effects.inspect(owner.pid);
+  if (leader && (leader.start !== owner.start || leader.session !== owner.pid || leader.uid !== process.getuid?.())) return fail();
+  const anchored = !!leader || witnesses.some((row) => row.session === owner.pid && sameIdentity(effects.inspect(row.pid), row));
+  const members = effects.list().filter((row) => row.session === owner.pid && row.pid !== owner.pid && !row.zombie);
+  if (!anchored && members.length) return fail();
+  if (members.some((row) => row.uid !== process.getuid?.() || BigInt(row.start) < BigInt(owner.start))) return fail();
+  return members;
+}
+export async function cleanupBrowserSession(owner: Pick<BrowserOwner, "pid" | "start">, witnesses: ProcessIdentity[], effects: BrowserProcessEffects = processEffects): Promise<void> {
+  const deadline = effects.now() + BROWSER_CLEANUP_MS - 500;
+  const known = [...witnesses];
+  const started = effects.now();
+  while (effects.now() < deadline) {
+    const members = ownedSessionProcesses(owner, known, effects);
+    if (!members.length) return;
+    known.push(...members);
+    const signal = effects.now() - started < 300 ? "SIGTERM" : "SIGKILL";
+    for (const row of members) {
+      if (!sameIdentity(effects.inspect(row.pid), row)) continue;
+      try { effects.signal(row.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     }
-    const current = readOwner(owner);
-    if (current.token !== owner.token || !sameProcess(current)) return fail();
-    rmSync(statePath(owner), { recursive: true });
-  };
-  process.removeAllListeners("SIGTERM"); process.removeAllListeners("SIGINT"); process.removeAllListeners("SIGHUP");
+    await effects.sleep(25);
+  }
+  return fail();
+}
+function removeOwnedState(owner: BrowserOwner): void {
+  const current = readOwner(owner);
+  if (current.token !== owner.token || current.pid !== owner.pid || current.start !== owner.start) return fail();
+  rmSync(statePath(owner), { recursive: true });
+}
+async function superviseBridge(owner: BrowserOwner, child: ChildProcess, witnesses: ProcessIdentity[], ownedCleanup: () => Promise<void>): Promise<void> {
+  let closed = !child.pid; let stopping = false;
+  child.once("exit", () => { closed = true; }); child.once("error", () => { closed = true; });
+  const pid = child.pid;
+  const start = pid ? processIdentity(pid) : undefined;
+  witnesses.push(...ownedSessionProcesses(owner, []));
+  const updated = { ...owner, bridgePid: pid, bridgeStart: start, descendants: witnesses };
+  writeOwner(updated);
+  const cleanup = (): Promise<void> => { stopping = true; return ownedCleanup(); };
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => { void cleanup().then(() => process.exit(0), () => process.exit(1)); });
-  await superviseBrowserLifetime({ now: () => performance.now(), sleep, lifecycleAlive: () => processIdentity(owner.lifecyclePid) === owner.lifecycleStart, bridgeAlive: () => !closed && !stopping, cleanup });
+  await superviseBrowserLifetime({ now: () => performance.now(), sleep: async (ms) => {
+    witnesses.splice(0, witnesses.length, ...ownedSessionProcesses(owner, witnesses));
+    if (!stopping) writeOwner({ ...updated, descendants: witnesses });
+    await sleep(ms);
+  }, lifecycleAlive: () => processIdentity(owner.lifecyclePid) === owner.lifecycleStart, bridgeAlive: () => !closed && !stopping, cleanup });
 }
 
 export async function runBrowserCommand(input: { node: string; entrypoint: string; mcp: string; chrome: string; args: readonly string[]; env: NodeJS.ProcessEnv }): Promise<string> {
   if (!browserArgumentsAllowed(input.args, input.env) || ![input.node, input.entrypoint, input.mcp, input.chrome].every(isAbsolute)) return fail();
   const context = browserContext(input.env);
+  const deadline = performance.now() + BROWSER_READINESS_MS;
   if (input.args[0] === "stop") { await cleanupManagedBrowser(input.env); return "browser stopped\n"; }
   let owner: BrowserOwner;
   try { lstatSync(statePath(context)); owner = readOwner(context); if (!sameProcess(owner)) return fail(); }
@@ -196,17 +295,41 @@ export async function runBrowserCommand(input: { node: string; entrypoint: strin
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const state = statePath(context);
     mkdirSync(state, { mode: 0o700 });
-    for (const name of ["home", "tmp", "profile"]) mkdirSync(join(state, name), { mode: 0o700 });
     const stat = lstatSync(state);
-    const port = await unusedPort();
-    // Gate daemon startup until its immutable ownership record has been written.
-    const child = spawn(input.node, [modulePath, "supervise", ownerFile(context)], { env: { PA_DEPLOYMENT_ID: context.id, PA_DEPLOYMENT_DIR: context.dir, PA_AXI_LIFECYCLE_PID: String(context.lifecyclePid), PA_AXI_LIFECYCLE_START: context.lifecycleStart }, stdio: "ignore", detached: true });
-    if (!child.pid) return fail();
-    owner = { ...context, token: randomUUID(), pid: child.pid, start: processIdentity(child.pid) ?? "", port, node: input.node, entrypoint: input.entrypoint, mcp: input.mcp, chrome: input.chrome, inode: stat.ino, device: stat.dev };
-    writeFileSync(ownerFile(context), JSON.stringify(owner), { mode: 0o600, flag: "wx" });
-    child.unref();
+    let child: ChildProcess | undefined;
+    let start: string | undefined;
+    try {
+      for (const name of ["home", "tmp", "profile"]) mkdirSync(join(state, name), { mode: 0o700 });
+      const port = await unusedPort();
+      // The daemon cannot spawn descendants before atomic owner publication.
+      child = spawn(input.node, [modulePath, "supervise", ownerFile(context)], { env: { PA_DEPLOYMENT_ID: context.id, PA_DEPLOYMENT_DIR: context.dir, PA_AXI_LIFECYCLE_PID: String(context.lifecyclePid), PA_AXI_LIFECYCLE_START: context.lifecycleStart }, stdio: "ignore", detached: true });
+      child.on("error", () => { /* startup fails via missing identity, never uncaught */ });
+      if (!child.pid) return fail();
+      start = processIdentity(child.pid);
+      if (!start) return fail();
+      owner = { ...context, token: randomUUID(), pid: child.pid, start, port, node: input.node, entrypoint: input.entrypoint, mcp: input.mcp, chrome: input.chrome, inode: stat.ino, device: stat.dev };
+      const temporary = join(state, `owner-${owner.token}.tmp`);
+      writeFileSync(temporary, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
+      renameSync(temporary, ownerFile(context));
+      child.unref();
+    } catch {
+      if (child?.pid && start && processIdentity(child.pid) === start) process.kill(child.pid, "SIGTERM");
+      // We won exclusive mkdir and have not published an owner: remove only
+      // that exact still-private directory, not a replacement/collision.
+      privateDirectory(state);
+      const current = lstatSync(state);
+      if (current.ino !== stat.ino || current.dev !== stat.dev) return fail();
+      rmSync(state, { recursive: true });
+      return fail();
+    }
   }
-  const deadline = performance.now() + BROWSER_READINESS_MS;
+  if (owner.node !== input.node || owner.entrypoint !== input.entrypoint || owner.mcp !== input.mcp || owner.chrome !== input.chrome) return fail();
+  const cancel = (): void => { void cleanupManagedBrowser(input.env).then(() => process.exit(1), () => process.exit(1)); };
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, cancel);
+  try { return await readyBrowserCommand(owner, context, input, deadline); }
+  finally { for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.removeListener(signal, cancel); }
+}
+async function readyBrowserCommand(owner: BrowserOwner, context: BrowserContext, input: Parameters<typeof runBrowserCommand>[0], deadline: number): Promise<string> {
   let ready = false;
   while (performance.now() < deadline) {
     owner = readOwner(context);
