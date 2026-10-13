@@ -711,6 +711,52 @@ test("Phase-4 installed smoke is separate, exact-CLI, complete-or-fail and has n
   }
 });
 
+test("installed smoke selects pinned executable outputs, not multi-output defaults or the first man path", () => {
+  const matrix = fileURLToPath(new URL("../../../../scripts/axi-smoke/matrix.py", import.meta.url));
+  const result = spawnSync("python3", ["-B", "-c", `
+import importlib.util, pathlib, sys, tempfile
+spec = importlib.util.spec_from_file_location("axi_matrix", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory)
+    out, man = root / "out", root / "man"
+    (out / "bin").mkdir(parents=True)
+    man.mkdir()
+    matrix = module.Matrix.__new__(module.Matrix)
+    matrix.url = "git+file:///synthetic-checkout?submodules=1"
+    expressions = []
+    def build(expression):
+        expressions.append(expression)
+        # Model the default man-before-out result: only explicit .out may
+        # resolve to the executable tree, never the first default output.
+        return str(out if expression.endswith(".out") else man)
+    matrix.build = build
+    for name, executable in (("strace", "strace"), ("bubblewrap", "bwrap")):
+        binary = out / "bin" / executable
+        binary.write_text("#!/bin/sh\\nexit 0\\n")
+        binary.chmod(0o700)
+        assert matrix.inspection_binary(name) == str(binary)
+        assert expressions[-1].endswith("." + name + ".out")
+        binary.chmod(0o600)
+        try:
+            matrix.inspection_binary(name)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("non-executable inspection tool accepted")
+        binary.unlink()
+        try:
+            matrix.inspection_binary(name)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("missing inspection tool accepted")
+    assert len(expressions) == 6
+`, matrix], { encoding: "utf8", timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("installed-smoke observer records actual credential/network/child attempts rather than assumed zero counters", () => {
   const dir = mkdtempSync(join(tmpdir(), "axi-smoke-observer-"));
   const ledger = join(dir, "events.jsonl");

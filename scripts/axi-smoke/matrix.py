@@ -146,6 +146,15 @@ class Matrix:
         check(Path(paths[0]).is_dir())
         return paths[0]
 
+    def inspection_binary(self, name):
+        executable = {"strace": "strace", "bubblewrap": "bwrap"}[name]
+        # strace's default outputs include man; select the pinned executable
+        # output explicitly instead of accepting an arbitrary first store path.
+        output = self.build(f'(builtins.getFlake {json.dumps(self.url)}).inputs.nixpkgs.legacyPackages.{SYSTEMS[0]}.{name}.out')
+        binary = Path(output) / "bin" / executable
+        check(binary.is_file() and os.access(binary, os.X_OK))
+        return str(binary)
+
     def run(self):
         self.data["featureSha"] = self.command(["git", "rev-parse", "HEAD"])[0].strip()
         self.data["flakeLockSha256"] = digest(self.repo / "flake.lock")
@@ -232,8 +241,7 @@ class Matrix:
         # Both inspection tools are flake-locked, not opportunistic npm tools.
         binaries = {}
         for name in ("strace", "bubblewrap"):
-            output = self.build(f'(builtins.getFlake {json.dumps(self.url)}).inputs.nixpkgs.legacyPackages.{SYSTEMS[0]}.{name}')
-            binaries[name] = str(Path(output) / "bin" / ("bwrap" if name == "bubblewrap" else name))
+            binaries[name] = self.inspection_binary(name)
         self.case("trace-tools", binaries)
         manifest = self.root / "manifest.json"
         manifest.write_text(json.dumps({"outputs": self.data["nativeOutputs"], "evaluations": self.data["evaluations"], "tools": self.data["tools"], "chrome": str(self.chrome), "root": str(self.root)}))
