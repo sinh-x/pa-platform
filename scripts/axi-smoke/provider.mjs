@@ -1,4 +1,6 @@
-// Hermetic provider effects only; never imports source policy or real credentials.
+// Constructed schema/redaction fixtures ONLY, not actual pinned-provider
+// acceptance. Explicit expiry below is deliberately synthetic. Real provider
+// expiry coverage lives in pinned-quota.cjs (transport-only responses).
 import fs from 'node:fs';
 import http from 'node:http';
 const ledger = process.env.AXI_SMOKE_LEDGER;

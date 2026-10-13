@@ -1,5 +1,6 @@
 // PAP-240 real installed outputs. All imports below resolve under /nix/store.
-// Provider effects are instrumented synthetic subprocesses; Chrome/MCP/AXI are real.
+// Generic status fixtures replace providers. Pinned expiry cases execute the real
+// quota CLI/providers with transport-only responses; Chrome/MCP/AXI remain real.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import cp from 'node:child_process';
@@ -217,11 +218,11 @@ try {
   active = 'quota-denials';
   const denialEvidence = [];
   const denyConsent = (name, env = quotaEnv) => {
-    const before = { reads: count('credentialRead'), requests: count('providerRequest'), invocations: count('providerInvocation'), observers: count('observerLoaded') };
+    const before = { reads: count('credentialRead'), metadata: count('profileMetadata'), evidence: count('profileEvidenceRead'), requests: count('providerRequest'), invocations: count('providerInvocation'), observers: count('observerLoaded') };
     assert.match(command(shim(all, 'quota-axi'), ['quota', '--json'], env, 1).stderr, /^AXI_(POLICY_REJECTED|QUOTA_CONSENT_REQUIRED):/);
-    const observed = { credentialReads: count('credentialRead') - before.reads, providerRequests: count('providerRequest') - before.requests, providerInvocations: count('providerInvocation') - before.invocations };
+    const observed = { credentialReads: count('credentialRead') - before.reads, profileMetadata: count('profileMetadata') - before.metadata, profileEvidenceReads: count('profileEvidenceRead') - before.evidence, providerRequests: count('providerRequest') - before.requests, providerInvocations: count('providerInvocation') - before.invocations };
     assert.equal(count('observerLoaded') - before.observers, 1);
-    assert.deepEqual(observed, { credentialReads: 0, providerRequests: 0, providerInvocations: 0 });
+    assert.deepEqual(observed, { credentialReads: 0, profileMetadata: 0, profileEvidenceReads: 0, providerRequests: 0, providerInvocations: 0 });
     denialEvidence.push({ name, ...observed });
   };
   denyConsent('absent', { ...quotaEnv, PA_AXI_QUOTA_CONSENT: undefined });
@@ -262,7 +263,88 @@ try {
     auditOutput(JSON.stringify(out));
     states.push({ fixture: status, providers: out });
   }
-  done(active, { states });
+  done(active, { states, scope: 'constructed schema/redaction only; not pinned-provider acceptance' });
+
+  active = 'quota-pinned-expiry';
+  const pinnedStates = [];
+  const jwt = payload => `${Buffer.from('{"alg":"HS256"}').toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${Buffer.from('synthetic-only-signature').toString('base64url')}`;
+  const pinnedEnv = { ...quotaEnv, AXI_SMOKE_PINNED: '1', AXI_SMOKE_PINNED_PRELOAD: join(helperDir, 'pinned-quota.cjs') };
+  for (const id of ['codex', 'claude']) {
+    const profilePath = join(root, 'profiles', id);
+    const file = join(profilePath, id === 'codex' ? 'auth.json' : '.credentials.json');
+    const selected = { ...value, providers: [{ id, profilePath }] };
+    setConsent(selected);
+    for (const expiry of ['expired', 'unexpired', 'absent']) {
+      const exp = expiry === 'expired' ? 1 : 4102444800;
+      const profile = id === 'codex'
+        ? { tokens: { access_token: jwt(expiry === 'absent' ? {} : { exp }), id_token: jwt({ exp: 1 }), refresh_token: 'secret-sentinel' } }
+        : { claudeAiOauth: { accessToken: 'synthetic-only-never-a-vendor-token', ...(expiry === 'absent' ? {} : { expiresAt: exp * 1000 }), refreshToken: 'secret-sentinel' } };
+      fs.writeFileSync(file, JSON.stringify(profile), { mode: 0o600 });
+      for (const response of ['denied', 'fresh']) {
+        const before = rows().length;
+        const out = JSON.parse(command(shim(all, 'quota-axi'), ['quota'], { ...pinnedEnv, AXI_SMOKE_RESPONSE: response }).stdout).providers;
+        const observed = rows().slice(before);
+        assert.equal(out.length, 1);
+        assert.equal(out[0].status, response === 'fresh' ? 'fresh' : expiry === 'expired' ? 'expired' : 'unknown');
+        const upstream = observed.filter(row => row.kind === 'pinnedUpstreamState');
+        assert.equal(upstream.length, 1);
+        assert.equal(upstream[0].status, response === 'fresh' ? 'fresh' : 'auth_required');
+        assert.equal(upstream[0].stale, false);
+        assert.equal(upstream[0].windows, response === 'fresh' ? 1 : 0);
+        assert.equal(observed.filter(row => row.kind === 'providerInvocation').length, 1);
+        assert.equal(observed.filter(row => row.kind === 'pinnedTransportLoaded').length, 1);
+        assert.equal(observed.filter(row => row.kind === 'providerRequest').length, id === 'codex' && response === 'fresh' ? 1 : id === 'claude' && response === 'denied' ? 1 : 2);
+        assert.ok(observed.some(row => row.kind === 'credentialRead'));
+        if (response === 'fresh') assert.equal(observed.filter(row => row.kind === 'profileEvidenceRead').length, 0);
+        pinnedStates.push({ provider: id, expiry, response, status: out[0].status, requests: observed.filter(row => row.kind === 'providerRequest').length });
+      }
+    }
+    const malformedEvidence = id === 'codex'
+      ? JSON.stringify({ tokens: { access_token: jwt({ exp: 'malformed' }) } })
+      : JSON.stringify({ claudeAiOauth: { accessToken: 'synthetic', expiresAt: 'malformed' } });
+    const duplicateEvidence = id === 'codex'
+      ? `{"tokens":{},"tokens":${JSON.stringify({ access_token: jwt({ exp: 1 }) })}}`
+      : '{"claudeAiOauth":{},"claudeAiOauth":{"accessToken":"synthetic","expiresAt":1000}}';
+    for (const text of [malformedEvidence, duplicateEvidence]) {
+      fs.writeFileSync(file, text);
+      const before = rows().length;
+      const out = JSON.parse(command(shim(all, 'quota-axi'), ['quota'], { ...pinnedEnv, AXI_SMOKE_RESPONSE: 'denied' }).stdout).providers;
+      const observed = rows().slice(before);
+      assert.equal(out[0].status, 'unknown');
+      assert.equal(observed.find(row => row.kind === 'pinnedUpstreamState').status, 'auth_required');
+      assert.ok(observed.some(row => row.kind === 'providerRequest'));
+      pinnedStates.push({ provider: id, malformedExpiry: true, status: 'unknown' });
+    }
+    fs.writeFileSync(file, '{');
+    const malformedBefore = rows().length;
+    const malformedOut = JSON.parse(command(shim(all, 'quota-axi'), ['quota'], { ...pinnedEnv, AXI_SMOKE_RESPONSE: 'denied' }).stdout).providers;
+    assert.equal(malformedOut[0].status, 'error');
+    assert.equal(rows().slice(malformedBefore).filter(row => row.kind === 'providerRequest').length, 0);
+    pinnedStates.push({ provider: id, malformedProfileJson: true, status: 'error', requests: 0 });
+    fs.unlinkSync(file);
+    const absentBefore = rows().length;
+    const absentOut = JSON.parse(command(shim(all, 'quota-axi'), ['quota'], pinnedEnv).stdout).providers;
+    assert.equal(absentOut[0].status, 'not-configured');
+    assert.equal(rows().slice(absentBefore).filter(row => row.kind === 'providerRequest').length, 0);
+    pinnedStates.push({ provider: id, absentProfile: true, status: 'not-configured', requests: 0 });
+    fs.writeFileSync(file, JSON.stringify(id === 'codex' ? { tokens: { access_token: jwt({ exp: 1 }) } } : { accessToken: 'synthetic', expiresAt: 1000 }), { mode: 0o600 });
+    setConsent({ ...selected, providers: [...selected.providers, { id: 'other', profilePath }] });
+    denyConsent(`${id}-pinned-invalid-whole`, pinnedEnv);
+    denyConsent(`${id}-pinned-no-consent`, { ...pinnedEnv, PA_AXI_QUOTA_CONSENT: undefined });
+    setConsent(selected);
+    for (const unsafe of ['foreign', 'oversize', 'symlink']) {
+      if (unsafe === 'oversize') fs.writeFileSync(file, ' '.repeat(65537));
+      if (unsafe === 'symlink') { fs.unlinkSync(file); fs.symlinkSync(join(root, 'foreign-sentinel'), file); }
+      const before = rows().length;
+      const out = JSON.parse(command(shim(all, 'quota-axi'), ['quota'], { ...pinnedEnv, ...(unsafe === 'foreign' ? { AXI_SMOKE_FOREIGN_PROFILE: '1' } : {}) }).stdout).providers;
+      assert.equal(out[0].status, 'unknown');
+      assert.equal(rows().slice(before).filter(row => ['providerInvocation', 'providerRequest', 'profileEvidenceRead'].includes(row.kind)).length, 0);
+      pinnedStates.push({ provider: id, unsafe, status: 'unknown', requests: 0 });
+      if (unsafe === 'symlink') fs.unlinkSync(file);
+      fs.writeFileSync(file, JSON.stringify(id === 'codex' ? { tokens: { access_token: jwt({ exp: 1 }) } } : { accessToken: 'synthetic', expiresAt: 1000 }), { mode: 0o600 });
+    }
+  }
+  done(active, { scope: 'actual pinned quota-axi 0.1.56 CLI/providers/serialization; HTTP responses only synthetic', states: pinnedStates });
 
   function lifetime(id) {
     const dir = join(root, id); fs.mkdirSync(dir, { mode: 0o700 });
@@ -407,14 +489,14 @@ try {
   const subprocesses = events.filter(row => row.kind === 'subprocess');
   assert.ok(count('observerLoaded') > 0);
   report.effectCounters = {
-    credentialReads: count('credentialRead'), providerRequests: count('providerRequest'), providerInvocations: count('providerInvocation'),
+    credentialReads: count('credentialRead'), profileMetadata: count('profileMetadata'), profileEvidenceReads: count('profileEvidenceRead'), providerRequests: count('providerRequest'), providerInvocations: count('providerInvocation'),
     delegatedRefresh: subprocesses.filter(row => row.args.includes('--refresh') || (row.args.includes('--provider') && !row.args.includes('--no-credential-refresh'))).length,
     inference: subprocesses.filter(row => row.args.some(arg => /^(infer|inference|--allow-claude-inference)$/.test(arg))).length,
     routing: subprocesses.filter(row => row.args.some(arg => /^(route|routing)$/.test(arg))).length,
     mcpTelemetry: count('unexpectedNetwork'),
     observerLoads: count('observerLoaded'),
   };
-  assert.equal(count('badProviderEnvironment') + count('forbiddenProviderArguments') + count('unexpectedSubprocess'), 0);
+  assert.equal(count('badProviderEnvironment') + count('forbiddenProviderArguments') + count('unexpectedSubprocess') + count('unexpectedDiscovery'), 0);
   auditOutput(JSON.stringify(report));
 } catch (error) {
   // Only a stable case ID is published. Node assertion messages can include

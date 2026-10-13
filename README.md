@@ -208,9 +208,34 @@ window duration and start/reset timestamps. Tokens, account IDs/emails, paths,
 credential sources, raw errors, labels and remedy commands are omitted. Statuses
 `fresh`, `stale`, `expired`, `not-configured`, `unknown`, `rate-limited`, `error`
 remain distinct; missing/invalid readings never become zero usage or healthy
-availability. An expired profile needs operator handling outside PA; no refresh
-is delegated. Synthetic smoke proves policy boundaries, **not live-provider
-correctness, availability or measured savings**.
+availability. On quota-axi 0.1.56's profile-only path, a generic authentication
+denial does **not** itself establish expiry. For a single empty, non-stale
+`auth_required` row only, PA checks advisory expiration in the exact consented
+profile: Codex `auth.json` → `tokens.access_token` (or `accessToken`) JWT `exp`
+in seconds; Claude `.credentials.json` → `claudeAiOauth` (or the root object)
+`expiresAt` in milliseconds (numeric or UTC ISO timestamp), with an access token.
+ID-token expiry is not access-token expiry. This means **denied authentication
+plus explicit stored expiry**, not proof of the vendor's reason for denying it.
+Successful quota always wins, even with advisory-expired credentials. Missing,
+ambiguous or malformed expiry evidence leaves an authentication-denied row
+unknown. Unsafe files fail closed before upstream access; a missing credential
+file retains upstream `not-configured`, and malformed profile JSON can retain
+upstream `error` (never invented expiry). PA neither verifies JWT signatures nor
+downloads keys, refreshes credentials, or probes models.
+
+After whole-consent validation, profile metadata is safety-checked before
+upstream execution. Profile files must be owner-held, regular, single-link,
+mode 0600 and at most 65536 bytes; directories must be owner/root-held and not
+writable by others (root-owned sticky temporary ancestors are allowed). Symlinks
+in any path component reject. Expiry reads are descriptor-anchored, capped,
+UTF-8/JSON/JWT bounded, reject duplicate keys/nesting over 32, and require the
+file metadata to remain unchanged across the upstream read and enrichment.
+Keep consented profiles stable during a read: these checks do not turn the
+upstream process into a filesystem sandbox against a concurrently hostile owner.
+No profile contents, tokens, paths, identities or raw errors are output. An
+expired profile needs operator handling outside PA; no refresh is delegated.
+Hermetic smoke proves policy/schema boundaries, **not live-provider correctness,
+availability or measured savings**.
 
 ### Installed-output evidence (independent review only)
 
@@ -242,7 +267,12 @@ all 8 native build/runs, 16 evaluations, 8 explicitly non-native dry-runs, all
 string/integer/null selector failures, aliases/overlay defaults, pins and
 installed lock/integrity/license digests/closures, selected-versus-inherited PATH,
 other-adapter prefixes, plugin defaults, measured real browser isolation/lifecycle
-and synthetic quota denial/status/redaction cases. Runtime effects are observed
+and quota denial/status/redaction cases. The additional required
+`quota-pinned-expiry` case exercises the **actual pinned CLI, providers and
+serialization** with disposable synthetic Codex/Claude profiles and in-process
+HTTP responses only (expired denial, unexpired/no-expiry denial, advisory-expired
+success and unsafe-file denials). Generic status/redaction workers remain clearly
+constructed fixtures, not actual pinned-provider acceptance. Runtime effects are observed
 through strace and instrumented filesystem/subprocess/loopback HTTP boundaries;
 missing or failed cases exit nonzero, with incomplete/failure JSON retained.
 Raw traces, synthetic credentials and sentinel fixtures stay in a disposable

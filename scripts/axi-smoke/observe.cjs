@@ -1,6 +1,7 @@
 // Test-only preload for installed managed CLI subprocesses. Not installed by Nix,
-// not a production endpoint flag. Provider effects alone are synthetic; policy,
-// consent validation, environment scrubbing and result parsing are installed code.
+// not a production endpoint flag. Generic status fixtures replace providers;
+// pinned cases retain the real CLI/providers and replace only HTTP transport.
+// Policy, consent, environment scrubbing and parsing are always installed code.
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const http = require('node:http');
@@ -11,14 +12,27 @@ const root = process.env.AXI_SMOKE_ROOT;
 const append = fs.appendFileSync.bind(fs);
 const ledger = process.env.AXI_SMOKE_LEDGER;
 const event = (kind, detail = {}) => append(ledger, JSON.stringify({ kind, ...detail }) + '\n', { mode: 0o600 });
-const credential = path => typeof path === 'string' && (path.startsWith(root + '/profiles/') || path.startsWith('/path-sentinel') || path.startsWith('/identity-sentinel'));
+const profileFds = new Set();
+const credential = path => {
+  if (typeof path !== 'string') return false;
+  const fd = /^\/proc\/self\/fd\/(\d+)(?:\/|$)/.exec(path)?.[1];
+  let anchored = '';
+  if (fd) { try { anchored = fs.readlinkSync(`/proc/self/fd/${fd}`) + path.slice(path.indexOf(fd) + fd.length); } catch {} }
+  return path.startsWith(root + '/profiles/') || anchored.startsWith(root + '/profiles/') || path.startsWith('/path-sentinel') || path.startsWith('/identity-sentinel') || (fd && profileFds.has(Number(fd)));
+};
 for (const name of ['readFileSync', 'openSync', 'accessSync', 'statSync', 'lstatSync', 'readdirSync']) {
   const original = fs[name];
-  fs[name] = (...args) => { if (credential(args[0])) event('credentialRead'); return original(...args); };
+  fs[name] = (...args) => {
+    const observed = credential(args[0]);
+    if (observed) event(name === 'readFileSync' ? 'credentialRead' : 'profileMetadata');
+    const result = original(...args);
+    if (name === 'openSync' && observed) profileFds.add(result);
+    return result;
+  };
 }
 for (const name of ['readFile', 'open', 'access', 'stat', 'lstat', 'readdir']) {
   const original = fs[name];
-  fs[name] = (...args) => { if (credential(args[0])) event('credentialRead'); return original(...args); };
+  fs[name] = (...args) => { if (credential(args[0])) event(name === 'readFile' ? 'credentialRead' : 'profileMetadata'); return original(...args); };
 }
 for (const module of [http, https]) {
   for (const name of ['request', 'get']) {
@@ -32,14 +46,18 @@ net.Socket.prototype.connect = (...args) => { event('unexpectedNetwork'); throw 
 // Promise APIs and non-sync child creation must not escape denial counters.
 for (const name of ['readFile', 'open', 'access', 'stat', 'lstat', 'readdir']) {
   const original = fs.promises[name].bind(fs.promises);
-  fs.promises[name] = (...args) => { if (credential(args[0])) event('credentialRead'); return original(...args); };
+  fs.promises[name] = (...args) => { if (credential(args[0])) event(name === 'readFile' ? 'credentialRead' : 'profileMetadata'); return original(...args); };
 }
+const originalReadSync = fs.readSync;
+fs.readSync = (...args) => { if (profileFds.has(args[0])) event('profileEvidenceRead'); return originalReadSync(...args); };
+const originalClose = fs.closeSync;
+fs.closeSync = fd => { profileFds.delete(fd); return originalClose(fd); };
 const originalStat = fs.fstatSync;
 fs.fstatSync = (...args) => {
   const stat = originalStat(...args);
   // Synthetic wrong-owner metadata is a test-only effect; no chown/sudo or
   // operator credential is needed. Installed consent validation still runs.
-  if (process.env.AXI_SMOKE_FOREIGN_OWNER === '1') stat.uid += 1;
+  if (process.env.AXI_SMOKE_FOREIGN_OWNER === '1' || (process.env.AXI_SMOKE_FOREIGN_PROFILE === '1' && stat.isFile() && profileFds.has(args[0]))) stat.uid += typeof stat.uid === 'bigint' ? 1n : 1;
   return stat;
 };
 for (const name of ['spawn', 'exec', 'execFile', 'fork']) {
@@ -62,7 +80,24 @@ cp.spawnSync = (node, args, options) => {
     throw new Error('AXI_SMOKE_BAD_PROVIDER_ENVIRONMENT');
   }
   event('providerInvocation', { provider, profileOnly: true, noRefresh: true, json: true });
-  // Delegate to a bounded synthetic worker. It really reads the synthetic
+  if (process.env.AXI_SMOKE_PINNED === '1') {
+    // Preserve the actual entrypoint, command, provider and serializer. Only
+    // install a test-only in-process transport at the HTTP boundary.
+    const result = originalSpawnSync(node, ['--require', process.env.AXI_SMOKE_PINNED_PRELOAD, ...args], {
+      ...options, env: { ...env, AXI_SMOKE_LEDGER: ledger, AXI_SMOKE_ROOT: root,
+        AXI_SMOKE_RESPONSE: process.env.AXI_SMOKE_RESPONSE },
+    });
+    try {
+      const row = JSON.parse(result.stdout).providers[0];
+      const status = ['fresh', 'auth_required', 'error', 'unavailable', 'stale', 'rate_limited'].includes(row.state?.status) ? row.state.status : 'unknown';
+      event('pinnedUpstreamState', { provider, status, stale: row.state?.stale === true,
+        windows: Array.isArray(row.windows) ? row.windows.length : 0 });
+    } catch { event('pinnedInvalidSerialization'); }
+    event('pinnedChildExit', { status: result.status, signal: result.signal,
+      diagnosticClass: /loading shared libraries/.test(result.stderr || '') ? 'native-loader' : /MODULE_NOT_FOUND/.test(result.stderr || '') ? 'missing-module' : /TypeError/.test(result.stderr || '') ? 'type-error' : /ReferenceError/.test(result.stderr || '') ? 'reference-error' : /AXI_SMOKE_[A-Z_]+/.exec(result.stderr || '')?.[0] || /ERR_[A-Z_]+/.exec(result.stderr || '')?.[0] || 'other' });
+    return result;
+  }
+  // Generic fixtures ONLY: delegate to a bounded synthetic worker. It reads the synthetic
   // profile and makes one loopback HTTP request; the server observes requests.
   // Environment assertions occur BEFORE adding harness-only worker parameters.
   return originalSpawnSync(node, [process.env.AXI_SMOKE_WORKER, provider], {

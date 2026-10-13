@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { AXI_VERSIONS, axiRuntimeEnvironment, runManagedAxi, type AxiPolicyEffects, type AxiTool, type ManagedAxiInvocation } from "../axi-policy.js";
 import { BROWSER_CLEANUP_MS, BROWSER_IDLE_MS, BROWSER_READINESS_MS, browserArgumentsAllowed, browserContext, browserLifecycleEnvironment, cleanupBrowserSession, cleanupManagedBrowser, managedMcpShim, ownedSessionProcesses, ownsListener, pinnedMcpArguments, processIdentity, runBrowserCommand, superviseBrowserLifetime, type BrowserProcessEffects, type ProcessIdentity } from "../axi-browser.js";
-import { parseQuotaConsent, quotaProviderEnvironment, readQuotaConsent, runManagedQuota, sanitizeQuotaResult, validConsentFile, type QuotaEffects, type QuotaProvider } from "../axi-quota.js";
+import { parseQuotaConsent, quotaProviderEnvironment, readQuotaConsent, readQuotaProfileExpired, runManagedQuota, sanitizeQuotaResult, validConsentFile, type QuotaEffects, type QuotaProvider } from "../axi-quota.js";
 import { finishBrowserLifecycle } from "../adapter.js";
 
 function fixture(tool: AxiTool, args: string[], env: NodeJS.ProcessEnv = {}) {
@@ -218,7 +218,7 @@ test("consent uses a bounded operator-owned 0600 regular file, rejects symlink/m
     }
     chmodSync(path, 0o600);
     assert.throws(() => runManagedQuota({ ...input, env: { ...input.env, PA_AXI_QUOTA_CONSENT: link } }, effects));
-    for (const text of ["not JSON secret-sentinel", JSON.stringify(consentValue("d-other")), " ".repeat(65537)]) {
+    for (const text of ["not JSON secret-sentinel", JSON.stringify(consentValue("d-other")), JSON.stringify(consentValue()).replace('"version":1', '"version":1,"version":1'), " ".repeat(65537)]) {
       writeFileSync(path, text);
       assert.throws(() => runManagedQuota(input, effects));
     }
@@ -268,7 +268,7 @@ test("providers run separately only after full consent, with fixed args and posi
   assert.deepEqual(result.map((row) => row.status), ["fresh", "fresh"]);
   assert.doesNotMatch(JSON.stringify(result), /sentinel|account|source|token|error:/);
 });
-test("pinned schemas preserve unknown/stale/expired/not-configured and allowlist only quantities/reset/freshness", () => {
+test("constructed schema/redaction fixtures preserve statuses (not actual pinned-provider acceptance)", () => {
   for (const version of [5, 6]) {
     const raw = upstreamQuota("codex").replace('"schemaVersion":6', `"schemaVersion":${version}`);
     const row = sanitizeQuotaResult(raw, "codex")[0]!;
@@ -287,6 +287,7 @@ test("pinned schemas preserve unknown/stale/expired/not-configured and allowlist
     [{ status: "rate_limited", stale: false }, {}, "rate-limited"],
     [{ status: "error", stale: false }, {}, "error"],
     [{ status: "fresh", stale: true }, {}, "stale"],
+    [{ status: "fresh", stale: false, reason: "credentials_expired", authStatus: "expired_refreshable" }, {}, "fresh"],
     [{ status: "fresh", stale: false }, { windows: [{ kind: "model", percentUsed: "0", percentRemaining: -1, limitUsd: "100", resetsAt: "/path-sentinel" }] }, "unknown"],
     [{ status: "fresh", stale: false }, { windows: [] }, "unknown"],
   ] as const) {
@@ -295,7 +296,7 @@ test("pinned schemas preserve unknown/stale/expired/not-configured and allowlist
     assert.doesNotMatch(JSON.stringify(result), /sentinel/);
     if (status === "stale" && "refreshedAt" in state) assert.equal(result[0]!.refreshedAt, "2026-10-09T04:00:00.000Z");
   }
-  for (const raw of ["secret-sentinel", "{}", upstreamQuota("claude"), upstreamQuota("codex").replace('"schemaVersion":6', '"schemaVersion":"6"'), upstreamQuota("codex").replace('"schemaVersion":6', '"schemaVersion":7')]) {
+  for (const raw of ["secret-sentinel", "{}", " ".repeat(1024 * 1024 + 1), upstreamQuota("codex").replace('"schemaVersion":6', '"schemaVersion":5,"schemaVersion":6'), upstreamQuota("claude"), upstreamQuota("codex").replace('"schemaVersion":6', '"schemaVersion":"6"'), upstreamQuota("codex").replace('"schemaVersion":6', '"schemaVersion":7')]) {
     assert.deepEqual(sanitizeQuotaResult(raw, "codex"), [{ provider: "codex", status: "unknown", reason: "invalid-response", windows: [] }]);
   }
 });
@@ -309,6 +310,178 @@ test("quota subprocess failures and identity-bearing errors are sanitized withou
     assert.equal(JSON.parse(f.stdout[0]!).providers[0].status, "unknown");
   }
 });
+const syntheticJwt = (payload: Record<string, unknown>) => `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${Buffer.from("synthetic-only-signature").toString("base64url")}`;
+function syntheticProfile(provider: QuotaProvider, expiry: "expired" | "unexpired" | "absent") {
+  const exp = expiry === "expired" ? 1 : 4102444800;
+  return provider === "codex" ? { tokens: { access_token: syntheticJwt(expiry === "absent" ? {} : { exp }), id_token: syntheticJwt({ exp: 1 }), refresh_token: "secret-sentinel" } }
+    : { claudeAiOauth: { accessToken: "synthetic-only-never-a-vendor-token", ...(expiry === "absent" ? {} : { expiresAt: exp * 1000 }), refreshToken: "secret-sentinel" } };
+}
+
+test("expiry evidence reads only safe bounded exact profiles; strict metadata parsing and internal clock bounds", () => {
+  const root = mkdtempSync(join(tmpdir(), "axi-expiry-"));
+  try {
+    for (const id of ["codex", "claude"] as const) {
+      const profilePath = join(root, id); mkdirSync(profilePath, { mode: 0o700 });
+      const file = join(profilePath, id === "codex" ? "auth.json" : ".credentials.json");
+      const provider = { id, profilePath };
+      for (const expiry of ["expired", "unexpired", "absent"] as const) {
+        writeFileSync(file, JSON.stringify(syntheticProfile(id, expiry)), { mode: 0o600 });
+        assert.equal(readQuotaProfileExpired(provider, 2000), expiry === "expired");
+        assert.equal(readQuotaProfileExpired(provider, NaN), false);
+      }
+      // Accepted pinned aliases/formats; access-token expiry only, not ID-token.
+      const good = id === "codex" ? { tokens: { accessToken: syntheticJwt({ exp: "1" }) } } : { access_token: "synthetic", expiresAt: "1970-01-01T00:00:01Z" };
+      writeFileSync(file, JSON.stringify(good)); assert.equal(readQuotaProfileExpired(provider, 1000), true);
+      assert.equal(readQuotaProfileExpired(provider, 999), false);
+      const invalid = id === "codex" ? [
+        { tokens: { access_token: "bad.jwt.shape" } }, { tokens: { access_token: `${syntheticJwt({ exp: 1 }).split('.').slice(0, 2).join('.')}.a` } }, { tokens: { access_token: syntheticJwt({ exp: "bad" }) } },
+        { tokens: { access_token: syntheticJwt({ exp: -1 }) } }, { tokens: { access_token: syntheticJwt({ exp: 1 }), accessToken: syntheticJwt({ exp: 1 }) } },
+        { tokens: { id_token: syntheticJwt({ exp: 1 }) } },
+      ] : [
+        { claudeAiOauth: { expiresAt: 1 } }, { claudeAiOauth: { accessToken: "synthetic", expiresAt: "bad" } }, { claudeAiOauth: { accessToken: "synthetic", expiresAt: "1970-02-30T00:00:00Z" } },
+        { claudeAiOauth: { accessToken: "synthetic", expiresAt: -1 } }, { claudeAiOauth: { accessToken: "a", access_token: "b", expiresAt: 1 } },
+        { claudeAiOauth: [], accessToken: "synthetic", expiresAt: 1 },
+      ];
+      for (const value of invalid) { writeFileSync(file, JSON.stringify(value)); assert.equal(readQuotaProfileExpired(provider, 2000), false); }
+      for (const text of ['{"tokens":{},"tokens":{}}', '{"claudeAiOauth":{},"claudeAiOauth":{}}', "bad", " ".repeat(65537), '[ '.repeat(33) + '0' + ' ]'.repeat(33)]) {
+        writeFileSync(file, text); assert.equal(readQuotaProfileExpired(provider, 2000), false);
+      }
+      writeFileSync(file, Buffer.from([0xff])); assert.equal(readQuotaProfileExpired(provider, 2000), false);
+      writeFileSync(file, JSON.stringify(good));
+      const hard = join(root, `${id}-hard`); linkSync(file, hard);
+      assert.equal(readQuotaProfileExpired(provider, 2000), false); rmSync(hard);
+      assert.equal(readQuotaProfileExpired(provider, 2000, "different-inode-or-time"), false);
+      chmodSync(file, 0o644); assert.equal(readQuotaProfileExpired(provider, 2000), false); chmodSync(file, 0o600);
+      rmSync(file); symlinkSync(join(root, "foreign-sentinel"), file);
+      assert.equal(readQuotaProfileExpired(provider, 2000), false);
+      rmSync(file); writeFileSync(file, JSON.stringify(good), { mode: 0o600 });
+      const link = join(root, `${id}-link`); symlinkSync(profilePath, link);
+      assert.equal(readQuotaProfileExpired({ id, profilePath: link }, 2000), false);
+      chmodSync(profilePath, 0o777); assert.equal(readQuotaProfileExpired(provider, 2000), false); chmodSync(profilePath, 0o700);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("expiry enrichment requires a single empty non-stale auth denial, never successful/advisory, generic or ambiguous evidence", () => {
+  let reads = 0;
+  const evidence = () => { reads++; return true; };
+  const denied = upstreamQuota("codex", { status: "auth_required", stale: false }, { windows: [] });
+  assert.equal(sanitizeQuotaResult(denied, "codex", evidence)[0]!.status, "expired");
+  assert.equal(reads, 1);
+  assert.equal(sanitizeQuotaResult(denied, "codex", () => false)[0]!.status, "unknown");
+  for (const [state, extra] of [
+    [{ status: "fresh", stale: false }, {}], [{ status: "auth_required", stale: true }, { windows: [] }],
+    [{ status: "auth_required" }, { windows: [] }], [{ status: "unavailable", stale: false }, { windows: [] }],
+    [{ status: "error", stale: false }, { windows: [] }], [{ status: "auth_required", stale: false }, {}],
+    [{ status: "auth_required", stale: false }, { windows: [], notSetUp: true }],
+  ] as const) sanitizeQuotaResult(upstreamQuota("codex", state, extra), "codex", evidence);
+  const multiple = JSON.parse(denied) as { providers: unknown[] }; multiple.providers.push(multiple.providers[0]);
+  assert.equal(sanitizeQuotaResult(JSON.stringify(multiple), "codex", evidence)[0]!.status, "unknown");
+  assert.equal(reads, 1);
+  const effects: QuotaEffects = { consent: () => ({ ...consentValue(), providers: [consentValue().providers[0], { id: "other", profilePath: "/foreign" }] } as never), run: () => { throw new Error("must not run"); }, expiredProfile: () => { reads++; return true; } };
+  assert.throws(() => runManagedQuota({ node: "/node", entrypoint: "/quota", args: [], env: quotaEnv }, effects));
+  assert.equal(reads, 1);
+});
+
+test("actual pinned 0.1.56 CLI/providers/serialization with synthetic profiles and transport-only responses", {
+  skip: process.env.PAP240_PINNED_QUOTA_ENTRY ? false : "materialize pinned quota and set PAP240_PINNED_QUOTA_ENTRY; installed smoke requires this case without skips",
+}, () => {
+  const entrypoint = process.env.PAP240_PINNED_QUOTA_ENTRY!;
+  assert.match(entrypoint, /^\/nix\/store\/[^/]+-quota-axi-0\.1\.56\/lib\/quota-axi\/node_modules\/quota-axi\/dist\/bin\/quota-axi\.js$/);
+  const root = mkdtempSync(join(tmpdir(), "axi-pinned-quota-"));
+  const dir = join(root, "d-pinned"); mkdirSync(dir, { mode: 0o700 });
+  const ledger = join(root, "effects.jsonl"); const consent = join(root, "consent.json");
+  const observer = fileURLToPath(new URL("../../../../scripts/axi-smoke/observe.cjs", import.meta.url));
+  const preload = fileURLToPath(new URL("../../../../scripts/axi-smoke/pinned-quota.cjs", import.meta.url));
+  const policy = fileURLToPath(new URL("../axi-policy.ts", import.meta.url));
+  const tsx = fileURLToPath(new URL("../../../../node_modules/tsx/dist/esm/index.mjs", import.meta.url));
+  const env: NodeJS.ProcessEnv = { PATH: "", HOME: join(root, "empty-home"), PA_DEPLOYMENT_ID: "d-pinned", PA_DEPLOYMENT_DIR: dir, PA_AXI_QUOTA_CONSENT: consent,
+    AXI_SMOKE_ROOT: root, AXI_SMOKE_LEDGER: ledger, AXI_SMOKE_QUOTA_ENTRY: entrypoint, AXI_SMOKE_PINNED: "1", AXI_SMOKE_PINNED_PRELOAD: preload,
+    CODEX_HOME: "/path-sentinel", CLAUDE_CONFIG_DIR: "/identity-sentinel", OPENAI_API_KEY: "secret-sentinel" };
+  const invoke = (changes: NodeJS.ProcessEnv = {}, expected = 0) => {
+    writeFileSync(ledger, "", { mode: 0o600 });
+    const result = spawnSync(process.execPath, ["--import", tsx, "--input-type=module", "--eval", `
+      import { createRequire } from 'node:module';
+      const { runManagedAxi } = await import(${JSON.stringify(policy)});
+      createRequire(import.meta.url)(${JSON.stringify(observer)});
+      process.exitCode = runManagedAxi({ tool: 'quota-axi', node: process.execPath,
+        entrypoint: process.env.AXI_SMOKE_QUOTA_ENTRY, gh: '-', args: ['quota', '--json'], env: process.env });
+    `], {
+      env: { ...env, ...changes }, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.error, undefined); assert.equal(result.status, expected);
+    assert.doesNotMatch(result.stdout + result.stderr, /sentinel|synthetic-only|account|source|token|auth\.json|credentials\.json/);
+    const events = readFileSync(ledger, "utf8").trim().split("\n").map(line => JSON.parse(line) as { kind: string; endpoint?: string; status?: string; stale?: boolean; windows?: number });
+    assert.equal(events.filter(row => row.kind === "observerLoaded").length, 1);
+    assert.equal(events.some(row => /unexpected|forbidden|badProvider/.test(row.kind)), false);
+    return { result, events };
+  };
+  try {
+    for (const id of ["codex", "claude"] as const) {
+      const profilePath = join(root, "profiles", id); mkdirSync(profilePath, { recursive: true, mode: 0o700 });
+      const file = join(profilePath, id === "codex" ? "auth.json" : ".credentials.json");
+      const value = { version: 1, deploymentId: "d-pinned", providers: [{ id, profilePath }] };
+      writeFileSync(consent, JSON.stringify(value), { mode: 0o600 });
+      for (const expiry of ["expired", "unexpired", "absent"] as const) for (const response of ["denied", "fresh"]) {
+        writeFileSync(file, JSON.stringify(syntheticProfile(id, expiry)), { mode: 0o600 });
+        const { result, events } = invoke({ AXI_SMOKE_RESPONSE: response });
+        const rows = (JSON.parse(result.stdout) as { providers: { status: string; windows: unknown[] }[] }).providers;
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0]!.status, response === "fresh" ? "fresh" : expiry === "expired" ? "expired" : "unknown", JSON.stringify({ id, expiry, response, output: rows, effects: events.map(row => row.kind === "pinnedChildExit" ? row : { kind: row.kind }) }));
+        const upstream = events.filter(row => row.kind === "pinnedUpstreamState");
+        assert.equal(upstream.length, 1);
+        assert.equal(upstream[0]!.status, response === "fresh" ? "fresh" : "auth_required");
+        assert.equal(upstream[0]!.stale, false);
+        assert.equal(upstream[0]!.windows, response === "fresh" ? 1 : 0);
+        assert.equal(events.filter(row => row.kind === "pinnedTransportLoaded").length, 1);
+        assert.equal(events.filter(row => row.kind === "providerInvocation").length, 1);
+        assert.equal(events.filter(row => row.kind === "providerRequest").length, id === "codex" && response === "fresh" ? 1 : id === "claude" && response === "denied" ? 1 : 2);
+        assert.ok(events.some(row => row.kind === "credentialRead"));
+        if (response === "fresh") assert.equal(events.filter(row => row.kind === "profileEvidenceRead").length, 0);
+      }
+      const malformedEvidence = id === "codex"
+        ? JSON.stringify({ tokens: { access_token: syntheticJwt({ exp: "malformed" }) } })
+        : JSON.stringify({ claudeAiOauth: { accessToken: "synthetic", expiresAt: "malformed" } });
+      const duplicateEvidence = id === "codex"
+        ? `{"tokens":{},"tokens":${JSON.stringify({ access_token: syntheticJwt({ exp: 1 }) })}}`
+        : '{"claudeAiOauth":{},"claudeAiOauth":{"accessToken":"synthetic","expiresAt":1000}}';
+      for (const text of [malformedEvidence, duplicateEvidence]) {
+        writeFileSync(file, text);
+        const { result, events } = invoke({ AXI_SMOKE_RESPONSE: "denied" });
+        assert.equal(JSON.parse(result.stdout).providers[0].status, "unknown");
+        assert.equal(events.find(row => row.kind === "pinnedUpstreamState")!.status, "auth_required");
+        assert.ok(events.some(row => row.kind === "providerRequest"));
+      }
+      // Malformed profile JSON is an upstream error, NOT fabricated expiry.
+      writeFileSync(file, '{');
+      const malformed = invoke({ AXI_SMOKE_RESPONSE: "denied" });
+      assert.equal(JSON.parse(malformed.result.stdout).providers[0].status, "error");
+      assert.equal(malformed.events.filter(row => row.kind === "providerRequest").length, 0);
+      rmSync(file);
+      const absent = invoke();
+      assert.equal(JSON.parse(absent.result.stdout).providers[0].status, "not-configured");
+      assert.equal(absent.events.filter(row => row.kind === "providerRequest").length, 0);
+      for (const changes of [{ PA_AXI_QUOTA_CONSENT: undefined }, {}]) {
+        writeFileSync(consent, JSON.stringify({ ...value, providers: [...value.providers, { id: "other", profilePath }] }));
+        const { events } = invoke(changes, 1);
+        assert.equal(events.filter(row => ["credentialRead", "profileMetadata", "profileEvidenceRead", "providerRequest", "providerInvocation"].includes(row.kind)).length, 0);
+      }
+      writeFileSync(consent, JSON.stringify(value));
+      writeFileSync(file, JSON.stringify(syntheticProfile(id, "expired")));
+      for (const unsafe of ["mode", "foreign", "oversize", "symlink"] as const) {
+        if (unsafe === "mode") chmodSync(file, 0o644);
+        if (unsafe === "oversize") writeFileSync(file, " ".repeat(65537));
+        if (unsafe === "symlink") { rmSync(file); symlinkSync(join(root, "foreign-sentinel"), file); }
+        const { result, events } = invoke(unsafe === "foreign" ? { AXI_SMOKE_FOREIGN_PROFILE: "1" } : {});
+        assert.equal(JSON.parse(result.stdout).providers[0].status, "unknown");
+        assert.equal(events.filter(row => ["providerInvocation", "providerRequest", "profileEvidenceRead"].includes(row.kind)).length, 0);
+        if (unsafe === "symlink") rmSync(file);
+        writeFileSync(file, JSON.stringify(syntheticProfile(id, "expired")), { mode: 0o600 }); chmodSync(file, 0o600);
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("browser safe public arguments and pinned MCP arguments reject all attach/profile/shared/extra bypasses", () => {
   for (const args of [["start", "--headless=false"], ["attach"], ["start", "--browser-url=http://foreign"], ["start", "--wsEndpoint=ws://foreign"], ["start", "--userDataDir=/foreign"], ["start", "--executablePath=/foreign"], ["start", "--chrome-arg=--remote-debugging-address=0.0.0.0"], ["start", "--channel=stable"], ["start", "--isolated=false"], ["start", "extra"], ["open", "\u0000"]]) assert.equal(browserArgumentsAllowed(args, {}), false);
   for (const key of ["CHROME_DEVTOOLS_AXI_AUTO_CONNECT", "CHROME_DEVTOOLS_AXI_MCP_SERVER_URL", "CHROME_DEVTOOLS_AXI_USER_DATA_DIR", "CHROME_DEVTOOLS_AXI_MCP_PATH", "CHROME_DEVTOOLS_AXI_CHROME_ARGS", "CHROME_DEVTOOLS_MCP_ARGS"]) assert.equal(browserArgumentsAllowed(["start"], { [key]: "secret-sentinel" }), false);
@@ -532,7 +705,7 @@ test("Phase-4 installed smoke is separate, exact-CLI, complete-or-fail and has n
   // importing production outputs, evaluating Nix, or launching Chrome.
   const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", fileURLToPath(new URL("scripts/axi-smoke/matrix.py", root))], { encoding: "utf8", timeout: 5000 });
   assert.equal(parsed.status, 0, parsed.stderr);
-  for (const filename of ["runtime.mjs", "provider.mjs", "observe.cjs"]) {
+  for (const filename of ["runtime.mjs", "provider.mjs", "observe.cjs", "pinned-quota.cjs"]) {
     const syntax = spawnSync(process.execPath, ["--check", fileURLToPath(new URL(`scripts/axi-smoke/${filename}`, root))], { encoding: "utf8", timeout: 5000 });
     assert.equal(syntax.status, 0, syntax.stderr);
   }

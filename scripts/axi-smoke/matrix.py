@@ -18,7 +18,7 @@ OPTIONS = ("enableGhAxi", "enableChromeDevtoolsAxi", "enableQuotaAxi")
 ALIASES = ("pa-platform", "pa-core", "opa", "cpa", "dpa", "ppa", "default")
 RUNTIME_CASES = ("installed-path", "installed-metadata", "installed-prerequisites",
                  "installed-policy-denials", "startup-authority", "quota-denials",
-                 "quota-providers", "quota-states", "browser-concurrent",
+                 "quota-providers", "quota-states", "quota-pinned-expiry", "browser-concurrent",
                  "browser-stop", "browser-cancel", "browser-exit", "browser-failure",
                  "browser-collision", "browser-foreign", "browser-idle", "observed-effects")
 MAX_LOG = 2 * 1024 * 1024
