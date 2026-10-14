@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "path": "node_modules/@toon-format/toon",
+      "name": "@toon-format/toon",
+      "version": "2.3.1",
+      "url": "https://registry.npmjs.org/@toon-format/toon/-/toon-2.3.1.tgz",
+      "integrity": "sha512-sWqEMeAJGMda9qRrfPKrX3C4c33CO9SJuvJzzrcBEn5sbDB+k6pSLkDsfN0rVnLQwR97MV3sDgVbcxQNsq8xVw==",
+      "sha256": "sha256-aSVhPqMpj1YlroSiBWt5Ahqs9zftF4IQf3fYwgrrrCo=",
+      "license": "MIT",
+      "licenseFiles": [
+        {
+          "path": "LICENSE",
+          "sha256": "2d0d2dd26bee672a2981c6d94ae71506011fdabbc54796a126476556c0b71875"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/axi-sdk-js",
+      "name": "axi-sdk-js",
+      "version": "0.1.13",
+      "url": "https://registry.npmjs.org/axi-sdk-js/-/axi-sdk-js-0.1.13.tgz",
+      "integrity": "sha512-Ygh8qUN5kdwQ3ASw+BNzCKYpy5QYi18vfcEpqEOQOSrcyh6i4wChrPMtvVW0/3Sqho3xPH3CuFkP0QUma5oxxA==",
+      "sha256": "sha256-707TB3ahUViunp9KcMv9c8Tg3U6F/1ddXsgdDz/65Yk=",
+      "license": "MIT",
+      "licenseFiles": [
+        {
+          "path": "LICENSE",
+          "sha256": "1b962d20f826f6a758c737f8aa4e8e76dc719b8aa78fcfacdfb46681bb36c2f4"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/gh-axi",
+      "name": "gh-axi",
+      "version": "0.1.35",
+      "url": "https://registry.npmjs.org/gh-axi/-/gh-axi-0.1.35.tgz",
+      "integrity": "sha512-xxe7ui0548FJ9KF0LTQZWdfm8UYuLRsfSidSEx3Ztu1Eqrn4GMg+oJW7UReG33Wt0+2Vppwl7P6Qcll0KpymTQ==",
+      "sha256": "sha256-9yWr5EfJkqPWzA2aYyWGcj7RzxbHlRpAvODHPgkD5q4=",
+      "license": "MIT",
+      "licenseFiles": [
+        {
+          "path": "LICENSE",
+          "sha256": "945016bd37e1ba7211622ef60ee1d23ab727896ba7710edd21e8fbe983863969"
+        }
+      ]
+    }
+  ]
+}

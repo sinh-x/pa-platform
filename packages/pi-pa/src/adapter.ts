@@ -8,6 +8,8 @@ import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
+import { axiRuntimeEnvironment } from "./axi-policy.js";
+import { browserLifecycleEnvironment, cleanupManagedBrowser } from "./axi-browser.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
@@ -243,7 +245,10 @@ export class PiAdapter implements RuntimeAdapter {
     ].filter((value): value is string => Boolean(value));
     const secrets = environmentSecrets(env, [...this.secretValues, ...protectedAuthority]);
     const audit = new PiRedactionAudit(opts.deployId, dirname(opts.primerPath));
-    try { assertPiExecutionRootAgreement(plan, opts.env); }
+    try {
+      assertPiExecutionRootAgreement(plan, opts.env);
+      Object.assign(env, axiRuntimeEnvironment(env));
+    }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const result = failure(message);
@@ -626,6 +631,7 @@ export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): {
 }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: line.slice(0, MAX_BODY) }); } }
 export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}): Promise<PiCommandResult> {
+  env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
   const sleep = supervision.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -704,7 +710,15 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       requestCleanup(1, error instanceof Error ? error : new Error(String(error)));
     }
   });
-  return completion;
+  return finishBrowserLifecycle(completion, env);
+}
+
+/** Both the foreground PTY and persistent background runner await owned browser
+ * teardown on normal exit, cancellation, timeout and failure. A separate daemon
+ * watches this supervisor's start identity in case it is killed abruptly. */
+export async function finishBrowserLifecycle(result: Promise<PiCommandResult>, env: NodeJS.ProcessEnv, cleanup: (env: NodeJS.ProcessEnv) => Promise<void> = cleanupManagedBrowser): Promise<PiCommandResult> {
+  try { return await result; }
+  finally { await cleanup(env); }
 }
 
 interface BackgroundLaunchInput {
@@ -1071,6 +1085,7 @@ function boundedRunnerDiagnostic(error: unknown, _secrets: string[]): string { r
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
 
 function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
+  env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
   const pty = (supervision.spawnPty ?? spawnPty)("pi", args, { name: "xterm-256color", cols: supervision.columns ?? process.stdout.columns ?? 80, rows: supervision.rows ?? process.stdout.rows ?? 24, cwd, env });
@@ -1096,7 +1111,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const terminalAudit = new StreamingPiRedactionAuditor(audit, "terminal-output", secrets);
   const logAudit = opts.logFile ? new StreamingPiRedactionAuditor(audit, "pi-log", secrets) : undefined;
 
-  return new Promise((resolveResult) => {
+  const completion = new Promise<PiCommandResult>((resolveResult) => {
     const restoreTerminal = (): Error | undefined => {
       const failures: string[] = [];
       try { input.off("data", onInput); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
@@ -1283,6 +1298,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       void monitorProcessExit();
     } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
   });
+  return finishBrowserLifecycle(completion, env);
 }
 function deliverToPiSinkThenObserve(value: string, sink: (original: string) => void, observe: (original: string) => void): void {
   sink(value);

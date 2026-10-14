@@ -1,0 +1,8 @@
+{
+  "name": "chrome-devtools-mcp-nix-closure",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "chrome-devtools-mcp": "1.10.1"
+  }
+}

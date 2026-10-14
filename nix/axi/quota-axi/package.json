@@ -1,0 +1,8 @@
+{
+  "name": "quota-axi-nix-closure",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "quota-axi": "0.1.56"
+  }
+}
