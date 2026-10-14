@@ -386,6 +386,15 @@ ppa repository inspect --repo pa-platform
 ppa repository quarantine --repo pa-platform --expected-evidence v1-<sha256-from-inspect>
 ```
 
+For live authenticated PPA linked-CWD inference, `ppa repository inspect` reports
+the canonical root, exact selected worktree, read-only role and relevant owner
+slot (standalone implement versus orchestrator custody). Missing selected ownership
+is reported explicitly, never substituted from the canonical checkout; review
+inspection does not acquire builder ownership. Explicit `--repo` continues to
+inspect the registered canonical root. Inferred linked inspection performs no
+ownership, lease, capacity, checkout or ticket updates.
+
+Quarantine remains canonical-only and does not consume read-only helper authority.
 Quarantine reacquires the crash-safe advisory mutex, re-reads evidence, refuses process-verified live ownership, rejects an identity mismatch, and uses a unique no-clobber destination. Do not replace this operation with a raw `mv` of the lease path.
 
 **Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, `cpa` uses `anthropic` / `claude-opus-4-7`, `dpa` uses `deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-6.1-sol`, normalized to Pi's `openai-codex` / `gpt-6.1-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
@@ -579,7 +588,7 @@ Display the project board with ticket columns. CWD-aware: defaults to the curren
 | `--all` | — | Show all tickets across all projects, including backlog and archived |
 | `--include-archived` | — | Show archived tickets alongside non-archived (keeps current project scope) |
 
-**Project resolution:** `--all` disables project scoping; `--project` resolves via `repos.yaml` (exact key, prefix, or path basename); otherwise CWD is detected. If not in a registered repo and neither `--all` nor `--project` is given, returns an error listing available projects.
+**Project resolution:** `--all` disables project scoping; `--project` resolves via `repos.yaml` (exact key, prefix, or path basename); otherwise CWD is detected. Live authenticated PPA linked-CWD inference uses the canonical registered project after an immediate evidence reread, without migrating/initializing the registry. Missing or invalid linked deployment evidence rejects; it never falls back to another project. Explicit `--all`/`--project` remain neutral data selections and grant no checkout authority. Outside a registered repo, use one of those explicit selectors. OPA/CPA inference remains canonical-only.
 
 **Default exclude tags:** `backlog` and `archived` (unless `--all` or `--include-archived`). Ticket types `fyi` and `work-report` are always excluded from the board view.
 
@@ -618,7 +627,17 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 
 **Usage:** `branch validate`
 
-Validates the current branch against the configured branch pattern. Returns exit 0 if it matches; otherwise prints a warning (distinguishing base branches `main`/`develop` from non-conforming feature branches) and still returns 0.
+Validates the current branch against the configured branch pattern. Live protected PPA orchestrator, parented/standalone implement, worker consistency-only and review-auto helpers authenticate and immediately reread their role-specific evidence, then read the **admitted worktreeRoot** branch, not the canonical repoRoot branch. Canonical-root naming behavior is unchanged: exit 0 if conforming; base (`main`/`develop`) and nonconforming branches warn and still exit 0. Actual authentication or command failure exits nonzero. Environment-only or unauthenticated standalone linked calls reject; OPA/CPA and `branch create` remain canonical-only.
+
+PPA helper failures distinguish `helper-incompatible`, `authority-rejected` and
+`command-unavailable`, with a bounded five-field diagnostic (Condition, Source,
+Reason, Correction, Resume Action). Implementation launch state is explicitly
+`launched`, `not-launched` or `unknown`; helpers without launch evidence report
+`unknown`. Shell exit 127 from a missing `file` diagnostic is separate from helper
+path rejection. Neither cancels feature tickets, revokes approvals, restarts a
+deployment or returns its checkout. Session task cancellation is not feature
+cancellation. Genuine authority failures and required matrix failures remain
+blocking. See [PPA helper workflow and role boundaries](../pi-pa.md#authenticated-read-only-helpers).
 
 **Examples:**
 ```bash

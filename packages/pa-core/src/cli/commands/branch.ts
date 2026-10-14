@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { buildBranchName, validateBranchName } from "../../tickets/git-validation.js";
 import { getBranchPattern, resolveRepoExecutionPath } from "../../repos.js";
+import { ReadOnlyHelperFailure, resolveReadOnlyHelperContext, withReadOnlyHelperContext, type ReadOnlyHelperCapability } from "../../readonly-helper-context.js";
 import { TicketStore } from "../../tickets/store.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
@@ -81,23 +82,33 @@ function runBranchCreate(argv: string[], io: Required<CliIo>): number {
   return 0;
 }
 
-function runBranchValidate(io: Required<CliIo>): number {
-  const repository = resolveRepoExecutionPath();
-  const repo = repository.repo;
-  const pattern = getBranchPattern(repo);
-
-  const currentBranch = git(["branch", "--show-current"], repository.repoRoot, io);
-  if (!currentBranch) return printError("Failed to determine current branch", io);
-
-  if (validateBranchName(currentBranch, pattern)) return 0;
-
-  const baseBranches = [repo.mainBranch ?? "main", repo.developBranch ?? "develop"];
-  if (baseBranches.includes(currentBranch)) {
-    io.stdout(`Warning: "${currentBranch}" is a base branch, not a feature branch`);
-  } else {
-    io.stdout(`Warning: "${currentBranch}" does not match the configured branch pattern (${pattern})`);
-  }
-  return 0;
+function runBranchValidate(io: Required<CliIo>, capability?: ReadOnlyHelperCapability): number {
+  // Non-opted-in adapters retain their canonical-only resolver and diagnostics.
+  if (!capability) resolveRepoExecutionPath();
+  const authentication = resolveReadOnlyHelperContext(undefined, process.cwd(), capability);
+  return withReadOnlyHelperContext(authentication, (repository) => {
+    const repo = repository.repo;
+    const pattern = getBranchPattern(repo);
+    let currentBranch: string;
+    try {
+      currentBranch = execFileSync("git", ["--no-optional-locks", "branch", "--show-current"], {
+        cwd: repository.worktreeRoot, encoding: "utf-8", timeout: 15_000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch (error) {
+      const unavailable = (error as NodeJS.ErrnoException).code === "ENOENT";
+      throw new ReadOnlyHelperFailure(unavailable ? "command-unavailable" : "helper-incompatible", "unknown", "branch validate Git read",
+        unavailable ? "required Git executable is unavailable" : "admitted checkout branch could not be read");
+    }
+    if (!currentBranch) return printError("Failed to determine current branch", io);
+    if (validateBranchName(currentBranch, pattern)) return 0;
+    const baseBranches = [repo.mainBranch ?? "main", repo.developBranch ?? "develop"];
+    if (baseBranches.includes(currentBranch)) {
+      io.stdout(`Warning: "${currentBranch}" is a base branch, not a feature branch`);
+    } else {
+      io.stdout(`Warning: "${currentBranch}" does not match the configured branch pattern (${pattern})`);
+    }
+    return 0;
+  });
 }
 
 function printBranchHelp(io: Required<CliIo>): number {
@@ -107,15 +118,15 @@ function printBranchHelp(io: Required<CliIo>): number {
   io.stdout("  create <ticket-id...> --topic <slug>  Create a feature branch in the registered checkout");
   io.stdout("  validate                              Validate the registered checkout's current branch");
   io.stdout("");
-  io.stdout("Repository: infer an exact configured root from CWD, then operate only at that registered path.");
+  io.stdout("Repository: create uses the exact registered root; validate may read a live authenticated PPA worktree.");
   return 0;
 }
 
-export function runBranchCommand(argv: string[], io: Required<CliIo>): number {
+export function runBranchCommand(argv: string[], io: Required<CliIo>, capability?: ReadOnlyHelperCapability): number {
   const subcommand = argv[0];
   if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") return printBranchHelp(io);
   if (subcommand === "create") return runBranchCreate(argv.slice(1), io);
-  if (subcommand === "validate") return runBranchValidate(io);
+  if (subcommand === "validate") return runBranchValidate(io, capability);
   io.stderr(`Unknown branch subcommand: ${subcommand}`);
   io.stderr("Available subcommands: create, validate");
   return 1;

@@ -101,7 +101,8 @@ export class TreehouseClient {
     const result = this.run(args, root);
     if (result.error || result.status !== 0) {
       const detail = result.error?.message ?? (result.stderr.toString("utf8").trim() || `exit ${result.status ?? "unknown"}`);
-      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v2.3.0 and preserve any lease created before retrying");
+      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v2.3.0 and preserve any lease created before retrying",
+        result.error ?? (result.status === 127 ? Object.assign(new Error("evidence command unavailable (exit 127)"), { code: "COMMAND_UNAVAILABLE" }) : undefined));
     }
     if (result.stdout.length === 0) throw treehouseError(`treehouse ${args.join(" ")} returned empty stdout`, "require bounded machine-readable JSON output");
     if (result.stdout.length > MAX_TREEHOUSE_JSON_BYTES) throw treehouseError(`treehouse JSON exceeded ${MAX_TREEHOUSE_JSON_BYTES} bytes`, "reduce/reconcile pool evidence before retrying");
@@ -211,12 +212,12 @@ function absolutePath(value: string, label: string): string { if (!isAbsolute(va
 function canonicalRepoRoot(value: string): string { return value; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
 function bounded(value: string, max: number): string { return value.length <= max ? value : `${value.slice(0, max - 3)}...`; }
-function treehouseError(reason: string, resume: string): Error {
+function treehouseError(reason: string, resume: string, cause?: Error): Error {
   return new Error(formatBoundedFiveFieldDiagnostic({
     condition: "Treehouse ticket checkout admission",
     source: "bounded Treehouse v2.3.0 JSON subprocess boundary",
     reason,
     correction: "preserve all Treehouse leases and branches; do not return, prune, destroy, or force",
     resumeAction: resume,
-  }));
+  }), cause ? { cause } : undefined);
 }

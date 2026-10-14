@@ -4,6 +4,7 @@ export * from "./config.js";
 export * from "./timers.js";
 export * from "./yaml-parser.js";
 export * from "./repos.js";
+export * from "./readonly-helper-context.js";
 export * from "./interactive.js";
 export * from "./registry/index.js";
 export * from "./tickets/index.js";

@@ -1,5 +1,6 @@
-import { inspectRepositoryMutationLease, quarantineRepositoryMutationLease, formatRepositoryAdmissionDiagnostic } from "../../deploy/index.js";
+import { inspectReadonlyRepositoryMutationLease, inspectRepositoryMutationLease, quarantineRepositoryMutationLease, formatRepositoryAdmissionDiagnostic } from "../../deploy/index.js";
 import { resolveRepoExecutionPath } from "../../repos.js";
+import { resolveReadOnlyHelperContext, withReadOnlyHelperContext, type ReadOnlyHelperCapability } from "../../readonly-helper-context.js";
 import type { CliIo } from "../utils.js";
 
 interface RepositoryArgs {
@@ -7,7 +8,7 @@ interface RepositoryArgs {
   expectedEvidence?: string;
 }
 
-export function runRepositoryCommand(argv: string[], io: Required<CliIo>): number {
+export function runRepositoryCommand(argv: string[], io: Required<CliIo>, capability?: ReadOnlyHelperCapability): number {
   const [action, ...rest] = argv;
   if (!action || action === "--help" || action === "-h" || action === "help") {
     printRepositoryHelp(io);
@@ -23,6 +24,23 @@ export function runRepositoryCommand(argv: string[], io: Required<CliIo>): numbe
     io.stderr(parsed.error);
     return 1;
   }
+  if (action === "inspect" && capability) {
+    const authentication = resolveReadOnlyHelperContext(parsed.args.repo, process.cwd(), capability);
+    return withReadOnlyHelperContext(authentication, (repository) => {
+      if (repository.worktreeKind === "primary") {
+        const inspection = inspectRepositoryMutationLease(repository.repoRoot);
+        io.stdout(formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: repository.repoKey, canonicalRepoRoot: repository.repoRoot, inspection }));
+      } else {
+        const slot = repository.role === "standalone-implement" ? "implement" : "orchestrator";
+        const inspection = inspectReadonlyRepositoryMutationLease(repository.repoRoot, repository.worktreeRoot, repository.gitDir, slot);
+        io.stdout(`Read-only helper: role=${repository.role}; access=read-only.`);
+        io.stdout(formatRepositoryAdmissionDiagnostic({ canonicalRepoKey: repository.repoKey, canonicalRepoRoot: repository.repoRoot,
+          worktreeRoot: repository.worktreeRoot, slot, inspection }));
+      }
+      return 0;
+    });
+  }
+  // Quarantine and adapters without the capability retain canonical-only behavior.
   let repository: ReturnType<typeof resolveRepoExecutionPath>;
   try {
     repository = resolveRepoExecutionPath(parsed.args.repo);
@@ -71,6 +89,6 @@ function printRepositoryHelp(io: Required<CliIo>): void {
   io.stdout("Usage: repository <inspect|quarantine> [options]");
   io.stdout("");
   io.stdout("Safely inspect or quarantine repository builder ownership evidence.");
-  io.stdout("  inspect --repo <key|path>");
+  io.stdout("  inspect [--repo <key|path>]  Inferred live PPA inspection targets the authenticated worktree");
   io.stdout("  quarantine --repo <key|path> --expected-evidence <v1-sha256>");
 }

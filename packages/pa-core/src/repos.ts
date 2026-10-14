@@ -155,8 +155,8 @@ export function resolveRepoExecutionPath(nameOrPath?: string, cwd = process.cwd(
   let evidence: GitWorkingTreeEvidence;
   try {
     evidence = gitWorkingTreeEvidence(requestedPath);
-  } catch {
-    throw repositoryResolutionError(`Current working directory "${cwd}" is not a valid physical Git working tree.`, repos);
+  } catch (error) {
+    throw repositoryResolutionError(`Current working directory "${cwd}" is not a valid physical Git working tree.`, repos, error);
   }
   if (evidence.worktreeRoot !== realpathSync(evidence.worktreeRoot)) {
     throw repositoryResolutionError(`Current working directory "${cwd}" resolves through a symlinked Git working-tree root. Use its physical path.`, repos);
@@ -207,8 +207,8 @@ function resolvedRegisteredRepo(repo: RegisteredRepo, inferredFrom: "explicit" |
   let primaryEvidence: GitWorkingTreeEvidence;
   try {
     primaryEvidence = gitWorkingTreeEvidence(repo.path);
-  } catch {
-    throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, []);
+  } catch (error) {
+    throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, [], error);
   }
   if (primaryEvidence.worktreeRoot !== repo.path) {
     throw repositoryResolutionError(`Configured path for "${repo.name}" is not the root of a Git working tree: ${repo.path}.`, []);
@@ -304,7 +304,7 @@ function isLinkedGitWorkingTree(path: string): boolean {
   }
 }
 
-function repositoryResolutionError(detail: string, candidates: RegisteredRepo[]): Error {
+function repositoryResolutionError(detail: string, candidates: RegisteredRepo[], cause?: unknown): Error {
   const correctiveAction = candidates.length === 1
     ? `Corrective action: pass --repo "${candidates[0]!.name}" or --repo "${candidates[0]!.path}".`
     : candidates.length > 1
@@ -315,7 +315,7 @@ function repositoryResolutionError(detail: string, candidates: RegisteredRepo[])
   const available = Math.max(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS - prefix.length - suffix.length - 3);
   const boundedDetail = detail.length > available ? `${detail.slice(0, available)}...` : detail;
   const message = `${prefix}${boundedDetail}${suffix}`;
-  return new Error(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS ? message : `${prefix}${correctiveAction}`.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS));
+  return new Error(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS ? message : `${prefix}${correctiveAction}`.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS), cause ? { cause } : undefined);
 }
 
 export function resolveProject(input: string): { key: string; prefix: string } {
@@ -355,5 +355,5 @@ export function resolveProjectFromCwd(cwd = process.cwd()): { key: string; prefi
 }
 
 function gitOutput(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000, maxBuffer: 16 * 1024 * 1024 }).trim();
 }

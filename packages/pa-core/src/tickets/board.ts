@@ -61,9 +61,11 @@ function compareRawText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function buildBoardView(project?: string, filters: Omit<TicketListFilters, "project" | "status" | "type" | "tags" | "search"> = {}): BoardView {
+export function buildBoardView(project?: string, filters: Omit<TicketListFilters, "project" | "status" | "type" | "tags" | "search"> = {},
+  readDeployments: typeof queryDeploymentStatuses = queryDeploymentStatuses,
+): BoardView {
   const tickets = new TicketStore().list({ project, ...filters });
-  const runningTicketIds = new Set(queryDeploymentStatuses().filter((deployment) => deployment.status === "running" && deployment.ticket_id).map((deployment) => deployment.ticket_id!));
+  const runningTicketIds = new Set(readDeployments().filter((deployment) => deployment.status === "running" && deployment.ticket_id).map((deployment) => deployment.ticket_id!));
   const grouped = new Map<TicketStatus, Array<Ticket & { hasRunningDeployment?: boolean }>>(BOARD_COLUMNS.map((status) => [status, []]));
   const assigneeCounts: Record<string, number> = {};
   for (const ticket of tickets) {

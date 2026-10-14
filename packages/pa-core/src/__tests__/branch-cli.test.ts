@@ -251,7 +251,8 @@ test("branch create warns on unknown ticket id but still creates branch", async 
 test("branch help documents exact-root inference", async () => {
   const captured = capture();
   assert.equal(await runCoreCommand(["branch", "--help"], { io: captured.io }), 0);
-  assert.match(captured.stdout.join("\n"), /infer an exact configured root from CWD/i);
+  assert.match(captured.stdout.join("\n"), /create uses the exact registered root/i);
+  assert.match(captured.stdout.join("\n"), /validate may read a live authenticated PPA worktree/i);
   const retiredHelpTerms = new RegExp([["merge", "evidence"].join(" "), ["delete", "local"].join(" "), ["delete", "remote"].join(" ")].join("|"), "i");
   assert.doesNotMatch(captured.stdout.join("\n"), retiredHelpTerms);
 });

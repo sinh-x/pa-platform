@@ -4,6 +4,7 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstat
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
+import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
 
 export const MAX_REPOSITORY_TICKET_SLOTS = 4;
@@ -54,6 +55,19 @@ export type RepositoryTicketSlotMutationResult =
 export type RepositoryTicketSlotAuthentication =
   | { readonly status: "authenticated"; readonly evidenceIdentity: string }
   | { readonly status: "rejected"; readonly reason: "absent" | "malformed" | "oversized" | "insecure" | "stale-process" | "identity-mismatch" | "replaced" };
+
+/** Existing protected capacity observation, with no mutex or capacity update. */
+export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string,
+  getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined = readProcessFingerprint,
+): { readonly slot: RepositoryTicketSlot; readonly identity: string } {
+  const path = repositoryTicketSlotPath(canonicalRepoRoot, ticket);
+  const stat = lstatSync(path);
+  if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper capacity evidence is not protected");
+  const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_TICKET_SLOT_BYTES, "helper capacity");
+  const slot: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (!isSlot(slot) || !fingerprintsEqual(slot.processFingerprint, getProcessFingerprint(slot.processFingerprint.pid))) throw new Error("helper capacity evidence is malformed or stale");
+  return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex") };
+}
 
 export function authenticateRepositoryTicketSlot(options: {
   canonicalRepoKey: string;

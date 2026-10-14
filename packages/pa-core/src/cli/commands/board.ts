@@ -1,5 +1,7 @@
 import { listRepos, resolveProject, resolveProjectFromCwd } from "../../repos.js";
-import { BOARD_COLUMNS, buildBoardView } from "../../tickets/index.js";
+import { queryReadonlyDeploymentStatuses } from "../../registry/index.js";
+import { ReadOnlyHelperFailure, resolveReadOnlyHelperContext, withReadOnlyHelperContext, type ReadOnlyHelperAuthentication, type ReadOnlyHelperCapability } from "../../readonly-helper-context.js";
+import { buildBoardView } from "../../tickets/index.js";
 import { formatBoard } from "../formatters.js";
 import type { CliIo } from "../utils.js";
 import { printError } from "../utils.js";
@@ -56,9 +58,14 @@ function availableProjectGuidance(): string {
   return available ? ` Available projects: ${available}` : "";
 }
 
-function resolveBoardProject(opts: { project?: string; all?: boolean }): { project?: string } | { error: string } {
+function resolveBoardProject(opts: { project?: string; all?: boolean }, capability?: ReadOnlyHelperCapability): { project?: string; authentication?: ReadOnlyHelperAuthentication } | { error: string } {
   if (opts.all) return { project: undefined };
   if (opts.project) return { project: resolveProject(opts.project).key };
+  if (capability) {
+    const authentication = resolveReadOnlyHelperContext(undefined, process.cwd(), capability);
+    if (authentication.context.repo.prefix) return { project: authentication.context.repoKey, authentication };
+    return { error: `Not in a registered repo. Use --all or --project name.${availableProjectGuidance()}` };
+  }
   const cwdProject = resolveProjectFromCwd();
   if (cwdProject) return { project: cwdProject.key };
   return { error: `Not in a registered repo. Use --all or --project name.${availableProjectGuidance()}` };
@@ -70,7 +77,7 @@ function buildBoardExcludeTags(opts: { all?: boolean; includeArchived?: boolean 
   return ["backlog", "archived"];
 }
 
-export function runBoardCommand(argv: string[], io: Required<CliIo>): number {
+export function runBoardCommand(argv: string[], io: Required<CliIo>, capability?: ReadOnlyHelperCapability): number {
   if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printBoardHelp(io);
     return 0;
@@ -80,10 +87,17 @@ export function runBoardCommand(argv: string[], io: Required<CliIo>): number {
     io.stderr(opts.error);
     return 1;
   }
-  const resolved = resolveBoardProject(opts);
+  const resolved = resolveBoardProject(opts, capability);
   if ("error" in resolved) return printError(resolved.error, io);
   const excludeTags = buildBoardExcludeTags(opts);
-  const board = buildBoardView(resolved.project, { assignee: opts.assignee, excludeTags, excludeTypes: ["fyi", "work-report"] });
-  io.stdout(formatBoard(board, { colorEnabled: shouldUseBoardColors() }));
-  return 0;
+  const display = () => {
+    const readDeployments = resolved.authentication?.context.worktreeKind === "linked" ? () => {
+      try { return queryReadonlyDeploymentStatuses(); }
+      catch { throw new ReadOnlyHelperFailure("authority-rejected", "unknown", "board existing registry observation", "authenticated registry is unavailable or changed; no initialization or migration performed"); }
+    } : undefined;
+    const board = buildBoardView(resolved.project, { assignee: opts.assignee, excludeTags, excludeTypes: ["fyi", "work-report"] }, readDeployments);
+    io.stdout(formatBoard(board, { colorEnabled: shouldUseBoardColors() }));
+    return 0;
+  };
+  return resolved.authentication ? withReadOnlyHelperContext(resolved.authentication, display) : display();
 }
