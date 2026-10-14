@@ -397,8 +397,12 @@ try {
     const mcps = processes.filter(p => p.args[0] === 'chrome-devtools-mcp' && fs.realpathSync(`/proc/${p.pid}/exe`) === pinnedNode);
     assert.equal(mcps.length, 1);
     const mcp = mcps[0];
-    assert.ok(mcp.env.includes('CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1'));
-    assert.ok(mcp.env.includes('CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1'));
+    assert.deepEqual(mcp.env.filter(Boolean).sort(), [
+      `HOME=${join(f.state, 'home')}`, `XDG_CONFIG_HOME=${join(f.state, 'home', 'config')}`,
+      `XDG_CACHE_HOME=${join(f.state, 'home', 'cache')}`, `TMPDIR=${join(f.state, 'tmp')}`,
+      `PATH=${dirname(row.node)}`, 'LANG=C.UTF-8',
+      'CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1', 'CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1',
+    ].sort());
     const bridge = processes.find(p => p.pid === row.bridgePid);
     assert.ok(bridge.env.includes('CHROME_DEVTOOLS_AXI_IDLE_TIMEOUT_MS=300000'));
     const chromeProcess = processes.find(p => p.args.some(arg => arg === `--user-data-dir=${join(f.state, 'profile')}`));

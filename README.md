@@ -165,8 +165,10 @@ MCP's explicit page-ID routing stays enabled. First `open` without a selection,
 and `newpage`, record only a unique created-page row matching the requested URL.
 Redirected/ambiguous output requires explicit `selectpage ID`; `pages` and its
 `[selected]` display marker never establish routing. Page-scoped commands use the
-private deployment's selected ID. Closing it, reconnecting or a missing-page error
-invalidates selection without guessing another tab. Concurrent routing operations
+private deployment's nonce-bound selected ID. A private AXI selection mirror only
+signals invalidation; it never establishes routing. Closing it, reconnecting or a
+missing-page error invalidates selection without guessing or reopening another tab
+in the failed invocation. Concurrent routing operations
 reject rather than retarget an in-flight command.
 
 PPA binds lifecycle identity to its own foreground/background supervisor (also

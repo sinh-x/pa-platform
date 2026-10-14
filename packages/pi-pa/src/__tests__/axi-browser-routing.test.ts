@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,6 +24,11 @@ test("browser page tools require our explicit selection and first open creates a
     assert.equal(browserToolRequest(args, 7).args.pageId, 7);
   }
   assert.deepEqual(browserToolRequest(["pages"], undefined), { name: "list_pages", args: {} });
+  assert.throws(() => browserToolRequest(["open", "http://127.0.0.1/"], undefined, true), /AXI_POLICY_REJECTED/);
+  assert.throws(() => browserToolRequest(["snapshot"], 7, true), /AXI_POLICY_REJECTED/);
+  assert.equal(browserToolRequest(["pages"], undefined, true).name, "list_pages");
+  assert.equal(browserToolRequest(["newpage", "about:blank"], undefined, true).name, "new_page");
+  assert.equal(browserToolRequest(["selectpage", "9"], undefined, true).args.pageId, 9);
   assert.deepEqual(browserToolRequest(["selectpage", "0"], undefined), { name: "select_page", args: { pageId: 0 } });
   assert.deepEqual(browserToolRequest(["closepage", "9"], 7), { name: "close_page", args: { pageId: 9 } });
   for (const id of ["-1", "01", "1.1", "NaN", "+1", "", "9007199254740992"]) {
@@ -98,7 +104,44 @@ test("state/lock replacement and stale ownership reject without removing foreign
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+test("upstream selection mirror can invalidate but never establish nonce-bound routing; unsafe mirrors stay untouched", async () => {
+  const f = fixture();
+  const mirror = join(dirname(f.file), "home", ".chrome-devtools-axi", "sessions", f.owner.id, "selected-page-id");
+  try {
+    for (const change of [() => unlinkSync(mirror), () => writeFileSync(mirror, "6")]) {
+      await withBrowserRouting(f.owner, async (routing) => { routing.select(5); });
+      change();
+      await withBrowserRouting(f.owner, async (routing) => {
+        assert.equal(routing.selected(), undefined); assert.equal(routing.lost(), true);
+        assert.equal(existsSync(f.file), false); assert.equal(existsSync(mirror), false);
+        assert.throws(() => browserToolRequest(["open", "about:blank"], routing.selected(), routing.lost()), /AXI_POLICY_REJECTED/);
+        routing.select(9); assert.equal(routing.selected(), 9); assert.equal(routing.lost(), false);
+      });
+    }
+    unlinkSync(f.file); // An upstream mirror alone is NEVER selection authority.
+    await withBrowserRouting(f.owner, async (routing) => { assert.equal(routing.selected(), undefined); routing.select(7); });
+    const record = readFileSync(f.file, "utf8"); unlinkSync(mirror);
+    const foreign = join(f.root, "foreign"); writeFileSync(foreign, "foreign unchanged", { mode: 0o600 }); symlinkSync(foreign, mirror);
+    await assert.rejects(withBrowserRouting(f.owner, async (routing) => { routing.clear(); }), /AXI_POLICY_REJECTED/);
+    assert.equal(readFileSync(foreign, "utf8"), "foreign unchanged"); assert.equal(readFileSync(f.file, "utf8"), record);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
 const pinned = process.env.PAP240_PINNED_BROWSER_BRIDGE;
+test("actual pinned AXI reconnect-clear hook consumes only our private mirror and invalidates routing without retarget", { skip: !pinned }, async () => {
+  const f = fixture();
+  try {
+    await withBrowserRouting(f.owner, async (routing) => { routing.select(4); });
+    const module = join(dirname(pinned!), "selected-page.js");
+    const actual = spawnSync(process.execPath, ["--input-type=module", "--eval", `const m=await import(${JSON.stringify(module)});const id=m.getSelectedPageId();const dropped=m.clearSelectedPageId();process.stdout.write(JSON.stringify({id,dropped,now:m.getSelectedPageId()}));`], { env: { PATH: "", HOME: join(dirname(f.file), "home"), CHROME_DEVTOOLS_AXI_SESSION: f.owner.id }, encoding: "utf8", timeout: 5000 });
+    assert.equal(actual.status, 0); assert.deepEqual(JSON.parse(actual.stdout), { id: 4, dropped: true, now: null });
+    await withBrowserRouting(f.owner, async (routing) => {
+      assert.equal(routing.selected(), undefined); assert.equal(routing.lost(), true);
+      assert.throws(() => browserToolRequest(["open", "about:blank"], undefined, routing.lost()), /AXI_POLICY_REJECTED/);
+      assert.equal(existsSync(f.file), false);
+    });
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
 test("actual pinned AXI new-page parser establishes only a unique requested-URL route, never a selected marker", { skip: !pinned }, async () => {
   const parser = await import(join(dirname(pinned!), "selected-page.js")) as { createdPageIdFromNewPageDump: (text: string, url: string) => number | null };
   const url = "http://127.0.0.1:12345/";

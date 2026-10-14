@@ -364,7 +364,7 @@ async function readyBrowserCommand(owner: BrowserOwner, context: BrowserContext,
     const selected = routing.selected();
     // Missing selection or a concurrent command fails without retargeting or
     // stopping another operation. No page ID is inferred from list_pages.
-    const call = browserToolRequest(input.args, selected);
+    const call = browserToolRequest(input.args, selected, reconnected || routing.lost());
     try {
       const result = await httpJson(owner.port, "/call", call, 30000);
       if (typeof result.result !== "string" || result.error) { routing.clear(); return fail(); }
