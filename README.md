@@ -154,7 +154,9 @@ Chrome is operator-owned, not bundled or provisioned. Managed commands are
 An operation starts the isolated headless browser on demand; deployment startup
 does not. The fixed shim uses flake-locked Node and MCP 1.10.1, disables MCP usage
 statistics/update checks and forwards the exact operator Chrome executable.
-CDP uses fixed pipe transport, not a TCP debugging listener.
+CDP uses fixed pipe transport, not a TCP debugging listener. The shim reconstructs
+private HOME/XDG/temp and mandatory telemetry/update opt-outs after SDK environment
+filtering; authentication, proxy and arbitrary caller environment is not inherited.
 Attach/shared/remote endpoints, personal profiles, headed/GPU launch options,
 extra flags and `CHROME_DEVTOOLS_AXI_*`/`CHROME_DEVTOOLS_MCP_ARGS` overrides are
 not admitted. Do not set upstream AXI environment overrides on a managed launch.

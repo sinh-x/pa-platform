@@ -89,6 +89,7 @@ try {
   };
   syncBuiltinESMExports();
   browser = await import(join(modules, 'axi-browser.js'));
+  report.managedMcpPreload = browser.managedProcessPreload();
   const policy = await import(join(modules, 'axi-policy.js'));
   assert.equal(browser.BROWSER_READINESS_MS, 30000);
   assert.equal(browser.BROWSER_IDLE_MS, 300000);
@@ -389,11 +390,13 @@ try {
     assert.equal(fs.statSync(join(f.state, 'owner.json')).mode & 0o777, 0o600);
     const members = browser.ownedSessionProcesses(row, row.descendants || []);
     const processes = members.map(member => ({ ...member, args: fs.readFileSync(`/proc/${member.pid}/cmdline`, 'utf8').split('\0'), env: fs.readFileSync(`/proc/${member.pid}/environ`, 'utf8').split('\0') }));
-    const mcp = processes.find(p => p.args.includes(join(tools['chrome-devtools-mcp'].store, 'lib/chrome-devtools-mcp/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js')));
-    assert.ok(mcp);
-    assert.ok(mcp.args.includes(`--executablePath=${chrome}`));
-    assert.ok(mcp.args.includes(`--userDataDir=${join(f.state, 'profile')}`));
-    assert.ok(mcp.args.includes('--headless')); assert.ok(mcp.args.includes('--no-usage-statistics'));
+    // The actual pinned MCP entry sets process.title, overwriting /proc argv.
+    // Bind its live title to the declared Node/session here; the coordinator
+    // must separately verify this exact PID's complete startup execve argv.
+    const pinnedNode = fs.realpathSync(join(tools['chrome-devtools-mcp'].node, 'bin/node'));
+    const mcps = processes.filter(p => p.args[0] === 'chrome-devtools-mcp' && fs.realpathSync(`/proc/${p.pid}/exe`) === pinnedNode);
+    assert.equal(mcps.length, 1);
+    const mcp = mcps[0];
     assert.ok(mcp.env.includes('CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1'));
     assert.ok(mcp.env.includes('CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1'));
     const bridge = processes.find(p => p.pid === row.bridgePid);
@@ -422,8 +425,8 @@ try {
       await asyncCommand(shim(all, 'chrome-devtools-axi'), ['open', `http://127.0.0.1:${fixture.address().port}/`], f.env);
       const snapshot = await asyncCommand(shim(all, 'chrome-devtools-axi'), ['snapshot'], f.env);
       assert.match(snapshot.stdout, /Local fixture|PAP240 fixture/);
-    } finally { await new Promise(resolve => fixture.close(resolve)); }
-    concurrent.push({ deploymentId: row.id, state: f.state, profile: join(f.state, 'profile'), pid: row.pid, start: row.start, bridgePid: row.bridgePid, port: row.port, readinessMs: readiness[index], chromeExecutable: executable, listeners, pinnedNode: row.node, pinnedMcp: row.mcp, idleMs: 300000, localNavigation: true });
+    } finally { fixture.closeAllConnections(); await new Promise(resolve => fixture.close(resolve)); }
+    concurrent.push({ deploymentId: row.id, state: f.state, profile: join(f.state, 'profile'), pid: row.pid, start: row.start, bridgePid: row.bridgePid, mcpPid: mcp.pid, mcpStart: mcp.start, port: row.port, readinessMs: readiness[index], chromeExecutable: executable, listeners, pinnedNode: row.node, pinnedMcp: row.mcp, idleMs: 300000, localNavigation: true });
   }
   done(active, { deployments: concurrent });
   active = 'browser-stop';

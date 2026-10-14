@@ -256,7 +256,7 @@ class Matrix:
         # A private mode-0700 tmpfs preserves the production profile ownership
         # checks without weakening them or changing any operator profile.
         stdout, _ = self.command([binaries["bubblewrap"], "--unshare-net", "--unshare-pid", "--new-session", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--perms", "0700", "--tmpfs", "/tmp", "--bind", str(self.root), str(self.root),
-                                 binaries["strace"], "-f", "-qq", "-s", "512", "-e", "trace=process,network,openat", "-o", str(trace),
+                                 binaries["strace"], "-f", "-qq", "-s", "4096", "-e", "trace=process,network,openat", "-o", str(trace),
                                  str(all_output / "bin/pa-platform-node"), str(helper), str(manifest)], timeout=900, env=runtime_env, expected=(0, 1))
         runtime = json.loads(stdout)
         self.data["runtime"] = runtime
@@ -304,12 +304,32 @@ class Matrix:
         check(trace.is_file() and 0 < trace.stat().st_size <= 128 * 1024 * 1024)
         counts = {"runtimeDownloads": 0, "selfUpdates": 0, "nonLoopbackConnectAttempts": 0, "githubMutations": 0, "hostCredentialAccesses": 0, "globalHookWrites": 0}
         execs = 0
+        # MCP 1.10.1 erases /proc argv by setting process.title. Kernel
+        # execve evidence must prove the COMPLETE fixed argv for each exact
+        # live session/Node/PID identified by the concurrent-browser helper.
+        deployments = runtime["cases"]["browser-concurrent"]["deployments"]
+        check(len(deployments) == 2)
+        required = {}
+        preload = runtime["managedMcpPreload"]
+        check(isinstance(preload, str) and preload.startswith("data:text/javascript;base64,") and len(preload) <= 4096)
+        for row in deployments:
+            pid = row["mcpPid"]
+            check(type(pid) is int and pid > 1 and str(row["mcpStart"]).isdigit() and pid not in required)
+            argv = [row["pinnedNode"], "--import", preload, row["pinnedMcp"], f"--executablePath={self.chrome}", f"--userDataDir={row['profile']}", "--headless", "--no-usage-statistics", "--chrome-arg=--remote-debugging-pipe", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"]
+            required[pid] = {"argv": argv, "observations": 0}
         with trace.open() as stream:
             for line in stream:
                 if "execve(" in line:
                     execs += 1
                     command = re.search(r'execve\("([^"\n]+)"', line)
                     check(command is not None)
+                    prefix = re.match(r'^\s*(\d+)\s+execve\(', line)
+                    if prefix and int(prefix.group(1)) in required:
+                        proof = required[int(prefix.group(1))]
+                        match = re.match(r'^\s*\d+\s+execve\(("(?:[^"\\]|\\.)*"), (\[.*?\]),', line)
+                        check(match is not None)
+                        check(json.loads(match.group(1)) == proof["argv"][0] and json.loads(match.group(2)) == proof["argv"])
+                        proof["observations"] += 1
                     if re.search(r'/(npm|npx|pnpm|curl|wget)("|/)', line):
                         counts["runtimeDownloads"] += 1
                     if re.search(r'"(self-update|selfupdate|update)"', line):
@@ -327,12 +347,12 @@ class Matrix:
                 if any(call in line for call in ("connect(", "sendto(", "sendmsg(")) and ("AF_INET," in line or "AF_INET6," in line):
                     if not re.search(r'inet_addr\("127\.[0-9.]+"\)|inet_pton\(AF_INET6, "::1"', line):
                         counts["nonLoopbackConnectAttempts"] += 1
-        check(execs > 0)
+        check(execs > 0 and all(proof["observations"] == 1 for proof in required.values()))
         check(all(value == 0 for value in counts.values()))
         counters = runtime["effectCounters"]
         check(all(counters[name] == 0 for name in ("delegatedRefresh", "inference", "routing", "mcpTelemetry")))
         check(counters["credentialReads"] > 0 and counters["providerRequests"] > 0 and counters["providerInvocations"] > 0)
-        self.case("observed-effects", {**counts, **counters, "execveObservations": execs, "traceSha256": digest(trace), "observation": "strace plus fixture filesystem/HTTP/subprocess instrumentation"})
+        self.case("observed-effects", {**counts, **counters, "execveObservations": execs, "verifiedMcpFixedArgvExecves": len(required), "traceSha256": digest(trace), "observation": "strace plus fixture filesystem/HTTP/subprocess instrumentation"})
 
     def finish(self, error=None):
         self.data["endedAt"] = utc()

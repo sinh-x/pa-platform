@@ -202,7 +202,11 @@ export function managedMcpShim(node: string, mcp: string, chrome: string, profil
   const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--use-mock-keychain", "--chrome-arg=--password-store=basic"];
   // AXI 0.1.38 cannot forward executablePath. The approved shim validates its
   // upstream argv, then replaces it with fixed pinned MCP/Chrome policy argv.
-  return `const {spawn}=require('node:child_process'); const expected=${JSON.stringify(expected)}; if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(expected)) process.exit(1); const child=spawn(${JSON.stringify(node)},${JSON.stringify(["--import", managedProcessPreload(), ...pinnedMcpArguments(mcp, chrome, profile)])},{env:process.env,stdio:['inherit','inherit','ignore']}); child.on('error',()=>process.exit(1)); child.on('exit',code=>process.exit(code??1));`;
+  // The pinned SDK stdio transport retains only its generic default keys.
+  // Reconstruct mandatory private/telemetry settings here, never copy its env.
+  const state = dirname(profile);
+  const env = { HOME: join(state, "home"), XDG_CONFIG_HOME: join(state, "home", "config"), XDG_CACHE_HOME: join(state, "home", "cache"), TMPDIR: join(state, "tmp"), PATH: dirname(node), LANG: "C.UTF-8", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" };
+  return `const {spawn}=require('node:child_process'); const expected=${JSON.stringify(expected)}; if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(expected)) process.exit(1); const child=spawn(${JSON.stringify(node)},${JSON.stringify(["--import", managedProcessPreload(), ...pinnedMcpArguments(mcp, chrome, profile)])},{env:${JSON.stringify(env)},stdio:['inherit','inherit','ignore']}); child.on('error',()=>process.exit(1)); child.on('exit',code=>process.exit(code??1));`;
 }
 async function launchBridge(owner: BrowserOwner, witnesses: ProcessIdentity[], cleanup: () => Promise<void>): Promise<void> {
   const state = statePath(owner);

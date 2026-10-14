@@ -616,7 +616,7 @@ test("managed MCP shim runs only the fixed Node/MCP/Chrome argv, rejects upstrea
 const session=pid=>{const s=fs.readFileSync('/proc/'+pid+'/stat','utf8');return s.slice(s.lastIndexOf(')')+2).split(' ')[3]};
 const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
 let groupRejected=false,foreignRejected=false; try{process.kill(-child.pid,'SIGTERM')}catch(e){groupRejected=e.code==='ESRCH'} try{process.kill(process.ppid,0)}catch(e){foreignRejected=e.code==='ESRCH'};
-const report={args:process.argv.slice(2),sameSession:session(child.pid)===session(process.pid),groupRejected,foreignRejected};
+const report={args:process.argv.slice(2),environment:{...process.env},sameSession:session(child.pid)===session(process.pid),groupRejected,foreignRejected};
 child.on('exit',()=>process.stdout.write(JSON.stringify(report))); process.kill(child.pid,'SIGTERM');`);
     writeFileSync(shim, managedMcpShim(process.execPath, mcp, "/synthetic/chrome", profile));
     const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--use-mock-keychain", "--chrome-arg=--password-store=basic"];
@@ -629,8 +629,12 @@ child.on('exit',()=>process.stdout.write(JSON.stringify(report))); process.kill(
       assert.equal(actual.status, 0, actual.stderr);
       assert.deepEqual(JSON.parse(actual.stdout), expected);
     }
-    const accepted = spawnSync(process.execPath, [shim, ...expected], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
-    assert.equal(accepted.status, 0); assert.deepEqual(JSON.parse(accepted.stdout), { args: pinnedMcpArguments(mcp, "/synthetic/chrome", profile).slice(1), sameSession: true, groupRejected: true, foreignRejected: true });
+    const accepted = spawnSync(process.execPath, [shim, ...expected], { env: { PATH: "", GH_TOKEN: "synthetic-do-not-inherit", HTTPS_PROXY: "http://synthetic.invalid", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "0", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "0" }, encoding: "utf8", timeout: 5000 });
+    assert.equal(accepted.status, 0); assert.deepEqual(JSON.parse(accepted.stdout), {
+      args: pinnedMcpArguments(mcp, "/synthetic/chrome", profile).slice(1),
+      environment: { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "home", "config"), XDG_CACHE_HOME: join(root, "home", "cache"), TMPDIR: join(root, "tmp"), PATH: dirname(process.execPath), LANG: "C.UTF-8", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" },
+      sameSession: true, groupRejected: true, foreignRejected: true,
+    });
     rmSync(marker);
     for (const args of [[], [expected[0], expected[1], expected[3], expected[2]], [...expected, "--browserUrl=http://foreign"], [...expected, "--no-usage-statistics=false"], ["--isolated"], ["--help"], ["--executablePath=/foreign"]]) {
       const denied = spawnSync(process.execPath, [shim, ...args], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
