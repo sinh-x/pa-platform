@@ -179,7 +179,8 @@ loopback-only bridges. A supervisor-held directory descriptor keeps temp socket
 paths short while resolving to that same private temp directory, never host `/tmp`.
 Port/state collisions and foreign or reused process
 identities reject before reuse/termination. Owned cleanup runs on normal exit,
-cancellation and failure, independently of the 300000-ms idle shutdown.
+cancellation and failure, independently of the 300000-ms idle shutdown. Explicit
+commands renew inactivity; background ambient probes do not.
 Readiness is bounded at 30000 ms; deployment-end cleanup at 10000 ms. Never
 remove a foreign profile or signal a PID merely because it appears in a file.
 

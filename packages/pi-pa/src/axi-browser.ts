@@ -99,7 +99,7 @@ export function ownsListener(owner: Pick<BrowserOwner, "pid" | "port">): boolean
 async function httpJson(port: number, path: string, body?: unknown, timeout = 2000): Promise<Record<string, unknown>> {
   return new Promise((done, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    const req = request({ hostname: "127.0.0.1", port, path, method: payload ? "POST" : "GET", timeout, headers: { ...(!payload ? { "x-chrome-devtools-axi-ambient": "1" } : {}), ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}) } }, (res) => {
+    const req = request({ hostname: "127.0.0.1", port, path, method: payload ? "POST" : "GET", timeout, headers: { ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}) } }, (res) => {
       let text = "";
       res.on("data", (chunk: Buffer) => { text += chunk.toString(); if (text.length > 1024 * 1024) req.destroy(new Error("bounded-response")); });
       res.on("end", () => { try { if (res.statusCode !== 200) return reject(new Error("bridge-response")); const value: unknown = JSON.parse(text); if (!value || typeof value !== "object" || Array.isArray(value)) return reject(new Error("bridge-response")); done(value as Record<string, unknown>); } catch { reject(new Error("bridge-response")); } });

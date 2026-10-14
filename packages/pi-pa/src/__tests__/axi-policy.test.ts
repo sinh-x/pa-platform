@@ -624,10 +624,13 @@ child.on('exit',()=>process.stdout.write(JSON.stringify(report))); process.kill(
     if (pinnedBridge) {
       const actual = spawnSync(process.execPath, ["--input-type=module", "--eval", `
         const bridge = await import(${JSON.stringify(pinnedBridge)});
-        process.stdout.write(JSON.stringify(bridge.buildTransportArgs().slice(2)));
+        const req = { headers: { host: '127.0.0.1:9224' } };
+        process.stdout.write(JSON.stringify({ args: bridge.buildTransportArgs().slice(2),
+          explicitActivity: bridge.isIdleActivity(req),
+          ambientActivity: bridge.isIdleActivity({ headers: { ...req.headers, 'x-chrome-devtools-axi-ambient': '1' } }) }));
       `], { env: { PATH: "", HOME: root, CHROME_DEVTOOLS_AXI_USER_DATA_DIR: profile }, encoding: "utf8", timeout: 5000 });
       assert.equal(actual.status, 0, actual.stderr);
-      assert.deepEqual(JSON.parse(actual.stdout), expected);
+      assert.deepEqual(JSON.parse(actual.stdout), { args: expected, explicitActivity: true, ambientActivity: false });
     }
     const accepted = spawnSync(process.execPath, [shim, ...expected], { env: { PATH: "", GH_TOKEN: "synthetic-do-not-inherit", HTTPS_PROXY: "http://synthetic.invalid", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "0", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "0" }, encoding: "utf8", timeout: 5000 });
     assert.equal(accepted.status, 0); assert.deepEqual(JSON.parse(accepted.stdout), {
