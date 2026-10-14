@@ -196,7 +196,7 @@ export function managedProcessPreload(): string {
   const source = `import {createRequire,syncBuiltinESMExports} from 'node:module'; const require=createRequire(process.cwd()+'/managed.cjs'); const cp=require('node:child_process'); const fs=require('node:fs'); const identity=pid=>{try{const s=fs.readFileSync('/proc/'+pid+'/stat','utf8');return s.slice(s.lastIndexOf(')')+2).split(' ')[19]}catch{return undefined}}; const owned=new Map([[process.pid,identity(process.pid)]]); const spawn=cp.spawn; cp.spawn=(command,args,options)=>{if(!Array.isArray(args)){options=args;args=[]} const child=spawn(command,args,{...options,detached:false}); const start=identity(child.pid); if(start)owned.set(child.pid,start); return child}; syncBuiltinESMExports(); const kill=process.kill.bind(process); process.kill=(pid,signal)=>{if(pid<=0||!owned.has(pid)||identity(pid)!==owned.get(pid)){const e=new Error('AXI_POLICY_REJECTED');e.code='ESRCH';throw e}return kill(pid,signal)};`;
   return `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 }
-export function managedMcpShim(node: string, mcp: string, chrome: string, profile: string): string {
+export function managedMcpShim(node: string, mcp: string, chrome: string, profile: string, tmpFd?: number): string {
   if (!isAbsolute(node)) return fail();
   // Exact chrome-devtools-axi 0.1.38 transport order; retain strict equality.
   const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--use-mock-keychain", "--chrome-arg=--password-store=basic"];
@@ -205,21 +205,36 @@ export function managedMcpShim(node: string, mcp: string, chrome: string, profil
   // The pinned SDK stdio transport retains only its generic default keys.
   // Reconstruct mandatory private/telemetry settings here, never copy its env.
   const state = dirname(profile);
-  const env = { HOME: join(state, "home"), XDG_CONFIG_HOME: join(state, "home", "config"), XDG_CACHE_HOME: join(state, "home", "cache"), TMPDIR: join(state, "tmp"), PATH: dirname(node), LANG: "C.UTF-8", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" };
+  let tmp = join(state, "tmp");
+  if (tmpFd !== undefined) {
+    if (!Number.isSafeInteger(tmpFd) || tmpFd < 0) return fail();
+    const stat = fstatSync(tmpFd);
+    const alias = `/proc/${process.pid}/fd/${tmpFd}`;
+    if (!stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700 || realpathSync(alias) !== tmp) return fail();
+    tmp = alias;
+  }
+  const env = { HOME: join(state, "home"), XDG_CONFIG_HOME: join(state, "home", "config"), XDG_CACHE_HOME: join(state, "home", "cache"), TMPDIR: tmp, PATH: dirname(node), LANG: "C.UTF-8", CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" };
   return `const {spawn}=require('node:child_process'); const expected=${JSON.stringify(expected)}; if(JSON.stringify(process.argv.slice(2))!==JSON.stringify(expected)) process.exit(1); const child=spawn(${JSON.stringify(node)},${JSON.stringify(["--import", managedProcessPreload(), ...pinnedMcpArguments(mcp, chrome, profile)])},{env:${JSON.stringify(env)},stdio:['inherit','inherit','ignore']}); child.on('error',()=>process.exit(1)); child.on('exit',code=>process.exit(code??1));`;
 }
 async function launchBridge(owner: BrowserOwner, witnesses: ProcessIdentity[], cleanup: () => Promise<void>): Promise<void> {
   const state = statePath(owner);
   const env = bridgeEnvironment(owner);
-  writeFileSync(join(state, "mcp.cjs"), managedMcpShim(owner.node, owner.mcp, owner.chrome, join(state, "profile")), { mode: 0o600, flag: "wx" });
-  const bridge = join(dirname(owner.entrypoint), "chrome-devtools-axi-bridge.js");
-  // Start the pinned bridge ourselves, not the upstream CLI's detached
-  // auto-restart/weak-PID lifecycle. It binds only 127.0.0.1.
-  // Keep every bridge/MCP/Chrome child in the daemon's private Linux session.
-  // The fixed preload also denies upstream exit-time group signals and stale
-  // direct-child PIDs; the daemon handles verified descendant cleanup instead.
-  const child = spawn(owner.node, ["--import", managedProcessPreload(), bridge], { env, cwd: state, stdio: "ignore" });
-  await superviseBridge(owner, child, witnesses, cleanup);
+  privateDirectory(env.TMPDIR!);
+  // Chrome's Unix singleton socket cannot use a long pathname. Keep a short
+  // alias to the SAME private directory, held by this verified supervisor until
+  // its descendants finish cleanup. Never use host /tmp or weaken singleton,
+  // profile ownership, sandbox, or readiness policy as a workaround.
+  const tmpFd = openSync(env.TMPDIR!, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    writeFileSync(join(state, "mcp.cjs"), managedMcpShim(owner.node, owner.mcp, owner.chrome, join(state, "profile"), tmpFd), { mode: 0o600, flag: "wx" });
+    env.TMPDIR = `/proc/${process.pid}/fd/${tmpFd}`;
+    const bridge = join(dirname(owner.entrypoint), "chrome-devtools-axi-bridge.js");
+    // Start the pinned bridge ourselves, not upstream detached auto-restart.
+    // The fixed preload guards session membership and stale/group signals;
+    // the daemon handles individually reverified descendant cleanup.
+    const child = spawn(owner.node, ["--import", managedProcessPreload(), bridge], { env, cwd: state, stdio: "ignore" });
+    await superviseBridge(owner, child, witnesses, cleanup);
+  } finally { closeSync(tmpFd); }
 }
 
 export interface ProcessIdentity { pid: number; start: string; session: number; uid: number; zombie: boolean }

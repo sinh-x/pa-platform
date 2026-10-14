@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, mkdirSync, openSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -662,6 +662,24 @@ test("actual pinned MCP/Puppeteer fixed arguments choose five-slot CDP pipe with
     assert.ok(!capture.args.some(arg => /^--remote-debugging-(port|address)/.test(arg)));
     assert.ok(!capture.args.includes("--no-sandbox"));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("private supervisor-held temp descriptor keeps Chrome socket paths short without host tmp or foreign directory fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "axi-private-temp-"));
+  const tmp = join(root, "tmp"); mkdirSync(tmp, { mode: 0o700 });
+  const fd = openSync(tmp, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const other = join(root, "foreign-dir"); mkdirSync(other, { mode: 0o700 });
+  const foreign = openSync(other, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const mcp = join(root, "mcp.cjs"), shim = join(root, "shim.cjs"), profile = join(root, "profile");
+    writeFileSync(mcp, "const fs=require('node:fs');process.stdout.write(JSON.stringify({tmp:process.env.TMPDIR,physical:fs.realpathSync(process.env.TMPDIR)}));");
+    writeFileSync(shim, managedMcpShim(process.execPath, mcp, "/operator/chrome", profile, fd));
+    const result = spawnSync(process.execPath, [shim, `--userDataDir=${profile}`, "--headless", "--chrome-arg=--use-mock-keychain", "--chrome-arg=--password-store=basic"], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 0); assert.deepEqual(JSON.parse(result.stdout), { tmp: `/proc/${process.pid}/fd/${fd}`, physical: tmp });
+    assert.throws(() => managedMcpShim(process.execPath, mcp, "/operator/chrome", profile, foreign), /AXI_POLICY_REJECTED/);
+    assert.throws(() => managedMcpShim(process.execPath, mcp, "/operator/chrome", profile, -1), /AXI_POLICY_REJECTED/);
+    chmodSync(tmp, 0o755);
+    assert.throws(() => managedMcpShim(process.execPath, mcp, "/operator/chrome", profile, fd), /AXI_POLICY_REJECTED/);
+  } finally { closeSync(fd); closeSync(foreign); rmSync(root, { recursive: true, force: true }); }
 });
 test("foreign loopback listener cannot be mistaken for the owned bridge, even with plausible health", async () => {
   const server = createServer();

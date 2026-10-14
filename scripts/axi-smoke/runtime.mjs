@@ -51,7 +51,12 @@ function asyncCommand(executable, args, env, status = 0, timeout = 45000) {
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
       try { assert.equal(signal, null); assert.equal(code, status); auditOutput(stdout + stderr); resolve({ stdout, stderr }); }
-      catch (error) { reject(error); }
+      catch (error) {
+        const command = ['start', 'stop', 'pages', 'open', 'newpage', 'snapshot', 'click', 'fill', 'press', 'back', 'selectpage', 'closepage'].includes(args[0]) ? args[0] : 'other';
+        error.exitEvidence = { command, expectedExit: status, actualExit: code,
+          signal: signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP', 'SIGABRT'].includes(signal) ? signal : 'other' };
+        reject(error);
+      }
     });
   });
 }
@@ -397,9 +402,14 @@ try {
     const mcps = processes.filter(p => p.args[0] === 'chrome-devtools-mcp' && fs.realpathSync(`/proc/${p.pid}/exe`) === pinnedNode);
     assert.equal(mcps.length, 1);
     const mcp = mcps[0];
+    const privateTmp = mcp.env.find(value => value.startsWith('TMPDIR='))?.slice(7);
+    assert.match(privateTmp, new RegExp(`^/proc/${row.pid}/fd/[0-9]+$`));
+    assert.equal(fs.realpathSync(privateTmp), join(f.state, 'tmp'));
+    assert.equal(fs.statSync(privateTmp).uid, process.getuid());
+    assert.equal(fs.statSync(privateTmp).mode & 0o777, 0o700);
     assert.deepEqual(mcp.env.filter(Boolean).sort(), [
       `HOME=${join(f.state, 'home')}`, `XDG_CONFIG_HOME=${join(f.state, 'home', 'config')}`,
-      `XDG_CACHE_HOME=${join(f.state, 'home', 'cache')}`, `TMPDIR=${join(f.state, 'tmp')}`,
+      `XDG_CACHE_HOME=${join(f.state, 'home', 'cache')}`, `TMPDIR=${privateTmp}`,
       `PATH=${dirname(row.node)}`, 'LANG=C.UTF-8',
       'CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1', 'CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1',
     ].sort());
@@ -510,7 +520,8 @@ try {
   // may contain credential, identity or path sentinels from negative fixtures.
   const location = /runtime\.mjs:(\d+):(\d+)/.exec(error.stack ?? '');
   report.cases[active] = { status: 'failed', failureKind: error.constructor.name,
-    ...(location ? { failureLine: Number(location[1]), failureColumn: Number(location[2]) } : {}) };
+    ...(location ? { failureLine: Number(location[1]), failureColumn: Number(location[2]) } : {}),
+    ...(error.exitEvidence ? { exitEvidence: error.exitEvidence } : {}) };
   process.exitCode = 1;
 } finally {
   for (const env of browserEnvs) { try { await browser?.cleanupManagedBrowser(env); } catch { report.cleanupFailure = true; process.exitCode = 1; } }

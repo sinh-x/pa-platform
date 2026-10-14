@@ -175,7 +175,9 @@ PPA binds lifecycle identity to its own foreground/background supervisor (also
 on resume); operators do not invent `PA_AXI_LIFECYCLE_PID/START`. State lives at
 `$PA_DEPLOYMENT_DIR/axi-browser/`, with private profile/HOME/temp descendants
 (mode 0700), mode-0600 non-symlink ownership records, distinct Linux sessions and
-loopback-only bridges. Port/state collisions and foreign or reused process
+loopback-only bridges. A supervisor-held directory descriptor keeps temp socket
+paths short while resolving to that same private temp directory, never host `/tmp`.
+Port/state collisions and foreign or reused process
 identities reject before reuse/termination. Owned cleanup runs on normal exit,
 cancellation and failure, independently of the 300000-ms idle shutdown.
 Readiness is bounded at 30000 ms; deployment-end cleanup at 10000 ms. Never
