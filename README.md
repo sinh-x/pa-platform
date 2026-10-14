@@ -154,9 +154,18 @@ Chrome is operator-owned, not bundled or provisioned. Managed commands are
 An operation starts the isolated headless browser on demand; deployment startup
 does not. The fixed shim uses flake-locked Node and MCP 1.10.1, disables MCP usage
 statistics/update checks and forwards the exact operator Chrome executable.
+CDP uses fixed pipe transport, not a TCP debugging listener.
 Attach/shared/remote endpoints, personal profiles, headed/GPU launch options,
 extra flags and `CHROME_DEVTOOLS_AXI_*`/`CHROME_DEVTOOLS_MCP_ARGS` overrides are
 not admitted. Do not set upstream AXI environment overrides on a managed launch.
+
+MCP's explicit page-ID routing stays enabled. First `open` without a selection,
+and `newpage`, record only a unique created-page row matching the requested URL.
+Redirected/ambiguous output requires explicit `selectpage ID`; `pages` and its
+`[selected]` display marker never establish routing. Page-scoped commands use the
+private deployment's selected ID. Closing it, reconnecting or a missing-page error
+invalidates selection without guessing another tab. Concurrent routing operations
+reject rather than retarget an in-flight command.
 
 PPA binds lifecycle identity to its own foreground/background supervisor (also
 on resume); operators do not invent `PA_AXI_LIFECYCLE_PID/START`. State lives at

@@ -5,6 +5,10 @@ import { request } from "node:http";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// Native stripped-TypeScript source tests have no inherited loader in the
+// supervisor's positive environment. Installed modules resolve ONLY .js;
+// there is no missing-file/source fallback in installed execution.
+const { browserToolRequest, withBrowserRouting } = await import(new URL(import.meta.url.endsWith(".ts") ? "./axi-browser-routing.ts" : "./axi-browser-routing.js", import.meta.url).href) as typeof import("./axi-browser-routing.js");
 
 export const BROWSER_READINESS_MS = 30000;
 export const BROWSER_IDLE_MS = 300000;
@@ -46,7 +50,7 @@ export function pinnedMcpArguments(mcp: string, chrome: string, profile: string)
   if (![mcp, chrome, profile].every(isAbsolute)) return fail();
   // Explicit private profile provides isolation. --isolated and --userDataDir
   // are mutually exclusive in pinned MCP; never combine them.
-  return [mcp, `--executablePath=${chrome}`, `--userDataDir=${profile}`, "--headless", "--no-usage-statistics", "--chrome-arg=--remote-debugging-address=127.0.0.1", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"];
+  return [mcp, `--executablePath=${chrome}`, `--userDataDir=${profile}`, "--headless", "--no-usage-statistics", "--chrome-arg=--remote-debugging-pipe", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"];
 }
 export interface BrowserOwner extends BrowserContext {
   token: string; pid: number; start: string; port: number;
@@ -336,30 +340,42 @@ export async function runBrowserCommand(input: { node: string; entrypoint: strin
 }
 async function readyBrowserCommand(owner: BrowserOwner, context: BrowserContext, input: Parameters<typeof runBrowserCommand>[0], deadline: number): Promise<string> {
   let ready = false;
+  let reconnected = false;
   while (performance.now() < deadline) {
     owner = readOwner(context);
     if (!sameProcess(owner)) break;
     const bridgeOwner = owner as BrowserOwner & { bridgePid?: number; bridgeStart?: string };
     if (bridgeOwner.bridgePid && bridgeOwner.bridgeStart && processIdentity(bridgeOwner.bridgePid) === bridgeOwner.bridgeStart && ownsListener({ ...owner, pid: bridgeOwner.bridgePid })) {
-      try { const health = await httpJson(owner.port, "/health?deep=1", undefined, Math.max(1, Math.min(2000, deadline - performance.now()))); if (health.status === "ok" && health.session === context.id) { ready = true; break; } } catch { /* bounded startup */ }
+      try { const health = await httpJson(owner.port, "/health?deep=1", undefined, Math.max(1, Math.min(2000, deadline - performance.now()))); if (health.status === "ok" && health.session === context.id) { reconnected = health.pageIdentityChanged === true; ready = true; break; } } catch { /* bounded startup */ }
     }
     await sleep(25);
   }
   if (!ready) { await cleanupManagedBrowser(input.env); return fail(); }
-  if (input.args[0] === "start") return "browser ready\n";
-  const [command, a, b] = input.args;
-  const calls: Record<string, { name: string; args: Record<string, unknown> }> = {
-    pages: { name: "list_pages", args: {} }, snapshot: { name: "take_snapshot", args: {} },
-    open: { name: "navigate_page", args: { type: "url", url: a } }, newpage: { name: "new_page", args: { url: a } },
-    click: { name: "click", args: { uid: a?.replace(/^@/, "") } }, fill: { name: "fill", args: { uid: a?.replace(/^@/, ""), value: b } },
-    press: { name: "press_key", args: { key: a } }, back: { name: "navigate_page", args: { type: "back" } },
-    closepage: { name: "close_page", args: { pageId: Number(a) } }, selectpage: { name: "select_page", args: { pageId: Number(a) } },
-  };
-  try {
-    const result = await httpJson(owner.port, "/call", calls[command!], 30000);
-    if (typeof result.result !== "string" || result.error) return fail();
-    return `${result.result}\n`;
-  } catch { await cleanupManagedBrowser(input.env); return fail(); }
+  if (input.args[0] === "start") {
+    if (reconnected) await withBrowserRouting(owner, async (routing) => { routing.clear(); });
+    return "browser ready\n";
+  }
+  return withBrowserRouting(owner, async (routing) => {
+    if (reconnected) routing.clear();
+    const selected = routing.selected();
+    // Missing selection or a concurrent command fails without retargeting or
+    // stopping another operation. No page ID is inferred from list_pages.
+    const call = browserToolRequest(input.args, selected);
+    try {
+      const result = await httpJson(owner.port, "/call", call, 30000);
+      if (typeof result.result !== "string" || result.error) { routing.clear(); return fail(); }
+      if (call.name === "new_page") {
+        // Reuse ONLY the integrity-pinned pure new-page parser. Do not invoke
+        // upstream client auto-restart, discovery, or selected-page file hooks.
+        const parser = await import(join(dirname(owner.entrypoint), "../src/selected-page.js")) as { createdPageIdFromNewPageDump: (text: string, url: string) => number | null };
+        const pageId = parser.createdPageIdFromNewPageDump(result.result, String(call.args.url));
+        if (pageId !== null && Number.isSafeInteger(pageId) && pageId >= 0) routing.select(pageId);
+        else routing.clear(); // Redirect/ambiguous output needs explicit selectpage.
+      } else if (call.name === "select_page") routing.select(call.args.pageId as number);
+      else if (call.name === "close_page" && call.args.pageId === selected) routing.clear();
+      return `${result.result}\n`;
+    } catch { await cleanupManagedBrowser(input.env); return fail(); }
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === modulePath) {

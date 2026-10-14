@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { AXI_VERSIONS, axiRuntimeEnvironment, runManagedAxi, type AxiPolicyEffects, type AxiTool, type ManagedAxiInvocation } from "../axi-policy.js";
@@ -489,7 +489,8 @@ test("browser safe public arguments and pinned MCP arguments reject all attach/p
   const args = pinnedMcpArguments("/pinned/mcp.js", "/operator/chrome", "/deployment/profile");
   assert.equal(args[0], "/pinned/mcp.js"); assert.ok(args.includes("--executablePath=/operator/chrome")); assert.ok(args.includes("--userDataDir=/deployment/profile"));
   assert.ok(args.includes("--headless")); assert.ok(args.includes("--no-usage-statistics"));
-  assert.ok(args.includes("--chrome-arg=--remote-debugging-address=127.0.0.1")); assert.ok(!args.includes("--isolated"));
+  assert.ok(args.includes("--chrome-arg=--remote-debugging-pipe")); assert.ok(!args.includes("--isolated"));
+  assert.doesNotMatch(args.join(" "), /remote-debugging-address|remote-debugging-port|no-page-id-routing/);
   assert.doesNotMatch(args.join(" "), /latest|npx|autoConnect|browserUrl|wsEndpoint|0\.0\.0\.0/);
   assert.throws(() => pinnedMcpArguments("relative", "/chrome", "/profile"));
   assert.equal(BROWSER_READINESS_MS, 30000); assert.equal(BROWSER_IDLE_MS, 300000); assert.equal(BROWSER_CLEANUP_MS, 10000);
@@ -635,6 +636,27 @@ child.on('exit',()=>process.stdout.write(JSON.stringify(report))); process.kill(
       const denied = spawnSync(process.execPath, [shim, ...args], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
       assert.equal(denied.status, 1); assert.equal(denied.stdout + denied.stderr, ""); assert.equal(existsSync(marker), false);
     }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+test("actual pinned MCP/Puppeteer fixed arguments choose five-slot CDP pipe without spawning Chrome", { skip: !process.env.PAP240_PINNED_MCP_ENTRYPOINT }, () => {
+  const root = mkdtempSync(join(tmpdir(), "axi-pinned-transport-"));
+  try {
+    const mcp = process.env.PAP240_PINNED_MCP_ENTRYPOINT!;
+    const module = join(dirname(mcp), "../BrowserManager.js");
+    const chromeArg = pinnedMcpArguments(mcp, process.execPath, join(root, "profile")).filter(arg => arg.startsWith("--chrome-arg=")).map(arg => arg.slice("--chrome-arg=".length));
+    const actual = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+      import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module';
+      let capture; cp.spawn=(command,args,options)=>{capture={args,slots:options.stdio.length};throw new Error('bounded-spawn-interception')}; syncBuiltinESMExports();
+      const {BrowserManager}=await import(${JSON.stringify(module)});
+      const manager=new BrowserManager({executablePath:process.execPath,userDataDir:${JSON.stringify(join(root, "profile"))},headless:true,chromeArg:${JSON.stringify(chromeArg)}});
+      try{await manager.ensureBrowser()}catch{}
+      if(!capture)process.exit(1);process.stdout.write(JSON.stringify(capture));
+    `], { env: { PATH: "", HOME: root }, encoding: "utf8", timeout: 5000 });
+    assert.equal(actual.status, 0);
+    const capture = JSON.parse(actual.stdout) as { args: string[]; slots: number };
+    assert.equal(capture.slots, 5); assert.ok(capture.args.includes("--remote-debugging-pipe"));
+    assert.ok(!capture.args.some(arg => /^--remote-debugging-(port|address)/.test(arg)));
+    assert.ok(!capture.args.includes("--no-sandbox"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 test("foreign loopback listener cannot be mistaken for the owned bridge, even with plausible health", async () => {
