@@ -252,7 +252,10 @@ class Matrix:
         (self.root / "d-axismoke").mkdir(mode=0o700)
         # No provider/public network is reachable. The trace observes attempted
         # network and exec effects too, rather than calling isolation 'zero'.
-        stdout, _ = self.command([binaries["bubblewrap"], "--unshare-net", "--unshare-pid", "--new-session", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--bind", str(self.root), str(self.root),
+        # Unprivileged user namespaces leave host root-owned /tmp unmapped.
+        # A private mode-0700 tmpfs preserves the production profile ownership
+        # checks without weakening them or changing any operator profile.
+        stdout, _ = self.command([binaries["bubblewrap"], "--unshare-net", "--unshare-pid", "--new-session", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--perms", "0700", "--tmpfs", "/tmp", "--bind", str(self.root), str(self.root),
                                  binaries["strace"], "-f", "-qq", "-s", "512", "-e", "trace=process,network,openat", "-o", str(trace),
                                  str(all_output / "bin/pa-platform-node"), str(helper), str(manifest)], timeout=900, env=runtime_env, expected=(0, 1))
         runtime = json.loads(stdout)

@@ -10,6 +10,8 @@ import http from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureInstalledWrapper } from './capture-wrapper.mjs';
+import { writeConsentFixture } from './consent-fixture.mjs';
 const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const { root, outputs, tools, chrome } = manifest;
 const helperDir = dirname(fileURLToPath(import.meta.url));
@@ -92,11 +94,7 @@ try {
   assert.equal(browser.BROWSER_IDLE_MS, 300000);
   assert.equal(browser.BROWSER_CLEANUP_MS, 10000);
   const inherited = '/inherited/gh-axi:/inherited/quota-axi:/inherited/bin::';
-  const captureWrapper = (output, name) => {
-    const result = cp.spawnSync('/bin/sh', ['-c', 'exec() { printf "%s\\n%s\\n" "$PATH" "${PA_AXI_PATH-}"; }; . "$1"', 'wrapper-capture', join(output, 'bin', name)], { env: { ...baseEnv, PATH: inherited }, encoding: 'utf8', timeout: 5000 });
-    assert.equal(result.status, 0);
-    return result.stdout.trimEnd().split('\n');
-  };
+  const captureWrapper = (output, name) => captureInstalledWrapper(output, name, { ...baseEnv, PATH: inherited });
   active = 'installed-path';
   const baselinePrefixes = Object.fromEntries(['pa-core', 'opa', 'cpa', 'dpa', 'pa-platform-node'].map(name => [name, captureWrapper(outputs['0'], name)[0]]));
   for (let mask = 0; mask < 8; mask++) {
@@ -214,7 +212,7 @@ try {
   const value = { version: 1, deploymentId: 'd-quota', providers: ['codex', 'claude'].map(id => ({ id, profilePath: join(root, 'profiles', id) })) };
   const quotaEnv = { ...fixtureEnv, PA_DEPLOYMENT_ID: 'd-quota', PA_DEPLOYMENT_DIR: dir, PA_AXI_QUOTA_CONSENT: consent, AXI_SMOKE_PORT: fs.readFileSync(portFile, 'utf8'), AXI_SMOKE_STATE: 'fresh',
     CODEX_HOME: '/path-sentinel', CLAUDE_CONFIG_DIR: '/identity-sentinel', OPENAI_API_KEY: 'secret-sentinel', ANTHROPIC_API_KEY: 'secret-sentinel', HTTPS_PROXY: 'secret-sentinel' };
-  const setConsent = v => { fs.writeFileSync(consent, JSON.stringify(v), { mode: 0o600 }); fs.chmodSync(consent, 0o600); };
+  const setConsent = v => writeConsentFixture(consent, v);
   active = 'quota-denials';
   const denialEvidence = [];
   const denyConsent = (name, env = quotaEnv) => {
@@ -501,7 +499,11 @@ try {
 } catch (error) {
   // Only a stable case ID is published. Node assertion messages can include
   // synthetic upstream output, so never log stack/message/raw stderr.
-  report.cases[active] = { status: 'failed', failureKind: error.constructor.name };
+  // Record only our source location, never raw assertion values/errors that
+  // may contain credential, identity or path sentinels from negative fixtures.
+  const location = /runtime\.mjs:(\d+):(\d+)/.exec(error.stack ?? '');
+  report.cases[active] = { status: 'failed', failureKind: error.constructor.name,
+    ...(location ? { failureLine: Number(location[1]), failureColumn: Number(location[2]) } : {}) };
   process.exitCode = 1;
 } finally {
   for (const env of browserEnvs) { try { await browser?.cleanupManagedBrowser(env); } catch { report.cleanupFailure = true; process.exitCode = 1; } }

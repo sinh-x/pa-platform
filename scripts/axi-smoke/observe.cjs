@@ -25,7 +25,13 @@ for (const name of ['readFileSync', 'openSync', 'accessSync', 'statSync', 'lstat
   fs[name] = (...args) => {
     const observed = credential(args[0]);
     if (observed) event(name === 'readFileSync' ? 'credentialRead' : 'profileMetadata');
-    const result = original(...args);
+    let result;
+    try { result = original(...args); }
+    catch (error) {
+      // Safe fixture diagnostics: never retain pathname, bytes or raw errors.
+      event('fixtureFsFailure', { operation: name, code: typeof error.code === 'string' ? error.code : 'unknown' });
+      throw error;
+    }
     if (name === 'openSync' && observed) profileFds.add(result);
     return result;
   };
@@ -55,6 +61,11 @@ fs.closeSync = fd => { profileFds.delete(fd); return originalClose(fd); };
 const originalStat = fs.fstatSync;
 fs.fstatSync = (...args) => {
   const stat = originalStat(...args);
+  if (stat.isDirectory()) event('profileDirectoryCheck', {
+    owner: stat.uid === (typeof stat.uid === 'bigint' ? BigInt(process.getuid()) : process.getuid()),
+    rootOwned: stat.uid === (typeof stat.uid === 'bigint' ? 0n : 0),
+    mode: Number(stat.mode) & 0o7777,
+  });
   // Synthetic wrong-owner metadata is a test-only effect; no chown/sudo or
   // operator credential is needed. Installed consent validation still runs.
   if (process.env.AXI_SMOKE_FOREIGN_OWNER === '1' || (process.env.AXI_SMOKE_FOREIGN_PROFILE === '1' && stat.isFile() && profileFds.has(args[0]))) stat.uid += typeof stat.uid === 'bigint' ? 1n : 1;

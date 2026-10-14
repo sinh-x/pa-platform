@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -618,11 +618,20 @@ let groupRejected=false,foreignRejected=false; try{process.kill(-child.pid,'SIGT
 const report={args:process.argv.slice(2),sameSession:session(child.pid)===session(process.pid),groupRejected,foreignRejected};
 child.on('exit',()=>process.stdout.write(JSON.stringify(report))); process.kill(child.pid,'SIGTERM');`);
     writeFileSync(shim, managedMcpShim(process.execPath, mcp, "/synthetic/chrome", profile));
-    const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--password-store=basic", "--chrome-arg=--use-mock-keychain"];
+    const expected = [`--userDataDir=${profile}`, "--headless", "--chrome-arg=--use-mock-keychain", "--chrome-arg=--password-store=basic"];
+    const pinnedBridge = process.env.PAP240_PINNED_BROWSER_BRIDGE;
+    if (pinnedBridge) {
+      const actual = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+        const bridge = await import(${JSON.stringify(pinnedBridge)});
+        process.stdout.write(JSON.stringify(bridge.buildTransportArgs().slice(2)));
+      `], { env: { PATH: "", HOME: root, CHROME_DEVTOOLS_AXI_USER_DATA_DIR: profile }, encoding: "utf8", timeout: 5000 });
+      assert.equal(actual.status, 0, actual.stderr);
+      assert.deepEqual(JSON.parse(actual.stdout), expected);
+    }
     const accepted = spawnSync(process.execPath, [shim, ...expected], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
     assert.equal(accepted.status, 0); assert.deepEqual(JSON.parse(accepted.stdout), { args: pinnedMcpArguments(mcp, "/synthetic/chrome", profile).slice(1), sameSession: true, groupRejected: true, foreignRejected: true });
     rmSync(marker);
-    for (const args of [[], [...expected, "--browserUrl=http://foreign"], [...expected, "--no-usage-statistics=false"], ["--isolated"], ["--help"], ["--executablePath=/foreign"]]) {
+    for (const args of [[], [expected[0], expected[1], expected[3], expected[2]], [...expected, "--browserUrl=http://foreign"], [...expected, "--no-usage-statistics=false"], ["--isolated"], ["--help"], ["--executablePath=/foreign"]]) {
       const denied = spawnSync(process.execPath, [shim, ...args], { env: { PATH: "" }, encoding: "utf8", timeout: 5000 });
       assert.equal(denied.status, 1); assert.equal(denied.stdout + denied.stderr, ""); assert.equal(existsSync(marker), false);
     }
@@ -696,6 +705,7 @@ test("Phase-4 installed smoke is separate, exact-CLI, complete-or-fail and has n
   assert.match(matrix, /--option", "sandbox", "true"/);
   assert.match(matrix, /--unshare-net/);
   assert.match(matrix, /--unshare-pid/);
+  assert.match(matrix, /"--perms", "0700", "--tmpfs", "\/tmp", "--bind"/);
   assert.match(matrix, /trace=process,network,openat/);
   assert.match(runtime, /share\/pa-platform\/packages\/pi-pa\/dist/);
   assert.match(runtime, /await import\(join\(modules, 'axi-browser\.js'\)\)/);
@@ -705,7 +715,7 @@ test("Phase-4 installed smoke is separate, exact-CLI, complete-or-fail and has n
   // importing production outputs, evaluating Nix, or launching Chrome.
   const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())", fileURLToPath(new URL("scripts/axi-smoke/matrix.py", root))], { encoding: "utf8", timeout: 5000 });
   assert.equal(parsed.status, 0, parsed.stderr);
-  for (const filename of ["runtime.mjs", "provider.mjs", "observe.cjs", "pinned-quota.cjs"]) {
+  for (const filename of ["runtime.mjs", "provider.mjs", "observe.cjs", "pinned-quota.cjs", "capture-wrapper.mjs", "consent-fixture.mjs"]) {
     const syntax = spawnSync(process.execPath, ["--check", fileURLToPath(new URL(`scripts/axi-smoke/${filename}`, root))], { encoding: "utf8", timeout: 5000 });
     assert.equal(syntax.status, 0, syntax.stderr);
   }
@@ -755,6 +765,56 @@ with tempfile.TemporaryDirectory() as directory:
     assert len(expressions) == 6
 `, matrix], { encoding: "utf8", timeout: 5000 });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("installed wrapper capture uses declared Bash semantics and rejects unsupported interpreters", async () => {
+  const helper = new URL("../../../../scripts/axi-smoke/capture-wrapper.mjs", import.meta.url);
+  const { captureInstalledWrapper } = await import(helper.href);
+  const shell = "/nix/store/00000000000000000000000000000000-bash-fixture/bin/bash";
+  const dir = mkdtempSync(join(tmpdir(), "axi-wrapper-capture-"));
+  mkdirSync(join(dir, "bin"));
+  const wrapper = join(dir, "bin", "ppa");
+  try {
+    writeFileSync(wrapper, `#! ${shell} -e\nexport PATH='/declared/bin:/inherited/bin::'\nexport PA_AXI_PATH='/selected/bin'\nexec /nonexistent/never-run --help\n`);
+    let calls = 0;
+    const effects = {
+      readFileSync,
+      spawnSync: (executable: string, args: string[], options: object) => {
+        calls++;
+        assert.equal(executable, shell);
+        assert.deepEqual(args.slice(0, 4), ["--noprofile", "--norc", "-e", "-c"]);
+        // Exercise the exact capture primitive with real Bash, without Nix or
+        // production wrapper execution; the declared fixture path is synthetic.
+        return spawnSync("bash", args, { ...options, env: { PATH: process.env.PATH } });
+      },
+    };
+    assert.deepEqual(captureInstalledWrapper(dir, "ppa", {}, effects), ["/declared/bin:/inherited/bin::", "/selected/bin"]);
+    assert.equal(calls, 1);
+    for (const shebang of ["#!/bin/sh", "#!/usr/bin/env bash", shell.replace("/bin/bash", "/bin/sh"), `#! ${shell} --posix`, `#! ${shell};touch /foreign`]) {
+      writeFileSync(wrapper, shebang + "\nexec /nonexistent/never-run\n");
+      assert.throws(() => captureInstalledWrapper(dir, "ppa", {}, effects));
+    }
+    assert.equal(calls, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("synthetic consent fixture safely rewrites intentional read-only modes and refuses symlinks", async () => {
+  const helper = new URL("../../../../scripts/axi-smoke/consent-fixture.mjs", import.meta.url);
+  const { writeConsentFixture } = await import(helper.href);
+  const dir = mkdtempSync(join(tmpdir(), "axi-consent-fixture-"));
+  const file = join(dir, "consent.json");
+  try {
+    for (const mode of [0o644, 0o400, 0o1600]) {
+      writeConsentFixture(file, { version: 1 });
+      chmodSync(file, mode);
+      writeConsentFixture(file, { version: 2 });
+      assert.equal(statSync(file).mode & 0o7777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { version: 2 });
+    }
+    const link = join(dir, "link.json"); symlinkSync(file, link);
+    assert.throws(() => writeConsentFixture(link, { version: 3 }));
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { version: 2 });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("installed-smoke observer records actual credential/network/child attempts rather than assumed zero counters", () => {
