@@ -9,6 +9,7 @@ import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnos
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
 import { clearPiTerminalStatus, readPiTerminalStatus } from "./terminal-status.js";
 import { normalizePiRuntimeConfig } from "./runtime-normalization.js";
+import { recordPiReadonlyRoleProcessIdentity } from "./process-identity.js";
 import { PI_REGISTRY_ADDON_ENV, piRegistryEnvironment, probePiNativeRegistryAddon, type PiNativeHostEvidence } from "./native-host.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
@@ -699,6 +700,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
     }
     try {
       if (!child.pid) throw new Error("Pi child did not expose a process id");
+      recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), child.pid);
       supervision.onSpawn?.(child.pid);
     } catch (error) {
       requestCleanup(1, error instanceof Error ? error : new Error(String(error)));
@@ -1278,6 +1280,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       inputFlowOwned = previousFlowing !== true && readableIsFlowing(input);
       input.once("end", onInputClosed); input.once("close", onInputClosed); process.stdout.on("resize", onResize); process.on("SIGINT", onSigint); pty.onData(onData);
       pty.onExit(({ exitCode, signal }) => finishExit(exitCode, signal));
+      recordPiReadonlyRoleProcessIdentity(env, opts.deployId, dirname(opts.primerPath), pty.pid);
       opts.onPid?.(pty.pid);
       if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
       void monitorProcessExit();

@@ -15,6 +15,7 @@ import {
 } from "@pa-platform/pa-core";
 import { createPiHooks, createPiReadonlyHelperCapability, piReviewCheckoutCorrelation } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
+import { PI_PROCESS_IDENTITY_FILE, recordPiProcessIdentity } from "../process-identity.js";
 
 const roles: ReadOnlyHelperRole[] = ["orchestrator", "parented-implement", "standalone-implement", "worker-consistency-only", "review-auto"];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -60,6 +61,10 @@ function fixture(root: string, role: ReadOnlyHelperRole) {
   const mode = role === "review-auto" ? "review-auto" : role === "worker-consistency-only" ? "worker" : role === "orchestrator" ? "orchestrator" : "implement";
   const team = role === "review-auto" ? "requirements" : "builder";
   Object.assign(process.env, { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: directory, PA_TEAM: team, PA_MODE: mode, PA_TICKET_ID: "ALT-7", PA_REPO: candidate, PA_WORKTREE_ROOT: candidate });
+  if (role === "worker-consistency-only" || role === "review-auto") {
+    mkdirSync(directory, { recursive: true });
+    assert.equal(recordPiProcessIdentity(id, directory, process.pid), true);
+  }
   const status: DeploymentStatus = { deploy_id: id, team, mode, status: "running", started_at: new Date().toISOString(), pid: process.pid, agents: [],
     runtime: "pi", binary: "ppa", ticket_id: "ALT-7", repo: candidate, repo_root: canonical, worktree_root: candidate };
   const binding = { builder_authority: role === "standalone-implement" ? "standalone-implement" as const : "orchestrator" as const,
@@ -384,6 +389,61 @@ test("built CLI rejects ended/replayed/forged locators and missing commands with
         for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.ok(result.stderr.includes(`${label}:`));
       }
     });
+  }));
+});
+
+test("owner-absent worker/reviewer reject stale PID incarnations with default process checks and built CLI", async (t) => {
+  for (const role of ["worker-consistency-only", "review-auto"] as const) {
+    for (const kind of ["absent", "incarnation", "boot", "pid", "deployment", "malformed", "insecure", "symlink", "oversized"] as const) {
+      await t.test(`${role}: ${kind}`, () => isolated((root) => {
+        const f = fixture(root, role);
+        const path = join(getDeployPaths(f.id).deployDir, PI_PROCESS_IDENTITY_FILE);
+        const identity = JSON.parse(readFileSync(path, "utf8"));
+        // Retain a stale running registry (and review reservation/claim) whose
+        // numeric PID is now the live test ancestor. Never refresh its anchor.
+        f.status.started_at = "2000-01-01T00:00:00.000Z";
+        f.claim.claimedAt = f.status.started_at;
+        if (role === "review-auto") protectedWrite(repositoryReviewReservationPath(f.candidate), { ...f.review, reservedAt: f.status.started_at });
+        if (kind === "absent") rmSync(path);
+        else if (kind === "incarnation") protectedWrite(path, { ...identity, processFingerprint: { ...identity.processFingerprint, startTimeTicks: "0" } });
+        else if (kind === "boot") protectedWrite(path, { ...identity, processFingerprint: { ...identity.processFingerprint, bootId: "00000000-0000-0000-0000-000000000000" } });
+        else if (kind === "pid") protectedWrite(path, { ...identity, processFingerprint: { ...identity.processFingerprint, pid: 1 } });
+        else if (kind === "deployment") protectedWrite(path, { ...identity, deploymentId: f.parent });
+        else if (kind === "malformed") protectedWrite(path, { ...identity, processFingerprint: { pid: process.pid } });
+        else if (kind === "insecure") chmodSync(path, 0o644);
+        else if (kind === "symlink") { rmSync(path); symlinkSync(f.ticketPath, path); }
+        else writeFileSync(path, "x".repeat(4097));
+        persistRegistryFixture(f); const run = builtCli(f);
+        const capability = createPiReadonlyHelperCapability({ treehouse: f.treehouse });
+        let substantiveCalls = 0;
+        guarded(f, () => {
+          rejected(() => withReadOnlyHelperContext(capability.authenticate(f.candidate), () => { substantiveCalls++; }));
+          for (const args of [["branch", "validate"], ["board"], ["repository", "inspect"]]) {
+            const result = run(args);
+            assert.equal(result.code, 1); assert.equal(result.stdout, "");
+            assert.match(result.stderr, /authority-rejected/); assert.match(result.stderr, /implementation unknown/);
+            assert.ok(result.stderr.trim().length <= 2000);
+            assert.doesNotMatch(result.stderr, /private-fixture|startTimeTicks|bootId|review-auth:/);
+          }
+        });
+        assert.equal(substantiveCalls, 0);
+      }));
+    }
+  }
+});
+
+test("worker/reviewer immediate reread rejects replaced launch anchors before substantive access", async (t) => {
+  for (const role of ["worker-consistency-only", "review-auto"] as const) await t.test(role, () => isolated((root) => {
+    const f = fixture(root, role);
+    persistRegistryFixture(f);
+    const capability = createPiReadonlyHelperCapability({ treehouse: f.treehouse });
+    const auth = capability.authenticate(f.candidate);
+    const path = join(getDeployPaths(f.id).deployDir, PI_PROCESS_IDENTITY_FILE);
+    const identity = JSON.parse(readFileSync(path, "utf8"));
+    protectedWrite(path, { ...identity, processFingerprint: { ...identity.processFingerprint, startTimeTicks: "0" } });
+    let substantiveCalls = 0;
+    guarded(f, () => rejected(() => withReadOnlyHelperContext(auth, () => { substantiveCalls++; })));
+    assert.equal(substantiveCalls, 0);
   }));
 });
 

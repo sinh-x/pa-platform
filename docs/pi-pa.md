@@ -80,6 +80,15 @@ immediately before substantive helper access. Missing, malformed, ended, replaye
 wrong-ticket/mode/path or drifted evidence fails closed; there is no canonical-root
 fallback, authority repair or automatic restart.
 
+Worker and review-auto runtimes record their actual spawned Pi process incarnation
+(PID, Linux process-start ticks and boot identity) in the private mode-0600
+`$PA_DEPLOYMENT_DIR/pi-process-identity.json` before publishing PID/readiness.
+Helpers require this historical anchor even with an existing orchestrator, compare
+it with the live process, and reread it before access. A currently live numeric PID
+alone does not authenticate stale deployment evidence. Missing legacy launch
+anchors reject; helpers never synthesize/repair one or restart a deployment.
+Builder roles retain their existing owner/borrower launch-fingerprint checks.
+
 | Deployment role | Required observational boundary |
 | --- | --- |
 | builder/orchestrator | Matching live owner and ticket capacity; any direct borrower must also match. |

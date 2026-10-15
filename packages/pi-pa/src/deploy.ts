@@ -14,6 +14,7 @@ import { TreehouseClient } from "./treehouse.js";
 import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
+import { readPiProcessIdentity } from "./process-identity.js";
 import { finalizeRepositoryReview, isCanonicalTicketId, reserveRepositoryReview, reviewCheckoutsEqual, withRepositoryReviewReservation, validateReviewCheckoutCorrelationEvidence, type RepositoryAdmissionDependencies, type RepositoryReviewReservation, type LinkedBranch, type ReviewCheckoutCorrelationEvidence, type ReviewCheckoutEvidence, type RuntimeName, type Ticket } from "@pa-platform/pa-core";
 
 export type PiReviewCandidateBinding = Pick<ReviewCheckoutCorrelationEvidence, "repoKey" | "repoRoot" | "ticket" | "branch" | "baseSha" | "featureSha" | "approvedReference">;
@@ -258,8 +259,8 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         const physical = resolveRepoExecutionPath(undefined, cwd, { allowLinkedWorktreeCwd: true });
         if (physical.worktreeKind !== "linked" || physical.worktreeRoot !== cwd || live.repo !== cwd || live.worktree_root !== cwd || live.repo_root !== physical.repoRoot) reject("crossed canonical/runtime domains or wrong physical worktree");
         const getFingerprint = dependencies.getProcessFingerprint ?? readProcessFingerprint;
-        const fingerprint = getFingerprint(live.pid!);
-        if (!fingerprint || !(dependencies.isProcessInLineage ?? processIsWithinFingerprintLineage)(process.pid, fingerprint)) reject("helper is not within the live deployment process lineage (stale/replayed locator)");
+        const observedFingerprint = getFingerprint(live.pid!);
+        const fingerprintEqual = (left: ProcessFingerprint, right: ProcessFingerprint | undefined) => Boolean(right && left.pid === right.pid && left.startTimeTicks === right.startTimeTicks && left.bootId === right.bootId);
         let role: ReadOnlyHelperRole;
         if (live.team === "builder" && live.mode === "orchestrator" && live.builder_authority === "orchestrator") role = "orchestrator";
         else if (live.team === "builder" && live.mode === "implement" && live.builder_authority === "parented-implement") role = "parented-implement";
@@ -267,12 +268,19 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         else if (live.team === "builder" && live.mode === "worker" && !live.builder_authority && !live.parent_deployment_id) role = "worker-consistency-only";
         else if (live.team === "requirements" && live.mode === "review-auto" && !live.builder_authority && !live.parent_deployment_id) role = "review-auto";
         else return reject("mode has no authenticated-worktree read-only helper role");
+        // Owners/borrowers are anchored below by their private launch evidence.
+        // Worker/reviewer identity needs its own runtime-recorded incarnation, even
+        // when an orchestrator happens to be present. Sampling live.pid is not proof
+        // that today's incarnation belongs to the historical deployment.
+        const fingerprint = role === "worker-consistency-only" || role === "review-auto"
+          ? readPiProcessIdentity(id!, directory) : observedFingerprint;
+        if (!fingerprint || fingerprint.pid !== live.pid || !fingerprintEqual(fingerprint, observedFingerprint)
+          || !(dependencies.isProcessInLineage ?? processIsWithinFingerprintLineage)(process.pid, fingerprint)) reject("helper is not within the recorded live deployment process incarnation/lineage (stale/replayed locator)");
         const authority = observeReadonlyRepositoryAuthority(physical.gitDir);
         const lease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(physical.repoRoot, physical.repoKey, ticketId, cwd);
         const ticket = readReviewCandidateTicket(ticketId);
         const linked = requireTicketLinkedBranch(ticket, physical.repoKey);
         if (ticket.project !== physical.repoKey || linked.state !== "materialized" || !/^[0-9a-f]{40}$/.test(linked.baseSha ?? "") || !/^[0-9a-f]{40}$/.test(linked.headSha ?? "")) reject("durable materialized ticket branch evidence is incomplete or wrong-project");
-        const fingerprintEqual = (left: ProcessFingerprint, right: ProcessFingerprint | undefined) => Boolean(right && left.pid === right.pid && left.startTimeTicks === right.startTimeTicks && left.bootId === right.bootId);
         const validateOwner = (owner: RepositoryMutationLease, slot: "orchestrator" | "implement") => {
           const registry = query(owner.deploymentId).status;
           if (!registry || registry.status !== "running" || registry.team !== "builder" || registry.mode !== owner.mode || registry.runtime !== "pi" || registry.binary !== "ppa"
