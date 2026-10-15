@@ -363,6 +363,18 @@ end
 
 complete -c ppa -f
 
+complete -c ppa -n __fish_use_subcommand -a artifact -d 'Render inert Markdown companions; review lifecycle unavailable'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and test (count (commandline -opc)) -eq 2' -a 'render review' -d 'Artifact operation'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and test (count (commandline -opc)) -eq 3' -a 'start status stop feedback' -d 'Review operation (not yet available)'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l source -r -d 'Absolute UTF-8 Markdown source'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l output-dir -r -d 'Previously absent authorized companion directory'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from start' -l manifest -r -d 'Absolute companion manifest'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from status stop feedback' -l session -r -d 'Opaque session ID (not a path or PID)'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from feedback' -l output -r -d 'Absolute feedback export target'
+complete -c ppa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from feedback' -l timeout-ms -r -d 'Integer 0..30000 (default 1000)'
+complete -c ppa -n '__fish_seen_subcommand_from artifact' -l json -d 'Required v1 JSON success envelope'
+complete -c ppa -n '__fish_seen_subcommand_from artifact' -l help -d 'Side-effect-free prerequisites and interface help'
+
 complete -c ppa -n __fish_use_subcommand -a repos -d 'Manage repositories'
 complete -c ppa -n __fish_use_subcommand -a repository -d 'Inspect or safely quarantine repository ownership evidence'
 complete -c ppa -n __fish_use_subcommand -a status -d 'Show deployment status'
@@ -431,15 +443,15 @@ complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Pi mod
 complete -c ppa -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
 
 
-complete -c ppa -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__ppa_deployments)' -d 'Deployment'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__ppa_teams)'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l recent -d 'Limit recent deployments' -r
-complete -c ppa -n '__fish_seen_subcommand_from status' -l wait -d 'Check whether deployment is terminal'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l report -d 'Show work report for deployment'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l artifacts -d 'List deployment artifact files'
-complete -c ppa -n '__fish_seen_subcommand_from status' -l activity -d 'Show deployment activity timeline'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact; and string match -q "d-*" -- (commandline -ct)' -a '(__ppa_deployments)' -d 'Deployment'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l running -d 'Only running deployments'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l today -d 'Only today deployments'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l team -d 'Filter by team' -r -a '(__ppa_teams)'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l recent -d 'Limit recent deployments' -r
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l wait -d 'Check whether deployment is terminal'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l report -d 'Show work report for deployment'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l artifacts -d 'List deployment artifact files'
+complete -c ppa -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l activity -d 'Show deployment activity timeline'
 
 complete -c ppa -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 2' -a '(__ppa_teams) daily:plan daily:progress daily:end signal:collect' -d 'Schedule spec'
 complete -c ppa -f -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 3' -a 'hourly daily weekly monthly' -d 'Repeat interval'
@@ -580,7 +592,7 @@ complete -c ppa -n '__fish_seen_subcommand_from signal; and __fish_seen_subcomma
 
 # Pi-only observational protected-review contract preflight
 complete -c ppa -n __fish_use_subcommand -a review -d 'Protected review preflight'
-complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from preflight' -a preflight -d 'Static checks only; grants no authority'
-complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l ticket -r -d 'Exact ticket ID'
-complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'
-complete -c ppa -n '__fish_seen_subcommand_from review; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'
+complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and not __fish_seen_subcommand_from preflight' -a preflight -d 'Static checks only; grants no authority'
+complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l ticket -r -d 'Exact ticket ID'
+complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'
+complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'
