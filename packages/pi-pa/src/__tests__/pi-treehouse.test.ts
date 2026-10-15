@@ -7,7 +7,8 @@ import test from "node:test";
 import { acquireRepositoryMutationLease, acquireRepositoryTicketSlot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, inspectRepositoryMutationLease, publishRepositoryDirtyBorrowApproval, queryDeploymentStatus, readProcessFingerprint, releaseRepositoryMutationLease, releaseRepositoryTicketSlot, repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryTicketSlotPath, runCoreCommand, TicketStore, type DeployRequest, type RepositoryMutationBorrower, type RepositoryDirtyBorrowApproval, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, selectPiReviewCandidateBeforePlanning, type PiDeployDependencies, type PiReviewCandidateBinding, type PiReviewCandidateOperation } from "../deploy.js";
 import { validateDeploymentCorrelationEvidence, validateReviewCheckoutCorrelationEvidence, type RuntimeName } from "@pa-platform/pa-core";
-import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, TreehouseClient, type TreehouseCommandResult } from "../treehouse.js";
+import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, type TreehouseCommandResult } from "../treehouse.js";
+import { TreehouseClient } from "./treehouse-fixture.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
   const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(typeof stdout === "string" ? stdout : JSON.stringify(stdout));
@@ -191,7 +192,7 @@ test("review-auto selects the exact existing candidate", async (t) => {
   }
 });
 
-test("Treehouse JSON boundary acquires from an exact v2.3.0 free row, reuses one lease, and rejects malformed evidence", () => {
+test("Treehouse JSON boundary acquires from a free row, reuses one lease, and rejects malformed evidence", () => {
   const calls: string[][] = [];
   const free = { name: "1", path: "/tmp/treehouse/free", status: "free", flavor: "git", lease_id: "", lease_holder: "", leased_at: null, processes: [] };
   const lease = { path: "/tmp/treehouse/one", status: "leased", leased: true, lease_id: "lease-1", lease_holder: "pa:registered:PAP-1", leased_at: "2026-09-17T00:00:00Z" };
@@ -212,7 +213,7 @@ test("Treehouse JSON boundary acquires from an exact v2.3.0 free row, reuses one
   assert.equal(getCalled, false);
 
   const absentFlagLeased = new TreehouseClient({ run: () => result([{ ...lease, leased: undefined }]) });
-  assert.equal(absentFlagLeased.status("/repo")[0]?.leased, true, "v2.3.0 status without the flag infers a lease only from complete metadata");
+  assert.equal(absentFlagLeased.status("/repo")[0]?.leased, true, "status without the flag infers a lease only from complete metadata");
   const absentFlagFree = new TreehouseClient({ run: () => result([{ path: "/tmp/treehouse/free" }]) });
   assert.deepEqual(absentFlagFree.status("/repo"), [{ path: "/tmp/treehouse/free", leased: false }]);
   const exactFree = new TreehouseClient({ run: () => result([free]) });
