@@ -7,7 +7,7 @@ let
   # Use npm's committed node_modules layout, including nested resolutions. The
   # published tarballs contain compiled JS; installation never runs npm, package
   # lifecycle scripts, browser provisioning, or an online dependency resolver.
-  mkPinnedTool = { name, version, bins, license, dependencies ? [], wrapperArgs ? "" }:
+  mkPinnedTool = { name, version, bins, license, dependencies ? [], wrapperArgs ? "", managedGate ? false }:
     let
       records = ./axi + "/${name}";
       manifest = builtins.fromJSON (builtins.readFile (records + "/package.json"));
@@ -47,12 +47,27 @@ let
     assert inventory.schemaVersion == 1;
     assert lib.sort builtins.lessThan (map (entry: entry.path) entries) == lockedPaths;
     assert builtins.all validEntry entries;
-    pkgs.stdenvNoCC.mkDerivation {
+    assert !managedGate || (
+      upstream.dependencies == lock.packages."node_modules/lavish-axi".dependencies
+      && lock.packages."node_modules/lavish-axi".integrity == "sha512-7qU7tF1ShNQEQY3SMceNkIR2T1Iuy3kOvatoOgPwUW1QJuXoi+vzF5NOiDSt7xMfNaKJMNLefY856yylFxOxHg=="
+      && builtins.all (entry: entry.path != "node_modules/lavish-axi"
+        || entry.sha256 == "sha256-sEvY7qcezoJMpdxoN8mN4ENyt2ymoo/m4aGrAl5QrP0=") entries
+      && builtins.all (adaptation:
+        builtins.hashFile "sha256" (records + "/${adaptation.path}") == adaptation.sha256
+      ) (builtins.fromJSON (builtins.readFile (records + "/adaptations.json"))).adaptations
+    );
+    (if managedGate then pkgs.pkgsStatic.stdenv else pkgs.stdenvNoCC).mkDerivation {
       pname = name;
       inherit version;
       dontUnpack = true;
-      dontBuild = true;
-      nativeBuildInputs = [ pkgs.makeWrapper ];
+      dontBuild = !managedGate;
+      nativeBuildInputs = lib.optional (!managedGate) pkgs.makeWrapper;
+      buildPhase = lib.optionalString managedGate ''
+        runHook preBuild
+        $CC -static -std=c11 -O2 -Wall -Wextra -Werror \
+          ${records}/adaptations/managed-entrypoint.c -o managed-gate
+        runHook postBuild
+      '';
 
       installPhase = ''
         runHook preInstall
@@ -60,7 +75,13 @@ let
         ${lib.concatMapStringsSep "\n" (source: ''
           mkdir -p "${moduleRoot}/${source.path}"
           tar --extract --gzip --file ${source.archive} \
-            --directory "${moduleRoot}/${source.path}" --strip-components=1
+            --directory "${moduleRoot}/${source.path}" --strip-components=1 \
+            ${lib.optionalString (managedGate && source.path == "node_modules/lavish-axi") ''
+              package/package.json package/LICENSE package/THIRD-PARTY-NOTICES.md \
+              package/dist/cli.mjs package/dist/chrome-client.js package/dist/chrome.css \
+              package/dist/design/daisyui.css package/dist/design/daisyui-themes.css \
+              package/dist/design/tailwindcss-browser.js
+            ''}
         '') sources}
         cp ${records}/package.json ${records}/package-lock.json \
           ${records}/upstream-package.json ${records}/integrity.json \
@@ -68,7 +89,14 @@ let
         ${lib.optionalString (name == "chrome-devtools-mcp") ''
           cp ${records}/bundled-packages.json $out/share/${name}/
         ''}
-        ${lib.concatStringsSep "\n" (lib.mapAttrsToList (bin: entrypoint: ''
+        ${if managedGate then ''
+          install -m755 managed-gate $out/bin/lavish-axi
+          chmod a-x ${moduleRoot}/node_modules/lavish-axi/dist/cli.mjs
+          ln -s ${node}/bin/node ${moduleRoot}/pinned-node
+          cp ${records}/adaptations.json ${records}/upstream-files.json \
+            $out/share/${name}/
+          cp -r ${records}/adaptations $out/share/${name}/
+        '' else lib.concatStringsSep "\n" (lib.mapAttrsToList (bin: entrypoint: ''
           test -f "${moduleRoot}/node_modules/${name}/${entrypoint}"
           makeWrapper ${node}/bin/node "$out/bin/${bin}" \
             --add-flags "${moduleRoot}/node_modules/${name}/${entrypoint}" \
@@ -84,14 +112,17 @@ let
         integrityRecords = records + "/integrity.json";
         licenseRecords = records + "/THIRD_PARTY_NOTICES.md";
         # Fixed managed-shim entrypoint, avoiding PATH/npm/npx resolution.
-        axiEntrypoint = "lib/${name}/node_modules/${name}/${bins.${name}}";
+        axiEntrypoint = if managedGate then "bin/lavish-axi"
+          else "lib/${name}/node_modules/${name}/${bins.${name}}";
+        inherit managedGate;
         # Direct entrypoint for the AXI bridge, avoiding npm/npx bootstrap.
         mcpEntrypoint = if name == "chrome-devtools-mcp"
           then "lib/${name}/node_modules/${name}/build/src/bin/chrome-devtools-mcp.js"
           else null;
       };
       meta = {
-        description = "Integrity-pinned ${name} CLI (independent of PA application dependencies)";
+        description = if managedGate then "Pinned Lavish provenance closure with fail-closed managed gate (review unavailable)"
+          else "Integrity-pinned ${name} CLI (independent of PA application dependencies)";
         inherit license;
         mainProgram = name;
         platforms = [ "x86_64-linux" "aarch64-linux" ];
@@ -112,6 +143,13 @@ let
     '';
   };
 in {
+  lavish-axi = mkPinnedTool {
+    name = "lavish-axi";
+    version = "0.1.67";
+    bins.lavish-axi = "dist/cli.mjs";
+    license = lib.licenses.mit;
+    managedGate = true;
+  };
   chrome-devtools-mcp = mcp;
   gh-axi = mkPinnedTool {
     name = "gh-axi";
