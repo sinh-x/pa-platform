@@ -61,7 +61,7 @@ let
       inherit version;
       dontUnpack = true;
       dontBuild = !managedGate;
-      nativeBuildInputs = lib.optional (!managedGate) pkgs.makeWrapper;
+      nativeBuildInputs = if managedGate then [ pkgs.python3 ] else [ pkgs.makeWrapper ];
       buildPhase = lib.optionalString managedGate ''
         runHook preBuild
         $CC -static -std=c11 -O2 -Wall -Wextra -Werror \
@@ -93,6 +93,12 @@ let
           install -m755 managed-gate $out/bin/lavish-axi
           chmod a-x ${moduleRoot}/node_modules/lavish-axi/dist/cli.mjs
           ln -s ${node}/bin/node ${moduleRoot}/pinned-node
+          # Extract only digest-pinned annotation/queue code. Never execute or
+          # import the upstream CLI, browser SDK initializer or unsafe server.
+          python3 ${records}/adaptations/adapt-upstream.py \
+            ${moduleRoot}/node_modules/lavish-axi/dist/cli.mjs \
+            ${moduleRoot}/node_modules/lavish-axi/dist/chrome-client.js \
+            $out/share/lavish-axi/review
           cp ${records}/adaptations.json ${records}/upstream-files.json \
             $out/share/${name}/
           cp -r ${records}/adaptations $out/share/${name}/
@@ -121,7 +127,7 @@ let
           else null;
       };
       meta = {
-        description = if managedGate then "Pinned Lavish provenance closure with fail-closed managed gate (review unavailable)"
+        description = if managedGate then "Pinned selectively adapted Lavish assets for core-owned local review; raw CLI denied"
           else "Integrity-pinned ${name} CLI (independent of PA application dependencies)";
         inherit license;
         mainProgram = name;

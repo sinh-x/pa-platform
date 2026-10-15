@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { Script } from "node:vm";
 import test from "node:test";
 import {
   ARTIFACT_DIAGNOSTICS, ARTIFACT_POLICY_VERSION, ARTIFACT_SOURCE_MAX_BYTES,
@@ -110,4 +111,46 @@ test("recorded native gate is fixed, has no upstream/interpreter execution path,
   assert.match(gate.toString(), /ARTIFACT_POLICY_REJECTED/);
   assert.match(gate.toString(), /ARTIFACT_USAGE_INVALID/);
   // Source assertions are NOT installed-output or confinement acceptance.
+});
+
+test("phase-3 helpers are digest-bound; genuine pinned annotation/queue extraction is narrowly asserted", () => {
+  const root = new URL("../../../../../nix/axi/lavish-axi/", import.meta.url);
+  const inventory: { adaptations: { path: string; sha256: string }[]; phase3: { sourceFiles: Record<string, string> } } = JSON.parse(readFileSync(new URL("adaptations.json", root), "utf8"));
+  for (const entry of inventory.adaptations) {
+    assert.equal(createHash("sha256").update(readFileSync(new URL(entry.path, root))).digest("hex"), entry.sha256, entry.path);
+  }
+  const generator = readFileSync(new URL("adaptations/adapt-upstream.py", root), "utf8");
+  for (const digest of Object.values(inventory.phase3.sourceFiles)) assert.ok(generator.includes(digest));
+  for (const retained of ["function selector(el)", "function closestElement(node)", "function persistQueuedPrompts()", "function promptTargetLabel(prompt)", "async function submitQueuedOnce()", '"mouseup"']) assert.ok(generator.includes(retained), retained);
+  assert.match(generator, /text\.count\(old\) == 1/);
+  assert.match(generator, /text\.count\(start\) == 1/);
+  assert.match(generator, /document !== frame\.contentDocument/);
+  assert.match(generator, /ack\.eventIds/);
+  assert.doesNotMatch(generator, /subprocess|exec\(|eval\(/);
+  // These are source assertions, not generated/installed/browser qualification.
+});
+
+test("trusted outer frame remains scriptless, UI glue has no messaging/forbidden effect paths", () => {
+  const root = new URL("../../../../../nix/axi/lavish-axi/adaptations/", import.meta.url);
+  const html = readFileSync(new URL("outer.html", root), "utf8");
+  const glue = readFileSync(new URL("outer.js", root), "utf8");
+  assert.match(html, /sandbox="allow-same-origin"/);
+  assert.doesNotMatch(html, /allow-scripts|allow-forms|allow-popups|allow-downloads|<form|https?:/);
+  assert.doesNotThrow(() => new Script(glue)); // syntax only; no DOM execution
+  assert.doesNotMatch(glue, /postMessage\(|WebSocket\(|sendBeacon\(|eval\(|innerHTML|\.src\s*=/);
+  const routes = [...glue.matchAll(/fetch\("([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(routes, ["api/activity", "api/end", "api/status"]);
+  assert.match(glue, /unsent text is retained/);
+  assert.match(glue, /sending = true/);
+});
+
+test("all three adapters provide only shared artifact lifecycle metadata including background persistence", () => {
+  const root = new URL("../../../../", import.meta.url);
+  for (const adapter of ["pi-pa", "opencode-pa", "claudecode-pa"]) {
+    const source = readFileSync(new URL(`${adapter}/src/adapter.ts`, root), "utf8");
+    assert.match(source, /PA_ARTIFACT_ADAPTER/);
+    assert.match(source, /PA_ARTIFACT_OWNER_PID/);
+    assert.match(source, /opts\.mode === "background" \? "background" : String\(process\.pid\)/);
+    if (adapter !== "pi-pa") assert.doesNotMatch(source, /axiRuntimeEnvironment/);
+  }
 });

@@ -1,9 +1,11 @@
 import { renderArtifact } from "../../artifacts/render.js";
 import {
   ArtifactPolicyError, artifactDiagnostic, assertArtifactAbsolutePath,
-  assertArtifactEnvironment, assertManagedReviewAvailable, parseArtifactFeedbackTimeout,
+  assertArtifactEnvironment, parseArtifactFeedbackTimeout,
 } from "../../artifacts/policy.js";
 import type { CliIo } from "../utils.js";
+import { consumeFeedback, reviewStatus, startReview, stopReview } from "../../artifacts/session.js";
+import { reviewContext, selectedReviewAssets } from "../../artifacts/runtime.js";
 
 const HELP = [
   "Usage: artifact render --source /absolute/document.md --output-dir /absolute/new-companion --json",
@@ -12,7 +14,8 @@ const HELP = [
   "       artifact review stop --session SESSION_ID --json",
   "       artifact review feedback --session SESSION_ID --output /absolute/new-feedback.json [--timeout-ms 1000] --json",
   "Render: no browser or selected Lavish required; existing output safety restrictions apply.",
-  "Review: requires selected managed Lavish; lifecycle is unavailable in this phase even when selected.",
+  "Review start: requires selected managed Lavish and a live deployment owner; no browser provisioning.",
+  "Status/stop/feedback: require the exact opaque session ID and matching adapter/deployment/process owner.",
   "No automatic browser opening, package setup, sharing, host options or argument pass-through.",
 ].join("\n");
 
@@ -33,7 +36,7 @@ function options(argv: string[], required: string[], optional: string[] = []): M
   return values;
 }
 
-export function runArtifactCommand(argv: string[], io: Required<CliIo>): number {
+export async function runArtifactCommand(argv: string[], io: Required<CliIo>): Promise<number> {
   try {
     // Metadata-only help is side-effect-free; no filesystem or runtime probe.
     if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help")
@@ -55,22 +58,28 @@ export function runArtifactCommand(argv: string[], io: Required<CliIo>): number 
     if (operation === "start") {
       const parsed = options(argv.slice(2), ["--manifest"]);
       assertArtifactAbsolutePath(parsed.get("--manifest")!);
-      // Phase 2 does not probe or spawn a runtime. Even selected managed paths
-      // cannot imply a qualified lifecycle. Phase 3 replaces this deny gate.
-      return assertManagedReviewAvailable(false, process.env);
+      const assets = selectedReviewAssets();
+      const result = await startReview(reviewContext(), parsed.get("--manifest")!, assets);
+      io.stdout(JSON.stringify({ schema: "pa-artifact/v1", operation: "review-start", ...result }));
+      return 0;
     }
     if (operation === "status" || operation === "stop" || operation === "feedback") {
       const parsed = operation === "feedback"
         ? options(argv.slice(2), ["--session", "--output"], ["--timeout-ms"])
         : options(argv.slice(2), ["--session"]);
-      // Treat session as opaque, never a file path or PID. Provisional grammar
-      // only rejects control/path injection; it claims no owned-session support.
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(parsed.get("--session")!)) throw artifactDiagnostic("ARTIFACT_USAGE_INVALID");
+      // An exact opaque ID, never a file path or guessed PID.
+      if (!/^[a-f0-9]{48}$/.test(parsed.get("--session")!)) throw artifactDiagnostic("ARTIFACT_USAGE_INVALID");
       if (operation === "feedback") {
         assertArtifactAbsolutePath(parsed.get("--output")!);
         parseArtifactFeedbackTimeout(parsed.get("--timeout-ms"));
       }
-      throw artifactDiagnostic("ARTIFACT_POLICY_REJECTED");
+      const context = reviewContext();
+      const session = parsed.get("--session")!;
+      const result = operation === "status" ? reviewStatus(context, session)
+        : operation === "stop" ? await stopReview(context, session)
+        : await consumeFeedback(context, session, parsed.get("--output")!, parseArtifactFeedbackTimeout(parsed.get("--timeout-ms")));
+      io.stdout(JSON.stringify({ schema: "pa-artifact/v1", operation: `review-${operation}`, ...result }));
+      return 0;
     }
     throw artifactDiagnostic("ARTIFACT_USAGE_INVALID");
   } catch (error) {

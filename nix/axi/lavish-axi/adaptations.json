@@ -34,6 +34,34 @@
       "kind": "offline-provenance-generator",
       "reason": "Reproduce all npm archive integrity and original license records without executing or extracting package code.",
       "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/adapt-upstream.py",
+      "sha256": "1360095f9b6d2ae57f9cf9d4779570370c6595a5cff1c5cf536291956b83cf92",
+      "kind": "digest-asserted-selective-upstream-build",
+      "reason": "Extract actual pinned SDK selection/element listeners and chrome queue/render/send code without importing the CLI. Assert whole source digests, unique boundaries and exact patch counts. Bind trusted outer execution explicitly to the scriptless iframe document; replace delivery with durable core ACK admission.",
+      "upstreamPatch": true
+    },
+    {
+      "path": "adaptations/outer.js",
+      "sha256": "b2f1dc318d9febc376ec550e5cf44f3c543bc8e889ab9aa815e904655c244749",
+      "kind": "trusted-outer-binding-and-durable-feedback-glue",
+      "reason": "Supply confined UI hooks around reused Lavish components. No companion SDK injection, postMessage, upload, sharing, export, setup, update or browser provisioning effects. Preserve unsent queue until exact durable event-ID ACK.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/outer.html",
+      "sha256": "70307b0d4e5cc524945ffab11fc014ee46c0ab45616b4f60c3d86292e5141aaa",
+      "kind": "packaged-trusted-outer-shell",
+      "reason": "Same-origin scriptless companion frame with only allow-same-origin; separate packaged script/style and explicit untrusted-feedback authority notice.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/outer.css",
+      "sha256": "ea7303b1ecf2c47e097535da16fe81572f3717d7e82bda884c2c818a72e0ca7d",
+      "kind": "packaged-static-outer-presentation",
+      "reason": "No external assets, remote fonts, CSS imports or document-controlled styles.",
+      "upstreamPatch": false
     }
   ],
   "installation": {
@@ -50,7 +78,19 @@
     "excluded": ["whiteboard bundles", "all fonts", "skills", "plugin metadata", "marketing assets", "upstream README guidance"],
     "bundledAssetLicenseSource": "Original root THIRD-PARTY-NOTICES.md retained in THIRD_PARTY_NOTICES.md; excluded bundles are not claimed fully resolved internally or operationally qualified."
   },
-  "deferredRequiredAdaptations": [
+  "phase3": {
+    "sourceFiles": {
+      "dist/cli.mjs": "973707874969efdf3e08ba544608aa4f32c755cf63ec586cad21d5ea8b076cdf",
+      "dist/chrome-client.js": "3b862eafe265c2e3a0e87579ff9cae09cfdf3c675d668f1522c92da7ce65171a"
+    },
+    "retained": ["SDK selector and text-range context", "SDK mouseup/click annotation listeners", "chrome escaped queue presentation, persistence, removal and enqueue", "chrome success-only queue consumption"],
+    "narrowPatches": ["Explicit contentDocument lexical binding; no injected SDK", "Submit source-linked event batch to core api/feedback", "Require exact durable ACK IDs before queue consumption"],
+    "notIncludedAtEffects": ["CLI telemetry/server/config", "SDK initialization and globals", "all postMessage handlers", "share/upload/attachments", "whiteboard/Mermaid", "setup/update/export", "upstream file server", "WebSocket transports"],
+    "managedAssetDirectory": "share/lavish-axi/review",
+    "supervisor": "pa-core artifacts/supervisor.js; fixed owned 127.0.0.1 ephemeral port; private source-linked journal",
+    "qualification": "Phase-focused source and synthetic loopback tests only; installed adaptation, browser selection, real idle, effects and platform acceptance remain independent Phase 4/review obligations. Raw native CLI deny gate remains unchanged."
+  },
+  "phase1DeferredRequiredAdaptations": [
     {"surface": "cli.mjs telemetry initialization before CLI dispatch", "policy": "Remove outbound telemetry execution, not environment-only assertions"},
     {"surface": "server host, Tailscale, state and browser opening", "policy": "Core-owned immutable snapshot and loopback-only bounded supervisor"},
     {"surface": "HTTP share/export/attachments/setup/update and browser controls", "policy": "Deny unknown capabilities, disallow publication/upload/provisioning through all routes"},
@@ -58,5 +98,5 @@
     {"surface": "artifact sibling/dotfile serving", "policy": "Exact immutable companion and packaged-asset allowlist, no arbitrary files"},
     {"surface": "destructive poll and session persistence", "policy": "Core durable journal-before-ack, source-linked non-destructive atomic export"}
   ],
-  "acceptance": "AC1/AC7/AC8 partial only. No full-matrix, installed-output, browser, native platform, operational confinement or final readiness acceptance."
+  "acceptance": "AC2/AC4/AC5/AC6/AC7/AC8 contributions only. No full-matrix, installed-output, browser, native platform or final readiness acceptance."
 }

@@ -1,4 +1,8 @@
-# Lavish 0.1.67 — PAP-197 phase 1 (not runtime readiness)
+# Lavish 0.1.67 — PAP-197 managed adaptation (not runtime readiness)
+
+The Phase 1 record below is historical provenance. Phase 3 adds the selective
+adaptation and core-owned lifecycle described at the end; it does not qualify
+installed/browser behavior or supersede the independent acceptance gates.
 
 `enableLavishAxi` is an independent **strict boolean**, default `false`, in
 `lib.mkPaPlatform`. Default aliases and overlay select no Lavish. Explicit
@@ -105,3 +109,83 @@ partial. All NFR1–NFR6 and AC1–AC10 retain their approved obligations for la
 phases/independent validation; no requirements checkbox or readiness is granted.
 If actual upstream adaptation/compatibility fails, stop for operator decision:
 never change 0.1.67, weaken policy or treat an env setting as confinement.
+
+## Phase 3 — owned review and durable feedback
+
+`pa-core` now implements the shared Interface v1 lifecycle under `ppa`, `opa`
+and `cpa`. Render remains independent of selection. Review start resolves only
+the installed adjacent selected `axi-tools/lavish-axi` Nix closure, never PATH,
+npm, an environment-selected executable or the upstream CLI. The native public
+`lavish-axi` gate remains metadata/deny-only. Selection supplies assets, not PA
+approval or an action-authority bypass. Adapter launch/resume supplies only
+shared adapter/owner metadata; other AXI tools remain PPA-only.
+
+### Genuine upstream reuse and content-document boundary
+
+`adaptations/adapt-upstream.py` verifies the complete original `dist/cli.mjs`
+and `dist/chrome-client.js` digests, extracts exact uniquely bounded components,
+and checks each narrow patch occurs once. It never imports/evaluates the CLI.
+Retained code is the real Lavish SDK selector, range-boundary/text-selection
+context, control guards and mouseup/click annotation listeners, plus chrome's
+escaped queue presentation, browser persistence, removal/enqueue and
+success-only queue consumption. The delivery patch supplies stable event IDs
+and exact source binding and accepts consumption only after the exact durable
+ACK IDs. Original MIT license/notices remain in the closure; generated
+`review/provenance.json` identifies source and derived-output digests.
+
+The SDK's ambient `document` is explicitly lexically bound to the scriptless
+iframe's `contentDocument`; its selection and DOM ancestry stay in that document,
+while `CSS.escape` and trusted UI execution remain in the outer realm. Table,
+Mermaid, shadow/style injection, snapshots, layout audit, SDK initialization,
+`window.lavish` and all message/attachment paths are omitted, not merely hidden.
+No code executes in the companion. Its exact bytes and `script-src 'none'` CSP
+are retained, with iframe sandbox allowing **only** `allow-same-origin` (no
+scripts, forms, popups or downloads). Packaged `outer.html`, `outer.css` and the
+generated `review.js` have a separate restrictive outer CSP. No postMessage
+boundary is supported; every WS upgrade and unknown HTTP route is rejected.
+
+The core supervisor contains no upstream server/CLI, arbitrary file server,
+share, upload, whiteboard, setup, updater, export or browser-opening effect.
+HTTP serves only the immutable validated companion and those exact three
+packaged assets; source, manifest, owner state, journal and sibling files are not
+served. Mutation routes require the secret session path plus exact Host/origin
+and JSON schema; core controls additionally require the private bearer token.
+No operator HOME, profile, provider credentials, PATH or upstream configuration
+is forwarded to the supervisor.
+
+### Lifecycle and journal
+
+A private deployment root and session directory (0700) bind adapter, deployment,
+canonical artifact digests, owner process birth/boot identity and private owner
+state (0600). The supervisor chooses `127.0.0.1:0` without replacing listeners.
+Owned direct loopback HTTP controls replace PID signaling and bypass inherited
+proxy/global-fetch dispatchers. Denied upgrades are fully closed even for
+half-open peers. Same-live-owner start and matching stop are idempotent; foreign
+ownership and PID reuse reject. Explicit human end is durable before ACK and
+cannot be automatically reopened; in-flight bodies cannot append after end. Owner exit and monotonic 900s
+idle cleanup retain journal/exports; status/socket presence does not refresh
+idle. Human activity, explicit start and feedback consumption may refresh it.
+Startup and stop are bounded by the approved 10s/5s budgets. Focused synthetic
+clock tests do not replace real-idle/installed proof.
+
+Each entire feedback batch is validated before replacing a complete journal:
+UTF-8 feedback <=65536 bytes, selection <=16384, journal <=1024 events or
+16777216 bytes. Stable IDs deduplicate identical retries and reject changed
+retry content; sequence, sourceRef/sourceSha256/htmlSha256 and exact anchor/line
+or explicit document-wide targets persist. File and directory fsync precede
+ACK, and upstream queue consumption follows ACK only. Rejected sends retain
+browser text. Export is non-destructive and no-clobber atomic: absent or
+byte-identical target only, mode 0600, no-feedback creates no output. Stale
+source/HTML/manifest/renderer/policy blocks start/export and freezes browser
+feedback; no regeneration or reassociation occurs.
+
+Reconciliation is explicit data: eventId, source digest, accepted/rejected/
+deferred disposition, rationale, affected FR/AC/section and renewed approval
+need. Neither feedback nor this record edits Markdown, approvals, tickets or
+implementation authority. Source changes require the owning workflow's new
+render/review/approval.
+
+Exact five Phase 3 checks and a staged secrets scan are recorded externally by
+the implementation deployment. No installed-output, browser selection, real
+900s idle, complete no-egress effects, native platform or readiness claim is
+made here. Phase 4 harnesses and independent review must establish those facts.

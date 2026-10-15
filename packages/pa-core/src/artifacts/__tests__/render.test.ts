@@ -14,7 +14,7 @@ import { ARTIFACT_DIAGNOSTICS, ARTIFACT_SOURCE_MAX_BYTES, ArtifactPolicyError, A
 import { renderArtifact, renderMarkdown } from "../render.js";
 import { artifactSha256, validateArtifactManifest } from "../manifest.js";
 
-const safeEnv = { PATH: process.env.PATH };
+import { isolatedArtifactEnvironment as cleanEnvironment, renderEnvironment as safeEnv } from "./test-environment.js";
 function fixture(t: { after(fn: () => void): void }): { root: string; source: string } {
   const root = mkdtempSync("/tmp/pa-render-test-");
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -25,12 +25,6 @@ function fixture(t: { after(fn: () => void): void }): { root: string; source: st
 function rejects(fn: () => unknown, code: keyof typeof ARTIFACT_DIAGNOSTICS): void {
   assert.throws(fn, (error: unknown) => error instanceof ArtifactPolicyError
     && error.diagnostic === code && error.exitCode === ARTIFACT_DIAGNOSTICS[code].exitCode);
-}
-async function cleanEnvironment<T>(fn: () => Promise<T>): Promise<T> {
-  const entries = Object.entries(process.env).filter(([key]) => ["NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH"].includes(key) || key.startsWith("LAVISH_AXI_"));
-  for (const [key] of entries) delete process.env[key];
-  try { return await fn(); }
-  finally { for (const [key, value] of entries) process.env[key] = value; }
 }
 async function cli(args: string[], binaryName = "ppa"): Promise<{ code: number; stdout: string[]; stderr: string[] }> {
   const stdout: string[] = [], stderr: string[] = [];
@@ -279,21 +273,26 @@ test("shared dispatcher uses the exact success envelope for ppa/opa/cpa, and err
   });
 });
 
-test("review placeholders fail closed and metadata help never claims an implemented lifecycle", async () => {
+test("review metadata describes implemented ownership/prerequisites and invalid sessions fail closed", async () => {
   await cleanEnvironment(async () => {
     for (const binary of ["ppa", "opa", "cpa"]) {
       for (const args of [["--help"], ["render", "--help"], ["review", "--help"], ["review", "start", "--help"]]) {
         const result = await cli(args, binary);
         assert.equal(result.code, 0);
-        assert.match(result.stdout.join(""), /lifecycle is unavailable/);
+        assert.match(result.stdout.join(""), /requires selected managed Lavish and a live deployment owner/);
+        assert.match(result.stdout.join(""), /matching adapter\/deployment\/process owner/);
+        assert.doesNotMatch(result.stdout.join(""), /lifecycle is unavailable/);
         assert.match(result.stdout.join(""), /no browser or selected Lavish required/);
       }
       for (const [args, expected] of [
         [["review", "start", "--manifest", "/tmp/never/manifest.json", "--json"], 3],
-        [["review", "status", "--session", "opaque-session", "--json"], 5],
-        [["review", "stop", "--session", "opaque-session", "--json"], 5],
-        [["review", "feedback", "--session", "opaque-session", "--output", "/tmp/never.json", "--json"], 5],
-        [["review", "feedback", "--session", "opaque-session", "--output", "/tmp/never.json", "--timeout-ms", "30001", "--json"], 2],
+        [["review", "status", "--session", "opaque-session", "--json"], 2],
+        [["review", "stop", "--session", "opaque-session", "--json"], 2],
+        [["review", "feedback", "--session", "opaque-session", "--output", "/tmp/never.json", "--json"], 2],
+        [["review", "status", "--session", "a".repeat(48), "--json"], 6],
+        [["review", "stop", "--session", "a".repeat(48), "--json"], 6],
+        [["review", "feedback", "--session", "a".repeat(48), "--output", "/tmp/never.json", "--json"], 6],
+        [["review", "feedback", "--session", "a".repeat(48), "--output", "/tmp/never.json", "--timeout-ms", "30001", "--json"], 2],
         [["review", "stop", "--session", "../../secret-sentinel", "--json"], 2],
         [["review", "start", "--manifest", "/tmp/never/manifest.json", "--json", "--open"], 2],
       ] as const) {
