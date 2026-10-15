@@ -116,6 +116,36 @@ for (const adapter of ["pi", "opencode", "claudecode"] as const) {
   });
 }
 
+test("idempotent start cannot report running after a concurrent ended publication", async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  const original = getRecord(f.context, id);
+  // Deterministic publication seam: End wins after start's initial admission,
+  // before its asynchronous control handoff. The old live controller can still
+  // reply 200, so the caller must re-read authoritative private state afterward.
+  const admitThenEnd: NonNullable<Parameters<typeof startReviewImpl>[4]> = (context, action) => {
+    const result = fixtureLock(context, action);
+    fixtureLock(context, () => {
+      const fd = sessionDirectory(context, id);
+      try { writeReviewRecord(fd, { ...readReviewRecord(fd, context, id), state: "ended" }); }
+      finally { closeSync(fd); }
+    });
+    return result;
+  };
+  try {
+    await assert.rejects(startReview(f.context, f.artifact.manifest, f.assets, f.launch, admitThenEnd), codeIs("ARTIFACT_OWNER_CONFLICT"));
+    assert.equal(getRecord(f.context, id).state, "ended");
+  } finally {
+    // Restore the synthetic controller's matching record for owned teardown.
+    fixtureLock(f.context, () => {
+      const fd = sessionDirectory(f.context, id);
+      try { writeReviewRecord(fd, original); } finally { closeSync(fd); }
+    });
+    await stopReview(f.context, id);
+  }
+});
+
 for (const changed of ["source", "HTML", "manifest"] as const) test(`stale ${changed} freezes HTTP feedback and rejects start/export without relabeling`, async t => {
   const f = fixture(t);
   const result = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);

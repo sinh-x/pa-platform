@@ -211,14 +211,18 @@ boundary review, not an unsupported claim that string parsing proves all securit
 A quiescent owned PID namespace and no remaining listeners are asserted before
 namespace teardown, not manufactured by teardown.
 
-**Observation prerequisite still unqualified:** the namespace launcher must
-preserve host-root ownership of immutable Nix files. Mapping host root to an
-overflow UID in an unprivileged user namespace breaks unchanged coreutils/asset
-ownership admission. The harness does not force that mapping, accepts no overflow
-UID/writable-store exception, and fails before runtime cases if ownership changes.
-Provisioning privileges or changing host namespace policy is not authorized here;
-if existing trusted setup cannot provide compatible isolation, stop for an
-operator decision. This source phase has not exercised that observation setup.
+**Observation prerequisite blocked on the current host:** a standalone parent
+bubblewrap/Node probe, both with the observer flags and with explicit user
+namespacing, returned UID 65534 for its root-owned immutable Nix executable
+(mode 0555). Thus merely omitting `--unshare-user` does not preserve host-root
+ownership here. The unchanged coreutils/asset and observer admission reject that
+mapping; no overflow-UID/writable-store exception or privilege bootstrap was
+introduced. Exact argv/timestamps/exits and scope are in
+`deployments/d-6201cf/environment-preflight/` under the operator's ai-usage root.
+This is a measured local prerequisite incompatibility, not an installed runtime,
+browser or matrix result. Provide a trusted compatible observer environment, or
+obtain a separately reviewed security-preserving design decision, before actual
+independent validation. Do not silently change host policy or count this as pass.
 
 ## Bounded engineering corrections (not acceptance)
 
@@ -237,9 +241,16 @@ Focused synthetic regression, native generated-asset and final phase-check
 receipts/findings dispositions are external:
 `/home/sinh/Documents/ai-usage/deployments/d-6201cf/findings-correction-report.md`
 and `deployments/d-190004/correction-evidence/` under the same ai-usage root.
+Parent follow-up also reproduced a stale idempotent-start success after a
+concurrent ended-state publication. The reuse path now revalidates generation,
+running state, process birth and artifact identity after its asynchronous control
+handoff instead of returning the old admission snapshot. The deterministic
+publication-seam regression and final focused check receipts are in
+`deployments/d-6201cf/final-correction-evidence/`; this is not real browser proof.
+
 These are source-engineering evidence only. They do not replace the approved
-matrix, real browser interaction, host-crash durability proof or native namespace
-feasibility. No observer ownership/privilege policy was changed.
+matrix, real browser interaction, host-crash durability proof or a compatible
+native observation environment. No observer ownership/privilege policy was changed.
 
 ## Remaining gates / consumer disposition
 

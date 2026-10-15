@@ -168,7 +168,17 @@ export async function startReview(context: ReviewContext, manifestPath: string, 
   });
   if (!initial.launch && initial.record.state === "running") {
     await reviewControl(initial.record, "start");
-    return { status: "running", payload: reviewPayload(initial.record) };
+    // End/stop/restart may win while the control request is in flight. A 200
+    // from the old controller is not authority to return its stale admission.
+    const fd = sessionDirectory(context, sessionId);
+    try {
+      const current = readReviewRecord(fd, context, sessionId);
+      if (!sameReviewGeneration(current, initial.record) || current.state !== "running" || !reviewAlive(current)) {
+        throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      }
+      validateArtifactManifest(manifestPath, current.identity);
+      return { status: "running", payload: reviewPayload(current, true) };
+    } finally { closeSync(fd); }
   }
   if (initial.launch) launcher(path);
   while (performance.now() - started < REVIEW_START_MS - 500) {
