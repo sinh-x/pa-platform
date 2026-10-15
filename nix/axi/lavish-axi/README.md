@@ -177,7 +177,19 @@ ACK, and upstream queue consumption follows ACK only. Rejected sends retain
 browser text. Export is non-destructive and no-clobber atomic: absent or
 byte-identical target only, mode 0600, no-feedback creates no output. Stale
 source/HTML/manifest/renderer/policy blocks start/export and freezes browser
-feedback; no regeneration or reassociation occurs.
+feedback; no regeneration or reassociation occurs. Authenticated user End is
+still permitted when stale, with a durable tombstone before ACK and explicit
+non-OK confirmation in the UI. Private-directory publication syncs each pinned
+parent, including existing-directory recovery; byte-identical export retries
+sync the validated file and parent before reporting success.
+
+Operation serialization uses an empty private regular `operation.lock` and
+kernel flock on an inherited open-file description. The fixed installed
+util-linux helper is independent of PATH/environment; the file is never removed
+or replaced for recovery. Holder crash releases the lock, live contention fails
+closed, and generation/state rechecks protect delayed cleanup. Foreign or
+malformed files and legacy directory locks are rejected without guessed repair.
+Synthetic crash/race/barrier tests are not installed or host-crash acceptance.
 
 Reconciliation is explicit data: eventId, source digest, accepted/rejected/
 deferred disposition, rationale, affected FR/AC/section and renewed approval

@@ -114,7 +114,8 @@ endButton.addEventListener("click", async () => {
   }
   try {
     const response = await fetch("api/end", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-    if (response.ok) markSessionEnded();
+    if (!response.ok || (await response.json()).status !== "ended") throw new Error("end not confirmed");
+    markSessionEnded();
   } catch { notice.textContent = "Could not confirm the review ended."; }
 });
 const statusTimer = setInterval(async () => {

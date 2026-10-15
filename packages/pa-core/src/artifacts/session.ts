@@ -9,7 +9,7 @@ import { artifactSha256, validateArtifactManifest, type ArtifactAnchor, type Art
 import { artifactDiagnostic } from "./policy.js";
 import {
   jsonBytes, opaqueId, privateDirectory, processBirth, readPrivate, replacePrivate,
-  REVIEW_START_MS, REVIEW_STOP_MS, sessionDirectory, withReviewLock, type ReviewContext,
+  REVIEW_START_MS, REVIEW_STOP_MS, sessionDirectory, withReviewLock, type ReviewContext, type ReviewLock,
 } from "./runtime.js";
 
 export interface ReviewRecord extends FeedbackBinding {
@@ -42,6 +42,27 @@ export function reviewFresh(record: ReviewRecord): boolean {
 }
 export function reviewAlive(record: ReviewRecord): boolean {
   return record.supervisorPid > 1 && processBirth(record.supervisorPid) === record.supervisorBirth;
+}
+export function sameReviewGeneration(a: ReviewRecord, b: ReviewRecord): boolean {
+  return a.token === b.token && a.supervisorPid === b.supervisorPid && a.supervisorBirth === b.supervisorBirth;
+}
+/** An absence observation is not authority to clean a later generation. Every
+ * cleanup re-reads under the same lock as start/claim/publication/termination. */
+export function cleanupDeadReview(expected: ReviewRecord, lock: ReviewLock = withReviewLock): ReviewRecord {
+  return lock(expected.context, () => {
+    const fd = sessionDirectory(expected.context, expected.sessionId);
+    try {
+      const current = readReviewRecord(fd, expected.context, expected.sessionId);
+      if (!sameReviewGeneration(current, expected) || current.state !== expected.state) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (current.state === "ended" || current.state === "stopped") return current;
+      if (processBirth(current.supervisorPid) || current.supervisorPid === 0 && Date.now() < current.startDeadline) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const stopped: ReviewRecord = { ...current, state: "stopped" };
+      writeReviewRecord(fd, stopped);
+      return stopped;
+    } finally { closeSync(fd); }
+  });
 }
 export function reviewPayload(record: ReviewRecord, fresh = reviewFresh(record)): Record<string, unknown> {
   return {
@@ -111,12 +132,12 @@ const launchSupervisor: ReviewLauncher = (path) => {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function startReview(context: ReviewContext, manifestPath: string, assets: string,
-    launcher: ReviewLauncher = launchSupervisor): Promise<{ status: string; payload: Record<string, unknown> }> {
+    launcher: ReviewLauncher = launchSupervisor, lock: ReviewLock = withReviewLock): Promise<{ status: string; payload: Record<string, unknown> }> {
   const started = performance.now();
   const artifact = validateArtifactManifest(manifestPath);
   const sessionId = createHash("sha256").update(JSON.stringify([context, artifact.identity])).digest("hex").slice(0, 48);
   const path = join(context.root, sessionId);
-  const initial = withReviewLock(context, () => {
+  const initial = lock(context, () => {
     const fd = privateDirectory(path, true);
     try {
       let exists = true;
@@ -155,6 +176,7 @@ export async function startReview(context: ReviewContext, manifestPath: string, 
     const fd = sessionDirectory(context, sessionId);
     try {
       const record = readReviewRecord(fd, context, sessionId);
+      if (record.token !== initial.record.token) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
       if (record.state === "running" && reviewAlive(record)) {
         try {
           validateArtifactManifest(manifestPath, artifact.identity);
@@ -173,16 +195,15 @@ export async function startReview(context: ReviewContext, manifestPath: string, 
   const fd = sessionDirectory(context, sessionId);
   try {
     const record = readReviewRecord(fd, context, sessionId);
-    if (record.state === "running" && reviewAlive(record)) await reviewControl(record, "stop");
-    else if (!processBirth(record.supervisorPid)) {
-      try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); } catch { /* not published */ }
-      record.state = "stopped"; writeReviewRecord(fd, record);
-    }
+    if (record.token !== initial.record.token) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+    if (record.state === "ended" || record.state === "stopped") { /* preserve terminal state */ }
+    else if (reviewAlive(record)) await reviewControl(record, "stop");
+    else cleanupDeadReview(record, lock);
   } finally { closeSync(fd); }
   throw artifactDiagnostic("ARTIFACT_RUNTIME_FAILED");
 }
 
-export async function stopReview(context: ReviewContext, sessionId: string): Promise<{ status: string; payload: Record<string, unknown> }> {
+export async function stopReview(context: ReviewContext, sessionId: string, lock: ReviewLock = withReviewLock): Promise<{ status: string; payload: Record<string, unknown> }> {
   const started = performance.now();
   const fd = sessionDirectory(context, sessionId);
   try {
@@ -191,13 +212,13 @@ export async function stopReview(context: ReviewContext, sessionId: string): Pro
     if (!reviewAlive(record)) {
       if (processBirth(record.supervisorPid)) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
       if (record.supervisorPid === 0 && Date.now() < record.startDeadline) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
-      try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); } catch { /* already cleaned */ }
-      record.state = "stopped"; writeReviewRecord(fd, record);
-      return { status: "stopped", payload: reviewPayload(record) };
+      const stopped = cleanupDeadReview(record, lock);
+      return { status: stopped.state, payload: reviewPayload(stopped) };
     }
     await reviewControl(record, "stop");
     while (performance.now() - started < REVIEW_STOP_MS - 250) {
       const current = readReviewRecord(fd, context, sessionId);
+      if (!sameReviewGeneration(current, record)) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
       if ((current.state === "stopped" || current.state === "ended") && !reviewAlive(current)) {
         return { status: current.state, payload: reviewPayload(current) };
       }

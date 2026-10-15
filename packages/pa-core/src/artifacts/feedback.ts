@@ -106,6 +106,10 @@ function identicalExport(parent: number, name: string, expected: Buffer): boolea
     const after = fstatSync(file, { bigint: true });
     if (length !== expected.length || !bytes.subarray(0, length).equals(expected)
         || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw artifactDiagnostic("ARTIFACT_OUTPUT_CONFLICT");
+    // Complete a prior crash's publication barrier, not just byte comparison.
+    // Both failures are conflicts; an idempotent retry is not a durability bypass.
+    fsyncSync(file);
+    fsyncSync(parent);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;

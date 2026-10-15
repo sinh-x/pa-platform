@@ -167,11 +167,38 @@ test("a refused generated submission cannot display a durable acknowledgement or
   const context = createContext({ document: { body: { dataset: { config: JSON.stringify({ sessionId: "synthetic", identity: {}, anchors: [] }) } }, getElementById: (id: string) => elements.get(id) },
     sessionStorage: { getItem: () => null }, setInterval: () => 1, render: () => {}, submitQueuedOnce: async () => false });
   new Script(glue).runInContext(context);
-  new Script('queued = [{ prompt: "Unsent synthetic feedback" }];').runInContext(context);
+  new Script('queued = [{ eventId: "synthetic-rejected-001", prompt: "Unsent synthetic feedback" }];').runInContext(context);
   await listeners.get("send:click")!();
   assert.doesNotMatch(elements.get("notice")!.textContent, /Durably acknowledged/);
   assert.match(elements.get("notice")!.textContent, /not acknowledged/);
   assert.equal(new Script("queued.length").runInContext(context), 1);
+  assert.equal(new Script("queued[0].eventId").runInContext(context), "synthetic-rejected-001");
+  assert.equal(new Script("queued[0].prompt").runInContext(context), "Unsent synthetic feedback");
+});
+
+test("outer End reports non-OK/malformed confirmations and remains retryable while stale", async () => {
+  const glue = readFileSync(new URL("../../../../../nix/axi/lavish-axi/adaptations/outer.js", import.meta.url), "utf8");
+  for (const response of [{ ok: false, status: 409, body: { diagnostic: "ARTIFACT_OWNER_CONFLICT" } },
+    { ok: false, status: 400, body: {} }, { ok: true, status: 200, body: { status: "running" } },
+    { ok: true, status: 200, body: { status: "ended" } }]) {
+    const listeners = new Map<string, () => Promise<void>>();
+    const elements = new Map<string, { textContent: string; value: string; disabled: boolean; addEventListener: (event: string, fn: () => Promise<void>) => void }>();
+    for (const id of ["artifact", "annotationPills", "chatInput", "send", "queue", "end", "notice", "target"]) {
+      elements.set(id, { textContent: "", value: "", disabled: false, addEventListener: (event, fn) => { listeners.set(`${id}:${event}`, fn); } });
+    }
+    const context = createContext({ document: { body: { dataset: { config: JSON.stringify({ sessionId: "synthetic", identity: {}, anchors: [] }) } }, getElementById: (id: string) => elements.get(id) },
+      sessionStorage: { getItem: () => null }, setInterval: () => 1, render: () => {},
+      fetch: async () => ({ ...response, json: async () => response.body }) });
+    new Script(glue).runInContext(context);
+    new Script("frozen = true;").runInContext(context);
+    await listeners.get("end:click")!();
+    if (response.ok && response.body.status === "ended") assert.equal(new Script("ended").runInContext(context), true);
+    else {
+      assert.match(elements.get("notice")!.textContent, /Could not confirm/);
+      assert.equal(new Script("ended").runInContext(context), false);
+      assert.equal(elements.get("end")!.disabled, false);
+    }
+  }
 });
 
 test("all three adapters provide only shared artifact lifecycle metadata including background persistence", () => {

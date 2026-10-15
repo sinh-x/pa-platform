@@ -189,7 +189,10 @@ tolerance. Human activity, explicit start and feedback consumption may refresh
 idle. Status polling and long-lived connections alone may not. Owner exit,
 partial startup and idle cleanup retain source, durable journals and exports.
 Private PA state directories are 0700; owner/journal/export files 0600.
-A user-ended tombstone persists before ACK; it cannot automatically reopen.
+A user-ended tombstone persists before ACK, including authenticated End while
+source/HTML/manifest is stale; it cannot automatically reopen. Staleness does
+not bypass End's exact origin, body, owner or running/closing checks. Failed End
+confirmation is shown explicitly, never treated as user-ended success.
 Any renewed operator authorization must belong to a new owning review context,
 not editing a tombstone or bypassing ownership. There is no reopen flag.
 
@@ -197,8 +200,17 @@ Source/HTML/manifest/version changes cause stale status, freeze new feedback and
 exit 4 on start/export. Original journals remain source-bound and recoverable,
 not silently regenerated, rebased, relabeled or merged with another source.
 Re-render/re-review under the owning workflow and renew affected approval.
-Do not repair private state or reclaim orphaned operation locks by guessing
-ownership; orphan-lock recovery has not been qualified.
+Start, supervisor transitions and dead/timeout cleanup serialize on a persistent
+empty regular `operation.lock` (0600, same UID, one link). Kernel flock ownership
+is an open-file description, released on holder close/process crash; no PID/age
+heuristic or inode replacement is used. The fixed packaged `artifact-review-flock`
+symlink resolves immutable root-owned util-linux, never PATH/environment input.
+Source tests inject only a validated immutable util-linux fixture. Live contention
+fails closed. Foreign, writable-mode, nonempty, hardlinked, symlink and legacy
+mkdir locks reject without removal or guessed repair; operator disposition is
+required for legacy/malformed state. Delayed cleanup re-reads token, supervisor
+birth/PID and state under the lock; it cannot erase a later generation/tombstone.
+Focused synthetic crash/race tests do not qualify host-crash/installed acceptance.
 
 ## Durable feedback and export
 
@@ -207,6 +219,10 @@ before a complete fsynced journal replacement. ACK and queue consumption occur
 only after durability and exact event-ID acknowledgement; refused sends retain
 unsent text and must not display a durable acknowledgement. A batch may not
 partially append, change a prior ID's content or cross-bind another source.
+Before readiness/ACK, newly created private root/session links are fsynced in
+their pinned parents; existing-directory retries complete those barriers too.
+Byte-identical export retries validate and fsync both the existing file and its
+pinned parent before success; either barrier failure is an output conflict.
 
 Exact exported envelope:
 

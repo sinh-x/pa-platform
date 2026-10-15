@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import fs, { closeSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { closeSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -158,4 +158,77 @@ test("symlink/conflicting destinations and corrupt journals are preserved, never
   const journal = join(f.root, "journal.json"); writeFileSync(journal, "not json", { mode: 0o600 });
   assert.throws(() => appendFeedback(f.fd, f.binding, [f.event()]));
   assert.equal(readFileSync(journal, "utf8"), "not json");
+});
+
+test("new and interrupted directory publications sync pinned parents before first journal ACK", t => {
+  const f = fixture(t);
+  const real = fs.fsyncSync;
+  const order: string[] = [];
+  const root = join(f.root, "review-root"), session = join(root, "session");
+  try {
+    fs.fsyncSync = fd => { order.push(readlinkSync(`/proc/self/fd/${fd}`)); real(fd); }; syncBuiltinESMExports();
+    closeSync(privateDirectory(root, true));
+    const fd = privateDirectory(session, true);
+    try { appendFeedback(fd, f.binding, [f.event()], () => { order.push("ACK"); }); }
+    finally { closeSync(fd); }
+    assert.equal(order[0], f.root); assert.equal(order[1], root);
+    assert.equal(order.at(-2), session); assert.equal(order.at(-1), "ACK");
+    assert.match(order[2]!, /session\/\.pending-/);
+    order.length = 0;
+    closeSync(privateDirectory(root, true)); closeSync(privateDirectory(session, true));
+    assert.deepEqual(order, [f.root, root]); // EEXIST also completes publication.
+  } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+});
+
+for (const barrier of ["root", "session"] as const) test(`failed ${barrier} parent barrier cannot reach first ACK; retry finishes publication`, t => {
+  const f = fixture(t);
+  const root = join(f.root, "review-root"), session = join(root, "session");
+  if (barrier === "session") closeSync(privateDirectory(root, true));
+  const real = fs.fsyncSync;
+  let acknowledged = false;
+  try {
+    fs.fsyncSync = fd => {
+      if (readlinkSync(`/proc/self/fd/${fd}`) === (barrier === "root" ? f.root : root)) throw new Error("parent barrier fault");
+      real(fd);
+    }; syncBuiltinESMExports();
+    assert.throws(() => {
+      closeSync(privateDirectory(root, true));
+      const fd = privateDirectory(session, true);
+      try { appendFeedback(fd, f.binding, [f.event()], () => { acknowledged = true; }); } finally { closeSync(fd); }
+    });
+    assert.equal(acknowledged, false);
+    assert.equal(existsSync(join(session, "journal.json")), false);
+  } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+  closeSync(privateDirectory(root, true));
+  const fd = privateDirectory(session, true);
+  try { appendFeedback(fd, f.binding, [f.event()], () => { acknowledged = true; }); } finally { closeSync(fd); }
+  assert.equal(acknowledged, true);
+});
+
+test("post-link interruption retry syncs identical export file and pinned parent; neither failure returns success", t => {
+  const f = fixture(t); appendFeedback(f.fd, f.binding, [f.event()]);
+  const output = join(f.root, "export.json");
+  const real = fs.fsyncSync;
+  try {
+    fs.fsyncSync = fd => {
+      if (readlinkSync(`/proc/self/fd/${fd}`) === f.root) throw new Error("post-link parent fault");
+      real(fd);
+    }; syncBuiltinESMExports();
+    assert.throws(() => exportFeedback(f.fd, f.binding, output), conflict);
+    assert.equal(existsSync(output), true);
+  } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+  const bytes = readFileSync(output);
+  for (const fault of [output, f.root]) {
+    try {
+      fs.fsyncSync = fd => { if (readlinkSync(`/proc/self/fd/${fd}`) === fault) throw new Error("retry barrier fault"); real(fd); }; syncBuiltinESMExports();
+      assert.throws(() => exportFeedback(f.fd, f.binding, output), conflict);
+      assert.deepEqual(readFileSync(output), bytes);
+    } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+  }
+  const order: string[] = [];
+  try {
+    fs.fsyncSync = fd => { order.push(readlinkSync(`/proc/self/fd/${fd}`)); real(fd); }; syncBuiltinESMExports();
+    assert.equal(exportFeedback(f.fd, f.binding, output).status, "exported");
+    assert.deepEqual(order, [output, f.root]);
+  } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
 });

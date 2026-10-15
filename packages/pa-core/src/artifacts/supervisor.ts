@@ -7,18 +7,19 @@ import { artifactSha256 } from "./manifest.js";
 import { ArtifactPolicyError, artifactDiagnostic } from "./policy.js";
 import {
   jsonBytes, privateDirectory, processBirth, readPrivate, readReviewAsset, REVIEW_IDLE_MS, REVIEW_START_MS, selectedReviewAssets,
-  withReviewLock, type ReviewContext,
+  withReviewLock, type ReviewContext, type ReviewLock,
 } from "./runtime.js";
-import { readReviewRecord, reviewFresh, writeReviewRecord, type ReviewRecord } from "./session.js";
+import { readReviewRecord, reviewFresh, sameReviewGeneration, writeReviewRecord, type ReviewRecord } from "./session.js";
 
 export const OUTER_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 export function idleExpired(lastActivity: number, now: number): boolean { return now - lastActivity >= REVIEW_IDLE_MS; }
-interface SupervisorOptions { now?: () => number; tickMs?: number; expectedAssets?: string }
+interface SupervisorOptions { now?: () => number; tickMs?: number; expectedAssets?: string; lock?: ReviewLock }
 
 /** Core-owned server uses only adapted packaged Lavish components, never the
  * upstream server. No route imports CLI, shell, SDK, updater or outbound client. */
 export async function superviseReview(path: string, options: SupervisorOptions = {}): Promise<{ close: () => Promise<void>; record: ReviewRecord }> {
   const fd = privateDirectory(path);
+  const lock = options.lock ?? withReviewLock;
   let record: ReviewRecord;
   try {
     const raw = JSON.parse(readPrivate(fd, "owner.json", 268_435_456).toString()) as ReviewRecord;
@@ -28,7 +29,7 @@ export async function superviseReview(path: string, options: SupervisorOptions =
         || record.supervisorPid !== 0 || processBirth(context.ownerPid) !== context.ownerBirth) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
     if (options.expectedAssets !== undefined && record.assets !== options.expectedAssets) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
     if (!reviewFresh(record)) throw artifactDiagnostic("ARTIFACT_STALE");
-    withReviewLock(context, () => {
+    lock(context, () => {
       const current = readReviewRecord(fd, context, record.sessionId);
       if (current.state !== "starting" || current.supervisorPid !== 0 || current.token !== record.token
           || Date.now() >= current.startDeadline) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
@@ -36,6 +37,20 @@ export async function superviseReview(path: string, options: SupervisorOptions =
       writeReviewRecord(fd, record);
     });
   } catch (error) { closeSync(fd); throw error; }
+  const publish = (state: ReviewRecord["state"], cleanup = false): void => {
+    lock(record.context, () => {
+      const current = readReviewRecord(fd, record.context, record.sessionId);
+      if (!sameReviewGeneration(current, record) || current.state !== record.state) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (state === "running" && current.state !== "starting") throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (cleanup) {
+        try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      const next: ReviewRecord = { ...current, port: record.port, state: current.state === "ended" ? "ended" : state };
+      writeReviewRecord(fd, next);
+      record = next;
+    });
+  };
   const now = options.now ?? (() => performance.now());
   let lastActivity = now();
   const boot = now();
@@ -50,8 +65,7 @@ export async function superviseReview(path: string, options: SupervisorOptions =
     readJournal(fd, record); // A corrupt journal never becomes a fresh empty one.
   } catch (error) {
     try {
-      try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); } catch { /* own transient only */ }
-      record.state = "stopped"; writeReviewRecord(fd, record);
+      publish("stopped", true);
     } finally { closeSync(fd); }
     throw error;
   }
@@ -121,7 +135,8 @@ export async function superviseReview(path: string, options: SupervisorOptions =
     }
     if (!["api/feedback", "api/activity", "api/end"].includes(route)
         || request.headers.origin !== origin || request.headers["content-type"] !== "application/json") throw artifactDiagnostic("ARTIFACT_POLICY_REJECTED");
-    if (!fresh()) throw artifactDiagnostic("ARTIFACT_STALE");
+    if (route !== "api/end" && !fresh()) throw artifactDiagnostic("ARTIFACT_STALE");
+    if (processBirth(record.context.ownerPid) !== record.context.ownerBirth) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
     if (record.state !== "running") throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
     const chunks: Buffer[] = [];
     let length = 0;
@@ -138,7 +153,8 @@ export async function superviseReview(path: string, options: SupervisorOptions =
     let body: unknown;
     try { body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
     catch { throw artifactDiagnostic("ARTIFACT_POLICY_REJECTED"); }
-    if (!fresh()) throw artifactDiagnostic("ARTIFACT_STALE");
+    if (route !== "api/end" && !fresh()) throw artifactDiagnostic("ARTIFACT_STALE");
+    if (processBirth(record.context.ownerPid) !== record.context.ownerBirth) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
     // Another request may have ended/closed the review while this body awaited
     // bytes. Never append or acknowledge new feedback after that transition.
     if (closing || record.state !== "running") throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
@@ -152,9 +168,7 @@ export async function superviseReview(path: string, options: SupervisorOptions =
       if (route === "api/end") {
         // Persist the user-ended tombstone before ACK. A crash between ACK and
         // socket cleanup must not make an explicitly ended review restartable.
-        const endedRecord: ReviewRecord = { ...record, state: "ended" };
-        writeReviewRecord(fd, endedRecord);
-        record = endedRecord;
+        publish("ended");
         response.once("finish", () => { setTimeout(() => { void close("ended"); }, 10); });
       }
       send(response, jsonBytes({ status: route === "api/end" ? "ended" : "running" }), "application/json");
@@ -165,15 +179,13 @@ export async function superviseReview(path: string, options: SupervisorOptions =
     if (closed) return closed;
     closing = true;
     if (interval) clearInterval(interval);
-    closed = new Promise<void>((done) => {
+    closed = new Promise<void>((done, fail) => {
       server.close(() => {
         try {
-          const current = readReviewRecord(fd, record.context, record.sessionId);
-          if (current.token === record.token && current.supervisorPid === record.supervisorPid && current.supervisorBirth === record.supervisorBirth) {
-            try { unlinkSync(`/proc/self/fd/${fd}/snapshot.html`); } catch { /* own transient file only */ }
-            record.state = record.state === "ended" ? "ended" : state; writeReviewRecord(fd, record);
-          }
-        } finally { closeSync(fd); done(); }
+          publish(state, true);
+          done();
+        } catch (error) { fail(error); }
+        finally { closeSync(fd); }
       });
       server.closeAllConnections();
     });
@@ -191,8 +203,8 @@ export async function superviseReview(path: string, options: SupervisorOptions =
     if (!address || typeof address === "string" || now() - boot >= REVIEW_START_MS - 1000) throw artifactDiagnostic("ARTIFACT_RUNTIME_FAILED");
     const claimed = readReviewRecord(fd, record.context, record.sessionId);
     if (claimed.state !== "starting" || claimed.token !== record.token || claimed.supervisorPid !== process.pid || Date.now() >= record.startDeadline) throw artifactDiagnostic("ARTIFACT_RUNTIME_FAILED");
-    record.port = address.port; record.state = "running";
-    writeReviewRecord(fd, record);
+    record.port = address.port;
+    publish("running");
     interval = setInterval(() => {
       if (processBirth(record.context.ownerPid) !== record.context.ownerBirth || idleExpired(lastActivity, now())) void close();
       else fresh();

@@ -141,6 +141,8 @@
             # Selected managed shims: fixed pinned Node/tool/MCP arguments;
             # metadata is unauthenticated, operational policy is deployment-bound.
             mkdir -p $share/axi-tools
+            # Fixed util-linux fd-lock helper; supervisors never resolve PATH.
+            ln -s ${pkgs.lib.getBin pkgs.util-linux}/bin/flock $share/artifact-review-flock
             printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON axiSelection)} > $share/axi-selection.json
             ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: tool: ''
               ln -s ${tool} $share/axi-tools/${name}

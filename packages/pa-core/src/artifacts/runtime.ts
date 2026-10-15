@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync,
-  readSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
+  readSync, realpathSync, renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,9 +122,22 @@ export function readReviewAsset(directory: string, name: string): Buffer {
 export function privateDirectory(path: string, create = false): number {
   if (create) {
     const parent = openArtifactDirectory(dirname(path), "ARTIFACT_OWNER_CONFLICT");
-    try { mkdirSync(`/proc/self/fd/${parent}/${path.slice(path.lastIndexOf("/") + 1)}`, { mode: 0o700 }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT"); }
-    finally { closeSync(parent); }
+    let child: number | undefined;
+    try {
+      const pinned = `/proc/self/fd/${parent}/${path.slice(path.lastIndexOf("/") + 1)}`;
+      try { mkdirSync(pinned, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      child = openSync(pinned, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const stat = fstatSync(child);
+      if (stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700 || realpathSync(`/proc/self/fd/${child}`) !== path) throw new Error();
+      // Also finish an interrupted earlier publication (EEXIST). The child's
+      // own fsync does not persist its link in this pinned parent.
+      fsyncSync(parent);
+      return child;
+    } catch {
+      if (child !== undefined) closeSync(child);
+      throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+    } finally { closeSync(parent); }
   }
   const fd = openArtifactDirectory(path, "ARTIFACT_OWNER_CONFLICT");
   const stat = fstatSync(fd);
@@ -170,15 +184,45 @@ export function replacePrivate(fd: number, name: string, bytes: Uint8Array): voi
 }
 export const jsonBytes = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
-export function withReviewLock<T>(context: ReviewContext, action: (root: number) => T): T {
-  const root = privateDirectory(context.root, true);
-  const lock = `/proc/self/fd/${root}/operation.lock`;
+/** Fixed packaged util-linux, independent of the supervisor's minimal env.
+ * The explicit argument is a source-test seam, still restricted to immutable
+ * root-owned util-linux store bytes. No environment/PATH fallback exists. */
+export function reviewFlock(executable = realpathSync(fileURLToPath(new URL("../../../../artifact-review-flock", import.meta.url)))): string {
+  if (!/^\/nix\/store\/[0-9abcdfghijklmnpqrsvwxyz]{32}-util-linux-[0-9][a-zA-Z0-9.+-]*-bin\/bin\/flock$/.test(executable)) throw artifactDiagnostic("ARTIFACT_RUNTIME_REQUIRED");
+  const parent = openArtifactDirectory(dirname(executable), "ARTIFACT_RUNTIME_REQUIRED");
+  let file: number | undefined;
   try {
-    try { mkdirSync(lock, { mode: 0o700 }); }
-    catch { throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT"); }
-    try { return action(root); }
-    finally { rmdirSync(lock); }
-  } finally { closeSync(root); }
+    file = openSync(`/proc/self/fd/${parent}/flock`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(file);
+    const dir = fstatSync(parent);
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o222) !== 0 || (stat.mode & 0o111) === 0
+        || dir.uid !== 0 || (dir.mode & 0o222) !== 0) throw new Error();
+    return executable;
+  } catch { throw artifactDiagnostic("ARTIFACT_RUNTIME_REQUIRED"); }
+  finally { if (file !== undefined) closeSync(file); closeSync(parent); }
+}
+export type ReviewLock = <T>(context: ReviewContext, action: (root: number) => T) => T;
+export function withReviewLock<T>(context: ReviewContext, action: (root: number) => T, fixtureExecutable?: string): T {
+  let executable: string;
+  try { executable = reviewFlock(fixtureExecutable); }
+  catch { throw artifactDiagnostic("ARTIFACT_RUNTIME_REQUIRED"); }
+  const root = privateDirectory(context.root, true);
+  let file: number | undefined;
+  try {
+    try {
+      file = openSync(`/proc/self/fd/${root}/operation.lock`, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+      const stat = fstatSync(file);
+      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size !== 0) throw new Error();
+      // Child fd 3 shares the parent's open-file description. flock survives
+      // this child exiting, but is released by parent close/crash. Never unlink
+      // or replace the lock inode, and never infer ownership from a stale PID.
+      const result = spawnSync(executable, ["--exclusive", "--nonblock", "3"], {
+        env: { LC_ALL: "C" }, stdio: ["ignore", "ignore", "ignore", file], timeout: 1000,
+      });
+      if (result.error || result.status !== 0) throw new Error();
+    } catch { throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT"); }
+    return action(root);
+  } finally { if (file !== undefined) closeSync(file); closeSync(root); }
 }
 export function sessionDirectory(context: ReviewContext, sessionId: string): number {
   if (!/^[a-f0-9]{48}$/.test(sessionId)) throw artifactDiagnostic("ARTIFACT_USAGE_INVALID");

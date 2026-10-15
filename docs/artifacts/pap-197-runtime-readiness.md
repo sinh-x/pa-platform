@@ -220,6 +220,27 @@ Provisioning privileges or changing host namespace policy is not authorized here
 if existing trusted setup cannot provide compatible isolation, stop for an
 operator decision. This source phase has not exercised that observation setup.
 
+## Bounded engineering corrections (not acceptance)
+
+SI-1–SI-4 from the parent's static Phase 3 inspection remain applicable to the
+Phase 4 baseline. Corrections serialize/recheck dead-stop and startup-timeout
+cleanup plus supervisor transitions; replace unrecoverable mkdir locking with
+crash-released private regular-file flock; complete pinned-parent publication and
+identical-export retry fsync barriers; and allow authenticated stale End while
+feedback/export stay frozen. Failed End confirmation is explicit. SI-5's existing
+409 false-return/retained-queue correction is preserved and regression-tested.
+Legacy directory locks and foreign/malformed lock files fail closed without
+removal; there is no guessed PID/age recovery. Production uses the fixed installed
+util-linux symlink, not an environment or PATH executable.
+
+Focused synthetic regression, native generated-asset and final phase-check
+receipts/findings dispositions are external:
+`/home/sinh/Documents/ai-usage/deployments/d-6201cf/findings-correction-report.md`
+and `deployments/d-190004/correction-evidence/` under the same ai-usage root.
+These are source-engineering evidence only. They do not replace the approved
+matrix, real browser interaction, host-crash durability proof or native namespace
+feasibility. No observer ownership/privilege policy was changed.
+
 ## Remaining gates / consumer disposition
 
 **Not executed:** all sixteen installed PA builds, either installed runtime or
@@ -233,7 +254,7 @@ unsupported/ambiguous prerequisites must block, not skip-to-pass or weaken polic
 Independent review must reconcile every FR1–FR10/NFR1–NFR6/AC1–AC10 with concrete
 exact-candidate evidence, complete outer count **9/9**, all mandatory subcases,
 zero forbidden effects and findings dispositions. The explicit launch-capture,
-fault-injection, observer and orphan-lock-recovery limitations need review;
+fault-injection, observer and installed crash-release/durability limitations need review;
 any genuine product/security scope decision goes back to the operator.
 Human UAT needs one traceable scenario per AC and explicit sign-off. PAPC-020
 must not enable consumer guidance merely because this contract/harness is

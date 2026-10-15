@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import fs, { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { request } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,13 +10,17 @@ import { runCoreCommand } from "../../cli/core-command.js";
 import { renderArtifact } from "../render.js";
 import { artifactDiagnostic, ArtifactPolicyError } from "../policy.js";
 import { appendFeedback } from "../feedback.js";
-import { processBirth, sessionDirectory, type ReviewContext } from "../runtime.js";
+import { processBirth, sessionDirectory, withReviewLock, type ReviewContext } from "../runtime.js";
 import {
-  consumeFeedback, readReviewRecord, reviewStatus, startReview, stopReview, writeReviewRecord,
+  cleanupDeadReview, consumeFeedback, readReviewRecord, reviewStatus, startReview as startReviewImpl, stopReview as stopReviewImpl, writeReviewRecord,
   type ReviewLauncher, type ReviewRecord,
 } from "../session.js";
-import { idleExpired, OUTER_CSP, superviseReview } from "../supervisor.js";
-import { isolatedArtifactEnvironment, renderEnvironment } from "./test-environment.js";
+import { idleExpired, OUTER_CSP, superviseReview as superviseReviewImpl } from "../supervisor.js";
+import { fixtureFlock, fixtureLock, isolatedArtifactEnvironment, renderEnvironment } from "./test-environment.js";
+
+const startReview = (...args: Parameters<typeof startReviewImpl>) => startReviewImpl(args[0], args[1], args[2], args[3], args[4] ?? fixtureLock);
+const stopReview = (context: ReviewContext, id: string) => stopReviewImpl(context, id, fixtureLock);
+const superviseReview = (path: string, options: Parameters<typeof superviseReviewImpl>[1] = {}) => superviseReviewImpl(path, { lock: fixtureLock, ...options });
 
 const loader = createRequire(import.meta.url).resolve("tsx/esm");
 const supervisor = fileURLToPath(new URL("../supervisor.ts", import.meta.url));
@@ -44,7 +48,8 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }, adapter: Re
   const launch: ReviewLauncher = path => {
     // Direct source API supplies synthetic assets; production supervisor main
     // independently resolves and revalidates the selected immutable Nix closure.
-    const script = `import { superviseReview } from ${JSON.stringify(pathToFileURL(supervisor).href)}; await superviseReview(process.argv[1]);`;
+    const runtime = new URL("../runtime.ts", import.meta.url).href;
+    const script = `import { superviseReview } from ${JSON.stringify(pathToFileURL(supervisor).href)}; import { withReviewLock } from ${JSON.stringify(runtime)}; await superviseReview(process.argv[1], { lock: (c,a) => withReviewLock(c,a,${JSON.stringify(fixtureFlock)}) });`;
     const child = spawn(process.execPath, ["--import", loader, "--input-type=module", "--eval", script, path], { env: { TZ: "UTC", LC_ALL: "C.UTF-8" }, stdio: "ignore" });
     child.unref(); children.push({ child, birth: child.pid ? processBirth(child.pid) : undefined });
   };
@@ -336,4 +341,255 @@ test("private session roots never follow sibling/symlink state", t => {
   const f = fixture(t);
   symlinkSync(f.root, f.context.root);
   assert.throws(() => sessionDirectory(f.context, "a".repeat(48)), codeIs("ARTIFACT_OWNER_CONFLICT"));
+});
+
+
+test("delayed dead-stop and timeout cleanup cannot erase a restarted or ended generation", async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  const old = getRecord(f.context, id);
+  const event = { schema: "pa-artifact-feedback/v1", eventId: "generation-race-0001", sessionId: id,
+    sourceRef: old.identity.sourceRef, sourceSha256: old.identity.sourceSha256, htmlSha256: old.identity.htmlSha256,
+    target: { type: "document" }, selectedText: "", feedbackText: "Retain across generations" };
+  assert.equal((await post(old, "api/feedback", [event])).status, 200);
+  const journal = readFileSync(join(f.context.root, id, "journal.json"));
+  await stopReview(f.context, id);
+  assert.equal(processBirth(old.supervisorPid), undefined);
+  // Resume the old cleanup's read/absence-observation after a real restart is ready.
+  const restarted = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const current = getRecord(f.context, id);
+  assert.notEqual(current.token, old.token);
+  const snapshot = readFileSync(join(f.context.root, id, "snapshot.html"));
+  assert.throws(() => cleanupDeadReview(old, fixtureLock), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  assert.throws(() => cleanupDeadReview({ ...old, state: "starting", supervisorPid: 0, supervisorBirth: "", startDeadline: 0 }, fixtureLock), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  assert.deepEqual(getRecord(f.context, id), current);
+  assert.deepEqual(readFileSync(join(f.context.root, id, "snapshot.html")), snapshot);
+  assert.equal((await fetch(restarted.payload["url"] as string)).status, 200);
+  assert.equal((await post(current, "api/end", {})).status, 200);
+  for (let i = 0; i < 200 && existsSync(join(f.context.root, id, "snapshot.html")); i++) await sleep(10);
+  assert.throws(() => cleanupDeadReview(old, fixtureLock), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  assert.equal(getRecord(f.context, id).state, "ended");
+  assert.deepEqual(readFileSync(join(f.context.root, id, "journal.json")), journal);
+});
+
+for (const operation of ["dead-stop", "startup-timeout"] as const) test(`${operation}: paused cleanup rechecks after a real concurrent restart and End`, async t => {
+  const f = fixture(t);
+  let id: string | undefined;
+  if (operation === "dead-stop") {
+    const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+    id = first.payload["sessionId"] as string;
+    const stale = getRecord(f.context, id);
+    await stopReview(f.context, id);
+    // Model a supervisor that died without writing its terminal record.
+    const fd = sessionDirectory(f.context, id);
+    try { writeReviewRecord(fd, stale); } finally { closeSync(fd); }
+  }
+  const runtime = new URL("../runtime.ts", import.meta.url).href;
+  const session = new URL("../session.ts", import.meta.url).href;
+  const script = `import { readSync, writeSync } from 'node:fs';
+    import { withReviewLock } from ${JSON.stringify(runtime)};
+    import { startReview, stopReview } from ${JSON.stringify(session)};
+    const c=${JSON.stringify(f.context)};let calls=0;
+    const lock=(c,a)=>{
+      if (++calls === ${operation === "dead-stop" ? 1 : 2}) { writeSync(1,'paused\\n'); readSync(0,Buffer.alloc(1),0,1,null); }
+      return withReviewLock(c,a,${JSON.stringify(fixtureFlock)});
+    };
+    try {
+      ${operation === "dead-stop" ? `await stopReview(c,${JSON.stringify(id)},lock);` : `await startReview(c,${JSON.stringify(f.artifact.manifest)},${JSON.stringify(f.assets)},()=>{},lock);`}
+      writeSync(1,'unexpected-success\\n');
+    } catch (error) { writeSync(1,error.diagnostic+'\\n'); }`;
+  const child = spawn(process.execPath, ["--import", loader, "--input-type=module", "--eval", script], { env: {}, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  let output = "";
+  await new Promise<void>((resolve, reject) => {
+    child.stdout!.on("data", bytes => { output += bytes.toString(); if (output.includes("paused\n")) resolve(); });
+    child.once("exit", code => reject(new Error(`cleanup worker exited ${code}: ${output}`)));
+  });
+  const next = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  id = next.payload["sessionId"] as string;
+  const live = getRecord(f.context, id);
+  const snapshot = readFileSync(join(f.context.root, id, "snapshot.html"));
+  if (operation === "startup-timeout") assert.equal((await post(live, "api/end", {})).status, 200);
+  const exit = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  child.stdin!.end("x"); await exit;
+  assert.match(output, /ARTIFACT_OWNER_CONFLICT/);
+  assert.equal(getRecord(f.context, id).token, live.token);
+  if (operation === "dead-stop") {
+    assert.deepEqual(readFileSync(join(f.context.root, id, "snapshot.html")), snapshot);
+    assert.equal(reviewStatus(f.context, id).status, "running");
+    await stopReview(f.context, id);
+  } else assert.equal(getRecord(f.context, id).state, "ended");
+});
+
+test("a replaced startup generation rejects its old waiter without stopping the new listener", async t => {
+  const f = fixture(t);
+  let old: ReviewRecord | undefined;
+  const pending = startReview(f.context, f.artifact.manifest, f.assets, path => {
+    const id = path.split("/").at(-1)!;
+    old = getRecord(f.context, id);
+    const fd = sessionDirectory(f.context, id);
+    try { writeReviewRecord(fd, { ...old, startDeadline: 0 }); } finally { closeSync(fd); }
+  });
+  const rejected = assert.rejects(pending, codeIs("ARTIFACT_OWNER_CONFLICT"));
+  const next = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  await rejected;
+  const id = next.payload["sessionId"] as string;
+  assert.notEqual(getRecord(f.context, id).token, old!.token);
+  assert.equal(reviewStatus(f.context, id).status, "running");
+  assert.equal(existsSync(join(f.context.root, id, "snapshot.html")), true);
+  await stopReview(f.context, id);
+});
+
+for (const changed of ["source", "HTML", "manifest"] as const) test(`stale ${changed} still permits authenticated durable End but not feedback/export`, async t => {
+  const f = fixture(t);
+  const result = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = result.payload["sessionId"] as string;
+  const record = getRecord(f.context, id);
+  const target = changed === "source" ? f.source : changed === "HTML" ? join(f.root, "companion", "index.html") : f.artifact.manifest;
+  const original = readFileSync(target);
+  writeFileSync(target, "changed");
+  assert.equal((await post(record, "api/feedback", [])).status, 409);
+  assert.equal((await post(record, "api/end", { invalid: true })).status, 400);
+  const origin = `http://127.0.0.1:${record.port}`;
+  assert.equal((await fetch(`${origin}/${record.token}/api/end`, { method: "POST", headers: { origin: "http://foreign.invalid", "content-type": "application/json" }, body: "{}" })).status, 400);
+  await assert.rejects(consumeFeedback(f.context, id, join(f.root, "stale-end.json"), 0), codeIs("ARTIFACT_STALE"));
+  const ended = await post(record, "api/end", {});
+  assert.equal(ended.status, 200); assert.equal((await ended.json() as {status: string}).status, "ended");
+  assert.equal(getRecord(f.context, id).state, "ended");
+  for (let i = 0; i < 200 && processBirth(record.supervisorPid); i++) await sleep(10);
+  assert.equal(processBirth(record.supervisorPid), undefined);
+  assert.equal(existsSync(join(f.context.root, id, "snapshot.html")), false);
+  writeFileSync(target, original);
+  await assert.rejects(startReview(f.context, f.artifact.manifest, f.assets, f.launch), codeIs("ARTIFACT_OWNER_CONFLICT"));
+});
+
+test("supervisor terminal cleanup rechecks generation under lock before touching snapshot or tombstone", async t => {
+  const f = fixture(t);
+  let running: Awaited<ReturnType<typeof superviseReview>> | undefined;
+  t.after(async () => { await running?.close().catch(() => {}); });
+  const result = await startReview(f.context, f.artifact.manifest, f.assets, path => {
+    void superviseReview(path).then(value => { running = value; });
+  });
+  const id = result.payload["sessionId"] as string;
+  const current = getRecord(f.context, id);
+  const replacement: ReviewRecord = { ...current, token: "e".repeat(48), state: "ended" };
+  fixtureLock(f.context, () => {
+    const fd = sessionDirectory(f.context, id);
+    try { writeReviewRecord(fd, replacement); } finally { closeSync(fd); }
+  });
+  const snapshot = readFileSync(join(f.context.root, id, "snapshot.html"));
+  await assert.rejects(running!.close(), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  assert.deepEqual(getRecord(f.context, id), replacement);
+  assert.deepEqual(readFileSync(join(f.context.root, id, "snapshot.html")), snapshot);
+});
+
+test("failed ended-tombstone fsync produces no End ACK and permits authenticated retry", async t => {
+  const f = fixture(t);
+  let running: Awaited<ReturnType<typeof superviseReview>> | undefined;
+  t.after(async () => { await running?.close(); });
+  const result = await startReview(f.context, f.artifact.manifest, f.assets, path => {
+    void superviseReview(path).then(value => { running = value; });
+  });
+  const id = result.payload["sessionId"] as string;
+  const current = getRecord(f.context, id);
+  const real = fs.fsyncSync;
+  try {
+    fs.fsyncSync = fd => {
+      if (fs.readlinkSync(`/proc/self/fd/${fd}`).includes(`${id}/.pending-`)) throw new Error("tombstone file barrier fault");
+      real(fd);
+    }; syncBuiltinESMExports();
+    assert.notEqual((await post(current, "api/end", {})).status, 200);
+    assert.equal(getRecord(f.context, id).state, "running");
+  } finally { fs.fsyncSync = real; syncBuiltinESMExports(); }
+  assert.equal((await post(current, "api/end", {})).status, 200);
+  assert.equal(getRecord(f.context, id).state, "ended");
+});
+
+test("source mutation during an End body does not prevent durable authenticated termination", async t => {
+  const f = fixture(t);
+  const result = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = result.payload["sessionId"] as string;
+  const record = getRecord(f.context, id);
+  const origin = `http://127.0.0.1:${record.port}`;
+  let req: ReturnType<typeof request>;
+  const outcome = new Promise<number | undefined>((resolve, reject) => {
+    req = request(`${origin}/${record.token}/api/end`, { method: "POST", headers: { origin, "content-type": "application/json" } }, response => {
+      response.resume(); response.on("end", () => resolve(response.statusCode));
+    });
+    req.on("error", reject); req.write("{");
+  });
+  t.after(() => req.destroy());
+  await sleep(30); writeFileSync(f.source, "changed while receiving End"); req!.end("}");
+  assert.equal(await outcome, 200);
+  assert.equal(getRecord(f.context, id).state, "ended");
+});
+
+for (const phase of ["acquired", "snapshot", "owner", "terminal"] as const) test(`flock holder crash at ${phase} releases contention and preserves journal/restart`, async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  const record = getRecord(f.context, id);
+  assert.equal((await post(record, "api/feedback", [{ schema: "pa-artifact-feedback/v1", eventId: "flock-crash-event-001", sessionId: id,
+    sourceRef: record.identity.sourceRef, sourceSha256: record.identity.sourceSha256, htmlSha256: record.identity.htmlSha256,
+    target: { type: "document" }, selectedText: "", feedbackText: "Retain across lock-holder death" }])).status, 200);
+  await stopReview(f.context, id);
+  const journal = readFileSync(join(f.context.root, id, "journal.json"));
+  const runtime = new URL("../runtime.ts", import.meta.url).href;
+  const session = new URL("../session.ts", import.meta.url).href;
+  const script = `import { writeSync, closeSync } from 'node:fs';
+    import { withReviewLock, sessionDirectory, replacePrivate } from ${JSON.stringify(runtime)};
+    import { readReviewRecord, writeReviewRecord } from ${JSON.stringify(session)};
+    const c=${JSON.stringify(f.context)};
+    withReviewLock(c, () => {
+      const fd=sessionDirectory(c,${JSON.stringify(id)});
+      const r=readReviewRecord(fd,c,${JSON.stringify(id)});
+      if (${JSON.stringify(phase)} === 'snapshot') replacePrivate(fd,'snapshot.html',Buffer.from('interrupted snapshot'));
+      if (${JSON.stringify(phase)} === 'owner') writeReviewRecord(fd,{...r,state:'starting',supervisorPid:0,supervisorBirth:'',startDeadline:0});
+      if (${JSON.stringify(phase)} === 'terminal') writeReviewRecord(fd,{...r,state:'stopped'});
+      closeSync(fd);writeSync(1,'locked\\n');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);
+    },${JSON.stringify(fixtureFlock)});`;
+  const child = spawn(process.execPath, ["--import", loader, "--input-type=module", "--eval", script], { env: {}, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout!.once("data", () => resolve()); child.once("exit", code => reject(new Error(`holder exited ${code}`)));
+  });
+  const lockPath = join(f.context.root, "operation.lock");
+  const inode = lstatSync(lockPath).ino;
+  assert.equal(lstatSync(lockPath).isFile(), true);
+  assert.throws(() => fixtureLock(f.context, () => assert.fail("live contender entered")), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  const exit = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  child.kill("SIGKILL"); await exit;
+  fixtureLock(f.context, () => {});
+  assert.equal(lstatSync(lockPath).ino, inode);
+  const next = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  assert.equal(next.payload["sessionId"], id);
+  assert.deepEqual(readFileSync(join(f.context.root, id, "journal.json")), journal);
+  await stopReview(f.context, id);
+});
+
+test("legacy/foreign/malformed operation.lock is never removed or adopted; no mutable executable seam", t => {
+  const f = fixture(t);
+  mkdirSync(f.context.root, { mode: 0o700 });
+  const path = join(f.context.root, "operation.lock");
+  for (const kind of ["directory", "symlink", "content", "pid-reuse", "mode", "hardlink"]) {
+    if (kind === "directory") mkdirSync(path, { mode: 0o700 });
+    else if (kind === "symlink") symlinkSync(f.source, path);
+    else if (kind === "hardlink") { writeFileSync(path, "", { mode: 0o600 }); fs.linkSync(path, join(f.root, "lock-alias")); }
+    else writeFileSync(path, kind === "content" ? "{pid:1}" : kind === "pid-reuse" ? JSON.stringify({ pid: process.pid, birth: "reused-pid-birth" }) : "", { mode: kind === "mode" ? 0o644 : 0o600 });
+    const before = lstatSync(path);
+    assert.throws(() => fixtureLock(f.context, () => assert.fail("malformed lock admitted")), codeIs("ARTIFACT_OWNER_CONFLICT"));
+    assert.equal(lstatSync(path).ino, before.ino);
+    rmSync(path, { recursive: true });
+  }
+  assert.throws(() => withReviewLock(f.context, () => {}, "/tmp/flock"), codeIs("ARTIFACT_RUNTIME_REQUIRED"));
+  // Synthetic UID fault, not a claim to have provisioned another host identity.
+  const real = fs.fstatSync;
+  try {
+    fs.fstatSync = ((fd: number, options?: unknown) => {
+      const stat = real(fd, options as never);
+      return fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith("/operation.lock") ? Object.assign(stat, { uid: (process.getuid?.() ?? 0) + 1 }) : stat;
+    }) as typeof fs.fstatSync; syncBuiltinESMExports();
+    assert.throws(() => fixtureLock(f.context, () => assert.fail("foreign lock admitted")), codeIs("ARTIFACT_OWNER_CONFLICT"));
+  } finally { fs.fstatSync = real; syncBuiltinESMExports(); }
 });

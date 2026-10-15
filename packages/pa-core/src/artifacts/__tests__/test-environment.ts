@@ -1,3 +1,11 @@
+import { reviewFlock, withReviewLock, type ReviewLock } from "../runtime.js";
+
+// Explicit source-fixture injection only; production has no PATH/env seam.
+const fixtureBin = (process.env.PATH ?? "").split(":").find(path =>
+  /^\/nix\/store\/[0-9abcdfghijklmnpqrsvwxyz]{32}-util-linux-[^/]+-bin\/bin$/.test(path));
+export const fixtureFlock = reviewFlock(`${fixtureBin}/flock`);
+export const fixtureLock: ReviewLock = (context, action) => withReviewLock(context, action, fixtureFlock);
+
 /** Synthetic source tests only: no operator configuration or runtime closure. */
 export const renderEnvironment = {
   PATH: (process.env.PATH ?? "").split(":")

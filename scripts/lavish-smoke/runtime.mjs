@@ -184,7 +184,9 @@ async function startupFailure(e,f,a,done) {
   const start=performance.now();
   await assert.rejects(session.startReview(context,a.manifest,join(e.inventory.tools['lavish-axi'].store,'share/lavish-axi/review'),()=>{}),error=>error.message.startsWith('ARTIFACT_RUNTIME_FAILED:'));
   const elapsed=performance.now()-start;assert.ok(elapsed<=10000);
-  const dirs=fs.readdirSync(context.root);assert.equal(dirs.length,1);const state=join(context.root,dirs[0]);
+  const entries=fs.readdirSync(context.root);assert.ok(entries.includes('operation.lock'));
+  const lock=fs.lstatSync(join(context.root,'operation.lock'));assert.ok(lock.isFile());assert.equal(lock.size,0);assert.equal(lock.mode&0o777,0o600);
+  const dirs=entries.filter(name=>/^[a-f0-9]{48}$/.test(name));assert.equal(dirs.length,1);assert.equal(entries.length,2);const state=join(context.root,dirs[0]);
   assert.equal(JSON.parse(fs.readFileSync(join(state,'owner.json'))).state,'stopped');assert.equal(fs.existsSync(join(state,'snapshot.html')),false);
   done('startup-failure',{failureMs:elapsed,ownedTransientRemoved:true,scope:'installed session implementation with explicit no-launch fault; normal success uses installed CLI'});
 }

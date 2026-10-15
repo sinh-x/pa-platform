@@ -44,9 +44,9 @@
     },
     {
       "path": "adaptations/outer.js",
-      "sha256": "66724475c5b61af67742082b0f12aae1b0691d259f55dcda956e5582c42aec68",
+      "sha256": "4389efb33e125597957265739fb88c34f3308f0d7637ed7bcc0bf295b9e2eed8",
       "kind": "trusted-outer-binding-and-durable-feedback-glue",
-      "reason": "Supply confined UI hooks around reused Lavish components. No companion SDK injection, postMessage, upload, sharing, export, setup, update or browser provisioning effects. Preserve unsent queue until exact durable event-ID ACK; do not display acknowledgement when pinned submit returns false for HTTP 409.",
+      "reason": "Supply confined UI hooks around reused Lavish components. No companion SDK injection, postMessage, upload, sharing, export, setup, update or browser provisioning effects. Preserve unsent queue until exact durable event-ID ACK; do not display acknowledgement when pinned submit returns false for HTTP 409. Report every failed or malformed End confirmation; permit retry without claiming user-ended success.",
       "upstreamPatch": false
     },
     {
