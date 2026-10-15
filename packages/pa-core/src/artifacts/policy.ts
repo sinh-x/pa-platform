@@ -1,10 +1,17 @@
-/** Artifact interface v1 policy seam. Pure admission only: no I/O or upstream import.
- * Phase 1 admits no runtime capability, even when Lavish is selected. Selection
- * is availability, not confinement or authority. Later lifecycle code must keep
- * the default deny across CLI, HTTP, WebSocket and UI, not just hide controls.
+/** Artifact interface v1 policy seam. No upstream import. Render is inert and
+ * independent of Lavish. Review capabilities still default-deny: selection is
+ * availability, not confinement or authority. Phase 3 owns lifecycle admission.
  */
 export const ARTIFACT_POLICY_VERSION = "pa-artifact-policy/v1";
 export const ARTIFACT_SOURCE_MAX_BYTES = 2_097_152;
+
+/** Static packaged presentation only. The hash permits exactly this stylesheet,
+ * not document styles. No script, asset, navigation, form or network capability. */
+export const ARTIFACT_STYLE = "body{max-width:72rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif;line-height:1.5;color:#202020;background:#fff}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f3f3;padding:1rem}table{border-collapse:collapse}td,th{border:1px solid #888;padding:.4rem}section{scroll-margin-top:1rem}.authority{border:1px solid #888;padding:1rem}code{overflow-wrap:anywhere}";
+export function escapeArtifactText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;").replace(/'/g, "&#39;").replace(/\u0000/g, "\uFFFD");
+}
 
 export const ARTIFACT_DIAGNOSTICS = {
   ARTIFACT_USAGE_INVALID: { exitCode: 2, message: "Invalid artifact arguments." },

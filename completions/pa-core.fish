@@ -363,6 +363,18 @@ end
 
 complete -c pa-core -f
 
+complete -c pa-core -n __fish_use_subcommand -a artifact -d 'Render inert Markdown companions; review lifecycle unavailable'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and test (count (commandline -opc)) -eq 2' -a 'render review' -d 'Artifact operation'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and test (count (commandline -opc)) -eq 3' -a 'start status stop feedback' -d 'Review operation (not yet available)'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l source -r -d 'Absolute UTF-8 Markdown source'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l output-dir -r -d 'Previously absent authorized companion directory'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from start' -l manifest -r -d 'Absolute companion manifest'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from status stop feedback' -l session -r -d 'Opaque session ID (not a path or PID)'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from feedback' -l output -r -d 'Absolute feedback export target'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from feedback' -l timeout-ms -r -d 'Integer 0..30000 (default 1000)'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact' -l json -d 'Required v1 JSON success envelope'
+complete -c pa-core -n '__fish_seen_subcommand_from artifact' -l help -d 'Side-effect-free prerequisites and interface help'
+
 complete -c pa-core -n __fish_use_subcommand -a repos -d 'Manage repositories'
 complete -c pa-core -n __fish_use_subcommand -a repository -d 'Inspect or safely quarantine repository ownership evidence'
 complete -c pa-core -n __fish_use_subcommand -a status -d 'Show deployment status'
@@ -428,15 +440,15 @@ complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l model -d 'Mo
 complete -c pa-core -f -n '__fish_seen_subcommand_from evaluate' -l team-model -d 'Deprecated model alias (PAP-147)' -r
 
 
-complete -c pa-core -n '__fish_seen_subcommand_from status; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l running -d 'Only running deployments'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l today -d 'Only today deployments'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l team -d 'Filter by team' -r -a '(__pa_core_teams)'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l recent -d 'Limit recent deployments' -r
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l wait -d 'Check whether deployment is terminal'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l report -d 'Show work report for deployment'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l artifacts -d 'List deployment artifact files'
-complete -c pa-core -n '__fish_seen_subcommand_from status' -l activity -d 'Show deployment activity timeline'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact; and string match -q "d-*" -- (commandline -ct)' -a '(__pa_core_deployments)' -d 'Deployment'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l running -d 'Only running deployments'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l today -d 'Only today deployments'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l team -d 'Filter by team' -r -a '(__pa_core_teams)'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l recent -d 'Limit recent deployments' -r
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l wait -d 'Check whether deployment is terminal'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l report -d 'Show work report for deployment'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l artifacts -d 'List deployment artifact files'
+complete -c pa-core -n '__fish_seen_subcommand_from status; and not __fish_seen_subcommand_from artifact' -l activity -d 'Show deployment activity timeline'
 
 complete -c pa-core -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 2' -a '(__pa_core_teams) daily:plan daily:progress daily:end signal:collect' -d 'Schedule spec'
 complete -c pa-core -f -n '__fish_seen_subcommand_from schedule; and test (count (commandline -opc)) -eq 3' -a 'hourly daily weekly monthly' -d 'Repeat interval'
