@@ -71,11 +71,17 @@ export function reviewContext(env: NodeJS.ProcessEnv = process.env): ReviewConte
   return { adapter, deployment, root: join(dir, "artifact-review-v1"), ownerPid, ownerBirth };
 }
 
+/** Exact static-stdenv output names for the two evaluated Linux targets.
+ * No generic suffix/glob or mutable-path fallback is accepted. */
+export function isReviewClosurePath(path: string): boolean {
+  return /^\/nix\/store\/[0-9abcdfghijklmnpqrsvwxyz]{32}-lavish-axi-static-(?:x86_64|aarch64)-unknown-linux-musl-0\.1\.67$/.test(path);
+}
+
 /** Only installed selected immutable closure. Never PATH or an env executable. */
 export function selectedReviewAssets(): string {
   try {
     const closure = realpathSync(fileURLToPath(new URL("../../../../axi-tools/lavish-axi", import.meta.url)));
-    if (!/^\/nix\/store\/[a-z0-9]{32}-lavish-axi-0\.1\.67$/.test(closure)) throw new Error();
+    if (!isReviewClosurePath(closure)) throw new Error();
     const assets = `${closure}/share/lavish-axi/review`;
     const record = JSON.parse(readReviewAsset(assets, "provenance.json").toString()) as Record<string, unknown>;
     if (record["schema"] !== "pa-lavish-adaptation/v1" || record["archiveSha256"] !== "b04bd8eea71ece824ca5dc6837c98de04372b76ca6a28fe6e1a1ab025e50acfd") throw new Error();
@@ -92,9 +98,12 @@ export function readReviewAsset(directory: string, name: string): Buffer {
   try {
     fd = openSync(`/proc/self/fd/${parent}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const before = fstatSync(fd, { bigint: true });
-    const immutable = /^\/nix\/store\/[a-z0-9]{32}-lavish-axi-0\.1\.67\/share\/lavish-axi\/review$/.test(directory)
-      && (before.mode & 0o222n) === 0n;
-    if (!before.isFile() || before.size > 2_097_152n || before.nlink !== 1n && !immutable) throw artifactDiagnostic("ARTIFACT_RUNTIME_REQUIRED");
+    const immutable = directory.endsWith("/share/lavish-axi/review")
+      && isReviewClosurePath(directory.slice(0, -"/share/lavish-axi/review".length))
+      && before.uid === 0n && (before.mode & 0o222n) === 0n
+      && fstatSync(parent).uid === 0 && (fstatSync(parent).mode & 0o222) === 0;
+    if (!before.isFile() || before.size > 2_097_152n || before.nlink !== 1n && !immutable
+        || directory.startsWith("/nix/store/") && !immutable) throw artifactDiagnostic("ARTIFACT_RUNTIME_REQUIRED");
     const bytes = Buffer.alloc(Number(before.size) + 1);
     let length = 0;
     while (length < bytes.length) {

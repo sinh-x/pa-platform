@@ -363,9 +363,9 @@ end
 
 complete -c dpa -f
 
-complete -c dpa -n __fish_use_subcommand -a artifact -d 'Render inert Markdown companions; review lifecycle unavailable'
+complete -c dpa -n __fish_use_subcommand -a artifact -d 'Render companions; owned review requires selected managed runtime'
 complete -c dpa -n '__fish_seen_subcommand_from artifact; and test (count (commandline -opc)) -eq 2' -a 'render review' -d 'Artifact operation'
-complete -c dpa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and test (count (commandline -opc)) -eq 3' -a 'start status stop feedback' -d 'Review operation (not yet available)'
+complete -c dpa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and test (count (commandline -opc)) -eq 3' -a 'start status stop feedback' -d 'Owned review operation; prerequisites apply'
 complete -c dpa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l source -r -d 'Absolute UTF-8 Markdown source'
 complete -c dpa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from render' -l output-dir -r -d 'Previously absent authorized companion directory'
 complete -c dpa -n '__fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from review; and __fish_seen_subcommand_from start' -l manifest -r -d 'Absolute companion manifest'

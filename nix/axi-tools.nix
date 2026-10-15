@@ -100,7 +100,7 @@ let
             ${moduleRoot}/node_modules/lavish-axi/dist/chrome-client.js \
             $out/share/lavish-axi/review
           cp ${records}/adaptations.json ${records}/upstream-files.json \
-            $out/share/${name}/
+            ${records}/generate-inventory.py $out/share/${name}/
           cp -r ${records}/adaptations $out/share/${name}/
         '' else lib.concatStringsSep "\n" (lib.mapAttrsToList (bin: entrypoint: ''
           test -f "${moduleRoot}/node_modules/${name}/${entrypoint}"

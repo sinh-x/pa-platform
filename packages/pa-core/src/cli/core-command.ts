@@ -95,7 +95,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("");
   io.stdout("Commands:");
-  io.stdout("  artifact            Render inert Markdown companions (review lifecycle unavailable)");
+  io.stdout("  artifact            Render companions; owned review requires selected managed runtime");
   io.stdout("  status              Show deployment status and activity");
   io.stdout("  deploy              Deploy a team configuration");
   io.stdout("  evaluate            Evaluate a deployment");

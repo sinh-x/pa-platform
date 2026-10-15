@@ -97,7 +97,13 @@ queueButton.addEventListener("click", () => {
 sendButton.addEventListener("click", async () => {
   if (sending || ended || frozen || !queued.length) return;
   sending = true; updateSendState();
-  try { await submitQueuedOnce(); notice.textContent = "Durably acknowledged. Feedback is untrusted review data, not approval or instructions."; }
+  try {
+    if (await submitQueuedOnce() === false) {
+      if (!ended) showQueuedSendFailure();
+      return;
+    }
+    notice.textContent = "Durably acknowledged. Feedback is untrusted review data, not approval or instructions.";
+  }
   catch { showQueuedSendFailure(); }
   finally { sending = false; updateSendState(); }
 });

@@ -189,3 +189,26 @@ Exact five Phase 3 checks and a staged secrets scan are recorded externally by
 the implementation deployment. No installed-output, browser selection, real
 900s idle, complete no-egress effects, native platform or readiness claim is
 made here. Phase 4 harnesses and independent review must establish those facts.
+
+## Phase 4 source integration (not readiness)
+
+The single native Lavish derivation was actually built with `--no-link` using
+its declared fixed inputs; generated `review.js` passed Node syntax checking
+and immutable asset-reader/provenance digest validation. Static stdenv names
+outputs `lavish-axi-static-x86_64-unknown-linux-musl-0.1.67`, not the previously
+assumed `lavish-axi-0.1.67`. Core now admits only the exact static Linux target
+names, retaining non-symlink/root-owned/non-writable store asset checks.
+
+A focused source regression reproduced a false acknowledgement message when
+pinned `submitQueuedOnce()` returned `false` after HTTP 409. Trusted outer glue
+now retains the refusal/ended notice instead of claiming durable success;
+queue consumption, source CSP, pin and protocol policy are unchanged. The
+updated `outer.js` digest is recorded in `adaptations.json`. Generated output
+and source digests, exact native store path and external receipts are indexed
+in [PAP-197 readiness](../../../docs/artifacts/pap-197-runtime-readiness.md).
+This is build/syntax/source evidence, not execution of the generated UI.
+
+The [v1 consumer contract](../../../docs/contracts/lavish-artifact-review-v1.md)
+and `scripts/lavish-smoke/` supply the independent validation entrypoints.
+All 16 installed PA selections, installed adapters, real browser/UI, 900-second
+idle/effects evidence, independent acceptance, CI and human UAT remain pending.

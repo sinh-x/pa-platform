@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { Script } from "node:vm";
+import { createContext, Script } from "node:vm";
 import test from "node:test";
 import {
   ARTIFACT_DIAGNOSTICS, ARTIFACT_POLICY_VERSION, ARTIFACT_SOURCE_MAX_BYTES,
@@ -9,6 +9,17 @@ import {
   assertArtifactCapability, assertArtifactEnvironment, assertArtifactSourceSize,
   assertManagedReviewAvailable, parseArtifactFeedbackTimeout,
 } from "../policy.js";
+
+import { isReviewClosurePath } from "../runtime.js";
+
+test("immutable asset admission matches native static derivation names, not writable lookalikes", () => {
+  const hash = "sc7aibhzzck5w47xd33znfwxdgycb1g3";
+  for (const arch of ["x86_64", "aarch64"]) assert.equal(isReviewClosurePath(`/nix/store/${hash}-lavish-axi-static-${arch}-unknown-linux-musl-0.1.67`), true);
+  for (const path of [`/tmp/${hash}-lavish-axi-static-x86_64-unknown-linux-musl-0.1.67`,
+    `/nix/store/${hash}-lavish-axi-0.1.67`, `/nix/store/${hash}-lavish-axi-static-unknown-0.1.67`,
+    `/nix/store/${hash}-lavish-axi-static-x86_64-unknown-linux-musl-0.1.68`,
+    `/nix/store/${hash}-lavish-axi-static-x86_64-unknown-linux-musl-0.1.67/extra`]) assert.equal(isReviewClosurePath(path), false);
+});
 
 function rejects(fn: () => unknown, diagnostic: keyof typeof ARTIFACT_DIAGNOSTICS): void {
   assert.throws(fn, (error: unknown) => error instanceof ArtifactPolicyError
@@ -116,6 +127,8 @@ test("recorded native gate is fixed, has no upstream/interpreter execution path,
 test("phase-3 helpers are digest-bound; genuine pinned annotation/queue extraction is narrowly asserted", () => {
   const root = new URL("../../../../../nix/axi/lavish-axi/", import.meta.url);
   const inventory: { adaptations: { path: string; sha256: string }[]; phase3: { sourceFiles: Record<string, string> } } = JSON.parse(readFileSync(new URL("adaptations.json", root), "utf8"));
+  const packaging = readFileSync(new URL("../../../../../nix/axi-tools.nix", import.meta.url), "utf8");
+  assert.match(packaging, /\$\{records\}\/generate-inventory\.py/); // actual installed bytes checked separately
   for (const entry of inventory.adaptations) {
     assert.equal(createHash("sha256").update(readFileSync(new URL(entry.path, root))).digest("hex"), entry.sha256, entry.path);
   }
@@ -142,6 +155,23 @@ test("trusted outer frame remains scriptless, UI glue has no messaging/forbidden
   assert.deepEqual(routes, ["api/activity", "api/end", "api/status"]);
   assert.match(glue, /unsent text is retained/);
   assert.match(glue, /sending = true/);
+});
+
+test("a refused generated submission cannot display a durable acknowledgement or consume queued text", async () => {
+  const glue = readFileSync(new URL("../../../../../nix/axi/lavish-axi/adaptations/outer.js", import.meta.url), "utf8");
+  const listeners = new Map<string, () => Promise<void>>();
+  const elements = new Map<string, { textContent: string; disabled: boolean; addEventListener: (event: string, fn: () => Promise<void>) => void }>();
+  for (const id of ["artifact", "annotationPills", "chatInput", "send", "queue", "end", "notice", "target"]) {
+    elements.set(id, { textContent: "", disabled: false, addEventListener: (event, fn) => { listeners.set(`${id}:${event}`, fn); } });
+  }
+  const context = createContext({ document: { body: { dataset: { config: JSON.stringify({ sessionId: "synthetic", identity: {}, anchors: [] }) } }, getElementById: (id: string) => elements.get(id) },
+    sessionStorage: { getItem: () => null }, setInterval: () => 1, render: () => {}, submitQueuedOnce: async () => false });
+  new Script(glue).runInContext(context);
+  new Script('queued = [{ prompt: "Unsent synthetic feedback" }];').runInContext(context);
+  await listeners.get("send:click")!();
+  assert.doesNotMatch(elements.get("notice")!.textContent, /Durably acknowledged/);
+  assert.match(elements.get("notice")!.textContent, /not acknowledged/);
+  assert.equal(new Script("queued.length").runInContext(context), 1);
 });
 
 test("all three adapters provide only shared artifact lifecycle metadata including background persistence", () => {
