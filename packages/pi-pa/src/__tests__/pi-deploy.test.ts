@@ -15,7 +15,8 @@ import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, PI_SUPERVISOR_FILE, buildPiB
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, piSessionCommand, selectPiReviewCandidateBeforePlanning, reservePiReviewCandidate, rereadPiReviewCandidate, withPiReviewCandidateReservation, type PiDeployDependencies, type PiReviewCandidateOperation } from "../deploy.js";
 import { finalizeRepositoryReview, repositoryReviewReservationPath, resolveExecutionPlan, type RepositoryReviewFinalEvidence } from "@pa-platform/pa-core";
-import { TreehouseClient, TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
+import { TREEHOUSE_TIMEOUT_MS, MAX_TREEHOUSE_JSON_BYTES } from "../treehouse.js";
+import { TreehouseClient } from "./treehouse-fixture.js";
 import { PI_VALIDATION_HANDOFF_FILE, type PiProtectedValidationLaunch } from "../validation-supervisor.js";
 import { extractMatrixAuthority } from "../matrix-compatibility.js";
 import { NIXOS_BASELINE_VERSION, NIXOS_APPROVAL_VERSION, NIXOS_TOOLS, nixosTupleDigest, type NixosBaseline, type NixosLaunchTuple } from "../nixos-prerequisites.js";
@@ -717,7 +718,7 @@ function installProtectedReviewToolFixture(root: string): void {
     flock: `#!/bin/sh\nexec ${JSON.stringify(REAL_FLOCK)} "$@"\n`,
     bash: `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' 'GNU bash, fixture'; exit 0; fi\nexec ${JSON.stringify(REAL_BASH)} "$@"\n`,
     nix: "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = --version ]; then printf '%s\\n' 'nix (Nix) fixture'; exit 0; fi\nexit 64\n",
-    treehouse: `#!/bin/sh\n[ "$*" = "status --json" ] || exit 64\nexec ${JSON.stringify(REAL_NODE)} -e ${JSON.stringify(`const fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(join(root, "treehouse-calls"))},'status\\n'); process.stdout.write(fs.readFileSync(${JSON.stringify(join(root, "treehouse-status.json"))}))`)}\n`,
+    treehouse: `#!/bin/sh\nif [ "$*" = "--version" ]; then printf 'v3.1.3\\n'; exit 0; fi\n[ "$*" = "status --json" ] || exit 64\nexec ${JSON.stringify(REAL_NODE)} -e ${JSON.stringify(`const fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(join(root, "treehouse-calls"))},'status\\n'); process.stdout.write(fs.readFileSync(${JSON.stringify(join(root, "treehouse-status.json"))}))`)}\n`,
   };
   for (const [name, script] of Object.entries(scripts)) {
     const path = join(bin, name);

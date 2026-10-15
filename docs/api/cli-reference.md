@@ -217,7 +217,7 @@ ppa deploy requirements --mode analyze --ticket PAP-234 --ticket-worktree --dry-
 Optional `--repo` accepts only a registered key or exact canonical root, never a
 worktree path. Selection requires matching ticket project, exactly one explicit
 `materialized` linked branch with full lowercase 40-hex base/HEAD, and exactly
-one existing lease held by `pa:<repo-key>:<ticket>`. Only bounded Treehouse v2.3.0
+one existing lease held by `pa:<repo-key>:<ticket>`. Only bounded Treehouse v3.1.3
 `status --json` is used (15 seconds, 1 MiB). Physical linked-worktree membership,
 forward/reverse Git metadata, common directory, branch and HEAD authenticate
 before planning and are reread with ticket/lease/live-owner evidence before
@@ -344,7 +344,7 @@ ppa deploy requirements --mode review-auto --ticket PAP-232 --repo pa-platform -
 
 Before immutable planning, PPA requires exactly one canonical-repository
 `materialized` ticket branch with exact base/HEAD/Feature-SHA agreement and
-exactly one existing Treehouse v2.3.0 lease for `pa:pa-platform:PAP-232`. The
+exactly one existing Treehouse v3.1.3 lease for `pa:pa-platform:PAP-232`. The
 lease path must authenticate as a physical registered linked worktree distinct
 from the canonical root. It must be on the exact branch and Feature SHA,
 descended from the immutable base, with a complete zero-record staged/unstaged/

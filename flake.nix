@@ -35,6 +35,7 @@
         let
           pkgs = pkgsFor system;
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
+          treehouse = pkgs.callPackage ./nix/treehouse.nix {};
           reviewProvenance = pkgs.writeText "review-runtime-provenance.json" (builtins.toJSON {
             schemaVersion = "pa-review-runtime/v1";
             sourceSha = self.rev or "unversioned-dirty-source";
@@ -116,7 +117,7 @@
           PI_PA_PLUGIN_SELECTION = builtins.toJSON pluginSelection;
 
           passthru = {
-            inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies;
+            inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies treehouse;
           };
 
           pnpmDeps = pkgs.fetchPnpmDeps {
@@ -244,6 +245,7 @@
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --set PA_PI_SQLITE_NATIVE_BINDING "$share/native-addons/pi-node-24/better_sqlite3.node" \
               --set PA_REQUIRE_PI_SQLITE_NATIVE_BINDING "1" \
+              --set PA_TREEHOUSE_BINARY "${treehouse}/bin/treehouse" \
               --set PA_AXI_PATH "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}"}" \
               --prefix PATH : "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}:"}${runtimePath}"
 
@@ -335,6 +337,12 @@
             { option = "enableQuotaAxi"; tool = "quota-axi"; version = "0.1.56"; }
           ];
         in {
+          treehouse-runtime = pkgs.runCommand "ppa-treehouse-runtime" {
+            nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
+          } ''
+            bash ${./scripts}/pap-252-packaged-treehouse-smoke.sh ${packagesForSystem.ppa}
+            touch $out
+          '';
           # Phase-1 evaluation assertions, not the installed-output matrix.
           axi-packaging-contract =
             assert builtins.all (contract:
@@ -388,6 +396,7 @@
       devShells = forAllSystems (system:
         let
           pkgs = pkgsFor system;
+          treehouse = pkgs.callPackage ./nix/treehouse.nix {};
           dev-pa-platform = pkgs.writeShellScriptBin "dev-pa-platform" ''
             set -euo pipefail
             PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -460,6 +469,7 @@
           '';
         in {
           default = pkgs.mkShell {
+            PA_TREEHOUSE_BINARY = "${treehouse}/bin/treehouse";
             packages = with pkgs; [
               bash
               bubblewrap
