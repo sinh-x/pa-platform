@@ -53,6 +53,7 @@ jobs:
         run: nix develop '.?submodules=1' --no-write-lock-file --command pnpm run test
 
       - name: Enforce config-first compatibility
+        shell: nix develop '.?submodules=1' --no-write-lock-file --command bash -e {0}
         env:
           PA_PHASE5_CONFIG_ROOT: ${{ github.workspace }}/paired-config
         run: |
