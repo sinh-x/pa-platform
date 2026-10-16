@@ -248,9 +248,31 @@ handoff instead of returning the old admission snapshot. The deterministic
 publication-seam regression and final focused check receipts are in
 `deployments/d-6201cf/final-correction-evidence/`; this is not real browser proof.
 
-These are source-engineering evidence only. They do not replace the approved
-matrix, real browser interaction, host-crash durability proof or a compatible
-native observation environment. No observer ownership/privilege policy was changed.
+A subsequent installed PPA smoke failed stopped-session restart with exit 6
+(`deployments/d-6201cf/installed-live-smoke-retry-report.md`). Bounded diagnosis
+in genuine Pi deployment `d-04eb8e` reproduced an unlinked owner-file inode during
+stop polling without scheduling intervention. A separately labeled module-level
+diagnostic widened the read/publication interval by 5 ms and captured the same
+boundary during restart readiness: `replacePrivate`'s atomic rename changed the
+pinned old inode's ctime/link count, and `readPrivate` rejected it as an ownership
+conflict. This establishes a concrete runtime race, not the unknowable internal
+throw site of the earlier uninstrumented CLI failure; it is not evidence against
+Treehouse, Bubblewrap or the separate observer UID prerequisite.
+
+Private reads now discard displaced inodes and reopen the current publication
+with all ownership/mode/link/size/content-stability checks repeated, at most four
+attempts. They never accept unlinked bytes or ignore in-place edits, unsafe
+replacement files or changed owner context. Deterministic source regressions
+cover both stat windows, stopped-session restart with retained feedback, foreign
+replacement context, unsafe files and bounded churn. Complete before/after,
+exact-candidate installed smoke/build receipts and final commit identity are
+recorded externally in
+`/home/sinh/Documents/ai-usage/deployments/d-6201cf/pr-prep-restart-report.md`.
+Those bounded checks are not the installed/browser matrix or UAT acceptance.
+
+These engineering checks do not replace the approved matrix, real browser
+interaction, host-crash durability proof or a compatible native observation
+environment. No observer ownership/privilege policy was changed.
 
 ## Remaining gates / consumer disposition
 

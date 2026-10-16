@@ -148,23 +148,33 @@ export function privateDirectory(path: string, create = false): number {
 }
 
 export function readPrivate(fd: number, name: string, cap = REVIEW_JOURNAL_BYTES): Buffer {
-  const file = openSync(`/proc/self/fd/${fd}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(file, { bigint: true });
-    if (!stat.isFile() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o777n) !== 0o600n
-        || stat.nlink !== 1n || stat.size > BigInt(cap)) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
-    const bytes = Buffer.alloc(Number(stat.size) + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const count = readSync(file, bytes, length, bytes.length - length, length);
-      if (!count) break;
-      length += count;
-    }
-    const after = fstatSync(file, { bigint: true });
-    if (length !== Number(stat.size) || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs
-        || after.size !== stat.size) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
-    return bytes.subarray(0, length);
-  } finally { closeSync(file); }
+  // replacePrivate publishes by rename: a concurrent reader's pinned old inode
+  // can lose its link (and change ctime) before either fstat. Never accept those
+  // displaced bytes; reopen and fully validate the current publication instead.
+  // Bound churn, and retain strict rejection of in-place edits/unsafe files.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const file = openSync(`/proc/self/fd/${fd}/${name}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = fstatSync(file, { bigint: true });
+      if (!stat.isFile() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o777n) !== 0o600n
+          || stat.nlink > 1n || stat.size > BigInt(cap)) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (stat.nlink === 0n) continue;
+      const bytes = Buffer.alloc(Number(stat.size) + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const count = readSync(file, bytes, length, bytes.length - length, length);
+        if (!count) break;
+        length += count;
+      }
+      const after = fstatSync(file, { bigint: true });
+      if (length !== Number(stat.size) || after.mtimeNs !== stat.mtimeNs || after.size !== stat.size
+          || after.uid !== stat.uid || after.mode !== stat.mode || after.nlink > 1n) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (after.nlink === 0n) continue;
+      if (after.ctimeNs !== stat.ctimeNs) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      return bytes.subarray(0, length);
+    } finally { closeSync(file); }
+  }
+  throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
 }
 
 /** Atomic durable replacement, only inside a pinned private directory. */

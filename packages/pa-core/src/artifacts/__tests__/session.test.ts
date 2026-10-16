@@ -10,7 +10,7 @@ import { runCoreCommand } from "../../cli/core-command.js";
 import { renderArtifact } from "../render.js";
 import { artifactDiagnostic, ArtifactPolicyError } from "../policy.js";
 import { appendFeedback } from "../feedback.js";
-import { processBirth, sessionDirectory, withReviewLock, type ReviewContext } from "../runtime.js";
+import { processBirth, readPrivate, replacePrivate, sessionDirectory, withReviewLock, type ReviewContext } from "../runtime.js";
 import {
   cleanupDeadReview, consumeFeedback, readReviewRecord, reviewStatus, startReview as startReviewImpl, stopReview as stopReviewImpl, writeReviewRecord,
   type ReviewLauncher, type ReviewRecord,
@@ -168,6 +168,141 @@ for (const changed of ["source", "HTML", "manifest"] as const) test(`stale ${cha
   assert.deepEqual(readFileSync(journalPath), journal);
   await stopReview(f.context, id);
   assert.deepEqual(readFileSync(journalPath), journal);
+});
+
+for (const boundary of ["before-first-stat", "after-read"] as const) test(`owner read reopens an atomically displaced inode ${boundary}`, async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  await stopReview(f.context, id);
+  const fd = sessionDirectory(f.context, id);
+  const next = { ...readReviewRecord(fd, f.context, id), token: "a".repeat(48) };
+  const realStat = fs.fstatSync;
+  const realRead = fs.readSync;
+  let replaced = false;
+  const publish = (file: number): void => {
+    if (!replaced && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith(`${id}/owner.json`)) {
+      replaced = true;
+      fixtureLock(f.context, () => writeReviewRecord(fd, next));
+      assert.equal(realStat(file).nlink, 0); // real rename/unlink, not fabricated stats
+    }
+  };
+  try {
+    if (boundary === "before-first-stat") fs.fstatSync = ((file: number, options?: unknown) => {
+      publish(file); return realStat(file, options as never);
+    }) as typeof fs.fstatSync;
+    else fs.readSync = ((file: number, ...args: unknown[]) => {
+      const count = Reflect.apply(realRead, fs, [file, ...args]) as number;
+      publish(file); return count;
+    }) as typeof fs.readSync;
+    syncBuiltinESMExports();
+    // Return the fully revalidated current publication, never the unlinked bytes.
+    assert.deepEqual(readReviewRecord(fd, f.context, id), next);
+    assert.equal(replaced, true);
+  } finally {
+    fs.fstatSync = realStat; fs.readSync = realRead; syncBuiltinESMExports(); closeSync(fd);
+  }
+});
+
+test("a displaced owner read still rejects a foreign replacement context", async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  await stopReview(f.context, id);
+  const fd = sessionDirectory(f.context, id);
+  const next = { ...readReviewRecord(fd, f.context, id), context: { ...f.context, deployment: "d-fedcba" } };
+  const realRead = fs.readSync;
+  let replaced = false;
+  try {
+    fs.readSync = ((file: number, ...args: unknown[]) => {
+      const count = Reflect.apply(realRead, fs, [file, ...args]) as number;
+      if (!replaced && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith(`${id}/owner.json`)) {
+        replaced = true;
+        fixtureLock(f.context, () => writeReviewRecord(fd, next));
+      }
+      return count;
+    }) as typeof fs.readSync; syncBuiltinESMExports();
+    assert.throws(() => readReviewRecord(fd, f.context, id), codeIs("ARTIFACT_OWNER_CONFLICT"));
+    assert.equal(replaced, true);
+  } finally { fs.readSync = realRead; syncBuiltinESMExports(); closeSync(fd); }
+});
+
+test("stopped-session restart survives owner publication during readiness and retains feedback", async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  const record = getRecord(f.context, id);
+  assert.equal((await post(record, "api/feedback", [{ schema: "pa-artifact-feedback/v1", eventId: "restart-publication-001", sessionId: id,
+    sourceRef: record.identity.sourceRef, sourceSha256: record.identity.sourceSha256, htmlSha256: record.identity.htmlSha256,
+    target: { type: "document" }, selectedText: "", feedbackText: "Keep across stopped-session restart" }])).status, 200);
+  const output = join(f.root, "restart-feedback.json");
+  await consumeFeedback(f.context, id, output, 0);
+  const exported = readFileSync(output);
+  await stopReview(f.context, id);
+  const journal = readFileSync(join(f.context.root, id, "journal.json"));
+  const realRead = fs.readSync;
+  let armed = false;
+  let replaced = false;
+  try {
+    fs.readSync = ((file: number, ...args: unknown[]) => {
+      const count = Reflect.apply(realRead, fs, [file, ...args]) as number;
+      if (armed && !replaced && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith(`${id}/owner.json`)) {
+        replaced = true;
+        // Deterministic publication seam only after restart admission/launch:
+        // the readiness reader pins a real inode that the publisher replaces.
+        fixtureLock(f.context, () => {
+          const fd = sessionDirectory(f.context, id);
+          try { writeReviewRecord(fd, readReviewRecord(fd, f.context, id)); }
+          finally { closeSync(fd); }
+        });
+        assert.equal(fs.fstatSync(file).nlink, 0);
+      }
+      return count;
+    }) as typeof fs.readSync; syncBuiltinESMExports();
+    const next = await startReview(f.context, f.artifact.manifest, f.assets, path => { f.launch(path); armed = true; });
+    assert.equal(replaced, true);
+    assert.equal(next.status, "running");
+    assert.equal(next.payload["sessionId"], id);
+    assert.notEqual(getRecord(f.context, id).token, record.token);
+  } finally { fs.readSync = realRead; syncBuiltinESMExports(); }
+  assert.deepEqual(readFileSync(join(f.context.root, id, "journal.json")), journal);
+  await consumeFeedback(f.context, id, output, 0);
+  assert.deepEqual(readFileSync(output), exported);
+  await stopReview(f.context, id);
+});
+
+test("private read retries are bounded and do not accept in-place mutation or unsafe replacement", async t => {
+  const f = fixture(t);
+  const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
+  const id = first.payload["sessionId"] as string;
+  await stopReview(f.context, id);
+  const fd = sessionDirectory(f.context, id);
+  const realRead = fs.readSync;
+  try {
+    for (const kind of ["churn", "in-place", "mode", "hardlink", "symlink", "oversize"] as const) {
+      replacePrivate(fd, "probe.json", Buffer.from("original"));
+      let publications = 0;
+      fs.readSync = ((file: number, ...args: unknown[]) => {
+        const count = Reflect.apply(realRead, fs, [file, ...args]) as number;
+        if (count && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith("/probe.json")) {
+          publications++;
+          const path = `/proc/self/fd/${fd}/probe.json`;
+          if (kind === "in-place") {
+            writeFileSync(path, "mutated!"); fs.utimesSync(path, 1, 1);
+          } else {
+            replacePrivate(fd, "probe.json", Buffer.from(kind === "oversize" ? "too many bytes" : "replaced"));
+            if (kind === "mode") fs.chmodSync(path, 0o644);
+            if (kind === "hardlink") fs.linkSync(path, join(f.root, "probe-alias"));
+            if (kind === "symlink") { fs.unlinkSync(path); symlinkSync(f.source, path); }
+          }
+        }
+        return count;
+      }) as typeof fs.readSync; syncBuiltinESMExports();
+      assert.throws(() => readPrivate(fd, "probe.json", 8));
+      assert.ok(publications > 0 && publications <= 4, "no unbounded retry on publication churn");
+      fs.readSync = realRead; syncBuiltinESMExports();
+    }
+  } finally { fs.readSync = realRead; syncBuiltinESMExports(); closeSync(fd); }
 });
 
 test("foreign adapter/deployment/private-state/PID-reuse reject without guessed signals", async t => {
