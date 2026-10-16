@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,7 +21,7 @@ const roles: ReadOnlyHelperRole[] = ["orchestrator", "parented-implement", "stan
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const protectedWrite = (path: string, value: unknown) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value), { mode: 0o600 }); };
 
-function isolated(run: (root: string) => void): void {
+function isolated<T>(run: (root: string) => T): T {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
   for (const key of Object.keys(inherited)) delete process.env[key];
   closeDb();
@@ -30,10 +30,14 @@ function isolated(run: (root: string) => void): void {
     PA_PLATFORM_HOME: join(root, "platform"), PA_PLATFORM_DATA: join(root, "data"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
   // Native ABI preparation belongs to the named check environment, not operator state.
   if (inherited.PA_SQLITE_NATIVE_BINDING) process.env.PA_SQLITE_NATIVE_BINDING = inherited.PA_SQLITE_NATIVE_BINDING;
-  try { run(root); } finally {
+  const cleanup = () => {
     closeDb(); for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
     Object.assign(process.env, inherited); rmSync(root, { recursive: true, force: true });
-  }
+  };
+  let result: T;
+  try { result = run(root); } catch (error) { cleanup(); throw error; }
+  if (result instanceof Promise) return result.finally(cleanup) as T;
+  cleanup(); return result;
 }
 
 function fixture(root: string, role: ReadOnlyHelperRole) {
@@ -61,10 +65,8 @@ function fixture(root: string, role: ReadOnlyHelperRole) {
   const mode = role === "review-auto" ? "review-auto" : role === "worker-consistency-only" ? "worker" : role === "orchestrator" ? "orchestrator" : "implement";
   const team = role === "review-auto" ? "requirements" : "builder";
   Object.assign(process.env, { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: directory, PA_TEAM: team, PA_MODE: mode, PA_TICKET_ID: "ALT-7", PA_REPO: candidate, PA_WORKTREE_ROOT: candidate });
-  if (role === "worker-consistency-only" || role === "review-auto") {
-    mkdirSync(directory, { recursive: true });
-    assert.equal(recordPiProcessIdentity(id, directory, process.pid), true);
-  }
+  mkdirSync(directory, { recursive: true });
+  assert.equal(recordPiProcessIdentity(id, directory, process.pid), true);
   const status: DeploymentStatus = { deploy_id: id, team, mode, status: "running", started_at: new Date().toISOString(), pid: process.pid, agents: [],
     runtime: "pi", binary: "ppa", ticket_id: "ALT-7", repo: candidate, repo_root: canonical, worktree_root: candidate };
   const binding = { builder_authority: role === "standalone-implement" ? "standalone-implement" as const : "orchestrator" as const,
@@ -91,6 +93,8 @@ function fixture(root: string, role: ReadOnlyHelperRole) {
   if (role === "worker-consistency-only") Object.assign(status, { branch_state: "materialized", branch_base_sha: base, branch_head_sha: head });
   if (role === "parented-implement") {
     statuses.set(parent, { ...status, ...binding, deploy_id: parent, mode: "orchestrator", parent_deployment_id: undefined });
+    mkdirSync(owner.deploymentDirectory, { recursive: true });
+    assert.equal(recordPiProcessIdentity(parent, owner.deploymentDirectory, process.pid), true);
     protectedWrite(repositoryMutationBorrowerPath(candidate), borrower);
   }
   const checkout = { kind: "existing-review-checkout" as const, repoKey: "fixture", repoRoot: canonical, worktreeRoot: candidate, ticket: "ALT-7",
@@ -258,6 +262,9 @@ test("valid idle custody and active direct-child custody remain observational", 
         branch_base_sha: f.review.checkout.baseSha, branch_head_sha: f.review.checkout.featureSha });
       protectedWrite(repositoryMutationLeasePath(f.candidate), owner);
     }
+    const parentDirectory = getDeployPaths(f.parent).deployDir;
+    mkdirSync(parentDirectory, { recursive: true });
+    assert.equal(recordPiProcessIdentity(f.parent, parentDirectory, process.pid), true);
     guarded(f, () => withReadOnlyHelperContext(f.capability.authenticate(f.candidate), (context) => assert.equal(context.role, role)));
   }));
 });
@@ -392,8 +399,8 @@ test("built CLI rejects ended/replayed/forged locators and missing commands with
   }));
 });
 
-test("owner-absent worker/reviewer reject stale PID incarnations with default process checks and built CLI", async (t) => {
-  for (const role of ["worker-consistency-only", "review-auto"] as const) {
+test("every role rejects stale PID incarnations with default process checks and built CLI", async (t) => {
+  for (const role of roles) {
     for (const kind of ["absent", "incarnation", "boot", "pid", "deployment", "malformed", "insecure", "symlink", "oversized"] as const) {
       await t.test(`${role}: ${kind}`, () => isolated((root) => {
         const f = fixture(root, role);
@@ -432,8 +439,8 @@ test("owner-absent worker/reviewer reject stale PID incarnations with default pr
   }
 });
 
-test("worker/reviewer immediate reread rejects replaced launch anchors before substantive access", async (t) => {
-  for (const role of ["worker-consistency-only", "review-auto"] as const) await t.test(role, () => isolated((root) => {
+test("every role's immediate reread rejects replaced launch anchors before substantive access", async (t) => {
+  for (const role of roles) await t.test(role, () => isolated((root) => {
     const f = fixture(root, role);
     persistRegistryFixture(f);
     const capability = createPiReadonlyHelperCapability({ treehouse: f.treehouse });
@@ -444,6 +451,126 @@ test("worker/reviewer immediate reread rejects replaced launch anchors before su
     let substantiveCalls = 0;
     guarded(f, () => rejected(() => withReadOnlyHelperContext(auth, () => { substantiveCalls++; })));
     assert.equal(substantiveCalls, 0);
+  }));
+});
+
+// A real four-process tree models parent supervisor -> parent Pi -> child
+// supervisor -> child Pi. Commands run underneath the selected Pi process; no
+// process/lineage dependency seams are used by these built-CLI regressions.
+async function roleProcesses() {
+  const source = `
+    const { spawn, spawnSync } = require('node:child_process');
+    const index = Number(process.argv[1]);
+    const child = index < 3 ? spawn(process.execPath, ['-e', process.execArgv[1], String(index + 1)], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }) : undefined;
+    const ready = (pids) => process.send({ ready: [process.pid, ...pids] });
+    if (child) child.on('message', (message) => message.ready ? ready(message.ready) : process.send(message));
+    else ready([]);
+    process.on('message', (message) => {
+      if (message.target !== index) { child.send(message); return; }
+      const result = spawnSync(process.execPath, message.args, { cwd: message.cwd, env: message.env, encoding: 'utf8', timeout: 30000, maxBuffer: 128 * 1024 });
+      process.send({ result: { code: result.status, stdout: result.stdout, stderr: result.stderr, error: result.error?.message, signal: result.signal } });
+    });
+    process.on('disconnect', () => { if (child?.connected) child.disconnect(); process.exit(0); });
+  `;
+  const controller = spawn(process.execPath, ["-e", source, "0"], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  const receive = <T>(key: string): Promise<T> => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { controller.off("message", onMessage); reject(new Error(`role process ${key} timed out`)); }, 40_000);
+    const onMessage = (message: unknown) => {
+      const row = message as Record<string, T>;
+      if (row[key] !== undefined) { clearTimeout(timer); controller.off("message", onMessage); resolve(row[key]!); }
+    };
+    controller.on("message", onMessage);
+  });
+  try {
+    const pids = await receive<number[]>("ready");
+    assert.equal(new Set(pids).size, 4);
+    return { pids, async run(target: number, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+      const pending = receive<{ code: number; stdout: string; stderr: string; error?: string; signal: string | null }>("result");
+      controller.send({ target, args, cwd, env });
+      const result = await pending;
+      assert.equal(result.error, undefined); assert.equal(result.signal, null);
+      return result;
+    }, async close() {
+      const exited = new Promise<void>((resolve) => controller.once("exit", () => resolve()));
+      controller.disconnect(); await exited;
+    } };
+  } catch (error) { controller.kill(); throw error; }
+}
+
+test("built CLI binds distinct historical supervisor and Pi-child incarnations for all roles", async (t) => {
+  for (const scenario of [...roles, "orchestrator-active-borrower"] as const) await t.test(scenario, () => isolated(async (root) => {
+    const activeBorrower = scenario === "orchestrator-active-borrower";
+    const role = activeBorrower ? "orchestrator" : scenario;
+    const f = fixture(root, role), processes = await roleProcesses();
+    try {
+      const [ownerSupervisor, ownerPi, borrowerSupervisor, borrowerPi] = processes.pids as [number, number, number, number];
+      const parented = role === "parented-implement", optionalOwner = role === "worker-consistency-only" || role === "review-auto";
+      const target = parented || optionalOwner ? 3 : 1;
+      f.status.pid = processes.pids[target];
+      assert.equal(recordPiProcessIdentity(f.id, getDeployPaths(f.id).deployDir, f.status.pid!), true);
+      const ownerId = parented || optionalOwner ? f.parent : f.id;
+      const ownerDirectory = getDeployPaths(ownerId).deployDir;
+      mkdirSync(ownerDirectory, { recursive: true });
+      assert.equal(recordPiProcessIdentity(ownerId, ownerDirectory, ownerPi), true);
+      const owner = { ...f.owner, deploymentId: ownerId, deploymentDirectory: ownerDirectory,
+        processFingerprint: readProcessFingerprint(ownerSupervisor)! };
+      protectedWrite(repositoryMutationLeasePath(f.candidate, owner.slot), owner);
+      if (parented || optionalOwner) f.statuses.set(ownerId, { ...f.status, deploy_id: ownerId, pid: ownerPi, team: "builder", mode: "orchestrator",
+        builder_authority: "orchestrator", parent_deployment_id: undefined, review_checkout: undefined,
+        treehouse_path: f.candidate, treehouse_lease_id: "fixture-lease", treehouse_lease_holder: "pa:fixture:ALT-7",
+        branch_state: "materialized", branch_base_sha: f.review.checkout.baseSha, branch_head_sha: f.review.checkout.headSha,
+        ticket_slot_id: f.slot.slotId, repository_permit: f.slot.repositoryPermit });
+      if (!optionalOwner) protectedWrite(repositoryTicketSlotPath(f.canonical, "ALT-7"), { ...f.slot,
+        processFingerprint: owner.processFingerprint });
+      if (parented) protectedWrite(repositoryMutationBorrowerPath(f.candidate), { ...f.borrower,
+        parentProcessFingerprint: owner.processFingerprint, processFingerprint: readProcessFingerprint(borrowerSupervisor)! });
+      if (activeBorrower) {
+        const childDirectory = getDeployPaths(f.parent).deployDir;
+        mkdirSync(childDirectory, { recursive: true });
+        assert.equal(recordPiProcessIdentity(f.parent, childDirectory, borrowerPi), true);
+        f.statuses.set(f.parent, { ...f.status, deploy_id: f.parent, pid: borrowerPi, mode: "implement",
+          builder_authority: "parented-implement", parent_deployment_id: f.id });
+        protectedWrite(repositoryMutationBorrowerPath(f.candidate), { ...f.borrower, deploymentId: f.parent,
+          deploymentDirectory: childDirectory, parentDeploymentId: f.id, parentProcessFingerprint: owner.processFingerprint,
+          processFingerprint: readProcessFingerprint(borrowerSupervisor)! });
+      }
+      persistRegistryFixture(f); builtCli(f);
+      const cli = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
+      const environment = { ...process.env, NO_COLOR: "1", PATH: `${join(root, "bin")}:${process.env.PATH}` };
+      const run = (args: string[]) => processes.run(target, [cli, ...args], f.candidate, environment);
+      const before = files(root), events = getDb().prepare("SELECT * FROM registry_events").all();
+      for (const args of [["branch", "validate"], ["board"], ["repository", "inspect"]]) {
+        const result = await run(args); assert.equal(result.code, 0, result.stderr);
+        if (args[0] === "board") assert.match(result.stdout, /candidate board sentinel/);
+        if (args[0] === "repository") assert.ok(result.stdout.includes(`role=${role}`));
+      }
+      assert.deepEqual(files(root), before, "real-process helper reads must not change any fixture evidence");
+      assert.deepEqual(getDb().prepare("SELECT * FROM registry_events").all(), events);
+      // Even optional owners must retain both historical child identity and live
+      // supervisor ancestry. A live numeric PID alone is never an anchor.
+      const ownerAnchor = join(ownerDirectory, PI_PROCESS_IDENTITY_FILE), bytes = readFileSync(ownerAnchor);
+      for (const bad of ["missing-owner-anchor", "replayed-owner-incarnation", "wrong-supervisor-lineage"] as const) {
+        if (bad === "missing-owner-anchor") rmSync(ownerAnchor);
+        else if (bad === "replayed-owner-incarnation") {
+          const value = JSON.parse(bytes.toString());
+          protectedWrite(ownerAnchor, { ...value, processFingerprint: { ...value.processFingerprint, startTimeTicks: "0" } });
+        } else protectedWrite(repositoryMutationLeasePath(f.candidate, owner.slot), { ...owner, processFingerprint: readProcessFingerprint(borrowerPi)! });
+        const rejectedBefore = files(root);
+        const result = await run(["branch", "validate"]);
+        assert.equal(result.code, 1, `${role}: ${bad}`); assert.equal(result.stdout, ""); assert.match(result.stderr, /authority-rejected/);
+        assert.deepEqual(files(root), rejectedBefore);
+        protectedWrite(ownerAnchor, JSON.parse(bytes.toString()));
+        protectedWrite(repositoryMutationLeasePath(f.candidate, owner.slot), owner);
+      }
+      if (parented) {
+        // Registry/anchor agree on a live Pi, but it is not below the recorded
+        // borrower supervisor. This must fail independently of PID equality.
+        getDb().prepare("UPDATE deployments SET pid = ? WHERE deployment_id = ?").run(ownerPi, f.id);
+        assert.equal(recordPiProcessIdentity(f.id, getDeployPaths(f.id).deployDir, ownerPi), true);
+        const result = await run(["branch", "validate"]);
+        assert.equal(result.code, 1); assert.match(result.stderr, /borrower Pi child is outside/);
+      }
+    } finally { await processes.close(); }
   }));
 });
 

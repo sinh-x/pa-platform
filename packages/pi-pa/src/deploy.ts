@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
+import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
@@ -259,8 +259,15 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         const physical = resolveRepoExecutionPath(undefined, cwd, { allowLinkedWorktreeCwd: true });
         if (physical.worktreeKind !== "linked" || physical.worktreeRoot !== cwd || live.repo !== cwd || live.worktree_root !== cwd || live.repo_root !== physical.repoRoot) reject("crossed canonical/runtime domains or wrong physical worktree");
         const getFingerprint = dependencies.getProcessFingerprint ?? readProcessFingerprint;
-        const observedFingerprint = getFingerprint(live.pid!);
         const fingerprintEqual = (left: ProcessFingerprint, right: ProcessFingerprint | undefined) => Boolean(right && left.pid === right.pid && left.startTimeTicks === right.startTimeTicks && left.bootId === right.bootId);
+        const inLineage = dependencies.isProcessInLineage ?? processIsWithinFingerprintLineage;
+        const processObservations: ProcessFingerprint[] = [];
+        const readLaunchProcess = (registry: DeploymentStatus): ProcessFingerprint => {
+          const anchor = readPiProcessIdentity(registry.deploy_id, getDeployPaths(registry.deploy_id).deployDir);
+          if (anchor.pid !== registry.pid || !fingerprintEqual(anchor, getFingerprint(anchor.pid))) return reject("recorded Pi-child process incarnation disagrees with live registry evidence");
+          processObservations.push(anchor);
+          return anchor;
+        };
         let role: ReadOnlyHelperRole;
         if (live.team === "builder" && live.mode === "orchestrator" && live.builder_authority === "orchestrator") role = "orchestrator";
         else if (live.team === "builder" && live.mode === "implement" && live.builder_authority === "parented-implement") role = "parented-implement";
@@ -268,14 +275,11 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         else if (live.team === "builder" && live.mode === "worker" && !live.builder_authority && !live.parent_deployment_id) role = "worker-consistency-only";
         else if (live.team === "requirements" && live.mode === "review-auto" && !live.builder_authority && !live.parent_deployment_id) role = "review-auto";
         else return reject("mode has no authenticated-worktree read-only helper role");
-        // Owners/borrowers are anchored below by their private launch evidence.
-        // Worker/reviewer identity needs its own runtime-recorded incarnation, even
-        // when an orchestrator happens to be present. Sampling live.pid is not proof
-        // that today's incarnation belongs to the historical deployment.
-        const fingerprint = role === "worker-consistency-only" || role === "review-auto"
-          ? readPiProcessIdentity(id!, directory) : observedFingerprint;
-        if (!fingerprint || fingerprint.pid !== live.pid || !fingerprintEqual(fingerprint, observedFingerprint)
-          || !(dependencies.isProcessInLineage ?? processIsWithinFingerprintLineage)(process.pid, fingerprint)) reject("helper is not within the recorded live deployment process incarnation/lineage (stale/replayed locator)");
+        // Registry PID names the Pi child, not the launcher/supervisor recorded
+        // in owner/borrower custody. Require its historical incarnation for every
+        // role, then independently bind builder custody to that child's ancestry.
+        const fingerprint = readLaunchProcess(live);
+        if (!inLineage(process.pid, fingerprint)) reject("helper is not within the recorded live deployment process incarnation/lineage (stale/replayed locator)");
         const authority = observeReadonlyRepositoryAuthority(physical.gitDir);
         const lease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(physical.repoRoot, physical.repoKey, ticketId, cwd);
         const ticket = readReviewCandidateTicket(ticketId);
@@ -284,7 +288,7 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         const validateOwner = (owner: RepositoryMutationLease, slot: "orchestrator" | "implement") => {
           const registry = query(owner.deploymentId).status;
           if (!registry || registry.status !== "running" || registry.team !== "builder" || registry.mode !== owner.mode || registry.runtime !== "pi" || registry.binary !== "ppa"
-            || registry.pid !== owner.processFingerprint.pid || registry.ticket_id !== ticketId || registry.repo !== cwd || registry.worktree_root !== cwd || registry.repo_root !== physical.repoRoot
+            || registry.ticket_id !== ticketId || registry.repo !== cwd || registry.worktree_root !== cwd || registry.repo_root !== physical.repoRoot
             || registry.builder_authority !== (slot === "orchestrator" ? "orchestrator" : "standalone-implement")
             || registry.treehouse_path !== cwd || registry.treehouse_lease_id !== lease.leaseId || registry.treehouse_lease_holder !== lease.leaseHolder
             || registry.branch_state !== "materialized" || registry.branch_base_sha !== linked.baseSha
@@ -293,6 +297,8 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
             || registry.branch_head_sha !== owner.preLaunchGitSnapshot.head
             || owner.runtime !== "pi" || owner.team !== "builder" || owner.mode !== slot || owner.deploymentDirectory !== getDeployPaths(owner.deploymentId).deployDir
             || !fingerprintEqual(owner.processFingerprint, getFingerprint(owner.processFingerprint.pid))) return reject("owner registry/process/physical role binding is malformed or stale");
+          const ownerPi = readLaunchProcess(registry);
+          if (!inLineage(ownerPi.pid, owner.processFingerprint)) return reject("recorded owner Pi child is outside its live launcher/supervisor custody");
           return registry;
         };
         let capacityIdentity: string | undefined;
@@ -331,7 +337,7 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
           if (borrower) {
             const child = query(borrower.deploymentId).status;
             if (!child || child.status !== "running" || child.team !== "builder" || child.mode !== "implement" || child.runtime !== "pi" || child.binary !== "ppa"
-              || child.builder_authority !== "parented-implement" || child.parent_deployment_id !== owner!.deploymentId || child.pid !== borrower.processFingerprint.pid
+              || child.builder_authority !== "parented-implement" || child.parent_deployment_id !== owner!.deploymentId
               || child.repo !== cwd || child.worktree_root !== cwd || child.repo_root !== physical.repoRoot || child.ticket_id !== ticketId
               || child.treehouse_path !== cwd || child.treehouse_lease_id !== lease.leaseId || child.treehouse_lease_holder !== lease.leaseHolder
               || child.branch_state !== "materialized" || child.branch_base_sha !== linked.baseSha
@@ -341,9 +347,12 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
               || borrower.canonicalRepoKey !== physical.repoKey || borrower.canonicalRepoRoot !== physical.repoRoot || borrower.worktreeRoot !== cwd
               || borrower.ticket !== ticketId || borrower.branch !== linked.branch || borrower.launchGitSnapshot.branch !== linked.branch || borrower.launchGitSnapshot.head !== child.branch_head_sha
               || !fingerprintEqual(borrower.processFingerprint, getFingerprint(borrower.processFingerprint.pid)) || !fingerprintEqual(borrower.parentProcessFingerprint, owner!.processFingerprint)
-              || (parented && (borrower.deploymentId !== id || borrower.parentDeploymentId !== live.parent_deployment_id || !fingerprintEqual(borrower.processFingerprint, fingerprint)))) reject("direct borrower evidence is replayed, finalized, or mismatched");
+              || (parented && (borrower.deploymentId !== id || borrower.parentDeploymentId !== live.parent_deployment_id))) return reject("direct borrower evidence is replayed, finalized, or mismatched");
+            const borrowerPi = readLaunchProcess(child);
+            if (!inLineage(borrowerPi.pid, borrower.processFingerprint)
+              || (parented && !fingerprintEqual(borrowerPi, fingerprint))) reject("recorded borrower Pi child is outside its live launcher/supervisor custody");
           }
-          if (!parented && (owner!.deploymentId !== id || live.parent_deployment_id || !fingerprintEqual(owner!.processFingerprint, fingerprint))) reject("sole owner does not match executing deployment");
+          if (!parented && (owner!.deploymentId !== id || live.parent_deployment_id || ownerRegistry.pid !== fingerprint.pid)) reject("sole owner does not match executing deployment");
           const observed = observeReadonlyRepositoryTicketSlot(physical.repoRoot, ticketId, getFingerprint);
           const slot = observed.slot;
           if (slot.canonicalRepoKey !== physical.repoKey || slot.canonicalRepoRoot !== physical.repoRoot || slot.ticket !== ticketId || slot.deploymentId !== owner!.deploymentId
@@ -369,7 +378,7 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
           || (role === "orchestrator" && !authority.borrower && snapshot.head !== (authority.owner!.authorityGitSnapshot ?? authority.owner!.preLaunchGitSnapshot).head)) reject("current branch/Feature SHA differs from authenticated role binding");
         if (role === "review-auto" && !repositoryGitSnapshotsEqual(snapshot, authority.review!.checkout.gitSnapshot)) reject("review candidate HEAD or complete clean status drifted");
         const context = Object.freeze({ ...physical, access: "read-only" as const, role, deploymentId: id!, ticket: ticketId });
-        const identity = createHash("sha256").update(JSON.stringify({ context, registryObservations, fingerprint, lease, linked, authority: authority.identity, capacityIdentity, claimIdentity, snapshot })).digest("hex");
+        const identity = createHash("sha256").update(JSON.stringify({ context, registryObservations, processObservations, fingerprint, lease, linked, authority: authority.identity, capacityIdentity, claimIdentity, snapshot })).digest("hex");
         return { context, identity };
       } catch (error) {
         if (error instanceof ReadOnlyHelperFailure) throw error;

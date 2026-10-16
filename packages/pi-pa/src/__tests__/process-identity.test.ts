@@ -8,7 +8,7 @@ import { readProcessFingerprint } from "@pa-platform/pa-core";
 import { PiAdapter, runPiManagedProcess } from "../adapter.js";
 import { PI_PROCESS_IDENTITY_FILE, readPiProcessIdentity, recordPiProcessIdentity } from "../process-identity.js";
 
-for (const role of ["worker", "review-auto"] as const) {
+for (const role of ["orchestrator", "implement", "worker", "review-auto"] as const) {
   test(`${role}: managed child identity is recorded before supervisor readiness, using the real spawned incarnation`, async () => {
     const root = mkdtempSync(join(tmpdir(), "pap249-process-launch-"));
     const id = "d-249abc";
@@ -17,7 +17,7 @@ for (const role of ["worker", "review-auto"] as const) {
       writeFileSync(join(bin, "pi"), `#!${process.execPath}\nsetTimeout(() => process.exit(0), 150);\n`, { mode: 0o700 });
       let spawnedPid: number | undefined;
       const result = await runPiManagedProcess([], root, { ...process.env, PATH: `${bin}:${process.env.PATH}`,
-        PA_TEAM: role === "worker" ? "builder" : "requirements", PA_MODE: role }, {
+        PA_TEAM: role === "review-auto" ? "requirements" : "builder", PA_MODE: role }, {
         primerPath: join(root, "primer.md"), deployId: id, mode: "dry-run",
       }, "synthetic-session", [], { onSpawn: (pid) => {
         spawnedPid = pid;
@@ -33,8 +33,8 @@ for (const role of ["worker", "review-auto"] as const) {
   });
 }
 
-test("foreground worker/reviewer records the launch incarnation before publishing its PID", async () => {
-  for (const mode of ["worker", "review-auto"] as const) {
+test("foreground builder/reviewer records the launch incarnation before publishing its PID", async () => {
+  for (const mode of ["orchestrator", "implement", "worker", "review-auto"] as const) {
     const dir = mkdtempSync(join(tmpdir(), "pap249-foreground-anchor-"));
     const primer = join(dir, "primer.md"); writeFileSync(primer, "synthetic fixture");
     const input = new Readable({ read() {} });
@@ -43,7 +43,7 @@ test("foreground worker/reviewer records the launch incarnation before publishin
     const pty = { pid: process.pid, write() {}, resize() {}, kill() {}, onData() {},
       onExit(handler: typeof exit) { exit = handler; } };
     const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined,
-      env: { ...process.env, PA_TEAM: mode === "worker" ? "builder" : "requirements", PA_MODE: mode },
+      env: { ...process.env, PA_TEAM: mode === "review-auto" ? "requirements" : "builder", PA_MODE: mode },
       supervision: { spawnPty: () => pty as never, input: input as never, output: { write: () => true } as never, processExists: () => running } });
     try {
       const pending = adapter.spawn({ primerPath: primer, deployId: "d-249abc", mode: "foreground", onPid: (pid) => {

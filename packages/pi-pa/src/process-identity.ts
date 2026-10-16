@@ -69,9 +69,9 @@ export function readPiProcessIdentity(deploymentId: string, deploymentDirectory:
   return Object.freeze({ pid: Number(fingerprint["pid"]), startTimeTicks: fingerprint["startTimeTicks"], bootId: fingerprint["bootId"] });
 }
 
-/** Only the two roles without their own builder launch fingerprint need this anchor. */
+/** Bind the registry's Pi-child incarnation separately from launcher/supervisor custody. */
 export function recordPiReadonlyRoleProcessIdentity(env: NodeJS.ProcessEnv, deploymentId: string, deploymentDirectory: string, pid: number): void {
-  if ((env["PA_TEAM"] === "builder" && env["PA_MODE"] === "worker")
+  if ((env["PA_TEAM"] === "builder" && ["orchestrator", "implement", "worker"].includes(env["PA_MODE"] ?? ""))
     || (env["PA_TEAM"] === "requirements" && env["PA_MODE"] === "review-auto")) {
     recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
   }
