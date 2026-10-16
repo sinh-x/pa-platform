@@ -60,6 +60,80 @@ Print, JSON, and RPC execution loads the same extension and commands but does no
 
 The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
 
+## Authenticated read-only helpers
+
+Inside a live protected PPA deployment, these inferred commands use its admitted
+physical Treehouse checkout, not the canonical checkout's branch or ownership:
+
+```bash
+ppa branch validate
+ppa board
+ppa repository inspect
+```
+
+The optional PPA helper capability is observational only. It correlates registered
+physical Git identity, existing live registry/process lineage, the exact durable
+ticket branch, Treehouse lease and role-specific protected custody. `PA_*` values
+locate this evidence; matching environment strings alone never authenticate it.
+Identity, evidence and the complete Git snapshot are synchronously reread
+immediately before substantive helper access. Missing, malformed, ended, replayed,
+wrong-ticket/mode/path or drifted evidence fails closed; there is no canonical-root
+fallback, authority repair or automatic restart.
+
+Orchestrator, implement, worker and review-auto runtimes record their actual spawned
+Pi-child process incarnation (PID, Linux process-start ticks and boot identity) in
+the private mode-0600 `$PA_DEPLOYMENT_DIR/pi-process-identity.json` before publishing
+PID/readiness. Helpers require this historical anchor for their own deployment and
+any observed builder owner/borrower, compare it with the live registry process, and
+reread it before access. Builder ownership/capacity fingerprints identify the
+launcher/supervisor, not the registry's Pi child: the child must be in the live
+custodian's process lineage, not have the same numeric PID. Missing anchors on
+older deployments fail closed; helpers never synthesize or repair them. A currently live numeric PID
+alone does not authenticate stale deployment evidence. Missing legacy launch
+anchors reject; helpers never synthesize/repair one or restart a deployment.
+Builder roles retain their existing owner/borrower launch-fingerprint checks.
+
+| Deployment role | Required observational boundary |
+| --- | --- |
+| builder/orchestrator | Matching live owner and ticket capacity; any direct borrower must also match. |
+| builder/implement, parented | Matching live parent owner, exact active direct borrower and shared capacity. |
+| builder/implement, standalone | Its own sole live implement owner and ticket capacity, no borrowed authority. |
+| builder/worker | Consistency-only selected branch/SHA and lease; no implement/borrower/review custody. An existing orchestrator owner is checked, never acquired. |
+| requirements/review-auto | Exact read-only candidate reservation and active authorization; no implement borrower. An optional idle orchestrator retains custody. |
+
+Other modes, ordinary sessions, rogue-one selection evidence, and unauthenticated
+standalone Treehouse calls gain no linked-checkout helper authority. OPA/CPA remain
+canonical-only. Canonical CWD and explicit registered repository selectors retain
+their supported behavior. `board --project <key|prefix|basename>` and `board --all`
+are neutral data selections, not checkout authentication. An inferred linked board
+uses the canonical registered project and observes the existing registry without
+initialization/migration. Explicit `repository inspect --repo <key|registered-path>`
+continues to target the canonical checkout. Inferred inspection identifies the
+canonical root, selected worktree, role and relevant owner slot; missing ownership
+is explicit, never substituted from the canonical checkout. Review inspection
+without builder ownership is valid and does not acquire it.
+
+`branch validate` reads the admitted worktree's actual branch. Base/nonconforming
+names remain advisory warnings with exit 0; authentication or command failures
+exit nonzero. `branch create` and `repository quarantine` do **not** consume the
+helper capability and gain no linked-worktree mutation authority. Helpers never
+acquire/update ownership, capacity or leases, mutate branches, change tickets or
+approvals, return checkouts, or launch children.
+
+Failures distinguish `helper-incompatible`, `authority-rejected` and
+`command-unavailable`. Each typed rejection is bounded to 2,000 JavaScript
+characters and names Condition, Source, Reason, Correction and Resume Action.
+Its report explicitly separates implementation launch state (`launched`,
+`not-launched`, or `unknown`); ordinary helper authentication reports `unknown`
+rather than inferring that implementation failed to launch. A missing diagnostic
+executable such as `file` (shell exit 127) is a command-unavailable failure,
+separate from a helper path rejection. Neither proves feature cancellation.
+Session todo cancellation is not ticket cancellation or approval revocation.
+Preserve genuine authority rejections and required matrix failures as failures;
+reconcile their evidence before an explicitly authorized retry. This helper repair
+never resumes stopped feature deployments or changes their approvals/statuses.
+Independent review, CI/UAT, merge and checkout return retain their separate gates.
+
 ## Protected Pi review-auto existing-candidate selection
 
 A fresh, non-dry-run Pi `requirements/review-auto` launch selects its candidate

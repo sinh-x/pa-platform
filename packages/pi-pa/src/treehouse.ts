@@ -65,8 +65,9 @@ export class TreehouseClient {
     const root = absolutePath(canonicalRepoRoot, "canonical repository root");
     let result: TreehouseCommandResult;
     try { result = this.run(["--version"], root); }
-    catch { throw this.versionError("unavailable executable"); }
-    if (result.error || result.status !== 0) throw this.versionError("version probe failed (missing executable, timeout, or nonzero exit)");
+    catch (error) { throw this.versionError("unavailable executable", error instanceof Error ? error : undefined); }
+    if (result.error || result.status !== 0) throw this.versionError("version probe failed (missing executable, timeout, or nonzero exit)",
+      result.error ?? (result.status === 127 ? Object.assign(new Error("evidence command unavailable (exit 127)"), { code: "COMMAND_UNAVAILABLE" }) : undefined));
     if (result.stdout.length > MAX_VERSION_BYTES || result.stdout.includes(0)) throw this.versionError("invalid bounded version output");
     let version: string;
     try { version = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout); }
@@ -78,9 +79,9 @@ export class TreehouseClient {
     }
   }
 
-  private versionError(actual: string): Error {
+  private versionError(actual: string, cause?: Error): Error {
     return treehouseError(`expected Treehouse v${SUPPORTED_TREEHOUSE_VERSION}; executable ${bounded(this.binary.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?"), 300)}; actual ${actual}`,
-      `use packaged PPA or nix develop; source launches require PA_TREEHOUSE_BINARY pointing to exact v${SUPPORTED_TREEHOUSE_VERSION}; no lease or branch changes were requested`);
+      `use packaged PPA or nix develop; source launches require PA_TREEHOUSE_BINARY pointing to exact v${SUPPORTED_TREEHOUSE_VERSION}; no lease or branch changes were requested`, cause);
   }
 
   status(canonicalRepoRoot: string): readonly TreehouseStatusEntry[] {
@@ -137,7 +138,8 @@ export class TreehouseClient {
     const result = this.run(args, root);
     if (result.error || result.status !== 0) {
       const detail = result.error?.message ?? (result.stderr.toString("utf8").trim() || `exit ${result.status ?? "unknown"}`);
-      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v3.1.3 and preserve any lease created before retrying");
+      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v3.1.3 and preserve any lease created before retrying",
+        result.error ?? (result.status === 127 ? Object.assign(new Error("evidence command unavailable (exit 127)"), { code: "COMMAND_UNAVAILABLE" }) : undefined));
     }
     if (result.stdout.length === 0) throw treehouseError(`treehouse ${args.join(" ")} returned empty stdout`, "require bounded machine-readable JSON output");
     if (result.stdout.length > MAX_TREEHOUSE_JSON_BYTES) throw treehouseError(`treehouse JSON exceeded ${MAX_TREEHOUSE_JSON_BYTES} bytes`, "reduce/reconcile pool evidence before retrying");
@@ -229,7 +231,7 @@ function resolveExecutable(binary: string): string {
   for (const candidate of candidates) {
     try { accessSync(candidate, constants.X_OK); return realpathSync(candidate); } catch { /* next PATH entry */ }
   }
-  throw new Error("Treehouse executable unavailable");
+  throw Object.assign(new Error("Treehouse executable unavailable"), { code: "ENOENT" });
 }
 
 function defaultRunner(binary: string): TreehouseCommandRunner {
@@ -257,12 +259,12 @@ function absolutePath(value: string, label: string): string { if (!isAbsolute(va
 function canonicalRepoRoot(value: string): string { return value; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
 function bounded(value: string, max: number): string { return value.length <= max ? value : `${value.slice(0, max - 3)}...`; }
-function treehouseError(reason: string, resume: string): Error {
+function treehouseError(reason: string, resume: string, cause?: Error): Error {
   return new Error(formatBoundedFiveFieldDiagnostic({
     condition: "Treehouse ticket checkout admission",
     source: "bounded Treehouse v3.1.3 JSON subprocess boundary",
     reason,
     correction: "preserve all Treehouse leases and branches; do not return, prune, destroy, or force",
     resumeAction: resume,
-  }));
+  }), cause ? { cause } : undefined);
 }

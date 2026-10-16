@@ -26,6 +26,12 @@ export function getDb(dbPath = getRegistryDbPath()): Database.Database {
   return db;
 }
 
+/** Existing registry only: no directory creation, migrations, or writable PRAGMAs. */
+export function openReadonlyRegistryDatabase(): Database.Database {
+  const nativeBinding = process.env[REGISTRY_NATIVE_BINDING_ENV]?.trim();
+  return new Database(getRegistryDbPath(), { readonly: true, fileMustExist: true, ...(nativeBinding ? { nativeBinding } : {}) });
+}
+
 export function closeDb(): void {
   singleton?.close();
   singleton = null;

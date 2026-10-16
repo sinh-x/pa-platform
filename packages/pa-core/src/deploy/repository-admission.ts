@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { queryDeploymentStatus } from "../registry/index.js";
 import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
@@ -935,12 +936,59 @@ export function readProcessFingerprint(pid: number): ProcessFingerprint | undefi
   }
 }
 
+/** Lock-free protected observation for helpers: no mutex, recovery, acquisition, or write. */
+export function observeReadonlyRepositoryAuthority(repositoryGitDir: string): {
+  readonly owner?: RepositoryMutationLease;
+  readonly implement?: RepositoryMutationLease;
+  readonly borrower?: RepositoryMutationBorrower;
+  readonly review?: RepositoryReviewReservation;
+  readonly identity: string;
+} {
+  const digest = createHash("sha256");
+  const read = (name: string): unknown => {
+    const path = join(repositoryGitDir, name);
+    let stat;
+    try { stat = lstatSync(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      digest.update(`${name}:absent;`); return undefined;
+    }
+    if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper evidence is not protected");
+    const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_LEASE_BYTES, "helper authority");
+    digest.update(name).update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes);
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  };
+  const owner = read(REPOSITORY_MUTATION_LEASE_FILE);
+  const implement = read(REPOSITORY_IMPLEMENT_LEASE_FILE);
+  const borrower = read(REPOSITORY_MUTATION_BORROWER_FILE);
+  const review = read(REPOSITORY_REVIEW_RESERVATION_FILE);
+  if ((owner !== undefined && !isRepositoryMutationLease(owner)) || (implement !== undefined && !isRepositoryMutationLease(implement))
+    || (borrower !== undefined && !isRepositoryMutationBorrower(borrower))) throw new Error("helper authority schema is malformed");
+  const complete = (snapshot: RepositoryGitSnapshot) => isCompleteGitSnapshot(snapshot) && /^[0-9a-f]{40}$/.test(snapshot.head);
+  for (const value of [owner, implement]) {
+    if (isRepositoryMutationLease(value) && (!complete(value.preLaunchGitSnapshot) || (value.authorityGitSnapshot && !complete(value.authorityGitSnapshot)))) throw new Error("helper requires complete protected launch/authority snapshots");
+  }
+  if (isRepositoryMutationBorrower(borrower) && !complete(borrower.launchGitSnapshot)) throw new Error("helper requires complete protected borrower launch snapshot");
+  return { ...(owner ? { owner: owner as RepositoryMutationLease } : {}), ...(implement ? { implement: implement as RepositoryMutationLease } : {}),
+    ...(borrower ? { borrower: borrower as RepositoryMutationBorrower } : {}), ...(review !== undefined ? { review: parseRepositoryReviewReservation(review) } : {}), identity: digest.digest("hex") };
+}
+
 export function inspectRepositoryMutationLease(
   canonicalRepoRoot: string,
   dependencies: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint"> & { worktreeRoot?: string; slot?: RepositoryMutationSlot; repositoryGitDir?: string } = { getProcessFingerprint: readProcessFingerprint },
 ): RepositoryEvidenceInspection {
   const { root, leasePath, mutexPath } = repositoryLeaseLocation(canonicalRepoRoot, dependencies.worktreeRoot, dependencies.slot ?? "orchestrator", dependencies.repositoryGitDir);
   return withMutationMutex(mutexPath, () => inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint));
+}
+
+/** Observational inspection after helper authentication: no mutation mutex or repair. */
+export function inspectReadonlyRepositoryMutationLease(
+  canonicalRepoRoot: string,
+  worktreeRoot: string,
+  repositoryGitDir: string,
+  slot: RepositoryMutationSlot = "orchestrator",
+): RepositoryEvidenceInspection {
+  const { root, leasePath } = repositoryLeaseLocation(canonicalRepoRoot, worktreeRoot, slot, repositoryGitDir);
+  return inspectLeaseUnlocked(root, leasePath, readProcessFingerprint);
 }
 
 export type RepositoryMutationLeaseAuthentication =
@@ -2386,7 +2434,7 @@ function resolveDependencies(overrides: Partial<RepositoryAdmissionDependencies>
   };
 }
 
-function processIsWithinFingerprintLineage(pid: number, ancestor: ProcessFingerprint): boolean {
+export function processIsWithinFingerprintLineage(pid: number, ancestor: ProcessFingerprint): boolean {
   if (!fingerprintsEqual(ancestor, readProcessFingerprint(ancestor.pid))) return false;
   let current = pid;
   for (let depth = 0; depth < 64 && current > 0; depth += 1) {

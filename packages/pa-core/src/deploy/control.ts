@@ -1,3 +1,4 @@
+import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
@@ -68,6 +69,8 @@ export interface SelfUpdateStartResult extends SelfUpdateStatusResult {
 }
 
 export interface CoreExecutionHooks {
+  /** Read-only helper authentication only; never consumed by mutation commands. */
+  readonly readOnlyHelperContext?: ReadOnlyHelperCapability;
   /** Observational adapter gate before CLI repository authentication/state initialization. */
   deployPreflight?(request: DeployRequest): Promise<{ reason: string } | undefined> | { reason: string } | undefined;
   deploy?(request: DeployRequest, diagnostics?: DeployDiagnostics): Promise<DeployHookResult> | DeployHookResult;
@@ -89,7 +92,7 @@ export interface CoreExecutionHooks {
 
 export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks, cliDeployRuntime: ApiRuntimeName = "opencode"): CoreExecutionHooks {
   const cliDeployHooks = cliDeployRuntime === "pi" ? pi : opencode;
-  return { ...opencode, deploy: cliDeployHooks.deploy, deployPreflight: cliDeployHooks.deployPreflight, runtimeHooks: { opencode, pi } };
+  return { ...opencode, readOnlyHelperContext: cliDeployHooks.readOnlyHelperContext, deploy: cliDeployHooks.deploy, deployPreflight: cliDeployHooks.deployPreflight, runtimeHooks: { opencode, pi } };
 }
 
 export interface SanitizeResult {

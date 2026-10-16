@@ -535,7 +535,8 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   for (const output of [opa, cpa, dpa, core].map((captured) => captured.stdout.join("\n"))) {
     assert.doesNotMatch(output, /--ticket-worktree/);
   }
-  assert.match(branch.stdout.join("\n"), /infer an exact configured root from CWD/i);
+  assert.match(branch.stdout.join("\n"), /create uses the exact registered root/i);
+  assert.match(branch.stdout.join("\n"), /validate may read a live authenticated PPA worktree/i);
 });
 
 test("deploy CLI propagates force while exact-root and worktree guards remain authoritative", async () => {

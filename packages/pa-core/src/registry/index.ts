@@ -1,6 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getDb } from "./db.js";
+import { getDb, openReadonlyRegistryDatabase } from "./db.js";
 import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, ReviewAuthorizationClaim, ReviewAuthorizationClaimInput, TicketAssociatedRegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
 import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js";
@@ -688,6 +688,26 @@ export function getDeploymentEvents(deployId: string): RegistryEvent[] {
 export function queryDeploymentStatuses(): DeploymentStatus[] {
   const db = getDb();
   return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments").all() as Record<string, unknown>[]).map(deploymentFromRow));
+}
+
+/** Board observations in authenticated helper context must not migrate registry state. */
+export function queryReadonlyDeploymentStatuses(): DeploymentStatus[] {
+  const db = openReadonlyRegistryDatabase();
+  try { return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments").all() as Record<string, unknown>[]).map(deploymentFromRow)); }
+  finally { db.close(); }
+}
+
+/** Helper authentication must never initialize or migrate operator registry state. */
+export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: string): {
+  status: DeploymentStatus | null; claim: ReviewAuthorizationClaim | null;
+} {
+  const db = openReadonlyRegistryDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
+    const starts = db.prepare("SELECT COUNT(*) AS count FROM registry_events WHERE deployment_id = ? AND event = 'started'").get(deployId) as { count: number };
+    if (starts.count !== 1) throw new Error("helper registry requires exactly one immutable launch");
+    return { status: row ? deploymentFromRow(row) : null, claim: authorizationId ? queryReviewAuthorizationClaimRow(db, authorizationId) : null };
+  } finally { db.close(); }
 }
 
 export function queryDeploymentStatus(deployId: string): DeploymentStatus | null {
