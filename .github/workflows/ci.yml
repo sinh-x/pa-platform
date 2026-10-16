@@ -45,8 +45,11 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      - name: Install Nix for immutable runtime test prerequisites
+        uses: DeterminateSystems/nix-installer-action@main
+
       - name: Test
-        run: pnpm run test
+        run: nix develop '.?submodules=1' --no-write-lock-file --command pnpm run test
 
       - name: Enforce config-first compatibility
         env:

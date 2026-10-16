@@ -279,6 +279,23 @@ These engineering checks do not replace the approved matrix, real browser
 interaction, host-crash durability proof or a compatible native observation
 environment. No observer ownership/privilege policy was changed.
 
+## Limited operator browser feedback evidence
+
+In explanation session `d-80d2e4`, the operator queued and sent one annotation
+through the installed PPA Lavish UI. The same event ID and source digest appeared
+in the durable journal and final CLI export. Explicit browser End completed
+before timeout; the owned process exited, snapshot was removed and Markdown
+remained unchanged. Evidence and an evidence-only reconciliation disposition are
+under `deployments/d-6201cf/` in `lavish-explanation-session-report.md` and
+`manual-feedback-reconciliation.json`. This covers one basic PPA queue/Send/End
+flow, not all browser cases, adapter parity, security effects or human acceptance
+of the full UAT plan. Rich layouts/diagrams are separate intake PAP-253, not an
+expansion of this runtime foundation or the full upstream editor.
+
+Source artifact tests require immutable Nix coreutils and util-linux. CI runs
+workspace tests through the candidate's pinned development shell rather than
+relaxing production executable ownership checks for generic system tools.
+
 ## Remaining gates / consumer disposition
 
 **Not executed:** all sixteen installed PA builds, either installed runtime or
