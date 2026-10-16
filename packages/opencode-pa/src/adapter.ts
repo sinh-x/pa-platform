@@ -123,6 +123,9 @@ export class OpencodeAdapter implements RuntimeAdapter {
   }
 
   private async runOpencode(opts: SpawnOpts, sessionId?: string): Promise<SpawnResult> {
+    // Only shared Lavish metadata, never the PPA-only AXI PATH/Treehouse seam.
+    const env: NodeJS.ProcessEnv = { ...this.env, ...opts.env, PA_ARTIFACT_ADAPTER: "opencode",
+      PA_ARTIFACT_OWNER_PID: opts.mode === "background" ? "background" : String(process.pid) };
     const cwd = opts.executionPlan?.repositoryCwd ?? this.cwd;
     const wrapperPrompt = buildPrimerLoadPrompt(opts.primerPath);
     const activityLogPath = getDeployPaths(opts.deployId).activityLogPath;
@@ -132,7 +135,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         args.push("--session", sessionId);
       }
       args.push("--prompt", wrapperPrompt);
-      const result = runInheritedCommand(args, { cwd, env: { ...this.env, ...opts.env } });
+      const result = runInheritedCommand(args, { cwd, env });
       const exitCode = result.status ?? 1;
       const errorMessage = adapterErrorMessage(result, exitCode);
       if (errorMessage) {
@@ -153,12 +156,11 @@ export class OpencodeAdapter implements RuntimeAdapter {
     args.push(wrapperPrompt);
 
     if (opts.mode === "background") {
-      const result = await this.runBackgroundCommand(args, { cwd, env: { ...this.env, ...opts.env }, logFile: opts.logFile, ...(opts.repositoryLease ? { repositoryLease: opts.repositoryLease } : {}) });
+      const result = await this.runBackgroundCommand(args, { cwd, env, logFile: opts.logFile, ...(opts.repositoryLease ? { repositoryLease: opts.repositoryLease } : {}) });
       const captured = result.sessionId ?? sessionId;
       return { ...(captured ? { sessionId: captured } : {}), exitCode: 0, logFile: opts.logFile, metadata: { pid: result.pid, ...(result.repositoryLeaseTransferred ? { repositoryLeaseTransferred: true } : {}) } };
     }
 
-    const env = { ...this.env, ...opts.env };
     const result = this.runCommand
       ? this.runCommand(args, { cwd, env })
       : await runStreamingCommand(args, { cwd, env, deployId: opts.deployId, logFile: opts.logFile, outputPath: resolve(dirname(opts.primerPath), "opencode-output.jsonl") });
@@ -464,7 +466,7 @@ function basenameDeployId(deployDir: string): string {
 
 function pickBackgroundEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const picked: Record<string, string> = {};
-  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL"] as const) {
+  for (const key of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_ARTIFACT_ADAPTER", "PA_ARTIFACT_OWNER_PID", "PA_ACTIVITY_LOG", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_PROVIDER", "PA_MODEL", "PA_TEAM_MODEL", "PA_AGENT_MODEL"] as const) {
     if (env[key]) picked[key] = env[key]!;
   }
   return picked;

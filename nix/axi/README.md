@@ -1,4 +1,9 @@
-# Pinned AXI package inputs (PAP-240 phase 1)
+# Pinned AXI package inputs
+
+PAP-197 adds the separate default-off [Lavish 0.1.67 closure](lavish-axi/README.md).
+Its standalone/selected entrypoint is a native fail-closed metadata gate, never
+raw upstream. Review runtime readiness and cross-adapter integration are not
+claimed. The remaining sections describe the original PAP-240 inputs only.
 
 These independent closures are not PA workspace dependencies:
 

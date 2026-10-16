@@ -72,6 +72,40 @@ pa-core serve
 
 Without a deployment adapter hook, `pa-core deploy` returns an explicit error instead of invoking a runtime directly. `pa-core serve` starts the core Agent API server and routes API deployment requests through the configured default adapter when one is provided.
 
+## Artifact companions and owned review (PAP-197, interface v1)
+
+**Source implementation, not installed readiness or workflow enablement.**
+PAPC-020 must consume independently verified evidence before enabling guidance.
+See the [v1 contract](docs/contracts/lavish-artifact-review-v1.md) for exact
+schemas/diagnostics and the [readiness index](docs/artifacts/pap-197-runtime-readiness.md)
+for tested versus pending evidence. No PAPC configuration is changed here.
+
+`ppa`, `opa` and `cpa` share these commands (use authorized absolute paths):
+
+```sh
+ppa artifact render --source /absolute/document.md --output-dir /absolute/new-companion --json
+ppa artifact review start --manifest /absolute/new-companion/manifest.json --json
+ppa artifact review status --session SESSION_ID --json
+ppa artifact review feedback --session SESSION_ID --output /absolute/new-feedback.json --timeout-ms 1000 --json
+ppa artifact review stop --session SESSION_ID --json
+```
+
+Render needs no Lavish/browser and never overwrites Markdown or prior output;
+write roots remain the caller's verified `/tmp`/`TMPDIR` and mode restrictions.
+Review requires a live matching deployment owner and a PA output constructed
+with independent strict `enableLavishAxi = true` (default **false**). This selects
+pinned Lavish **0.1.67** managed assets, not its raw CLI/server. Other AXI pins and
+PPA-only exposure are unchanged. A selected output is not evidence of readiness.
+
+Open the returned owned loopback URL manually; no browser is launched or
+installed. Source changes make the review stale and block export/new feedback.
+Exported stable event IDs bind the original Markdown/HTML digests; reconcile
+accepted/rejected/deferred feedback explicitly as untrusted quoted input.
+Feedback changes no Markdown, approvals, ticket state or implementation authority.
+Sharing, uploads, updates, arbitrary HTML execution and external assets/navigation
+are unsupported. x86_64-linux installed/browser acceptance, independent review,
+CI and human UAT are still pending; aarch64 is evaluation-only, not native-ready.
+
 ## Selected AXI tools for managed PPA (PAP-240)
 
 `lib.mkPaPlatform` accepts independent strict booleans `enableGhAxi`,

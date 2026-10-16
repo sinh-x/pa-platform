@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import type { CoreExecutionHooks } from "../deploy/index.js";
 import { runBranchCommand } from "./commands/branch.js";
+import { runArtifactCommand } from "./commands/artifact.js";
 import { runCodeCtxCommand } from "./commands/codectx.js";
 import { runRegistryCommand } from "./commands/registry.js";
 import { runBoardCommand } from "./commands/board.js";
@@ -53,6 +54,7 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       printHelp(io, opts.binaryName ?? defaultBinaryName());
       return 0;
     }
+    if (command === "artifact") return runArtifactCommand(rest, io);
     if (command === "repos") return runReposCommand(rest, io);
     if (command === "repository") return runRepositoryCommand(rest, io);
     if (command === "status") return runStatusCommand(rest, io, opts.now ?? new Date(), {
@@ -93,6 +95,7 @@ function printHelp(io: Required<CliIo>, binaryName: string): void {
   io.stdout(`Usage: ${binaryName} <command> [options]`);
   io.stdout("");
   io.stdout("Commands:");
+  io.stdout("  artifact            Render companions; owned review requires selected managed runtime");
   io.stdout("  status              Show deployment status and activity");
   io.stdout("  deploy              Deploy a team configuration");
   io.stdout("  evaluate            Evaluate a deployment");

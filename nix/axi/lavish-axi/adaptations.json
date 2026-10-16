@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "name": "lavish-axi",
+    "version": "0.1.67",
+    "archiveSha256": "b04bd8eea71ece824ca5dc6837c98de04372b76ca6a28fe6e1a1ab025e50acfd",
+    "integrity": "sha512-7qU7tF1ShNQEQY3SMceNkIR2T1Iuy3kOvatoOgPwUW1QJuXoi+vzF5NOiDSt7xMfNaKJMNLefY856yylFxOxHg==",
+    "modified": false,
+    "fileDigests": "upstream-files.json"
+  },
+  "review": {
+    "date": "2026-10-15",
+    "scope": "PAP-197 phase 1 source, dependency metadata, integrity, license and fail-closed seam review",
+    "nodeBaseline": "22.23.3",
+    "npmVersion": "10.9.9",
+    "resolvedArchiveCount": 91,
+    "extractedLicenseFileCount": 92,
+    "packageExecution": false,
+    "browserOrServerExecution": false,
+    "compatibility": "Declared engines admit Node 22.23.3; no install scripts/native build prerequisites in resolved runtime packages. Operational upstream/adapted browser compatibility is unqualified, not supported.",
+    "qualification": "No runtime capability is admitted. Actual incompatibility stops for operator decision, without pin or policy changes."
+  },
+  "adaptations": [
+    {
+      "path": "adaptations/managed-entrypoint.c",
+      "sha256": "8e606baad22600ced1ec223697bd3ae43948b7a5fb29ed9f14e20a1e3aba599d",
+      "kind": "separate-static-native-deny-gate",
+      "reason": "Reject before interpreter/configuration, upstream imports, state, sockets or subprocesses. Only constant metadata is supported; every runtime protocol remains denied.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "generate-inventory.py",
+      "sha256": "6daf9cb37e15680585c3358356723c1849a60eec08573c9d4788dcc6012c6bd0",
+      "kind": "offline-provenance-generator",
+      "reason": "Reproduce all npm archive integrity and original license records without executing or extracting package code.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/adapt-upstream.py",
+      "sha256": "1360095f9b6d2ae57f9cf9d4779570370c6595a5cff1c5cf536291956b83cf92",
+      "kind": "digest-asserted-selective-upstream-build",
+      "reason": "Extract actual pinned SDK selection/element listeners and chrome queue/render/send code without importing the CLI. Assert whole source digests, unique boundaries and exact patch counts. Bind trusted outer execution explicitly to the scriptless iframe document; replace delivery with durable core ACK admission.",
+      "upstreamPatch": true
+    },
+    {
+      "path": "adaptations/outer.js",
+      "sha256": "4389efb33e125597957265739fb88c34f3308f0d7637ed7bcc0bf295b9e2eed8",
+      "kind": "trusted-outer-binding-and-durable-feedback-glue",
+      "reason": "Supply confined UI hooks around reused Lavish components. No companion SDK injection, postMessage, upload, sharing, export, setup, update or browser provisioning effects. Preserve unsent queue until exact durable event-ID ACK; do not display acknowledgement when pinned submit returns false for HTTP 409. Report every failed or malformed End confirmation; permit retry without claiming user-ended success.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/outer.html",
+      "sha256": "70307b0d4e5cc524945ffab11fc014ee46c0ab45616b4f60c3d86292e5141aaa",
+      "kind": "packaged-trusted-outer-shell",
+      "reason": "Same-origin scriptless companion frame with only allow-same-origin; separate packaged script/style and explicit untrusted-feedback authority notice.",
+      "upstreamPatch": false
+    },
+    {
+      "path": "adaptations/outer.css",
+      "sha256": "ea7303b1ecf2c47e097535da16fe81572f3717d7e82bda884c2c818a72e0ca7d",
+      "kind": "packaged-static-outer-presentation",
+      "reason": "No external assets, remote fonts, CSS imports or document-controlled styles.",
+      "upstreamPatch": false
+    }
+  ],
+  "installation": {
+    "managedEntrypoint": "bin/lavish-axi",
+    "staticNativeGate": true,
+    "nodeFromUnchangedFlakeLock": true,
+    "upstreamCliIsSupportedEntrypoint": false,
+    "npmOrLifecycleScripts": false,
+    "rootArchiveAllowlist": [
+      "package.json", "LICENSE", "THIRD-PARTY-NOTICES.md", "dist/cli.mjs",
+      "dist/chrome-client.js", "dist/chrome.css", "dist/design/daisyui.css",
+      "dist/design/daisyui-themes.css", "dist/design/tailwindcss-browser.js"
+    ],
+    "excluded": ["whiteboard bundles", "all fonts", "skills", "plugin metadata", "marketing assets", "upstream README guidance"],
+    "bundledAssetLicenseSource": "Original root THIRD-PARTY-NOTICES.md retained in THIRD_PARTY_NOTICES.md; excluded bundles are not claimed fully resolved internally or operationally qualified."
+  },
+  "phase3": {
+    "sourceFiles": {
+      "dist/cli.mjs": "973707874969efdf3e08ba544608aa4f32c755cf63ec586cad21d5ea8b076cdf",
+      "dist/chrome-client.js": "3b862eafe265c2e3a0e87579ff9cae09cfdf3c675d668f1522c92da7ce65171a"
+    },
+    "retained": ["SDK selector and text-range context", "SDK mouseup/click annotation listeners", "chrome escaped queue presentation, persistence, removal and enqueue", "chrome success-only queue consumption"],
+    "narrowPatches": ["Explicit contentDocument lexical binding; no injected SDK", "Submit source-linked event batch to core api/feedback", "Require exact durable ACK IDs before queue consumption"],
+    "notIncludedAtEffects": ["CLI telemetry/server/config", "SDK initialization and globals", "all postMessage handlers", "share/upload/attachments", "whiteboard/Mermaid", "setup/update/export", "upstream file server", "WebSocket transports"],
+    "managedAssetDirectory": "share/lavish-axi/review",
+    "supervisor": "pa-core artifacts/supervisor.js; fixed owned 127.0.0.1 ephemeral port; private source-linked journal",
+    "qualification": "Phase-focused source and synthetic loopback tests only; installed adaptation, browser selection, real idle, effects and platform acceptance remain independent Phase 4/review obligations. Raw native CLI deny gate remains unchanged."
+  },
+  "phase1DeferredRequiredAdaptations": [
+    {"surface": "cli.mjs telemetry initialization before CLI dispatch", "policy": "Remove outbound telemetry execution, not environment-only assertions"},
+    {"surface": "server host, Tailscale, state and browser opening", "policy": "Core-owned immutable snapshot and loopback-only bounded supervisor"},
+    {"surface": "HTTP share/export/attachments/setup/update and browser controls", "policy": "Deny unknown capabilities, disallow publication/upload/provisioning through all routes"},
+    {"surface": "WebSocket upgrade and UI/SDK events", "policy": "Exact ownership/schema/capability admission and inert content"},
+    {"surface": "artifact sibling/dotfile serving", "policy": "Exact immutable companion and packaged-asset allowlist, no arbitrary files"},
+    {"surface": "destructive poll and session persistence", "policy": "Core durable journal-before-ack, source-linked non-destructive atomic export"}
+  ],
+  "acceptance": "AC2/AC4/AC5/AC6/AC7/AC8 contributions only. No full-matrix, installed-output, browser, native platform or final readiness acceptance."
+}

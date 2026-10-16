@@ -231,6 +231,10 @@ export class PiAdapter implements RuntimeAdapter {
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
     const env = withoutParentLeaseCapability({ ...this.env, ...opts.env });
+    // Shared Lavish ownership only; selection is resolved by pa-core from the
+    // installed closure, not PATH or Pi-specific Treehouse capabilities.
+    env["PA_ARTIFACT_ADAPTER"] = "pi";
+    env["PA_ARTIFACT_OWNER_PID"] = opts.mode === "background" ? "background" : String(process.pid);
     if (plan?.reviewCheckout) {
       delete env["PA_TICKET_SLOT"];
       delete env["PA_REPOSITORY_PERMIT"];

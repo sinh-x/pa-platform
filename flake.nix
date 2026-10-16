@@ -31,6 +31,7 @@
         enableGhAxi ? false,
         enableChromeDevtoolsAxi ? false,
         enableQuotaAxi ? false,
+        enableLavishAxi ? false,
       }:
         let
           pkgs = pkgsFor system;
@@ -53,6 +54,7 @@
             "gh-axi" = requireBooleanOption "enableGhAxi" enableGhAxi;
             "chrome-devtools-axi" = requireBooleanOption "enableChromeDevtoolsAxi" enableChromeDevtoolsAxi;
             "quota-axi" = requireBooleanOption "enableQuotaAxi" enableQuotaAxi;
+            "lavish-axi" = requireBooleanOption "enableLavishAxi" enableLavishAxi;
           };
           selectedAxiTools = pkgs.lib.filterAttrs (name: _: axiSelection.${name} or false) (axiToolsFor system);
           selectedAxiDependencies = pkgs.lib.unique (pkgs.lib.concatMap
@@ -139,12 +141,21 @@
             # Selected managed shims: fixed pinned Node/tool/MCP arguments;
             # metadata is unauthenticated, operational policy is deployment-bound.
             mkdir -p $share/axi-tools
+            # Fixed util-linux fd-lock helper; supervisors never resolve PATH.
+            ln -s ${pkgs.lib.getBin pkgs.util-linux}/bin/flock $share/artifact-review-flock
             printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON axiSelection)} > $share/axi-selection.json
             ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: tool: ''
               ln -s ${tool} $share/axi-tools/${name}
               mkdir -p $share/axi-bin
-              makeWrapper ${tool.node}/bin/node $share/axi-bin/${name} \
-                --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"} ${if name == "chrome-devtools-axi" then "${builtins.head tool.dependencies}/${(builtins.head tool.dependencies).mcpEntrypoint}" else "-"}"
+              ${if name == "lavish-axi" then ''
+                # Native fail-closed gate: never route through the generic AXI
+                # Node shim or run the unqualified upstream CLI. Phase 3 owns
+                # independently qualified cross-adapter lifecycle integration.
+                ln -s ${tool}/${tool.axiEntrypoint} $share/axi-bin/lavish-axi
+              '' else ''
+                makeWrapper ${tool.node}/bin/node $share/axi-bin/${name} \
+                  --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"} ${if name == "chrome-devtools-axi" then "${builtins.head tool.dependencies}/${(builtins.head tool.dependencies).mcpEntrypoint}" else "-"}"
+              ''}
             '') selectedAxiTools)}
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
@@ -328,13 +339,14 @@
           both = { "pi-vimmode" = true; "proper-base" = true; };
           invalidVim = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enablePiVimMode = "yes"; }) true);
           invalidProper = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enableProperBase = 1; }) true);
-          noAxi = { "gh-axi" = false; "chrome-devtools-axi" = false; "quota-axi" = false; };
+          noAxi = { "gh-axi" = false; "chrome-devtools-axi" = false; "quota-axi" = false; "lavish-axi" = false; };
           invalidAxi = option: value:
             builtins.tryEval ((paPlatformFor system { ${option} = value; }).drvPath);
           axiOptionContracts = [
             { option = "enableGhAxi"; tool = "gh-axi"; version = "0.1.35"; }
             { option = "enableChromeDevtoolsAxi"; tool = "chrome-devtools-axi"; version = "0.1.38"; }
             { option = "enableQuotaAxi"; tool = "quota-axi"; version = "0.1.56"; }
+            { option = "enableLavishAxi"; tool = "lavish-axi"; version = "0.1.67"; }
           ];
         in {
           treehouse-runtime = pkgs.runCommand "ppa-treehouse-runtime" {
@@ -360,6 +372,9 @@
             assert builtins.all (name: overlayPackages.${name}.axiSelection == noAxi)
               [ "pa-platform" "pa-core" "opa" "cpa" "dpa" "ppa" ];
             assert (paPlatformFor system {}).axiSelection == noAxi;
+            assert packagesForSystem.lavish-axi.managedGate;
+            assert packagesForSystem.lavish-axi.axiEntrypoint == "bin/lavish-axi";
+            assert packagesForSystem.lavish-axi.dependencies == [];
             assert packagesForSystem.chrome-devtools-mcp.version == "1.10.1";
             assert pkgs.lib.versionAtLeast packagesForSystem.quota-axi.node.version "22.19.0";
             assert packagesForSystem.gh-axi.dependencies == [ pkgs.gh ];
