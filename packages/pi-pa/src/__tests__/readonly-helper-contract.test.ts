@@ -14,7 +14,7 @@ import {
   type RegistryEvent, type ReviewAuthorizationClaim, type RuntimeAdapter,
 } from "@pa-platform/pa-core";
 import { createPiHooks, createPiReadonlyHelperCapability, piReviewCheckoutCorrelation } from "../deploy.js";
-import { TreehouseClient } from "../treehouse.js";
+import { TreehouseClient } from "./treehouse-fixture.js";
 import { PI_PROCESS_IDENTITY_FILE, recordPiProcessIdentity } from "../process-identity.js";
 
 const roles: ReadOnlyHelperRole[] = ["orchestrator", "parented-implement", "standalone-implement", "worker-consistency-only", "review-auto"];
@@ -343,7 +343,7 @@ function builtCli(f: Fixture) {
   assert.ok(readFileSync(cli).length, "build the candidate PPA CLI before contract verification");
   const bin = join(f.root, "bin"); mkdirSync(bin);
   const treehouse = join(bin, "treehouse");
-  writeFileSync(treehouse, `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== 'status --json') process.exit(89);\nprocess.stdout.write(${JSON.stringify(JSON.stringify([{ path: f.candidate, leased: true, lease_id: "fixture-lease", lease_holder: "pa:fixture:ALT-7" }]))});\n`, { mode: 0o700 });
+  writeFileSync(treehouse, `#!${process.execPath}\nif (process.argv[2] === '--version') { process.stdout.write('v3.1.3\\n'); process.exit(0); }\nif (process.argv.slice(2).join(' ') !== 'status --json') process.exit(89);\nprocess.stdout.write(${JSON.stringify(JSON.stringify([{ path: f.candidate, leased: true, lease_id: "fixture-lease", lease_holder: "pa:fixture:ALT-7" }]))});\n`, { mode: 0o700 });
   return (args: string[], environment: NodeJS.ProcessEnv = {}) => {
     const result = spawnSync(process.execPath, [cli, ...args], { cwd: f.candidate, encoding: "utf8", timeout: 30_000, maxBuffer: 128 * 1024,
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, NO_COLOR: "1", ...environment } });

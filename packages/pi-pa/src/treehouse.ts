@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { isAbsolute, resolve } from "node:path";
+import { accessSync, constants, realpathSync } from "node:fs";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "@pa-platform/pa-core";
 
 export const MAX_TREEHOUSE_JSON_BYTES = 1024 * 1024;
 export const TREEHOUSE_TIMEOUT_MS = 15_000;
+export const SUPPORTED_TREEHOUSE_VERSION = "3.1.3";
+const MAX_VERSION_BYTES = 256;
 const MAX_FIELD = 4_096;
 
 export interface TreehouseLeaseEvidence {
@@ -44,14 +47,47 @@ export function deriveTreehouseLeaseHolder(repoKey: string, ticketId: string): s
 
 export class TreehouseClient {
   private readonly run: TreehouseCommandRunner;
+  private binary: string;
   constructor(options: TreehouseClientOptions = {}) {
-    this.run = options.run ?? defaultRunner(options.binary ?? "treehouse");
+    this.binary = options.binary ?? process.env["PA_TREEHOUSE_BINARY"] ?? "treehouse";
+    let resolvedRunner: TreehouseCommandRunner | undefined;
+    this.run = options.run ?? ((args, cwd) => {
+      if (!resolvedRunner) {
+        this.binary = resolveExecutable(this.binary);
+        resolvedRunner = defaultRunner(this.binary);
+      }
+      return resolvedRunner(args, cwd);
+    });
+  }
+
+  /** Read-only and repeated before every JSON command, including direct allocation. */
+  preflight(canonicalRepoRoot: string): void {
+    const root = absolutePath(canonicalRepoRoot, "canonical repository root");
+    let result: TreehouseCommandResult;
+    try { result = this.run(["--version"], root); }
+    catch (error) { throw this.versionError("unavailable executable", error instanceof Error ? error : undefined); }
+    if (result.error || result.status !== 0) throw this.versionError("version probe failed (missing executable, timeout, or nonzero exit)",
+      result.error ?? (result.status === 127 ? Object.assign(new Error("evidence command unavailable (exit 127)"), { code: "COMMAND_UNAVAILABLE" }) : undefined));
+    if (result.stdout.length > MAX_VERSION_BYTES || result.stdout.includes(0)) throw this.versionError("invalid bounded version output");
+    let version: string;
+    try { version = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout); }
+    catch { throw this.versionError("invalid UTF-8 version output"); }
+    if (version !== `v${SUPPORTED_TREEHOUSE_VERSION}\n` && version !== `v${SUPPORTED_TREEHOUSE_VERSION}`) {
+      // Never echo arbitrary subprocess output or stderr (which can contain secrets).
+      const actual = /^v?\d{1,5}\.\d{1,5}\.\d{1,5}\n?$/.test(version) ? version.trim() : "unrecognized version output";
+      throw this.versionError(actual);
+    }
+  }
+
+  private versionError(actual: string, cause?: Error): Error {
+    return treehouseError(`expected Treehouse v${SUPPORTED_TREEHOUSE_VERSION}; executable ${bounded(this.binary.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?"), 300)}; actual ${actual}`,
+      `use packaged PPA or nix develop; source launches require PA_TREEHOUSE_BINARY pointing to exact v${SUPPORTED_TREEHOUSE_VERSION}; no lease or branch changes were requested`, cause);
   }
 
   status(canonicalRepoRoot: string): readonly TreehouseStatusEntry[] {
     const value = parseJson(this.invoke(["status", "--json"], canonicalRepoRoot), "status --json");
     if (!Array.isArray(value)) {
-      throw treehouseError("status JSON must be one top-level array", "reconcile the pinned Treehouse v2.3.0 executable and retry");
+      throw treehouseError("status JSON must be one top-level array", "reconcile the pinned Treehouse v3.1.3 executable and retry");
     }
     const entries = value.map((item, index) => parseStatusEntry(item, `status[${index}]`));
     rejectDuplicates(entries);
@@ -98,10 +134,11 @@ export class TreehouseClient {
 
   private invoke(args: readonly string[], cwd: string): Buffer {
     const root = absolutePath(canonicalRepoRoot(cwd), "canonical repository root");
+    this.preflight(root);
     const result = this.run(args, root);
     if (result.error || result.status !== 0) {
       const detail = result.error?.message ?? (result.stderr.toString("utf8").trim() || `exit ${result.status ?? "unknown"}`);
-      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v2.3.0 and preserve any lease created before retrying",
+      throw treehouseError(`treehouse ${args.join(" ")} failed: ${bounded(detail, 600)}`, "verify Treehouse v3.1.3 and preserve any lease created before retrying",
         result.error ?? (result.status === 127 ? Object.assign(new Error("evidence command unavailable (exit 127)"), { code: "COMMAND_UNAVAILABLE" }) : undefined));
     }
     if (result.stdout.length === 0) throw treehouseError(`treehouse ${args.join(" ")} returned empty stdout`, "require bounded machine-readable JSON output");
@@ -112,12 +149,13 @@ export class TreehouseClient {
 
 function parseStatusEntry(value: unknown, label: string): TreehouseStatusEntry {
   if (!isRecord(value)) throw treehouseError(`${label} is not an object`, "repair malformed Treehouse status evidence");
-  const allowed = new Set(["name", "path", "status", "processes", "leased", "lease_id", "lease_holder", "leased_at", "flavor", "owner_pid", "owner_started_at", "pending_process", "pending_thread", "locked", "destroying", "blocked", "caught", "checked_at"]);
-  if (Object.keys(value).some((key) => !allowed.has(key))) throw treehouseError(`${label} contains an unexpected field`, "use the pinned Treehouse v2.3.0 JSON contract");
-  for (const field of ["name", "status", "flavor", "owner_started_at", "pending_process", "pending_thread", "checked_at"] as const) {
-    if (value[field] !== undefined && typeof value[field] !== "string") throw treehouseError(`${label}.${field} has an unexpected type`, "repair malformed Treehouse status evidence");
+  const allowed = new Set(["name", "path", "status", "processes", "leased", "lease_id", "lease_holder", "leased_at", "flavor", "owner_pid", "owner_started_at", "pending_process", "pending_thread", "locked", "destroying", "blocked", "caught", "checked_at", "branch", "detached", "branch_error", "recovery_reason", "recovery_backup"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw treehouseError(`${label} contains an unexpected field`, "use the pinned Treehouse v3.1.3 JSON contract");
+  for (const field of ["name", "status", "flavor", "owner_started_at", "pending_process", "pending_thread", "checked_at", "branch", "branch_error", "recovery_reason", "recovery_backup"] as const) {
+    if (value[field] !== undefined && (typeof value[field] !== "string" || value[field].length > MAX_FIELD || value[field].includes("\0"))) throw treehouseError(`${label}.${field} has an unexpected type or malformed value`, "repair malformed Treehouse status evidence");
   }
-  for (const field of ["leased", "locked", "destroying", "blocked", "caught"] as const) {
+  if (value["detached"] === true && value["branch"]) throw treehouseError(`${label} has contradictory branch/detached evidence`, "reconcile branch evidence without changing any lease");
+  for (const field of ["leased", "locked", "destroying", "blocked", "caught", "detached"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "boolean") throw treehouseError(`${label}.${field} has an unexpected type`, "repair malformed Treehouse status evidence");
   }
   if (value["owner_pid"] !== undefined && (!Number.isInteger(value["owner_pid"]) || Number(value["owner_pid"]) <= 0)) throw treehouseError(`${label}.owner_pid is malformed`, "repair malformed Treehouse status evidence");
@@ -150,9 +188,10 @@ function parseStatusEntry(value: unknown, label: string): TreehouseStatusEntry {
 
 function parseLease(value: unknown, label: string): TreehouseLeaseEvidence {
   if (!isRecord(value)) throw treehouseError(`${label} JSON is not an object`, "require the pinned Treehouse lease JSON schema");
-  const allowed = new Set(["name", "path", "status", "leased", "lease_id", "lease_holder", "leased_at", "flavor"]);
-  if (Object.keys(value).some((key) => !allowed.has(key))) throw treehouseError(`${label} contains an unexpected field`, "use the pinned Treehouse v2.3.0 JSON contract");
-  for (const field of ["name", "status", "flavor"] as const) if (value[field] !== undefined && typeof value[field] !== "string") throw treehouseError(`${label}.${field} has an unexpected type`, "repair malformed Treehouse allocation evidence");
+  const allowed = new Set(["name", "path", "status", "leased", "lease_id", "lease_holder", "leased_at", "flavor", "base_branch"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw treehouseError(`${label} contains an unexpected field`, "use the pinned Treehouse v3.1.3 JSON contract");
+  for (const field of ["name", "status", "flavor", "base_branch"] as const) if (value[field] !== undefined && (typeof value[field] !== "string" || value[field].length > MAX_FIELD || value[field].includes("\0"))) throw treehouseError(`${label}.${field} has an unexpected type or malformed value`, "repair malformed Treehouse allocation evidence");
+  if (value["status"] !== undefined && value["status"] !== "leased") throw treehouseError(`${label}.status contradicts allocation`, "preserve and reconcile the allocation");
   if (value["leased"] !== undefined && value["leased"] !== true) throw treehouseError(`${label}.leased must be true`, "preserve and reconcile the allocation");
   const leasedAt = optionalTimestamp(value["leased_at"], `${label}.leased_at`);
   return {
@@ -187,6 +226,14 @@ function parseJson(bytes: Buffer, command: string): unknown {
   catch { throw treehouseError(`${command} stdout is not one valid UTF-8 JSON value`, "ignore human stderr and require complete machine-readable stdout"); }
 }
 
+function resolveExecutable(binary: string): string {
+  const candidates = binary.includes("/") ? [binary] : (process.env["PATH"] ?? "").split(delimiter).filter(Boolean).map((dir) => resolve(dir, binary));
+  for (const candidate of candidates) {
+    try { accessSync(candidate, constants.X_OK); return realpathSync(candidate); } catch { /* next PATH entry */ }
+  }
+  throw Object.assign(new Error("Treehouse executable unavailable"), { code: "ENOENT" });
+}
+
 function defaultRunner(binary: string): TreehouseCommandRunner {
   return (args, cwd) => {
     const result = spawnSync(binary, [...args], { cwd, encoding: "buffer", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_TREEHOUSE_JSON_BYTES + 1, timeout: TREEHOUSE_TIMEOUT_MS, killSignal: "SIGKILL" });
@@ -215,7 +262,7 @@ function bounded(value: string, max: number): string { return value.length <= ma
 function treehouseError(reason: string, resume: string, cause?: Error): Error {
   return new Error(formatBoundedFiveFieldDiagnostic({
     condition: "Treehouse ticket checkout admission",
-    source: "bounded Treehouse v2.3.0 JSON subprocess boundary",
+    source: "bounded Treehouse v3.1.3 JSON subprocess boundary",
     reason,
     correction: "preserve all Treehouse leases and branches; do not return, prune, destroy, or force",
     resumeAction: resume,

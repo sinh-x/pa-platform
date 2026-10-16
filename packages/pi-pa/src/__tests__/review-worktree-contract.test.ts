@@ -17,7 +17,7 @@ import { requireReviewPreflight } from "../review-preflight.js";
 import { PI_VALIDATION_HANDOFF_FILE, runPiValidationBeforeReviewer, writePiProtectedValidationLaunch } from "../validation-supervisor.js";
 import { redactPiProtectedReviewPrimer, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
-import { TreehouseClient } from "../treehouse.js";
+import { TreehouseClient } from "./treehouse-fixture.js";
 import { piMatrixAttemptStatePath, readPiMatrixStartedEvent, type PiValidationLaunchInput } from "../validation-launch.js";
 
 const fixtures = fileURLToPath(new URL("../../../pa-core/src/__tests__/fixtures/protected-review-v1/", import.meta.url));

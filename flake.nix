@@ -19,6 +19,7 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
+      axiToolsFor = system: import ./nix/axi-tools.nix { pkgs = pkgsFor system; };
 
       requireBooleanOption = name: value:
         if builtins.isBool value then value
@@ -27,10 +28,15 @@
       paPlatformFor = system: {
         enablePiVimMode ? false,
         enableProperBase ? false,
+        enableGhAxi ? false,
+        enableChromeDevtoolsAxi ? false,
+        enableQuotaAxi ? false,
+        enableLavishAxi ? false,
       }:
         let
           pkgs = pkgsFor system;
           packageJson = builtins.fromJSON (builtins.readFile ./package.json);
+          treehouse = pkgs.callPackage ./nix/treehouse.nix {};
           reviewProvenance = pkgs.writeText "review-runtime-provenance.json" (builtins.toJSON {
             schemaVersion = "pa-review-runtime/v1";
             sourceSha = self.rev or "unversioned-dirty-source";
@@ -44,6 +50,18 @@
             "pi-vimmode" = requireBooleanOption "enablePiVimMode" enablePiVimMode;
             "proper-base" = requireBooleanOption "enableProperBase" enableProperBase;
           };
+          axiSelection = {
+            "gh-axi" = requireBooleanOption "enableGhAxi" enableGhAxi;
+            "chrome-devtools-axi" = requireBooleanOption "enableChromeDevtoolsAxi" enableChromeDevtoolsAxi;
+            "quota-axi" = requireBooleanOption "enableQuotaAxi" enableQuotaAxi;
+            "lavish-axi" = requireBooleanOption "enableLavishAxi" enableLavishAxi;
+          };
+          selectedAxiTools = pkgs.lib.filterAttrs (name: _: axiSelection.${name} or false) (axiToolsFor system);
+          selectedAxiDependencies = pkgs.lib.unique (pkgs.lib.concatMap
+            (tool: [ tool.node ] ++ tool.dependencies) (builtins.attrValues selectedAxiTools));
+          # Only the managed selected-tool directory and its declared dependencies
+          # enter PPA PATH. Raw upstream AXI bins are not the managed boundary.
+          axiDependencyPath = pkgs.lib.makeBinPath selectedAxiDependencies;
           baseSource = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: _type:
@@ -74,7 +92,8 @@
             sqlcipher
           ]);
         in
-        pkgs.stdenv.mkDerivation (finalAttrs: {
+        # Force all selectors even when a caller requests only drvPath.
+        builtins.deepSeq axiSelection (pkgs.stdenv.mkDerivation (finalAttrs: {
           pname = "pa-platform";
           version = packageJson.version;
 
@@ -100,7 +119,7 @@
           PI_PA_PLUGIN_SELECTION = builtins.toJSON pluginSelection;
 
           passthru = {
-            inherit pluginSelection;
+            inherit pluginSelection axiSelection selectedAxiTools selectedAxiDependencies treehouse;
           };
 
           pnpmDeps = pkgs.fetchPnpmDeps {
@@ -119,6 +138,25 @@
             runHook preInstall
 
             share=$out/share/pa-platform
+            # Selected managed shims: fixed pinned Node/tool/MCP arguments;
+            # metadata is unauthenticated, operational policy is deployment-bound.
+            mkdir -p $share/axi-tools
+            # Fixed util-linux fd-lock helper; supervisors never resolve PATH.
+            ln -s ${pkgs.lib.getBin pkgs.util-linux}/bin/flock $share/artifact-review-flock
+            printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON axiSelection)} > $share/axi-selection.json
+            ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: tool: ''
+              ln -s ${tool} $share/axi-tools/${name}
+              mkdir -p $share/axi-bin
+              ${if name == "lavish-axi" then ''
+                # Native fail-closed gate: never route through the generic AXI
+                # Node shim or run the unqualified upstream CLI. Phase 3 owns
+                # independently qualified cross-adapter lifecycle integration.
+                ln -s ${tool}/${tool.axiEntrypoint} $share/axi-bin/lavish-axi
+              '' else ''
+                makeWrapper ${tool.node}/bin/node $share/axi-bin/${name} \
+                  --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"} ${if name == "chrome-devtools-axi" then "${builtins.head tool.dependencies}/${(builtins.head tool.dependencies).mcpEntrypoint}" else "-"}"
+              ''}
+            '') selectedAxiTools)}
             mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
@@ -218,7 +256,9 @@
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --set PA_PI_SQLITE_NATIVE_BINDING "$share/native-addons/pi-node-24/better_sqlite3.node" \
               --set PA_REQUIRE_PI_SQLITE_NATIVE_BINDING "1" \
-              --prefix PATH : "${runtimePath}"
+              --set PA_TREEHOUSE_BINARY "${treehouse}/bin/treehouse" \
+              --set PA_AXI_PATH "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}"}" \
+              --prefix PATH : "${pkgs.lib.optionalString (selectedAxiTools != {}) "$share/axi-bin:${axiDependencyPath}:"}${runtimePath}"
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/pa-platform-node \
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
@@ -266,7 +306,7 @@
             license = licenses.mit;
             platforms = platforms.linux;
           };
-        });
+        }));
     in
     {
       lib.mkPaPlatform = paPlatformFor;
@@ -277,7 +317,7 @@
             enablePiVimMode = false;
             enableProperBase = false;
           };
-        in {
+        in (axiToolsFor system) // {
           pa-platform = defaultPaPlatform;
           pa-core = defaultPaPlatform;
           opa = defaultPaPlatform;
@@ -299,7 +339,49 @@
           both = { "pi-vimmode" = true; "proper-base" = true; };
           invalidVim = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enablePiVimMode = "yes"; }) true);
           invalidProper = builtins.tryEval (builtins.deepSeq (paPlatformFor system { enableProperBase = 1; }) true);
+          noAxi = { "gh-axi" = false; "chrome-devtools-axi" = false; "quota-axi" = false; "lavish-axi" = false; };
+          invalidAxi = option: value:
+            builtins.tryEval ((paPlatformFor system { ${option} = value; }).drvPath);
+          axiOptionContracts = [
+            { option = "enableGhAxi"; tool = "gh-axi"; version = "0.1.35"; }
+            { option = "enableChromeDevtoolsAxi"; tool = "chrome-devtools-axi"; version = "0.1.38"; }
+            { option = "enableQuotaAxi"; tool = "quota-axi"; version = "0.1.56"; }
+            { option = "enableLavishAxi"; tool = "lavish-axi"; version = "0.1.67"; }
+          ];
         in {
+          treehouse-runtime = pkgs.runCommand "ppa-treehouse-runtime" {
+            nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
+          } ''
+            bash ${./scripts}/pap-252-packaged-treehouse-smoke.sh ${packagesForSystem.ppa}
+            touch $out
+          '';
+          # Phase-1 evaluation assertions, not the installed-output matrix.
+          axi-packaging-contract =
+            assert builtins.all (contract:
+              let selected = paPlatformFor system { ${contract.option} = true; };
+              in selected.axiSelection == (noAxi // { ${contract.tool} = true; })
+                && builtins.attrNames selected.selectedAxiTools == [ contract.tool ]
+                && packagesForSystem.${contract.tool}.version == contract.version
+                && builtins.all (value: !(invalidAxi contract.option value).success)
+                  [ "true" 1 null [] {} ]
+            ) axiOptionContracts;
+            assert builtins.all (name:
+              packagesForSystem.${name}.axiSelection == noAxi
+                && packagesForSystem.${name}.selectedAxiTools == {}
+            ) [ "pa-platform" "pa-core" "opa" "cpa" "dpa" "ppa" "default" ];
+            assert builtins.all (name: overlayPackages.${name}.axiSelection == noAxi)
+              [ "pa-platform" "pa-core" "opa" "cpa" "dpa" "ppa" ];
+            assert (paPlatformFor system {}).axiSelection == noAxi;
+            assert packagesForSystem.lavish-axi.managedGate;
+            assert packagesForSystem.lavish-axi.axiEntrypoint == "bin/lavish-axi";
+            assert packagesForSystem.lavish-axi.dependencies == [];
+            assert packagesForSystem.chrome-devtools-mcp.version == "1.10.1";
+            assert pkgs.lib.versionAtLeast packagesForSystem.quota-axi.node.version "22.19.0";
+            assert packagesForSystem.gh-axi.dependencies == [ pkgs.gh ];
+            assert packagesForSystem.chrome-devtools-axi.dependencies == [ packagesForSystem.chrome-devtools-mcp ];
+            pkgs.runCommand "pa-platform-axi-packaging-contract" {} ''
+              touch $out
+            '';
           plugin-selection-contract =
             assert selectionOf (paPlatformFor system {}) == neither;
             assert selectionOf (paPlatformFor system { enablePiVimMode = true; }) == vimOnly;
@@ -329,6 +411,7 @@
       devShells = forAllSystems (system:
         let
           pkgs = pkgsFor system;
+          treehouse = pkgs.callPackage ./nix/treehouse.nix {};
           dev-pa-platform = pkgs.writeShellScriptBin "dev-pa-platform" ''
             set -euo pipefail
             PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -401,6 +484,7 @@
           '';
         in {
           default = pkgs.mkShell {
+            PA_TREEHOUSE_BINARY = "${treehouse}/bin/treehouse";
             packages = with pkgs; [
               bash
               bubblewrap

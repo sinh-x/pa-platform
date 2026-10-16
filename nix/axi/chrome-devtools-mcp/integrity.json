@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "path": "node_modules/chrome-devtools-mcp",
+      "name": "chrome-devtools-mcp",
+      "version": "1.10.1",
+      "url": "https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-1.10.1.tgz",
+      "integrity": "sha512-Klw6HWDqHC/XS1JwZldd2r49aUhbUJN9m9Mvcx4SEueIPXtzuQX+QelxAViobv8YUkDZ7HWDrmViR6LeYK0wAw==",
+      "sha256": "sha256-ASy89ugy1PZwna0MIde+8XCJ6Ure6c8zF50V6gqa3ys=",
+      "license": "Apache-2.0",
+      "licenseFiles": [
+        {
+          "path": "LICENSE",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+        },
+        {
+          "path": "build/src/third_party/THIRD_PARTY_NOTICES",
+          "sha256": "6ae0ce181dbc9ba4217b6aad679d7503ed3ab56c45e6f3647e9ab753aa97b67b"
+        }
+      ]
+    }
+  ]
+}

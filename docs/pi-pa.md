@@ -201,7 +201,7 @@ ppa deploy requirements --mode review-auto --ticket PAP-237 --repo pa-platform -
 
 The launcher requires exactly one canonical-repository ticket linked branch in
 `materialized` state with the exact branch, immutable 40-lowercase-hex base, and
-HEAD equal to the approved Feature SHA. It reads bounded Treehouse v2.3.0 status
+HEAD equal to the approved Feature SHA. It reads bounded Treehouse v3.1.3 status
 (15,000 ms timeout, 1 MiB stdout maximum) and selects exactly one existing lease
 whose holder is `pa:<repoKey>:<ticket>`—for this example,
 `pa:pa-platform:PAP-237`. Missing/duplicate leases or planned/stale/conflicting
@@ -450,7 +450,7 @@ have exactly one explicit `materialized` linked branch with full lowercase
 40-character `baseSha` and `headSha`. Planned, duplicate, legacy-incomplete or
 conflicting evidence rejects; selection never refreshes ticket evidence.
 
-PPA runs **status only**, with Treehouse v2.3.0's 15-second timeout and 1-MiB
+PPA runs **status only**, with Treehouse v3.1.3's 15-second timeout and 1-MiB
 stdout cap. Exactly one leased row must have holder `pa:<repo-key>:<ticket>`.
 Its physical path, forward/reverse `.git` metadata, common directory, registered
 worktree membership, branch and HEAD must agree. No `get`, return, checkout
@@ -486,11 +486,47 @@ related integration policy.
 
 ## Treehouse-backed builder ticket checkouts
 
-PPA uses the pinned Treehouse v2.3.0 CLI as the checkout lifecycle manager while
+PPA uses the pinned Treehouse v3.1.3 CLI as the checkout lifecycle manager while
 PA remains authoritative for ticket branch intent, repository identity, launch
 admission, concurrency, and deployment evidence. PPA intentionally has no
 worktree create/list/return/prune/destroy commands and does not merge, rebase,
 delete branches, clean checkouts, or claim filesystem sandboxing.
+
+### Exact runtime dependency (PAP-252)
+
+The Nix package privately fetches Treehouse **3.1.3** with fixed hashes for
+x86_64-linux and aarch64-linux (`nix/treehouse.nix`). The built `ppa` wrapper
+sets `PA_TREEHOUSE_BINARY` to that store executable, overriding inherited values;
+ambient `treehouse` on PATH is never selected. No global Treehouse downgrade or
+personal-nixos rebuild is required. `nix develop` exports the same executable.
+Outside Nix, source launches may set `PA_TREEHOUSE_BINARY` to an exact 3.1.3
+executable; absent that setting they resolve PATH once to its physical executable
+and still enforce the exact version. Other versions (including 2.3.0) reject.
+
+Before **each** status/allocation command, a bounded read-only `--version` probe
+must return exactly `v3.1.3`. Missing, unsupported, malformed, NUL, invalid UTF-8,
+failed or timed-out probes reject before allocation or branch materialization.
+The diagnostic identifies expected version, executable and safe actual version,
+without echoing arbitrary version stdout/stderr. Remediation is packaged PPA,
+`nix develop`, or an exact supported source executable—not a PATH-filtering shim.
+
+The reviewed upstream contract is tag `v3.1.3`: `cmd/status.go` and
+`internal/pool/pool.go` (`LeaseInfo`). Status explicitly validates string `branch`,
+boolean `detached`, and string `branch_error`, `recovery_reason`,
+`recovery_backup`; a named branch plus `detached: true` contradicts itself.
+Allocation explicitly validates string `base_branch` (reporting only, never
+branch authority). All prior bounded identity/state/path validation and the
+unknown-field allowlist remain; older optional normalized flags remain accepted
+inside that allowlist, not as permission to run older binaries. Reported branch
+metadata never replaces authenticated Git evidence. Future version changes must
+update the pin, version gate, allowlist, fixtures, docs and packaged checks together.
+
+Run `bash scripts/pap-252-packaged-treehouse-smoke.sh /nix/store/...-pa-platform`
+or `nix build .#checks.x86_64-linux.treehouse-runtime` for the built-wrapper
+regression. It poisons ambient PATH and the inherited executable override,
+exercises real isolated allocation/reuse and orchestrator admission through an
+in-process recording Pi adapter, and checks canonical/retained-lease invariants.
+It does **not** launch a provider-backed Pi session or use live ticket leases.
 
 ### Prepare the ticket branch intent
 
@@ -536,7 +572,7 @@ identity remains separately available as immutable plan `repoRoot`, deployment
 and registry `repo_root`, and repository lease evidence. Canonical branch, HEAD,
 and raw porcelain-v2 bytes must remain unchanged.
 
-An operator may instead prepare the lease with Treehouse v2.3.0, `cd` to its
+An operator may instead prepare the lease with Treehouse v3.1.3, `cd` to its
 exact physical root, and omit `--repo`:
 
 ```bash
@@ -553,7 +589,7 @@ The launcher and adapter also require Treehouse path, runtime CWD, `PA_REPO`,
 execution path to agree exactly before Pi/native-host preflight or child spawn.
 Missing, canonical-root, relative, stale, or conflicting runtime path evidence
 fails closed while preserving the Treehouse checkout and branch.
-Treehouse v2.3.0 free status rows are valid when their non-`leased` status is
+Treehouse v3.1.3 free status rows are valid when their non-`leased` status is
 paired with `lease_id: ""`, `lease_holder: ""`, and `leased_at: null`; PPA then
 makes exactly one bounded lease-acquisition call. Leased rows still require a
 complete non-empty lease ID and holder. Contradictory, malformed, duplicate,

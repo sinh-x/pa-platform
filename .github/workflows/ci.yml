@@ -13,6 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Read paired config SHA
         id: paired-config
@@ -45,10 +46,14 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      - name: Install Nix for immutable runtime test prerequisites
+        uses: DeterminateSystems/nix-installer-action@main
+
       - name: Test
-        run: pnpm run test
+        run: nix develop '.?submodules=1' --no-write-lock-file --command pnpm run test
 
       - name: Enforce config-first compatibility
+        shell: nix develop .?submodules=1 --no-write-lock-file --command bash -e {0}
         env:
           PA_PHASE5_CONFIG_ROOT: ${{ github.workspace }}/paired-config
         run: |
