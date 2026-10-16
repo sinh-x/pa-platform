@@ -170,7 +170,7 @@ for (const changed of ["source", "HTML", "manifest"] as const) test(`stale ${cha
   assert.deepEqual(readFileSync(journalPath), journal);
 });
 
-for (const boundary of ["before-first-stat", "after-read"] as const) test(`owner read reopens an atomically displaced inode ${boundary}`, async t => {
+for (const boundary of ["before-first-stat", "after-read", "mixed-unlink-stat"] as const) test(`owner read reopens an atomically displaced inode ${boundary}`, async t => {
   const f = fixture(t);
   const first = await startReview(f.context, f.artifact.manifest, f.assets, f.launch);
   const id = first.payload["sessionId"] as string;
@@ -180,6 +180,7 @@ for (const boundary of ["before-first-stat", "after-read"] as const) test(`owner
   const realStat = fs.fstatSync;
   const realRead = fs.readSync;
   let replaced = false;
+  let mixedStatReplayed = false;
   const publish = (file: number): void => {
     if (!replaced && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith(`${id}/owner.json`)) {
       replaced = true;
@@ -188,10 +189,20 @@ for (const boundary of ["before-first-stat", "after-read"] as const) test(`owner
     }
   };
   try {
-    if (boundary === "before-first-stat") fs.fstatSync = ((file: number, options?: unknown) => {
-      publish(file); return realStat(file, options as never);
+    fs.fstatSync = ((file: number, options?: unknown) => {
+      if (boundary === "before-first-stat") publish(file);
+      const stat = realStat(file, options as never);
+      if (boundary === "mixed-unlink-stat" && !mixedStatReplayed && stat.nlink === 0n
+          && fs.readlinkSync(`/proc/self/fd/${file}`).endsWith(`${id}/owner.json (deleted)`)) {
+        // Replay the observed non-atomic stat snapshot: updated ctime with the
+        // pre-unlink link count. The real inode is already unlinked, so a fresh
+        // fstat confirms displacement. This is a source fault seam, not CLI proof.
+        mixedStatReplayed = true;
+        return Object.assign(stat, { nlink: 1n });
+      }
+      return stat;
     }) as typeof fs.fstatSync;
-    else fs.readSync = ((file: number, ...args: unknown[]) => {
+    if (boundary !== "before-first-stat") fs.readSync = ((file: number, ...args: unknown[]) => {
       const count = Reflect.apply(realRead, fs, [file, ...args]) as number;
       publish(file); return count;
     }) as typeof fs.readSync;
@@ -199,6 +210,7 @@ for (const boundary of ["before-first-stat", "after-read"] as const) test(`owner
     // Return the fully revalidated current publication, never the unlinked bytes.
     assert.deepEqual(readReviewRecord(fd, f.context, id), next);
     assert.equal(replaced, true);
+    assert.equal(mixedStatReplayed, boundary === "mixed-unlink-stat");
   } finally {
     fs.fstatSync = realStat; fs.readSync = realRead; syncBuiltinESMExports(); closeSync(fd);
   }
@@ -279,7 +291,7 @@ test("private read retries are bounded and do not accept in-place mutation or un
   const fd = sessionDirectory(f.context, id);
   const realRead = fs.readSync;
   try {
-    for (const kind of ["churn", "in-place", "mode", "hardlink", "symlink", "oversize"] as const) {
+    for (const kind of ["churn", "in-place", "metadata-only", "mode", "hardlink", "symlink", "oversize"] as const) {
       replacePrivate(fd, "probe.json", Buffer.from("original"));
       let publications = 0;
       fs.readSync = ((file: number, ...args: unknown[]) => {
@@ -289,6 +301,8 @@ test("private read retries are bounded and do not accept in-place mutation or un
           const path = `/proc/self/fd/${fd}/probe.json`;
           if (kind === "in-place") {
             writeFileSync(path, "mutated!"); fs.utimesSync(path, 1, 1);
+          } else if (kind === "metadata-only") {
+            fs.chmodSync(path, 0o400); fs.chmodSync(path, 0o600);
           } else {
             replacePrivate(fd, "probe.json", Buffer.from(kind === "oversize" ? "too many bytes" : "replaced"));
             if (kind === "mode") fs.chmodSync(path, 0o644);

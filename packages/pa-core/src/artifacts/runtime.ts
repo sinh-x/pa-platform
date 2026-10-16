@@ -170,7 +170,15 @@ export function readPrivate(fd: number, name: string, cap = REVIEW_JOURNAL_BYTES
       if (length !== Number(stat.size) || after.mtimeNs !== stat.mtimeNs || after.size !== stat.size
           || after.uid !== stat.uid || after.mode !== stat.mode || after.nlink > 1n) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
       if (after.nlink === 0n) continue;
-      if (after.ctimeNs !== stat.ctimeNs) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      if (after.ctimeNs !== stat.ctimeNs) {
+        // stat fields need not describe one instant during unlink: ctime can
+        // change while that same result still reports the previous link count.
+        // Require a fresh confirmation of displacement, not a ctime exception.
+        const displaced = fstatSync(file, { bigint: true });
+        if (displaced.nlink === 0n && displaced.uid === stat.uid && displaced.mode === stat.mode
+            && displaced.size === stat.size && displaced.mtimeNs === stat.mtimeNs) continue;
+        throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
+      }
       return bytes.subarray(0, length);
     } finally { closeSync(file); }
   }

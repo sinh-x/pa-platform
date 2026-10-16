@@ -262,8 +262,13 @@ Treehouse, Bubblewrap or the separate observer UID prerequisite.
 Private reads now discard displaced inodes and reopen the current publication
 with all ownership/mode/link/size/content-stability checks repeated, at most four
 attempts. They never accept unlinked bytes or ignore in-place edits, unsafe
-replacement files or changed owner context. Deterministic source regressions
-cover both stat windows, stopped-session restart with retained feedback, foreign
+replacement files or changed owner context. The first exact-commit CLI rerun
+still failed; further genuine installed-module tracing captured changed ctime
+with the previous link count of 1, followed immediately by link count 0 on the
+same pinned inode and a different inode at owner.json. A confirming fresh fstat
+now handles that mixed-field unlink observation without accepting metadata-only
+changes. Deterministic source regressions cover both stat windows, the observed
+mixed-field snapshot, stopped-session restart with retained feedback, foreign
 replacement context, unsafe files and bounded churn. Complete before/after,
 exact-candidate installed smoke/build receipts and final commit identity are
 recorded externally in
