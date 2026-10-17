@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
+import { parseIdlePreparationReservation, type IdlePreparationReservation } from "./execution-custody.js";
 
 export const MAX_REPOSITORY_TICKET_SLOTS = 4;
 export const MAX_REPOSITORY_TICKET_SLOT_BYTES = 64 * 1024;
@@ -88,7 +89,7 @@ export function authenticateRepositoryTicketSlot(options: {
     if (!existsSync(path)) return { status: "rejected", reason: "absent" };
     const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
     if (inspected.state !== "live") {
-      return { status: "rejected", reason: inspected.state === "stale" ? "stale-process" : inspected.state };
+      return { status: "rejected", reason: inspected.state === "stale" ? "stale-process" : inspected.state === "prepared" ? "identity-mismatch" : inspected.state === "invalid-preparation" ? "malformed" : inspected.state };
     }
     const slot = inspected.slot;
     if (slot.canonicalRepoKey !== options.canonicalRepoKey
@@ -118,6 +119,11 @@ export function repositoryTicketSlotPath(canonicalRepoRoot: string, ticket: stri
   return join(directory, `${createHash("sha256").update(required(ticket, "ticket")).digest("hex")}.json`);
 }
 
+/** Distinct suffix preserves durable ownership even when record bytes are unreadable. */
+export function preparedRepositoryTicketReservationPath(canonicalRepoRoot: string, ticket: string): string {
+  return join(ticketSlotDirectory(canonicalRepoRoot), `${createHash("sha256").update(required(ticket, "ticket")).digest("hex")}.prepared.json`);
+}
+
 export function acquireRepositoryTicketSlot(options: {
   canonicalRepoKey: string;
   canonicalRepoRoot: string;
@@ -134,12 +140,20 @@ export function acquireRepositoryTicketSlot(options: {
   const directory = ticketSlotDirectory(root);
   const slotPath = repositoryTicketSlotPath(root, options.ticket);
   return withTicketMutex(root, () => {
-    const live: RepositoryTicketSlot[] = [];
+    const live: Array<RepositoryTicketSlot | IdlePreparationReservation> = [];
     let recovered = 0;
     for (const path of ticketEvidencePaths(directory)) {
       const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
-      if (inspected.state === "live") {
-        live.push(inspected.slot);
+      if (inspected.state === "live" || inspected.state === "prepared") {
+        const row = inspected.state === "prepared" ? inspected.reservation : inspected.slot;
+        // Even --force cannot reclaim prepared/uncertain/idle reservations.
+        if (("repoRoot" in row ? row.repoRoot : row.canonicalRepoRoot) !== root
+          || ("repoKey" in row ? row.repoKey : row.canonicalRepoKey) !== options.canonicalRepoKey
+          || path !== ("operationId" in row ? preparedRepositoryTicketReservationPath(root, row.ticket) : repositoryTicketSlotPath(root, row.ticket))
+          || live.some((entry) => capacityRowsConflict(entry, row))) {
+          return { status: "rejected", reason: "invalid-evidence", slotPath, diagnostic: ticketDiagnostic(options, "capacity identity or permit inventory conflicts", "preserve capacity evidence for operator reconciliation") };
+        }
+        live.push(row);
         continue;
       }
       if (inspected.state === "stale") {
@@ -147,8 +161,8 @@ export function acquireRepositoryTicketSlot(options: {
         recovered += 1;
         continue;
       }
-      if (!options.force) {
-        return { status: "rejected", reason: "invalid-evidence", slotPath, diagnostic: ticketDiagnostic(options, `persisted ticket-slot evidence is ${inspected.state} at ${path}`, "preserve the file and reconcile or retry with --force only after proving no recorded process is live") };
+      if (!options.force || inspected.state === "invalid-preparation") {
+        return { status: "rejected", reason: "invalid-evidence", slotPath, diagnostic: ticketDiagnostic(options, `persisted ticket-slot evidence is ${inspected.state} at ${path}`, inspected.state === "invalid-preparation" ? "preserve durable preparation capacity for operator reconciliation; --force cannot reclaim it" : "preserve the file and reconcile or retry with --force only after proving no recorded process is live") };
       }
       quarantine(path, dependencies.now, dependencies.createToken);
       recovered += 1;
@@ -243,23 +257,36 @@ function ticketEvidencePaths(directory: string): string[] {
     .sort();
 }
 
-function inspectSlot(path: string, getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined): { state: "live" | "stale"; slot: RepositoryTicketSlot } | { state: "malformed" | "oversized" | "insecure" } {
+function inspectSlot(path: string, getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined): { state: "live" | "stale"; slot: RepositoryTicketSlot } | { state: "prepared"; reservation: IdlePreparationReservation } | { state: "malformed" | "oversized" | "insecure" | "invalid-preparation" } {
+  const prepared = path.endsWith(".prepared.json");
   let stat;
-  try { stat = lstatSync(path); } catch { return { state: "malformed" }; }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) return { state: "insecure" };
-  if (stat.size > MAX_REPOSITORY_TICKET_SLOT_BYTES) return { state: "oversized" };
-  const slot = readSlot(path);
+  try { stat = lstatSync(path); } catch { return { state: prepared ? "invalid-preparation" : "malformed" }; }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o600) return { state: prepared ? "invalid-preparation" : "insecure" };
+  if (stat.size > MAX_REPOSITORY_TICKET_SLOT_BYTES) return { state: prepared ? "invalid-preparation" : "oversized" };
+  const value = readCapacityRecord(path);
+  if (prepared) {
+    try { return { state: "prepared", reservation: parseIdlePreparationReservation(value) }; }
+    catch { return { state: "invalid-preparation" }; }
+  }
+  if (value && typeof value === "object" && "schemaVersion" in value && typeof value.schemaVersion === "string" && value.schemaVersion.startsWith("prepared-")) return { state: "invalid-preparation" };
+  const slot = isSlot(value) ? value : null;
   if (!slot) return { state: "malformed" };
   return fingerprintsEqual(slot.processFingerprint, getProcessFingerprint(slot.processFingerprint.pid)) ? { state: "live", slot } : { state: "stale", slot };
 }
 
 function readSlot(path: string): RepositoryTicketSlot | null | undefined {
-  if (!existsSync(path)) return undefined;
+  const value = readCapacityRecord(path);
+  return value === undefined ? undefined : isSlot(value) ? value : null;
+}
+
+function readCapacityRecord(path: string): unknown {
+  // lstat/open rather than existsSync: dangling symlinks are invalid, not absent.
+  try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; return null; }
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_REPOSITORY_TICKET_SLOT_BYTES) return null;
+    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o600 || stat.size > MAX_REPOSITORY_TICKET_SLOT_BYTES) return null;
     const bytes = Buffer.alloc(stat.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -268,8 +295,9 @@ function readSlot(path: string): RepositoryTicketSlot | null | undefined {
       offset += count;
     }
     if (offset !== bytes.length) return null;
-    const value: unknown = JSON.parse(bytes.toString("utf8"));
-    return isSlot(value) ? value : null;
+    const after = fstatSync(descriptor); const named = lstatSync(path);
+    if (after.ctimeMs !== stat.ctimeMs || after.size !== stat.size || after.nlink !== 1 || named.ino !== stat.ino || named.dev !== stat.dev) return null;
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   } catch { return null; }
   finally { if (descriptor !== undefined) closeSync(descriptor); }
 }
@@ -320,6 +348,134 @@ function quarantine(path: string, now: () => Date, createToken: () => string): v
   const destination = `${path}.quarantine.${now().toISOString().replace(/[:.]/g, "-")}.${required(createToken(), "quarantine token")}`;
   linkSync(path, destination);
   unlinkSync(path);
+}
+
+/**
+ * Dormant preparation primitive. The trusted preparation service supplies authenticated
+ * intent; this API does not authenticate an approval or activate the optional policy.
+ * Uses the SAME directory/mutex/permit namespace as ordinary builder admission.
+ * No process-death reclamation, expiry, return or delete operation is provided.
+ */
+export interface PreparedTicketCapacityTransaction {
+  readonly inventory: () => readonly (RepositoryTicketSlot | IdlePreparationReservation)[];
+  readonly reserve: (input: {
+    ticket: string; operationId: string; reservationId: string; retainedAt: string;
+  }) => { readonly status: "reserved"; readonly reservation: IdlePreparationReservation } | { readonly status: "capacity" };
+  readonly update: (expected: IdlePreparationReservation, next: IdlePreparationReservation) => IdlePreparationReservation;
+}
+const activePreparedCapacityOwners = new WeakMap<PreparedTicketCapacityTransaction, string>();
+/** Reuse a live owner without recursively acquiring the same repository mutex. */
+export function withPreparedRepositoryTicketOwner<T>(transaction: PreparedTicketCapacityTransaction, canonicalRepoRoot: string, operation: () => T): T {
+  if (activePreparedCapacityOwners.get(transaction) !== canonicalRepoRoot) throw new Error("prepared capacity owner is absent, expired or root-conflicting");
+  const result = operation();
+  if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("prepared capacity owner callback must be synchronous");
+  return result;
+}
+export type PreparedCapacityBoundary = "file-synced" | "linked" | "published" | "directory-synced";
+export function withPreparedTicketCapacity<T>(options: {
+  canonicalRepoKey: string; canonicalRepoRoot: string;
+  dependencies?: Partial<RepositoryTicketSlotDependencies>;
+  /** Fault injection for isolated tests; an exception preserves uncertain evidence. */
+  boundary?: (point: PreparedCapacityBoundary) => void;
+}, operation: (transaction: PreparedTicketCapacityTransaction) => T): T {
+  const root = physicalRoot(options.canonicalRepoRoot);
+  const key = required(options.canonicalRepoKey, "repository key");
+  const dependencies = resolvedDependencies(options.dependencies);
+  return withTicketMutex(root, () => {
+    let active = true;
+    const assertActive = () => { if (!active) throw new Error("prepared capacity transaction expired"); };
+    const inventory = (): readonly (RepositoryTicketSlot | IdlePreparationReservation)[] => {
+      assertActive();
+      const rows: Array<RepositoryTicketSlot | IdlePreparationReservation> = [];
+      for (const path of ticketEvidencePaths(ticketSlotDirectory(root))) {
+        const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
+        if (inspected.state !== "prepared" && inspected.state !== "live" && inspected.state !== "stale") throw new Error("prepared capacity evidence is insecure or uncertain");
+        const row = inspected.state === "prepared" ? inspected.reservation : inspected.slot;
+        if (("repoRoot" in row ? row.repoRoot : row.canonicalRepoRoot) !== root
+          || ("repoKey" in row ? row.repoKey : row.canonicalRepoKey) !== key
+          || path !== ("operationId" in row ? preparedRepositoryTicketReservationPath(root, row.ticket) : repositoryTicketSlotPath(root, row.ticket))
+          || rows.some((other) => capacityRowsConflict(other, row))) throw new Error("prepared capacity inventory conflicts");
+        rows.push(row);
+      }
+      if (rows.length > MAX_REPOSITORY_TICKET_SLOTS) throw new Error("prepared capacity inventory exceeds limit");
+      // A stale LEGACY process record is conservatively occupied here. Its existing
+      // owner can reconcile it through ordinary admission, never this service.
+      // Reaffirm a prior publish/replace that crashed before its directory fsync.
+      syncPreparedCapacityDirectory(root);
+      return Object.freeze(rows);
+    };
+    const transaction = Object.freeze<PreparedTicketCapacityTransaction>({
+      inventory,
+      reserve(input) {
+        const rows = inventory();
+        const existing = rows.find((row) => row.ticket === input.ticket);
+        if (existing) {
+          if (!("operationId" in existing) || existing.operationId !== input.operationId || existing.reservationId !== input.reservationId) throw new Error("prepared ticket already has different custody");
+          syncPreparedCapacityDirectory(root);
+          return { status: "reserved" as const, reservation: existing };
+        }
+        const permit = ([1, 2, 3, 4] as const).find((value) => !rows.some((row) => row.repositoryPermit === value));
+        if (!permit) return { status: "capacity" as const };
+        const reservation = parseIdlePreparationReservation({ schemaVersion: "prepared-reservation/v1", repoKey: key, repoRoot: root,
+          ticket: input.ticket, operationId: input.operationId, reservationId: input.reservationId, repositoryPermit: permit,
+          occupancy: "preparing", lineageId: null, custody: { state: "idle", holder: null, inFlightOperation: null }, receiptId: null, retainedAt: input.retainedAt });
+        if (rows.some((row) => capacityRowsConflict(row, reservation))) throw new Error("prepared capacity operation or lineage already reserved");
+        publishPreparedCapacity(preparedRepositoryTicketReservationPath(root, reservation.ticket), reservation, false, options.boundary);
+        return { status: "reserved" as const, reservation };
+      },
+      update(expectedInput, nextInput) {
+        assertActive();
+        const expected = parseIdlePreparationReservation(expectedInput); const next = parseIdlePreparationReservation(nextInput);
+        const current = inventory().find((row) => row.ticket === expected.ticket);
+        if (!current || !("operationId" in current) || JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("prepared capacity compare-and-swap failed");
+        for (const field of ["repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "retainedAt"] as const) {
+          if (next[field] !== expected[field]) throw new Error("prepared capacity identity changed");
+        }
+        if (JSON.stringify(next) === JSON.stringify(expected)) { syncPreparedCapacityDirectory(root); return current; }
+        if (inventory().some((row) => row.ticket !== expected.ticket && capacityRowsConflict(row, next))) throw new Error("prepared capacity operation or lineage conflicts");
+        const allowed = expected.occupancy === "preparing" ? ["idle-ready", "uncertain-retained"]
+          : expected.occupancy === "idle-ready" ? ["active", "uncertain-retained"]
+          : expected.occupancy === "active" ? ["uncertain-retained"] : [];
+        if (!allowed.includes(next.occupancy) || (expected.receiptId !== null && next.receiptId !== expected.receiptId)
+          || (expected.lineageId !== null && next.lineageId !== expected.lineageId)) throw new Error("prepared capacity transition denied");
+        if (next.occupancy === "active" && (next.custody.state !== "orchestrator-direct" || !next.custody.holder || next.custody.inFlightOperation !== null
+          || !fingerprintsEqual(next.custody.holder.process, dependencies.getProcessFingerprint(next.custody.holder.process.pid)))) throw new Error("prepared capacity holder is not live");
+        publishPreparedCapacity(preparedRepositoryTicketReservationPath(root, next.ticket), next, true, options.boundary);
+        return next;
+      },
+    });
+    activePreparedCapacityOwners.set(transaction, root);
+    try {
+      const result = operation(transaction);
+      if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("prepared capacity transaction must be synchronous");
+      return result;
+    } finally { active = false; activePreparedCapacityOwners.delete(transaction); }
+  });
+}
+
+function capacityRowsConflict(left: RepositoryTicketSlot | IdlePreparationReservation, right: RepositoryTicketSlot | IdlePreparationReservation): boolean {
+  return left.ticket === right.ticket || left.repositoryPermit === right.repositoryPermit
+    || ("operationId" in left && "operationId" in right && (left.operationId === right.operationId || left.reservationId === right.reservationId
+      || (left.lineageId !== null && left.lineageId === right.lineageId)));
+}
+
+function publishPreparedCapacity(path: string, reservation: IdlePreparationReservation, replace: boolean, boundary?: (point: PreparedCapacityBoundary) => void): void {
+  const body = Buffer.from(`${JSON.stringify(parseIdlePreparationReservation(reservation))}\n`);
+  if (body.length > MAX_REPOSITORY_TICKET_SLOT_BYTES) throw new Error("prepared capacity record exceeds limit");
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const descriptor = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(descriptor, body); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  boundary?.("file-synced");
+  if (replace) renameSync(temporary, path);
+  else { linkSync(temporary, path); boundary?.("linked"); unlinkSync(temporary); }
+  boundary?.("published");
+  syncPreparedCapacityDirectory(reservation.repoRoot);
+  boundary?.("directory-synced");
+  if (JSON.stringify(readCapacityRecord(path)) !== JSON.stringify(reservation)) throw new Error("prepared capacity readback failed");
+}
+function syncPreparedCapacityDirectory(root: string): void {
+  const descriptor = openSync(ticketSlotDirectory(root), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
 export function withRepositoryTicketTransaction<T>(canonicalRepoRoot: string, operation: () => T): T {

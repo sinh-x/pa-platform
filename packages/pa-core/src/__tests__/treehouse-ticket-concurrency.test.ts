@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { acquireRepositoryTicketSlot, authenticateRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, type ProcessFingerprint } from "../deploy/index.js";
+import { acquireRepositoryTicketSlot, authenticateRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, withVacantPreparationWorktree, type ProcessFingerprint } from "../deploy/index.js";
 import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
+import { preparedRepositoryTicketReservationPath, withPreparedRepositoryTicketOwner, withPreparedTicketCapacity, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
+import { parseIdlePreparationReservation } from "../deploy/execution-custody.js";
 
 function git(args: string[], cwd: string, encoding: BufferEncoding | null = "utf8"): string | Buffer {
   return execFileSync("git", args, { cwd, encoding, stdio: ["ignore", "pipe", "pipe"] });
@@ -231,3 +233,268 @@ test("sparse planned ticket branch materializes once at exact local develop and 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("AC3/AC4: independent preparation processes reserve at most four tickets and exit without releasing ready capacity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-prepared-capacity-race-"));
+  const repo = initializeRepo(root);
+  const moduleUrl = new URL("../deploy/ticket-concurrency.ts", import.meta.url).href;
+  const script = `
+    const api = await import(process.env.PA_SLOT_MODULE_URL);
+    const number = Number(process.env.PA_SLOT_NUMBER);
+    const result = api.withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: process.env.PA_SLOT_REPO }, tx => tx.reserve({
+      ticket: "PAP-" + number, operationId: number.toString(16).padStart(64, "0"), reservationId: (number + 100).toString(16).padStart(64, "0"), retainedAt: "2026-10-17T00:00:00.000Z"
+    }));
+    process.stdout.write(JSON.stringify(result) + "\\n");
+  `;
+  try {
+    const results = await Promise.all(Array.from({ length: 8 }, (_, index) => new Promise<{ status: string }>((resolveAttempt, rejectAttempt) => {
+      const child = spawn(process.execPath, ["--import=tsx", "--input-type=module", "--eval", script], {
+        cwd: process.cwd(), env: { PATH: process.env.PATH, HOME: root, PA_SLOT_MODULE_URL: moduleUrl, PA_SLOT_REPO: repo, PA_SLOT_NUMBER: String(index + 1) },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = ""; let stderr = "";
+      child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+      child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.once("error", rejectAttempt);
+      child.once("exit", (code) => {
+        if (code !== 0) rejectAttempt(new Error(`contender exited ${code}: ${stderr}`));
+        else { try { resolveAttempt(JSON.parse(stdout) as { status: string }); } catch (error) { rejectAttempt(error); } }
+      });
+    })));
+    assert.equal(results.filter((row) => row.status === "reserved").length, 4);
+    assert.equal(results.filter((row) => row.status === "capacity").length, 4);
+    assert.equal(withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: repo }, (tx) => tx.inventory()).length, 4);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("AC3/AC6 integration: concurrent services reconcile one journal/reservation/ready transfer under the existing capacity mutex", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-prepared-service-race-"));
+  const repo = initializeRepo(root);
+  const protectedRoot = join(root, "protected"); const resources = join(root, "resources");
+  mkdirSync(protectedRoot, { mode: 0o700 }); mkdirSync(resources, { mode: 0o700 });
+  const capacityModule = new URL("../deploy/ticket-concurrency.ts", import.meta.url).href;
+  const serviceModule = new URL("../deploy/prepared-workflow.ts", import.meta.url).href;
+  const script = `
+    const capacity = await import(process.env.PA_SLOT_MODULE_URL);
+    const api = await import(process.env.PA_SERVICE_MODULE_URL);
+    const fs = await import("node:fs"); const path = await import("node:path");
+    const repo = process.env.PA_SLOT_REPO; const root = process.env.PA_SLOT_ROOT;
+    const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40); const digest = "b".repeat(64);
+    const source = ref => ({ ref, version: "fixture", sha256: digest });
+    const contract = api.parsePreparationContract({ schemaVersion: "prepared-workflow/v1", policyVersion: "prepared-autonomy/v1", repoKey: "registered", repoRoot: repo,
+      ticket: "PAP-256", branch: "feature/PAP-256-fixture", integrationTarget: "origin/develop", approvalBaseSha: sha,
+      requirements: source("requirements:fixture"), uat: source("uat:fixture"), promotionEvidence: "promotion:fixture", signoffEvidence: "signoff:fixture",
+      finalChecks: source("checks:fixture"), finalCheckCount: 13, matrix: source("requirements:fixture"), matrixApprovalEvidence: "matrix:fixture" });
+    let transaction;
+    const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+    const result = step => ({ state: "observed", evidence: source("result:" + step) });
+    const current = () => transaction.inventory().find(row => row.ticket === contract.ticket);
+    const host = {
+      locks: { repository: run => capacity.withPreparedTicketCapacity(options, tx => { transaction = tx; try { return run(); } finally { transaction = undefined; } }), worktree: run => run() },
+      authorize() {}, // isolated fake authority, NOT a production resolver
+      inspect(step, context) {
+        if (step === "reservation") return current() ? result(step) : { state: "absent" };
+        if (step === "ready") return current().occupancy === "idle-ready" && current().receiptId === context.receipt.receiptId ? result(step) : { state: "absent" };
+        const marker = path.join(root, "resources", step);
+        return fs.existsSync(marker) ? result(step) : { state: "absent" };
+      },
+      perform(step, context) {
+        if (step === "reservation") {
+          const reserved = transaction.reserve({ ticket: contract.ticket, operationId: context.operationId, reservationId: digest, retainedAt: time });
+          if (reserved.status !== "reserved") throw new Error("unexpected capacity");
+        } else if (step === "ready") {
+          const before = current(); transaction.update(before, { ...before, occupancy: "idle-ready", receiptId: context.receipt.receiptId });
+        } else fs.writeFileSync(path.join(root, "resources", step), context.operationId, { flag: "wx", mode: 0o600 });
+        return result(step);
+      },
+      resolveReceipt(context) { return api.parsePreparedReceipt({ schemaVersion: "prepared-receipt/v1", operationId: context.operationId, receiptId: digest, state: "ready", contract,
+        preparationBaseSha: sha, preparedHeadSha: sha, worktreeRoot: path.join(root, "fake-checkout"), leaseRef: "lease:fixture", capacityRef: "capacity:fixture", custodyRef: "custody:fixture",
+        ticketReread: context.results["ticket-reread"], observedAt: time, nextOwner: "builder" }); },
+      now: () => time,
+    };
+    const service = new api.PreparedWorkflowService(new api.ProtectedWorkflowStore(path.join(root, "protected")), host);
+    process.stdout.write(JSON.stringify(service.request(contract)) + "\\n");
+  `;
+  try {
+    const results = await Promise.all([1, 2].map(() => new Promise<{ state: string; operationId: string }>((resolveAttempt, rejectAttempt) => {
+      const child = spawn(process.execPath, ["--import=tsx", "--input-type=module", "--eval", script], {
+        cwd: process.cwd(), env: { PATH: process.env.PATH, HOME: root, PA_SLOT_MODULE_URL: capacityModule, PA_SERVICE_MODULE_URL: serviceModule, PA_SLOT_REPO: repo, PA_SLOT_ROOT: root }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = ""; let stderr = "";
+      child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); }); child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.once("error", rejectAttempt); child.once("exit", (code) => {
+        if (code !== 0) rejectAttempt(new Error(`service contender exited ${code}: ${stderr}`));
+        else { try { resolveAttempt(JSON.parse(stdout) as { state: string; operationId: string }); } catch (error) { rejectAttempt(error); } }
+      });
+    })));
+    assert.equal(results.every((row) => row.state === "ready"), true);
+    assert.equal(results[0]!.operationId, results[1]!.operationId);
+    const inventory = withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: repo }, (tx) => tx.inventory());
+    assert.equal(inventory.length, 1); assert.equal("occupancy" in inventory[0]! && inventory[0].occupancy, "idle-ready");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+const retainedAt = "2026-10-17T00:00:00.000Z";
+const preparedInput = (number: number) => ({ ticket: `PAP-${number}`, operationId: number.toString(16).padStart(64, "0"), reservationId: (number + 100).toString(16).padStart(64, "0"), retainedAt });
+function preparedFixture(action: (repo: string, root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "pa-prepared-capacity-"));
+  try { action(initializeRepo(root), root); } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+test("AC4/AC6: idle reservations share the four-permit namespace with legacy builders and survive requester death/force", () => preparedFixture((repo, root) => {
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+  for (let index = 1; index <= 3; index += 1) {
+    const first = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(index)));
+    assert.equal(first.status, "reserved");
+    assert.deepEqual(withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(index))), first);
+  }
+  const fp = fingerprint(45000);
+  const legacy = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-4", deploymentId: "d-legacy", deploymentDirectory: root,
+    pid: fp.pid, processFingerprint: fp, dependencies: { getProcessFingerprint: () => fp } });
+  assert.equal(legacy.status, "acquired");
+  assert.equal(legacy.status === "acquired" && legacy.slot.repositoryPermit, 4);
+  assert.deepEqual(withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(5))), { status: "capacity" });
+  for (const force of [false, true]) {
+    const duplicate = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-1", deploymentId: "d-other", deploymentDirectory: root, force });
+    assert.equal(duplicate.status, "rejected");
+    assert.equal(duplicate.status === "rejected" && duplicate.reason, "duplicate-ticket");
+  }
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 3); // legacy stale slot reconciled by its existing owner
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.reserve({ ...preparedInput(1), operationId: "f".repeat(64) })));
+}));
+
+test("AC6: preparing -> ready -> active transfer retains one permit, rejects replay/CAS drift and never expires", () => preparedFixture((repo) => {
+  const fp = { pid: 45001, startTimeTicks: "123", bootId: "fixture" };
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, dependencies: { getProcessFingerprint: () => fp } };
+  const first = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+  assert.equal(first.status, "reserved"); if (first.status !== "reserved") throw new Error("fixture failed");
+  const ready = parseIdlePreparationReservation({ ...first.reservation, occupancy: "idle-ready", receiptId: "b".repeat(64) });
+  withPreparedTicketCapacity(options, (tx) => tx.update(first.reservation, ready));
+  const active = parseIdlePreparationReservation({ ...ready, occupancy: "active", lineageId: "lineage:one",
+    custody: { state: "orchestrator-direct", holder: { deploymentId: "d-000001", process: fp }, inFlightOperation: null } });
+  assert.throws(() => withPreparedTicketCapacity({ ...options, dependencies: { getProcessFingerprint: () => undefined } }, (tx) => tx.update(ready, active)));
+  withPreparedTicketCapacity(options, (tx) => tx.update(ready, active));
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.update(ready, { ...active, lineageId: "lineage:two" })));
+  assert.deepEqual(withPreparedTicketCapacity(options, (tx) => tx.update(active, active)), active);
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.update(active, ready)));
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.update(active, { ...active, repositoryPermit: 2 })));
+  assert.equal(withPreparedTicketCapacity({ ...options, dependencies: { getProcessFingerprint: () => undefined } }, (tx) => tx.inventory()).length, 1);
+  const blocked = parseIdlePreparationReservation({ ...active, occupancy: "uncertain-retained", custody: { state: "uncertain-blocked", holder: active.custody.holder, inFlightOperation: null } });
+  withPreparedTicketCapacity(options, (tx) => tx.update(active, blocked));
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.update(blocked, active)));
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 1);
+}));
+
+test("prepared capacity rejects duplicate operation/reservation identity across tickets", () => preparedFixture((repo) => {
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+  withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+  for (const patch of [{ operationId: preparedInput(1).operationId }, { reservationId: preparedInput(1).reservationId }]) {
+    assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.reserve({ ...preparedInput(2), ...patch })));
+  }
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 1);
+}));
+
+test("capacity/worktree owner handles are live, root-bound and unforgeable; preparation cannot invert lock order", () => preparedFixture((repo, root) => {
+  const checkout = join(root, "checkout"); git(["worktree", "add", "--detach", checkout, "HEAD"], repo);
+  let escaped: PreparedTicketCapacityTransaction | undefined;
+  withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: repo }, (tx) => {
+    escaped = tx;
+    assert.equal(withPreparedRepositoryTicketOwner(tx, repo, () => 7), 7);
+    assert.throws(() => withPreparedRepositoryTicketOwner(tx, root, () => 8));
+    assert.throws(() => withPreparedRepositoryTicketOwner(tx, repo, () => Promise.resolve(9)));
+    assert.equal(withVacantPreparationWorktree(repo, checkout, tx, () => 10), 10);
+    assert.throws(() => withVacantPreparationWorktree(repo, repo, tx, () => 11));
+  });
+  assert.throws(() => withPreparedRepositoryTicketOwner(escaped!, repo, () => 12));
+  assert.throws(() => withVacantPreparationWorktree(repo, checkout, escaped!, () => 13));
+  assert.throws(() => withPreparedRepositoryTicketOwner({} as PreparedTicketCapacityTransaction, repo, () => 14));
+}));
+
+test("prepared transaction expires at callback exit and rejects async work", () => preparedFixture((repo) => {
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+  let escaped: PreparedTicketCapacityTransaction | undefined;
+  withPreparedTicketCapacity(options, (tx) => { escaped = tx; });
+  assert.throws(() => escaped!.reserve(preparedInput(1)));
+  assert.throws(() => escaped!.inventory());
+  assert.throws(() => withPreparedTicketCapacity(options, () => Promise.resolve(1)));
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 0);
+}));
+
+for (const boundary of ["file-synced", "linked", "published", "directory-synced"] as const) {
+  test(`AC3: prepared reservation crash at ${boundary} never duplicates occupancy`, () => preparedFixture((repo) => {
+    const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+    assert.throws(() => withPreparedTicketCapacity({ ...options, boundary(point) { if (point === boundary) throw new Error("crash"); } }, (tx) => tx.reserve(preparedInput(1))));
+    if (boundary === "linked") {
+      assert.equal(statSync(preparedRepositoryTicketReservationPath(repo, "PAP-1")).nlink, 2);
+      assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1))));
+      return; // uncertain hard-link alias is preserved, never auto-repaired
+    }
+    const recovered = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+    assert.equal(recovered.status, "reserved");
+    assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 1);
+    assert.equal(statSync(preparedRepositoryTicketReservationPath(repo, "PAP-1")).mode & 0o777, 0o600);
+  }));
+}
+
+for (const transition of ["ready", "active"] as const) {
+  for (const boundary of ["file-synced", "published", "directory-synced"] as const) {
+    test(`AC3/AC6: ${transition} capacity replacement crash at ${boundary} retains one reconcilable permit`, () => preparedFixture((repo) => {
+      const fp = { pid: 45002, startTimeTicks: "123", bootId: "fixture" };
+      const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, dependencies: { getProcessFingerprint: () => fp } };
+      const first = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+      if (first.status !== "reserved") throw new Error("fixture failed");
+      const ready = parseIdlePreparationReservation({ ...first.reservation, occupancy: "idle-ready", receiptId: "b".repeat(64) });
+      const before = transition === "ready" ? first.reservation : withPreparedTicketCapacity(options, (tx) => tx.update(first.reservation, ready));
+      const next = transition === "ready" ? ready : parseIdlePreparationReservation({ ...ready, occupancy: "active", lineageId: "lineage:one",
+        custody: { state: "orchestrator-direct", holder: { deploymentId: "d-000001", process: fp }, inFlightOperation: null } });
+      assert.throws(() => withPreparedTicketCapacity({ ...options, boundary(point) { if (point === boundary) throw new Error("crash"); } }, (tx) => tx.update(before, next)));
+      const rows = withPreparedTicketCapacity(options, (tx) => tx.inventory());
+      assert.equal(rows.length, 1);
+      if (boundary === "file-synced") {
+        assert.deepEqual(rows[0], before);
+        assert.deepEqual(withPreparedTicketCapacity(options, (tx) => tx.update(before, next)), next);
+      } else {
+        assert.deepEqual(rows[0], next);
+        assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.update(before, next)));
+        assert.deepEqual(withPreparedTicketCapacity(options, (tx) => tx.update(next, next)), next);
+      }
+      assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 1);
+    }));
+  }
+}
+
+test("AC5: malformed/oversized/insecure/aliased prepared evidence is never force-quarantined or reclaimed", () => preparedFixture((repo, root) => {
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+  const path = preparedRepositoryTicketReservationPath(repo, "PAP-1");
+  const reject = () => {
+    assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(2))));
+    const result = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-2", deploymentId: "d-force", deploymentDirectory: root, force: true });
+    assert.equal(result.status === "rejected" && result.reason, "invalid-evidence");
+  };
+  for (const body of ["{bad-json", "x".repeat(MAX_REPOSITORY_TICKET_SLOT_BYTES + 1), JSON.stringify({ schemaVersion: "unsupported" })]) {
+    writeFileSync(path, body, { mode: 0o600 }); reject(); assert.equal(readFileSync(path, "utf8"), body); rmSync(path);
+  }
+  symlinkSync(join(root, "missing"), path); reject(); rmSync(path);
+  const reserved = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+  assert.equal(reserved.status, "reserved");
+  chmodSync(path, 0o644); reject(); chmodSync(path, 0o600);
+  linkSync(path, join(root, "alias")); reject();
+  assert.equal(statSync(path).nlink, 2); // no repair or delete by --force
+}));
+
+test("prepared inventory rejects mismatched path/root and duplicate permit; ordinary admission cannot allocate past it", () => preparedFixture((repo, root) => {
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo };
+  const result = withPreparedTicketCapacity(options, (tx) => tx.reserve(preparedInput(1)));
+  if (result.status !== "reserved") throw new Error("fixture failed");
+  const path = preparedRepositoryTicketReservationPath(repo, "PAP-1");
+  for (const patch of [{ repoRoot: root }, { ticket: "PAP-9" }]) {
+    writeFileSync(path, JSON.stringify({ ...result.reservation, ...patch }), { mode: 0o600 });
+    assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.inventory()));
+    const next = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-2", deploymentId: "d-other", deploymentDirectory: root, force: true });
+    assert.equal(next.status === "rejected" && next.reason, "invalid-evidence");
+  }
+  writeFileSync(path, JSON.stringify(result.reservation), { mode: 0o600 });
+  writeFileSync(preparedRepositoryTicketReservationPath(repo, "PAP-2"), JSON.stringify({ ...result.reservation, ...preparedInput(2) }), { mode: 0o600 });
+  assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.inventory()));
+}));

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { withRepositoryTicketTransaction } from "../deploy/ticket-concurrency.js";
+import { withPreparedRepositoryTicketOwner, withRepositoryTicketTransaction, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
 import { loadRepoEntry, MAX_REPOSITORY_DIAGNOSTIC_CHARS, resolveRepoExecutionPath } from "../repos.js";
 import { requireTicketLinkedBranch } from "./git-validation.js";
 import { TicketStore } from "./store.js";
@@ -15,6 +15,12 @@ export interface MaterializeTicketBranchOptions {
   actor?: string;
   ticketStore?: TicketStore;
   runGit?: (args: readonly string[], cwd: string) => string | Buffer;
+  /** Trusted preparation service only: an authenticated exact base, never a CLI/agent override. */
+  approvedPreparationBaseSha?: string;
+  /** Live existing repository owner; avoids recursive mutex acquisition during preparation. */
+  preparedCapacityOwner?: PreparedTicketCapacityTransaction;
+  /** Durable operation identity, required for exact post-crash branch/ticket reconciliation. */
+  preparationOperationId?: string;
 }
 
 export interface MaterializedTicketBranch {
@@ -69,8 +75,13 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
   if (!ticket) throw diagnostic(`ticket ${options.ticketId} does not exist`, "restore the durable ticket before acquiring a checkout");
   const linked = requireTicketLinkedBranch(ticket, options.canonicalRepoKey);
   const canonicalBefore = canonicalSnapshot(canonicalRoot, runGit);
+  const approvedBase = options.approvedPreparationBaseSha;
+  if (approvedBase !== undefined && !/^[0-9a-f]{40}$/.test(approvedBase)) throw diagnostic("preparation base is not one exact full commit SHA", "resolve the immutable approved base before resource actions");
+  const transaction = <T>(action: () => T): T => options.preparedCapacityOwner
+    ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, action)
+    : withRepositoryTicketTransaction(canonicalRoot, action);
 
-  return withRepositoryTicketTransaction(canonicalRoot, () => {
+  return transaction(() => {
     authenticateLinkedWorktree(options.canonicalRepoKey, canonicalRoot, worktreeRoot);
     const currentTicket = store.get(options.ticketId);
     if (!currentTicket) throw diagnostic(`ticket ${options.ticketId} disappeared during materialization`, "restore the same ticket evidence and retry");
@@ -81,6 +92,9 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
 
     const developBranch = repo.developBranch ?? "develop";
     const developSha = fullCommit(runGit, canonicalRoot, `refs/heads/${developBranch}^{commit}`, `configured local ${developBranch}`);
+    const selectedBase = approvedBase === undefined ? developSha : fullCommit(runGit, canonicalRoot, `${approvedBase}^{commit}`, "approved preparation base");
+    if (approvedBase !== undefined && selectedBase !== approvedBase) throw diagnostic("approved preparation base did not resolve exactly", "preserve the checkout and reconcile the immutable approval source");
+    if (approvedBase !== undefined && linked.state === "materialized" && linked.baseSha !== approvedBase) throw diagnostic("retained materialization base does not match the current exact approved preparation base", "preserve historical provenance and obtain the owning changed-base or migration decision");
     const existingHead = optionalCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}^{commit}`);
     const occupiedAt = branchWorktree(runGit, canonicalRoot, linked.branch);
     if (occupiedAt && occupiedAt !== worktreeRoot) {
@@ -89,9 +103,19 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
 
     let created = false;
     if (linked.state === "planned") {
-      if (existingHead) throw diagnostic("planned branch evidence raced with an independently created local branch", "refresh and reconcile the ticket branch evidence before retrying");
-      gitText(runGit(["checkout", "--no-guess", "-b", linked.branch, developSha], worktreeRoot));
-      created = true;
+      if (existingHead) {
+        const reservation = options.preparedCapacityOwner?.inventory().find((row) => row.ticket === options.ticketId);
+        const ownedExactPreparation = approvedBase !== undefined && options.preparationOperationId !== undefined
+          && reservation && "operationId" in reservation && reservation.operationId === options.preparationOperationId && reservation.occupancy === "preparing"
+          && existingHead === selectedBase && occupiedAt === worktreeRoot && symbolicBranch(runGit, worktreeRoot) === linked.branch;
+        if (!ownedExactPreparation) throw diagnostic("planned branch evidence raced with an independently created local branch", "refresh and reconcile the ticket branch evidence before retrying");
+        // The optional service has prior durable operation intent, exact capacity
+        // custody and this same vacant checkout/base. Finish ticket publication;
+        // never recreate/reset/checkout an independently observed branch.
+      } else {
+        gitText(runGit(["checkout", "--no-guess", "-b", linked.branch, selectedBase], worktreeRoot));
+        created = true;
+      }
     } else {
       if (!existingHead) throw diagnostic("a materialized ticket branch no longer exists locally", "restore or explicitly reconcile the recorded branch; automatic recreation is forbidden");
       const currentBranch = symbolicBranch(runGit, worktreeRoot);
@@ -101,8 +125,8 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     const headSha = fullCommit(runGit, worktreeRoot, "HEAD^{commit}", "selected ticket HEAD");
     const branchHead = fullCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}^{commit}`, "ticket branch");
     if (headSha !== branchHead) throw diagnostic("selected worktree HEAD does not equal the ticket branch ref", "preserve the checkout and reconcile branch replacement or drift before retrying");
-    const baseSha = linked.state === "planned" ? developSha : linked.baseSha;
-    if (linked.state === "planned" && headSha !== developSha) throw diagnostic("new ticket branch did not materialize at the exact configured local develop SHA", "preserve the branch for diagnosis; do not reset or recreate it automatically");
+    const baseSha = linked.state === "planned" ? selectedBase : linked.baseSha;
+    if (linked.state === "planned" && headSha !== selectedBase) throw diagnostic("new ticket branch did not materialize at the exact selected base SHA", "preserve the branch for diagnosis; do not reset or recreate it automatically");
     if (baseSha && !isAncestor(runGit, canonicalRoot, baseSha, headSha)) throw diagnostic("ticket head is not descended from immutable baseSha", "reconcile branch replacement under operator control");
     if (linked.headSha && !isAncestor(runGit, canonicalRoot, linked.headSha, headSha)) throw diagnostic("ticket branch head was replaced instead of advanced", "restore or explicitly reconcile the recorded branch; do not overwrite evidence");
 

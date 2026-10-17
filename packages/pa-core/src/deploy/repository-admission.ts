@@ -30,6 +30,7 @@ import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
+import { withPreparedRepositoryTicketOwner, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
 
 export const REPOSITORY_REVIEW_RESERVATION_FILE = "pa-repository-review.reservation.json";
 
@@ -484,6 +485,36 @@ function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string
   const leasePath = join(gitDir, linked && slot === "implement" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE);
   const mutexPath = linked ? resolve(gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR) : leasePath;
   return { root, worktree, gitDir, leasePath, mutexPath, linked };
+}
+
+/**
+ * Internal preparation owner, nested ONLY under the repository capacity owner.
+ * Uses the existing mutation-slot mutex; any lease/borrower/review evidence,
+ * including stale or malformed evidence, blocks without cleanup or adoption.
+ * This lock is not an approval, source authority or a generic agent entry point.
+ */
+export function withVacantPreparationWorktree<T>(canonicalRepoRoot: string, worktreeRoot: string, capacityOwner: PreparedTicketCapacityTransaction, operation: () => T): T {
+  return withPreparedRepositoryTicketOwner(capacityOwner, canonicalRepoRoot, () => {
+    const location = repositoryLeaseLocation(canonicalRepoRoot, worktreeRoot, "orchestrator");
+    if (!location.linked) throw new Error("preparation requires a distinct linked worktree");
+    const common = repositoryPhysicalGitCommonDir(location.worktree);
+    if (common !== repositoryPhysicalGitCommonDir(location.root)) throw new Error("preparation worktree common directory conflicts with canonical identity");
+    return withMutationMutex(location.mutexPath, () => {
+      const assertVacant = (): void => {
+        assertExpectedGitIdentity(location.worktree, location.gitDir, common);
+        for (const name of [REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+          try { lstatSync(join(location.gitDir, name)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          throw new Error("preparation worktree has retained execution or review custody; preserve it for its owner");
+        }
+      };
+      assertVacant();
+      const result = operation();
+      if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("preparation worktree callback must be synchronous");
+      assertVacant();
+      return result;
+    });
+  });
 }
 
 export function repositoryReviewReservationPath(worktreeRoot: string): string {

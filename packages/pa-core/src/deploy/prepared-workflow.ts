@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, readdirSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
-import { MAX_REPOSITORY_TICKET_SLOT_BYTES } from "./ticket-concurrency.js";
 
-/** Phase 1 only: no admission/export/tool/config wiring, resource actions or ready publisher. */
+/** Inactive contracts and core transaction engine; no production host/tool/launch activation. */
 export const PREPARED_WORKFLOW_VERSION = "prepared-workflow/v1";
 export const PREPARED_POLICY_VERSION = "prepared-autonomy/v1";
-export const MAX_PROTECTED_WORKFLOW_BYTES = MAX_REPOSITORY_TICKET_SLOT_BYTES;
+// Independent record limit: do not import the capacity owner here. That owner
+// validates reservation schemas through execution-custody -> this module.
+export const MAX_PROTECTED_WORKFLOW_BYTES = 64 * 1024;
 export const WORKFLOW_OUTPUT_LIMITS = Object.freeze({ markdown: 1_048_576, html: 4_194_304, diff: 10_485_760 });
 export type PreparationState = "not-requested" | "preparing" | "ready" | "consumed" | "not-ready-capacity" | "not-ready-failed" | "uncertain-blocked";
 export interface SourceVersion {
@@ -68,7 +69,7 @@ export function workflowError(): Error {
     source: "versioned contract or protected persistence",
     reason: "missing, insecure, unsupported, conflicting or uncertain evidence",
     correction: "preserve state; reconcile evidence with the owning service/operator",
-    resumeAction: "resume only with matching supported authority; Phase 1 grants none",
+    resumeAction: "resume only with matching supported authority; optional automation remains inactive",
   }));
 }
 export function workflowObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -78,6 +79,15 @@ export function workflowObject(value: unknown, keys: readonly string[]): Record<
   const descriptors = Object.getOwnPropertyDescriptors(row);
   if (Reflect.ownKeys(row).length !== keys.length || keys.some((key) => !descriptors[key] || !("value" in descriptors[key]!))) throw workflowError();
   return row;
+}
+/** Authority/resource callbacks are synchronous. Never treat a pending Promise as approval. */
+export function workflowSynchronous<T>(value: T): T {
+  if (value && (typeof value === "object" || typeof value === "function") && "then" in value) {
+    // Observe native Promise rejection without awaiting it or allowing successors.
+    if (value instanceof Promise) void value.catch(() => undefined);
+    throw workflowError();
+  }
+  return value;
 }
 export function workflowText(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 4_096 || value.trim() !== value || /[\u0000-\u001f\u007f-\u009f]/.test(value)) throw workflowError();
@@ -229,8 +239,9 @@ export type PublicationBoundary = "file-synced" | "linked" | "temporary-unlinked
  * After unlink, retry of identical bytes fsyncs the directory before returning.
  * A conflicting existing name is never overwritten or automatically quarantined.
  * This intentionally prefers uncertain-blocked over automatic crash repair.
- * A caller must not begin resource effects until intent() has RETURNED; no
- * resource execution/ready-publication routine is implemented in this phase.
+ * A caller must not begin resource effects until intent() has RETURNED. The
+ * transaction engine below additionally journals every individual action intent;
+ * this storage primitive itself never allocates, spawns or transfers authority.
  */
 export class ProtectedWorkflowStore {
   readonly #root: string;
@@ -257,7 +268,7 @@ export class ProtectedWorkflowStore {
     finally { if (descriptor !== undefined) closeSync(descriptor); }
   }
   #name(name: string): string {
-    if (!/^[0-9a-f]{64}\.(intent|[1-9][0-9]?)\.json$/.test(name)) throw workflowError();
+    if (!/^[0-9a-f]{64}\.(intent|[1-9][0-9]?|transaction-[1-9][0-9]{0,2})\.json$/.test(name)) throw workflowError();
     return name;
   }
   #read(descriptor: number, name: string): Buffer {
@@ -281,6 +292,16 @@ export class ProtectedWorkflowStore {
   }
   read(name: string): unknown {
     return this.#directory((fd) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(this.#read(fd, name))) as unknown);
+  }
+  /** Reestablish publication durability on a resumed, successfully validated chain. */
+  reaffirm(scope: PreparedLockScope): void { assertScope(scope); this.#directory((fd) => fsyncSync(fd)); }
+  /** Enumerate before replay so gaps/orphan successors cannot masquerade as absence. */
+  records(): readonly string[] {
+    return this.#directory((fd) => {
+      const names = readdirSync(`/proc/self/fd/${fd}`);
+      if (names.length > 4_096) throw workflowError();
+      return Object.freeze(names.filter((name) => name.endsWith(".json")).map((name) => this.#name(name)).sort());
+    });
   }
   publish(scope: PreparedLockScope, name: string, value: unknown, boundary?: (point: PublicationBoundary) => void): "published" | "identical" {
     assertScope(scope);
@@ -343,5 +364,307 @@ export class PreparationJournal {
     }
     this.store.publish(scope, `${entry.operationId}.${entry.sequence}.json`, entry, boundary);
     return entry;
+  }
+}
+
+/** Native UI capture, persisted by trusted adapter code, never accepted as tool JSON. */
+export interface NativePreparationRetry {
+  readonly schemaVersion: "native-preparation-retry/v1";
+  readonly eventId: string;
+  readonly operationId: string;
+  readonly bindingIdentity: string;
+  readonly callerIdentity: string;
+  readonly deploymentId: string;
+  readonly toolCallId: string;
+  readonly preparationAttempt: number;
+  readonly failureSha256: string;
+  readonly capturedAt: string;
+}
+function parseNativePreparationRetry(value: unknown): NativePreparationRetry {
+  const row = workflowObject(value, ["schemaVersion", "eventId", "operationId", "bindingIdentity", "callerIdentity", "deploymentId", "toolCallId", "preparationAttempt", "failureSha256", "capturedAt"]);
+  const eventId = workflowText(row["eventId"]); const deploymentId = workflowText(row["deploymentId"]);
+  if (row["schemaVersion"] !== "native-preparation-retry/v1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(eventId)
+    || !/^d-[0-9a-f]{6}$/.test(deploymentId) || !Number.isSafeInteger(row["preparationAttempt"])
+    || Number(row["preparationAttempt"]) < 1 || Number(row["preparationAttempt"]) > 32) throw workflowError();
+  return Object.freeze({ schemaVersion: "native-preparation-retry/v1", eventId, operationId: workflowSha(row["operationId"]),
+    bindingIdentity: workflowSha(row["bindingIdentity"]), callerIdentity: workflowSha(row["callerIdentity"]), deploymentId,
+    toolCallId: workflowText(row["toolCallId"]), preparationAttempt: Number(row["preparationAttempt"]), failureSha256: workflowSha(row["failureSha256"]), capturedAt: workflowTimestamp(row["capturedAt"]) });
+}
+/** Caller already holds the existing owners' locks. Returns only a non-secret locator. */
+export function publishNativePreparationRetry(store: ProtectedWorkflowStore, scope: PreparedLockScope, value: NativePreparationRetry): SourceVersion {
+  const record = parseNativePreparationRetry(value); const sha256 = workflowDigest(`${JSON.stringify(record)}\n`);
+  store.publish(scope, `${sha256}.intent.json`, record);
+  return Object.freeze({ ref: `native-preparation-retry:${sha256}`, version: "native-preparation-retry/v1", sha256 });
+}
+/**
+ * Verification primitive for host.authorize("retry"). Shape alone is not native
+ * authority: resolve this record ONLY from protected adapter-owned storage, and
+ * compare against the current authenticated operation/binding/caller. The service
+ * separately enforces one-use reference/digest accounting across attempts.
+ */
+function resolveNativePreparationRetry(store: ProtectedWorkflowStore, input: SourceVersion): NativePreparationRetry {
+  const source = parseSourceVersion(input);
+  if (source.version !== "native-preparation-retry/v1" || source.ref !== `native-preparation-retry:${source.sha256}`) throw workflowError();
+  const record = parseNativePreparationRetry(store.read(`${source.sha256}.intent.json`));
+  if (workflowDigest(`${JSON.stringify(record)}\n`) !== source.sha256) throw workflowError();
+  return record;
+}
+export function readNativePreparationRetry(store: ProtectedWorkflowStore, input: SourceVersion, expected: Pick<NativePreparationRetry, "operationId" | "bindingIdentity" | "callerIdentity" | "deploymentId" | "preparationAttempt" | "failureSha256">): NativePreparationRetry {
+  const record = resolveNativePreparationRetry(store, input);
+  for (const field of ["operationId", "bindingIdentity", "callerIdentity", "deploymentId", "preparationAttempt", "failureSha256"] as const) if (record[field] !== expected[field]) throw workflowError();
+  return record;
+}
+
+export const PREPARATION_ACTIONS = Object.freeze(["reservation", "allocation", "branch", "ticket-reread", "ready", "consume"] as const);
+export type PreparationAction = typeof PREPARATION_ACTIONS[number];
+export type PreparationOutcome =
+  | { readonly state: "absent" }
+  | { readonly state: "observed" | "failed" | "capacity" | "uncertain"; readonly evidence: SourceVersion };
+export interface PreparationStepContext {
+  readonly contract: PreparationContract;
+  readonly operationId: string;
+  readonly attempt: number;
+  readonly results: Readonly<Partial<Record<PreparationAction, SourceVersion>>>;
+  readonly receipt: PreparedReceipt | null;
+  readonly consumer: SourceVersion | null;
+}
+/**
+ * TRUSTED HOST interface, never an agent tool schema. Production integration must
+ * authenticate native activation, caller incarnation, durable promotion/approvals,
+ * exact bases/checkout/ticket reread and evidence identities on EVERY call.
+ * No permissive/default implementation is provided. A public projection is not a host.
+ *
+ * inspect() is mandatory before each effect, including crash resumption. "absent"
+ * means positively proven no effect; unknown MUST be "uncertain". Both methods
+ * reconcile the stable operationId, not a new allocation on each attempt. ready
+ * publishes the exact receipt binding into capacity; consume transfers that SAME
+ * capacity to the authenticated consumer and must be idempotent for only that lineage.
+ *
+ * Locks wrap existing owners, repository -> worktree -> journal; host capacity
+ * operations must use the already-held transaction, never reacquire its mutex.
+ */
+export interface PreparationHost {
+  readonly locks: PreparedLockOwners;
+  readonly authorize: (operation: "request" | "retry" | "consume", contract: PreparationContract, evidence: SourceVersion | null) => void;
+  readonly inspect: (action: PreparationAction, context: PreparationStepContext) => PreparationOutcome;
+  readonly perform: (action: PreparationAction, context: PreparationStepContext) => Exclude<PreparationOutcome, { state: "absent" }>;
+  /** Resolve protected resource facts; copied JSON/CLI output alone is not authority. */
+  readonly resolveReceipt: (context: PreparationStepContext) => PreparedReceipt;
+  readonly now: () => string;
+}
+export interface PreparationStatus {
+  readonly schemaVersion: "preparation-status/v1";
+  readonly operationId: string;
+  readonly state: PreparationState;
+  readonly attempt: number;
+  readonly completedActions: readonly PreparationAction[];
+  readonly receipt: PreparedReceipt | null;
+  readonly failure: SourceVersion | null;
+}
+interface PreparationEvent {
+  readonly schemaVersion: "preparation-event/v1";
+  readonly operationId: string;
+  readonly sequence: number;
+  readonly previousSha256: string;
+  readonly kind: "started" | "observed" | "failed" | "capacity" | "uncertain" | "retry";
+  readonly action: PreparationAction | null;
+  readonly evidence: SourceVersion | null;
+  readonly receipt: PreparedReceipt | null;
+  readonly consumer: SourceVersion | null;
+  readonly recordedAt: string;
+}
+interface PreparationReplay {
+  state: PreparationState;
+  attempt: number;
+  pending: PreparationAction | null;
+  results: Partial<Record<PreparationAction, SourceVersion>>;
+  receipt: PreparedReceipt | null;
+  consumer: SourceVersion | null;
+  failure: SourceVersion | null;
+  retries: Set<string>;
+}
+function parsePreparationEvent(value: unknown): PreparationEvent {
+  const row = workflowObject(value, ["schemaVersion", "operationId", "sequence", "previousSha256", "kind", "action", "evidence", "receipt", "consumer", "recordedAt"]);
+  if (row["schemaVersion"] !== "preparation-event/v1" || !Number.isSafeInteger(row["sequence"]) || Number(row["sequence"]) < 1 || Number(row["sequence"]) > 256
+    || typeof row["kind"] !== "string" || !["started", "observed", "failed", "capacity", "uncertain", "retry"].includes(row["kind"])
+    || (row["action"] !== null && (typeof row["action"] !== "string" || !PREPARATION_ACTIONS.includes(row["action"] as PreparationAction)))) throw workflowError();
+  return Object.freeze({ schemaVersion: "preparation-event/v1", operationId: workflowSha(row["operationId"]), sequence: Number(row["sequence"]),
+    previousSha256: workflowSha(row["previousSha256"]), kind: row["kind"] as PreparationEvent["kind"], action: row["action"] as PreparationAction | null,
+    evidence: row["evidence"] === null ? null : parseSourceVersion(row["evidence"]), receipt: row["receipt"] === null ? null : parsePreparedReceipt(row["receipt"]),
+    consumer: row["consumer"] === null ? null : parseSourceVersion(row["consumer"]), recordedAt: workflowTimestamp(row["recordedAt"]) });
+}
+function nextPreparationAction(replay: PreparationReplay): PreparationAction | null {
+  return PREPARATION_ACTIONS.find((action) => !replay.results[action]) ?? null;
+}
+function applyPreparationEvent(replay: PreparationReplay, event: PreparationEvent, contract: PreparationContract): void {
+  if (event.kind === "retry") {
+    if (event.action !== null || !event.evidence || event.receipt || event.consumer || replay.pending
+      || !["not-ready-capacity", "not-ready-failed"].includes(replay.state) || replay.attempt >= 32
+      || replay.retries.has(event.evidence.ref) || replay.retries.has(event.evidence.sha256)) throw workflowError();
+    replay.retries.add(event.evidence.ref); replay.retries.add(event.evidence.sha256);
+    replay.attempt += 1; replay.state = "preparing"; // original failure remains in the immutable chain AND status
+    return;
+  }
+  const action = event.action;
+  if (!action || action !== nextPreparationAction(replay)) throw workflowError();
+  if (event.kind === "started") {
+    if (replay.pending || event.evidence || !["preparing", "ready"].includes(replay.state)
+      || (action === "consume" ? replay.state !== "ready" || !event.consumer : event.consumer !== null)
+      || (action === "ready" ? !event.receipt : event.receipt !== null)) throw workflowError();
+    if (event.receipt) {
+      if (event.receipt.state !== "ready" || JSON.stringify(event.receipt.contract) !== JSON.stringify(contract)
+        || JSON.stringify(event.receipt.ticketReread) !== JSON.stringify(replay.results["ticket-reread"])) throw workflowError();
+      replay.receipt = event.receipt;
+    }
+    replay.consumer = event.consumer;
+    replay.pending = action;
+    return;
+  }
+  if (replay.pending !== action || !event.evidence || event.receipt || event.consumer) throw workflowError();
+  replay.pending = null;
+  if (event.kind === "observed") {
+    replay.results[action] = event.evidence;
+    replay.state = action === "ready" ? "ready" : action === "consume" ? "consumed" : "preparing";
+    if (action === "consume") {
+      if (!replay.receipt || !replay.consumer) throw workflowError();
+      replay.receipt = parsePreparedReceipt({ ...replay.receipt, state: "consumed" });
+    }
+  } else {
+    if (event.kind === "capacity" && action !== "reservation" && action !== "allocation") throw workflowError();
+    replay.failure = event.evidence;
+    replay.state = action === "consume" ? "uncertain-blocked" : event.kind === "capacity" ? "not-ready-capacity" : event.kind === "failed" ? "not-ready-failed" : "uncertain-blocked";
+  }
+}
+function parsePreparationOutcome(value: unknown): PreparationOutcome {
+  // Do not invoke accessors/coercion while interpreting host observations.
+  if (value && typeof value === "object" && Object.getOwnPropertyDescriptor(value, "state")?.value === "absent") {
+    workflowObject(value, ["state"]); return Object.freeze({ state: "absent" });
+  }
+  const row = workflowObject(value, ["state", "evidence"]);
+  if (typeof row["state"] !== "string" || !["observed", "failed", "capacity", "uncertain"].includes(row["state"])) throw workflowError();
+  return Object.freeze({ state: row["state"] as "observed" | "failed" | "capacity" | "uncertain", evidence: parseSourceVersion(row["evidence"]) });
+}
+
+/**
+ * Journaled transaction engine, not production registration/activation. Status is a
+ * non-authoritative projection. Only a trusted host can resolve resources/approvals;
+ * the shipped Pi/launcher still use their unchanged legacy path.
+ */
+export class PreparedWorkflowService {
+  constructor(readonly store: ProtectedWorkflowStore, readonly host: PreparationHost,
+    readonly boundary?: (point: PublicationBoundary) => void) {}
+  #load(contract: PreparationContract): { intent: WorkflowIntent | null; events: PreparationEvent[]; replay: PreparationReplay } {
+    const operationId = preparationIdentity(contract);
+    const names = this.store.records().filter((name) => name.startsWith(`${operationId}.`));
+    // Phase-1 primitive results are not silently upgraded into service authority.
+    // Adoption needs an owning, independently authenticated migration adapter.
+    if (names.some((name) => !name.endsWith(".intent.json") && !name.includes(".transaction-"))) throw workflowError();
+    const intentName = `${operationId}.intent.json`;
+    const intent = names.includes(intentName) ? parseIntent(this.store.read(intentName)) : null;
+    const eventNames = names.filter((name) => name.includes(".transaction-"));
+    const replay: PreparationReplay = { state: intent ? "preparing" : "not-requested", attempt: intent ? 1 : 0, pending: null, results: {}, receipt: null, consumer: null, failure: null, retries: new Set() };
+    if (!intent) { if (eventNames.length) throw workflowError(); return { intent, events: [], replay }; }
+    if (intent.operationId !== operationId || JSON.stringify(intent.contract) !== JSON.stringify(contract)) throw workflowError();
+    const events = eventNames.map((name) => {
+      const event = parsePreparationEvent(this.store.read(name));
+      if (name !== `${operationId}.transaction-${event.sequence}.json`) throw workflowError();
+      return event;
+    }).sort((a, b) => a.sequence - b.sequence);
+    let previous: WorkflowIntent | PreparationEvent = intent;
+    for (const [index, event] of events.entries()) {
+      if (event.sequence !== index + 1 || !eventNames.includes(`${operationId}.transaction-${event.sequence}.json`) || event.operationId !== operationId
+        || event.previousSha256 !== workflowDigest(JSON.stringify(previous)) || event.recordedAt < ("createdAt" in previous ? previous.createdAt : previous.recordedAt)) throw workflowError();
+      applyPreparationEvent(replay, event, contract); previous = event;
+    }
+    return { intent, events, replay };
+  }
+  status(contractInput: PreparationContract): PreparationStatus {
+    const contract = parsePreparationContract(contractInput);
+    return this.#status(contract, this.#load(contract).replay);
+  }
+  #status(contract: PreparationContract, replay: PreparationReplay): PreparationStatus {
+    // An intent may already have changed resources before the result was journaled.
+    // Never advertise readiness or a proven failure while that outcome is pending.
+    // Only a trusted inspect() on resumption can resolve it; status never does effects.
+    const state = replay.pending !== null ? "uncertain-blocked" : replay.state;
+    return Object.freeze({ schemaVersion: "preparation-status/v1", operationId: preparationIdentity(contract), state,
+      attempt: replay.attempt, completedActions: Object.freeze(PREPARATION_ACTIONS.filter((action) => Boolean(replay.results[action]))),
+      receipt: state === "ready" || state === "consumed" ? replay.receipt : null, failure: replay.failure });
+  }
+  request(contract: PreparationContract): PreparationStatus { return this.#run("request", contract, null); }
+  retry(contract: PreparationContract, nativeRequest: SourceVersion): PreparationStatus { return this.#run("retry", contract, parseSourceVersion(nativeRequest)); }
+  consume(contract: PreparationContract, authenticatedLineage: SourceVersion): PreparationStatus { return this.#run("consume", contract, parseSourceVersion(authenticatedLineage)); }
+  #run(operation: "request" | "retry" | "consume", contractInput: PreparationContract, evidence: SourceVersion | null): PreparationStatus {
+    const contract = parsePreparationContract(contractInput);
+    // This resolver is mandatory, even for an idempotent request or consumed retry.
+    // Throwing propagates as a bounded error without persisting caller/host secrets.
+    try {
+      if (workflowSynchronous(this.host.authorize(operation, contract, evidence)) !== undefined) throw workflowError();
+    } catch { throw workflowError(); }
+    return withPreparedWorkflowLocks(this.host.locks, (scope) => {
+      const loaded = this.#load(contract);
+      let { intent } = loaded; const { events, replay } = loaded;
+      if (intent) this.store.reaffirm(scope);
+      if (!intent) {
+        if (operation !== "request") throw workflowError();
+        intent = new PreparationJournal(this.store).intent(scope, contract, workflowTimestamp(this.host.now()), this.boundary);
+        replay.state = "preparing"; replay.attempt = 1;
+      }
+      const append = (fields: Pick<PreparationEvent, "kind" | "action" | "evidence" | "receipt" | "consumer">): void => {
+        const previous = events.at(-1) ?? intent!;
+        const event = parsePreparationEvent({ schemaVersion: "preparation-event/v1", operationId: intent!.operationId, sequence: events.length + 1,
+          previousSha256: workflowDigest(JSON.stringify(previous)), ...fields, recordedAt: workflowTimestamp(this.host.now()) });
+        if (event.recordedAt < ("createdAt" in previous ? previous.createdAt : previous.recordedAt)) throw workflowError();
+        // Validate against a reconstructed state BEFORE publication; only mutate the
+        // live replay after durable publication returns. Crash exceptions stop effects.
+        const probe: PreparationReplay = { ...replay, results: { ...replay.results }, retries: new Set(replay.retries) };
+        applyPreparationEvent(probe, event, contract);
+        this.store.publish(scope, `${event.operationId}.transaction-${event.sequence}.json`, event, this.boundary);
+        applyPreparationEvent(replay, event, contract); events.push(event);
+      };
+      if (operation === "retry") {
+        if (evidence?.version === "native-preparation-retry/v1") {
+          // Recheck the exact failed attempt under the repository lock. Two native
+          // dialogs opened against one failure cannot silently retry different attempts.
+          const native = resolveNativePreparationRetry(this.store, evidence);
+          if (native.operationId !== preparationIdentity(contract) || native.preparationAttempt !== replay.attempt
+            || native.failureSha256 !== replay.failure?.sha256 || native.capturedAt < (events.at(-1)?.recordedAt ?? intent.createdAt)
+            || native.capturedAt > workflowTimestamp(this.host.now())) throw workflowError();
+        }
+        append({ kind: "retry", action: null, evidence, receipt: null, consumer: null });
+      }
+      if (operation === "consume") {
+        if (replay.state === "consumed") {
+          if (JSON.stringify(replay.consumer) !== JSON.stringify(evidence)) throw workflowError();
+          return this.#status(contract, replay);
+        }
+        if (replay.state !== "ready" || (replay.pending === "consume" && JSON.stringify(replay.consumer) !== JSON.stringify(evidence))) throw workflowError();
+      } else if (replay.state !== "preparing") return this.#status(contract, replay);
+      while (true) {
+        const action = nextPreparationAction(replay);
+        if (!action || (action === "consume" && operation !== "consume")) return this.#status(contract, replay);
+        const context = (): PreparationStepContext => Object.freeze({ contract, operationId: intent!.operationId, attempt: replay.attempt,
+          results: Object.freeze({ ...replay.results }), receipt: replay.receipt, consumer: replay.consumer });
+        if (!replay.pending) {
+          let receipt: PreparedReceipt | null = null;
+          if (action === "ready") {
+            try { receipt = parsePreparedReceipt(workflowSynchronous(this.host.resolveReceipt(context()))); } catch { throw workflowError(); }
+          }
+          append({ kind: "started", action, evidence: null, receipt, consumer: action === "consume" ? evidence : null });
+        }
+        // Intent is now durable. A crash/throw leaves pending, not success/failure.
+        // Resumption always observes before deciding whether an effect is absent.
+        let outcome: PreparationOutcome;
+        try {
+          outcome = parsePreparationOutcome(workflowSynchronous(this.host.inspect(action, context())));
+          if (outcome.state === "absent") {
+            outcome = parsePreparationOutcome(workflowSynchronous(this.host.perform(action, context())));
+            if (outcome.state === "absent") throw workflowError();
+          }
+        } catch { throw workflowError(); }
+        append({ kind: outcome.state, action, evidence: outcome.evidence, receipt: null, consumer: null });
+        if (outcome.state !== "observed") return this.#status(contract, replay);
+      }
+    });
   }
 }

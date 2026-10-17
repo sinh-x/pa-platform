@@ -3,7 +3,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { inactiveOperatorProjection, MAX_PROTECTED_WORKFLOW_BYTES, parseActivationProjection, parsePreparationContract, parsePreparedReceipt, preparationIdentity, PreparationJournal, preparedCapability, ProtectedWorkflowStore, requirePreparedCapability, withPreparedWorkflowLocks, workflowDigest, workflowError, WORKFLOW_OUTPUT_LIMITS, type PreparationContract, type PreparedLockScope, type PublicationBoundary, type WorkflowJournalEntry } from "../deploy/prepared-workflow.js";
+import { publishNativePreparationRetry, readNativePreparationRetry, type NativePreparationRetry, PREPARATION_ACTIONS, PreparedWorkflowService, type PreparationHost, type PreparationOutcome, type PreparationAction, type PreparationStepContext, inactiveOperatorProjection, MAX_PROTECTED_WORKFLOW_BYTES, parseActivationProjection, parsePreparationContract, parsePreparedReceipt, preparationIdentity, PreparationJournal, preparedCapability, ProtectedWorkflowStore, requirePreparedCapability, withPreparedWorkflowLocks, workflowDigest, workflowError, WORKFLOW_OUTPUT_LIMITS, type PreparationContract, type PreparedLockScope, type PublicationBoundary, type WorkflowJournalEntry } from "../deploy/prepared-workflow.js";
 import { assertReceiptReservationBinding, assertReservationInventory, assertUnresetExecutionBounds, DEFAULT_EXECUTION_BOUNDS, executionBoundStop, parseExecutionBounds, parseExecutionCustody, parseIdlePreparationReservation, PREPARED_LOCK_ORDER, projectReservation } from "../deploy/execution-custody.js";
 
 const sha = "a".repeat(40); const digest = "b".repeat(64); const time = "2026-10-17T00:00:00.000Z";
@@ -248,4 +248,286 @@ test("NFR6/NFR8: bounded five-field diagnostics and exact output limits; no hidd
   assert.ok(diagnostic.length <= 2_000); assert.ok(diagnostic.split(/\s+/u).length <= 1_000);
   assert.deepEqual(WORKFLOW_OUTPUT_LIMITS, { markdown: 1_048_576, html: 4_194_304, diff: 10_485_760 });
   // These constants do not assert Phase 4 report/redaction/rendering or human delivery is delivered.
+});
+
+/** Isolated trusted-host fake. Never imports PA config/HOME or invokes real leases. */
+function serviceFixture(action: (input: {
+  root: string; store: ProtectedWorkflowStore; host: PreparationHost; service: PreparedWorkflowService;
+  effects: Map<PreparationAction, number>; facts: Map<PreparationAction, PreparationOutcome>;
+  controls: { authorized: boolean; capacity: boolean; fail: PreparationAction | null; uncertain: PreparationAction | null; crashBefore: PreparationAction | null; crashAfter: PreparationAction | null };
+}) => void): void {
+  fixture((root, store) => {
+    const effects = new Map<PreparationAction, number>(); const facts = new Map<PreparationAction, PreparationOutcome>();
+    const controls = { authorized: true, capacity: false, fail: null as PreparationAction | null, uncertain: null as PreparationAction | null,
+      crashBefore: null as PreparationAction | null, crashAfter: null as PreparationAction | null };
+    const host: PreparationHost = {
+      locks: { repository: (run) => run(), worktree: (run) => run() },
+      authorize(operation, value, evidence) {
+        if (!controls.authorized || JSON.stringify(value) !== JSON.stringify(contract())) throw new Error("PRIVATE-AUTHORITY-SENTINEL");
+        if (operation === "retry" && !evidence?.ref.startsWith("native:retry-")) throw new Error("forged operator retry");
+        if (operation === "consume" && !evidence?.ref.startsWith("lineage:")) throw new Error("forged lineage");
+      },
+      inspect(step, context) {
+        assert.equal(context.operationId, preparationIdentity(contract()));
+        if (controls.crashBefore === step) { controls.crashBefore = null; throw new Error("crash before effect"); }
+        const found = facts.get(step);
+        if (found?.state === "observed") return found;
+        return { state: "absent" };
+      },
+      perform(step, context) {
+        effects.set(step, (effects.get(step) ?? 0) + 1);
+        const result = { state: controls.uncertain === step ? "uncertain" as const : controls.fail === step ? "failed" as const
+          : controls.capacity && (step === "reservation" || step === "allocation") ? "capacity" as const : "observed" as const,
+          evidence: source(`resource:${step}-${context.attempt}`) };
+        facts.set(step, result);
+        if (controls.crashAfter === step) { controls.crashAfter = null; throw new Error("crash after effect"); }
+        return result;
+      },
+      resolveReceipt(context) {
+        for (const step of PREPARATION_ACTIONS.slice(0, 4)) assert.ok(context.results[step]);
+        return parsePreparedReceipt({ ...receipt(), ticketReread: context.results["ticket-reread"] });
+      },
+      now: () => time,
+    };
+    action({ root, store, host, service: new PreparedWorkflowService(store, host), effects, facts, controls });
+  });
+}
+const nativeRetry = (number: number) => ({ ref: `native:retry-${number}`, version: "v1", sha256: number.toString(16).padStart(64, "0") });
+const consumer = () => source("lineage:one");
+
+test("AC2/AC3/AC6 service: durable intent precedes each effect, ready/consume are single-lineage and restart-idempotent", () => serviceFixture(({ root, store, host, service, effects }) => {
+  assert.equal(service.status(contract()).state, "not-requested");
+  const perform = host.perform;
+  const checkedHost: PreparationHost = { ...host, perform(step, context) {
+    const files = readdirSync(root);
+    assert.ok(files.includes(`${context.operationId}.intent.json`));
+    const pending = files.filter((file) => file.includes(".transaction-")).map((file) => store.read(file) as { sequence: number; kind: string; action: string }).sort((a, b) => a.sequence - b.sequence).at(-1)!;
+    assert.equal(pending.kind, "started"); assert.equal(pending.action, step);
+    return perform(step, context);
+  } };
+  const first = new PreparedWorkflowService(store, checkedHost).request(contract());
+  assert.equal(first.state, "ready"); assert.equal(first.attempt, 1); assert.equal(first.receipt?.state, "ready");
+  assert.equal(effects.size, 5);
+  assert.deepEqual(new PreparedWorkflowService(store, checkedHost).request(contract()), first);
+  const consumed = service.consume(contract(), consumer());
+  assert.equal(consumed.state, "consumed"); assert.equal(consumed.receipt?.receiptId, first.receipt?.receiptId);
+  assert.equal(consumed.receipt?.state, "consumed");
+  assert.deepEqual(service.consume(contract(), consumer()), consumed);
+  assert.throws(() => service.consume(contract(), source("lineage:two")));
+  assert.equal(effects.size, 6); assert.ok([...effects.values()].every((count) => count === 1));
+  // Public receipt is a projection, never a service resolver or activation switch.
+  assert.equal(preparedCapability(first.receipt).enabled, false);
+}));
+
+test("AC1/AC2 service: inactive/unapproved host rejects before intent, capacity or allocation", () => serviceFixture(({ root, store, host, service, controls, effects }) => {
+  controls.authorized = false;
+  assert.throws(() => service.request(contract()), (error: unknown) => error instanceof Error && error.message.length <= 2_000 && !error.message.includes("PRIVATE-AUTHORITY-SENTINEL"));
+  assert.equal(readdirSync(root).length, 0); assert.equal(effects.size, 0);
+  // No default host/activation resolver is shipped; projection shape cannot enable effects.
+  const denied = new PreparedWorkflowService(store, { ...host, authorize() { throw new Error("inactive"); } });
+  assert.throws(() => denied.request(contract()));
+  assert.equal(readdirSync(root).length, 0);
+}));
+
+test("async/Boolean authorization is never treated as permission and rejects before intent or resource effects", () => serviceFixture(({ root, store, host, effects }) => {
+  for (const authorize of [async () => { throw new Error("PRIVATE-ASYNC-AUTHORITY"); }, () => false, () => true]) {
+    const service = new PreparedWorkflowService(store, { ...host, authorize });
+    assert.throws(() => service.request(contract()), /Condition:/);
+    assert.equal(readdirSync(root).length, 0); assert.equal(effects.size, 0);
+  }
+}));
+
+test("async resource observation cannot be interpreted as absence or authorize an effect", () => serviceFixture(({ store, host, effects }) => {
+  const service = new PreparedWorkflowService(store, { ...host, inspect: (async () => { throw new Error("PRIVATE-ASYNC-OBSERVATION"); }) as never });
+  assert.throws(() => service.request(contract()), /Condition:/); assert.equal(effects.size, 0);
+  assert.equal(service.status(contract()).state, "uncertain-blocked");
+}));
+
+test("AC4 service: capacity not-ready never queues/retries automatically; fresh operator evidence is required", () => serviceFixture(({ root, service, effects, controls }) => {
+  controls.capacity = true;
+  const full = service.request(contract()); assert.equal(full.state, "not-ready-capacity");
+  assert.equal(full.receipt, null); assert.equal(effects.get("allocation"), undefined);
+  const original = readdirSync(root).filter((name) => name.endsWith(".json")).map((name) => [name, readFileSync(join(root, name))] as const);
+  controls.capacity = false;
+  assert.deepEqual(service.request(contract()), full); assert.equal(effects.get("reservation"), 1);
+  assert.throws(() => service.retry(contract(), source("model:sinh-said-retry")));
+  const ready = service.retry(contract(), nativeRetry(1));
+  assert.equal(ready.state, "ready"); assert.equal(ready.attempt, 2);
+  assert.equal(effects.get("reservation"), 2); assert.equal(effects.get("allocation"), 1);
+  assert.ok(ready.failure); // original capacity failure stays visible, not laundered into a clean first pass
+  for (const [name, bytes] of original) assert.deepEqual(readFileSync(join(root, name)), bytes);
+  assert.throws(() => service.retry(contract(), nativeRetry(1))); // retry only valid from not-ready
+}));
+
+test("AC4/AC5 service: retry resumes first unproven step and preserves successful allocation/branch evidence", () => serviceFixture(({ service, effects, controls }) => {
+  controls.fail = "branch";
+  const failed = service.request(contract()); assert.equal(failed.state, "not-ready-failed");
+  assert.deepEqual(failed.completedActions, ["reservation", "allocation"]);
+  assert.equal(service.request(contract()).state, "not-ready-failed");
+  assert.equal(effects.get("allocation"), 1);
+  assert.throws(() => service.consume(contract(), consumer()));
+  controls.fail = null;
+  const ready = service.retry(contract(), nativeRetry(2)); assert.equal(ready.state, "ready");
+  assert.equal(effects.get("allocation"), 1); assert.equal(effects.get("branch"), 2);
+}));
+
+test("AC5 service: uncertain result stops; even a native retry cannot invent reconciliation", () => serviceFixture(({ service, controls, effects }) => {
+  controls.uncertain = "allocation";
+  assert.equal(service.request(contract()).state, "uncertain-blocked");
+  controls.uncertain = null;
+  assert.equal(service.request(contract()).state, "uncertain-blocked");
+  assert.throws(() => service.retry(contract(), nativeRetry(3)));
+  assert.equal(effects.get("allocation"), 1); assert.equal(effects.get("branch"), undefined);
+}));
+
+for (const step of PREPARATION_ACTIONS) {
+  for (const seam of ["crashBefore", "crashAfter"] as const) {
+    test(`AC3/AC6 service: ${seam} ${step} reconciles persisted intent without duplicate effect`, () => serviceFixture(({ service, store, host, effects, controls }) => {
+      if (step === "consume") assert.equal(service.request(contract()).state, "ready");
+      controls[seam] = step;
+      assert.throws(() => step === "consume" ? service.consume(contract(), consumer()) : service.request(contract()));
+      const restarted = new PreparedWorkflowService(store, host);
+      const settled = step === "consume" ? restarted.consume(contract(), consumer()) : restarted.request(contract());
+      assert.equal(settled.state, step === "consume" ? "consumed" : "ready");
+      assert.equal(effects.get(step), 1);
+    }));
+  }
+}
+
+test("AC3 service: interrupted ready publication is not public readiness and consume cannot race ahead", () => serviceFixture(({ store, host, controls, service }) => {
+  controls.crashBefore = "ready";
+  assert.throws(() => service.request(contract()));
+  const status = service.status(contract()); assert.equal(status.state, "uncertain-blocked"); assert.equal(status.receipt, null);
+  assert.throws(() => service.consume(contract(), consumer()));
+  assert.equal(new PreparedWorkflowService(store, host).request(contract()).state, "ready");
+}));
+
+test("AC6 service: pending consume is bound to exact lineage even after resource transfer/crash", () => serviceFixture(({ service, controls, effects }) => {
+  service.request(contract()); controls.crashAfter = "consume";
+  assert.throws(() => service.consume(contract(), consumer()));
+  assert.equal(service.status(contract()).state, "uncertain-blocked");
+  assert.equal(service.status(contract()).receipt, null);
+  assert.throws(() => service.consume(contract(), source("lineage:two")));
+  assert.equal(service.consume(contract(), consumer()).state, "consumed");
+  assert.equal(effects.get("consume"), 1);
+}));
+
+test("manual retry source is one-use across failed attempts; fresh retries cannot erase prior failures", () => serviceFixture(({ service, controls }) => {
+  controls.fail = "allocation";
+  assert.equal(service.request(contract()).state, "not-ready-failed");
+  assert.equal(service.retry(contract(), nativeRetry(10)).attempt, 2);
+  assert.throws(() => service.retry(contract(), nativeRetry(10)));
+  assert.throws(() => service.retry(contract(), { ...nativeRetry(10), ref: "native:retry-forged-new-name" }));
+  controls.fail = null;
+  const ready = service.retry(contract(), nativeRetry(11));
+  assert.equal(ready.attempt, 3); assert.equal(ready.state, "ready"); assert.ok(ready.failure);
+}));
+
+test("missing or malformed observation is never interpreted as absence or sent to an effect", () => serviceFixture(({ store, host, effects }) => {
+  const malformedHost: PreparationHost = { ...host, inspect: () => undefined as unknown as PreparationOutcome };
+  assert.throws(() => new PreparedWorkflowService(store, malformedHost).request(contract()));
+  assert.equal(effects.size, 0);
+  const uncertainHost: PreparationHost = { ...host, inspect: () => ({ state: "uncertain", evidence: source("observation:unknown") }) };
+  assert.equal(new PreparedWorkflowService(store, uncertainHost).request(contract()).state, "uncertain-blocked");
+  assert.equal(effects.size, 0);
+}));
+
+test("service cannot silently adopt unverified Phase-1 result journal bytes", () => serviceFixture(({ store, host, effects }) => {
+  const journal = new PreparationJournal(store);
+  const intent = locked((scope) => journal.intent(scope, contract(), time));
+  locked((scope) => journal.append(scope, result(intent.operationId, intent)));
+  assert.throws(() => new PreparedWorkflowService(store, host).request(contract()));
+  assert.equal(effects.size, 0);
+}));
+
+test("stale final ticket reread cannot publish ready", () => serviceFixture(({ store, host, effects }) => {
+  const staleHost: PreparationHost = { ...host, resolveReceipt: () => receipt() };
+  assert.throws(() => new PreparedWorkflowService(store, staleHost).request(contract()));
+  assert.equal(effects.has("ready"), false);
+}));
+
+test("forged receipt bindings cannot publish ready even through a malformed trusted adapter", () => serviceFixture(({ store, host, effects }) => {
+  const badHost: PreparationHost = { ...host, resolveReceipt: () => ({ ...receipt(), contract: { ...contract(), branch: "feature/PAP-256-other" } }) };
+  assert.throws(() => new PreparedWorkflowService(store, badHost).request(contract()));
+  assert.equal(effects.has("ready"), false);
+}));
+
+test("AC5 service: a failed consume is uncertain retained custody, never a preparation retry", () => serviceFixture(({ service, controls }) => {
+  service.request(contract()); controls.fail = "consume";
+  assert.equal(service.consume(contract(), consumer()).state, "uncertain-blocked");
+  assert.throws(() => service.retry(contract(), nativeRetry(4)));
+}));
+
+const nativeRecord = (operationId: string): NativePreparationRetry => ({ schemaVersion: "native-preparation-retry/v1",
+  eventId: "12345678-1234-4234-8234-123456789abc", operationId, bindingIdentity: "c".repeat(64), callerIdentity: "d".repeat(64),
+  deploymentId: "d-123abc", toolCallId: "native-ui:retry", preparationAttempt: 1, failureSha256: digest, capturedAt: time });
+
+test("native retry proof is protected, raw-byte bound and exact-operation/caller/attempt bound, never a parsed author string", () => fixture((root, store) => {
+  const record = nativeRecord(preparationIdentity(contract()));
+  const proof = locked((scope) => publishNativePreparationRetry(store, scope, record));
+  const expected = { operationId: record.operationId, bindingIdentity: record.bindingIdentity, callerIdentity: record.callerIdentity,
+    deploymentId: record.deploymentId, preparationAttempt: record.preparationAttempt, failureSha256: record.failureSha256 };
+  assert.deepEqual(readNativePreparationRetry(store, proof, expected), record);
+  assert.equal(proof.sha256, workflowDigest(readFileSync(join(root, `${proof.sha256}.intent.json`))));
+  for (const patch of [{ operationId: "f".repeat(64) }, { callerIdentity: "f".repeat(64) }, { bindingIdentity: "f".repeat(64) },
+    { deploymentId: "d-999999" }, { preparationAttempt: 2 }, { failureSha256: "f".repeat(64) }]) assert.throws(() => readNativePreparationRetry(store, proof, { ...expected, ...patch }));
+  assert.throws(() => readNativePreparationRetry(store, { ...proof, ref: "sinh:approved" }, expected));
+  assert.throws(() => readNativePreparationRetry(store, { ...proof, version: "v2" }, expected));
+  writeFileSync(join(root, `${proof.sha256}.intent.json`), JSON.stringify({ ...record, capturedAt: "2026-10-17T01:00:00.000Z" }), { mode: 0o600 });
+  assert.throws(() => readNativePreparationRetry(store, proof, expected));
+}));
+
+test("native retry publication rejects unknown fields, non-v4 IDs and invalid attempt bounds", () => fixture((root, store) => {
+  const record = nativeRecord(preparationIdentity(contract()));
+  for (const patch of [{ eventId: "model:approve" }, { eventId: "12345678-1234-1234-8234-123456789abc" }, { preparationAttempt: 0 },
+    { preparationAttempt: 33 }, { author: "sinh" }, { argv: ["sh"] }]) assert.throws(() => locked((scope) => publishNativePreparationRetry(store, scope, { ...record, ...patch })));
+  assert.equal(readdirSync(root).length, 0);
+}));
+
+test("a native dialog opened against an earlier failed attempt cannot retry a later one even with permissive fixture authorization", () => serviceFixture(({ store, host, service, controls, effects }) => {
+  controls.capacity = true;
+  service.request(contract());
+  const proof = locked((scope) => publishNativePreparationRetry(store, scope, nativeRecord(preparationIdentity(contract()))));
+  service.retry(contract(), nativeRetry(21)); // another authorized operator already consumed attempt 1
+  assert.equal(service.status(contract()).attempt, 2);
+  const other = new PreparedWorkflowService(store, { ...host, authorize() {} });
+  assert.throws(() => other.retry(contract(), proof));
+  assert.equal(effects.get("reservation"), 2); assert.equal(other.status(contract()).attempt, 2);
+}));
+
+for (const capturedAt of ["2026-10-16T23:59:59.000Z", "2026-10-17T00:00:01.000Z"]) {
+  test(`native retry capture outside the proven failure/current-clock interval ${capturedAt} stops before effects`, () => serviceFixture(({ store, host, service, controls, effects }) => {
+    controls.capacity = true; service.request(contract());
+    const proof = locked((scope) => publishNativePreparationRetry(store, scope, { ...nativeRecord(preparationIdentity(contract())), capturedAt }));
+    const other = new PreparedWorkflowService(store, { ...host, authorize() {} });
+    assert.throws(() => other.retry(contract(), proof)); assert.equal(effects.get("reservation"), 1);
+  }));
+}
+
+test("service replay rejects orphan/gapped/swapped events and altered source identity", () => {
+  for (const mutation of ["gap", "swap", "identity"] as const) serviceFixture(({ root, service }) => {
+    service.request(contract());
+    const operationId = preparationIdentity(contract());
+    const first = join(root, `${operationId}.transaction-1.json`); const second = join(root, `${operationId}.transaction-2.json`);
+    if (mutation === "gap") rmSync(first);
+    if (mutation === "swap") { const bytes = readFileSync(first); writeFileSync(first, readFileSync(second)); writeFileSync(second, bytes); }
+    if (mutation === "identity") { const value = JSON.parse(readFileSync(first, "utf8")) as Record<string, unknown>; value["operationId"] = "f".repeat(64); writeFileSync(first, JSON.stringify(value)); }
+    assert.throws(() => service.status(contract()));
+    assert.throws(() => service.request(contract()));
+  });
+});
+
+test("AC3 service: durable event publication crashes do not authorize a resource successor", () => {
+  for (const point of ["file-synced", "linked", "temporary-unlinked", "directory-synced"] as const) serviceFixture(({ store, host, service, effects }) => {
+    // Count the intent publication then fail the started-reservation event.
+    let publications = 0;
+    const crashing = new PreparedWorkflowService(store, host, (boundary) => {
+      if (boundary === "file-synced") publications += 1;
+      if (publications === 2 && boundary === point) throw new Error("publication crash");
+    });
+    assert.throws(() => crashing.request(contract())); assert.equal(effects.size, 0);
+    if (point === "linked") assert.throws(() => service.request(contract())); // hard-link forensic alias is uncertain
+    else assert.equal(service.request(contract()).state, "ready");
+    assert.ok([...effects.values()].every((count) => count === 1));
+  });
 });
