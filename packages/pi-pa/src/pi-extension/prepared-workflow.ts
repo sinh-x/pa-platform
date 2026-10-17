@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { Type } from "typebox";
 import {
-  MAX_REPOSITORY_TICKET_SLOTS, ExecutionCustodyService, parseExecutionPlan, projectExecution, updateFeatureWithExpectedHead,
+  MAX_REPOSITORY_TICKET_SLOTS, ExecutionCustodyService, PhaseReportService, parsePhaseReport, parseExecutionPlan, projectExecution, updateFeatureWithExpectedHead,
   loadRepoEntry, materializeTicketBranch, parseExecutionCustody, parseIdlePreparationReservation,
   requireTicketLinkedBranch, TicketStore, withPreparedTicketCapacity, withVacantPreparationWorktree,
   PA_PI_EXECUTION_MODE_ENV, parsePreparationContract, parsePreparedReceipt, preparationIdentity,
@@ -11,7 +11,7 @@ import {
   readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest,
   workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
   type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
-  type ExecutionRecovery, type ExecutionRecoveryInventory,
+  type ExecutionRecovery, type ExecutionRecoveryInventory, type PhaseReport, type PhaseReportReceipt,
   type IdlePreparationReservation, type PreparationAction, type PreparationContract,
   type PreparationHost, type PreparationOutcome, type PreparationStepContext, type PreparedReceipt,
   type PreparedTicketCapacityTransaction, type RepositoryTicketSlotDependencies, type SourceVersion,
@@ -571,7 +571,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
       try {
         const call = raw as PiToolCall & { toolCallId?: string };
         const name = executionToolName(call);
-        if (name === "pa_execution" || name === "pa_feature_update" || readOnlyExecutionCall(name, call.input)) return;
+        if (name === "pa_execution" || name === "pa_feature_update" || name === "pa_phase_report" || readOnlyExecutionCall(name, call.input)) return;
         const binding = resolve(context); if (!binding) return;
         const id = workflowText(call.toolCallId); if (pending.has(id)) throw workflowError();
         const state = binding.service.status(binding.actor);
@@ -610,3 +610,53 @@ function parseEvidence(value: unknown): SourceVersion {
   return Object.freeze({ ref: workflowText(row.ref), version: workflowText(row.version), sha256: workflowSha(row.sha256) });
 }
 export const registerExecutionCustodyModule: PiExtensionModule = createPiExecutionModule();
+
+export interface PiPhaseReportBinding {
+  readonly service: PhaseReportService;
+  resolveReport(source: SourceVersion): PhaseReport;
+  resolveReceipt(source: SourceVersion): PhaseReportReceipt;
+}
+export interface PiPhaseReportOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  /** Native artifact/caller authority, including ticketless rogue-one. No builder admission is added. */
+  readonly resolveBinding?: (context: unknown) => PiPhaseReportBinding | null;
+}
+export const PiPhaseReportParams = Type.Union([
+  Type.Object({ action: Type.Literal("publish"), source: EvidenceParams }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("status"), report: Type.Optional(EvidenceParams) }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("settle"), report: EvidenceParams, deliveries: Type.Array(EvidenceParams, { maxItems: 2 }) }, { additionalProperties: false }),
+]);
+export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): PiExtensionModule {
+  return (pi, lifecycle) => {
+    const env = options.env ?? process.env;
+    if (env.PA_TEAM !== "rogue-one" && !(env.PA_TEAM === "builder" && ["implement", "orchestrator"].includes(env.PA_MODE ?? ""))) return;
+    const resolve = options.resolveBinding ?? (() => null);
+    pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Publish or settle immutable source-bound phase evidence; HTML generation is not browser/Obsidian delivery or human UAT. Requires native artifact authority.", parameters: PiPhaseReportParams, executionMode: "sequential",
+      execute: async (_id, input, signal, _update, context) => {
+        const run = () => {
+          if (signal?.aborted) throw workflowError();
+          const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
+          const keys = action === "publish" ? ["action", "source"] : action === "settle" ? ["action", "report", "deliveries"] : action === "status" ? ["action", ...(Object.hasOwn(input, "report") ? ["report"] : [])] : [];
+          const row = workflowObject(input, keys); if (!keys.length) throw workflowError();
+          const binding = nativeExecutionCall(() => resolve(context));
+          if (binding === null) {
+            if (action !== "status" || row.report !== undefined) throw workflowError();
+            return executionResult({ schemaVersion: "phase-report-tool-status/v1", state: "inactive", artifactAuthorityAvailable: false });
+          }
+          if (!(binding.service instanceof PhaseReportService)) throw workflowError();
+          if (action === "publish") {
+            const report = parsePhaseReport(nativeExecutionCall(() => binding.resolveReport(parseEvidence(row.source))));
+            const receipt = binding.service.publish(report);
+            return executionResult(binding.service.settle(receipt));
+          }
+          if (action === "status" && row.report === undefined) return executionResult({ schemaVersion: "phase-report-tool-status/v1", artifactAuthorityAvailable: true });
+          const receipt = nativeExecutionCall(() => binding.resolveReceipt(parseEvidence(row.report)));
+          if (action === "settle" && (!Array.isArray(row.deliveries) || row.deliveries.length > 2)) throw workflowError();
+          return executionResult(binding.service.settle(receipt, action === "settle" ? (row.deliveries as unknown[]).map(parseEvidence) : []));
+        };
+        try { return await (lifecycle ? lifecycle.trackRegistryAccess(run) : run()); } catch { throw workflowError(); }
+      },
+    });
+  };
+}
+export const registerPhaseReportModule: PiExtensionModule = createPiPhaseReportModule();

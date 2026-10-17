@@ -13,6 +13,7 @@ Examples and explanatory docs live under `docs/` so they are not accidentally lo
 ## Operational Docs
 
 - `release-process.md` documents version bumping, tagging, and CI release expectations.
+- `prepared-autonomous-runtime.md` records PAP-256's inactive core preparation/capacity implementation and remaining delivery boundaries.
 - `opencode-primer-parity-matrix.md` records the PAP-022 Old PA versus pa-platform primer-generation audit.
 - `sanitize-and-file-inputs.md` records current sanitization/file-input behavior and the recommended low-friction safety policy.
 - `dashboard-phase1-uat.md` records local read-only dashboard UAT checks and route-level expectations.

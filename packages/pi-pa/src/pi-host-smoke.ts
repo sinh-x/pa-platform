@@ -56,10 +56,16 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     aiUsage: process.env["PA_AI_USAGE_HOME"],
     registry: process.env["PA_REGISTRY_DB"],
     binding: process.env["PA_SQLITE_NATIVE_BINDING"],
+    team: process.env["PA_TEAM"],
+    mode: process.env["PA_MODE"],
   };
   process.env["PA_AI_USAGE_HOME"] = root;
   process.env["PA_REGISTRY_DB"] = join(root, "deployments", "registry.db");
   process.env["PA_SQLITE_NATIVE_BINDING"] = addonPath;
+  // Frozen eight-tool native smoke is a legacy fixture, not an admission or
+  // optional automation test in the invoking deployment's mode.
+  process.env["PA_TEAM"] = "fixture";
+  process.env["PA_MODE"] = "fixture";
 
   try {
     const fixtureText = "pap-156 managed read fixture\n";
@@ -165,6 +171,8 @@ export async function runHostManagedToolSmoke(addonPath: string): Promise<{ node
     restoreEnv("PA_AI_USAGE_HOME", previous.aiUsage);
     restoreEnv("PA_REGISTRY_DB", previous.registry);
     restoreEnv("PA_SQLITE_NATIVE_BINDING", previous.binding);
+    restoreEnv("PA_TEAM", previous.team);
+    restoreEnv("PA_MODE", previous.mode);
     rmSync(root, { recursive: true, force: true });
   }
 }
