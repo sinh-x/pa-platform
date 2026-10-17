@@ -10,7 +10,7 @@ import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
 import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
-import { registerPreparedWorkflowModule } from "./prepared-workflow.js";
+import { registerExecutionCustodyModule, registerPreparedWorkflowModule } from "./prepared-workflow.js";
 import {
   registerBundledEditorsModule,
   createBundledEditorsModule,
@@ -205,6 +205,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
     const decision = interceptToolCall(call);
     return decision.allowed ? undefined : { block: true, reason: decision.reason };
   });
+  registerExecutionCustodyModule(pi, lifecycle);
   pi.on?.("agent_end", (event) => {
     const deployDir = process.env.PA_DEPLOYMENT_DIR;
     if (deployDir) persistTerminalStatus(event.messages, deployDir, process.env);

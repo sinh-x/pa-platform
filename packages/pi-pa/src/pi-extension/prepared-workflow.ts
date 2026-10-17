@@ -3,19 +3,22 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { Type } from "typebox";
 import {
-  MAX_REPOSITORY_TICKET_SLOTS, loadRepoEntry, materializeTicketBranch, parseExecutionCustody, parseIdlePreparationReservation,
+  MAX_REPOSITORY_TICKET_SLOTS, ExecutionCustodyService, parseExecutionPlan, projectExecution, updateFeatureWithExpectedHead,
+  loadRepoEntry, materializeTicketBranch, parseExecutionCustody, parseIdlePreparationReservation,
   requireTicketLinkedBranch, TicketStore, withPreparedTicketCapacity, withVacantPreparationWorktree,
   PA_PI_EXECUTION_MODE_ENV, parsePreparationContract, parsePreparedReceipt, preparationIdentity,
   processIsWithinFingerprintLineage, publishNativePreparationRetry, queryDeploymentStatus,
   readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest,
   workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
-  type ExecutionHolder, type IdlePreparationReservation, type PreparationAction, type PreparationContract,
+  type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
+  type ExecutionRecovery, type ExecutionRecoveryInventory,
+  type IdlePreparationReservation, type PreparationAction, type PreparationContract,
   type PreparationHost, type PreparationOutcome, type PreparationStepContext, type PreparedReceipt,
   type PreparedTicketCapacityTransaction, type RepositoryTicketSlotDependencies, type SourceVersion,
   type PreparedWorkflowService, type PreparationStatus,
 } from "@pa-platform/pa-core";
 import { TreehouseClient, deriveTreehouseLeaseHolder, type TreehouseLeaseEvidence } from "../treehouse.js";
-import type { PiExtensionModule, PiSessionLifecycle, PiToolDefinition, PiToolResult } from "./index.js";
+import type { PiExtensionModule, PiSessionLifecycle, PiToolCall, PiToolDefinition, PiToolResult } from "./index.js";
 
 const APPROVE_RETRY = "Retry this unchanged preparation once";
 const REJECT_RETRY = "Do not retry";
@@ -419,3 +422,191 @@ export function createPiPreparationHost(contractInput: PreparationContract, opti
     },
   };
 }
+
+/** Native runtime ports. Tool JSON cannot provide a binding, holder/process or evidence resolver. */
+export interface PiExecutionBinding {
+  readonly bindingIdentity: string;
+  readonly service: ExecutionCustodyService;
+  readonly actor: ExecutionHolder;
+  /** Validate actual tool arguments, exact physical cwd/paths/shell scope and native correlation. */
+  assertToolCall(call: PiToolCall, context: unknown, state: ExecutionState): void;
+  /** Match exact approved shell check command; null for ordinary operations. */
+  resolveCheck(call: PiToolCall, state: ExecutionState): string | null;
+  /** Prove check/process termination and resolve private output/Git records, not tool text claims. */
+  resolveToolResult(event: PiExecutionEndEvent, state: ExecutionState): { evidence: SourceVersion; failure: ExecutionFailure | null };
+  resolveHolder(source: SourceVersion): ExecutionHolder;
+  resolveInventory(source: SourceVersion): ExecutionRecoveryInventory;
+  resolveRecovery(source: SourceVersion): ExecutionRecovery;
+  resolveCandidate(source: SourceVersion): string;
+  /** Authenticate configured origin (including push URL), routine scope, current candidate/custody. */
+  assertFeatureUpdate(candidateSha: string, expectedRemoteSha: string, state: ExecutionState): void;
+  /** Fixed Git port with private command/stdout/stderr/exit persistence. Never a tool argument. */
+  runGit(args: readonly string[], cwd: string): Buffer;
+  recordFeatureUpdateIntent(candidateSha: string, expectedRemoteSha: string, state: ExecutionState): SourceVersion;
+  recordFeatureUpdate(state: ExecutionState): SourceVersion;
+}
+export interface PiExecutionEndEvent {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly result: unknown;
+  readonly isError: boolean;
+}
+export interface PiExecutionOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  /** null ONLY for never-adopted legacy lineages. Retained adopted bindings must survive revocation. */
+  readonly resolveBinding?: (context: unknown) => PiExecutionBinding | null;
+}
+const EvidenceParams = Type.Object({ ref: Type.String(), version: Type.String(), sha256: Type.String({ pattern: "^[0-9a-f]{64}$" }) }, { additionalProperties: false });
+const PlanParams = Type.Object({ phaseId: Type.String(), scope: Type.String(), paths: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }),
+  requirements: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }), prerequisites: Type.Array(EvidenceParams, { maxItems: 64 }),
+  checks: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }), size: Type.String(), complexity: Type.String(), rationale: Type.String() }, { additionalProperties: false });
+export const PiExecutionParams = Type.Union([
+  Type.Object({ action: Type.Literal("status") }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("plan"), plan: PlanParams }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("select"), executor: Type.Union([Type.Literal("orchestrator-direct"), Type.Literal("implement-child"), Type.Literal("review-reserved")]), holder: EvidenceParams, handover: EvidenceParams }, { additionalProperties: false }),
+  ...["settle", "attempt", "resolve", "candidate"].map((action) => Type.Object({ action: Type.Literal(action), evidence: EvidenceParams }, { additionalProperties: false })),
+  Type.Object({ action: Type.Literal("accept"), kind: Type.Union([Type.Literal("review"), Type.Literal("ci"), Type.Literal("uat"), Type.Literal("integration")]), evidence: EvidenceParams }, { additionalProperties: false }),
+]);
+export const PiFeatureUpdateParams = Type.Object({ candidateSha: Type.String({ pattern: "^[0-9a-f]{40}$" }), expectedRemoteSha: Type.String({ pattern: "^[0-9a-f]{40}$" }) }, { additionalProperties: false });
+function executionResult(details: Readonly<Record<string, unknown>>): PiToolResult {
+  const text = JSON.stringify(details); if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw workflowError();
+  return { content: [{ type: "text", text }], details: { ...details } };
+}
+function nativeExecutionCall<T>(action: () => T): T { return workflowSynchronous(action()); }
+function assertExecutionCall(action: () => void): void { if (nativeExecutionCall(action) !== undefined) throw workflowError(); }
+function executionToolName(call: PiToolCall): string {
+  const name = call.toolName ?? call.name;
+  if (typeof name !== "string") throw workflowError();
+  // Only known runtime aliases. An arbitrary MCP tool named "read" in another namespace is NOT read-only.
+  return name.startsWith("functions.") ? name.slice("functions.".length) : name;
+}
+function readOnlyExecutionCall(name: string, input: Record<string, unknown>): boolean {
+  if (["read", "grep", "glob", "find", "ls", "pa_registry", "pa_status", "pa_bulletin", "todo", "question"].includes(name)) return true;
+  return name === "pa_ticket" && ["read", "show", "list"].includes(String(input.action));
+}
+function operationKind(name: string): ExecutionOperationKind {
+  if (["write", "write_file"].includes(name)) return "write";
+  if (["edit", "edit_file", "apply_patch"].includes(name)) return "edit";
+  if (["pa_deploy", "deploy"].includes(name)) return "launch";
+  // Treat unknown tools as effectful, not as an implicit escape hatch.
+  return "shell";
+}
+/**
+ * Real Pi hooks, disabled until a trusted native lineage binding exists.
+ * Both model and nested tools traverse tool_call. Start is persisted BEFORE
+ * dispatch; only a native exact-call termination record may close the barrier.
+ * Notification failures, cancellation/reload and session shutdown never clear it.
+ */
+export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExtensionModule {
+  return (pi, lifecycle) => {
+    const env = { ...(options.env ?? process.env) };
+    const resolver = options.resolveBinding ?? (() => null);
+    const pending = new Map<string, { binding: PiExecutionBinding; name: string }>();
+    let adopted = false; let closing = false;
+    lifecycle?.addShutdownStep(() => { closing = true; });
+    const resolve = (context: unknown) => {
+      const binding = nativeExecutionCall(() => resolver(context));
+      if (binding === null) { if (adopted) throw workflowError(); return null; }
+      if (closing) throw workflowError();
+      workflowSha(binding.bindingIdentity);
+      if (!(binding.service instanceof ExecutionCustodyService)) throw workflowError();
+      adopted = true;
+      return binding;
+    };
+    const control = (context: unknown) => { const binding = resolve(context); if (!binding) throw workflowError(); return binding; };
+    const run = async (action: () => PiToolResult): Promise<PiToolResult> => {
+      try { return await (lifecycle ? lifecycle.trackRegistryAccess(action) : action()); } catch { throw workflowError(); }
+    };
+    if (env.PA_TEAM === "builder" && ["orchestrator", "implement"].includes(env.PA_MODE ?? "")) {
+      pi.registerTool?.({
+        name: "pa_execution", label: "PA Execution", description: "Record a bounded phase plan and authenticated executor/recovery evidence. Optional automation is inactive without native lineage authority.",
+        parameters: PiExecutionParams, executionMode: "sequential",
+        execute: async (_id, input, signal, _update, context) => run(() => {
+          if (signal?.aborted) throw workflowError();
+          if (!input || typeof input !== "object") throw workflowError();
+          const binding = control(context); const { service, actor } = binding;
+          const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
+          if (action === "status") { workflowObject(input, ["action"]); return executionResult(projectExecution(service.status(actor))); }
+          let command: ExecutionCommand;
+          if (action === "plan") { const row = workflowObject(input, ["action", "plan"]); command = { action, plan: parseExecutionPlan(row.plan) }; }
+          else if (action === "select") {
+            const row = workflowObject(input, ["action", "executor", "holder", "handover"]);
+            if (row.executor !== "orchestrator-direct" && row.executor !== "implement-child" && row.executor !== "review-reserved") throw workflowError();
+            command = { action, executor: row.executor, holder: nativeExecutionCall(() => binding.resolveHolder(parseEvidence(row.holder))), handover: parseEvidence(row.handover) };
+          } else if (["settle", "attempt", "resolve", "candidate"].includes(action)) {
+            const row = workflowObject(input, ["action", "evidence"]); const evidence = parseEvidence(row.evidence);
+            if (action === "settle") command = { action, evidence, inventory: nativeExecutionCall(() => binding.resolveInventory(evidence)) };
+            else if (action === "attempt") command = { action, recovery: nativeExecutionCall(() => binding.resolveRecovery(evidence)) };
+            else if (action === "candidate") command = { action, mapping: evidence, candidateSha: nativeExecutionCall(() => binding.resolveCandidate(evidence)) };
+            else command = { action: "resolve", evidence };
+          } else if (action === "accept") {
+            const row = workflowObject(input, ["action", "kind", "evidence"]);
+            if (row.kind !== "review" && row.kind !== "ci" && row.kind !== "uat" && row.kind !== "integration") throw workflowError();
+            command = { action, kind: row.kind, evidence: parseEvidence(row.evidence) };
+          } else throw workflowError();
+          return executionResult(projectExecution(service.apply(actor, command)));
+        }),
+      });
+      pi.registerTool?.({
+        name: "pa_feature_update", label: "PA Feature Update", description: "Update only the configured ticket feature ref using an exact expected remote HEAD. No arbitrary remote, refspec, force flag or command.",
+        parameters: PiFeatureUpdateParams, executionMode: "sequential",
+        execute: async (toolCallId, input, signal, _update, context) => run(() => {
+          const row = workflowObject(input, ["candidateSha", "expectedRemoteSha"]);
+          if (signal?.aborted) throw workflowError();
+          const candidateSha = workflowSha(row.candidateSha, 40); const expectedRemoteSha = workflowSha(row.expectedRemoteSha, 40);
+          const binding = control(context); const { service, actor } = binding;
+          const state = service.status(actor);
+          if (state.candidateSha !== candidateSha) throw workflowError();
+          assertExecutionCall(() => binding.assertFeatureUpdate(candidateSha, expectedRemoteSha, state));
+          const operationId = `feature-update:${workflowText(toolCallId)}`;
+          const intent = parseEvidence(nativeExecutionCall(() => binding.recordFeatureUpdateIntent(candidateSha, expectedRemoteSha, state)));
+          service.apply(actor, { action: "begin", operation: { id: operationId, kind: "feature-update", check: null, intent } });
+          updateFeatureWithExpectedHead({ binding: service.binding, candidateSha, expectedRemoteSha }, (args, cwd) => binding.runGit(args, cwd));
+          const evidence = parseEvidence(nativeExecutionCall(() => binding.recordFeatureUpdate(service.status(actor))));
+          return executionResult(projectExecution(service.apply(actor, { action: "finish", operationId, evidence, failure: null })));
+        }),
+      });
+    }
+    pi.on?.("tool_call", (raw: unknown, context: unknown) => {
+      try {
+        const call = raw as PiToolCall & { toolCallId?: string };
+        const name = executionToolName(call);
+        if (name === "pa_execution" || name === "pa_feature_update" || readOnlyExecutionCall(name, call.input)) return;
+        const binding = resolve(context); if (!binding) return;
+        const id = workflowText(call.toolCallId); if (pending.has(id)) throw workflowError();
+        const state = binding.service.status(binding.actor);
+        assertExecutionCall(() => binding.assertToolCall(call, context, state));
+        const resolvedCheck = nativeExecutionCall(() => binding.resolveCheck(call, state));
+        const check = resolvedCheck === null ? null : workflowText(resolvedCheck);
+        if (check !== null && !["bash", "shell", "execute"].includes(name)) throw workflowError();
+        binding.service.apply(binding.actor, { action: "begin", operation: { id, kind: check === null ? operationKind(name) : "check", check, intent: null } });
+        pending.set(id, { binding, name });
+      } catch { return { block: true, reason: workflowError().message }; }
+    });
+    pi.on?.("tool_execution_end", (raw, context) => {
+      try {
+      const event = raw as PiExecutionEndEvent;
+      const started = pending.get(event.toolCallId); if (!started) return;
+      const fresh = resolve(context);
+      if (!fresh || fresh.bindingIdentity !== started.binding.bindingIdentity || fresh.service.executionId !== started.binding.service.executionId
+        || JSON.stringify(fresh.actor) !== JSON.stringify(started.binding.actor) || executionToolName({ toolName: event.toolName, input: {} }) !== started.name) throw workflowError();
+      const state = fresh.service.status(fresh.actor);
+      const result = nativeExecutionCall(() => fresh.resolveToolResult(event, state));
+      // A native error cannot be laundered into a passing operation by tool text.
+      if (typeof event.isError !== "boolean" || (event.isError && !result.failure)) throw workflowError();
+      fresh.service.apply(fresh.actor, { action: "finish", operationId: event.toolCallId, evidence: parseEvidence(result.evidence), failure: result.failure });
+      pending.delete(event.toolCallId);
+      } catch { throw workflowError(); }
+    });
+    pi.on?.("user_bash", (_event, context) => {
+      // The user-bash notification has no authenticated completion boundary. Do
+      // not allow it to overlap delegated work or circumvent operation tracking.
+      try { if (resolve(context)) throw workflowError(); } catch { throw workflowError(); }
+    });
+  };
+}
+function parseEvidence(value: unknown): SourceVersion {
+  const row = workflowObject(value, ["ref", "version", "sha256"]);
+  return Object.freeze({ ref: workflowText(row.ref), version: workflowText(row.version), sha256: workflowSha(row.sha256) });
+}
+export const registerExecutionCustodyModule: PiExtensionModule = createPiExecutionModule();

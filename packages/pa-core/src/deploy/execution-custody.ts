@@ -1,8 +1,8 @@
-import type { ProcessFingerprint, RepositoryGitSnapshot } from "./repository-admission.js";
+import { parseRepositoryGitStatus, repositoryGitSnapshotDigest, type ProcessFingerprint, type RepositoryGitSnapshot } from "./repository-admission.js";
 import { MAX_REPOSITORY_TICKET_SLOTS } from "./ticket-concurrency.js";
-import { parsePreparedReceipt, workflowError, workflowObject, workflowPath, workflowSha, workflowText, workflowTimestamp, type PreparedReceipt } from "./prepared-workflow.js";
+import { parsePreparedReceipt, parseSourceVersion, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowSynchronous, workflowText, workflowTimestamp, type PreparedLockOwners, type PreparedLockScope, type PreparedReceipt, type SourceVersion } from "./prepared-workflow.js";
 
-/** Schema only: current repository admission remains the owner; no Pi enforcement here. */
+/** Optional execution service; existing repository admission remains the lock/authority owner. */
 export const EXECUTION_CUSTODY_VERSION = "execution-custody/v1";
 export const PREPARED_LOCK_ORDER = Object.freeze(["canonical-repository-capacity", "worktree-admission", "journal-publication"] as const);
 export interface ExecutionHolder {
@@ -152,4 +152,406 @@ export function projectReservation(value: IdlePreparationReservation): Readonly<
   const reservation = parseIdlePreparationReservation(value);
   return Object.freeze({ schemaVersion: "prepared-reservation-status/v1", occupancy: reservation.occupancy,
     occupied: true, holderPresent: reservation.custody.holder !== null, automatedUseAvailable: false });
+}
+
+/** Native runtime binding, never accepted from tool arguments or environment. */
+export interface ExecutionBinding {
+  readonly schemaVersion: "execution-binding/v1";
+  readonly operationId: string;
+  readonly lineageId: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly initialHeadSha: string;
+  readonly owner: ExecutionHolder;
+  readonly bounds: ExecutionBounds;
+}
+export interface PhaseExecutionPlan {
+  readonly phaseId: string;
+  readonly scope: string;
+  readonly paths: readonly string[];
+  readonly requirements: readonly string[];
+  readonly prerequisites: readonly SourceVersion[];
+  readonly checks: readonly string[];
+  readonly size: string;
+  readonly complexity: string;
+  readonly rationale: string;
+}
+export interface ExecutionFailure {
+  readonly check: string;
+  readonly command: string;
+  readonly exitCode: number;
+  readonly candidateSha: string;
+  readonly output: SourceVersion;
+}
+export interface ExecutionRecovery {
+  readonly originalFailure: SourceVersion;
+  readonly diagnostic: SourceVersion | null;
+  readonly remedy: SourceVersion | null;
+  readonly rationale: string | null;
+  readonly recheck: ExecutionFailure;
+}
+export interface ExecutionRecoveryInventory {
+  readonly branch: string;
+  readonly headSha: string;
+  readonly porcelainV2Base64: string;
+  readonly snapshotSha256: string;
+  /** Both rename endpoints, including deleted paths. Unknown/unrelated is never an allowed label. */
+  readonly paths: readonly { readonly path: string; readonly classification: "ticket-produced" | "ticket-preserved" }[];
+  /** Host resolves binary/untracked metadata and accepted commits from this exact evidence. */
+  readonly evidence: SourceVersion;
+}
+export type ExecutionOperationKind = "write" | "edit" | "shell" | "check" | "feature-update" | "launch";
+export interface ExecutionOperation {
+  readonly id: string;
+  readonly kind: ExecutionOperationKind;
+  readonly check: string | null;
+  readonly intent: SourceVersion | null;
+}
+export type ExecutionCommand =
+  | { readonly action: "plan"; readonly plan: PhaseExecutionPlan }
+  | { readonly action: "select"; readonly executor: "orchestrator-direct" | "implement-child" | "review-reserved"; readonly holder: ExecutionHolder; readonly handover: SourceVersion }
+  | { readonly action: "begin"; readonly operation: ExecutionOperation }
+  | { readonly action: "finish"; readonly operationId: string; readonly evidence: SourceVersion; readonly failure: ExecutionFailure | null }
+  | { readonly action: "settle"; readonly evidence: SourceVersion; readonly inventory: ExecutionRecoveryInventory }
+  | { readonly action: "attempt"; readonly recovery: ExecutionRecovery }
+  | { readonly action: "resolve"; readonly evidence: SourceVersion }
+  | { readonly action: "candidate"; readonly candidateSha: string; readonly mapping: SourceVersion }
+  | { readonly action: "accept"; readonly kind: "review" | "ci" | "uat" | "integration"; readonly evidence: SourceVersion };
+export interface ExecutionState {
+  readonly binding: ExecutionBinding;
+  readonly sequence: number;
+  readonly recordedAt: string;
+  readonly plan: PhaseExecutionPlan | null;
+  readonly custody: ExecutionCustody;
+  readonly bounds: ExecutionBounds;
+  readonly candidateSha: string;
+  readonly operation: ExecutionOperation | null;
+  readonly usedOperationIds: readonly string[];
+  readonly originalFailure: ExecutionFailure | null;
+  readonly recoveryPending: boolean;
+  readonly diagnosticDigests: readonly string[];
+  readonly remedyDigests: readonly string[];
+  readonly passedChecks: Readonly<Record<string, SourceVersion>>;
+  readonly acceptance: Readonly<Partial<Record<"review" | "ci" | "uat" | "integration", SourceVersion>>>;
+}
+export interface ExecutionHost {
+  /** Bind EXISTING capacity -> admission mutex owners, never a separate admission database. */
+  readonly locks: PreparedLockOwners;
+  /** Resolve current native policy, scope, caller/registry identity and existing admission. */
+  authorize(binding: ExecutionBinding, actor: ExecutionHolder, command: ExecutionCommand | "initialize" | "status"): void;
+  assertLive(holder: ExecutionHolder): void;
+  /** Exact reference bytes/identity/candidate and result facts, not a Boolean supplied by the model. */
+  verifyEvidence(evidence: SourceVersion, purpose: string, state: ExecutionState, command: ExecutionCommand): void;
+  /** Process death + terminal registry + Git + matching existing authority finalization. */
+  assertHandover(state: ExecutionState, command: Extract<ExecutionCommand, { action: "select" | "settle" }>): void;
+  now(): string;
+}
+function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
+function nativeCheck(action: () => void): void { if (workflowSynchronous(action()) !== undefined) throw workflowError(); }
+function strings(value: unknown, minimum = 1): readonly string[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > 64) throw workflowError();
+  const result = value.map(workflowText);
+  if (new Set(result).size !== result.length) throw workflowError();
+  return Object.freeze(result);
+}
+function ticketPath(value: unknown): string {
+  const path = workflowText(value);
+  if (path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git")
+    || /[*?\[\]{}]/.test(path)) throw workflowError();
+  return path;
+}
+export function parseExecutionBinding(value: unknown): ExecutionBinding {
+  const row = workflowObject(value, ["schemaVersion", "operationId", "lineageId", "repoKey", "repoRoot", "worktreeRoot", "ticket", "branch", "initialHeadSha", "owner", "bounds"]);
+  const ticket = workflowText(row.ticket); const branch = workflowText(row.branch);
+  const repoRoot = workflowPath(row.repoRoot); const worktreeRoot = workflowPath(row.worktreeRoot);
+  if (row.schemaVersion !== "execution-binding/v1" || repoRoot === worktreeRoot || !/^[A-Z][A-Z0-9]*-\d+$/.test(ticket)
+    || !branch.startsWith(`feature/${ticket}-`) || /[\s~^:?*\[\\]|\.\.|@\{|\/\/|\/$|\.lock$/.test(branch)) throw workflowError();
+  return Object.freeze({ schemaVersion: "execution-binding/v1", operationId: workflowSha(row.operationId), lineageId: workflowText(row.lineageId),
+    repoKey: workflowText(row.repoKey), repoRoot, worktreeRoot, ticket, branch, initialHeadSha: workflowSha(row.initialHeadSha, 40), owner: parseHolder(row.owner), bounds: parseExecutionBounds(row.bounds) });
+}
+export function parseExecutionPlan(value: unknown): PhaseExecutionPlan {
+  const row = workflowObject(value, ["phaseId", "scope", "paths", "requirements", "prerequisites", "checks", "size", "complexity", "rationale"]);
+  const paths = strings(row.paths).map(ticketPath);
+  if (!Array.isArray(row.prerequisites) || row.prerequisites.length > 64) throw workflowError();
+  return Object.freeze({ phaseId: workflowText(row.phaseId), scope: workflowText(row.scope), paths: Object.freeze(paths), requirements: strings(row.requirements),
+    prerequisites: Object.freeze(row.prerequisites.map(parseSourceVersion)), checks: strings(row.checks), size: workflowText(row.size), complexity: workflowText(row.complexity), rationale: workflowText(row.rationale) });
+}
+function parseFailure(value: unknown): ExecutionFailure {
+  const row = workflowObject(value, ["check", "command", "exitCode", "candidateSha", "output"]);
+  if (!Number.isSafeInteger(row.exitCode) || row.exitCode === 0 || Number(row.exitCode) < -1 || Number(row.exitCode) > 255) throw workflowError();
+  return Object.freeze({ check: workflowText(row.check), command: workflowText(row.command), exitCode: Number(row.exitCode), candidateSha: workflowSha(row.candidateSha, 40), output: parseSourceVersion(row.output) });
+}
+export function parseExecutionRecoveryInventory(value: unknown): ExecutionRecoveryInventory {
+  const row = workflowObject(value, ["branch", "headSha", "porcelainV2Base64", "snapshotSha256", "paths", "evidence"]);
+  if (typeof row.porcelainV2Base64 !== "string" || row.porcelainV2Base64.length > 32_768 || !Array.isArray(row.paths) || row.paths.length > 128) throw workflowError();
+  const branch = workflowText(row.branch); const headSha = workflowSha(row.headSha, 40);
+  const raw = Buffer.from(row.porcelainV2Base64, "base64");
+  if (raw.toString("base64") !== row.porcelainV2Base64 || repositoryGitSnapshotDigest(branch, headSha, raw) !== workflowSha(row.snapshotSha256)) throw workflowError();
+  const entries = parseRepositoryGitStatus(raw);
+  const expected = [...new Set(entries.flatMap((entry) => {
+    if (entry.kind === "ignored" || entry.kind === "unmerged") throw workflowError();
+    return [ticketPath(entry.path), ...(entry.sourcePath ? [ticketPath(entry.sourcePath)] : [])];
+  }))].sort();
+  const paths = row.paths.map((item) => {
+    const path = workflowObject(item, ["path", "classification"]);
+    if (path.classification !== "ticket-produced" && path.classification !== "ticket-preserved") throw workflowError();
+    return Object.freeze({ path: ticketPath(path.path), classification: path.classification });
+  });
+  if (!same(paths.map((item) => item.path).sort(), expected)) throw workflowError();
+  return Object.freeze({ branch, headSha, porcelainV2Base64: row.porcelainV2Base64, snapshotSha256: workflowSha(row.snapshotSha256), paths: Object.freeze(paths), evidence: parseSourceVersion(row.evidence) });
+}
+function parseOperation(value: unknown): ExecutionOperation {
+  const row = workflowObject(value, ["id", "kind", "check", "intent"]);
+  if (typeof row.kind !== "string" || !["write", "edit", "shell", "check", "feature-update", "launch"].includes(row.kind)) throw workflowError();
+  const check = nullableText(row.check);
+  const intent = row.intent === null ? null : parseSourceVersion(row.intent);
+  if ((row.kind === "check") !== (check !== null) || (row.kind === "feature-update" && intent === null)) throw workflowError();
+  return Object.freeze({ id: workflowText(row.id), kind: row.kind as ExecutionOperationKind, check, intent });
+}
+function parseCommand(value: unknown): ExecutionCommand {
+  if (!value || typeof value !== "object" || !Object.getOwnPropertyDescriptor(value, "action")?.value) throw workflowError();
+  const action = (value as { action: unknown }).action;
+  switch (action) {
+    case "plan": { const row = workflowObject(value, ["action", "plan"]); return { action, plan: parseExecutionPlan(row.plan) }; }
+    case "select": {
+      const row = workflowObject(value, ["action", "executor", "holder", "handover"]);
+      if (row.executor !== "orchestrator-direct" && row.executor !== "implement-child" && row.executor !== "review-reserved") throw workflowError();
+      return { action, executor: row.executor, holder: parseHolder(row.holder), handover: parseSourceVersion(row.handover) };
+    }
+    case "begin": { const row = workflowObject(value, ["action", "operation"]); return { action, operation: parseOperation(row.operation) }; }
+    case "finish": { const row = workflowObject(value, ["action", "operationId", "evidence", "failure"]); return { action, operationId: workflowText(row.operationId), evidence: parseSourceVersion(row.evidence), failure: row.failure === null ? null : parseFailure(row.failure) }; }
+    case "settle": { const row = workflowObject(value, ["action", "evidence", "inventory"]); return { action, evidence: parseSourceVersion(row.evidence), inventory: parseExecutionRecoveryInventory(row.inventory) }; }
+    case "attempt": {
+      const row = workflowObject(value, ["action", "recovery"]); const recovery = workflowObject(row.recovery, ["originalFailure", "diagnostic", "remedy", "rationale", "recheck"]);
+      return { action, recovery: { originalFailure: parseSourceVersion(recovery.originalFailure), diagnostic: recovery.diagnostic === null ? null : parseSourceVersion(recovery.diagnostic),
+        remedy: recovery.remedy === null ? null : parseSourceVersion(recovery.remedy), rationale: nullableText(recovery.rationale), recheck: parseFailure(recovery.recheck) } };
+    }
+    case "resolve": { const row = workflowObject(value, ["action", "evidence"]); return { action, evidence: parseSourceVersion(row.evidence) }; }
+    case "candidate": { const row = workflowObject(value, ["action", "candidateSha", "mapping"]); return { action, candidateSha: workflowSha(row.candidateSha, 40), mapping: parseSourceVersion(row.mapping) }; }
+    case "accept": {
+      const row = workflowObject(value, ["action", "kind", "evidence"]);
+      if (row.kind !== "review" && row.kind !== "ci" && row.kind !== "uat" && row.kind !== "integration") throw workflowError();
+      return { action, kind: row.kind, evidence: parseSourceVersion(row.evidence) };
+    }
+    default: throw workflowError();
+  }
+}
+function sources(command: ExecutionCommand): readonly SourceVersion[] {
+  switch (command.action) {
+    case "plan": return command.plan.prerequisites;
+    case "select": return [command.handover];
+    case "begin": return command.operation.intent ? [command.operation.intent] : [];
+    case "finish": return [command.evidence, ...(command.failure ? [command.failure.output] : [])];
+    case "settle": return [command.evidence, command.inventory.evidence];
+    case "attempt": return [command.recovery.originalFailure, command.recovery.recheck.output, ...[command.recovery.diagnostic, command.recovery.remedy].filter((s): s is SourceVersion => s !== null)];
+    case "candidate": return [command.mapping];
+    case "resolve": case "accept": return [command.evidence];
+  }
+}
+function initialState(binding: ExecutionBinding, recordedAt: string): ExecutionState {
+  return Object.freeze({ binding, recordedAt, sequence: 0, plan: null, custody: parseExecutionCustody({ state: "idle", holder: null, inFlightOperation: null }), bounds: binding.bounds,
+    candidateSha: binding.initialHeadSha, operation: null, usedOperationIds: [], originalFailure: null, recoveryPending: false, diagnosticDigests: [], remedyDigests: [], passedChecks: {}, acceptance: {} });
+}
+function runnable(state: ExecutionState, now: string): void {
+  if (Date.parse(now) >= Date.parse(state.bounds.deadlineAt) || state.bounds.consecutiveNoProgress >= 3) throw workflowError();
+}
+function owner(state: ExecutionState, actor: ExecutionHolder): void { if (!same(state.binding.owner, actor)) throw workflowError(); }
+function writer(state: ExecutionState, actor: ExecutionHolder): void {
+  if ((state.custody.state !== "orchestrator-direct" && state.custody.state !== "implement-child") || !same(state.custody.holder, actor)) throw workflowError();
+}
+function sourceMutation(kind: ExecutionOperationKind): boolean { return kind !== "check" && kind !== "feature-update"; }
+/** Pure replay: persisted commands must satisfy the same transitions as fresh calls. */
+function transition(state: ExecutionState, actor: ExecutionHolder, command: ExecutionCommand, now: string): ExecutionState {
+  if (Date.parse(now) < Date.parse(state.recordedAt)) throw workflowError();
+  let next = { ...state, sequence: state.sequence + 1, recordedAt: now };
+  const idle = () => { if (state.custody.state !== "idle" || state.operation) throw workflowError(); };
+  switch (command.action) {
+    case "plan":
+      owner(state, actor); idle(); runnable(state, now);
+      // Replanning cannot remove an unresolved check or launder it into a new phase.
+      if (state.originalFailure && (!command.plan.checks.includes(state.originalFailure.check) || command.plan.phaseId !== state.plan?.phaseId)) throw workflowError();
+      // Phase transitions need the report/acceptance owner, not a plan edit.
+      if (state.plan && command.plan.phaseId !== state.plan.phaseId) throw workflowError();
+      next = { ...next, plan: command.plan, passedChecks: {}, acceptance: {} }; break;
+    case "select": {
+      owner(state, actor); idle(); runnable(state, now);
+      if (!state.plan || state.recoveryPending || (command.executor === "orchestrator-direct" && !same(command.holder, state.binding.owner))
+        || (command.executor !== "orchestrator-direct" && same(command.holder, state.binding.owner))) throw workflowError();
+      let bounds = state.bounds;
+      if (command.executor === "implement-child") {
+        const priorChildren = state.usedOperationIds.filter((id) => id.startsWith("custody-child:")).length;
+        if (priorChildren > 0) {
+          if (bounds.replacementsUsed >= 3) throw workflowError();
+          bounds = { ...bounds, replacementsUsed: bounds.replacementsUsed + 1 };
+        }
+        next = { ...next, usedOperationIds: [...state.usedOperationIds, `custody-child:${state.sequence + 1}`] };
+      }
+      if (command.executor === "review-reserved") {
+        if (bounds.reviewsUsed >= bounds.reviewCap || state.originalFailure || !state.plan.checks.every((check) => Object.hasOwn(state.passedChecks, check))) throw workflowError();
+        bounds = { ...bounds, reviewsUsed: bounds.reviewsUsed + 1 };
+      }
+      next = { ...next, bounds, custody: parseExecutionCustody({ state: command.executor, holder: command.holder, inFlightOperation: null }) }; break;
+    }
+    case "begin":
+      writer(state, actor); runnable(state, now);
+      if (!state.plan || state.recoveryPending || state.operation || state.custody.inFlightOperation || state.usedOperationIds.includes(command.operation.id) || command.operation.id.startsWith("custody-child:")
+        || (command.operation.check !== null && !state.plan.checks.includes(command.operation.check))) throw workflowError();
+      next = { ...next, operation: command.operation, usedOperationIds: [...state.usedOperationIds, command.operation.id], custody: parseExecutionCustody({ ...state.custody, inFlightOperation: command.operation.id }),
+        passedChecks: sourceMutation(command.operation.kind) ? {} : state.passedChecks, acceptance: sourceMutation(command.operation.kind) ? {} : state.acceptance }; break;
+    case "finish": {
+      writer(state, actor);
+      if (!state.operation || state.operation.id !== command.operationId || state.custody.inFlightOperation !== command.operationId) throw workflowError();
+      if (command.failure && (command.failure.candidateSha !== state.candidateSha || !state.plan?.checks.includes(command.failure.check) || (state.operation.check !== null && command.failure.check !== state.operation.check))) throw workflowError();
+      const check = state.operation.check;
+      const passedChecks = { ...state.passedChecks };
+      if (check !== null) { if (command.failure) delete passedChecks[check]; else passedChecks[check] = command.evidence; }
+      // Any write/shell can change candidate content without changing HEAD. Old acceptance cannot survive it.
+      const mayMutate = sourceMutation(state.operation.kind);
+      next = { ...next, operation: null, custody: parseExecutionCustody({ ...state.custody, inFlightOperation: null }),
+        originalFailure: state.originalFailure ?? command.failure, recoveryPending: state.recoveryPending || command.failure !== null, passedChecks: mayMutate ? {} : passedChecks, acceptance: command.failure || mayMutate ? {} : state.acceptance,
+        bounds: command.failure && !state.originalFailure ? { ...state.bounds, unresolvedFailureRef: command.failure.output.ref } : state.bounds }; break;
+    }
+    case "settle":
+      owner(state, actor);
+      if (state.custody.state === "idle" || state.operation || state.custody.inFlightOperation || command.inventory.branch !== state.binding.branch || command.inventory.headSha !== state.candidateSha) throw workflowError();
+      next = { ...next, custody: parseExecutionCustody({ state: "idle", holder: null, inFlightOperation: null }) }; break;
+    case "attempt": {
+      owner(state, actor); idle(); runnable(state, now);
+      const recovery = command.recovery; const failure = state.originalFailure;
+      if (!failure || !same(recovery.originalFailure, failure.output) || recovery.recheck.check !== failure.check || recovery.recheck.candidateSha !== state.candidateSha) throw workflowError();
+      const newDiagnostic = recovery.diagnostic && !state.diagnosticDigests.includes(recovery.diagnostic.sha256) && recovery.diagnostic.sha256 !== failure.output.sha256;
+      const newRemedy = recovery.remedy && !state.remedyDigests.includes(recovery.remedy.sha256);
+      const progress = Boolean((newDiagnostic || newRemedy) && recovery.rationale);
+      next = { ...next, recoveryPending: false, bounds: { ...state.bounds, consecutiveNoProgress: progress ? 0 : state.bounds.consecutiveNoProgress + 1 },
+        diagnosticDigests: [...state.diagnosticDigests, ...(recovery.diagnostic ? [recovery.diagnostic.sha256] : [])], remedyDigests: [...state.remedyDigests, ...(recovery.remedy ? [recovery.remedy.sha256] : [])] }; break;
+    }
+    case "resolve":
+      owner(state, actor); idle();
+      if (!state.originalFailure || !Object.hasOwn(state.passedChecks, state.originalFailure.check) || !same(command.evidence, state.passedChecks[state.originalFailure.check])) throw workflowError();
+      next = { ...next, originalFailure: null, recoveryPending: false, bounds: { ...state.bounds, consecutiveNoProgress: 0, unresolvedFailureRef: null } }; break;
+    case "candidate":
+      owner(state, actor); idle(); runnable(state, now);
+      if (command.candidateSha === state.candidateSha) throw workflowError();
+      next = { ...next, candidateSha: command.candidateSha, passedChecks: {}, acceptance: {} }; break;
+    case "accept":
+      owner(state, actor); idle(); runnable(state, now);
+      if (!state.plan || state.originalFailure || !state.plan.checks.every((check) => Object.hasOwn(state.passedChecks, check)) || Object.hasOwn(state.acceptance, command.kind)) throw workflowError();
+      if ((command.kind === "uat" || command.kind === "integration") && (!state.acceptance.review || !state.acceptance.ci)) throw workflowError();
+      if (command.kind === "integration" && !state.acceptance.uat) throw workflowError();
+      next = { ...next, acceptance: { ...state.acceptance, [command.kind]: command.evidence } }; break;
+  }
+  // Prevent callbacks/tool callers from changing nested authority through returned state.
+  return freezeExecution(next);
+}
+function freezeExecution<T>(value: T): T {
+  if (value && typeof value === "object") { for (const child of Object.values(value)) freezeExecution(child); Object.freeze(value); }
+  return value;
+}
+interface ExecutionEvent { schemaVersion: "execution-event/v1"; executionId: string; sequence: number; previousSha256: string; actor: ExecutionHolder; command: ExecutionCommand; recordedAt: string }
+/**
+ * Append-only journal under the existing protected storage and mutex composition.
+ * Crash after begin is deliberately retained as in-flight; neither quiet logs,
+ * tool errors, agent shutdown nor a copied completion flag clears the barrier.
+ * No production native binding/activation is installed by this constructor.
+ */
+export class ExecutionCustodyService {
+  readonly binding: ExecutionBinding;
+  readonly executionId: string;
+  constructor(readonly store: ProtectedWorkflowStore, binding: ExecutionBinding, readonly host: ExecutionHost) {
+    this.binding = parseExecutionBinding(binding);
+    // Stable lineage identity: changing candidate, plan, executor or bounds cannot start a fresh journal.
+    this.executionId = workflowDigest(JSON.stringify(["execution/v1", this.binding.operationId, this.binding.lineageId]));
+  }
+  #locked<T>(run: (scope: PreparedLockScope) => T): T { return withPreparedWorkflowLocks(this.host.locks, run); }
+  #load(): { state: ExecutionState; previous: unknown } {
+    const id = this.executionId; const names = this.store.records().filter((name) => name.startsWith(`${id}.`));
+    if (!names.includes(`${id}.intent.json`)) throw workflowError();
+    const intent = workflowObject(this.store.read(`${id}.intent.json`), ["schemaVersion", "binding", "recordedAt"]);
+    if (intent.schemaVersion !== "execution-intent/v1" || !same(parseExecutionBinding(intent.binding), this.binding)) throw workflowError();
+    let state = initialState(this.binding, workflowTimestamp(intent.recordedAt)); let previous: unknown = intent;
+    const entries = names.filter((name) => name !== `${id}.intent.json`);
+    if (entries.length > 256) throw workflowError();
+    for (let sequence = 1; sequence <= entries.length; sequence++) {
+      const name = `${id}.transaction-${sequence}.json`;
+      if (!entries.includes(name)) throw workflowError();
+      const row = workflowObject(this.store.read(name), ["schemaVersion", "executionId", "sequence", "previousSha256", "actor", "command", "recordedAt"]);
+      if (row.schemaVersion !== "execution-event/v1" || row.executionId !== id || row.sequence !== sequence || row.previousSha256 !== workflowDigest(JSON.stringify(previous))) throw workflowError();
+      const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: id, sequence, previousSha256: workflowSha(row.previousSha256), actor: parseHolder(row.actor), command: parseCommand(row.command), recordedAt: workflowTimestamp(row.recordedAt) };
+      state = transition(state, event.actor, event.command, event.recordedAt); previous = event;
+    }
+    return { state: freezeExecution(state), previous };
+  }
+  initialize(actorInput: ExecutionHolder): ExecutionState {
+    const actor = parseHolder(actorInput);
+    return this.#locked((scope) => {
+      nativeCheck(() => this.host.authorize(this.binding, actor, "initialize")); nativeCheck(() => this.host.assertLive(actor));
+      if (!same(actor, this.binding.owner)) throw workflowError();
+      const name = `${this.executionId}.intent.json`;
+      if (!this.store.records().some((entry) => entry.startsWith(`${this.executionId}.`))) {
+        const recordedAt = workflowTimestamp(this.host.now());
+        if (Date.parse(recordedAt) < Date.parse(this.binding.bounds.startedAt)) throw workflowError();
+        this.store.publish(scope, name, { schemaVersion: "execution-intent/v1", binding: this.binding, recordedAt });
+      }
+      const state = this.#load().state; this.store.reaffirm(scope); return state;
+    });
+  }
+  status(actorInput: ExecutionHolder): ExecutionState {
+    const actor = parseHolder(actorInput);
+    return this.#locked((scope) => {
+      nativeCheck(() => this.host.authorize(this.binding, actor, "status")); nativeCheck(() => this.host.assertLive(actor));
+      const state = this.#load().state; this.store.reaffirm(scope); return state;
+    });
+  }
+  apply(actorInput: ExecutionHolder, input: ExecutionCommand): ExecutionState {
+    const actor = parseHolder(actorInput); const command = freezeExecution(parseCommand(input));
+    return this.#locked((scope) => {
+      nativeCheck(() => this.host.authorize(this.binding, actor, command)); nativeCheck(() => this.host.assertLive(actor));
+      const { state, previous } = this.#load();
+      if (state.sequence >= 256) throw workflowError();
+      const now = workflowTimestamp(this.host.now()); const next = transition(state, actor, command, now);
+      for (const source of sources(command)) nativeCheck(() => this.host.verifyEvidence(source, command.action, state, command));
+      if (command.action === "select") nativeCheck(() => this.host.assertLive(command.holder));
+      if (command.action === "select" || command.action === "settle") nativeCheck(() => this.host.assertHandover(state, command));
+      const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: this.executionId, sequence: next.sequence,
+        previousSha256: workflowDigest(JSON.stringify(previous)), actor, command, recordedAt: now };
+      this.store.reaffirm(scope); this.store.publish(scope, `${this.executionId}.transaction-${next.sequence}.json`, event);
+      return next;
+    });
+  }
+}
+/** Allowlisted public projection: no fingerprints, arbitrary refs, private paths or commands. */
+export function projectExecution(state: ExecutionState): Readonly<Record<string, unknown>> {
+  return Object.freeze({ schemaVersion: "execution-status/v1", sequence: state.sequence, phaseId: state.plan?.phaseId ?? null,
+    state: state.custody.state, inFlight: state.operation !== null, candidateSha: state.candidateSha,
+    consecutiveNoProgress: state.bounds.consecutiveNoProgress, replacementsUsed: state.bounds.replacementsUsed,
+    reviewsUsed: state.bounds.reviewsUsed, reviewCap: state.bounds.reviewCap, failureRecorded: state.originalFailure !== null, recoveryPending: state.recoveryPending,
+    checkCount: Object.keys(state.passedChecks).length, integrationVerified: state.custody.state === "idle" && state.operation === null && Boolean(state.acceptance.integration) });
+}
+
+export interface ExpectedHeadFeatureUpdate {
+  readonly binding: ExecutionBinding;
+  readonly candidateSha: string;
+  readonly expectedRemoteSha: string;
+}
+/**
+ * Only invoke INSIDE an authenticated feature-update operation. Native host must
+ * authenticate configured origin and source custody; this fixed argv primitive
+ * grants no authority by itself. Generic force-push shell denials are unchanged.
+ * Runner owns private command/output evidence; throws preserve the started barrier.
+ */
+export function updateFeatureWithExpectedHead(input: ExpectedHeadFeatureUpdate, runGit: (args: readonly string[], cwd: string) => Buffer): void {
+  const binding = parseExecutionBinding(input.binding); const candidate = workflowSha(input.candidateSha, 40); const expected = workflowSha(input.expectedRemoteSha, 40);
+  const ref = `refs/heads/${binding.branch}`;
+  const git = (args: readonly string[]) => {
+    const result = workflowSynchronous(runGit(args, binding.worktreeRoot)); if (!Buffer.isBuffer(result)) throw workflowError(); return result.toString("utf8");
+  };
+  if (git(["branch", "--show-current"]).trim() !== binding.branch || git(["rev-parse", "--verify", "HEAD^{commit}"]).trim() !== candidate) throw workflowError();
+  const remote = git(["ls-remote", "--exit-code", "--refs", "origin", ref]);
+  if (remote !== `${expected}\t${ref}\n`) throw workflowError();
+  git(["-c", "push.followTags=false", "push", "--porcelain", "--no-follow-tags", "--no-mirror", "--recurse-submodules=no", `--force-with-lease=${ref}:${expected}`, "origin", `${candidate}:${ref}`]);
+  if (git(["ls-remote", "--exit-code", "--refs", "origin", ref]) !== `${candidate}\t${ref}\n`
+    || git(["branch", "--show-current"]).trim() !== binding.branch || git(["rev-parse", "--verify", "HEAD^{commit}"]).trim() !== candidate) throw workflowError();
 }
