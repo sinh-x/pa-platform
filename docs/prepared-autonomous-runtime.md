@@ -174,7 +174,11 @@ checkout/resource actions. Ordinary preparation then reuses the captured binding
 without repeating source/setup prompts.
 
 Native authority roots derive from the OS account home, not `HOME`, `PA_PLATFORM_DATA`
-or artifact/config environment overrides. Owner-only regular single-link records
+or artifact/config environment overrides. Ordinary read/write/edit and bounded
+shell operands deny the native authority namespace and ticket-slot storage,
+including filesystem aliases. Trusted native services use their narrow private
+IO owners instead; public status never spreads those records. This remains a tool
+boundary, not confinement of arbitrary out-of-band code or a general OS sandbox. Owner-only regular single-link records
 are bounded and published under the existing repository capacity mutex. A concrete
 installed-runtime reader requires the running Nix-store module, packaged version,
 source/config provenance and exact clean registered config revision contained in

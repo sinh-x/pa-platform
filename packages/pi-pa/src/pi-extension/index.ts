@@ -148,7 +148,8 @@ function captureModuleShutdownHandlers(pi: PiRuntime, lifecycle: PiSessionLifecy
 }
 
 export function interceptToolCall(call: PiToolCall): PiSafetyDecision {
-  const name = (call.name ?? call.toolName ?? "").toLowerCase();
+  const rawName = (call.name ?? call.toolName ?? "").toLowerCase();
+  const name = rawName.startsWith("functions.") ? rawName.slice("functions.".length) : rawName;
   if (name === "bash" || name === "shell" || name === "execute") {
     const command = typeof call.input.command === "string" ? call.input.command : "";
     const decision = evaluateAdapterSafety({ kind: "shell", value: command }, "ppa");

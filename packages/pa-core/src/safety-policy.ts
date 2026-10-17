@@ -22,6 +22,8 @@ export const PA_SAFETY_PATTERNS: SafetyPatterns = {
     String.raw`secrets?.*\.(json|ya?ml)$`, String.raw`[-_]token\.json$`, String.raw`[-_]api[-_]?key\.json$`,
     String.raw`(^|[\\/])pa-repository-mutation\.(?:lease|borrower)\.json$`,
     String.raw`(^|[\\/])repository-dirty-borrow\.approval\.json$`, String.raw`(^|[\\/])pi-repository-handoff\.json$`,
+    String.raw`(^|[\\/])pa-ticket-builder-slots([\\/]|$)`,
+    String.raw`(^|[\\/])\.local[\\/]share[\\/]pa-platform[\\/]prepared-autonomy([\\/]|$)`,
     String.raw`(^|[\\/])\.netrc$`, String.raw`(^|[\\/])\.npmrc$`, String.raw`(^|[\\/])\.pypirc$`,
   ],
 };

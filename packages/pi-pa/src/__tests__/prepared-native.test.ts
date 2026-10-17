@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ import { deployWithPi } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
 import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
-import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
+import { interceptToolCall, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
 const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40);
 const facts: PreparedNativeRuntime = { sourceSha: sha, packageVersion: "fixture", configSha: "b".repeat(40), storeRoot: "/fixture/immutable-runtime" };
 const env = { PA_TEAM: "requirements", PA_MODE: "analyze", PA_PI_EXECUTION_MODE: "foreground" };
@@ -75,6 +75,18 @@ async function fixture(run: (f: ReturnType<typeof setup>) => unknown | Promise<u
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("native authority and capacity storage are denied at exposed read/write/edit/shell paths, including aliases", () => fixture((f) => {
+  const directory = join(f.root, ".local/share/pa-platform/prepared-autonomy/native"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const record = join(directory, "record.intent.json"); writeFileSync(record, "PRIVATE-NATIVE-RECORD", { mode: 0o600 });
+  const alias = join(f.root, "innocent-alias"); symlinkSync(record, alias);
+  for (const path of [directory, record, alias, join(f.repo, ".git/pa-ticket-builder-slots/hash.prepared.json")]) {
+    for (const name of ["read", "write", "edit"]) assert.equal(interceptToolCall({ name, input: { path } }).allowed, false, `${name}: protected authority`);
+    for (const name of ["bash", "shell", "execute", "functions.bash"]) assert.equal(interceptToolCall({ name, input: { command: `cat '${path}'` } }).allowed, false);
+  }
+  assert.equal(interceptToolCall({ name: "functions.bash", input: { command: "git push --force origin HEAD" } }).allowed, false);
+  assert.equal(interceptToolCall({ name: "question", input: { question: `Explain the native namespace ${directory}`, options: [] } }).allowed, true);
+}));
 
 test("native default ignores environment authority roots, absent records leave baseline inactive with no writes", () => fixture(async (f) => {
   const absent = new PiPreparedNativeAuthority({ root: join(f.root, "absent"), aiUsageRoot: f.ai, runtime: () => { throw new Error("must not read runtime while absent"); } });
