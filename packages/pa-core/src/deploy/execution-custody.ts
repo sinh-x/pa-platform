@@ -36,7 +36,12 @@ export interface ExecutionContract {
   readonly launchSnapshot: RepositoryGitSnapshot;
 }
 /** Durable variants distinct from existing process-live RepositoryTicketSlot. No expiry/reclaim. */
-export type ReservationOccupancy = "preparing" | "uncertain-retained" | "idle-ready" | "active";
+export type ReservationOccupancy = "preparing" | "uncertain-retained" | "idle-ready" | "active" | "settled-retained";
+export interface PreparedReservationLaunch {
+  readonly slotToken: string;
+  readonly deploymentDirectory: string;
+  readonly acquiredAt: string;
+}
 export interface IdlePreparationReservation {
   readonly schemaVersion: "prepared-reservation/v1";
   readonly repoKey: string;
@@ -50,6 +55,8 @@ export interface IdlePreparationReservation {
   readonly custody: ExecutionCustody;
   readonly receiptId: string | null;
   readonly retainedAt: string;
+  /** Native consuming launcher only; never included in receipt/status/tool projections. */
+  readonly launch?: PreparedReservationLaunch;
 }
 export const DEFAULT_EXECUTION_BOUNDS = Object.freeze({ runtimeMinutes: 120, noProgressLimit: 3, replacementLimit: 3, reviewCap: 3 });
 function integer(value: unknown, minimum: number, maximum: number): number {
@@ -107,21 +114,29 @@ export function executionBoundStop(value: ExecutionBounds, now: string): boolean
     || bounds.replacementsUsed >= 3 || bounds.reviewsUsed >= bounds.reviewCap;
 }
 export function parseIdlePreparationReservation(value: unknown): IdlePreparationReservation {
-  const row = workflowObject(value, ["schemaVersion", "repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "occupancy", "lineageId", "custody", "receiptId", "retainedAt"]);
+  const hasLaunch = value !== null && typeof value === "object" && Object.hasOwn(value, "launch");
+  const row = workflowObject(value, ["schemaVersion", "repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "occupancy", "lineageId", "custody", "receiptId", "retainedAt", ...(hasLaunch ? ["launch"] : [])]);
   const repoKey = workflowText(row["repoKey"]); const ticket = workflowText(row["ticket"]);
   const occupancy = row["occupancy"];
   if (row["schemaVersion"] !== "prepared-reservation/v1" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoKey)
-    || !/^[A-Z][A-Z0-9]*-\d+$/.test(ticket) || typeof occupancy !== "string" || !["preparing", "uncertain-retained", "idle-ready", "active"].includes(occupancy)) throw workflowError();
+    || !/^[A-Z][A-Z0-9]*-\d+$/.test(ticket) || typeof occupancy !== "string" || !["preparing", "uncertain-retained", "idle-ready", "active", "settled-retained"].includes(occupancy)) throw workflowError();
   const custody = parseExecutionCustody(row["custody"]); const lineageId = nullableText(row["lineageId"]);
   const receiptId = row["receiptId"] === null ? null : workflowSha(row["receiptId"]);
   if ((occupancy === "active" && (!lineageId || !custody.holder))
     || (occupancy === "idle-ready" && (lineageId !== null || custody.state !== "idle" || receiptId === null))
     || (occupancy === "preparing" && (lineageId !== null || custody.state !== "idle" || receiptId !== null))
-    || (occupancy === "uncertain-retained" && custody.state !== "uncertain-blocked")) throw workflowError();
+    || (occupancy === "uncertain-retained" && custody.state !== "uncertain-blocked")
+    || (occupancy === "settled-retained" && (!lineageId || !receiptId || custody.state !== "idle"))) throw workflowError();
+  let launch: PreparedReservationLaunch | undefined;
+  if (hasLaunch) {
+    const raw = workflowObject(row.launch, ["slotToken", "deploymentDirectory", "acquiredAt"]);
+    if (!["active", "settled-retained", "uncertain-retained"].includes(occupancy)) throw workflowError();
+    launch = Object.freeze({ slotToken: workflowText(raw.slotToken), deploymentDirectory: workflowPath(raw.deploymentDirectory), acquiredAt: workflowTimestamp(raw.acquiredAt) });
+  }
   return Object.freeze({ schemaVersion: "prepared-reservation/v1", repoKey, repoRoot: workflowPath(row["repoRoot"]), ticket,
     operationId: workflowSha(row["operationId"]), reservationId: workflowSha(row["reservationId"]),
     repositoryPermit: integer(row["repositoryPermit"], 1, MAX_REPOSITORY_TICKET_SLOTS) as 1 | 2 | 3 | 4,
-    occupancy: occupancy as ReservationOccupancy, lineageId, custody, receiptId, retainedAt: workflowTimestamp(row["retainedAt"]) });
+    occupancy: occupancy as ReservationOccupancy, lineageId, custody, receiptId, retainedAt: workflowTimestamp(row["retainedAt"]), ...(launch ? { launch } : {}) });
 }
 /** Pure capacity validator: does not acquire, transfer or reclaim any existing permit. */
 export function assertReservationInventory(values: readonly unknown[]): readonly IdlePreparationReservation[] {

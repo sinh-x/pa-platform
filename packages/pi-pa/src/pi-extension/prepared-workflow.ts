@@ -12,7 +12,7 @@ import {
   workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
   type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
   type ExecutionRecovery, type ExecutionRecoveryInventory, type PhaseReport, type PhaseReportReceipt,
-  type IdlePreparationReservation, type PreparationAction, type PreparationContract,
+  type IdlePreparationReservation, type PreparedReservationLaunch, type PreparationAction, type PreparationContract,
   type PreparationHost, type PreparationOutcome, type PreparationStepContext, type PreparedReceipt,
   type PreparedTicketCapacityTransaction, type RepositoryTicketSlotDependencies, type SourceVersion,
   PreparedWorkflowService, type PreparationStatus,
@@ -286,7 +286,7 @@ export interface PiPreparationHostOptions {
   readonly authorize: PreparationHost["authorize"];
   /** Revalidate exact protected source/policy bindings at every resource boundary. */
   readonly assertCurrentBindings: (contract: PreparationContract) => void;
-  readonly resolveConsumer?: (source: SourceVersion) => { lineageId: string; holder: ExecutionHolder };
+  readonly resolveConsumer?: (source: SourceVersion) => { lineageId: string; holder: ExecutionHolder; launch?: PreparedReservationLaunch };
   readonly treehouse?: TreehouseClient;
   readonly ticketStore?: TicketStore;
   readonly runGit?: (args: readonly string[], cwd: string) => Buffer;
@@ -380,7 +380,7 @@ export function createPiPreparationHost(contractInput: PreparationContract, opti
     if (!custody.holder) throw workflowError();
     const current = (options.capacityDependencies?.getProcessFingerprint ?? readProcessFingerprint)(custody.holder.process.pid);
     if (JSON.stringify(current) !== JSON.stringify(custody.holder.process)) throw workflowError();
-    return { lineageId: workflowText(resolved.lineageId), custody };
+    return { lineageId: workflowText(resolved.lineageId), custody, ...(resolved.launch ? { launch: resolved.launch } : {}) };
   };
   const inspect = (step: PreparationAction, context: PreparationStepContext): PreparationOutcome => {
     assertContext(context);
@@ -418,7 +418,7 @@ export function createPiPreparationHost(contractInput: PreparationContract, opti
         const next = consumer(context);
         if (facts.row.occupancy === "idle-ready" && facts.row.receiptId === receipt.receiptId) return { state: "absent" };
         if (facts.row.occupancy !== "active" || facts.row.receiptId !== receipt.receiptId || facts.row.lineageId !== next.lineageId
-          || JSON.stringify(facts.row.custody) !== JSON.stringify(next.custody)) throw workflowError();
+          || JSON.stringify(facts.row.custody) !== JSON.stringify(next.custody) || JSON.stringify(facts.row.launch) !== JSON.stringify(next.launch)) throw workflowError();
         return observed(step, { receiptId: receipt.receiptId, consumer: context.consumer });
       }
       throw workflowError();

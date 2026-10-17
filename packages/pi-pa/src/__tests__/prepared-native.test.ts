@@ -4,9 +4,11 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion } from "@pa-platform/pa-core";
+import { closeDb, getDeploymentEvents, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { deployWithPi } from "../deploy.js";
+import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
-import { createPiPreparationTool, createPiWorkflowPolicyModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
+import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
 import type { PiRuntime, PiToolDefinition } from "../pi-extension/index.js";
 const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40);
 const facts: PreparedNativeRuntime = { sourceSha: sha, packageVersion: "fixture", configSha: "b".repeat(40), storeRoot: "/fixture/immutable-runtime" };
@@ -153,4 +155,88 @@ test("insecure private records and qualified-runtime drift are not fallback auth
   const grant = qualified.resolve(f.caller); assert.ok(grant);
   chmodSync(join(f.native, `${grant.grantId}.intent.json`), 0o644);
   assert.throws(() => qualified.resolve(f.caller));
+}));
+
+async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; service: PreparedWorkflowService; gets: () => number; deploy: (onSpawn?: (options: SpawnOpts) => void, preflight?: () => Promise<void>) => ReturnType<typeof deployWithPi>; git: (args: string[], cwd?: string) => string }) => unknown | Promise<unknown>) {
+  const previous = process.env; process.env = { ...previous };
+  for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+  try {
+    await fixture(async (f) => {
+      const git = (args: string[], cwd = f.repo) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["symbolic-ref", "HEAD", "refs/heads/develop"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+      writeFileSync(join(f.repo, "README.md"), "approved fixture\n"); git(["add", "README.md"]); git(["commit", "-m", "approved fixture"]);
+      const base = git(["rev-parse", "HEAD"]); git(["clone", "--bare", f.repo, join(f.root, "remote.git")], f.root); git(["remote", "add", "origin", join(f.root, "remote.git")]);
+      const checkout = join(f.root, "checkout"); git(["worktree", "add", "--detach", checkout, base]);
+      let requirement = readFileSync(f.requirementPath, "utf8").replaceAll(sha, base);
+      const region = /^### Full Validation Matrix[\s\S]*?(?=^## After matrix)/m.exec(requirement)![0];
+      const digest = workflowDigest(region); const oldDigest = f.checks.matrixAuthoritySha256;
+      requirement = requirement.replaceAll(oldDigest, digest); writeFileSync(f.requirementPath, requirement);
+      writeFileSync(f.checkPath, JSON.stringify({ ...f.checks, requirementsSha256: workflowDigest(requirement), matrixAuthoritySha256: digest }));
+      writeFileSync(f.ticketPath, JSON.stringify({ ...f.ticket, status: "implementing", title: "Native launch fixture", comments: f.ticket.comments.map((comment) => ({ ...comment, content: comment.content.replace(oldDigest, digest) })) }));
+      let gets = 0; let leased = false;
+      const treehouse = new TreehouseClient({ run(args, cwd) {
+        assert.equal(cwd, f.repo);
+        const result = (value: unknown) => ({ status: 0, stdout: Buffer.from(JSON.stringify(value)), stderr: Buffer.alloc(0) });
+        if (args[0] === "--version") return { status: 0, stdout: Buffer.from("v3.1.3\n"), stderr: Buffer.alloc(0) };
+        const lease = { path: checkout, lease_id: "native-fixture-lease", lease_holder: "pa:fixture-repo:PAP-256", leased_at: "2026-10-17T00:00:00Z" };
+        if (args[0] === "status") return result([{ name: "1", path: checkout, status: leased ? "leased" : "available", branch: "", detached: true, flavor: "git", lease_id: leased ? lease.lease_id : "", lease_holder: leased ? lease.lease_holder : "", leased_at: leased ? lease.leased_at : null, processes: [] }]);
+        if (args[0] === "get") { gets++; leased = true; return result({ ...lease, base_branch: "develop" }); }
+        throw new Error("unlisted Treehouse resource operation");
+      } });
+      f.qualify(); await f.execute("activate"); await f.execute("bind");
+      const grant = f.authority.resolve(f.caller); assert.ok(grant);
+      const store = f.authority.operations(); assert.ok(store);
+      const host = createPiPreparationHost(grant.contract, { treehouse, ticketStore: f.authority.tickets(), authorize: (op, contract, evidence) => f.authority.authorize(f.caller, grant, op, contract, evidence), assertCurrentBindings: () => f.authority.assertCurrent(f.caller, grant), now: () => time });
+      const service = new PreparedWorkflowService(store, host); assert.equal(service.request(grant.contract).state, "ready");
+      process.env.PA_AI_USAGE_HOME = f.ai; process.env.PA_REGISTRY_DB = join(f.ai, "registry.db"); process.env.PA_PLATFORM_HOME = f.root;
+      save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+      const deploy = (onSpawn?: (opts: SpawnOpts) => void, preflight = async () => {}) => {
+        const adapter: RuntimeAdapter & { preflight: () => Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "native-fixture-session", preflight,
+          installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "fixture tools" }), extractActivity: () => [],
+          spawn(opts) { onSpawn?.(opts); return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
+          resume() { throw new Error("unexpected resume"); } };
+        return deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: "fixture-repo", provider: "openai-codex", model: "gpt-6.1-sol", objective: "Native prepared launch fixture" }, adapter, undefined, { treehouse, preparedAuthority: f.authority });
+      };
+      await run({ ...f, checkout, base, treehouse, service, gets: () => gets, deploy, git });
+    });
+  } finally { closeDb(); process.env = previous; }
+}
+
+test("AC6 real deploy consumes the same native prepared permit, persists correlation before spawn, and never allocates/materializes again", () => resourceFixture(async (f) => {
+  assert.equal(f.gets(), 1); const beforeTicket = readFileSync(f.ticketPath); const beforeCanonical = f.git(["rev-parse", "HEAD"]); let spawns = 0;
+  const result = await f.deploy((opts) => {
+    spawns++;
+    assert.equal(opts.executionPlan?.worktreeRoot, f.checkout); assert.equal(opts.executionPlan?.treehouse?.repositoryPermit, 1);
+    assert.equal(readFileSync(f.ticketPath).equals(beforeTicket), true); // no unchanged setup publication
+    const correlation = JSON.parse(readFileSync(join(f.ai, "deployments", opts.deployId, "prepared-consumption.json"), "utf8"));
+    assert.equal(correlation.receiptId, f.service.status(f.authority.resolve(f.caller)!.contract).receipt?.receiptId);
+    assert.equal(correlation.deploymentId, opts.deployId); assert.equal(correlation.repositoryPermit, 1);
+    const starts = getDeploymentEvents(opts.deployId).filter((event) => event.event === "started");
+    assert.equal(starts.length, 1); assert.equal(starts[0]?.ticket_slot_id, correlation.ticketSlotId); assert.equal(starts[0]?.repository_permit, 1);
+    const slot = observeReadonlyRepositoryTicketSlot(f.repo, "PAP-256").slot;
+    assert.equal(slot.deploymentId, opts.deployId);
+    assert.equal(JSON.stringify(opts.env).includes(slot.slotToken), false); assert.equal(JSON.stringify(correlation).includes(slot.slotToken), false);
+    assert.doesNotMatch(JSON.stringify(opts.env), /slotToken|native-prepared-consumer|PRIVATE/);
+  });
+  assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1); assert.equal(f.gets(), 1);
+  assert.equal(f.git(["rev-parse", "HEAD"]), beforeCanonical); assert.equal(f.git(["branch", "--show-current"]), "develop");
+  const retained = withPreparedTicketCapacity({ canonicalRepoKey: "fixture-repo", canonicalRepoRoot: f.repo }, (tx) => tx.inventory());
+  assert.equal(retained.length, 1); assert.equal("occupancy" in retained[0]! && retained[0].occupancy, "settled-retained");
+  const duplicate = await f.deploy(() => { spawns++; }); assert.equal(duplicate.status, "failed"); assert.equal(spawns, 1); assert.equal(f.gets(), 1);
+}));
+
+test("AC6 real prepared deploy rejects dirty candidate before transfer/spawn and retains pending native evidence", () => resourceFixture(async (f) => {
+  const marker = join(f.checkout, "unrelated.txt"); writeFileSync(marker, "preserve unknown work\n"); let spawns = 0;
+  const result = await f.deploy(() => { spawns++; }); assert.equal(result.status, "failed"); assert.equal(spawns, 0); assert.equal(f.gets(), 1);
+  assert.equal(readFileSync(marker, "utf8"), "preserve unknown work\n");
+  const reservation = JSON.parse(readFileSync(preparedRepositoryTicketReservationPath(f.repo, "PAP-256"), "utf8"));
+  assert.equal(reservation.occupancy, "idle-ready"); assert.equal(reservation.repositoryPermit, 1);
+}));
+
+test("AC6 actual preflight revocation stops prepared spawn while retaining the same checkout/reservation", () => resourceFixture(async (f) => {
+  let spawns = 0;
+  const result = await f.deploy(() => { spawns++; }, async () => { f.authority.deactivate(f.caller); });
+  assert.equal(result.status, "failed"); assert.equal(spawns, 0); assert.equal(f.gets(), 1);
+  const reservation = JSON.parse(readFileSync(preparedRepositoryTicketReservationPath(f.repo, "PAP-256"), "utf8"));
+  assert.equal(reservation.occupancy, "settled-retained"); assert.equal(reservation.repositoryPermit, 1);
 }));

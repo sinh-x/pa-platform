@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { ReadOnlyHelperFailure, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readReviewEvidenceFile, type ReadOnlyHelperCapability, type ReadOnlyHelperRole, type RepositoryMutationLease } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
@@ -11,6 +11,9 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
+import { PiPreparedNativeAuthority } from "./prepared-native.js";
+import { createPiPreparationHost, type PiPreparationCaller } from "./pi-extension/prepared-workflow.js";
+import { PreparedWorkflowService, repositoryTicketSlotId, workflowDigest, workflowError, type PreparedReceipt, type SourceVersion } from "@pa-platform/pa-core";
 import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
@@ -400,10 +403,95 @@ export interface PiDeployDependencies {
   /** Trusted embedding/test seam only; never populated from requests, CLI, environment or team config. */
   readonly reviewPreflight?: typeof inspectReviewPreflight;
   readonly treehouse?: TreehouseClient;
+  readonly preparedAuthority?: PiPreparedNativeAuthority;
   readonly observeReviewOperation?: (operation: PiReviewCandidateOperation) => void;
   readonly getProcessFingerprint?: (pid: number) => ProcessFingerprint | undefined;
   readonly queryParentDeploymentStatus?: typeof queryDeploymentStatus;
   readonly observeOperation?: (operation: "checkout" | "branch" | "slot" | "permit" | "lineage" | "runtime-spawn") => void;
+}
+
+export interface PiPreparedBuilderAdmission {
+  readonly slot: RepositoryTicketSlotHandoff;
+  readonly lease: ReturnType<TreehouseClient["authenticatePrepared"]>;
+  readonly branch: LinkedBranch & { headSha: string; baseSha: string };
+  readonly reread: () => void;
+}
+/** Native-only ready selection/consume. No CLI receipt, allocation, materialization,
+ * setup approval, or public projection supplies this authority. An absent grant or
+ * unrequested intent preserves ordinary independent CLI admission. */
+export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repoRoot: string; ticket: string; deploymentId: string; deploymentDirectory: string }, dependencies: Pick<PiDeployDependencies, "treehouse" | "preparedAuthority"> = {}): PiPreparedBuilderAdmission | undefined {
+  const authority = dependencies.preparedAuthority ?? new PiPreparedNativeAuthority();
+  const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint) throw workflowError();
+  const caller: PiPreparationCaller = { deploymentId: input.deploymentId, repoKey: input.repoKey, repoRoot: input.repoRoot, ticket: input.ticket,
+    callerIdentity: workflowDigest(JSON.stringify(["native-prepared-builder", input.deploymentId, fingerprint])) };
+  const grant = authority.resolve(caller); if (!grant) return undefined;
+  const store = authority.operations(); if (!store) throw workflowError();
+  const treehouse = dependencies.treehouse ?? new TreehouseClient();
+  let receipt: PreparedReceipt | null = null; let consumer: SourceVersion | null = null;
+  const current = () => {
+    if (JSON.stringify(readProcessFingerprint(process.pid)) !== JSON.stringify(fingerprint)) throw workflowError();
+    authority.assertCurrent(caller, grant);
+  };
+  const host = createPiPreparationHost(grant.contract, { treehouse, ticketStore: authority.tickets(),
+    assertCurrentBindings: current,
+    authorize(operation, contract, evidence) {
+      current();
+      if (operation !== "consume" || JSON.stringify(contract) !== JSON.stringify(grant.contract) || !consumer || JSON.stringify(evidence) !== JSON.stringify(consumer) || !receipt) throw workflowError();
+      const record = authority.consumer(caller, grant, consumer);
+      if (record.receiptId !== receipt.receiptId || record.worktreeRoot !== receipt.worktreeRoot || record.headSha !== receipt.preparedHeadSha) throw workflowError();
+    },
+    resolveConsumer(reference) {
+      const record = authority.consumer(caller, grant, reference);
+      return { lineageId: record.deploymentId, holder: { deploymentId: record.deploymentId, process: record.process },
+        launch: { slotToken: record.slotToken, deploymentDirectory: record.deploymentDirectory, acquiredAt: record.capturedAt } };
+    },
+  });
+  const service = new PreparedWorkflowService(store, host); const status = service.status(grant.contract);
+  if (status.state === "not-requested") return undefined;
+  if (status.state !== "ready" || !status.receipt) throw workflowError();
+  receipt = status.receipt;
+  consumer = authority.createConsumer(caller, grant, receipt, input.deploymentDirectory);
+  const consumed = service.consume(grant.contract, consumer);
+  if (consumed.state !== "consumed" || consumed.receipt?.receiptId !== receipt.receiptId) throw workflowError();
+  const record = authority.consumer(caller, grant, consumer);
+  const lease = treehouse.authenticatePrepared(input.repoRoot, input.repoKey, input.ticket, receipt.worktreeRoot);
+  const ticket = authority.tickets().get(input.ticket); if (!ticket) throw workflowError();
+  const linked = requireTicketLinkedBranch(ticket, input.repoKey);
+  if (!linked.baseSha || !linked.headSha || linked.state !== "materialized" || linked.baseSha !== receipt.preparationBaseSha || linked.headSha !== receipt.preparedHeadSha || linked.branch !== grant.contract.branch) throw workflowError();
+  // Existing native authentication resolves the SAME active reservation as the
+  // ordinary slot view. No second slot file/permit is published.
+  const observed = observeReadonlyRepositoryTicketSlot(input.repoRoot, input.ticket);
+  if (observed.slot.slotToken !== record.slotToken || observed.slot.deploymentId !== input.deploymentId) throw workflowError();
+  const handoff: RepositoryTicketSlotHandoff = Object.freeze({ canonicalRepoKey: input.repoKey, canonicalRepoRoot: input.repoRoot, ticket: input.ticket,
+    slotToken: record.slotToken, slotId: repositoryTicketSlotId(input.repoKey, input.ticket), repositoryPermit: observed.slot.repositoryPermit });
+  const correlation = { schemaVersion: "prepared-builder-consumption/v1", deploymentId: input.deploymentId, repoKey: input.repoKey, repoRoot: input.repoRoot, ticket: input.ticket,
+    operationId: receipt.operationId, receiptId: receipt.receiptId, grantId: grant.grantId, consumer, worktreeRoot: receipt.worktreeRoot, branch: linked.branch,
+    baseSha: linked.baseSha, headSha: linked.headSha, ticketSlotId: handoff.slotId, repositoryPermit: handoff.repositoryPermit };
+  const path = join(input.deploymentDirectory, "prepared-consumption.json"); const body = `${JSON.stringify(correlation)}\n`;
+  const directory = openSync(input.deploymentDirectory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const info = fstatSync(directory);
+    if (info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0 || realpathSync(`/proc/self/fd/${directory}`) !== input.deploymentDirectory) throw workflowError();
+    const anchored = `/proc/self/fd/${directory}/prepared-consumption.json`;
+    try { writeFileSync(anchored, body, { flag: "wx", mode: 0o600 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Buffer.from(readReviewEvidenceFile(path, 65_536, "prepared consumption correlation")).toString("utf8") !== body) throw error; }
+    const fd = openSync(anchored, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { const stat = fstatSync(fd); if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o7777) !== 0o600) throw workflowError(); fsyncSync(fd); } finally { closeSync(fd); }
+    fsyncSync(directory);
+  } finally { closeSync(directory); }
+  const reread = () => {
+    current();
+    if (Buffer.from(readReviewEvidenceFile(path, 65_536, "prepared consumption correlation")).toString("utf8") !== body) throw workflowError();
+    const freshLease = treehouse.authenticatePrepared(input.repoRoot, input.repoKey, input.ticket, receipt!.worktreeRoot);
+    const freshTicket = authority.tickets().get(input.ticket); if (!freshTicket) throw workflowError();
+    const freshBranch = requireTicketLinkedBranch(freshTicket, input.repoKey); const snapshot = captureRepositoryGitSnapshot(receipt!.worktreeRoot);
+    const authenticated = authenticateRepositoryTicketSlot({ canonicalRepoKey: input.repoKey, canonicalRepoRoot: input.repoRoot, ticket: input.ticket,
+      deploymentId: input.deploymentId, deploymentDirectory: input.deploymentDirectory, slotId: handoff.slotId, repositoryPermit: handoff.repositoryPermit, processFingerprint: fingerprint });
+    if (authenticated.status !== "authenticated" || JSON.stringify(freshLease) !== JSON.stringify(lease) || freshBranch.branch !== linked.branch || freshBranch.baseSha !== linked.baseSha
+      || freshBranch.headSha !== linked.headSha || snapshot.branch !== linked.branch || snapshot.head !== linked.headSha || snapshot.dirty || snapshot.statusPorcelainV2Base64 !== "") throw workflowError();
+  };
+  reread();
+  return Object.freeze({ slot: handoff, lease, branch: Object.freeze({ ...linked, headSha: linked.headSha, baseSha: linked.baseSha }), reread });
 }
 
 export type { TicketWorktreeSelectionEvidence } from "@pa-platform/pa-core";
@@ -691,6 +779,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     activeReviewReservation = undefined;
   };
   let activeTicketSlot: RepositoryTicketSlotHandoff | undefined;
+  let preparedBuilderAdmission: PiPreparedBuilderAdmission | undefined;
   let treehouseEvidence: TreehouseLaunchEvidence | undefined;
   let reauthenticateParentBeforeSpawn: (() => void) | undefined;
   let selectedTicketWorktree: ReturnType<typeof authenticateTicketWorktreeSelection> | undefined;
@@ -778,8 +867,13 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const ticket = new TicketStore().get(ticketId);
       if (!ticket) throw new Error(`Condition: Treehouse ticket checkout admission. Source: durable ticket store. Reason: ticket ${ticketId} does not exist. Correction: restore the exact ticket and linked-branch evidence. Resume Action: retry before Treehouse acquisition.`);
       requireTicketLinkedBranch(ticket, initialRepository.repoKey);
+      if (builderMode === "orchestrator" && !request.resume) {
+        preparedBuilderAdmission = consumePiPreparedBuilderAdmission({ repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, ticket: ticketId,
+          deploymentId, deploymentDirectory: deployDir }, dependencies);
+        if (preparedBuilderAdmission) activeTicketSlot = preparedBuilderAdmission.slot;
+      }
       const ownsTicketSlot = builderMode === "orchestrator" || !parent;
-      if (ownsTicketSlot) {
+      if (ownsTicketSlot && !preparedBuilderAdmission) {
         dependencies.observeOperation?.("slot");
         dependencies.observeOperation?.("permit");
         dependencies.observeOperation?.("lineage");
@@ -803,7 +897,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
       const treehouse = dependencies.treehouse ?? new TreehouseClient();
       let lease: ReturnType<TreehouseClient["authenticatePrepared"]>;
-      if (builderMode === "orchestrator" && initialRepository.worktreeKind !== "linked") {
+      if (preparedBuilderAdmission) lease = preparedBuilderAdmission.lease;
+      else if (builderMode === "orchestrator" && initialRepository.worktreeKind !== "linked") {
         dependencies.observeOperation?.("checkout");
         lease = treehouse.acquireOrReuse(initialRepository.repoRoot, initialRepository.repoKey, ticketId);
       } else if (parent) {
@@ -815,8 +910,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       if (selectedRepository.repoKey !== initialRepository.repoKey || selectedRepository.repoRoot !== initialRepository.repoRoot || selectedRepository.worktreeRoot !== lease.path || selectedRepository.worktreeKind !== "linked") {
         throw new Error("Condition: Treehouse ticket checkout admission. Source: registered physical Git identity. Reason: selected lease path does not authenticate as the exact linked worktree for the canonical repository. Correction: preserve the lease and reconcile path/top-level/Git-dir/common-dir/worktree membership. Resume Action: retry only with the sole matching physical checkout.");
       }
-      if (builderMode === "orchestrator") dependencies.observeOperation?.("branch");
-      const branchEvidence = builderMode === "orchestrator"
+      if (builderMode === "orchestrator" && !preparedBuilderAdmission) dependencies.observeOperation?.("branch");
+      const branchEvidence = preparedBuilderAdmission ? preparedBuilderAdmission.branch : builderMode === "orchestrator"
         ? materializeTicketBranch({ canonicalRepoKey: initialRepository.repoKey, canonicalRepoRoot: initialRepository.repoRoot, worktreeRoot: selectedRepository.worktreeRoot, ticketId })
         : parent
           ? authenticateParentTicketBranch(initialRepository.repoKey, selectedRepository.worktreeRoot, ticketId)
@@ -1231,7 +1326,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         }));
       }
     } else if (activeRepositoryLease) {
-      if (plan.treehouse && plan.ticket) {
+      if (plan.treehouse && plan.ticket && !preparedBuilderAdmission) {
         const refreshed = refreshTicketLinkedBranchHead({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ticketId: plan.ticket });
         if (refreshed.baseSha !== plan.treehouse.baseSha || refreshed.headSha !== plan.treehouse.headSha) {
           throw new Error("Treehouse launch evidence drifted after immutable planning; PA ownership was finalized and no runtime was started");
@@ -1262,6 +1357,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     }
 
     if (activeRepositoryBorrower) reauthenticateParentBeforeSpawn?.();
+    preparedBuilderAdmission?.reread();
     selectedTicketWorktree?.reread();
 
     let publishedPid: number | undefined;

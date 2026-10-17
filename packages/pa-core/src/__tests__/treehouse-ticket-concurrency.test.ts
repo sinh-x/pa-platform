@@ -7,7 +7,7 @@ import test from "node:test";
 import { acquireRepositoryTicketSlot, authenticateRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, withVacantPreparationWorktree, type ProcessFingerprint } from "../deploy/index.js";
 import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
-import { preparedRepositoryTicketReservationPath, withPreparedRepositoryTicketOwner, withPreparedTicketCapacity, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
+import { observeReadonlyRepositoryTicketSlot, transferRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedRepositoryTicketOwner, withPreparedTicketCapacity, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
 import { parseIdlePreparationReservation } from "../deploy/execution-custody.js";
 
 function git(args: string[], cwd: string, encoding: BufferEncoding | null = "utf8"): string | Buffer {
@@ -497,4 +497,33 @@ test("prepared inventory rejects mismatched path/root and duplicate permit; ordi
   writeFileSync(path, JSON.stringify(result.reservation), { mode: 0o600 });
   writeFileSync(preparedRepositoryTicketReservationPath(repo, "PAP-2"), JSON.stringify({ ...result.reservation, ...preparedInput(2) }), { mode: 0o600 });
   assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.inventory()));
+}));
+
+test("AC6: consumed reservation is the ordinary slot view; transfer and terminal release retain one occupied permit", () => preparedFixture((repo, root) => {
+  const first = { pid: 12_001, startTimeTicks: "123", bootId: "fixture" };
+  const next = { pid: 12_002, startTimeTicks: "456", bootId: "fixture" };
+  const fingerprints = (pid: number) => pid === first.pid ? first : pid === next.pid ? next : undefined;
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, dependencies: { getProcessFingerprint: fingerprints } };
+  withPreparedTicketCapacity(options, (tx) => {
+    const reserved = tx.reserve(preparedInput(1)); if (reserved.status !== "reserved") throw new Error("fixture capacity");
+    const ready = tx.update(reserved.reservation, parseIdlePreparationReservation({ ...reserved.reservation, occupancy: "idle-ready", receiptId: "f".repeat(64) }));
+    tx.update(ready, parseIdlePreparationReservation({ ...ready, occupancy: "active", lineageId: "d-123abc", custody: { state: "orchestrator-direct", holder: { deploymentId: "d-123abc", process: first }, inFlightOperation: null },
+      launch: { slotToken: "PRIVATE-PREPARED-TOKEN", deploymentDirectory: root, acquiredAt: "2026-10-17T00:00:00.000Z" } }));
+  });
+  const observed = observeReadonlyRepositoryTicketSlot(repo, "PAP-1", fingerprints);
+  const handoff = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: observed.slot.slotToken, slotId: observed.slot.slotId, repositoryPermit: observed.slot.repositoryPermit };
+  assert.equal(observed.slot.deploymentId, "d-123abc"); assert.equal(observed.slot.repositoryPermit, 1);
+  assert.throws(() => statSync(repositoryTicketSlotPath(repo, "PAP-1"))); // no second slot file
+  const authenticate = (processFingerprint: ProcessFingerprint) => authenticateRepositoryTicketSlot({ ...handoff, deploymentId: "d-123abc", deploymentDirectory: root, processFingerprint, dependencies: { getProcessFingerprint: fingerprints } });
+  assert.equal(authenticate(first).status, "authenticated");
+  assert.equal(transferRepositoryTicketSlot({ ...handoff, nextProcessFingerprint: next, dependencies: { getProcessFingerprint: fingerprints, createToken: () => "unused" } }).status, "transferred");
+  assert.equal(authenticate(first).status, "rejected"); assert.equal(authenticate(next).status, "authenticated");
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 1);
+  assert.equal(releaseRepositoryTicketSlot({ ...handoff, slotToken: "forged" }).status, "token-mismatch");
+  assert.equal(releaseRepositoryTicketSlot(handoff).status, "released"); assert.equal(releaseRepositoryTicketSlot(handoff).status, "absent");
+  const retained = withPreparedTicketCapacity(options, (tx) => tx.inventory());
+  assert.equal(retained.length, 1); assert.equal("occupancy" in retained[0]! && retained[0].occupancy, "settled-retained");
+  const retry = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-1", deploymentId: "d-654abc", deploymentDirectory: root, force: true });
+  assert.equal(retry.status, "rejected");
+  assert.ok(statSync(preparedRepositoryTicketReservationPath(repo, "PAP-1")).isFile());
 }));

@@ -61,11 +61,11 @@ export type RepositoryTicketSlotAuthentication =
 export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string,
   getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined = readProcessFingerprint,
 ): { readonly slot: RepositoryTicketSlot; readonly identity: string } {
-  const path = repositoryTicketSlotPath(canonicalRepoRoot, ticket);
+  const path = executionSlotPath(canonicalRepoRoot, ticket);
   const stat = lstatSync(path);
   if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper capacity evidence is not protected");
   const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_TICKET_SLOT_BYTES, "helper capacity");
-  const slot: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const slot: unknown = path.endsWith(".prepared.json") ? preparedSlotView(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))) : JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!isSlot(slot) || !fingerprintsEqual(slot.processFingerprint, getProcessFingerprint(slot.processFingerprint.pid))) throw new Error("helper capacity evidence is malformed or stale");
   return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex") };
 }
@@ -85,9 +85,9 @@ export function authenticateRepositoryTicketSlot(options: {
   const root = physicalRoot(options.canonicalRepoRoot);
   const dependencies = resolvedDependencies(options.dependencies);
   return withTicketMutex(root, () => {
-    const path = repositoryTicketSlotPath(root, options.ticket);
+    const path = executionSlotPath(root, options.ticket);
     if (!existsSync(path)) return { status: "rejected", reason: "absent" };
-    const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
+    const inspected = inspectExecutionSlot(path, dependencies.getProcessFingerprint);
     if (inspected.state !== "live") {
       return { status: "rejected", reason: inspected.state === "stale" ? "stale-process" : inspected.state === "prepared" ? "identity-mismatch" : inspected.state === "invalid-preparation" ? "malformed" : inspected.state };
     }
@@ -207,26 +207,36 @@ export function transferRepositoryTicketSlot(options: RepositoryTicketSlotHandof
 }): RepositoryTicketSlotMutationResult {
   const dependencies = resolvedDependencies(options.dependencies);
   return withTicketMutex(options.canonicalRepoRoot, () => {
-    const path = repositoryTicketSlotPath(options.canonicalRepoRoot, options.ticket);
+    const path = executionSlotPath(options.canonicalRepoRoot, options.ticket);
     const slot = readSlot(path);
     if (slot === undefined) return { status: "absent" };
     if (slot === null || !slotMatchesHandoff(slot, options)) return { status: "invalid-evidence" };
     if (!secureEqual(slot.slotToken, options.slotToken)) return { status: "token-mismatch" };
     if (!fingerprintsEqual(options.nextProcessFingerprint, dependencies.getProcessFingerprint(options.nextProcessFingerprint.pid))) return { status: "invalid-evidence" };
     const transferred = Object.freeze({ ...slot, processFingerprint: Object.freeze({ ...options.nextProcessFingerprint }) });
-    replaceAtomic(path, transferred, dependencies.createToken);
+    if (path.endsWith(".prepared.json")) {
+      const reservation = parseIdlePreparationReservation(readCapacityRecord(path));
+      if (reservation.occupancy !== "active" || !reservation.custody.holder || reservation.custody.inFlightOperation !== null) return { status: "invalid-evidence" };
+      publishPreparedCapacity(path, parseIdlePreparationReservation({ ...reservation, custody: { ...reservation.custody, holder: { ...reservation.custody.holder, process: transferred.processFingerprint } } }), true);
+    } else replaceAtomic(path, transferred, dependencies.createToken);
     return { status: "transferred", slot: transferred };
   });
 }
 
 export function releaseRepositoryTicketSlot(options: RepositoryTicketSlotHandoff): RepositoryTicketSlotMutationResult {
   return withTicketMutex(options.canonicalRepoRoot, () => {
-    const path = repositoryTicketSlotPath(options.canonicalRepoRoot, options.ticket);
+    const path = executionSlotPath(options.canonicalRepoRoot, options.ticket);
     const slot = readSlot(path);
     if (slot === undefined) return { status: "absent" };
     if (slot === null || !slotMatchesHandoff(slot, options)) return { status: "invalid-evidence" };
     if (!secureEqual(slot.slotToken, options.slotToken)) return { status: "token-mismatch" };
-    unlinkSync(path);
+    if (path.endsWith(".prepared.json")) {
+      const reservation = parseIdlePreparationReservation(readCapacityRecord(path));
+      if (reservation.occupancy !== "active" || reservation.custody.inFlightOperation !== null) return { status: "invalid-evidence" };
+      // Release execution capability only. The occupied reservation/checkout is
+      // retained after terminal or no-spawn failure; no reclaim or return occurs.
+      publishPreparedCapacity(path, parseIdlePreparationReservation({ ...reservation, occupancy: "settled-retained", custody: { state: "idle", holder: null, inFlightOperation: null } }), true);
+    } else unlinkSync(path);
     return { status: "released" };
   });
 }
@@ -276,7 +286,33 @@ function inspectSlot(path: string, getProcessFingerprint: (pid: number) => Proce
 
 function readSlot(path: string): RepositoryTicketSlot | null | undefined {
   const value = readCapacityRecord(path);
-  return value === undefined ? undefined : isSlot(value) ? value : null;
+  if (value === undefined) return undefined;
+  if (path.endsWith(".prepared.json")) return preparedSlotView(value);
+  return isSlot(value) ? value : null;
+}
+function executionSlotPath(root: string, ticket: string): string {
+  const legacy = repositoryTicketSlotPath(root, ticket); const prepared = preparedRepositoryTicketReservationPath(root, ticket);
+  const present = (path: string) => { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } };
+  const legacyPresent = present(legacy); const preparedPresent = present(prepared);
+  if (legacyPresent && preparedPresent) throw new Error(formatBoundedFiveFieldDiagnostic({ condition: "conflicting ticket capacity evidence", source: "native ticket-slot storage",
+    reason: "legacy and prepared records both exist for the same ticket", correction: "preserve both records for owning reconciliation", resumeAction: "retry only after supported reconciliation; no force or reclamation" }));
+  return preparedPresent ? prepared : legacy;
+}
+function preparedSlotView(value: unknown): RepositoryTicketSlot | null | undefined {
+  try {
+    const row = parseIdlePreparationReservation(value);
+    if (row.occupancy === "settled-retained") return undefined;
+    if (row.occupancy !== "active" || !row.launch || row.custody.state !== "orchestrator-direct" || !row.custody.holder || row.custody.inFlightOperation !== null) return null;
+    return Object.freeze({ schemaVersion: 1, slotToken: row.launch.slotToken, slotId: repositoryTicketSlotId(row.repoKey, row.ticket),
+      canonicalRepoKey: row.repoKey, canonicalRepoRoot: row.repoRoot, ticket: row.ticket, deploymentId: row.custody.holder.deploymentId,
+      deploymentDirectory: row.launch.deploymentDirectory, repositoryPermit: row.repositoryPermit, processFingerprint: row.custody.holder.process, acquiredAt: row.launch.acquiredAt });
+  } catch { return null; }
+}
+function inspectExecutionSlot(path: string, fingerprint: (pid: number) => ProcessFingerprint | undefined): ReturnType<typeof inspectSlot> {
+  if (!path.endsWith(".prepared.json")) return inspectSlot(path, fingerprint);
+  const slot = readSlot(path);
+  if (!slot) return { state: "invalid-preparation" };
+  return fingerprintsEqual(slot.processFingerprint, fingerprint(slot.processFingerprint.pid)) ? { state: "live", slot } : { state: "stale", slot };
 }
 
 function readCapacityRecord(path: string): unknown {

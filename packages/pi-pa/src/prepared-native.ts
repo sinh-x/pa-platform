@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -7,7 +8,7 @@ import {
   parsePreparationContract, parseReviewMatrix, parseReviewEvidenceJson, parseSourceVersion, preparationIdentity, ProtectedWorkflowStore,
   readNativePreparationRetry, readReviewEvidenceFile, requireTicketLinkedBranch, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowText, workflowTimestamp, loadRepoEntry,
-  type PreparationContract, type SourceVersion, type Ticket,
+  readProcessFingerprint, TicketStore, type PreparedReceipt, type PreparationContract, type SourceVersion, type Ticket, type ProcessFingerprint,
 } from "@pa-platform/pa-core";
 import type { PiPreparationCaller } from "./pi-extension/prepared-workflow.js";
 
@@ -45,6 +46,22 @@ export interface NativePreparationGrant {
   readonly contract: PreparationContract;
   readonly deploymentId: string;
   readonly callerIdentity: string;
+  readonly capturedAt: string;
+}
+export interface NativePreparedConsumer {
+  readonly schemaVersion: "native-prepared-consumer/v1";
+  readonly grantId: string;
+  readonly operationId: string;
+  readonly receiptId: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly ticket: string;
+  readonly worktreeRoot: string;
+  readonly headSha: string;
+  readonly deploymentId: string;
+  readonly deploymentDirectory: string;
+  readonly process: ProcessFingerprint;
+  readonly slotToken: string;
   readonly capturedAt: string;
 }
 export interface PreparedNativeDependencies {
@@ -132,6 +149,7 @@ export class PiPreparedNativeAuthority {
   }
   #store(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "native"), create); }
   operations(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "operations"), create); }
+  tickets(): TicketStore { return new TicketStore(join(this.aiUsageRoot, "tickets")); }
   #facts(): PreparedNativeRuntime { return runtime(this.#runtime()); }
   #policyId(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot">, facts: PreparedNativeRuntime): string {
     return workflowDigest(JSON.stringify(["prepared-autonomy/v1", caller.repoKey, caller.repoRoot, facts]));
@@ -151,7 +169,8 @@ export class PiPreparedNativeAuthority {
       const item = workflowObject(evidence, ["schemaVersion", "kind", "runtime", "result", "source", "capturedAt"]);
       if (item.schemaVersion !== ref.version || item.kind !== kind || item.result !== "passed" || !equal(runtime(item.runtime), facts)
         || workflowDigest(JSON.stringify(evidence)) !== ref.sha256) throw workflowError();
-      parseSourceVersion(item.source); workflowTimestamp(item.capturedAt);
+      parseSourceVersion(item.source);
+      if (workflowTimestamp(item.capturedAt) > workflowTimestamp(this.#now())) throw workflowError();
     }
     return source(`native-prepared-qualification:${id}`, "prepared-native-qualification/v1", Buffer.from(JSON.stringify(value)));
   }
@@ -280,6 +299,44 @@ export class PiPreparedNativeAuthority {
   }
   assertCurrent(caller: PiPreparationCaller, grant: NativePreparationGrant): void {
     if (!equal(this.resolve(caller), grant)) throw workflowError();
+  }
+  createConsumer(caller: PiPreparationCaller, grant: NativePreparationGrant, receipt: PreparedReceipt, deploymentDirectory: string): SourceVersion {
+    this.assertCurrent(caller, grant);
+    if (!/^d-[0-9a-f]{6}$/.test(caller.deploymentId) || receipt.state !== "ready" || receipt.operationId !== preparationIdentity(grant.contract)
+      || !equal(receipt.contract, grant.contract) || deploymentDirectory !== join(this.aiUsageRoot, "deployments", caller.deploymentId)
+      || realpathSync(deploymentDirectory) !== deploymentDirectory) throw workflowError();
+    const process = readProcessFingerprint(globalThis.process.pid); if (!process) throw workflowError();
+    const capturedAt = workflowTimestamp(this.#now());
+    if (capturedAt < receipt.observedAt) throw workflowError();
+    const store = this.operations(); if (!store) throw workflowError();
+    const id = workflowDigest(JSON.stringify(["native-prepared-consumer/v1", grant.grantId, receipt.receiptId, caller.deploymentId]));
+    const name = `${id}.intent.json`;
+    let record: NativePreparedConsumer;
+    if (store.records().includes(name)) record = store.read(name) as NativePreparedConsumer;
+    else {
+      record = { schemaVersion: "native-prepared-consumer/v1", grantId: grant.grantId, operationId: receipt.operationId, receiptId: receipt.receiptId,
+        repoKey: caller.repoKey, repoRoot: caller.repoRoot, ticket: caller.ticket, worktreeRoot: receipt.worktreeRoot, headSha: receipt.preparedHeadSha,
+        deploymentId: caller.deploymentId, deploymentDirectory, process, slotToken: randomUUID(), capturedAt };
+      this.#publish(caller, store, name, record);
+    }
+    const reference = source(`native-prepared-consumer:${id}`, "native-prepared-consumer/v1", Buffer.from(JSON.stringify(record)));
+    this.consumer(caller, grant, reference);
+    return reference;
+  }
+  consumer(caller: PiPreparationCaller, grant: NativePreparationGrant, reference: SourceVersion): NativePreparedConsumer {
+    this.assertCurrent(caller, grant); const store = this.operations(); if (!store) throw workflowError();
+    const ref = parseSourceVersion(reference); const match = /^native-prepared-consumer:([0-9a-f]{64})$/.exec(ref.ref);
+    if (!match || ref.version !== "native-prepared-consumer/v1") throw workflowError();
+    const value = store.read(`${match[1]}.intent.json`);
+    const row = workflowObject(value, ["schemaVersion", "grantId", "operationId", "receiptId", "repoKey", "repoRoot", "ticket", "worktreeRoot", "headSha", "deploymentId", "deploymentDirectory", "process", "slotToken", "capturedAt"]);
+    const process = readProcessFingerprint(globalThis.process.pid);
+    if (row.schemaVersion !== ref.version || workflowDigest(JSON.stringify(value)) !== ref.sha256 || row.grantId !== grant.grantId
+      || row.operationId !== preparationIdentity(grant.contract) || row.repoKey !== caller.repoKey || row.repoRoot !== caller.repoRoot || row.ticket !== caller.ticket
+      || row.deploymentId !== caller.deploymentId || row.deploymentDirectory !== join(this.aiUsageRoot, "deployments", caller.deploymentId) || !process || !equal(row.process, process)
+      || match[1] !== workflowDigest(JSON.stringify(["native-prepared-consumer/v1", grant.grantId, row.receiptId, caller.deploymentId]))) throw workflowError();
+    workflowSha(row.receiptId); workflowSha(row.headSha, 40); workflowPath(row.worktreeRoot); workflowText(row.slotToken);
+    if (workflowTimestamp(row.capturedAt) > workflowTimestamp(this.#now())) throw workflowError();
+    return Object.freeze(value as NativePreparedConsumer);
   }
   authorize(caller: PiPreparationCaller, grant: NativePreparationGrant, operation: "request" | "retry" | "consume", contract: PreparationContract, evidence: SourceVersion | null): void {
     this.assertCurrent(caller, grant); if (!equal(contract, grant.contract) || operation === "consume") throw workflowError();

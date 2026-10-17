@@ -34,8 +34,9 @@ fixed protected storage and verifies current promoted bytes; it no longer instal
 an unconditional null resolver. **No live policy has been activated.** Protected
 exact-revision qualification/activation/grant records are absent, so ordinary status
 remains inactive and mutation requests reject before resource effects. The native
-qualification producer, execution/report evidence adapters and ready-consuming
-builder-launch integration are still incomplete. No public receipt or environment
+qualification producer and execution/report evidence adapters are still incomplete.
+The actual orchestrator launcher now consumes authenticated ready records and
+persists pre-spawn correlation; this is locally fixture-tested, not live-qualified. No public receipt or environment
 flag supplies native authority. Tests exercise actual dispatch, source files, Git
 and existing locks using isolated native qualification/Treehouse fixtures—not live
 approvals, product acceptance or production allocations. Never call internal APIs
@@ -48,13 +49,20 @@ namespace under the existing repository ticket mutex. Preparation records use a
 separate `<ticket-hash>.prepared.json` suffix, so even unreadable, malformed,
 insecure or aliased preparation evidence is preserved and cannot be quarantined
 by ordinary `--force` admission. Valid reservations count while preparing,
-idle-ready, active or uncertain-retained; requester death never releases them.
+idle-ready, active, uncertain-retained or settled-retained; requester death never
+releases them.
 
 `withPreparedTicketCapacity()` supplies a synchronous, callback-scoped transaction.
 It rejects expired callbacks, asynchronous results, duplicate ticket/operation/
 reservation/permit/lineage identities and compare-and-swap drift. Its transitions
 are preparing → idle-ready → active, or conservative uncertain-retained. An active
 transfer requires a verified live orchestrator process and no in-flight operation.
+The native consuming launcher can attach a private execution handoff to the active
+reservation. Ordinary slot authentication, supervisor process transfer and matching
+terminal finalization resolve that same record, not a second slot/permit. Terminal
+or no-spawn failure releases execution capability into `settled-retained`; the
+checkout and occupied permit remain retained for operator-owned disposition.
+Malformed/aliased/conflicting legacy-plus-prepared records never become authority.
 No delete, expiry, reclamation, lease return or reverse transition is provided.
 Legacy process-slot cleanup remains with its existing owner; preparation conservatively
 counts stale legacy evidence rather than reclaiming it itself.
@@ -99,8 +107,14 @@ live capacity owner, operation, vacant checkout, planned branch and exact approv
 HEAD can finish publication without constructing a second branch. Legacy planned
 branch races remain rejected. Unknown/changed work is preserved, never reset or
 silently adopted. Repeated requests/consumption reuse one reservation; candidate
-or ticket drift prevents consumption. The adapter's consume transition is tested,
-but it is not yet connected to the real builder spawn/correlation path.
+or ticket drift prevents consumption. The adapter's consume transition is now connected to actual builder/orchestrator
+admission before planning, lease acquisition and preflight. The existing ordinary
+slot view authenticates the same retained reservation. A protected native consumer
+intent binds deployment/process/receipt before transfer; source-bound correlation
+is fsynced in `prepared-consumption.json` before registry start/spawn. Ordinary
+registry ticket/root/branch/slot/permit identifiers agree with that artifact; no
+secret token or consumer record enters the model environment. This does not add a
+new registry database field or independently qualify the installed runtime.
 
 ## Preparation engine
 
@@ -136,8 +150,17 @@ stop conservatively at 32 attempts or 256 events; reaching a bound grants no res
 
 Ready publication follows all resource results and the matching final ticket
 reread. A consume intent binds one authenticated lineage before capacity transfer;
-a different lineage cannot replay it, including after a crash. Core consume tests
-are not proof that the current production builder launcher supports this protocol.
+a different lineage cannot replay it, including after a crash. The trusted launcher resolves only native protected ready state; it never accepts
+a request/environment receipt. Absent/unrequested native intent retains the normal
+independently authenticated CLI path. Pending/uncertain/consumed state cannot spawn
+a duplicate lineage. Ready consumption performs no Treehouse get, branch creation,
+unchanged ticket publication or setup prompt. After preflight, native policy/source,
+Treehouse, candidate, correlation and live capacity identity are reread before
+spawn. Dirty candidate or revocation stops without stash/reset/cleanup of content.
+Local actual-deploy fixtures cover one allocation during preparation, same-permit
+foreground consumption, preflight rejection and retained terminal capacity.
+Supervisor-transfer compatibility is tested at the existing slot owner; actual
+installed/background/parent-child qualification remains acceptance work.
 
 ## Concrete native preparation authority
 
@@ -177,8 +200,10 @@ Default service authorization resolves those same protected policy/grant records
 and revalidates caller/source identity at resource boundaries. Revocation blocks
 new optional requests without deleting resources or resetting caps. Same-revision
 reactivation after revocation is deliberately unsupported, not an implicit retry
-or migration. Native consuming-launch authority is separate and still rejected by
-the preparation-only authorization path until launch integration is delivered.
+or migration. Native consuming-launch authority is separate: analyst authorization still rejects
+consume, while the real launcher authenticates a distinct private consumer intent
+and transfers the same reservation. No author string, public receipt or raw CLI
+argument can supply that native intent.
 
 ## Execution custody and recovery primitives
 
@@ -268,12 +293,13 @@ its default publication still requires a real native artifact/evidence binding.
 
 ## Remaining delivery
 
-1. Complete Phase 2: connect native prepared grants/reservations to trusted builder
-   launch/correlation and deliver the authorized final native qualification producer.
-   Default preparation authority/source resolution and native capture are implemented,
-   but fixture qualification records are not production approval/activation or spawn
-   integration. Preserve exact-candidate/live-owner checks; do not synthesize a baseline
-   receipt from factual CLI output.
+1. Complete Phase-2 acceptance: deliver the authorized final native qualification
+   producer and verify actual installed/background/parent-child consumption and
+   migration. Default native resolution/capture and real orchestrator ready
+   consumption/correlation are implemented, but fixture qualification records are
+   not production activation or installed qualification. Prepared resume/migration
+   is not silently inferred; unsupported transitions retain resources and stop.
+   Never synthesize a protected receipt from factual CLI output.
 2. Complete Phases 3–4 integration: bind the implemented services/hooks to actual
    native policy, protected caller/check/Git evidence and existing sole-writer
    capacity/admission/launch owners. Implement the trusted terminal reconstruction
