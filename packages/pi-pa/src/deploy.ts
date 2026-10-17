@@ -280,25 +280,32 @@ export function createPiReadonlyHelperCapability(dependencies: PiReadonlyHelperD
         // role, then independently bind builder custody to that child's ancestry.
         const fingerprint = readLaunchProcess(live);
         if (!inLineage(process.pid, fingerprint)) reject("helper is not within the recorded live deployment process incarnation/lineage (stale/replayed locator)");
-        const authority = observeReadonlyRepositoryAuthority(physical.gitDir);
+        const authority = (() => {
+          try { return observeReadonlyRepositoryAuthority(physical.gitDir); }
+          catch { return reject("protected-authority-evidence: owner/borrower/review evidence or complete snapshot is malformed or unavailable"); }
+        })();
         const lease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(physical.repoRoot, physical.repoKey, ticketId, cwd);
         const ticket = readReviewCandidateTicket(ticketId);
         const linked = requireTicketLinkedBranch(ticket, physical.repoKey);
         if (ticket.project !== physical.repoKey || linked.state !== "materialized" || !/^[0-9a-f]{40}$/.test(linked.baseSha ?? "") || !/^[0-9a-f]{40}$/.test(linked.headSha ?? "")) reject("durable materialized ticket branch evidence is incomplete or wrong-project");
         const validateOwner = (owner: RepositoryMutationLease, slot: "orchestrator" | "implement") => {
           const registry = query(owner.deploymentId).status;
-          if (!registry || registry.status !== "running" || registry.team !== "builder" || registry.mode !== owner.mode || registry.runtime !== "pi" || registry.binary !== "ppa"
-            || registry.ticket_id !== ticketId || registry.repo !== cwd || registry.worktree_root !== cwd || registry.repo_root !== physical.repoRoot
-            || registry.builder_authority !== (slot === "orchestrator" ? "orchestrator" : "standalone-implement")
-            || registry.treehouse_path !== cwd || registry.treehouse_lease_id !== lease.leaseId || registry.treehouse_lease_holder !== lease.leaseHolder
-            || registry.branch_state !== "materialized" || registry.branch_base_sha !== linked.baseSha
-            || owner.canonicalRepoKey !== physical.repoKey || owner.canonicalRepoRoot !== physical.repoRoot || owner.worktreeRoot !== cwd
+          if (!registry || registry.status !== "running" || registry.team !== "builder" || registry.mode !== owner.mode || registry.runtime !== "pi" || registry.binary !== "ppa") return reject("owner-registry-role: owner registry is missing, ended, or has a mismatched runtime/team/mode");
+          if (registry.ticket_id !== ticketId || registry.repo !== cwd || registry.worktree_root !== cwd || registry.repo_root !== physical.repoRoot
+            || registry.builder_authority !== (slot === "orchestrator" ? "orchestrator" : "standalone-implement")) return reject("owner-registry-binding: owner ticket, repository, or authority role disagrees");
+          if (registry.treehouse_path !== cwd || registry.treehouse_lease_id !== lease.leaseId || registry.treehouse_lease_holder !== lease.leaseHolder
+            || registry.branch_state !== "materialized" || registry.branch_base_sha !== linked.baseSha) return reject("owner-checkout-binding: owner lease or materialized branch/base disagrees");
+          if (owner.canonicalRepoKey !== physical.repoKey || owner.canonicalRepoRoot !== physical.repoRoot || owner.worktreeRoot !== cwd
             || owner.repositoryGitDir !== physical.gitDir || owner.repositoryGitCommonDir !== physical.gitCommonDir || owner.slot !== slot || owner.ticket !== ticketId
-            || registry.branch_head_sha !== owner.preLaunchGitSnapshot.head
-            || owner.runtime !== "pi" || owner.team !== "builder" || owner.mode !== slot || owner.deploymentDirectory !== getDeployPaths(owner.deploymentId).deployDir
-            || !fingerprintEqual(owner.processFingerprint, getFingerprint(owner.processFingerprint.pid))) return reject("owner registry/process/physical role binding is malformed or stale");
+            || owner.runtime !== "pi" || owner.team !== "builder" || owner.mode !== slot || owner.deploymentDirectory !== getDeployPaths(owner.deploymentId).deployDir) return reject("owner-physical-role: protected owner physical identity, ticket, directory, or role disagrees");
+          // The read-only protected parser has already validated both snapshots.
+          // Current projection follows finalized authority, not immutable launch
+          // history. A present invalid snapshot rejects there; never accept either HEAD.
+          const currentAuthority = owner.authorityGitSnapshot ?? owner.preLaunchGitSnapshot;
+          if (registry.branch_head_sha !== currentAuthority.head) return reject("owner-current-head: registry projection differs from protected current authority snapshot");
+          if (!fingerprintEqual(owner.processFingerprint, getFingerprint(owner.processFingerprint.pid))) return reject("owner-process-incarnation: owner launcher/supervisor fingerprint is stale");
           const ownerPi = readLaunchProcess(registry);
-          if (!inLineage(ownerPi.pid, owner.processFingerprint)) return reject("recorded owner Pi child is outside its live launcher/supervisor custody");
+          if (!inLineage(ownerPi.pid, owner.processFingerprint)) return reject("owner-process-lineage: recorded owner Pi child is outside its live launcher/supervisor custody");
           return registry;
         };
         let capacityIdentity: string | undefined;
