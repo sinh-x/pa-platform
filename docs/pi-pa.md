@@ -93,6 +93,28 @@ alone does not authenticate stale deployment evidence. Missing legacy launch
 anchors reject; helpers never synthesize/repair one or restart a deployment.
 Builder roles retain their existing owner/borrower launch-fingerprint checks.
 
+After an authenticated direct child finalizes, its parent may retain an advanced
+`authorityGitSnapshot` and a matching current registry HEAD. The owner's
+`preLaunchGitSnapshot` and original registry `started` event remain immutable
+launch history. All three helpers compare the current registry projection with
+that validated current authority snapshot, falling back to launch history **only
+when the current snapshot is absent**. Invalid present evidence, a stale old-HEAD
+projection, or a mismatched current HEAD rejects; accepting either HEAD is not
+supported. This applies to an idle parent and its next admitted direct child,
+without changing borrower, capacity, lease or review authentication.
+
+Owner rejections name non-secret categories: `owner-registry-role`,
+`owner-registry-binding`, `owner-checkout-binding`, `owner-physical-role`,
+`owner-current-head`, `owner-process-incarnation` and `owner-process-lineage`.
+Malformed protected records/snapshots report `protected-authority-evidence`.
+These categories identify the observed mismatch, not private values or a proven
+historical cause. For PAP-257, the sequential source defect is reproducible;
+the exact predicate rejected in historical PAPC-056 child d-fa3a75 and installed
+0.1.139/source parity remain unproven. Preserve accepted PAPC-056 Phase 1 and its
+retained checkout. Before a separately approved Phase 2 continuation, reconcile
+fresh selected-runtime and protected parent/child custody evidence; neither this
+source correction nor public identity equality authorizes repair or restart.
+
 | Deployment role | Required observational boundary |
 | --- | --- |
 | builder/orchestrator | Matching live owner and ticket capacity; any direct borrower must also match. |
