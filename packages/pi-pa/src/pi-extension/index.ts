@@ -10,7 +10,7 @@ import { registerTodoModule } from "./todo.js";
 import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
 import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
-import { registerExecutionCustodyModule, registerPhaseReportModule, registerPreparedWorkflowModule } from "./prepared-workflow.js";
+import { registerExecutionCustodyModule, registerPhaseReportModule, registerPreparedWorkflowModule, registerWorkflowPolicyModule } from "./prepared-workflow.js";
 import {
   registerBundledEditorsModule,
   createBundledEditorsModule,
@@ -201,6 +201,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
   for (const tool of createPaTools(lifecycle)) pi.registerTool?.(tool);
   registerDirtyBorrowApprovalModule(pi, lifecycle);
   registerPreparedWorkflowModule(pi, lifecycle);
+  registerWorkflowPolicyModule(pi, lifecycle);
   registerPhaseReportModule(pi, lifecycle);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);

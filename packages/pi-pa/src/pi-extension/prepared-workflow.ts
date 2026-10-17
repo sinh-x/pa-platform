@@ -15,9 +15,10 @@ import {
   type IdlePreparationReservation, type PreparationAction, type PreparationContract,
   type PreparationHost, type PreparationOutcome, type PreparationStepContext, type PreparedReceipt,
   type PreparedTicketCapacityTransaction, type RepositoryTicketSlotDependencies, type SourceVersion,
-  type PreparedWorkflowService, type PreparationStatus,
+  PreparedWorkflowService, type PreparationStatus,
 } from "@pa-platform/pa-core";
 import { TreehouseClient, deriveTreehouseLeaseHolder, type TreehouseLeaseEvidence } from "../treehouse.js";
+import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import type { PiExtensionModule, PiSessionLifecycle, PiToolCall, PiToolDefinition, PiToolResult } from "./index.js";
 
 const APPROVE_RETRY = "Retry this unchanged preparation once";
@@ -51,6 +52,7 @@ export interface PiPreparedWorkflowOptions {
   /** Trusted-runtime dependencies only; these are not tool/CLI options. */
   readonly authenticateCaller?: (context: PiPreparationContext) => PiPreparationCaller;
   readonly resolveBinding?: (caller: PiPreparationCaller) => PiPreparationBinding | null;
+  readonly nativeAuthority?: PiPreparedNativeAuthority;
   readonly now?: () => string;
   readonly createEventId?: () => string;
 }
@@ -138,17 +140,19 @@ function statusResult(status: PreparationStatus, contract: PreparationContract):
 export function createPiPreparationTool(options: PiPreparedWorkflowOptions = {}, lifecycle?: PiSessionLifecycle): PiToolDefinition<PiPreparationInput, PiPreparationDetails> {
   const env = { ...(options.env ?? process.env) };
   const authenticate = options.authenticateCaller ?? ((context: PiPreparationContext) => authenticatePiPreparationCaller(context, env));
-  // Deliberately no environment enable switch or default permissive host. A future
-  // native activation owner must supply a verified runtime binding, not copied JSON.
-  const resolveBinding = options.resolveBinding ?? (() => null);
+  // Fixed native storage and installed-runtime/source proof, never an environment
+  // enable switch. No active record/qualification means no resource-capable host.
+  const authority = options.nativeAuthority ?? new PiPreparedNativeAuthority();
   const now = options.now ?? (() => new Date().toISOString());
   const createEventId = options.createEventId ?? randomUUID;
   let mutating = false;
   const resolve = (context: PiPreparationContext) => {
     if (context.mode !== "tui" || !isInteractivePreparationEnvironment(env)) throw workflowError();
     const caller = validateCaller(workflowSynchronous(authenticate(context)));
-    const binding = workflowSynchronous(resolveBinding(caller));
-    if (!binding) return { caller, binding: null };
+    const binding = options.resolveBinding
+      ? workflowSynchronous(options.resolveBinding(caller))
+      : resolveNativePiPreparationBinding(caller, authority, () => validateCaller(workflowSynchronous(authenticate(context))));
+    if (binding === null) return { caller, binding: null };
     const contract = parsePreparationContract(binding.contract);
     if (contract.ticket !== caller.ticket || contract.repoKey !== caller.repoKey || contract.repoRoot !== caller.repoRoot) throw workflowError();
     return { caller, binding: { contract, bindingIdentity: workflowSha(binding.bindingIdentity), service: binding.service } };
@@ -215,6 +219,67 @@ export function createPiPreparedWorkflowModule(options: PiPreparedWorkflowOption
   };
 }
 export const registerPreparedWorkflowModule: PiExtensionModule = createPiPreparedWorkflowModule();
+
+export function resolveNativePiPreparationBinding(caller: PiPreparationCaller, authority: PiPreparedNativeAuthority, reauthenticate: () => PiPreparationCaller): PiPreparationBinding | null {
+  const grant = authority.resolve(caller); if (!grant) return null;
+  const store = authority.operations(); if (!store) throw workflowError();
+  const current = () => {
+    if (JSON.stringify(validateCaller(workflowSynchronous(reauthenticate()))) !== JSON.stringify(validateCaller(caller))) throw workflowError();
+    authority.assertCurrent(caller, grant);
+  };
+  const host = createPiPreparationHost(grant.contract, {
+    authorize(operation, contract, evidence) { current(); authority.authorize(caller, grant, operation, contract, evidence); },
+    assertCurrentBindings() { current(); },
+  });
+  return Object.freeze({ bindingIdentity: workflowDigest(JSON.stringify(grant)), contract: grant.contract, service: new PreparedWorkflowService(store, host) });
+}
+
+export const PiWorkflowPolicyParams = Type.Object({ action: Type.Union([Type.Literal("status"), Type.Literal("activate"), Type.Literal("bind"), Type.Literal("deactivate")]) }, { additionalProperties: false });
+/** Fixed foreground native dialogs. Qualification must already exist from its
+ * separately authorized producer; this tool cannot create/qualify it or execute
+ * project/resource commands to make activation pass. No root/source/author override. */
+export function createPiWorkflowPolicyModule(options: PiPreparedWorkflowOptions = {}): PiExtensionModule {
+  return (pi, lifecycle) => {
+    const env = { ...(options.env ?? process.env) }; if (!isInteractivePreparationEnvironment(env)) return;
+    const authority = options.nativeAuthority ?? new PiPreparedNativeAuthority();
+    const authenticate = options.authenticateCaller ?? ((context: PiPreparationContext) => authenticatePiPreparationCaller(context, env));
+    pi.registerTool?.({ name: "pa_workflow_policy", label: "PA Workflow Policy", description: "Inspect optional automation or request a fixed native operator activation/adoption/revocation dialog. Protected exact-revision qualification is mandatory; tool text cannot grant authority.", parameters: PiWorkflowPolicyParams, executionMode: "sequential",
+      execute: async (_id, input, signal, _update, rawContext) => {
+        const run = async () => {
+          const row = workflowObject(input, ["action"]);
+          if (!["status", "activate", "bind", "deactivate"].includes(String(row.action))) throw workflowError();
+          const context = rawContext as PiPreparationContext;
+          if (signal?.aborted || context.mode !== "tui") throw workflowError();
+          const caller = validateCaller(workflowSynchronous(authenticate(context)));
+          if (row.action === "status") return executionResult({ schemaVersion: "prepared-native-policy-status/v1", ...authority.status(caller) });
+          if (!context.ui?.select) throw workflowError();
+          let reference: string | null = null; let preview: unknown;
+          if (row.action === "activate") preview = authority.activationPreview(caller);
+          else if (row.action === "bind") {
+            if (!authority.status(caller).active) throw workflowError();
+            const references = [...authority.sources(caller)]; if (!references.length) throw workflowError();
+            const choice = await context.ui.select("Select the exact promoted requirements source for optional preparation adoption", references, signal ? { signal } : undefined);
+            if (signal?.aborted || choice === undefined) return executionResult({ state: "cancelled" });
+            if (!references.includes(choice)) throw workflowError(); reference = choice; preview = authority.preview(caller, reference);
+          } else preview = authority.status(caller);
+          const accept = row.action === "activate" ? "Activate only these exact qualified revisions" : row.action === "bind" ? "Authenticate this exact promoted pair for optional preparation" : "Deactivate new optional admissions; retain all existing work and resources";
+          const choice = await context.ui.select(`Native operator decision: ${row.action}. Exact binding: ${JSON.stringify(preview)}. No checkout/resource action, cap reset or retrospective upgrade is performed by this decision.`, [accept, "Cancel"], signal ? { signal } : undefined);
+          if (signal?.aborted || choice !== accept) return executionResult({ state: "cancelled" });
+          const fresh = validateCaller(workflowSynchronous(authenticate(context)));
+          if (JSON.stringify(fresh) !== JSON.stringify(caller)) throw workflowError();
+          const reread = row.action === "activate" ? authority.activationPreview(fresh) : row.action === "bind" ? authority.preview(fresh, reference!) : authority.status(fresh);
+          if (JSON.stringify(reread) !== JSON.stringify(preview)) throw workflowError();
+          if (row.action === "activate") authority.activate(fresh);
+          else if (row.action === "bind") authority.bind(fresh, reference!);
+          else authority.deactivate(fresh);
+          return executionResult({ schemaVersion: "prepared-native-policy-status/v1", ...authority.status(fresh), preparationBound: row.action === "bind" });
+        };
+        try { return await (lifecycle ? lifecycle.trackRegistryAccess(run) : run()); } catch { throw workflowError(); }
+      },
+    });
+  };
+}
+export const registerWorkflowPolicyModule: PiExtensionModule = createPiWorkflowPolicyModule();
 
 export interface PiPreparationHostOptions {
   /** Mandatory trusted native-policy/promotion/caller authority; no default implementation. */

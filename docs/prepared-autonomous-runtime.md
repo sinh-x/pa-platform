@@ -19,21 +19,27 @@ lease, checkout allocation or return is changed by this implementation.
   publication, redaction seam, existing-owner-report CAS/index and durable delivery
   evidence/debt primitives. Separate reading HTML reuses the existing escaped
   renderer; default Lavish/artifact rendering remains inert and byte-compatible.
+- `packages/pi-pa/src/prepared-native.ts`: concrete fixed-location native
+  policy/grant resolution, exact promoted-pair/13-check/matrix validation and
+  native operator capture. This separates authority IO from tool/resource IO.
 - `packages/pi-pa/src/pi-extension/prepared-workflow.ts`: mode-scoped preparation,
   execution/feature-update/report tools, actual Pi custody hooks, native retry
   capture, caller correlation and a fixed Treehouse/Git preparation host adapter.
 - Existing repository admission/materialization owners: callback-scoped vacant
   worktree locking, exact-approved-base creation and bounded crash reconciliation.
 
-`preparedCapability()` remains disabled. The production extension has no active
-native-policy/promotion binding resolver, activation command, execution/report
-native evidence adapter or ready-consuming builder-launcher integration. `pa_preparation` is registered only for foreground
-interactive requirements/analyze. Its default status is inactive after caller
-correlation, and mutation requests reject before effects. The resource host has
-mandatory native authority/source-verification ports, never a permissive default.
-Tests exercise actual dispatch, local Git and existing locks with isolated
-approval/Treehouse fakes, not live approvals or production allocations. Do not call
-internal APIs from an agent shell to manufacture activation or repair old authority.
+`preparedCapability()` remains a disabled informational projection, never enable
+permission. The default Pi preparation tool now resolves its native authority from
+fixed protected storage and verifies current promoted bytes; it no longer installs
+an unconditional null resolver. **No live policy has been activated.** Protected
+exact-revision qualification/activation/grant records are absent, so ordinary status
+remains inactive and mutation requests reject before resource effects. The native
+qualification producer, execution/report evidence adapters and ready-consuming
+builder-launch integration are still incomplete. No public receipt or environment
+flag supplies native authority. Tests exercise actual dispatch, source files, Git
+and existing locks using isolated native qualification/Treehouse fixtures—not live
+approvals, product acceptance or production allocations. Never call internal APIs
+from an agent shell to manufacture activation or repair old authority.
 
 ## Capacity ownership
 
@@ -133,6 +139,47 @@ reread. A consume intent binds one authenticated lineage before capacity transfe
 a different lineage cannot replay it, including after a crash. Core consume tests
 are not proof that the current production builder launcher supports this protocol.
 
+## Concrete native preparation authority
+
+`pa_workflow_policy` is registered only alongside foreground requirements/analyze.
+Its action-only schema offers status, activate, bind and deactivate. Mutations
+require fixed native TUI selectors, fresh caller correlation after the dialog and
+fresh source/revision rereads. It cannot qualify a runtime, run the matrix, supply
+an arbitrary root/source/author/argv, or self-certify human UAT. Cancellation/drift
+publishes no grant. Activation and source adoption are distinct; neither performs
+checkout/resource actions. Ordinary preparation then reuses the captured binding
+without repeating source/setup prompts.
+
+Native authority roots derive from the OS account home, not `HOME`, `PA_PLATFORM_DATA`
+or artifact/config environment overrides. Owner-only regular single-link records
+are bounded and published under the existing repository capacity mutex. A concrete
+installed-runtime reader requires the running Nix-store module, packaged version,
+source/config provenance and exact clean registered config revision contained in
+origin/develop. A source checkout cannot activate itself. Production activation
+also requires protected exact-runtime/config native review, CI, pairing, human-UAT
+and delivery qualification receipts. **The authorized producer of those final
+qualification receipts is not implemented yet; their grammar/readback is not a
+claim that qualification occurred.** Public report/ticket prose is never substituted
+for that native qualification or operator capture.
+
+The native adoption verifier reads exactly selected attached requirements and UAT,
+requires approved interactive-analyst/builder route, verifies all thirteen final
+checks and raw pair/matrix hashes, parses the existing versioned matrix without
+changing its commands, and corroborates exact branch/base/durable comment evidence.
+It handles retained amendment bases independently of the specialized review-launch
+parser, without editing that parser or fabricating fresh-only headers. Planned
+links retain their existing no-SHA grammar; materialized links must preserve the
+approved base. Ticket source primacy is not guessed from a builder implementation
+report. A native operator selects/authenticates the exact promoted pair before a
+protected grant is written; existing public author strings alone cannot create it.
+
+Default service authorization resolves those same protected policy/grant records
+and revalidates caller/source identity at resource boundaries. Revocation blocks
+new optional requests without deleting resources or resetting caps. Same-revision
+reactivation after revocation is deliberately unsupported, not an implicit retry
+or migration. Native consuming-launch authority is separate and still rejected by
+the preparation-only authorization path until launch integration is delivered.
+
 ## Execution custody and recovery primitives
 
 The execution service stores an immutable binding and hash-chained commands using
@@ -221,11 +268,12 @@ its default publication still requires a real native artifact/evidence binding.
 
 ## Remaining delivery
 
-1. Complete Phase 2: connect the implemented host/tool adapter to a real protected
-   native-policy/promotion binding resolver and trusted builder launch/correlation.
-   The mandatory verifier ports and positive local fixtures are not production
-   approval/activation or spawn integration. Preserve exact-candidate and live-owner
-   checks; do not synthesize a baseline receipt from factual CLI output.
+1. Complete Phase 2: connect native prepared grants/reservations to trusted builder
+   launch/correlation and deliver the authorized final native qualification producer.
+   Default preparation authority/source resolution and native capture are implemented,
+   but fixture qualification records are not production approval/activation or spawn
+   integration. Preserve exact-candidate/live-owner checks; do not synthesize a baseline
+   receipt from factual CLI output.
 2. Complete Phases 3–4 integration: bind the implemented services/hooks to actual
    native policy, protected caller/check/Git evidence and existing sole-writer
    capacity/admission/launch owners. Implement the trusted terminal reconstruction
@@ -249,7 +297,7 @@ its default publication still requires a real native artifact/evidence binding.
 ```sh
 corepack pnpm --filter @pa-platform/pa-core typecheck
 corepack pnpm exec tsx --test packages/pa-core/src/__tests__/prepared-workflow.test.ts packages/pa-core/src/__tests__/treehouse-ticket-concurrency.test.ts packages/pa-core/src/__tests__/execution-custody.test.ts packages/pa-core/src/__tests__/phase-report.test.ts packages/pa-core/src/artifacts/__tests__/render.test.ts
-corepack pnpm exec tsx --test --test-concurrency=1 packages/pi-pa/src/__tests__/pi-prepared-workflow.test.ts packages/pi-pa/src/__tests__/pi-execution-custody.test.ts packages/pi-pa/src/__tests__/pi-phase-report.test.ts packages/pi-pa/src/__tests__/treehouse-runtime.test.ts
+corepack pnpm exec tsx --test --test-concurrency=1 packages/pi-pa/src/__tests__/prepared-native.test.ts packages/pi-pa/src/__tests__/pi-prepared-workflow.test.ts packages/pi-pa/src/__tests__/pi-execution-custody.test.ts packages/pi-pa/src/__tests__/pi-phase-report.test.ts packages/pi-pa/src/__tests__/treehouse-runtime.test.ts
 corepack pnpm exec tsx --test scripts/dev/validate_prepared_workflow.test.mts
 ```
 
