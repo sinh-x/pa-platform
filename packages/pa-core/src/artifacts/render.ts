@@ -20,19 +20,23 @@ import {
 /** Bump for any byte-affecting parsing, allowlist, presentation or anchor change.
  * marked 18.0.2 is lock-bound; parser upgrades require a renderer-version bump. */
 export const ARTIFACT_RENDERER_VERSION = "pa-artifact-renderer/v1";
+export const ARTIFACT_READING_RENDERER_VERSION = "pa-phase-reading-renderer/v1";
 
 // No marked HTML output is trusted. Only these fixed tags are emitted, with
 // escaped text and locally computed attributes. Unknown constructs stay text.
-function inline(tokens: Token[]): string {
+function inline(tokens: Token[], readingLink?: (href: string) => boolean): string {
   return tokens.map((input) => {
     const token = input as MarkedToken;
     switch (token.type) {
-      case "strong": return `<strong>${inline(token.tokens)}</strong>`;
-      case "em": return `<em>${inline(token.tokens)}</em>`;
+      case "strong": return `<strong>${inline(token.tokens, readingLink)}</strong>`;
+      case "em": return `<em>${inline(token.tokens, readingLink)}</em>`;
       case "codespan": return `<code>${escapeArtifactText(token.text)}</code>`;
       case "br": return "<br>";
       case "escape": return escapeArtifactText(token.text);
-      case "text": return token.tokens ? inline(token.tokens) : escapeArtifactText(token.text);
+      case "text": return token.tokens ? inline(token.tokens, readingLink) : escapeArtifactText(token.text);
+      case "link": return readingLink?.(token.href)
+        ? `<a href="${escapeArtifactText(token.href)}" rel="noreferrer">${inline(token.tokens, readingLink)}</a>`
+        : escapeArtifactText(input.raw);
       // Links, images, HTML, math and all unsupported syntax are inert literal
       // text, never href/src/style/DOM markup. Even fragment links stay inert.
       default: return escapeArtifactText(input.raw);
@@ -40,20 +44,20 @@ function inline(tokens: Token[]): string {
   }).join("");
 }
 
-function block(input: Token): string {
+function block(input: Token, readingLink?: (href: string) => boolean): string {
   const token = input as MarkedToken;
   switch (token.type) {
     case "space": return "";
-    case "heading": return `<h${token.depth}>${inline(token.tokens)}</h${token.depth}>`;
-    case "paragraph": return `<p>${inline(token.tokens)}</p>`;
-    case "text": return token.tokens ? inline(token.tokens) : escapeArtifactText(token.text);
+    case "heading": return `<h${token.depth}>${inline(token.tokens, readingLink)}</h${token.depth}>`;
+    case "paragraph": return `<p>${inline(token.tokens, readingLink)}</p>`;
+    case "text": return token.tokens ? inline(token.tokens, readingLink) : escapeArtifactText(token.text);
     case "code": return `<pre><code>${escapeArtifactText(token.text)}</code></pre>`;
     case "list": {
       const tag = token.ordered ? "ol" : "ul";
       const start = token.ordered && Number.isSafeInteger(token.start) ? ` start="${token.start}"` : "";
-      return `<${tag}${start}>${token.items.map((item) => `<li>${item.task ? (item.checked ? "[x] " : "[ ] ") : ""}${item.tokens.map(block).join("")}</li>`).join("")}</${tag}>`;
+      return `<${tag}${start}>${token.items.map((item) => `<li>${item.task ? (item.checked ? "[x] " : "[ ] ") : ""}${item.tokens.map((child) => block(child, readingLink)).join("")}</li>`).join("")}</${tag}>`;
     }
-    case "table": return `<table><thead><tr>${token.header.map((cell) => `<th>${inline(cell.tokens)}</th>`).join("")}</tr></thead><tbody>${token.rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell.tokens)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    case "table": return `<table><thead><tr>${token.header.map((cell) => `<th>${inline(cell.tokens, readingLink)}</th>`).join("")}</tr></thead><tbody>${token.rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell.tokens, readingLink)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
     default: return `<pre>${escapeArtifactText(input.raw)}</pre>`;
   }
 }
@@ -63,6 +67,24 @@ function block(input: Token): string {
  * 1-based inclusive, CRLF/lone CR count as one newline, trailing blanks excluded.
  * A fresh Lexer prevents process-global marked extensions from changing output. */
 export function renderMarkdown(source: Uint8Array, sourceRef: string): { html: Buffer; anchors: ArtifactAnchor[] } {
+  return renderMarkdownInternal(source, sourceRef);
+}
+
+/** Separate reading view. Allowed files are native-verified report-relative public
+ * companions. This pure renderer grants no filesystem or Lavish authority. */
+export function renderReadingMarkdown(source: Uint8Array, sourceRef: string, allowedRelativeLinks: readonly string[] = []): { html: Buffer; anchors: ArtifactAnchor[] } {
+  const anchors = new Set(renderMarkdown(source, sourceRef).anchors.map((anchor) => anchor.id));
+  const safePath = (path: string) => /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(path)
+    && path.split("/").every((part) => Boolean(part) && !part.startsWith(".") && !part.endsWith(".lock"));
+  if (allowedRelativeLinks.some((path) => !safePath(path))) throw artifactDiagnostic("ARTIFACT_POLICY_REJECTED");
+  const allowed = new Set(allowedRelativeLinks);
+  return renderMarkdownInternal(source, sourceRef, (href) => {
+    const [path, fragment, extra] = href.split("#");
+    if (extra !== undefined || !path && !fragment || fragment !== undefined && !anchors.has(fragment)) return false;
+    return path === "" ? fragment !== undefined : path !== undefined && safePath(path) && allowed.has(path);
+  });
+}
+function renderMarkdownInternal(source: Uint8Array, sourceRef: string, readingLink?: (href: string) => boolean): { html: Buffer; anchors: ArtifactAnchor[] } {
   assertArtifactAbsolutePath(sourceRef);
   const markdown = decodeArtifactSource(source).replace(/\r\n|\r/g, "\n");
   const tokens = new Lexer({ gfm: true, breaks: false, pedantic: false }).lex(markdown);
@@ -89,15 +111,15 @@ export function renderMarkdown(source: Uint8Array, sourceRef: string): { html: B
       const gap = markdown.slice(offset, position);
       append(gap, `<pre>${escapeArtifactText(gap)}</pre>`);
     }
-    append(token.raw, block(token));
+    append(token.raw, block(token, readingLink));
   }
   if (offset < markdown.length) {
     const gap = markdown.slice(offset);
     append(gap, `<pre>${escapeArtifactText(gap)}</pre>`);
   }
   const styleHash = createHash("sha256").update(ARTIFACT_STYLE).digest("base64");
-  const csp = `default-src 'none'; script-src 'none'; style-src 'sha256-${styleHash}'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'`;
-  const html = Buffer.from(`<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeArtifactText(csp)}"><meta name="referrer" content="no-referrer"><title>Markdown companion</title><style>${ARTIFACT_STYLE}</style></head><body><aside class="authority">Companion only. Authoritative Markdown: <code>${escapeArtifactText(sourceRef)}</code>. Feedback is not approval.</aside><main>${content.join("\n")}</main></body></html>\n`, "utf8");
+  const csp = `default-src 'none'; script-src 'none'; style-src 'sha256-${styleHash}'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; navigate-to '${readingLink ? "self" : "none"}'`;
+  const html = Buffer.from(`<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeArtifactText(csp)}"><meta name="referrer" content="no-referrer"><title>Markdown companion</title>${readingLink ? `<meta name="pa-reading-renderer" content="${ARTIFACT_READING_RENDERER_VERSION}">` : ""}<style>${ARTIFACT_STYLE}</style></head><body><aside class="authority">Companion only. Authoritative Markdown: <code>${escapeArtifactText(sourceRef)}</code>. Feedback is not approval.</aside><main>${content.join("\n")}</main></body></html>\n`, "utf8");
   return { html, anchors };
 }
 

@@ -61,11 +61,17 @@ test("trusted entrypoint registers only selected editors while preserving attrib
   const registered: string[] = [];
   const commands: string[] = [];
   const shortcuts: string[] = [];
-  registerPiPaExtension({
-    registerTool: (tool) => registered.push(tool.name),
-    registerCommand: (name) => { commands.push(name); },
-    registerShortcut: (shortcut) => { shortcuts.push(shortcut); },
-  });
+  // Registration is mode-scoped. Verify the legacy baseline independently of
+  // the deployment running this test; dedicated suites cover the new modes.
+  const originalEnvironment = process.env;
+  process.env = { ...originalEnvironment, PA_TEAM: "fixture", PA_MODE: "fixture" };
+  try {
+    registerPiPaExtension({
+      registerTool: (tool) => registered.push(tool.name),
+      registerCommand: (name) => { commands.push(name); },
+      registerShortcut: (shortcut) => { shortcuts.push(shortcut); },
+    });
+  } finally { process.env = originalEnvironment; }
   assert.equal(PI_EXAMPLE_VERSION, "0.80.8");
   assert.deepEqual(PI_EXAMPLE_SOURCES, [
     "examples/extensions/question.ts",

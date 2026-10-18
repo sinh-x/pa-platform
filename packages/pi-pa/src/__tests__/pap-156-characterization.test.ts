@@ -478,7 +478,12 @@ test("failure fixtures preserve causal categories and original content within ex
 test("managed Pi fixture covers built-ins and every registered PA tool", () => {
   const fixture = loadFixture();
   const registered: string[] = [];
-  registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) });
+  // This frozen characterization fixture is the legacy loadout, not the
+  // caller's deployment mode. Optional mode-specific tools have dedicated tests.
+  const originalEnvironment = process.env;
+  process.env = { ...originalEnvironment, PA_TEAM: "fixture", PA_MODE: "fixture" };
+  try { registerPiPaExtension({ registerTool: (tool) => registered.push(tool.name) }); }
+  finally { process.env = originalEnvironment; }
   assert.deepEqual(["read", "bash", ...registered].sort(), [...fixture.managedTools].sort());
 });
 

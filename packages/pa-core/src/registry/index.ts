@@ -567,6 +567,41 @@ export function advanceParentAuthoritySnapshot(options: AdvanceParentAuthoritySn
   }).immediate();
 }
 
+export interface AdvanceDirectAuthoritySnapshotOptions {
+  deploymentId: string;
+  repoRoot: string;
+  worktreeRoot: string;
+  ticket: string;
+  expectedBranchHeadSha: string;
+  branchHeadSha: string;
+  timestamp?: string;
+}
+/** Mutable projection only, called by the existing direct-owner worktree
+ * transaction after its protected snapshot is persisted. Never invent a child
+ * finalization or rewrite immutable launch history to reconcile a direct commit. */
+export function advanceDirectAuthoritySnapshot(options: AdvanceDirectAuthoritySnapshotOptions): void {
+  const db = getDb();
+  db.transaction(() => {
+    const current = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(options.deploymentId) as Record<string, unknown> | undefined;
+    const started = db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started' ORDER BY id LIMIT 1").get(options.deploymentId) as Record<string, unknown> | undefined;
+    const fail = (): never => { throw new DeploymentCorrelationConflictError(correlationConflictDiagnostic("direct owner projection conflicts with the running role, physical binding or expected predecessor; preserve custody")); };
+    if (!current || !started) return fail();
+    const bindings = ["team", "mode", "runtime", "binary", "builder_authority", "parent_deployment_id", "repo", "repo_root", "worktree_root", "ticket_id", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_base_sha", "ticket_slot_id", "repository_permit"];
+    if (current.status !== "running" || started.team !== "builder" || started.mode !== "orchestrator" || started.runtime !== "pi" || started.binary !== "ppa"
+      || started.builder_authority !== "orchestrator" || started.parent_deployment_id != null || bindings.some((key) => current[key] !== started[key])
+      || current.repo_root !== options.repoRoot || current.worktree_root !== options.worktreeRoot || current.repo !== options.worktreeRoot || current.ticket_id !== options.ticket
+      || current.branch_state !== "materialized" || !/^[0-9a-f]{40}$/.test(options.expectedBranchHeadSha) || !/^[0-9a-f]{40}$/.test(options.branchHeadSha)) return fail();
+    const note = `direct-owner-authority:${options.expectedBranchHeadSha}:${options.branchHeadSha}`;
+    if (current.branch_head_sha !== options.expectedBranchHeadSha) {
+      if (current.branch_head_sha === options.branchHeadSha && db.prepare("SELECT id FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND note = ? AND branch_head_sha = ?").get(options.deploymentId, note, options.branchHeadSha)) return;
+      return fail();
+    }
+    const event: RegistryEvent = { deployment_id: options.deploymentId, team: "builder", event: "updated", timestamp: options.timestamp ?? new Date().toISOString(), note,
+      branch_state: "materialized", branch_base_sha: String(current.branch_base_sha), branch_head_sha: options.branchHeadSha };
+    validateRegistryEvent(event); assertEventMatchesStartedIdentity(db, event); insertRegistryEvent(db, event); upsertDeployment(db, event);
+  }).immediate();
+}
+
 export function appendRegistryEvent(event: RegistryEvent): void {
   if (event.event === "ticket-associated") throw new Error("Use associateDeploymentTicket for ticket-associated events");
   validateRegistryEvent(event);
@@ -683,6 +718,14 @@ export function readRegistry(): RegistryEvent[] {
 export function getDeploymentEvents(deployId: string): RegistryEvent[] {
   const db = getDb();
   return (db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(deployId) as Record<string, unknown>[]).map(fromRow);
+}
+
+/** Existing-only launch evidence: native binding reads must not initialize or
+ * migrate the registry, unlike the ordinary administrative event reader. */
+export function queryReadonlyDeploymentEvents(deployId: string): RegistryEvent[] {
+  const db = openReadonlyRegistryDatabase();
+  try { return (db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(deployId) as Record<string, unknown>[]).map(fromRow); }
+  finally { db.close(); }
 }
 
 export function queryDeploymentStatuses(): DeploymentStatus[] {

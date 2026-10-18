@@ -72,7 +72,8 @@ export function readPiProcessIdentity(deploymentId: string, deploymentDirectory:
 /** Bind the registry's Pi-child incarnation separately from launcher/supervisor custody. */
 export function recordPiReadonlyRoleProcessIdentity(env: NodeJS.ProcessEnv, deploymentId: string, deploymentDirectory: string, pid: number): void {
   if ((env["PA_TEAM"] === "builder" && ["orchestrator", "implement", "worker"].includes(env["PA_MODE"] ?? ""))
-    || (env["PA_TEAM"] === "requirements" && env["PA_MODE"] === "review-auto")) {
+    || (env["PA_TEAM"] === "requirements" && env["PA_MODE"] === "review-auto")
+    || env["PA_TEAM"] === "rogue-one") {
     recordPiProcessIdentity(deploymentId, deploymentDirectory, pid);
   }
 }

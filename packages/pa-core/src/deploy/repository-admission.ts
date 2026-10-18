@@ -23,13 +23,14 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { queryDeploymentStatus } from "../registry/index.js";
+import { advanceDirectAuthoritySnapshot, queryDeploymentStatus } from "../registry/index.js";
 import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
+import { withPreparedRepositoryTicketOwner, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
 
 export const REPOSITORY_REVIEW_RESERVATION_FILE = "pa-repository-review.reservation.json";
 
@@ -484,6 +485,80 @@ function repositoryLeaseLocation(canonicalRepoRoot: string, worktreeRoot: string
   const leasePath = join(gitDir, linked && slot === "implement" ? REPOSITORY_IMPLEMENT_LEASE_FILE : REPOSITORY_MUTATION_LEASE_FILE);
   const mutexPath = linked ? resolve(gitDir, REPOSITORY_SLOT_MUTEX_ANCHOR) : leasePath;
   return { root, worktree, gitDir, leasePath, mutexPath, linked };
+}
+
+/**
+ * Internal preparation owner, nested ONLY under the repository capacity owner.
+ * Uses the existing mutation-slot mutex; any lease/borrower/review evidence,
+ * including stale or malformed evidence, blocks without cleanup or adoption.
+ * This lock is not an approval, source authority or a generic agent entry point.
+ */
+export function withVacantPreparationWorktree<T>(canonicalRepoRoot: string, worktreeRoot: string, capacityOwner: PreparedTicketCapacityTransaction, operation: () => T): T {
+  return withPreparedRepositoryTicketOwner(capacityOwner, canonicalRepoRoot, () => {
+    const location = repositoryLeaseLocation(canonicalRepoRoot, worktreeRoot, "orchestrator");
+    if (!location.linked) throw new Error("preparation requires a distinct linked worktree");
+    const common = repositoryPhysicalGitCommonDir(location.worktree);
+    if (common !== repositoryPhysicalGitCommonDir(location.root)) throw new Error("preparation worktree common directory conflicts with canonical identity");
+    return withMutationMutex(location.mutexPath, () => {
+      const assertVacant = (): void => {
+        assertExpectedGitIdentity(location.worktree, location.gitDir, common);
+        for (const name of [REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+          try { lstatSync(join(location.gitDir, name)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          throw new Error("preparation worktree has retained execution or review custody; preserve it for its owner");
+        }
+      };
+      assertVacant();
+      const result = operation();
+      if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("preparation worktree callback must be synchronous");
+      assertVacant();
+      return result;
+    });
+  });
+}
+
+export interface ExecutionWorktreeTransaction {
+  /** Native direct-holder settlement only; never rewrites the immutable launch snapshot. */
+  advanceDirectSnapshot(input: { deploymentId: string; ownershipToken: string; expected: RepositoryGitSnapshot; next: RepositoryGitSnapshot }): void;
+}
+/** Existing lock composition for native execution: capacity -> worktree. This
+ * wrapper is not authority; the native host must authenticate each command. */
+export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, worktreeRoot: string, capacityOwner: PreparedTicketCapacityTransaction, operation: (transaction: ExecutionWorktreeTransaction) => T): T {
+  return withPreparedRepositoryTicketOwner(capacityOwner, canonicalRepoRoot, () => {
+    const location = repositoryLeaseLocation(canonicalRepoRoot, worktreeRoot, "orchestrator");
+    const common = repositoryPhysicalGitCommonDir(location.worktree);
+    if (!location.linked || common !== repositoryPhysicalGitCommonDir(location.root)) throw new Error("native execution requires the exact linked repository");
+    return withMutationMutex(location.mutexPath, () => {
+      let active = true;
+      const transaction: ExecutionWorktreeTransaction = Object.freeze({ advanceDirectSnapshot(input: Parameters<ExecutionWorktreeTransaction["advanceDirectSnapshot"]>[0]) {
+        if (!active) throw new Error("native execution transaction expired");
+        assertExpectedGitIdentity(location.worktree, location.gitDir, common);
+        const inspection = inspectLeaseUnlocked(location.root, location.leasePath, readProcessFingerprint);
+        const lease = inspection.lease;
+        if (inspection.state !== "live" || !lease || lease.deploymentId !== input.deploymentId || lease.mode !== "orchestrator" || lease.runtime !== "pi"
+          || !secureStringsEqual(lease.ownershipToken, input.ownershipToken) || !isCompleteGitSnapshot(input.next)
+          || !repositoryGitSnapshotsEqual(lease.authorityGitSnapshot ?? lease.preLaunchGitSnapshot, input.expected)
+          || input.next.branch !== input.expected.branch || queryDeploymentStatus(input.deploymentId)?.status !== "running") throw new Error("native direct settlement identity conflicts");
+        for (const name of [REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+          try { lstatSync(join(location.gitDir, name)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+          throw new Error("native direct settlement has overlapping custody");
+        }
+        if (!repositoryGitSnapshotsEqual(captureRepositoryGitSnapshot(location.worktree), input.next)) throw new Error("native direct settlement Git drift");
+        // Non-descendant/rebase adoption needs its explicit scope/base verifier;
+        // this direct owner primitive never infers that authorization.
+        execFileSync("git", ["--no-optional-locks", "merge-base", "--is-ancestor", input.expected.head, input.next.head], { cwd: location.worktree, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+        const next = { ...lease, authorityGitSnapshot: Object.freeze({ ...input.next }), authorityUpdatedAt: new Date().toISOString() };
+        // A direct operation is not a fabricated child finalization. Historical
+        // child evidence remains in its original records, not this new mapping.
+        delete next.authorityChildDeploymentId;
+        replaceLeaseAtomic(location.leasePath, Object.freeze(next), randomUUID);
+        advanceDirectAuthoritySnapshot({ deploymentId: input.deploymentId, repoRoot: location.root, worktreeRoot: location.worktree, ticket: lease.ticket!,
+          expectedBranchHeadSha: input.expected.head, branchHeadSha: input.next.head, timestamp: next.authorityUpdatedAt });
+      } });
+      try { const result = operation(transaction); if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("native execution transaction must be synchronous"); return result; }
+      finally { active = false; }
+    });
+  });
 }
 
 export function repositoryReviewReservationPath(worktreeRoot: string): string {

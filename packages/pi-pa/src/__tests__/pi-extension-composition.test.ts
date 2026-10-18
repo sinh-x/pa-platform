@@ -8,7 +8,7 @@ import registerProperBase from "../../vendor/proper-pi-extensions/proper-base/in
 import {
   createPiPaModules,
   createPiSessionLifecycle,
-  registerPiSessionModules,
+  registerPiSessionModules as registerSessionModules,
 } from "../pi-extension/index.js";
 import type { BundledEditorFactory } from "../pi-extension/bundled-editors.js";
 import {
@@ -28,6 +28,14 @@ type ScheduledCallback = () => void;
 const VIM_FACTORY: BundledEditorFactory = { name: "pi-vimmode", version: "0.9.0", register: registerPiVimMode };
 const PROPER_FACTORY: BundledEditorFactory = { name: "proper-base", version: "0.5.0", register: registerProperBase };
 const BOTH_EDITOR_MODULES = createPiPaModules([VIM_FACTORY, PROPER_FACTORY]);
+
+// Editor composition fixtures assert the legacy loadout, independent of the
+// surrounding PA deployment. Dedicated runtime suites verify each optional mode.
+function registerPiSessionModules(...args: Parameters<typeof registerSessionModules>): void {
+  const original = process.env;
+  process.env = { ...original, PA_TEAM: "fixture", PA_MODE: "fixture" };
+  try { registerSessionModules(...args); } finally { process.env = original; }
+}
 
 async function captureScheduled(run: () => Promise<void>): Promise<ScheduledCallback[]> {
   const scheduled: ScheduledCallback[] = [];
