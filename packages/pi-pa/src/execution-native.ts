@@ -8,7 +8,7 @@ import {
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
-  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion,
+  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
 import { createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
 import { readPiProcessIdentity } from "./process-identity.js";
@@ -94,6 +94,15 @@ export interface NativeToolResult {
   settlementError: string | null;
   sdkError: NativeBlob | null;
   unprovenProcess: SourceVersion | null;
+}
+export interface NativeExecutionReportFacts {
+  readonly state: ExecutionState;
+  readonly snapshot: RepositoryGitSnapshot;
+  readonly checks: readonly PhaseReportCheck[];
+  readonly scopeProven: boolean;
+  readonly diff: Buffer;
+  readonly omissions: readonly string[];
+  readonly pendingResult: SourceVersion | null;
 }
 export interface NativeExecutionOptions {
   readonly authority?: PiPreparedNativeAuthority;
@@ -403,6 +412,49 @@ export class NativeExecutionSession {
     return { evidence: source, candidateSha: row.after.git.head, failure: row.exitCode === 0 ? null : {
       check: state.operation.check ?? `@operation:${state.operation.kind}`, command: intent.command, exitCode: row.exitCode, candidateSha: state.candidateSha, output: source,
     } };
+  }
+  /** Native report input, never a model-supplied check list or path classifier.
+   * Historical results remain labelled with their original candidate. Unknown
+   * scope/in-flight work yields metadata only, not guessed safe diff contents. */
+  reportFacts(): NativeExecutionReportFacts {
+    this.assertCaller({ cwd: process.cwd() });
+    const state = this.service.status(this.actor);
+    const snapshot = captureRepositoryGitSnapshot(this.contract.worktreeRoot, git);
+    let scopeProven = false;
+    try { scopeProven = state.operation === null && equal(captureNativeScope(this.contract.worktreeRoot), this.#known(state)); } catch { /* retained unknown scope, not an empty inventory */ }
+    const checks: PhaseReportCheck[] = [];
+    for (let sequence = 1; sequence <= state.sequence; sequence += 1) {
+      const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
+      if (event.command.action !== "finish") continue;
+      const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
+      const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
+      if (intent.executionId !== this.service.executionId || !equal(intent.actor, this.actor) || result.scopeValid !== true
+        || (intent.toolName === "bash" && (!result.process || result.process.groupSettled !== true))) throw workflowError();
+      if (result.process) { this.evidence.blob(result.process.stdout); this.evidence.blob(result.process.stderr); }
+      if (result.sdkError) this.evidence.blob(result.sdkError);
+      checks.push({ command: intent.command, candidateSha: intent.before.git.head, state: result.exitCode === 0 ? "passed" : "failed", exitCode: result.exitCode, output: event.command.evidence });
+    }
+    const omissions: string[] = [];
+    let diff = Buffer.alloc(0);
+    if (scopeProven && state.plan) {
+      const arguments_ = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", this.contract.initialHeadSha, "--", ...state.plan.paths];
+      const pieces = [git(arguments_, this.contract.worktreeRoot)];
+      for (const entry of snapshot.statusEntries ?? []) {
+        if (entry.kind !== "untracked") continue;
+        if (!state.plan.paths.includes(entry.path)) throw workflowError();
+        scopedPath(this.contract.worktreeRoot, entry.path);
+        try { pieces.push(git(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--", "/dev/null", entry.path], this.contract.worktreeRoot)); }
+        catch (error) { const failure = error as { status?: number; stdout?: Buffer }; if (failure.status !== 1 || !Buffer.isBuffer(failure.stdout)) throw error; pieces.push(failure.stdout); }
+      }
+      diff = Buffer.concat(pieces);
+      if (diff.length > 1_048_576) throw workflowError(); // no silent truncation of the full companion
+      if (diff.includes(Buffer.from("Binary files "))) omissions.push("Binary patch bytes are omitted; Git binary-change metadata and the private content inventory are retained.");
+    } else omissions.push("Full diff omitted: current source scope or operation settlement is unproven. Preserve all work for its owner.");
+    let pendingResult: SourceVersion | null = null;
+    if (state.operation) { try { pendingResult = this.#resultSource(state.operation.id); } catch { omissions.push("The started operation has no durable native result; no terminal cause or process death is inferred."); } }
+    if (!equal(snapshot, captureRepositoryGitSnapshot(this.contract.worktreeRoot, git))) throw workflowError();
+    this.assertCaller({ cwd: process.cwd() });
+    return Object.freeze({ state, snapshot, checks: Object.freeze(checks), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
   }
   publicText(value: string): string {
     const owner = observeReadonlyRepositoryAuthority(this.#physical.gitDir).owner;

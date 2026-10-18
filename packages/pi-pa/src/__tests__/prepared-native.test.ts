@@ -284,6 +284,9 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       assert.equal(failed.failed, true);
       const original = session.service.status(session.actor).originalFailure!;
       assert.equal(original.exitCode, 2); assert.equal(original.command, "corepack pnpm typecheck");
+      const failedFacts = session.reportFacts();
+      assert.equal(failedFacts.scopeProven, true); assert.equal(failedFacts.checks.at(-1)?.exitCode, 2);
+      assert.match(failedFacts.diff.toString(), /src\/file\.ts/); assert.match(failedFacts.diff.toString(), /value = 2/);
       const raw = session.evidence.read(original.output, "tool-result") as { process: { stdout: Parameters<typeof session.evidence.blob>[0] } };
       assert.match(session.evidence.blob(raw.process.stdout).toString(), /native-test-private-output-value/);
       await settle(); await control({ action: "attempt", evidence: await observe("recovery") });
@@ -299,6 +302,10 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       const committed = session.service.status(session.actor);
       assert.equal(committed.candidateSha, f.git(["rev-parse", "HEAD"], f.checkout)); assert.notEqual(committed.candidateSha, beforeCanonical);
       assert.equal(committed.binding.initialHeadSha, beforeCanonical); assert.deepEqual(committed.passedChecks, {});
+      const reportFacts = session.reportFacts();
+      assert.equal(reportFacts.scopeProven, true); assert.equal(reportFacts.snapshot.head, committed.candidateSha);
+      assert.ok(reportFacts.checks.some((check) => check.exitCode === 2)); assert.ok(reportFacts.checks.some((check) => check.exitCode === 0));
+      assert.match(reportFacts.diff.toString(), /value = 2/); assert.match(reportFacts.diff.toString(), /package.json/);
       await settle(); assert.equal(session.service.status(session.actor).custody.state, "idle");
       assert.equal((await runtime.dispatch("tool_call", { toolName: "bash", toolCallId: "force-denied", input: { command: "git push --force origin HEAD" } }, context) as { block: boolean }).block, true);
       assert.equal(f.git(["rev-parse", "HEAD"]), beforeCanonical); assert.equal(f.gets(), 1);
@@ -372,6 +379,7 @@ test("native SDK exit zero with a remaining process group cannot clear the durab
       const session = adapter.resolve(context)!;
       const row = session.evidence.read(session.observe("last-result"), "tool-result") as { process: { exitCode: number; groupSettled: boolean } };
       assert.equal(row.process.exitCode, 0); assert.equal(row.process.groupSettled, false);
+      const reportFacts = session.reportFacts(); assert.equal(reportFacts.scopeProven, false); assert.equal(reportFacts.diff.length, 0); assert.ok(reportFacts.pendingResult);
       assert.equal(session.service.status(session.actor).operation?.id, "unsettled"); assert.deepEqual(session.service.status(session.actor).passedChecks, {});
       await assert.rejects(control({ action: "settle", evidence: (await control({ action: "observe", kind: "inventory" })).details.evidence }));
     } catch (error) { bodyFailure = error; throw error; }

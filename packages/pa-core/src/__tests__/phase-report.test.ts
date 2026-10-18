@@ -60,6 +60,23 @@ test("AC14/15 strict cross-mode corpus covers all outcomes and honest no-commit/
   assert.throws(() => parsePhaseReport({ ...input, identity: { ...input.identity, phaseId: "../../escape" } }));
 });
 
+test("native full safe diff is fixed-path, source-bound, immutable and verified on settlement", () => fixture((f) => {
+  const diff = Buffer.from("diff --git a/a.ts b/a.ts\n+bounded source\n");
+  f.host.resolvePublicDiff = () => diff;
+  const input = report("partial"); const value = { ...input, sections: { ...input.sections, diff: `[Full safe diff](diff.patch) SHA-256 ${workflowDigest(diff)}` } };
+  const receipt = f.service.publish(value);
+  assert.deepEqual(readFileSync(join(f.path(), "diff.patch")), diff);
+  assert.match(readFileSync(join(f.path(), "report.html"), "utf8"), /href="diff.patch"/);
+  assert.equal(f.service.settle(receipt).canonicalEvidenceAvailable, true);
+  f.host.resolvePublicDiff = () => Buffer.from("conflicting diff"); assert.throws(() => f.service.publish(value));
+  writeFileSync(join(f.path(), "diff.patch"), "tampered"); assert.throws(() => f.service.settle(receipt));
+}));
+
+test("unsafe or oversized native diff cannot persist public report bytes", () => fixture((f) => {
+  f.host.resolvePublicDiff = () => Buffer.from("SECRET-SENTINEL"); assert.throws(() => f.service.publish(report())); assert.equal(existsSync(f.path()), false);
+  f.host.resolvePublicDiff = () => Buffer.alloc(1_048_577, 65); assert.throws(() => f.service.publish(report())); assert.equal(existsSync(f.path()), false);
+}));
+
 test("AC15 failed/no-commit and unknown checks are evidence, never fabricated passes", () => fixture((f) => {
   const input = report("failed");
   const failed = { ...input, checks: [{ ...input.checks[0]!, state: "failed" as const, exitCode: 2 }], sections: { ...input.sections, failures: "Original exact command exit 2; remedy/recheck not run. Unknown cause retained." } };

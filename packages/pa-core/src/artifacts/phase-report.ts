@@ -60,6 +60,8 @@ export interface PhaseReportHost {
   authorize(action: "publish" | "settle", identity: PhaseReportIdentity): void;
   /** Check full Git inventory (both rename endpoints), original failures, exact commands/results and reconstruction origins. */
   verifyReport(report: PhaseReport): void;
+  /** Native source-bound full safe text diff. Fixed companion only; no caller path. */
+  resolvePublicDiff?(report: PhaseReport): Buffer;
   /** Redact private/unrelated/secret content BEFORE public persistence. Must be deterministic. */
   sanitize(markdown: string): string;
   /** Existing sensitive-pattern checks plus native private-value inventory; never a model-provided allow flag. */
@@ -223,12 +225,20 @@ export class PhaseReportService {
       const report = parsePhaseReport(input);
       assertNative(() => this.host.authorize("publish", report.identity)); assertNative(() => this.host.verifyReport(report));
       const source = Buffer.from(text(native(() => this.host.sanitize(phaseReportMarkdown(report))), WORKFLOW_OUTPUT_LIMITS.markdown));
-      const html = renderReadingMarkdown(source, this.#source(report.identity), ["report.md"]).html;
+      const diff = this.host.resolvePublicDiff ? native(() => this.host.resolvePublicDiff!(report)) : null;
+      if (diff !== null && (!Buffer.isBuffer(diff) || diff.length > WORKFLOW_OUTPUT_LIMITS.markdown)) throw workflowError();
+      if (diff !== null) assertNative(() => this.host.assertPublic(diff));
+      const html = renderReadingMarkdown(source, this.#source(report.identity), this.#links()).html;
       if (html.length > WORKFLOW_OUTPUT_LIMITS.html) throw workflowError();
       assertNative(() => this.host.assertPublic(source)); assertNative(() => this.host.assertPublic(html));
       const receipt = parseReceipt({ schemaVersion: "phase-report-receipt/v1", identity: report.identity, reportId: phaseReportIdentity(report.identity), outcome: report.outcome, sourceSha256: workflowDigest(source), htmlSha256: workflowDigest(html) });
       const manifest = Buffer.from(`${JSON.stringify(receipt)}\n`); assertNative(() => this.host.assertPublic(manifest));
       this.#directory(report.identity, true, (fd) => {
+        if (diff !== null) {
+          const diffManifest = Buffer.from(`${JSON.stringify({ schemaVersion: "phase-report-diff/v1", reportId: receipt.reportId, sourceSha256: receipt.sourceSha256, sha256: workflowDigest(diff) })}\n`);
+          assertNative(() => this.host.assertPublic(diffManifest));
+          publishAbsent(fd, "diff.patch", diff, WORKFLOW_OUTPUT_LIMITS.markdown); publishAbsent(fd, "diff.json", diffManifest, 65_536);
+        }
         publishAbsent(fd, "report.md", source, WORKFLOW_OUTPUT_LIMITS.markdown);
         publishAbsent(fd, "report.html", html, WORKFLOW_OUTPUT_LIMITS.html);
         publishAbsent(fd, "report.json", manifest, 65_536);
@@ -236,13 +246,20 @@ export class PhaseReportService {
       this.#verify(receipt); assertNative(() => this.host.index(receipt)); return receipt;
     } catch { throw workflowError(); }
   }
+  #links(): readonly string[] { return this.host.resolvePublicDiff ? ["report.md", "diff.patch"] : ["report.md"]; }
   #verify(receipt: PhaseReportReceipt): void {
     this.#directory(receipt.identity, false, (fd) => {
       const source = readPublic(fd, "report.md", WORKFLOW_OUTPUT_LIMITS.markdown); const html = readPublic(fd, "report.html", WORKFLOW_OUTPUT_LIMITS.html);
       const manifest = readPublic(fd, "report.json", 65_536);
       if (workflowDigest(source) !== receipt.sourceSha256 || workflowDigest(html) !== receipt.htmlSha256 || !manifest.equals(Buffer.from(`${JSON.stringify(receipt)}\n`))
-        || !renderReadingMarkdown(source, this.#source(receipt.identity), ["report.md"]).html.equals(html)) throw workflowError();
+        || !renderReadingMarkdown(source, this.#source(receipt.identity), this.#links()).html.equals(html)) throw workflowError();
       assertNative(() => this.host.assertPublic(source)); assertNative(() => this.host.assertPublic(html));
+      if (this.host.resolvePublicDiff) {
+        const diff = readPublic(fd, "diff.patch", WORKFLOW_OUTPUT_LIMITS.markdown);
+        const row = workflowObject(JSON.parse(readPublic(fd, "diff.json", 65_536).toString("utf8")), ["schemaVersion", "reportId", "sourceSha256", "sha256"]);
+        if (row.schemaVersion !== "phase-report-diff/v1" || row.reportId !== receipt.reportId || row.sourceSha256 !== receipt.sourceSha256 || row.sha256 !== workflowDigest(diff)) throw workflowError();
+        assertNative(() => this.host.assertPublic(diff));
+      }
     });
   }
   settle(input: PhaseReportReceipt, deliverySources: readonly SourceVersion[] = []): Readonly<Record<string, unknown>> {
