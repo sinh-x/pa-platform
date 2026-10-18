@@ -5,7 +5,7 @@ import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  parsePreparationContract, parseReviewMatrix, parseReviewEvidenceJson, parseSourceVersion, preparationIdentity, ProtectedWorkflowStore,
+  parsePreparationContract, parseReviewMatrix, parseReviewEvidenceJson, parseSourceVersion, parseExecutionCustody, preparationIdentity, ProtectedWorkflowStore,
   readNativePreparationRetry, readReviewEvidenceFile, requireTicketLinkedBranch, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   workflowDigest, workflowError, workflowObject, workflowPath, workflowSha, workflowText, workflowTimestamp, loadRepoEntry,
   readProcessFingerprint, TicketStore, type PreparedReceipt, type PreparationContract, type SourceVersion, type Ticket, type ProcessFingerprint,
@@ -149,6 +149,41 @@ export class PiPreparedNativeAuthority {
   }
   #store(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "native"), create); }
   operations(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "operations"), create); }
+  execution(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "execution"), create); }
+  evidenceRoot(): string { return join(this.root, "execution"); }
+  /** Retained adopted lineages may finish/settle/report after revocation. This
+   * never authorizes a new source operation or upgrades a different runtime. */
+  retained(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot" | "ticket">, grantId: string): { grant: NativePreparationGrant; active: boolean } {
+    const store = this.#store(); if (!store) throw workflowError();
+    const id = workflowSha(grantId); const row = workflowObject(store.read(`${id}.intent.json`), ["schemaVersion", "policyId", "grantId", "contract", "deploymentId", "callerIdentity", "capturedAt"]);
+    const contract = parsePreparationContract(row.contract);
+    if (row.schemaVersion !== "prepared-native-grant/v1" || row.grantId !== id || contract.repoKey !== caller.repoKey || contract.repoRoot !== caller.repoRoot || contract.ticket !== caller.ticket
+      || row.policyId !== this.#policyId(caller, this.#facts())) throw workflowError();
+    if (id !== workflowDigest(JSON.stringify(["prepared-native-grant/v1", row.policyId, caller.ticket, contract.requirements, contract.uat, contract.finalChecks, contract.matrix]))) throw workflowError();
+    const grant: NativePreparationGrant = Object.freeze({ schemaVersion: "prepared-native-grant/v1", policyId: workflowSha(row.policyId), grantId: id, contract,
+      deploymentId: workflowText(row.deploymentId), callerIdentity: workflowSha(row.callerIdentity), capturedAt: workflowTimestamp(row.capturedAt) });
+    let active = false;
+    if (this.#policy(caller)) {
+      try { active = equal(this.promoted({ ...caller, deploymentId: grant.deploymentId, callerIdentity: grant.callerIdentity }, contract.requirements.ref, id), contract); }
+      catch { active = false; }
+    }
+    return { grant, active };
+  }
+  retainedConsumer(grant: NativePreparationGrant, reference: SourceVersion, deploymentId: string): NativePreparedConsumer {
+    const store = this.operations(); if (!store) throw workflowError(); const ref = parseSourceVersion(reference);
+    const match = /^native-prepared-consumer:([0-9a-f]{64})$/.exec(ref.ref);
+    if (!match || ref.version !== "native-prepared-consumer/v1") throw workflowError();
+    const value = store.read(`${match[1]}.intent.json`);
+    const row = workflowObject(value, ["schemaVersion", "grantId", "operationId", "receiptId", "repoKey", "repoRoot", "ticket", "worktreeRoot", "headSha", "deploymentId", "deploymentDirectory", "process", "slotToken", "capturedAt"]);
+    if (row.schemaVersion !== ref.version || workflowDigest(JSON.stringify(value)) !== ref.sha256 || row.grantId !== grant.grantId || row.operationId !== preparationIdentity(grant.contract)
+      || row.repoKey !== grant.contract.repoKey || row.repoRoot !== grant.contract.repoRoot || row.ticket !== grant.contract.ticket || row.deploymentId !== deploymentId
+      || row.deploymentDirectory !== join(this.aiUsageRoot, "deployments", deploymentId)
+      || match[1] !== workflowDigest(JSON.stringify(["native-prepared-consumer/v1", grant.grantId, row.receiptId, deploymentId]))) throw workflowError();
+    workflowSha(row.receiptId); workflowSha(row.headSha, 40); workflowPath(row.worktreeRoot); workflowText(row.slotToken); workflowTimestamp(row.capturedAt);
+    const holder = parseExecutionCustody({ state: "orchestrator-direct", holder: { deploymentId, process: row.process }, inFlightOperation: null });
+    if (!holder.holder) throw workflowError();
+    return Object.freeze({ ...(value as NativePreparedConsumer), process: holder.holder.process });
+  }
   tickets(): TicketStore { return new TicketStore(join(this.aiUsageRoot, "tickets")); }
   #facts(): PreparedNativeRuntime { return runtime(this.#runtime()); }
   #policyId(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot">, facts: PreparedNativeRuntime): string {
@@ -324,19 +359,11 @@ export class PiPreparedNativeAuthority {
     return reference;
   }
   consumer(caller: PiPreparationCaller, grant: NativePreparationGrant, reference: SourceVersion): NativePreparedConsumer {
-    this.assertCurrent(caller, grant); const store = this.operations(); if (!store) throw workflowError();
-    const ref = parseSourceVersion(reference); const match = /^native-prepared-consumer:([0-9a-f]{64})$/.exec(ref.ref);
-    if (!match || ref.version !== "native-prepared-consumer/v1") throw workflowError();
-    const value = store.read(`${match[1]}.intent.json`);
-    const row = workflowObject(value, ["schemaVersion", "grantId", "operationId", "receiptId", "repoKey", "repoRoot", "ticket", "worktreeRoot", "headSha", "deploymentId", "deploymentDirectory", "process", "slotToken", "capturedAt"]);
+    this.assertCurrent(caller, grant);
+    const record = this.retainedConsumer(grant, reference, caller.deploymentId);
     const process = readProcessFingerprint(globalThis.process.pid);
-    if (row.schemaVersion !== ref.version || workflowDigest(JSON.stringify(value)) !== ref.sha256 || row.grantId !== grant.grantId
-      || row.operationId !== preparationIdentity(grant.contract) || row.repoKey !== caller.repoKey || row.repoRoot !== caller.repoRoot || row.ticket !== caller.ticket
-      || row.deploymentId !== caller.deploymentId || row.deploymentDirectory !== join(this.aiUsageRoot, "deployments", caller.deploymentId) || !process || !equal(row.process, process)
-      || match[1] !== workflowDigest(JSON.stringify(["native-prepared-consumer/v1", grant.grantId, row.receiptId, caller.deploymentId]))) throw workflowError();
-    workflowSha(row.receiptId); workflowSha(row.headSha, 40); workflowPath(row.worktreeRoot); workflowText(row.slotToken);
-    if (workflowTimestamp(row.capturedAt) > workflowTimestamp(this.#now())) throw workflowError();
-    return Object.freeze(value as NativePreparedConsumer);
+    if (!process || !equal(record.process, process) || record.capturedAt > workflowTimestamp(this.#now())) throw workflowError();
+    return record;
   }
   authorize(caller: PiPreparationCaller, grant: NativePreparationGrant, operation: "request" | "retry" | "consume", contract: PreparationContract, evidence: SourceVersion | null): void {
     this.assertCurrent(caller, grant); if (!equal(contract, grant.contract) || operation === "consume") throw workflowError();

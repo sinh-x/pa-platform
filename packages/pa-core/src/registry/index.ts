@@ -685,6 +685,14 @@ export function getDeploymentEvents(deployId: string): RegistryEvent[] {
   return (db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(deployId) as Record<string, unknown>[]).map(fromRow);
 }
 
+/** Existing-only launch evidence: native binding reads must not initialize or
+ * migrate the registry, unlike the ordinary administrative event reader. */
+export function queryReadonlyDeploymentEvents(deployId: string): RegistryEvent[] {
+  const db = openReadonlyRegistryDatabase();
+  try { return (db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(deployId) as Record<string, unknown>[]).map(fromRow); }
+  finally { db.close(); }
+}
+
 export function queryDeploymentStatuses(): DeploymentStatus[] {
   const db = getDb();
   return sortDeploymentsByStartedAt((db.prepare("SELECT * FROM deployments").all() as Record<string, unknown>[]).map(deploymentFromRow));

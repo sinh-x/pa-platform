@@ -19,6 +19,8 @@ import {
 } from "@pa-platform/pa-core";
 import { TreehouseClient, deriveTreehouseLeaseHolder, type TreehouseLeaseEvidence } from "../treehouse.js";
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
+import { PiNativeExecutionAdapter } from "../execution-native.js";
+import { registerNativeExecutionBuiltins } from "../native-execution-tools.js";
 import type { PiExtensionModule, PiSessionLifecycle, PiToolCall, PiToolDefinition, PiToolResult } from "./index.js";
 
 const APPROVE_RETRY = "Retry this unchanged preparation once";
@@ -498,7 +500,10 @@ export interface PiExecutionBinding {
   /** Match exact approved shell check command; null for ordinary operations. */
   resolveCheck(call: PiToolCall, state: ExecutionState): string | null;
   /** Prove check/process termination and resolve private output/Git records, not tool text claims. */
-  resolveToolResult(event: PiExecutionEndEvent, state: ExecutionState): { evidence: SourceVersion; failure: ExecutionFailure | null };
+  resolveToolResult(event: PiExecutionEndEvent, state: ExecutionState): { evidence: SourceVersion; failure: ExecutionFailure | null; candidateSha?: string };
+  /** Native immutable pre-dispatch record, never supplied by the model. */
+  prepareOperation?(call: PiToolCall, context: unknown, state: ExecutionState, operationId: string): SourceVersion;
+  observe?(kind: string): SourceVersion;
   resolveHolder(source: SourceVersion): ExecutionHolder;
   resolveInventory(source: SourceVersion): ExecutionRecoveryInventory;
   resolveRecovery(source: SourceVersion): ExecutionRecovery;
@@ -520,6 +525,7 @@ export interface PiExecutionOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** null ONLY for never-adopted legacy lineages. Retained adopted bindings must survive revocation. */
   readonly resolveBinding?: (context: unknown) => PiExecutionBinding | null;
+  readonly nativeAdapter?: PiNativeExecutionAdapter;
 }
 const EvidenceParams = Type.Object({ ref: Type.String(), version: Type.String(), sha256: Type.String({ pattern: "^[0-9a-f]{64}$" }) }, { additionalProperties: false });
 const PlanParams = Type.Object({ phaseId: Type.String(), scope: Type.String(), paths: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }),
@@ -527,6 +533,7 @@ const PlanParams = Type.Object({ phaseId: Type.String(), scope: Type.String(), p
   checks: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }), size: Type.String(), complexity: Type.String(), rationale: Type.String() }, { additionalProperties: false });
 export const PiExecutionParams = Type.Union([
   Type.Object({ action: Type.Literal("status") }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("observe"), kind: Type.Union([Type.Literal("holder"), Type.Literal("inventory"), Type.Literal("last-result"), Type.Literal("recovery")]) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("plan"), plan: PlanParams }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("select"), executor: Type.Union([Type.Literal("orchestrator-direct"), Type.Literal("implement-child"), Type.Literal("review-reserved")]), holder: EvidenceParams, handover: EvidenceParams }, { additionalProperties: false }),
   ...["settle", "attempt", "resolve", "candidate"].map((action) => Type.Object({ action: Type.Literal(action), evidence: EvidenceParams }, { additionalProperties: false })),
@@ -565,7 +572,9 @@ function operationKind(name: string): ExecutionOperationKind {
 export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExtensionModule {
   return (pi, lifecycle) => {
     const env = { ...(options.env ?? process.env) };
-    const resolver = options.resolveBinding ?? (() => null);
+    const native = options.resolveBinding || env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "") ? null : options.nativeAdapter ?? new PiNativeExecutionAdapter();
+    const resolver = options.resolveBinding ?? ((context) => native?.resolve(context)?.binding ?? null);
+    if (native) registerNativeExecutionBuiltins(pi, native, lifecycle);
     const pending = new Map<string, { binding: PiExecutionBinding; name: string }>();
     let adopted = false; let closing = false;
     lifecycle?.addShutdownStep(() => { closing = true; });
@@ -592,6 +601,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
           const binding = control(context); const { service, actor } = binding;
           const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
           if (action === "status") { workflowObject(input, ["action"]); return executionResult(projectExecution(service.status(actor))); }
+          if (action === "observe") { const row = workflowObject(input, ["action", "kind"]); if (!binding.observe || !["holder", "inventory", "last-result", "recovery"].includes(String(row.kind))) throw workflowError(); return executionResult({ evidence: nativeExecutionCall(() => binding.observe!(String(row.kind))) }); }
           let command: ExecutionCommand;
           if (action === "plan") { const row = workflowObject(input, ["action", "plan"]); command = { action, plan: parseExecutionPlan(row.plan) }; }
           else if (action === "select") {
@@ -644,7 +654,8 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         const resolvedCheck = nativeExecutionCall(() => binding.resolveCheck(call, state));
         const check = resolvedCheck === null ? null : workflowText(resolvedCheck);
         if (check !== null && !["bash", "shell", "execute"].includes(name)) throw workflowError();
-        binding.service.apply(binding.actor, { action: "begin", operation: { id, kind: check === null ? operationKind(name) : "check", check, intent: null } });
+        const intent = binding.prepareOperation ? nativeExecutionCall(() => binding.prepareOperation!(call, context, state, id)) : null;
+        binding.service.apply(binding.actor, { action: "begin", operation: { id, kind: check === null ? operationKind(name) : "check", check, intent } });
         pending.set(id, { binding, name });
       } catch { return { block: true, reason: workflowError().message }; }
     });
@@ -659,7 +670,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
       const result = nativeExecutionCall(() => fresh.resolveToolResult(event, state));
       // A native error cannot be laundered into a passing operation by tool text.
       if (typeof event.isError !== "boolean" || (event.isError && !result.failure)) throw workflowError();
-      fresh.service.apply(fresh.actor, { action: "finish", operationId: event.toolCallId, evidence: parseEvidence(result.evidence), failure: result.failure });
+      fresh.service.apply(fresh.actor, { action: "finish", operationId: event.toolCallId, evidence: parseEvidence(result.evidence), failure: result.failure, ...(result.candidateSha !== undefined ? { candidateSha: result.candidateSha } : {}) });
       pending.delete(event.toolCallId);
       } catch { throw workflowError(); }
     });

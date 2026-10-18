@@ -30,6 +30,8 @@ export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
   effectiveTimeoutSeconds?: number;
   rogueOne?: boolean;
   invocationChannel?: DeploymentInvocationChannel;
+  /** Native launch correlation/audit locator only, never an authority flag. */
+  note?: string;
 }
 
 /**
@@ -60,6 +62,7 @@ export function emitStartedEvent(opts: StartDeploymentOpts): void {
     effective_timeout_seconds: opts.effectiveTimeoutSeconds,
     rogue_one: opts.rogueOne,
     invocation_channel: opts.invocationChannel,
+    note: opts.note,
   });
 }
 

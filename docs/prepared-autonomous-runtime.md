@@ -22,6 +22,12 @@ lease, checkout allocation or return is changed by this implementation.
 - `packages/pi-pa/src/prepared-native.ts`: concrete fixed-location native
   policy/grant resolution, exact promoted-pair/13-check/matrix validation and
   native operator capture. This separates authority IO from tool/resource IO.
+- `packages/pi-pa/src/native-execution-evidence.ts`: private original stdout/stderr,
+  pre-dispatch process-incarnation/group frames, bounded output and retained native
+  failure evidence. A printed success string cannot establish a successful check.
+- `packages/pi-pa/src/execution-native.ts` and `native-execution-tools.ts`: concrete
+  consumed-lineage direct-holder binding and lower Pi SDK write/edit/bash evidence
+  producers. Unsupported executors/actions stop; this is not full Phase-3 acceptance.
 - `packages/pi-pa/src/pi-extension/prepared-workflow.ts`: mode-scoped preparation,
   execution/feature-update/report tools, actual Pi custody hooks, native retry
   capture, caller correlation and a fixed Treehouse/Git preparation host adapter.
@@ -34,7 +40,9 @@ fixed protected storage and verifies current promoted bytes; it no longer instal
 an unconditional null resolver. **No live policy has been activated.** Protected
 exact-revision qualification/activation/grant records are absent, so ordinary status
 remains inactive and mutation requests reject before resource effects. The native
-qualification producer and execution/report evidence adapters are still incomplete.
+qualification producer and full execution/report integration remain incomplete.
+The default execution resolver now supplies a concrete direct-holder adapter for
+qualified consumed lineages; default report publication still has no native producer.
 The actual orchestrator launcher now consumes authenticated ready records and
 persists pre-spawn correlation; this is locally fixture-tested, not live-qualified. No public receipt or environment
 flag supplies native authority. Tests exercise actual dispatch, source files, Git
@@ -161,6 +169,12 @@ Local actual-deploy fixtures cover one allocation during preparation, same-permi
 foreground consumption, preflight rejection and retained terminal capacity.
 Supervisor-transfer compatibility is tested at the existing slot owner; actual
 installed/background/parent-child qualification remains acceptance work.
+Consumed launches now bind a digest locator in the existing immutable registry
+started-event note. This is not a grant: missing or contradictory correlation
+fails closed, including after extension reload, instead of becoming legacy mode.
+Only consumed native launches use the 120-minute default execution window (whole
+minutes, 60–240 minutes). Invalid explicit bounds reject before consumption;
+unrequested/legacy launches retain their existing timeout behavior.
 
 ## Concrete native preparation authority
 
@@ -251,6 +265,52 @@ execution is rejected for a bound lineage because that event has no supported
 source-bound completion barrier. This is a managed tool boundary, not an OS
 sandbox or control of arbitrary external terminal processes.
 
+### Concrete native direct-holder increment
+
+A real consumed launch must authenticate its private grant/consumer, immutable
+registry locator, original Pi launch fingerprint, live registry/capacity/lease,
+physical linked checkout and unchanged source/runtime policy. The direct adapter
+uses the existing capacity → worktree mutex composition. Only after authenticated
+session startup does it replace the actual SDK write/edit/bash implementations;
+never-adopted/inactive sessions keep their original built-ins. Revocation blocks
+new source work but retains status, existing result settlement and the journal.
+Source/context/correlation drift never supplies a fresh binding or resets bounds.
+
+`pa_execution observe` produces native holder, inventory, last-result and recovery
+references; no tool accepts a caller's process, command-result or novelty flags.
+Write/edit lower operations use dirfd-relative no-follow traversal and reject
+hardlinks. Before another source action, full NUL status, both rename endpoints,
+changed-file content hashes and current HEAD must match the last native result.
+Unknown/unrelated changes are retained and block progress, even if a plan names
+those paths. A scoped descendant commit advances only the mutable owner snapshot,
+preserving the immutable launch snapshot and without manufacturing child evidence.
+Every intervening commit's changed paths are checked, not merely the net tip diff.
+The native execution status carries the current candidate; ordinary registry launch
+correlation is not represented as a new independent source controller.
+
+Named developer checks are currently typecheck/build/test/completions/secrets-scan
+with fixed commands. These are **not** the full approved matrix or review/CI/UAT.
+Original process channels remain private, with 16-MiB per-channel bounds; a limit,
+timeout, abort or unproven group never becomes a passing check. Public SDK output
+is redacted before logs/temporary output; unknown sensitive-pattern extent withholds
+that output rather than leaking the remainder of a private key. Failed non-check
+operations have separate implicit failure channels, not fabricated named passes.
+A native failed recheck can open a bounded retry, incrementing no-progress. This
+adapter deliberately claims no semantic diagnosis/remedy novelty. Only a fresh
+matching successful action/check can resolve that original failure.
+
+Process frames are fsynced while the child waits before dispatch. Observed remaining
+process-group members retain the started barrier, including after leader exit zero.
+This manages the recorded group, **not arbitrary detached/escaped descendants**;
+escaped-descendant custody and trusted terminal reconstruction remain qualification
+work. There is no OS-sandbox or complete sole-writer acceptance claim here.
+
+Native delegation/review reservations, semantic-progress evidence, rebase adoption,
+privileged feature update, cross-phase transitions and independent acceptance
+producers remain unsupported. The actual parented launcher refuses an adopted
+native parent before borrower/spawn effects until its native launch producer is
+delivered; it cannot quietly use legacy admission to bypass the new barrier.
+
 `pa_feature_update` persists native exact-candidate/expected-HEAD intent, then uses
 only fixed `origin`/ticket-feature argv with explicit force-with-lease, no mirror,
 no tag following and no recursive submodule push. It verifies remote and local
@@ -304,15 +364,16 @@ its default publication still requires a real native artifact/evidence binding.
    not production activation or installed qualification. Prepared resume/migration
    is not silently inferred; unsupported transitions retain resources and stop.
    Never synthesize a protected receipt from factual CLI output.
-2. Complete Phases 3–4 integration: bind the implemented services/hooks to actual
-   native policy, protected caller/check/Git evidence and existing sole-writer
-   capacity/admission/launch owners. Implement the trusted terminal reconstruction
-   and safe full-diff producers, cross-phase lineage-bound handoff and actual
-   browser/Obsidian observation adapters. Current execution journals deliberately
-   reject changing phase via a plan edit; they are not an independent multi-phase
-   controller or proof of production sole-writer enforcement. Positive local
-   fixtures use explicit native-owner fakes; actual installed integration and
-   phase acceptance remain unverified.
+2. Complete Phases 3–4 integration beyond the native direct-holder increment:
+   implement native delegated/review/feature-update/rebase and semantic-progress
+   producers, escaped-descendant/terminal settlement, safe full-diff/report
+   production, cross-phase lineage-bound handoff and actual browser/Obsidian
+   observation adapters (including ticketless rogue-one). Current journals reject
+   changing phase via a plan edit; they are not an independent multi-phase
+   controller or proof of production sole-writer enforcement. The direct fixture
+   now traverses actual launch, SDK filesystem/process operations, native records,
+   registry and existing owners, while qualification and Treehouse responses remain
+   isolated fixtures. Installed integration and phase acceptance remain unverified.
 3. Phase 5: finish the isolated runner, paired migration/rollback fixtures, exports,
    tool packaging and complete automated AC coverage. The existing runner still
    intentionally rejects all ten matrix expansions.
@@ -327,7 +388,7 @@ its default publication still requires a real native artifact/evidence binding.
 ```sh
 corepack pnpm --filter @pa-platform/pa-core typecheck
 corepack pnpm exec tsx --test packages/pa-core/src/__tests__/prepared-workflow.test.ts packages/pa-core/src/__tests__/treehouse-ticket-concurrency.test.ts packages/pa-core/src/__tests__/execution-custody.test.ts packages/pa-core/src/__tests__/phase-report.test.ts packages/pa-core/src/artifacts/__tests__/render.test.ts
-corepack pnpm exec tsx --test --test-concurrency=1 packages/pi-pa/src/__tests__/prepared-native.test.ts packages/pi-pa/src/__tests__/pi-prepared-workflow.test.ts packages/pi-pa/src/__tests__/pi-execution-custody.test.ts packages/pi-pa/src/__tests__/pi-phase-report.test.ts packages/pi-pa/src/__tests__/treehouse-runtime.test.ts
+corepack pnpm exec tsx --test --test-concurrency=1 packages/pi-pa/src/__tests__/prepared-native.test.ts packages/pi-pa/src/__tests__/native-execution-evidence.test.ts packages/pi-pa/src/__tests__/pi-prepared-workflow.test.ts packages/pi-pa/src/__tests__/pi-execution-custody.test.ts packages/pi-pa/src/__tests__/pi-phase-report.test.ts packages/pi-pa/src/__tests__/treehouse-runtime.test.ts
 corepack pnpm exec tsx --test scripts/dev/validate_prepared_workflow.test.mts
 ```
 

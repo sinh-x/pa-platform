@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
@@ -63,6 +63,19 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   assert.equal(caught.code, code);
   return caught;
 }
+
+test("native launch event observation is existing-only and never initializes or rewrites registry state", () => {
+  withAssociationFixture(({ root }) => {
+    const path = join(root, "registry.db");
+    assert.throws(() => queryReadonlyDeploymentEvents("d-aabbcc")); assert.equal(existsSync(path), false);
+    appendRegistryEvent({ deployment_id: "d-aabbcc", team: "rogue-one", event: "started", timestamp: "2026-10-17T00:00:00Z", runtime: "pi", binary: "ppa", note: "audit locator only; not native authority" });
+    closeDb(); const before = readFileSync(path); const time = statSync(path).mtimeMs;
+    const observed = queryReadonlyDeploymentEvents("d-aabbcc");
+    assert.equal(observed.length, 1); assert.equal(observed[0]?.note, "audit locator only; not native authority");
+    assert.deepEqual(readFileSync(path), before); assert.equal(statSync(path).mtimeMs, time);
+    assert.deepEqual(queryReadonlyDeploymentEvents("d-not-present"), []);
+  });
+});
 
 test("selection-only registry lifecycle preserves branch and dual roots without builder correlation", () => {
   withAssociationFixture(({ canonicalRoot }) => {

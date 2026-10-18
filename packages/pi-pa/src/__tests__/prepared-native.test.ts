@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, linkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { closeDb, getDeploymentEvents, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
-import { deployWithPi } from "../deploy.js";
+import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
-import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
+import { PiNativeExecutionAdapter } from "../execution-native.js";
+import { recordPiProcessIdentity } from "../process-identity.js";
+import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, createPiExecutionModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
 import { interceptToolCall, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
 const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40);
 const facts: PreparedNativeRuntime = { sourceSha: sha, packageVersion: "fixture", configSha: "b".repeat(40), storeRoot: "/fixture/immutable-runtime" };
@@ -169,7 +171,7 @@ test("insecure private records and qualified-runtime drift are not fallback auth
   assert.throws(() => qualified.resolve(f.caller));
 }));
 
-async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; service: PreparedWorkflowService; gets: () => number; deploy: (onSpawn?: (options: SpawnOpts) => void, preflight?: () => Promise<void>) => ReturnType<typeof deployWithPi>; git: (args: string[], cwd?: string) => string }) => unknown | Promise<unknown>) {
+async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; service: PreparedWorkflowService; gets: () => number; deploy: (onSpawn?: (options: SpawnOpts) => void | Promise<void>, preflight?: () => Promise<void>) => ReturnType<typeof deployWithPi>; git: (args: string[], cwd?: string) => string }) => unknown | Promise<unknown>) {
   const previous = process.env; process.env = { ...previous };
   for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   try {
@@ -201,11 +203,11 @@ async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: s
       const host = createPiPreparationHost(grant.contract, { treehouse, ticketStore: f.authority.tickets(), authorize: (op, contract, evidence) => f.authority.authorize(f.caller, grant, op, contract, evidence), assertCurrentBindings: () => f.authority.assertCurrent(f.caller, grant), now: () => time });
       const service = new PreparedWorkflowService(store, host); assert.equal(service.request(grant.contract).state, "ready");
       process.env.PA_AI_USAGE_HOME = f.ai; process.env.PA_REGISTRY_DB = join(f.ai, "registry.db"); process.env.PA_PLATFORM_HOME = f.root;
-      save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
-      const deploy = (onSpawn?: (opts: SpawnOpts) => void, preflight = async () => {}) => {
+      save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n  - id: implement\n    label: Implement\n    require_ticket: true\n");
+      const deploy = (onSpawn?: (opts: SpawnOpts) => void | Promise<void>, preflight = async () => {}) => {
         const adapter: RuntimeAdapter & { preflight: () => Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "native-fixture-session", preflight,
           installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "fixture tools" }), extractActivity: () => [],
-          spawn(opts) { onSpawn?.(opts); return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
+          async spawn(opts) { await onSpawn?.(opts); return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
           resume() { throw new Error("unexpected resume"); } };
         return deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: "fixture-repo", provider: "openai-codex", model: "gpt-6.1-sol", objective: "Native prepared launch fixture" }, adapter, undefined, { treehouse, preparedAuthority: f.authority });
       };
@@ -213,6 +215,114 @@ async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: s
     });
   } finally { closeDb(); process.env = previous; }
 }
+
+function executionRuntime() {
+  const tools = new Map<string, PiToolDefinition>();
+  const handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
+  const pi = { registerTool(tool: PiToolDefinition) { tools.set(tool.name, tool); }, on(name: string, handler: (event: unknown, context: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as PiRuntime;
+  return { pi, tools, async dispatch(name: string, event: unknown, context: unknown) { for (const handler of handlers.get(name) ?? []) { const result = await handler(event, context); if (result !== undefined) return result; } } };
+}
+
+test("native real launch -> actual SDK write/edit/bash -> private results, bounded recovery and commit settlement", () => resourceFixture(async (f) => {
+  const beforeCanonical = f.git(["rev-parse", "HEAD"]); const previousCwd = process.cwd();
+  const manager = JSON.parse(readFileSync(new URL("../../../../package.json", import.meta.url), "utf8")).packageManager;
+  f.git(["config", "commit.gpgsign", "false"]); f.git(["config", "core.hooksPath", join(f.root, "empty-hooks")]); mkdirSync(join(f.root, "empty-hooks"));
+  let bodyFailure: unknown;
+  const launched = await f.deploy(async (opts) => {
+    const previousEnv = process.env; process.env = { ...previousEnv, ...opts.env, TEST_PRIVATE_TOKEN: "native-test-private-output-value" }; process.chdir(f.checkout);
+    try {
+      assert.equal(opts.executionPlan?.timeoutSeconds, 7200);
+      assert.equal(recordPiProcessIdentity(opts.deployId, join(f.ai, "deployments", opts.deployId), process.pid), true); opts.onPid?.(process.pid);
+      const adapter = new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
+      const runtime = executionRuntime(); const context = { cwd: f.checkout };
+      createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi);
+      await runtime.dispatch("session_start", {}, context);
+      assert.deepEqual([...runtime.tools.keys()], ["pa_execution", "pa_feature_update", "bash", "write", "edit"]);
+      const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+      const observe = async (kind: string) => (await control({ action: "observe", kind })).details.evidence as SourceVersion;
+      const select = async () => { const holder = await observe("holder"); await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
+      const settle = async () => control({ action: "settle", evidence: await observe("inventory") });
+      let sequence = 0;
+      const execute = async (name: string, input: Record<string, unknown>, claimedSuccess = false) => {
+        const id = `native-${++sequence}`;
+        assert.equal(await runtime.dispatch("tool_call", { toolName: name, toolCallId: id, input }, context), undefined);
+        let result: unknown; let failed = false;
+        try { result = await runtime.tools.get(name)!.execute(id, input, undefined, undefined, context); } catch (error) { failed = true; result = String(error); }
+        try { await runtime.dispatch("tool_execution_end", { toolName: name, toolCallId: id, result: claimedSuccess ? { exitCode: 0, text: "PASS, regardless of real exit" } : result, isError: claimedSuccess ? false : failed }, context); }
+        catch (error) {
+          const proof = session.evidence.read(session.observe("last-result"), "tool-result") as { scopeValid: boolean; settlementError: string | null; process: { groupSettled: boolean } | null };
+          assert.fail(`Native end rejected: ${JSON.stringify({ scopeValid: proof.scopeValid, settlementError: proof.settlementError, groupSettled: proof.process?.groupSettled })}; ${String(error)}`);
+        }
+        return { result, failed };
+      };
+      assert.equal((await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "unplanned", input: { path: "src/file.ts", content: "no" } }, context) as { block: boolean }).block, true);
+      await control({ action: "plan", plan: { phaseId: "phase-3", scope: "isolated native direct fixture", paths: ["src/file.ts", "package.json"], requirements: ["AC8", "AC10"], prerequisites: [], checks: ["typecheck"], size: "bounded", complexity: "bounded", rationale: "Exercise direct native custody; not installed qualification." } });
+      await select();
+      const session = adapter.resolve(context)!;
+      // An invented completion cannot close a real started operation.
+      const write = { path: "src/file.ts", content: "export const value = 1;\n" };
+      assert.equal(await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "native-write", input: write }, context), undefined);
+      await assert.rejects(runtime.dispatch("tool_execution_end", { toolName: "write", toolCallId: "native-write", result: { text: "success" }, isError: false }, context));
+      assert.equal(session.service.status(session.actor).operation?.id, "native-write");
+      mkdirSync(join(f.checkout, "src"));
+      const canonicalBytes = readFileSync(join(f.repo, "README.md"));
+      for (const alias of [symlinkSync, linkSync]) {
+        alias(join(f.repo, "README.md"), join(f.checkout, "src/file.ts"));
+        await assert.rejects(runtime.tools.get("write")!.execute("native-write", write, undefined, undefined, context));
+        assert.deepEqual(readFileSync(join(f.repo, "README.md")), canonicalBytes);
+        assert.equal(session.service.status(session.actor).operation?.id, "native-write");
+        unlinkSync(join(f.checkout, "src/file.ts"));
+      }
+      rmdirSync(join(f.checkout, "src"));
+      await runtime.tools.get("write")!.execute("native-write", write, undefined, undefined, context);
+      await runtime.dispatch("tool_execution_end", { toolName: "write", toolCallId: "native-write", result: { text: "not authoritative" }, isError: false }, context);
+      assert.equal(readFileSync(join(f.checkout, "src/file.ts"), "utf8"), write.content);
+      await execute("edit", { path: "src/file.ts", edits: [{ oldText: "value = 1", newText: "value = 2" }] });
+      const packageJson = (exit: number) => JSON.stringify({ name: "native-fixture", packageManager: manager, scripts: { typecheck: `node -e \"console.log(process.env.TEST_PRIVATE_TOKEN);process.exit(${exit})\"` } });
+      await execute("write", { path: "package.json", content: packageJson(2) });
+      const failed = await execute("bash", { command: "corepack pnpm typecheck", timeout: 30 }, true);
+      assert.equal(failed.failed, true);
+      const original = session.service.status(session.actor).originalFailure!;
+      assert.equal(original.exitCode, 2); assert.equal(original.command, "corepack pnpm typecheck");
+      const raw = session.evidence.read(original.output, "tool-result") as { process: { stdout: Parameters<typeof session.evidence.blob>[0] } };
+      assert.match(session.evidence.blob(raw.process.stdout).toString(), /native-test-private-output-value/);
+      await settle(); await control({ action: "attempt", evidence: await observe("recovery") });
+      assert.equal(session.service.status(session.actor).bounds.consecutiveNoProgress, 1);
+      await assert.rejects(observe("recovery")); // no fresh recheck; no artificial counter-burning/novelty
+      await select(); await execute("write", { path: "package.json", content: packageJson(0) });
+      const passed = await execute("bash", { command: "corepack pnpm typecheck", timeout: 30 });
+      assert.equal(passed.failed, false); assert.doesNotMatch(JSON.stringify(passed.result), /native-test-private-output-value/); assert.match(JSON.stringify(passed.result), /REDACTED/);
+      await settle(); await control({ action: "resolve", evidence: await observe("last-result") });
+      assert.equal(session.service.status(session.actor).originalFailure, null);
+      await select(); await execute("bash", { command: "git add -- package.json src/file.ts" });
+      await execute("bash", { command: "git commit -m 'tested native fixture'" });
+      const committed = session.service.status(session.actor);
+      assert.equal(committed.candidateSha, f.git(["rev-parse", "HEAD"], f.checkout)); assert.notEqual(committed.candidateSha, beforeCanonical);
+      assert.equal(committed.binding.initialHeadSha, beforeCanonical); assert.deepEqual(committed.passedChecks, {});
+      await settle(); assert.equal(session.service.status(session.actor).custody.state, "idle");
+      assert.equal((await runtime.dispatch("tool_call", { toolName: "bash", toolCallId: "force-denied", input: { command: "git push --force origin HEAD" } }, context) as { block: boolean }).block, true);
+      assert.equal(f.git(["rev-parse", "HEAD"]), beforeCanonical); assert.equal(f.gets(), 1);
+      const child = await deployWithPi({ team: "builder", mode: "implement", background: true, ticket: "PAP-256", repo: "fixture-repo", provider: "openai-codex", model: "gpt-6.1-sol", objective: "Must stop at native launch owner, not old admission" }, undefined, undefined, { treehouse: f.treehouse, preparedAuthority: f.authority });
+      assert.equal(child.status, "failed"); assert.match(child.reason ?? "", /prepared workflow stopped/);
+      assert.equal(getDeploymentEvents(child.deploymentId!).some((event) => event.event === "started"), false); assert.equal(f.gets(), 1);
+      const correlationPath = join(f.ai, "deployments", opts.deployId, "prepared-consumption.json");
+      const correlationBytes = readFileSync(correlationPath); unlinkSync(correlationPath);
+      assert.throws(() => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } }).resolve(context));
+      assert.throws(() => adapter.resolve(context)); // durable start locator prevents a fresh-module legacy fallback
+      writeFileSync(correlationPath, correlationBytes, { mode: 0o600 });
+      // Revocation retains audit/settlement evidence, never falls back to legacy
+      // mutation, and a same-process module reload reads the retained journal.
+      f.authority.deactivate(f.caller);
+      assert.equal(adapter.resolve(context)!.service.status(session.actor).custody.state, "idle");
+      const reloaded = new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } }).resolve(context)!;
+      assert.equal(reloaded.service.status(reloaded.actor).candidateSha, committed.candidateSha);
+      await assert.rejects(select());
+    } catch (error) { bodyFailure = error; throw error; }
+    finally { process.chdir(previousCwd); process.env = previousEnv; }
+  });
+  if (bodyFailure) throw bodyFailure;
+  assert.equal(launched.status, "success", launched.reason); assert.equal(f.git(["rev-parse", "HEAD"]), beforeCanonical);
+}));
 
 test("AC6 real deploy consumes the same native prepared permit, persists correlation before spawn, and never allocates/materializes again", () => resourceFixture(async (f) => {
   assert.equal(f.gets(), 1); const beforeTicket = readFileSync(f.ticketPath); const beforeCanonical = f.git(["rev-parse", "HEAD"]); let spawns = 0;
@@ -235,6 +345,49 @@ test("AC6 real deploy consumes the same native prepared permit, persists correla
   const retained = withPreparedTicketCapacity({ canonicalRepoKey: "fixture-repo", canonicalRepoRoot: f.repo }, (tx) => tx.inventory());
   assert.equal(retained.length, 1); assert.equal("occupancy" in retained[0]! && retained[0].occupancy, "settled-retained");
   const duplicate = await f.deploy(() => { spawns++; }); assert.equal(duplicate.status, "failed"); assert.equal(spawns, 1); assert.equal(f.gets(), 1);
+}));
+
+test("native SDK exit zero with a remaining process group cannot clear the durable tool barrier", () => resourceFixture(async (f) => {
+  const previousCwd = process.cwd(); const manager = JSON.parse(readFileSync(new URL("../../../../package.json", import.meta.url), "utf8")).packageManager;
+  let bodyFailure: unknown;
+  const launched = await f.deploy(async (opts) => {
+    const previousEnv = process.env; process.env = { ...previousEnv, ...opts.env }; process.chdir(f.checkout);
+    try {
+      recordPiProcessIdentity(opts.deployId, join(f.ai, "deployments", opts.deployId), process.pid); opts.onPid?.(process.pid);
+      const adapter = new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
+      const runtime = executionRuntime(); const context = { cwd: f.checkout }; createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi);
+      await runtime.dispatch("session_start", {}, context);
+      const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+      await control({ action: "plan", plan: { phaseId: "phase-3", scope: "native unproven group fixture", paths: ["package.json"], requirements: ["AC8"], prerequisites: [], checks: ["typecheck"], size: "bounded", complexity: "process", rationale: "A real surviving group is not a settled check." } });
+      const holder = (await control({ action: "observe", kind: "holder" })).details.evidence;
+      await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder });
+      const file = { path: "package.json", content: JSON.stringify({ name: "native-group-fixture", packageManager: manager, scripts: { typecheck: "sleep 10 >/dev/null 2>&1 & printf done; exit 0" } }) };
+      await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "setup", input: file }, context);
+      await runtime.tools.get("write")!.execute("setup", file, undefined, undefined, context);
+      await runtime.dispatch("tool_execution_end", { toolName: "write", toolCallId: "setup", result: {}, isError: false }, context);
+      const input = { command: "corepack pnpm typecheck", timeout: 15 };
+      assert.equal(await runtime.dispatch("tool_call", { toolName: "bash", toolCallId: "unsettled", input }, context), undefined);
+      await assert.rejects(runtime.tools.get("bash")!.execute("unsettled", input, undefined, undefined, context));
+      await assert.rejects(runtime.dispatch("tool_execution_end", { toolName: "bash", toolCallId: "unsettled", result: { exitCode: 0, text: "PASS" }, isError: false }, context));
+      const session = adapter.resolve(context)!;
+      const row = session.evidence.read(session.observe("last-result"), "tool-result") as { process: { exitCode: number; groupSettled: boolean } };
+      assert.equal(row.process.exitCode, 0); assert.equal(row.process.groupSettled, false);
+      assert.equal(session.service.status(session.actor).operation?.id, "unsettled"); assert.deepEqual(session.service.status(session.actor).passedChecks, {});
+      await assert.rejects(control({ action: "settle", evidence: (await control({ action: "observe", kind: "inventory" })).details.evidence }));
+    } catch (error) { bodyFailure = error; throw error; }
+    finally { process.chdir(previousCwd); process.env = previousEnv; }
+  });
+  if (bodyFailure) throw bodyFailure;
+  assert.equal(launched.status, "success", "fixture adapter process exit only; NOT a passing phase/qualification");
+  assert.equal(f.gets(), 1);
+}));
+
+test("native runtime bounds reject before consumption; existing ready reservation/permit are untouched", () => resourceFixture(async (f) => {
+  const grant = f.authority.resolve(f.caller)!; const before = f.authority.operations()!.records();
+  for (const seconds of [0, 3599, 3601, 14401]) {
+    assert.throws(() => consumePiPreparedBuilderAdmission({ repoKey: f.caller.repoKey, repoRoot: f.repo, ticket: f.caller.ticket, deploymentId: "d-ff0001", deploymentDirectory: join(f.ai, "deployments/d-ff0001"), timeoutSeconds: seconds }, { treehouse: f.treehouse, preparedAuthority: f.authority }));
+  }
+  assert.deepEqual(f.authority.operations()!.records(), before); assert.equal(f.service.status(grant.contract).state, "ready"); assert.equal(f.gets(), 1);
 }));
 
 test("AC6 real prepared deploy rejects dirty candidate before transfer/spawn and retains pending native evidence", () => resourceFixture(async (f) => {

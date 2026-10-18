@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,17 @@ function initializeRepo(root: string): string {
 }
 
 function fingerprint(pid: number): ProcessFingerprint { return { pid, startTimeTicks: `ticks-${pid}`, bootId: "boot" }; }
+
+test("read-only capacity observation neither creates missing storage nor repairs insecure directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-readonly-slot-")); const repo = initializeRepo(root);
+  const directory = join(repo, ".git", "pa-ticket-builder-slots"); const fp = fingerprint(31_999);
+  try {
+    assert.throws(() => observeReadonlyRepositoryTicketSlot(repo, "PAP-1", () => fp)); assert.equal(existsSync(directory), false);
+    const acquired = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", deploymentId: "d-readonly", deploymentDirectory: join(root, "deployment"), pid: fp.pid, processFingerprint: fp, dependencies: { getProcessFingerprint: () => fp } });
+    assert.equal(acquired.status, "acquired"); chmodSync(directory, 0o755);
+    assert.throws(() => observeReadonlyRepositoryTicketSlot(repo, "PAP-1", () => fp)); assert.equal(statSync(directory).mode & 0o777, 0o755);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("ticket slots reject duplicate and fifth live tickets in one repository transaction", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-ticket-slots-"));

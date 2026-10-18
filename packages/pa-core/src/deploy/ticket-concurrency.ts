@@ -61,7 +61,7 @@ export type RepositoryTicketSlotAuthentication =
 export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string,
   getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined = readProcessFingerprint,
 ): { readonly slot: RepositoryTicketSlot; readonly identity: string } {
-  const path = executionSlotPath(canonicalRepoRoot, ticket);
+  const path = executionSlotPath(canonicalRepoRoot, ticket, false);
   const stat = lstatSync(path);
   if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper capacity evidence is not protected");
   const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_TICKET_SLOT_BYTES, "helper capacity");
@@ -290,8 +290,14 @@ function readSlot(path: string): RepositoryTicketSlot | null | undefined {
   if (path.endsWith(".prepared.json")) return preparedSlotView(value);
   return isSlot(value) ? value : null;
 }
-function executionSlotPath(root: string, ticket: string): string {
-  const legacy = repositoryTicketSlotPath(root, ticket); const prepared = preparedRepositoryTicketReservationPath(root, ticket);
+function executionSlotPath(root: string, ticket: string, createDirectory = true): string {
+  const directory = createDirectory ? ticketSlotDirectory(root) : join(physicalGitCommonDir(physicalRoot(root)), REPOSITORY_TICKET_SLOT_DIRECTORY);
+  if (!createDirectory) {
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o7777) !== 0o700 || stat.uid !== process.getuid?.()) throw new Error("helper capacity directory is absent or insecure; no repair permitted");
+  }
+  const name = createHash("sha256").update(required(ticket, "ticket")).digest("hex");
+  const legacy = join(directory, `${name}.json`); const prepared = join(directory, `${name}.prepared.json`);
   const present = (path: string) => { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } };
   const legacyPresent = present(legacy); const preparedPresent = present(prepared);
   if (legacyPresent && preparedPresent) throw new Error(formatBoundedFiveFieldDiagnostic({ condition: "conflicting ticket capacity evidence", source: "native ticket-slot storage",

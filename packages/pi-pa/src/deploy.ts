@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
+import { assertNativePreparedChildLaunchSupported } from "./execution-native.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
@@ -411,6 +412,8 @@ export interface PiDeployDependencies {
 }
 
 export interface PiPreparedBuilderAdmission {
+  readonly timeoutSeconds: number;
+  readonly correlationSha256: string;
   readonly slot: RepositoryTicketSlotHandoff;
   readonly lease: ReturnType<TreehouseClient["authenticatePrepared"]>;
   readonly branch: LinkedBranch & { headSha: string; baseSha: string };
@@ -419,7 +422,7 @@ export interface PiPreparedBuilderAdmission {
 /** Native-only ready selection/consume. No CLI receipt, allocation, materialization,
  * setup approval, or public projection supplies this authority. An absent grant or
  * unrequested intent preserves ordinary independent CLI admission. */
-export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repoRoot: string; ticket: string; deploymentId: string; deploymentDirectory: string }, dependencies: Pick<PiDeployDependencies, "treehouse" | "preparedAuthority"> = {}): PiPreparedBuilderAdmission | undefined {
+export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repoRoot: string; ticket: string; deploymentId: string; deploymentDirectory: string; timeoutSeconds?: number }, dependencies: Pick<PiDeployDependencies, "treehouse" | "preparedAuthority"> = {}): PiPreparedBuilderAdmission | undefined {
   const authority = dependencies.preparedAuthority ?? new PiPreparedNativeAuthority();
   const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint) throw workflowError();
   const caller: PiPreparationCaller = { deploymentId: input.deploymentId, repoKey: input.repoKey, repoRoot: input.repoRoot, ticket: input.ticket,
@@ -449,6 +452,8 @@ export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repo
   const service = new PreparedWorkflowService(store, host); const status = service.status(grant.contract);
   if (status.state === "not-requested") return undefined;
   if (status.state !== "ready" || !status.receipt) throw workflowError();
+  const timeoutSeconds = input.timeoutSeconds ?? 120 * 60;
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 60 * 60 || timeoutSeconds > 240 * 60 || timeoutSeconds % 60 !== 0) throw workflowError();
   receipt = status.receipt;
   consumer = authority.createConsumer(caller, grant, receipt, input.deploymentDirectory);
   const consumed = service.consume(grant.contract, consumer);
@@ -491,7 +496,7 @@ export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repo
       || freshBranch.headSha !== linked.headSha || snapshot.branch !== linked.branch || snapshot.head !== linked.headSha || snapshot.dirty || snapshot.statusPorcelainV2Base64 !== "") throw workflowError();
   };
   reread();
-  return Object.freeze({ slot: handoff, lease, branch: Object.freeze({ ...linked, headSha: linked.headSha, baseSha: linked.baseSha }), reread });
+  return Object.freeze({ timeoutSeconds, correlationSha256: workflowDigest(JSON.stringify(correlation)), slot: handoff, lease, branch: Object.freeze({ ...linked, headSha: linked.headSha, baseSha: linked.baseSha }), reread });
 }
 
 export type { TicketWorktreeSelectionEvidence } from "@pa-platform/pa-core";
@@ -704,7 +709,7 @@ export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHook
 
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
-  const timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
+  let timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
@@ -830,6 +835,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       const ticketId = request.ticket!;
       const parent = builderMode === "implement" ? inheritedAttempt : undefined;
       if (parent && request.background !== true) throw new Error(parentAdmissionDiagnostic("a parented implement launch must be direct background mode", "child launch mode"));
+      if (parent) assertNativePreparedChildLaunchSupported(parent.parentDeploymentDirectory, parent.parentDeploymentId);
       let parentInvocationRepository: ReturnType<typeof resolveRepoExecutionPath> | undefined;
       if (parent) {
         try {
@@ -869,8 +875,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       requireTicketLinkedBranch(ticket, initialRepository.repoKey);
       if (builderMode === "orchestrator" && !request.resume) {
         preparedBuilderAdmission = consumePiPreparedBuilderAdmission({ repoKey: initialRepository.repoKey, repoRoot: initialRepository.repoRoot, ticket: ticketId,
-          deploymentId, deploymentDirectory: deployDir }, dependencies);
-        if (preparedBuilderAdmission) activeTicketSlot = preparedBuilderAdmission.slot;
+          deploymentId, deploymentDirectory: deployDir, timeoutSeconds: request.timeout }, dependencies);
+        if (preparedBuilderAdmission) { activeTicketSlot = preparedBuilderAdmission.slot; timeout = { timeout: preparedBuilderAdmission.timeoutSeconds }; }
       }
       const ownsTicketSlot = builderMode === "orchestrator" || !parent;
       if (ownsTicketSlot && !preparedBuilderAdmission) {
@@ -1138,7 +1144,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}` : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     const containmentFailure = await finalizeActiveRepositoryAuthority(kind === "completed" && status === "success");
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
