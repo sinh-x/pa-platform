@@ -229,7 +229,7 @@ export type ExecutionCommand =
   | { readonly action: "plan"; readonly plan: PhaseExecutionPlan }
   | { readonly action: "select"; readonly executor: "orchestrator-direct" | "implement-child" | "review-reserved"; readonly holder: ExecutionHolder; readonly handover: SourceVersion }
   | { readonly action: "begin"; readonly operation: ExecutionOperation }
-  | { readonly action: "finish"; readonly operationId: string; readonly evidence: SourceVersion; readonly failure: ExecutionFailure | null }
+  | { readonly action: "finish"; readonly operationId: string; readonly evidence: SourceVersion; readonly failure: ExecutionFailure | null; readonly candidateSha?: string }
   | { readonly action: "settle"; readonly evidence: SourceVersion; readonly inventory: ExecutionRecoveryInventory }
   | { readonly action: "attempt"; readonly recovery: ExecutionRecovery }
   | { readonly action: "resolve"; readonly evidence: SourceVersion }
@@ -250,6 +250,7 @@ export interface ExecutionState {
   readonly diagnosticDigests: readonly string[];
   readonly remedyDigests: readonly string[];
   readonly passedChecks: Readonly<Record<string, SourceVersion>>;
+  readonly actionPasses: Readonly<Record<string, SourceVersion>>;
   readonly acceptance: Readonly<Partial<Record<"review" | "ci" | "uat" | "integration", SourceVersion>>>;
 }
 export interface ExecutionHost {
@@ -292,12 +293,16 @@ export function parseExecutionPlan(value: unknown): PhaseExecutionPlan {
   const paths = strings(row.paths).map(ticketPath);
   if (!Array.isArray(row.prerequisites) || row.prerequisites.length > 64) throw workflowError();
   return Object.freeze({ phaseId: workflowText(row.phaseId), scope: workflowText(row.scope), paths: Object.freeze(paths), requirements: strings(row.requirements),
-    prerequisites: Object.freeze(row.prerequisites.map(parseSourceVersion)), checks: strings(row.checks), size: workflowText(row.size), complexity: workflowText(row.complexity), rationale: workflowText(row.rationale) });
+    prerequisites: Object.freeze(row.prerequisites.map(parseSourceVersion)), checks: (() => { const checks = strings(row.checks); if (checks.some((check) => check.startsWith("@operation:"))) throw workflowError(); return checks; })(), size: workflowText(row.size), complexity: workflowText(row.complexity), rationale: workflowText(row.rationale) });
+}
+export function parseExecutionCommandText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > 16_384 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) throw workflowError();
+  return value;
 }
 function parseFailure(value: unknown): ExecutionFailure {
   const row = workflowObject(value, ["check", "command", "exitCode", "candidateSha", "output"]);
   if (!Number.isSafeInteger(row.exitCode) || row.exitCode === 0 || Number(row.exitCode) < -1 || Number(row.exitCode) > 255) throw workflowError();
-  return Object.freeze({ check: workflowText(row.check), command: workflowText(row.command), exitCode: Number(row.exitCode), candidateSha: workflowSha(row.candidateSha, 40), output: parseSourceVersion(row.output) });
+  return Object.freeze({ check: workflowText(row.check), command: parseExecutionCommandText(row.command), exitCode: Number(row.exitCode), candidateSha: workflowSha(row.candidateSha, 40), output: parseSourceVersion(row.output) });
 }
 export function parseExecutionRecoveryInventory(value: unknown): ExecutionRecoveryInventory {
   const row = workflowObject(value, ["branch", "headSha", "porcelainV2Base64", "snapshotSha256", "paths", "evidence"]);
@@ -337,7 +342,7 @@ function parseCommand(value: unknown): ExecutionCommand {
       return { action, executor: row.executor, holder: parseHolder(row.holder), handover: parseSourceVersion(row.handover) };
     }
     case "begin": { const row = workflowObject(value, ["action", "operation"]); return { action, operation: parseOperation(row.operation) }; }
-    case "finish": { const row = workflowObject(value, ["action", "operationId", "evidence", "failure"]); return { action, operationId: workflowText(row.operationId), evidence: parseSourceVersion(row.evidence), failure: row.failure === null ? null : parseFailure(row.failure) }; }
+    case "finish": { const hasCandidate = Object.hasOwn(value, "candidateSha"); const row = workflowObject(value, ["action", "operationId", "evidence", "failure", ...(hasCandidate ? ["candidateSha"] : [])]); return { action, operationId: workflowText(row.operationId), evidence: parseSourceVersion(row.evidence), failure: row.failure === null ? null : parseFailure(row.failure), ...(hasCandidate ? { candidateSha: workflowSha(row.candidateSha, 40) } : {}) }; }
     case "settle": { const row = workflowObject(value, ["action", "evidence", "inventory"]); return { action, evidence: parseSourceVersion(row.evidence), inventory: parseExecutionRecoveryInventory(row.inventory) }; }
     case "attempt": {
       const row = workflowObject(value, ["action", "recovery"]); const recovery = workflowObject(row.recovery, ["originalFailure", "diagnostic", "remedy", "rationale", "recheck"]);
@@ -368,7 +373,7 @@ function sources(command: ExecutionCommand): readonly SourceVersion[] {
 }
 function initialState(binding: ExecutionBinding, recordedAt: string): ExecutionState {
   return Object.freeze({ binding, recordedAt, sequence: 0, plan: null, custody: parseExecutionCustody({ state: "idle", holder: null, inFlightOperation: null }), bounds: binding.bounds,
-    candidateSha: binding.initialHeadSha, operation: null, usedOperationIds: [], originalFailure: null, recoveryPending: false, diagnosticDigests: [], remedyDigests: [], passedChecks: {}, acceptance: {} });
+    candidateSha: binding.initialHeadSha, operation: null, usedOperationIds: [], originalFailure: null, recoveryPending: false, diagnosticDigests: [], remedyDigests: [], passedChecks: {}, actionPasses: {}, acceptance: {} });
 }
 function runnable(state: ExecutionState, now: string): void {
   if (Date.parse(now) >= Date.parse(state.bounds.deadlineAt) || state.bounds.consecutiveNoProgress >= 3) throw workflowError();
@@ -390,7 +395,7 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
       if (state.originalFailure && (!command.plan.checks.includes(state.originalFailure.check) || command.plan.phaseId !== state.plan?.phaseId)) throw workflowError();
       // Phase transitions need the report/acceptance owner, not a plan edit.
       if (state.plan && command.plan.phaseId !== state.plan.phaseId) throw workflowError();
-      next = { ...next, plan: command.plan, passedChecks: {}, acceptance: {} }; break;
+      next = { ...next, plan: command.plan, passedChecks: {}, actionPasses: {}, acceptance: {} }; break;
     case "select": {
       owner(state, actor); idle(); runnable(state, now);
       if (!state.plan || state.recoveryPending || (command.executor === "orchestrator-direct" && !same(command.holder, state.binding.owner))
@@ -419,14 +424,18 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
     case "finish": {
       writer(state, actor);
       if (!state.operation || state.operation.id !== command.operationId || state.custody.inFlightOperation !== command.operationId) throw workflowError();
-      if (command.failure && (command.failure.candidateSha !== state.candidateSha || !state.plan?.checks.includes(command.failure.check) || (state.operation.check !== null && command.failure.check !== state.operation.check))) throw workflowError();
-      const check = state.operation.check;
-      const passedChecks = { ...state.passedChecks };
-      if (check !== null) { if (command.failure) delete passedChecks[check]; else passedChecks[check] = command.evidence; }
-      // Any write/shell can change candidate content without changing HEAD. Old acceptance cannot survive it.
+      const check = state.operation.check ?? `@operation:${state.operation.kind}`;
+      if (command.failure && (command.failure.candidateSha !== state.candidateSha || command.failure.check !== check)) throw workflowError();
+      // Invalidate before/after any source effect. Native completion can bind an
+      // observed new HEAD; it never carries checks/acceptance across candidates.
       const mayMutate = sourceMutation(state.operation.kind);
-      next = { ...next, operation: null, custody: parseExecutionCustody({ ...state.custody, inFlightOperation: null }),
-        originalFailure: state.originalFailure ?? command.failure, recoveryPending: state.recoveryPending || command.failure !== null, passedChecks: mayMutate ? {} : passedChecks, acceptance: command.failure || mayMutate ? {} : state.acceptance,
+      const candidateSha = command.candidateSha ?? state.candidateSha;
+      const passedChecks = mayMutate || candidateSha !== state.candidateSha ? {} : { ...state.passedChecks };
+      const actionPasses = { ...state.actionPasses };
+      const results = state.operation.check === null ? actionPasses : passedChecks;
+      if (command.failure) delete results[check]; else results[check] = command.evidence;
+      next = { ...next, candidateSha, actionPasses, operation: null, custody: parseExecutionCustody({ ...state.custody, inFlightOperation: null }),
+        originalFailure: state.originalFailure ?? command.failure, recoveryPending: state.recoveryPending || command.failure !== null, passedChecks, acceptance: command.failure || mayMutate || candidateSha !== state.candidateSha ? {} : state.acceptance,
         bounds: command.failure && !state.originalFailure ? { ...state.bounds, unresolvedFailureRef: command.failure.output.ref } : state.bounds }; break;
     }
     case "settle":
@@ -445,12 +454,12 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
     }
     case "resolve":
       owner(state, actor); idle();
-      if (!state.originalFailure || !Object.hasOwn(state.passedChecks, state.originalFailure.check) || !same(command.evidence, state.passedChecks[state.originalFailure.check])) throw workflowError();
+      if (!state.originalFailure || !same(command.evidence, state.passedChecks[state.originalFailure.check] ?? state.actionPasses[state.originalFailure.check])) throw workflowError();
       next = { ...next, originalFailure: null, recoveryPending: false, bounds: { ...state.bounds, consecutiveNoProgress: 0, unresolvedFailureRef: null } }; break;
     case "candidate":
       owner(state, actor); idle(); runnable(state, now);
       if (command.candidateSha === state.candidateSha) throw workflowError();
-      next = { ...next, candidateSha: command.candidateSha, passedChecks: {}, acceptance: {} }; break;
+      next = { ...next, candidateSha: command.candidateSha, passedChecks: {}, actionPasses: {}, acceptance: {} }; break;
     case "accept":
       owner(state, actor); idle(); runnable(state, now);
       if (!state.plan || state.originalFailure || !state.plan.checks.every((check) => Object.hasOwn(state.passedChecks, check)) || Object.hasOwn(state.acceptance, command.kind)) throw workflowError();
@@ -543,7 +552,7 @@ export function projectExecution(state: ExecutionState): Readonly<Record<string,
     state: state.custody.state, inFlight: state.operation !== null, candidateSha: state.candidateSha,
     consecutiveNoProgress: state.bounds.consecutiveNoProgress, replacementsUsed: state.bounds.replacementsUsed,
     reviewsUsed: state.bounds.reviewsUsed, reviewCap: state.bounds.reviewCap, failureRecorded: state.originalFailure !== null, recoveryPending: state.recoveryPending,
-    checkCount: Object.keys(state.passedChecks).length, integrationVerified: state.custody.state === "idle" && state.operation === null && Boolean(state.acceptance.integration) });
+    checkCount: Object.keys(state.passedChecks).filter((check) => state.plan?.checks.includes(check)).length, integrationVerified: state.custody.state === "idle" && state.operation === null && Boolean(state.acceptance.integration) });
 }
 
 export interface ExpectedHeadFeatureUpdate {

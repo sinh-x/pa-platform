@@ -70,6 +70,31 @@ test("AC7 plan and rationale precede judgment-based selection; strict input neve
   assert.throws(() => f.apply({ action: "begin", operation: { id: "forged", kind: "write", check: null, intent: null }, extra: true } as ExecutionCommand));
 }));
 
+test("native completion binds an observed commit and invalidates old checks without rewriting launch/bounds", () => fixture((f) => {
+  f.plan(); f.select(); f.begin("before", "check"); f.finish("before");
+  f.begin("commit");
+  const next = f.apply({ action: "finish", operationId: "commit", evidence: source("native-commit-result"), failure: null, candidateSha: "c".repeat(40) });
+  assert.equal(next.candidateSha, "c".repeat(40)); assert.deepEqual(next.passedChecks, {}); assert.deepEqual(next.acceptance, {});
+  assert.equal(next.binding.initialHeadSha, sha); assert.deepEqual(next.bounds, binding().bounds);
+  assert.equal(projectExecution(next).checkCount, 0);
+  assert.throws(() => f.apply({ action: "finish", operationId: "commit", evidence: source("forged"), failure: null, candidateSha: "c" }));
+}));
+
+test("native non-check failures preserve actual multiline commands and require a fresh matching action result", () => fixture((f) => {
+  f.plan(); f.select();
+  f.apply({ action: "begin", operation: { id: "failed-shell", kind: "shell", check: null, intent: null } });
+  const original: ExecutionFailure = { check: "@operation:shell", command: "printf original\\n\nexit 2", exitCode: 2, candidateSha: sha, output: source("raw-original") };
+  f.finish("failed-shell", original); f.settle();
+  assert.equal(f.service.status(owner).originalFailure?.command, original.command);
+  assert.throws(() => f.apply({ action: "resolve", evidence: source("fictional-pass") }));
+  f.apply({ action: "attempt", recovery: { originalFailure: original.output, diagnostic: null, remedy: null, rationale: null, recheck: original } });
+  f.select(); f.apply({ action: "begin", operation: { id: "recheck-shell", kind: "shell", check: null, intent: null } }); f.finish("recheck-shell"); f.settle();
+  assert.equal(projectExecution(f.service.status(owner)).checkCount, 0);
+  f.apply({ action: "resolve", evidence: source("result-recheck-shell") });
+  assert.equal(f.service.status(owner).originalFailure, null);
+  assert.throws(() => parseExecutionPlan({ ...executionPlan(), checks: ["@operation:write"] }));
+}));
+
 test("AC8 exact holder only, stale identities and parent writer rejected; in-flight operations bar transfer", () => fixture((f) => {
   f.plan(); f.select("implement-child");
   assert.throws(() => f.begin("parent"));
