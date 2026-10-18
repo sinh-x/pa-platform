@@ -15,7 +15,8 @@ import { readPiProcessIdentity } from "./process-identity.js";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
 import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess, type NativeBlob, type NativeProcessResult } from "./native-execution-evidence.js";
 import type { PiExecutionBinding, PiExecutionEndEvent } from "./pi-extension/prepared-workflow.js";
-import { interceptToolCall, type PiToolCall } from "./pi-extension/index.js";
+import type { PiToolCall } from "./pi-extension/index.js";
+import { interceptToolCall } from "./pi-extension/safety.js";
 import { environmentSecrets } from "./diagnostics.js";
 
 const CHECKS: Readonly<Record<string, string>> = Object.freeze({ typecheck: "corepack pnpm typecheck", build: "corepack pnpm build", test: "corepack pnpm test", completions: "corepack pnpm completions", "secrets-scan": "corepack pnpm secrets:scan" });
