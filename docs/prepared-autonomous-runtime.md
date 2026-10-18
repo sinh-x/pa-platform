@@ -1,10 +1,28 @@
 # Prepared autonomous runtime — inactive implementation notes
 
-PAP-256 is **partially implemented**. This is reference documentation, not active
-policy, an approval receipt, or a claim that the whole ticket is delivered.
-PAPC-056's separately verified existing-tools workflow does not depend on this
-optional automation. No configuration pin, review parser, activation, historical
-lease, checkout allocation or return is changed by this implementation.
+PAP-256 provides **CLI/runtime support for an agent-driven workflow**. This is
+reference documentation, not active policy or an approval/activation receipt.
+No configuration pin, review parser, historical lease, checkout allocation or
+return is changed by merging this implementation.
+
+## Scope reconciliation — operator direction, 2026-10-18
+
+The operator clarified the delivery boundary: PAP-256 supplies reliable CLI/runtime
+primitives, implemented code and verification tests. Agents verify implementation
+and test results and mark work done through the ordinary workflow; a new
+cryptographically/authenticated phase-completion protocol is not required.
+PAPC-056 owns agent instructions, workflow guidelines, report templates and the
+requirement to generate reports from actual work/check evidence. Those configuration
+sources are not changed here. Existing admission, custody and Git safety protections
+remain in force; prose or a done marker never bypasses them.
+
+Automatic phase-end reports, terminal reconstruction, machine-certified outcomes,
+viewer receipts and a multi-phase autonomous controller are **not PAP-256 CLI merge
+requirements**. The optional native automation below remains inactive and its
+unsupported paths are disclosed, not represented as completed features. The
+historical broader automation/qualification plan is retained for context, not used
+to block the supported independently usable CLI workflow. Normal PR code/test/CI
+verification is separate from activation of that optional automation.
 
 ## Delivered core and Pi adapter
 
@@ -398,10 +416,16 @@ is independent of current check evidence: unproven and historical reports remain
 readable/indexed but block dependents. A partial report alone cannot grant phase
 advancement; otherwise authorized bounded work still needs current native checks. This live
 producer emits only partial or native-failed outcomes, not inferred phase success
-or terminal interruption; automatic phase-end/terminal reconstruction and exact
-phase-completion/acceptance producers are still required.
+or terminal interruption. Automatic phase-end/terminal reconstruction and exact
+phase-completion/acceptance producers would be needed only for the broader optional
+automation, not the agent-generated-report/ordinary-done workflow above.
 
-## Remaining delivery
+## Historical broader automation plan — not CLI merge requirements
+
+The items below describe unimplemented or unqualified optional automation. They
+are not an assertion that the supported CLI workflow needs a new authenticated
+done protocol, native report generator, or automatic viewer observation. Keep the
+optional path inactive; any future activation must still satisfy its actual gates.
 
 1. Complete Phase-2 acceptance: deliver the authorized final native qualification
    producer and verify actual installed/background/parent-child consumption and
