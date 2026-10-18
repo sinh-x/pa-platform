@@ -68,6 +68,9 @@ export interface PhaseReportHost {
   assertPublic(bytes: Buffer): void;
   /** Revalidate native check/Git/candidate evidence at dependent-work settlement. */
   verifyCanonical(receipt: PhaseReportReceipt): void;
+  /** Native current-candidate/check projection; publishing partial history is
+   * distinct from permission to advance dependent phase work. */
+  dependencyState?(receipt: PhaseReportReceipt): "available" | "missing-check-evidence" | "historical";
   /** Existing owner report's lock/CAS/idempotent index operation, not another workflow database. */
   index(receipt: PhaseReportReceipt): void;
   resolveDelivery(source: SourceVersion): PhaseReportDelivery;
@@ -281,9 +284,11 @@ export class PhaseReportService {
       }
       for (const observation of observations) assertNative(() => this.host.recordDelivery(receipt, observation));
       const debt = ["browser", "obsidian"].filter((app) => !delivered.has(app));
+      const dependency = this.host.dependencyState ? native(() => this.host.dependencyState!(receipt)) : "available";
+      if (!["available", "missing-check-evidence", "historical"].includes(dependency)) throw workflowError();
       return Object.freeze({ schemaVersion: "phase-report-status/v1", reportId: receipt.reportId, outcome: receipt.outcome, sourceSha256: receipt.sourceSha256,
-        htmlGenerated: true, presentationDebt: Object.freeze(debt), canonicalEvidenceAvailable: true, dependentWorkMayContinue: true,
-        phaseDeliveryReady: receipt.outcome === "success" && debt.length === 0, humanProductUatClaimed: false });
+        htmlGenerated: true, presentationDebt: Object.freeze(debt), canonicalEvidenceAvailable: true, dependentWorkMayContinue: dependency === "available", ...(this.host.dependencyState ? { dependencyState: dependency } : {}),
+        phaseDeliveryReady: receipt.outcome === "success" && debt.length === 0 && dependency === "available", humanProductUatClaimed: false });
     } catch { throw workflowError(); }
   }
 }

@@ -42,7 +42,9 @@ exact-revision qualification/activation/grant records are absent, so ordinary st
 remains inactive and mutation requests reject before resource effects. The native
 qualification producer and full execution/report integration remain incomplete.
 The default execution resolver now supplies a concrete direct-holder adapter for
-qualified consumed lineages; default report publication still has no native producer.
+qualified consumed lineages. The default report resolver now supplies native live
+capture/publication, owner indexing and source-bound foreground delivery observation;
+terminal reconstruction and automatic phase-end collection remain unimplemented.
 The actual orchestrator launcher now consumes authenticated ready records and
 persists pre-spawn correlation; this is locally fixture-tested, not live-qualified. No public receipt or environment
 flag supplies native authority. Tests exercise actual dispatch, source files, Git
@@ -355,6 +357,50 @@ report status asserts product UAT, activation, ticket completion or OS confineme
 Ticketless rogue-one report registration adds no builder/ticket admission gate;
 its default publication still requires a real native artifact/evidence binding.
 
+### Native live-report increment
+
+`pa_phase_report capture` accepts only `phaseId`, `summary`, `nextAction` and
+`learning`. Narrative is explicitly labelled agent-provided, never acceptance
+proof. The tool captures the real live Pi incarnation/registry/physical checkout,
+full NUL Git inventory, and (where available) the adopted native execution journal.
+It returns an opaque protected source reference; `publish` resolves that reference
+and returns the protected report reference plus fixed Markdown/HTML/diff/owner
+reading locations. No caller path, outcome, check list or passed flag is accepted.
+
+Only recorded native developer-check operations populate the check table, with
+original candidate, command, exit and private-output reference; writes/commits are
+separate settled operation references, not extra passing checks. Historical
+failures remain visible after successful rechecks. A source-proven idle direct
+holder gets the **full** scoped text diff from the original launch base, including
+committed changes and untracked files; binary contents are omitted, with metadata
+retained. Unknown/unrelated scope and in-flight processes yield metadata-only
+partial reports. Explicit environment/lease/capability values and sensitive
+patterns are scrubbed before any public output. The immutable fixed `diff.patch`
+and `diff.json` companion are verified again at settlement; excerpts are only
+reading aids. Private inputs remain in the existing native protected namespace,
+partitioned by deployment, not a new workflow/resource owner.
+
+Rogue-one (including ticketless) and report-only implement contexts capture no
+inferred check passes or source permissions. Rogue-one startup now records its
+real Pi process anchor without acquiring builder admission. A captured native
+policy authorizes only that runtime's artifact owner intent; revocation may settle
+its existing report lineage but cannot reactivate automation or migrate code.
+The dated runtime owner Markdown is created/indexed idempotently and subsequent
+CAS updates preserve its existing non-managed content and delivery history.
+
+`observe-delivery` requires a live foreground TUI and an actual operator choice
+about the exact source-bound browser or Obsidian view. Both canonical digests are
+shown, and authority/bytes are rechecked after the UI turn. Cancellation, RPC,
+JSON/print, source replacement or a forged caller observation cannot record it.
+Observations and debt survive reload/revocation. This is **not** an automatic
+browser opener, verified DOM/Obsidian plugin receipt, or product UAT. Delivery debt
+is independent of current check evidence: unproven and historical reports remain
+readable/indexed but block dependents. A partial report alone cannot grant phase
+advancement; otherwise authorized bounded work still needs current native checks. This live
+producer emits only partial or native-failed outcomes, not inferred phase success
+or terminal interruption; automatic phase-end/terminal reconstruction and exact
+phase-completion/acceptance producers are still required.
+
 ## Remaining delivery
 
 1. Complete Phase-2 acceptance: deliver the authorized final native qualification
@@ -366,9 +412,11 @@ its default publication still requires a real native artifact/evidence binding.
    Never synthesize a protected receipt from factual CLI output.
 2. Complete Phases 3–4 integration beyond the native direct-holder increment:
    implement native delegated/review/feature-update/rebase and semantic-progress
-   producers, escaped-descendant/terminal settlement, safe full-diff/report
-   production, cross-phase lineage-bound handoff and actual browser/Obsidian
-   observation adapters (including ticketless rogue-one). Current journals reject
+   producers, escaped-descendant/terminal settlement, automatic terminal/phase-end
+   report production and exact phase-completion proofs, cross-phase lineage-bound
+   handoff and installed browser/Obsidian qualification. Native live safe-diff/report
+   publication and foreground operator observation are implemented, including
+   ticketless rogue-one, but do not establish those missing journeys. Current journals reject
    changing phase via a plan edit; they are not an independent multi-phase
    controller or proof of production sole-writer enforcement. The direct fixture
    now traverses actual launch, SDK filesystem/process operations, native records,

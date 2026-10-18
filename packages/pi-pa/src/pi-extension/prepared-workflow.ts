@@ -21,6 +21,7 @@ import { TreehouseClient, deriveTreehouseLeaseHolder, type TreehouseLeaseEvidenc
 import { PiPreparedNativeAuthority } from "../prepared-native.js";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
 import { registerNativeExecutionBuiltins } from "../native-execution-tools.js";
+import { PiNativePhaseReportAdapter, type NativeReportDraft } from "../phase-report-native.js";
 import type { PiExtensionModule, PiSessionLifecycle, PiToolCall, PiToolDefinition, PiToolResult } from "./index.js";
 
 const APPROVE_RETRY = "Retry this unchanged preparation once";
@@ -691,13 +692,20 @@ export interface PiPhaseReportBinding {
   readonly service: PhaseReportService;
   resolveReport(source: SourceVersion): PhaseReport;
   resolveReceipt(source: SourceVersion): PhaseReportReceipt;
+  capture?(toolCallId: string, draft: NativeReportDraft): SourceVersion;
+  recordReceipt?(receipt: PhaseReportReceipt): SourceVersion;
+  readingLocations?(receipt: PhaseReportReceipt): Readonly<Record<string, string>>;
+  observeDelivery?(receipt: PhaseReportReceipt, application: "browser" | "obsidian", context: unknown, signal?: AbortSignal): Promise<SourceVersion | null>;
 }
 export interface PiPhaseReportOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Native artifact/caller authority, including ticketless rogue-one. No builder admission is added. */
   readonly resolveBinding?: (context: unknown) => PiPhaseReportBinding | null;
+  readonly nativeAdapter?: PiNativePhaseReportAdapter;
 }
 export const PiPhaseReportParams = Type.Union([
+  Type.Object({ action: Type.Literal("capture"), phaseId: Type.String(), summary: Type.String({ maxLength: 4096 }), nextAction: Type.String({ maxLength: 4096 }), learning: Type.String({ maxLength: 4096 }) }, { additionalProperties: false }),
+  Type.Object({ action: Type.Literal("observe-delivery"), report: EvidenceParams, application: Type.Union([Type.Literal("browser"), Type.Literal("obsidian")]) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("publish"), source: EvidenceParams }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("status"), report: Type.Optional(EvidenceParams) }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal("settle"), report: EvidenceParams, deliveries: Type.Array(EvidenceParams, { maxItems: 2 }) }, { additionalProperties: false }),
@@ -706,13 +714,14 @@ export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): P
   return (pi, lifecycle) => {
     const env = options.env ?? process.env;
     if (env.PA_TEAM !== "rogue-one" && !(env.PA_TEAM === "builder" && ["implement", "orchestrator"].includes(env.PA_MODE ?? ""))) return;
-    const resolve = options.resolveBinding ?? (() => null);
-    pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Publish or settle immutable source-bound phase evidence; HTML generation is not browser/Obsidian delivery or human UAT. Requires native artifact authority.", parameters: PiPhaseReportParams, executionMode: "sequential",
-      execute: async (_id, input, signal, _update, context) => {
-        const run = () => {
+    const native = options.resolveBinding ? null : options.nativeAdapter ?? new PiNativePhaseReportAdapter();
+    const resolve = options.resolveBinding ?? ((context: unknown) => native!.resolve(context));
+    pi.registerTool?.({ name: "pa_phase_report", label: "PA Phase Report", description: "Capture native phase facts plus labelled agent narrative, then publish the returned source; status/settle use the returned report reference. Foreground observe-delivery asks the operator about the exact reading view. Caller paths, checks, outcomes and passed flags are not authority. Partial/historical reports cannot substitute for current checks; HTML generation is not browser/Obsidian observation or human UAT.", parameters: PiPhaseReportParams, executionMode: "sequential",
+      execute: async (id, input, signal, _update, context) => {
+        const run = async () => {
           if (signal?.aborted) throw workflowError();
           const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
-          const keys = action === "publish" ? ["action", "source"] : action === "settle" ? ["action", "report", "deliveries"] : action === "status" ? ["action", ...(Object.hasOwn(input, "report") ? ["report"] : [])] : [];
+          const keys = action === "capture" ? ["action", "phaseId", "summary", "nextAction", "learning"] : action === "observe-delivery" ? ["action", "report", "application"] : action === "publish" ? ["action", "source"] : action === "settle" ? ["action", "report", "deliveries"] : action === "status" ? ["action", ...(Object.hasOwn(input, "report") ? ["report"] : [])] : [];
           const row = workflowObject(input, keys); if (!keys.length) throw workflowError();
           const binding = nativeExecutionCall(() => resolve(context));
           if (binding === null) {
@@ -720,15 +729,25 @@ export function createPiPhaseReportModule(options: PiPhaseReportOptions = {}): P
             return executionResult({ schemaVersion: "phase-report-tool-status/v1", state: "inactive", artifactAuthorityAvailable: false });
           }
           if (!(binding.service instanceof PhaseReportService)) throw workflowError();
+          if (action === "capture") {
+            if (!binding.capture) throw workflowError();
+            const source = nativeExecutionCall(() => binding.capture!(id, { phaseId: row.phaseId as string, summary: row.summary as string, nextAction: row.nextAction as string, learning: row.learning as string }));
+            return executionResult({ schemaVersion: "phase-report-capture/v1", source: parseEvidence(source) });
+          }
           if (action === "publish") {
             const report = parsePhaseReport(nativeExecutionCall(() => binding.resolveReport(parseEvidence(row.source))));
             const receipt = binding.service.publish(report);
-            return executionResult(binding.service.settle(receipt));
+            return executionResult({ ...binding.service.settle(receipt), ...(binding.readingLocations ? { readingLocations: binding.readingLocations(receipt) } : {}), ...(binding.recordReceipt ? { report: nativeExecutionCall(() => binding.recordReceipt!(receipt)) } : {}) });
           }
           if (action === "status" && row.report === undefined) return executionResult({ schemaVersion: "phase-report-tool-status/v1", artifactAuthorityAvailable: true });
           const receipt = nativeExecutionCall(() => binding.resolveReceipt(parseEvidence(row.report)));
+          if (action === "observe-delivery") {
+            if (!binding.observeDelivery || (row.application !== "browser" && row.application !== "obsidian")) throw workflowError();
+            const observed = await binding.observeDelivery(receipt, row.application, context, signal);
+            return executionResult({ ...binding.service.settle(receipt, observed ? [observed] : []), ...(binding.readingLocations ? { readingLocations: binding.readingLocations(receipt) } : {}), observation: observed ? "recorded" : "not-observed" });
+          }
           if (action === "settle" && (!Array.isArray(row.deliveries) || row.deliveries.length > 2)) throw workflowError();
-          return executionResult(binding.service.settle(receipt, action === "settle" ? (row.deliveries as unknown[]).map(parseEvidence) : []));
+          return executionResult({ ...binding.service.settle(receipt, action === "settle" ? (row.deliveries as unknown[]).map(parseEvidence) : []), ...(binding.readingLocations ? { readingLocations: binding.readingLocations(receipt) } : {}) });
         };
         try { return await (lifecycle ? lifecycle.trackRegistryAccess(run) : run()); } catch { throw workflowError(); }
       },

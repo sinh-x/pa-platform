@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, linkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, linkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, getDeploymentEvents, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { closeDb, appendRegistryEvent, getDeploymentEvents, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
 import { PiNativeExecutionAdapter } from "../execution-native.js";
-import { recordPiProcessIdentity } from "../process-identity.js";
-import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, createPiExecutionModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
+import { PiNativePhaseReportAdapter } from "../phase-report-native.js";
+import { recordPiProcessIdentity, recordPiReadonlyRoleProcessIdentity } from "../process-identity.js";
+import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, createPiExecutionModule, createPiPhaseReportModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
 import { interceptToolCall, type PiRuntime, type PiToolDefinition } from "../pi-extension/index.js";
 const time = "2026-10-17T00:00:00.000Z"; const sha = "a".repeat(40);
 const facts: PreparedNativeRuntime = { sourceSha: sha, packageVersion: "fixture", configSha: "b".repeat(40), storeRoot: "/fixture/immutable-runtime" };
@@ -171,6 +172,97 @@ test("insecure private records and qualified-runtime drift are not fallback auth
   assert.throws(() => qualified.resolve(f.caller));
 }));
 
+async function reportFixture(run: (f: ReturnType<typeof setup> & { runtime: ReturnType<typeof executionRuntime>; context: PiPreparationContext; report: PiToolDefinition; actorId: string; directory: string }) => Promise<void>) {
+  const previousEnv = process.env; const previousCwd = process.cwd(); process.env = { ...previousEnv };
+  for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+  try { await fixture(async (f) => {
+    const git = (args: string[]) => execFileSync("git", args, { cwd: f.repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+    writeFileSync(join(f.repo, "README.md"), "report fixture\n"); git(["add", "README.md"]); git(["-c", "core.hooksPath=/dev/null", "commit", "-m", "fixture"]);
+    f.qualify(); await f.execute("activate");
+    const actorId = "d-654abc"; const deploymentDir = join(f.ai, "deployments", actorId); mkdirSync(deploymentDir, { recursive: true, mode: 0o700 });
+    Object.assign(process.env, { PA_AI_USAGE_HOME: f.ai, PA_REGISTRY_DB: join(f.ai, "registry.db"), PA_DEPLOYMENT_ID: actorId, PA_DEPLOYMENT_DIR: deploymentDir,
+      PA_TEAM: "rogue-one", PA_MODE: "rogue-one", PA_REPO: f.repo, PA_WORKTREE_ROOT: f.repo, PA_PI_EXECUTION_MODE: "foreground", TEST_PRIVATE_TOKEN: "report-private-fixture-token" });
+    appendRegistryEvent({ deployment_id: actorId, team: "rogue-one", mode: "rogue-one", rogue_one: true, runtime: "pi", binary: "ppa", event: "started", timestamp: time,
+      pid: process.pid, repo: f.repo, repo_root: f.repo, worktree_root: f.repo });
+    recordPiReadonlyRoleProcessIdentity(process.env, actorId, deploymentDir, process.pid); process.chdir(f.repo);
+    const runtime = executionRuntime(); const context: PiPreparationContext = { mode: "tui", cwd: f.repo, ui: { select: async (_title, choices) => choices[0] } };
+    createPiPhaseReportModule({ nativeAdapter: new PiNativePhaseReportAdapter({ authority: f.authority }) })(runtime.pi);
+    await run({ ...f, runtime, context, report: runtime.tools.get("pa_phase_report")!, actorId, directory: deploymentDir });
+  }); } finally { closeDb(); process.chdir(previousCwd); process.env = previousEnv; }
+}
+
+test("native report default remains inactive and effect-free without a captured policy/owner intent", () => fixture(async (f) => {
+  const runtime = executionRuntime();
+  createPiPhaseReportModule({ env: { PA_TEAM: "rogue-one" }, nativeAdapter: new PiNativePhaseReportAdapter({ authority: f.authority }) })(runtime.pi);
+  const report = runtime.tools.get("pa_phase_report")!;
+  assert.equal((await report.execute("status", { action: "status" }, undefined, undefined, {})).details.artifactAuthorityAvailable, false);
+  await assert.rejects(report.execute("capture", { action: "capture", phaseId: "phase-4", summary: "no authority", nextAction: "stop", learning: "not approved" }, undefined, undefined, {}));
+  assert.equal(f.authority.reports(), null); assert.equal(existsSync(join(f.ai, "agent-teams/rogue-one/artifacts")), false);
+}));
+
+test("native ticketless report capture/publish uses actual actor evidence, preserves ownership and never invents checks", () => reportFixture(async (f) => {
+  const capacity = readdirSync(join(f.repo, ".git/pa-ticket-builder-slots"));
+  writeFileSync(join(f.repo, ".env"), "UNRELATED-CONTENT-MUST-NOT-BE-READ\n");
+  const draft = { action: "capture", phaseId: "phase-4", summary: "Agent note report-private-fixture-token", nextAction: "Verify unproven checks.", learning: "Do not infer acceptance." };
+  const capture = await f.report.execute("capture-1", draft, undefined, undefined, f.context);
+  assert.deepEqual((await f.report.execute("capture-1", draft, undefined, undefined, f.context)).details.source, capture.details.source);
+  await assert.rejects(f.report.execute("capture-1", { ...draft, summary: "conflicting retry" }, undefined, undefined, f.context));
+  const published = await f.report.execute("publish-1", { action: "publish", source: capture.details.source }, undefined, undefined, f.context);
+  assert.equal(published.details.outcome, "partial"); assert.equal(published.details.canonicalEvidenceAvailable, true);
+  assert.deepEqual(published.details.presentationDebt, ["browser", "obsidian"]); assert.equal(published.details.phaseDeliveryReady, false);
+  assert.equal(published.details.dependentWorkMayContinue, false); assert.equal(published.details.dependencyState, "missing-check-evidence");
+  const root = join(f.ai, "agent-teams/rogue-one/artifacts"); const reportDir = join(root, `2026-10-17-ticketless-phase-4-${f.actorId}`, "attempt-1");
+  const markdown = readFileSync(join(reportDir, "report.md"), "utf8");
+  assert.match(markdown, /No checks recorded/); assert.match(markdown, /REDACTED/);
+  assert.doesNotMatch(markdown, /UNRELATED-CONTENT-MUST-NOT-BE-READ|report-private-fixture-token|\? \.env/);
+  assert.equal(readFileSync(join(f.repo, ".env"), "utf8"), "UNRELATED-CONTENT-MUST-NOT-BE-READ\n");
+  assert.match(readFileSync(join(reportDir, "report.html"), "utf8"), /diff.patch/);
+  const owner = join(root, `2026-10-17-ticketless-${f.actorId}-owner.md`);
+  writeFileSync(owner, `${readFileSync(owner, "utf8")}\nHuman follow-up remains outside managed markers.\n`); const before = readFileSync(owner);
+  const duplicate = await f.report.execute("publish-2", { action: "publish", source: capture.details.source }, undefined, undefined, f.context);
+  assert.deepEqual(duplicate.details.report, published.details.report); assert.deepEqual(readFileSync(owner), before);
+  assert.deepEqual(readdirSync(join(f.repo, ".git/pa-ticket-builder-slots")), capacity);
+  await assert.rejects(f.report.execute("forged", { ...draft, passed: true }, undefined, undefined, f.context));
+  process.env.PA_TICKET_ID = "PAP-999";
+  await assert.rejects(f.report.execute("forged-actor", { action: "publish", source: capture.details.source }, undefined, undefined, f.context));
+  delete process.env.PA_TICKET_ID;
+  writeFileSync(join(f.repo, "README.md"), "new unrelated metadata\n");
+  const historical = await f.report.execute("historical", { action: "status", report: published.details.report }, undefined, undefined, f.context);
+  assert.equal(historical.details.canonicalEvidenceAvailable, true); assert.equal(historical.details.dependencyState, "historical");
+}));
+
+test("native report delivery needs foreground UI observation and source revalidation; durable debt survives reload/revocation", () => reportFixture(async (f) => {
+  const captured = await f.report.execute("capture", { action: "capture", phaseId: "phase-4", summary: "Partial native report", nextAction: "Observe reading views.", learning: "Generation is not observation." }, undefined, undefined, f.context);
+  const published = await f.report.execute("publish", { action: "publish", source: captured.details.source }, undefined, undefined, f.context);
+  const reference = published.details.report;
+  const unobserved = { ...f.context, ui: { select: async () => undefined } };
+  assert.equal((await f.report.execute("cancel", { action: "observe-delivery", report: reference, application: "browser" }, undefined, undefined, unobserved)).details.observation, "not-observed");
+  await assert.rejects(f.report.execute("rpc", { action: "observe-delivery", report: reference, application: "browser" }, undefined, undefined, { ...f.context, mode: "rpc" }));
+  const browser = await f.report.execute("browser", { action: "observe-delivery", report: reference, application: "browser" }, undefined, undefined, f.context);
+  assert.deepEqual(browser.details.presentationDebt, ["obsidian"]); assert.equal(browser.details.humanProductUatClaimed, false);
+  f.authority.deactivate(f.caller);
+  const fresh = executionRuntime(); createPiPhaseReportModule({ nativeAdapter: new PiNativePhaseReportAdapter({ authority: f.authority }) })(fresh.pi);
+  const tool = fresh.tools.get("pa_phase_report")!;
+  assert.deepEqual((await tool.execute("status", { action: "status", report: reference }, undefined, undefined, f.context)).details.presentationDebt, ["obsidian"]);
+  const obsidian = await tool.execute("obsidian", { action: "observe-delivery", report: reference, application: "obsidian" }, undefined, undefined, f.context);
+  assert.deepEqual(obsidian.details.presentationDebt, []); assert.equal(obsidian.details.phaseDeliveryReady, false); // partial is never product/phase acceptance
+  const reportDir = join(f.ai, "agent-teams/rogue-one/artifacts", `2026-10-17-ticketless-phase-4-${f.actorId}`, "attempt-1");
+  writeFileSync(join(reportDir, "report.md"), "tampered");
+  await assert.rejects(tool.execute("tampered", { action: "status", report: reference }, undefined, undefined, f.context));
+}));
+
+test("native report observation cannot survive source-byte replacement during the UI turn", () => reportFixture(async (f) => {
+  const capture = await f.report.execute("capture", { action: "capture", phaseId: "phase-4", summary: "Partial native report", nextAction: "Inspect source-bound view.", learning: "Revalidate after UI." }, undefined, undefined, f.context);
+  const published = await f.report.execute("publish", { action: "publish", source: capture.details.source }, undefined, undefined, f.context);
+  const root = join(f.ai, "agent-teams/rogue-one/artifacts");
+  const recordCount = () => f.authority.reports(false, f.actorId)!.records().filter((name) => name.endsWith(".intent.json")).filter((name) => (f.authority.reports(false, f.actorId)!.read(name) as { kind?: string }).kind === "report-delivery").length;
+  const before = recordCount();
+  const context = { ...f.context, ui: { select: async (_title: string, choices: string[]) => { writeFileSync(join(root, `2026-10-17-ticketless-phase-4-${f.actorId}`, "attempt-1/report.md"), "replaced during UI"); return choices[0]; } } };
+  await assert.rejects(f.report.execute("stale-view", { action: "observe-delivery", report: published.details.report, application: "browser" }, undefined, undefined, context));
+  assert.equal(recordCount(), before);
+}));
+
 async function resourceFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; service: PreparedWorkflowService; gets: () => number; deploy: (onSpawn?: (options: SpawnOpts) => void | Promise<void>, preflight?: () => Promise<void>) => ReturnType<typeof deployWithPi>; git: (args: string[], cwd?: string) => string }) => unknown | Promise<unknown>) {
   const previous = process.env; process.env = { ...previous };
   for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
@@ -317,6 +409,17 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       assert.throws(() => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } }).resolve(context));
       assert.throws(() => adapter.resolve(context)); // durable start locator prevents a fresh-module legacy fallback
       writeFileSync(correlationPath, correlationBytes, { mode: 0o600 });
+      await select(); await execute("bash", { command: "corepack pnpm typecheck", timeout: 30 }); await settle();
+      const reporter = new PiNativePhaseReportAdapter({ authority: f.authority, execution: adapter });
+      createPiPhaseReportModule({ nativeAdapter: reporter })(runtime.pi);
+      const reports = runtime.tools.get("pa_phase_report")!;
+      const captured = await reports.execute("report-native-direct", { action: "capture", phaseId: "phase-3", summary: "Native evidence snapshot; not phase acceptance.", nextAction: "Keep independent acceptance pending.", learning: "Preserve original failures." }, undefined, undefined, context);
+      const published = await reports.execute("publish-native-direct", { action: "publish", source: captured.details.source }, undefined, undefined, context);
+      assert.equal(published.details.canonicalEvidenceAvailable, true); assert.equal(published.details.outcome, "partial");
+      assert.equal(published.details.dependencyState, "available"); assert.equal(published.details.phaseDeliveryReady, false);
+      const reportDir = join(f.ai, "agent-teams/builder/artifacts", `${committed.bounds.startedAt.slice(0, 10)}-PAP-256-phase-3-${opts.deployId}`, "attempt-1");
+      assert.match(readFileSync(join(reportDir, "report.md"), "utf8"), /exit: 2/); assert.match(readFileSync(join(reportDir, "diff.patch"), "utf8"), /value = 2/);
+      assert.doesNotMatch(readFileSync(join(reportDir, "report.md"), "utf8"), /native-test-private-output-value/);
       // Revocation retains audit/settlement evidence, never falls back to legacy
       // mutation, and a same-process module reload reads the retained journal.
       f.authority.deactivate(f.caller);

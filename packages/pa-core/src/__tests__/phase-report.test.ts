@@ -72,6 +72,14 @@ test("native full safe diff is fixed-path, source-bound, immutable and verified 
   writeFileSync(join(f.path(), "diff.patch"), "tampered"); assert.throws(() => f.service.settle(receipt));
 }));
 
+test("native partial/history publication is separate from current dependent-work evidence", () => fixture((f) => {
+  f.host.dependencyState = () => "missing-check-evidence";
+  const receipt = f.service.publish(report()); const status = f.service.settle(receipt);
+  assert.equal(status.canonicalEvidenceAvailable, true); assert.equal(status.dependentWorkMayContinue, false);
+  f.host.dependencyState = () => "historical"; assert.equal(f.service.settle(receipt).dependencyState, "historical");
+  f.host.dependencyState = () => "invented" as never; assert.throws(() => f.service.settle(receipt));
+}));
+
 test("unsafe or oversized native diff cannot persist public report bytes", () => fixture((f) => {
   f.host.resolvePublicDiff = () => Buffer.from("SECRET-SENTINEL"); assert.throws(() => f.service.publish(report())); assert.equal(existsSync(f.path()), false);
   f.host.resolvePublicDiff = () => Buffer.alloc(1_048_577, 65); assert.throws(() => f.service.publish(report())); assert.equal(existsSync(f.path()), false);

@@ -151,6 +151,28 @@ export class PiPreparedNativeAuthority {
   operations(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "operations"), create); }
   execution(create = false): ProtectedWorkflowStore | null { return protectedRoot(join(this.root, "execution"), create); }
   evidenceRoot(): string { return join(this.root, "execution"); }
+  reports(create = false, deploymentId?: string): ProtectedWorkflowStore | null { return protectedRoot(this.reportEvidenceRoot(deploymentId), create); }
+  reportEvidenceRoot(deploymentId?: string): string {
+    if (deploymentId !== undefined && !/^d-[0-9a-f]{6}$/.test(deploymentId)) throw workflowError();
+    return deploymentId === undefined ? join(this.root, "reports") : join(this.root, "reports", deploymentId);
+  }
+  hasReportPolicyState(): boolean {
+    const store = this.#store();
+    return store !== null && store.records().some((name) => (store.read(name) as { schemaVersion?: string }).schemaVersion === "prepared-native-policy/v1");
+  }
+  reportPolicy(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot">): SourceVersion | null {
+    const active = this.#policy(caller); if (!active) return null;
+    return source(`native-report-policy:${active.id}`, "prepared-native-policy/v1", Buffer.from(JSON.stringify(active.policy)));
+  }
+  /** Retained report settlement grants artifact authority only, never new work,
+   * activation, source adoption or a different runtime's implicit migration. */
+  assertReportPolicy(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot">, reference: SourceVersion): void {
+    const ref = parseSourceVersion(reference); const id = this.#policyId(caller, this.#facts()); const store = this.#store();
+    if (!store || ref.ref !== `native-report-policy:${id}` || ref.version !== "prepared-native-policy/v1") throw workflowError();
+    const value = store.read(`${id}.intent.json`);
+    const row = workflowObject(value, ["schemaVersion", "repoKey", "repoRoot", "runtime", "qualification", "deploymentId", "callerIdentity", "capturedAt"]);
+    if (row.schemaVersion !== ref.version || row.repoKey !== caller.repoKey || row.repoRoot !== caller.repoRoot || !equal(row.runtime, this.#facts()) || ref.sha256 !== workflowDigest(JSON.stringify(value))) throw workflowError();
+  }
   /** Retained adopted lineages may finish/settle/report after revocation. This
    * never authorizes a new source operation or upgrades a different runtime. */
   retained(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot" | "ticket">, grantId: string): { grant: NativePreparationGrant; active: boolean } {
@@ -224,7 +246,7 @@ export class PiPreparedNativeAuthority {
     if (!equal(this.#readQualification(store, facts), policy.qualification)) throw workflowError();
     return { id, policy, store };
   }
-  status(caller: PiPreparationCaller): Readonly<{ active: boolean }> { return Object.freeze({ active: this.#policy(caller) !== null }); }
+  status(caller: Pick<PiPreparationCaller, "repoKey" | "repoRoot">): Readonly<{ active: boolean }> { return Object.freeze({ active: this.#policy(caller) !== null }); }
   activationPreview(caller: PiPreparationCaller): Readonly<{ runtimeSourceSha: string; configSha: string; qualificationSha256: string }> {
     const facts = this.#facts(); const store = this.#store(); if (!store) throw workflowError();
     const qualification = this.#readQualification(store, facts);

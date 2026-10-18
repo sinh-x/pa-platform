@@ -99,6 +99,7 @@ export interface NativeExecutionReportFacts {
   readonly state: ExecutionState;
   readonly snapshot: RepositoryGitSnapshot;
   readonly checks: readonly PhaseReportCheck[];
+  readonly operations: readonly SourceVersion[];
   readonly scopeProven: boolean;
   readonly diff: Buffer;
   readonly omissions: readonly string[];
@@ -421,10 +422,16 @@ export class NativeExecutionSession {
     const state = this.service.status(this.actor);
     const snapshot = captureRepositoryGitSnapshot(this.contract.worktreeRoot, git);
     let scopeProven = false;
-    try { scopeProven = state.operation === null && equal(captureNativeScope(this.contract.worktreeRoot), this.#known(state)); } catch { /* retained unknown scope, not an empty inventory */ }
-    const checks: PhaseReportCheck[] = [];
+    try {
+      if (state.plan && state.operation === null && !this.#initial.git.dirty) {
+        const current = this.#assertKnown(state);
+        scopeProven = names(current.git).every((path) => state.plan!.paths.includes(path));
+      }
+    } catch { /* retained unknown scope, not an empty inventory */ }
+    const checks: PhaseReportCheck[] = []; const operations: SourceVersion[] = []; const kinds = new Map<string, string>();
     for (let sequence = 1; sequence <= state.sequence; sequence += 1) {
       const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
+      if (event.command.action === "begin") kinds.set(event.command.operation.id, event.command.operation.kind);
       if (event.command.action !== "finish") continue;
       const result = this.evidence.read(event.command.evidence, "tool-result") as NativeToolResult;
       const intent = this.evidence.read(result.intent, "tool-intent") as NativeIntent;
@@ -432,7 +439,8 @@ export class NativeExecutionSession {
         || (intent.toolName === "bash" && (!result.process || result.process.groupSettled !== true))) throw workflowError();
       if (result.process) { this.evidence.blob(result.process.stdout); this.evidence.blob(result.process.stderr); }
       if (result.sdkError) this.evidence.blob(result.sdkError);
-      checks.push({ command: intent.command, candidateSha: intent.before.git.head, state: result.exitCode === 0 ? "passed" : "failed", exitCode: result.exitCode, output: event.command.evidence });
+      operations.push(event.command.evidence);
+      if (kinds.get(event.command.operationId) === "check") checks.push({ command: intent.command, candidateSha: intent.before.git.head, state: result.exitCode === 0 ? "passed" : "failed", exitCode: result.exitCode, output: event.command.evidence });
     }
     const omissions: string[] = [];
     let diff = Buffer.alloc(0);
@@ -454,7 +462,7 @@ export class NativeExecutionSession {
     if (state.operation) { try { pendingResult = this.#resultSource(state.operation.id); } catch { omissions.push("The started operation has no durable native result; no terminal cause or process death is inferred."); } }
     if (!equal(snapshot, captureRepositoryGitSnapshot(this.contract.worktreeRoot, git))) throw workflowError();
     this.assertCaller({ cwd: process.cwd() });
-    return Object.freeze({ state, snapshot, checks: Object.freeze(checks), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
+    return Object.freeze({ state, snapshot, checks: Object.freeze(checks), operations: Object.freeze(operations), scopeProven, diff, omissions: Object.freeze(omissions), pendingResult });
   }
   publicText(value: string): string {
     const owner = observeReadonlyRepositoryAuthority(this.#physical.gitDir).owner;
