@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
@@ -63,6 +63,30 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   assert.equal(caught.code, code);
   return caught;
 }
+
+test("native direct owner projection uses exact predecessor, preserves launch history and replays idempotently", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const id = "d-256abc", worktree = "/ticket/PAP-001", head = "a".repeat(40), next = "b".repeat(40);
+    appendRegistryEvent({ deployment_id: id, team: "builder", mode: "orchestrator", runtime: "pi", binary: "ppa", event: "started", timestamp: "2026-10-18T00:00:00Z",
+      ticket_id: "PAP-001", repo: worktree, repo_root: canonicalRoot, worktree_root: worktree, builder_authority: "orchestrator",
+      treehouse_path: worktree, treehouse_lease_id: "fixture-lease", treehouse_lease_holder: "pa:pa-platform:PAP-001", branch_state: "materialized", branch_base_sha: head,
+      branch_head_sha: head, ticket_slot_id: "pa:pa-platform:PAP-001", repository_permit: 1 });
+    const launch = getDeploymentEvents(id)[0];
+    const input = { deploymentId: id, repoRoot: canonicalRoot, worktreeRoot: worktree, ticket: "PAP-001", expectedBranchHeadSha: head, branchHeadSha: next };
+    for (const patch of [{ deploymentId: "d-absent" }, { repoRoot: "/other" }, { worktreeRoot: "/other" }, { ticket: "PAP-002" }, { expectedBranchHeadSha: "c".repeat(40) }, { branchHeadSha: "short" }]) assert.throws(() => advanceDirectAuthoritySnapshot({ ...input, ...patch }));
+    assert.equal(getDeploymentEvents(id).length, 1);
+    advanceDirectAuthoritySnapshot(input); advanceDirectAuthoritySnapshot(input);
+    assert.equal(queryDeploymentStatus(id)?.branch_head_sha, next); assert.equal(getDeploymentEvents(id).length, 2);
+    assert.deepEqual(getDeploymentEvents(id)[0], launch); assert.match(getDeploymentEvents(id)[1]!.note!, /^direct-owner-authority:/);
+    assert.throws(() => advanceDirectAuthoritySnapshot({ ...input, branchHeadSha: "c".repeat(40) }));
+    const second = { ...input, expectedBranchHeadSha: next, branchHeadSha: "c".repeat(40) };
+    getDb().exec("CREATE TRIGGER reject_direct_projection BEFORE UPDATE OF branch_head_sha ON deployments BEGIN SELECT RAISE(ABORT, 'projection failed'); END");
+    assert.throws(() => advanceDirectAuthoritySnapshot(second)); assert.equal(getDeploymentEvents(id).length, 2); assert.equal(queryDeploymentStatus(id)?.branch_head_sha, next);
+    getDb().exec("DROP TRIGGER reject_direct_projection"); advanceDirectAuthoritySnapshot(second);
+    appendRegistryEvent({ deployment_id: id, team: "builder", event: "completed", status: "success", timestamp: "2026-10-18T00:03:00Z" });
+    assert.throws(() => advanceDirectAuthoritySnapshot(second)); assert.deepEqual(getDeploymentEvents(id)[0], launch);
+  });
+});
 
 test("native launch event observation is existing-only and never initializes or rewrites registry state", () => {
   withAssociationFixture(({ root }) => {

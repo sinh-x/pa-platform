@@ -23,7 +23,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { queryDeploymentStatus } from "../registry/index.js";
+import { advanceDirectAuthoritySnapshot, queryDeploymentStatus } from "../registry/index.js";
 import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
@@ -552,6 +552,8 @@ export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, wor
         // child evidence remains in its original records, not this new mapping.
         delete next.authorityChildDeploymentId;
         replaceLeaseAtomic(location.leasePath, Object.freeze(next), randomUUID);
+        advanceDirectAuthoritySnapshot({ deploymentId: input.deploymentId, repoRoot: location.root, worktreeRoot: location.worktree, ticket: lease.ticket!,
+          expectedBranchHeadSha: input.expected.head, branchHeadSha: input.next.head, timestamp: next.authorityUpdatedAt });
       } });
       try { const result = operation(transaction); if (result && (typeof result === "object" || typeof result === "function") && "then" in result) throw new Error("native execution transaction must be synchronous"); return result; }
       finally { active = false; }

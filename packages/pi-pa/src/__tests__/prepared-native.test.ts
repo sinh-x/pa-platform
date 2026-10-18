@@ -389,11 +389,14 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       assert.equal(passed.failed, false); assert.doesNotMatch(JSON.stringify(passed.result), /native-test-private-output-value/); assert.match(JSON.stringify(passed.result), /REDACTED/);
       await settle(); await control({ action: "resolve", evidence: await observe("last-result") });
       assert.equal(session.service.status(session.actor).originalFailure, null);
+      const immutableStarted = getDeploymentEvents(opts.deployId).find((event) => event.event === "started");
       await select(); await execute("bash", { command: "git add -- package.json src/file.ts" });
       await execute("bash", { command: "git commit -m 'tested native fixture'" });
       const committed = session.service.status(session.actor);
       assert.equal(committed.candidateSha, f.git(["rev-parse", "HEAD"], f.checkout)); assert.notEqual(committed.candidateSha, beforeCanonical);
       assert.equal(committed.binding.initialHeadSha, beforeCanonical); assert.deepEqual(committed.passedChecks, {});
+      assert.deepEqual(getDeploymentEvents(opts.deployId).find((event) => event.event === "started"), immutableStarted);
+      assert.equal(getDeploymentEvents(opts.deployId).findLast((event) => event.note?.startsWith("direct-owner-authority:"))?.branch_head_sha, committed.candidateSha);
       const reportFacts = session.reportFacts();
       assert.equal(reportFacts.scopeProven, true); assert.equal(reportFacts.snapshot.head, committed.candidateSha);
       assert.ok(reportFacts.checks.some((check) => check.exitCode === 2)); assert.ok(reportFacts.checks.some((check) => check.exitCode === 0));
