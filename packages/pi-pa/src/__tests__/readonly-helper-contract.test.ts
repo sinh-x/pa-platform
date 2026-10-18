@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
-  appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, getDb, getDeployPaths, queryReadonlyHelperRegistry,
+  advanceParentAuthoritySnapshot, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, finalizeRepositoryMutationBorrower,
+  getDb, getDeployPaths, inspectRepositoryMutationLease, queryReadonlyHelperRegistry, registerRepositoryMutationBorrower,
   ReadOnlyHelperFailure, readProcessFingerprint, repositoryMutationBorrowerPath, repositoryMutationLeasePath,
   repositoryReviewReservationPath, repositoryTicketSlotPath, resolveReadOnlyHelperContext, resolveRepoExecutionPath,
   withReadOnlyHelperContext, type DeploymentStatus, type ImplementationLaunchState, type ReadOnlyHelperRole,
@@ -146,12 +147,14 @@ function guarded(f: Fixture, operation: () => void): void {
   assert.equal(JSON.stringify([...f.statuses]), registry); assert.equal(JSON.stringify(f.ticket), feature);
   assert.deepEqual(Object.values(f.counters), Array(7).fill(0));
 }
-function rejected(action: () => unknown, classification = "authority-rejected") {
+function rejected(action: () => unknown, classification = "authority-rejected", reason?: RegExp) {
   assert.throws(action, (error: unknown) => {
     assert.ok(error instanceof ReadOnlyHelperFailure); assert.equal(error.classification, classification);
     assert.equal(error.implementationLaunchState, "unknown"); assert.ok(error.message.length <= 2000);
     for (const label of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.ok(error.message.includes(`${label}:`));
-    assert.doesNotMatch(error.message, /private-fixture|review-auth:/); return true;
+    assert.doesNotMatch(error.message, /private-fixture|review-auth:/);
+    if (reason) assert.match(error.message, reason);
+    return true;
   });
 }
 
@@ -269,15 +272,120 @@ test("valid idle custody and active direct-child custody remain observational", 
   }));
 });
 
-test("orchestrator accepts reconciled child commits without rewriting immutable launch registry evidence", () => isolated((root) => {
-  const f = fixture(root, "orchestrator");
-  writeFileSync(join(f.candidate, "completed-phase"), "phase\n");
-  git(f.candidate, "add", "completed-phase"); git(f.candidate, "commit", "-qm", "child phase");
-  const snapshot = captureRepositoryGitSnapshot(f.candidate);
-  protectedWrite(repositoryMutationLeasePath(f.candidate), { ...f.owner, authorityGitSnapshot: snapshot,
-    authorityUpdatedAt: new Date().toISOString(), authorityChildDeploymentId: f.parent });
-  guarded(f, () => withReadOnlyHelperContext(f.capability.authenticate(f.candidate), (context) => assert.equal(context.role, "orchestrator")));
-}));
+// Exercise the producer contract, not a fabricated public status advance.
+function advanceSequentialAuthority(f: Fixture) {
+  persistRegistryFixture(f);
+  rmSync(repositoryMutationBorrowerPath(f.candidate));
+  const register = (deploymentId: string, snapshot: typeof f.owner.preLaunchGitSnapshot) => registerRepositoryMutationBorrower({
+    capability: f.owner.ownershipToken, canonicalRepoKey: "fixture", canonicalRepoRoot: f.canonical, worktreeRoot: f.candidate,
+    parentDeploymentId: f.parent, deploymentId, deploymentDirectory: getDeployPaths(deploymentId).deployDir,
+    runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "ALT-7",
+    branch: snapshot.branch, timeoutSeconds: 60, gitSnapshot: snapshot,
+  });
+  const first = register(f.id, f.owner.preLaunchGitSnapshot);
+  assert.equal(first.status, "registered", JSON.stringify(first));
+  assert.ok(first.status === "registered");
+  git(f.candidate, "commit", "--allow-empty", "-qm", "first direct child");
+  const advanced = captureRepositoryGitSnapshot(f.candidate);
+  assert.equal(finalizeRepositoryMutationBorrower({
+    canonicalRepoRoot: f.canonical, worktreeRoot: f.candidate, borrowerToken: first.borrower.borrowerToken,
+    deploymentId: f.id, finalGitSnapshot: advanced, dependencies: { publishParentAuthoritySnapshot: advanceParentAuthoritySnapshot },
+  }).status, "finalized");
+  const current = inspectRepositoryMutationLease(f.candidate).lease!;
+  assert.deepEqual(current.preLaunchGitSnapshot, f.owner.preLaunchGitSnapshot);
+  assert.deepEqual(current.authorityGitSnapshot, advanced);
+  assert.equal(queryReadonlyHelperRegistry(f.parent).status?.branch_head_sha, advanced.head);
+  const started = () => getDb().prepare("SELECT * FROM registry_events WHERE deployment_id = ? AND event = 'started'").get(f.parent);
+  assert.equal((started() as { branch_head_sha: string }).branch_head_sha, f.owner.preLaunchGitSnapshot.head);
+  return { advanced, register, started };
+}
+
+test("sequential authority advance: finalized first child permits idle parent and second child built helpers", async (t) => {
+  for (const role of ["orchestrator", "parented-implement"] as const) await t.test(role, () => isolated((root) => {
+    const f = fixture(root, "parented-implement");
+    const { advanced, register, started } = advanceSequentialAuthority(f);
+    const launchBytes = JSON.stringify(started());
+    let selectedId = f.parent;
+    if (role === "parented-implement") {
+      selectedId = "d-257abc";
+      const second = { ...f.status, deploy_id: selectedId, branch_head_sha: advanced.head };
+      persistRegistryFixture({ ...f, statuses: new Map([[selectedId, second]]) });
+      mkdirSync(getDeployPaths(selectedId).deployDir, { recursive: true });
+      assert.equal(recordPiProcessIdentity(selectedId, getDeployPaths(selectedId).deployDir, process.pid), true);
+      assert.equal(register(selectedId, advanced).status, "registered");
+      assert.equal(register("d-257bad", advanced).status, "rejected", "no sibling admission");
+    }
+    Object.assign(process.env, { PA_DEPLOYMENT_ID: selectedId, PA_DEPLOYMENT_DIR: getDeployPaths(selectedId).deployDir,
+      PA_MODE: role === "orchestrator" ? "orchestrator" : "implement" });
+    const run = builtCli(f), events = getDb().prepare("SELECT * FROM registry_events").all();
+    guarded(f, () => {
+      const results = [["branch", "validate"], ["board"], ["repository", "inspect"]].map((args) => ({ args, ...run(args) }));
+      for (const result of results) {
+        assert.equal(result.code, 0, `${result.args.join(" ")}: ${result.stderr}`);
+        if (result.args[0] === "board") assert.match(result.stdout, /candidate board sentinel/);
+        if (result.args[0] === "repository") assert.ok(result.stdout.includes(`role=${role}`));
+      }
+    });
+    assert.deepEqual(getDb().prepare("SELECT * FROM registry_events").all(), events);
+    assert.equal(JSON.stringify(started()), launchBytes);
+    assert.deepEqual(inspectRepositoryMutationLease(f.candidate).lease!.preLaunchGitSnapshot, f.owner.preLaunchGitSnapshot);
+  }));
+});
+
+test("current authority rejects stale projection and invalid present snapshots through all three built helpers", async (t) => {
+  for (const fault of ["old-projection", "wrong-projection", "missing-current", "null-current", "malformed-current", "incomplete-current", "wrong-current-head"] as const) {
+    await t.test(fault, () => isolated((root) => {
+      const f = fixture(root, "parented-implement");
+      const { advanced } = advanceSequentialAuthority(f);
+      // Idle owner exercises the exact selected-current equality check. Old OR
+      // current acceptance and fallback on invalid present evidence must fail.
+      Object.assign(process.env, { PA_DEPLOYMENT_ID: f.parent, PA_DEPLOYMENT_DIR: getDeployPaths(f.parent).deployDir, PA_MODE: "orchestrator" });
+      const ownerPath = repositoryMutationLeasePath(f.candidate);
+      const current = JSON.parse(readFileSync(ownerPath, "utf8"));
+      if (fault === "old-projection" || fault === "wrong-projection") {
+        getDb().prepare("UPDATE deployments SET branch_head_sha = ? WHERE deployment_id = ?")
+          .run(fault === "old-projection" ? f.owner.preLaunchGitSnapshot.head : "b".repeat(40), f.parent);
+      } else {
+        if (fault === "missing-current") { delete current.authorityGitSnapshot; delete current.authorityUpdatedAt; delete current.authorityChildDeploymentId; }
+        if (fault === "null-current") current.authorityGitSnapshot = null;
+        if (fault === "malformed-current") current.authorityGitSnapshot = { ...advanced, head: "invalid" };
+        if (fault === "incomplete-current") { const { statusEntries: _entries, ...incomplete } = advanced; current.authorityGitSnapshot = incomplete; }
+        if (fault === "wrong-current-head") current.authorityGitSnapshot = f.owner.preLaunchGitSnapshot;
+        protectedWrite(ownerPath, current);
+      }
+      const category = ["null-current", "malformed-current", "incomplete-current"].includes(fault) ? /protected-authority-evidence/ : /owner-current-head/;
+      const capability = createPiReadonlyHelperCapability({ treehouse: f.treehouse });
+      const run = builtCli(f), events = getDb().prepare("SELECT * FROM registry_events").all();
+      guarded(f, () => {
+        rejected(() => capability.authenticate(f.candidate), "authority-rejected", category);
+        for (const args of [["branch", "validate"], ["board"], ["repository", "inspect"]]) {
+          const result = run(args);
+          assert.equal(result.code, 1); assert.equal(result.stdout, "");
+          assert.match(result.stderr, category); assert.match(result.stderr, /authority-rejected; implementation unknown/);
+          assert.ok(result.stderr.length <= 2000);
+          for (const field of ["Condition", "Source", "Reason", "Correction", "Resume Action"]) assert.ok(result.stderr.includes(`${field}:`));
+          assert.doesNotMatch(result.stderr, /private-fixture|review-auth:/);
+        }
+      });
+      assert.deepEqual(getDb().prepare("SELECT * FROM registry_events").all(), events);
+    }));
+  }
+});
+
+test("owner mismatch diagnostics name bounded non-secret predicate categories", async (t) => {
+  const cases: Array<[string, (f: Fixture) => void]> = [
+    ["owner-registry-role", (f) => { f.statuses.get(f.parent)!.status = "success"; }],
+    ["owner-registry-binding", (f) => { f.statuses.get(f.parent)!.ticket_id = "ALT-8"; }],
+    ["owner-checkout-binding", (f) => { f.statuses.get(f.parent)!.treehouse_lease_id = "private-fixture-wrong-lease"; }],
+    ["owner-physical-role", (f) => protectedWrite(repositoryMutationLeasePath(f.candidate), { ...f.owner, repositoryGitDir: f.canonical })],
+    ["owner-current-head", (f) => { f.statuses.get(f.parent)!.branch_head_sha = "b".repeat(40); }],
+    ["owner-process-incarnation", (f) => protectedWrite(repositoryMutationLeasePath(f.candidate), { ...f.owner, processFingerprint: { ...f.owner.processFingerprint, startTimeTicks: "0" } })],
+  ];
+  for (const [category, change] of cases) await t.test(category, () => isolated((root) => {
+    const f = fixture(root, "parented-implement"); change(f);
+    guarded(f, () => rejected(() => f.capability.authenticate(f.candidate), "authority-rejected", new RegExp(category)));
+  }));
+});
 
 test("missing evidence command is command-unavailable, never an inferred authority/launch failure", () => isolated((root) => {
   const f = fixture(root, "orchestrator");
@@ -570,6 +678,57 @@ test("built CLI binds distinct historical supervisor and Pi-child incarnations f
         const result = await run(["branch", "validate"]);
         assert.equal(result.code, 1); assert.match(result.stderr, /borrower Pi child is outside/);
       }
+    } finally { await processes.close(); }
+  }));
+});
+
+test("sequential authority advance retains distinct supervisor/Pi ancestry with built helpers", async (t) => {
+  for (const role of ["orchestrator", "parented-implement"] as const) await t.test(role, () => isolated(async (root) => {
+    const f = fixture(root, "parented-implement");
+    const { advanced, started } = advanceSequentialAuthority(f), launchBytes = JSON.stringify(started());
+    const processes = await roleProcesses();
+    try {
+      const [ownerSupervisor, ownerPi, borrowerSupervisor, borrowerPi] = processes.pids as [number, number, number, number];
+      const ownerPath = repositoryMutationLeasePath(f.candidate);
+      const current = JSON.parse(readFileSync(ownerPath, "utf8"));
+      protectedWrite(ownerPath, { ...current, processFingerprint: readProcessFingerprint(ownerSupervisor)! });
+      protectedWrite(repositoryTicketSlotPath(f.canonical, "ALT-7"), { ...f.slot, processFingerprint: readProcessFingerprint(ownerSupervisor)! });
+      getDb().prepare("UPDATE deployments SET pid = ? WHERE deployment_id = ?").run(ownerPi, f.parent);
+      assert.equal(recordPiProcessIdentity(f.parent, getDeployPaths(f.parent).deployDir, ownerPi), true);
+      const selectedId = role === "orchestrator" ? f.parent : "d-257abc";
+      if (role === "parented-implement") {
+        const second = { ...f.status, deploy_id: selectedId, pid: borrowerPi, branch_head_sha: advanced.head };
+        persistRegistryFixture({ ...f, statuses: new Map([[selectedId, second]]) });
+        mkdirSync(getDeployPaths(selectedId).deployDir, { recursive: true });
+        assert.equal(recordPiProcessIdentity(selectedId, getDeployPaths(selectedId).deployDir, borrowerPi), true);
+        const admitted = registerRepositoryMutationBorrower({
+          capability: f.owner.ownershipToken, canonicalRepoKey: "fixture", canonicalRepoRoot: f.canonical, worktreeRoot: f.candidate,
+          parentDeploymentId: f.parent, deploymentId: selectedId, deploymentDirectory: getDeployPaths(selectedId).deployDir,
+          runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "ALT-7",
+          branch: advanced.branch, timeoutSeconds: 60, gitSnapshot: advanced, pid: borrowerSupervisor,
+        });
+        assert.equal(admitted.status, "registered", JSON.stringify(admitted));
+      }
+      builtCli(f);
+      const cli = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
+      const environment = { ...process.env, PA_DEPLOYMENT_ID: selectedId, PA_DEPLOYMENT_DIR: getDeployPaths(selectedId).deployDir,
+        PA_MODE: role === "orchestrator" ? "orchestrator" : "implement", PATH: `${join(root, "bin")}:${process.env.PATH}` };
+      const target = role === "orchestrator" ? 1 : 3;
+      const before = files(root), events = getDb().prepare("SELECT * FROM registry_events").all();
+      for (const args of [["branch", "validate"], ["board"], ["repository", "inspect"]]) {
+        const result = await processes.run(target, [cli, ...args], f.candidate, environment);
+        assert.equal(result.code, 0, result.stderr);
+        if (args[0] === "repository") assert.ok(result.stdout.includes(`role=${role}`));
+      }
+      assert.deepEqual(files(root), before);
+      assert.deepEqual(getDb().prepare("SELECT * FROM registry_events").all(), events);
+      assert.equal(JSON.stringify(started()), launchBytes);
+      assert.deepEqual(Object.values(f.counters), Array(7).fill(0));
+      protectedWrite(ownerPath, { ...current, processFingerprint: readProcessFingerprint(borrowerPi)! });
+      const badBefore = files(root);
+      const bad = await processes.run(target, [cli, "branch", "validate"], f.candidate, environment);
+      assert.equal(bad.code, 1); assert.equal(bad.stdout, ""); assert.match(bad.stderr, /owner-process-lineage/);
+      assert.deepEqual(files(root), badBefore);
     } finally { await processes.close(); }
   }));
 });
