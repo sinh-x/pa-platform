@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import test from "node:test";
 import {
   MAX_REPOSITORY_CHILD_SETTLEMENT_BYTES, REPOSITORY_CHILD_SETTLEMENT_FILE,
   acquireRepositoryMutationLease, captureRepositoryGitSnapshot, finalizeRepositoryMutationBorrower,
-  inspectRepositoryMutationLease, observeReadonlyRepositoryAuthority, publishRepositoryDirtyBorrowApproval, reconcileRepositoryTerminalChild,
+  inspectRepositoryMutationLease, observeReadonlyRepositoryAuthority, publishRepositoryDirtyBorrowApproval, reconcileRepositoryTerminalChild, recoverRepositoryTerminalChild,
   registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryMutationLease,
   repositoryMutationBorrowerPath, repositoryMutationLeasePath, repositoryDirtyBorrowApprovalPath, reserveRepositoryReview,
   transferRepositoryMutationBorrower, transferRepositoryMutationLease, updateRepositoryMutationLeaseGitSnapshot,
@@ -170,6 +171,49 @@ for (const boundary of ["intent", "lease", "registry", "ticket", "published", "c
     closeDb(); delete f.host.boundary;
     const result = f.apply(); assert.equal(result.outcome, boundary === "complete" ? "already-reconciled" : "reconciled", result.diagnostic);
     assert.equal(f.apply().outcome, "already-reconciled"); assert.equal(authorityEvents().length, 1); assert.equal(f.ticketWrites(), 1);
+  } finally { f.dispose(); }
+});
+
+for (const boundary of ["intent", "lease", "registry", "ticket", "published", "cleanup", "complete"] as const) test(`existing-only recovery inspection and confirmed replay at ${boundary}`, () => {
+  const f = fixture("partial");
+  try {
+    f.commit();
+    f.host.boundary = (stage) => { if (stage === boundary) throw new Error("interruption"); };
+    assertBlocked(f.apply()); delete f.host.boundary;
+    const snapshot = (dir: string): Record<string, string> => Object.fromEntries(readdirSync(dir, { withFileTypes: true }).flatMap((entry): Array<[string, string]> => {
+      const path = join(dir, entry.name);
+      // SQLite's readonly WAL reader updates volatile shared-memory read marks,
+      // not database/WAL contents. Inventory its existence, not reader-lock bytes.
+      return entry.isDirectory() ? Object.entries(snapshot(path)) : [[path, path.endsWith("registry.db-shm") ? "volatile-reader-lock-state" : createHash("sha256").update(readFileSync(path)).digest("hex")]];
+    }));
+    const before = snapshot(f.dir);
+    const inspect = () => recoverRepositoryTerminalChild({ ...f.options, host: f.host });
+    const first = inspect(); assert.equal(first.outcome, "eligible", first.diagnostic); assert.ok(first.observationDigest);
+    assert.deepEqual(snapshot(f.dir), before, "inspection changes no durable file/directory/index/database/WAL bytes");
+    assert.deepEqual(inspect(), first, "read-only observations are stable");
+    const applied = recoverRepositoryTerminalChild({ ...f.options, host: f.host, expectedObservationDigest: first.observationDigest });
+    assert.equal(applied.outcome, boundary === "complete" ? "already-reconciled" : "reconciled", applied.diagnostic);
+    assert.equal(authorityEvents().length, 1);
+    const completed = inspect(); assert.equal(completed.outcome, "eligible"); assert.equal(completed.cleanup, true);
+    assert.equal(recoverRepositoryTerminalChild({ ...f.options, host: f.host, expectedObservationDigest: completed.observationDigest }).outcome, "already-reconciled");
+    assert.equal(authorityEvents().length, 1);
+  } finally { f.dispose(); }
+});
+
+test("operator observation drift and absence of retained native proof cannot create or publish authority", () => {
+  const f = fixture();
+  try {
+    assertBlocked(recoverRepositoryTerminalChild({ ...f.options, host: f.host }));
+    assert.equal(existsSync(f.activePath), false);
+    f.host.boundary = (stage) => { if (stage === "intent") throw new Error("interruption"); };
+    assertBlocked(f.apply()); delete f.host.boundary;
+    const observed = recoverRepositoryTerminalChild({ ...f.options, host: f.host }); assert.equal(observed.outcome, "eligible");
+    const before = readFileSync(f.activePath);
+    assertBlocked(recoverRepositoryTerminalChild({ ...f.options, host: f.host, expectedObservationDigest: "a".repeat(64) }));
+    assert.deepEqual(readFileSync(f.activePath), before); assert.deepEqual(readFileSync(f.leasePath), f.beforeLease); assert.equal(authorityEvents().length, 0);
+    f.dirty();
+    assertBlocked(recoverRepositoryTerminalChild({ ...f.options, host: f.host, expectedObservationDigest: observed.observationDigest }));
+    assert.deepEqual(readFileSync(f.activePath), before); assert.equal(authorityEvents().length, 0);
   } finally { f.dispose(); }
 });
 

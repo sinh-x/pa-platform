@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
+import { queryReadonlyHelperRegistry } from "../registry/index.js";
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
 
@@ -133,6 +134,27 @@ test("native direct owner projection uses exact predecessor, preserves launch hi
     getDb().exec("DROP TRIGGER reject_direct_projection"); advanceDirectAuthoritySnapshot(second);
     appendRegistryEvent({ deployment_id: id, team: "builder", event: "completed", status: "success", timestamp: "2026-10-18T00:03:00Z" });
     assert.throws(() => advanceDirectAuthoritySnapshot(second)); assert.deepEqual(getDeploymentEvents(id)[0], launch);
+  });
+});
+
+test("allocation-free registry observation handles live WAL and closed checkpoints without creating sidecars", () => {
+  withAssociationFixture(({ root }) => {
+    const path = join(root, "registry.db"), id = "d-238aaa";
+    const initial = readdirSync(root).sort();
+    assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.deepEqual(readdirSync(root).sort(), initial);
+    appendRegistryEvent({ deployment_id: id, team: "builder", event: "started", timestamp: "2026-10-21T00:00:00Z", runtime: "pi", binary: "ppa" });
+    const liveDb = readFileSync(path), liveWal = readFileSync(`${path}-wal`);
+    assert.equal(queryReadonlyHelperRegistry(id, undefined, true).status?.status, "running");
+    assert.deepEqual(readFileSync(path), liveDb); assert.deepEqual(readFileSync(`${path}-wal`), liveWal);
+    renameSync(`${path}-shm`, `${path}-saved-shm`);
+    try { assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.equal(existsSync(`${path}-shm`), false); }
+    finally { renameSync(`${path}-saved-shm`, `${path}-shm`); }
+    closeDb(); const before = readFileSync(path); const inventory = readdirSync(root).sort();
+    assert.equal(existsSync(`${path}-wal`), false);
+    assert.equal(queryReadonlyHelperRegistry(id, undefined, true).status?.status, "running");
+    assert.deepEqual(readFileSync(path), before); assert.deepEqual(readdirSync(root).sort(), inventory);
+    writeFileSync(`${path}-journal`, "unsettled rollback evidence");
+    assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.deepEqual(readFileSync(path), before);
   });
 });
 

@@ -50,6 +50,62 @@ for rollout. Protected launch always checks producer pairing and readiness.
 Implementation-first merge does not assert live protected-review/UAT acceptance.
 No OPA/CPA review command or Treehouse claim is introduced.
 
+## Terminal child reconciliation (PAP-238)
+
+```text
+ppa pi reconcile-child --parent-id ID --child-id ID --ticket TICKET [--apply] [--json]
+```
+
+Default inspection is read-only and existing-state-only: no deployment/checkout/slot
+allocation, source edit, check execution, Git mutation, registry migration or ticket
+write. Missing state stays missing. Inspect reports `eligible` or `blocked`;
+eligibility is not approval, execution custody, acceptance or permission to retry.
+SQLite readonly WAL observation can update volatile shared-memory reader marks;
+it does not update database/WAL records or settlement evidence.
+
+**Apply is native in-session, not a shell prompt.** In the matching live parent's
+foreground Pi TUI, while idle, type the exact command above with `--apply` directly
+in the input editor (no `!`/shell prefix or slash alias). The runtime consumes it
+before model processing, authenticates native `interactive` input, exact parent
+Pi process/registry/session/worktree identity, and displays the fresh canonical
+repository/worktree, parent/child/ticket/branch, predecessor/final full HEAD,
+snapshot/settlement/observation digests and effects. A native selection is required.
+After selection, process/session identity is reauthenticated and the same shared
+settlement service checks the confirmed observation under the existing mutex.
+Cancellation, shutdown, concurrent input or tuple drift grants no authority.
+
+From an ordinary shell, `--apply` fails closed and directs the operator to this
+native route. Model tools, inherited environment, an actor name, RPC or
+extension-injected input cannot substitute for native origin and confirmation.
+No Pi process is spawned to obtain a dialog. This dispatch design was approved
+for PAP-238 in ticket comment `c-20261021195511445`.
+
+Recovery requires retained runtime-owned normal terminal execution, process-birth,
+launch/predecessor and final-snapshot proof. It resumes one settlement and verifies
+parent lease, registry and exact structured ticket HEAD before matching transient
+cleanup. Repeated completed recovery reports `already-reconciled` only while all
+proof/projections still match. Missing historical proof reports
+`legacy-proof-unavailable`; incident reports, borrower absence and user-authored
+JSON are not authority. Do not reconstruct borrowers, hand-edit protected state,
+discard work or launch a duplicate child. Unknown legacy base, uncertain/live
+execution, successor/replacement authority and out-of-scope inventory block.
+
+The versioned JSON schema is `pa-child-reconciliation/v1`, with `mode`, `outcome`,
+non-secret identity/full HEAD/digests, each projection state, cleanup state and a
+bounded five-field diagnostic when blocked. Text and JSON represent the same
+outcome. Exit 0 means eligible inspection or reconciled/already-reconciled apply;
+exit 1 means blocked/declined; exit 2 means invalid usage. Duplicate/unknown/missing
+flags, arbitrary root/path, token, force, status/snapshot override and actor inputs
+are not accepted. Tokens, process fingerprints and private receipts are not output.
+
+Normal automatic failed/partial settlement uses the same core protocol without
+relabeling the original software result. Reconciliation does **not** consume or
+refresh a continuation approval: dirty follow-on work still requires a separately
+valid exact one-use approval and ordinary admission. No review/CI/UAT, native
+prepared-child enablement, installation, incident repair, merge or resource return
+is implied. Actual packaged native foreground UAT on a separately authorized exact
+disposable tuple remains mandatory; fixture tests alone do not satisfy that gate.
+
 ## Managed Deployments
 
 `ppa deploy` is isolated from ordinary Pi discovery. Every managed Pi argv has one `--no-extensions`, exactly one `--extension` naming the trusted `pi-pa` entrypoint, and no discovered user or project extensions. A managed deployment receives only the selected PA skills through explicit resource arguments. A setup registration does not weaken this isolation. The same trusted entrypoint registers the existing `pa_ticket`, `pa_bulletin`, `pa_registry`, and `pa_status` tools plus question, todo, terminal status, safety interception, and the context UI below.

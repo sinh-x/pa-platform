@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   readSync,
   realpathSync,
   renameSync,
@@ -23,7 +24,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, readParentChildSettlementRegistry, queryDeploymentStatus } from "../registry/index.js";
+import { advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, readParentChildSettlementRegistry, queryDeploymentStatus, queryReadonlyHelperRegistry } from "../registry/index.js";
 import { formatBoundedFiveFieldDiagnostic, loadReposYaml, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
@@ -1743,7 +1744,7 @@ interface RepositoryChildSettlementRecord {
 }
 export interface RepositoryChildSettlementResult {
   readonly schemaVersion: "pa-child-reconciliation/v1";
-  readonly outcome: "reconciled" | "already-reconciled" | "blocked";
+  readonly outcome: "eligible" | "reconciled" | "already-reconciled" | "blocked";
   readonly canonicalRepoKey?: string;
   readonly canonicalRepoRoot?: string;
   readonly worktreeRoot?: string;
@@ -1754,6 +1755,9 @@ export interface RepositoryChildSettlementResult {
   readonly head?: string;
   readonly snapshotDigest?: string;
   readonly settlementDigest?: string;
+  /** Exact observation binding, not an execution capability. */
+  readonly observationDigest?: string;
+  readonly predecessorHead?: string;
   readonly softwareOutcome?: "success" | "partial" | "failed";
   readonly executionOutcome?: "success" | "partial" | "failed";
   readonly projection: { readonly lease: boolean; readonly registry: boolean; readonly ticket: boolean };
@@ -1815,21 +1819,25 @@ function settlementAdvancedParent(intent: RepositoryChildSettlementIntent): Repo
   return { ...intent.parent, authorityGitSnapshot: intent.finalSnapshot, authorityUpdatedAt: intent.createdAt, authorityChildDeploymentId: intent.borrower.deploymentId };
 }
 
-/** Opt-in shared factual settlement. Existing terminal callers are deliberately
- * unchanged until adapter integration. No outcome rewrite, admission, branch
- * action, check execution or checkout/capacity allocation occurs here. */
+/** Shared factual settlement. Inspection traverses the same authentication and
+ * containment checks, without opening a mutex or performing any durable write.
+ * No outcome rewrite, admission, branch action, check or allocation occurs here. */
 export function reconcileRepositoryTerminalChild(options: {
   canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
   repositoryGitDir: string; repositoryGitCommonDir: string;
   parentDeploymentId: string; childDeploymentId: string; ticket: string;
   borrowerToken: string;
   host: RepositoryChildSettlementHost;
+  /** Runtime adapter only; not CLI authority inputs. */
+  inspection?: boolean;
+  expectedObservationDigest?: string;
   dependencies?: Partial<RepositoryAdmissionDependencies>;
 }): RepositoryChildSettlementResult {
   let record: RepositoryChildSettlementRecord | undefined;
   let stage = "authentication";
   const projection = { lease: false, registry: false, ticket: false };
   let cleanup = false;
+  let observationDigest: string | undefined;
   const result = (outcome: RepositoryChildSettlementResult["outcome"], reason?: string): RepositoryChildSettlementResult => {
     const intent = record?.intent;
     return { schemaVersion: "pa-child-reconciliation/v1", outcome,
@@ -1837,7 +1845,8 @@ export function reconcileRepositoryTerminalChild(options: {
         worktreeRoot: intent.borrower.worktreeRoot ?? intent.borrower.canonicalRepoRoot,
         parentId: intent.parent.deploymentId, childId: intent.borrower.deploymentId, ticket: intent.borrower.ticket,
         branch: intent.finalSnapshot.branch, head: intent.finalSnapshot.head, snapshotDigest: intent.finalSnapshot.digestSha256,
-        settlementDigest: record!.digest, softwareOutcome: intent.terminal.status as "success" | "partial" | "failed", executionOutcome: intent.execution.rawOutcome.status } : {}),
+        settlementDigest: record!.digest, predecessorHead: intent.borrower.launchGitSnapshot.head,
+        ...(observationDigest ? { observationDigest } : {}), softwareOutcome: intent.terminal.status as "success" | "partial" | "failed", executionOutcome: intent.execution.rawOutcome.status } : {}),
       projection: { ...projection }, cleanup, ...(reason ? { diagnostic: settlementDiagnostic(reason) } : {}) };
   };
   try {
@@ -1846,8 +1855,13 @@ export function reconcileRepositoryTerminalChild(options: {
     assertPhysicalDirectory(root, "canonical repository root"); assertPhysicalDirectory(worktree, "authenticated worktree");
     assertExpectedGitIdentity(worktree, gitDir, options.repositoryGitCommonDir);
     if (loadReposYaml()[options.canonicalRepoKey]?.path !== root || repositoryPhysicalGitCommonDir(root) !== options.repositoryGitCommonDir) throw new Error("registered canonical identity conflicts");
-    const dependencies = resolveDependencies(options.dependencies);
-    return withMutationMutex(mutexPath, () => {
+    const dependencies = resolveDependencies({
+      ...(options.inspection ? {
+        isDeploymentRunning: (id: string) => queryReadonlyHelperRegistry(id, undefined, true).status?.status === "running",
+        runGit: (args: readonly string[], cwd: string, identity?: GitCommandOptions) => defaultGitRunner(["--no-optional-locks", ...args], cwd, identity),
+      } : {}), ...options.dependencies,
+    });
+    const run = () => {
       const activePath = join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE);
       const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
       // Keyed to the protected borrower capability, not an agent's narrative ID.
@@ -1891,7 +1905,7 @@ export function reconcileRepositoryTerminalChild(options: {
           && dependencies.getProcessFingerprint(process.pid) === undefined && !dependencies.isProcessAlive(process.pid))
           || !isChildMutationScope(borrower.settlementMutationScope, worktree)) throw new Error("execution termination or retained scope unavailable");
         const registry = readParentChildSettlementRegistry({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree,
-          parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head });
+          parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head }, options.inspection);
         const parentValue = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
         if (!isRepositoryMutationLease(parentValue)) throw new Error("parent evidence invalid");
         const parent = parentValue;
@@ -1905,6 +1919,7 @@ export function reconcileRepositoryTerminalChild(options: {
         const finalSnapshot = captureRepositoryGitSnapshot(worktree, dependencies.runGit, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
         if (!isCompleteGitSnapshot(finalSnapshot) || !/^[0-9a-f]{40}$/.test(finalSnapshot.head) || finalSnapshot.branch !== borrower.branch) throw new Error("complete final identity unavailable");
         if (!record) {
+          if (options.inspection || options.expectedObservationDigest) return result("blocked", "legacy-proof-unavailable: retained native terminal execution proof is required for operator recovery");
           const previous = parent.authorityGitSnapshot ?? parent.preLaunchGitSnapshot;
           if (!isCompleteGitSnapshot(previous) || previous.branch !== borrower.branch || previous.head !== borrower.launchGitSnapshot.head) throw new Error("parent predecessor mismatch");
           const intent: RepositoryChildSettlementIntent = { schemaVersion: "pa-child-settlement/v1", borrower, parent, gitDir,
@@ -1944,7 +1959,7 @@ export function reconcileRepositoryTerminalChild(options: {
             || !dependencies.isDeploymentRunning(intent.parent.deploymentId)) throw new Error("parent terminated before effect");
           if (reviewReservationPresent(borrowerPath) && settlementHash(readSettlementPrivate(borrowerPath, MAX_REPOSITORY_BORROWER_BYTES)) !== settlementHash(borrower)) throw new Error("borrower replacement before effect");
           const observed = readParentChildSettlementRegistry({ canonicalRepoKey: borrower.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree,
-            parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head });
+            parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head }, options.inspection);
           const predecessor = observed.authorityEventId === intent.expectedAuthorityEventId && observed.headSha === borrower.launchGitSnapshot.head;
           const published = observed.authorityNote === `direct-child-authority:${borrower.deploymentId}:${record!.digest}` && observed.headSha === intent.finalSnapshot.head;
           if ((!predecessor && !published) || (projection.registry && !published) || observed.terminalDigest !== intent.terminalDigest) throw new Error("registry successor before effect");
@@ -1961,11 +1976,24 @@ export function reconcileRepositoryTerminalChild(options: {
           if (order.indexOf(next) <= order.indexOf(record!.stage)) return;
           record = { ...record!, stage: next }; writeSettlementPrivate(activePath, record); options.host.boundary?.(next);
         };
+        const observe = () => {
+          assertGit();
+          const ticket = options.host.readTicket();
+          if (ticket.branch !== borrower.branch || ticket.baseSha !== intent.baseSha
+            || (ticket.headSha !== borrower.launchGitSnapshot.head && ticket.headSha !== intent.finalSnapshot.head)) throw new Error("ticket identity or predecessor conflict");
+          projection.lease = parentMatches(parent);
+          projection.registry = registry.authorityNote === `direct-child-authority:${borrower.deploymentId}:${record!.digest}` && registry.headSha === intent.finalSnapshot.head;
+          projection.ticket = ticket.headSha === intent.finalSnapshot.head;
+          cleanup = !reviewReservationPresent(borrowerPath) && record!.stage === "complete" && !active;
+          observationDigest = settlementHash({ record, parent, registry, ticket, finalSnapshot, borrowerPresent: reviewReservationPresent(borrowerPath), active });
+          if (options.expectedObservationDigest !== undefined && observationDigest !== options.expectedObservationDigest) throw new Error("confirmed observation drift");
+        };
+        observe();
         if (retained && !active) {
-          if (record.stage !== "complete" || !parentMatches(parent) || reviewReservationPresent(borrowerPath)) throw new Error("completed replay conflicts with successor");
-          assertGit(); projection.lease = true; publishRegistry(); projection.registry = true; assertTicket(intent.finalSnapshot.head); projection.ticket = true; cleanup = true;
-          return result("already-reconciled");
+          if (record.stage !== "complete" || !projection.lease || !projection.registry || !projection.ticket || !cleanup) throw new Error("completed replay conflicts with successor");
+          return result(options.inspection ? "eligible" : "already-reconciled");
         }
+        if (options.inspection) return result("eligible");
         // Authenticate the ticket tuple before the first authority effect, not
         // merely after publishing the lease/registry. A retained intent still
         // blocks admission if this cross-store preflight detects a conflict.
@@ -2018,13 +2046,79 @@ export function reconcileRepositoryTerminalChild(options: {
       } catch {
         // Never surface arbitrary host/Git/database error messages (may contain
         // capabilities). Keep the first causal stage across every retry.
-        if (authenticatedRecord && record && reviewReservationPresent(activePath) && !record.firstFailure) {
+        if (!options.inspection && !options.expectedObservationDigest && authenticatedRecord && record && reviewReservationPresent(activePath) && !record.firstFailure) {
           try { record = { ...record, firstFailure: stage }; writeSettlementPrivate(activePath, record); } catch { /* sole durable proof remains blocking */ }
         }
         return result("blocked", `conflicting or unavailable ${stage} evidence; first failure=${record?.firstFailure ?? stage}`);
       }
-    });
+    };
+    return options.inspection ? run() : withMutationMutex(mutexPath, run);
   } catch { return result("blocked", "repository identity, serialization or protected evidence unavailable"); }
+}
+
+/** Native foreground caller correlation, not approval. Reading this digest
+ * neither locks nor grants execution custody. The Pi adapter must additionally
+ * require a native interactive event, exact registered Pi PID/session and UI. */
+export function repositoryTerminalOperatorIdentity(options: {
+  canonicalRepoRoot: string; worktreeRoot: string; repositoryGitDir: string; repositoryGitCommonDir: string;
+  parentDeploymentId: string; ticket: string;
+}): string {
+  const { root, worktree, gitDir, leasePath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+  assertExpectedGitIdentity(worktree, gitDir, options.repositoryGitCommonDir);
+  const parent = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
+  const current = readProcessFingerprint(process.pid);
+  if (!isRepositoryMutationLease(parent) || !current || parent.deploymentId !== options.parentDeploymentId || parent.ticket !== options.ticket
+    || parent.canonicalRepoRoot !== root || (parent.worktreeRoot ?? root) !== worktree || parent.runtime !== "pi" || parent.team !== "builder"
+    || parent.mode !== "orchestrator" || parent.launchMode !== "foreground" || parent.repositoryGitDir !== gitDir || parent.repositoryGitCommonDir !== options.repositoryGitCommonDir
+    || parent.repositoryMetadataIdentity !== repositoryMetadataIdentity(root, worktree, gitDir, options.repositoryGitCommonDir)
+    || !fingerprintsEqual(parent.processFingerprint, readProcessFingerprint(parent.processFingerprint.pid))
+    || !processIsWithinFingerprintLineage(current.pid, parent.processFingerprint)) throw new Error("native terminal caller lineage conflicts");
+  return settlementHash({ parent, current });
+}
+
+/** Operator adapter port: resolve only existing private runtime proof. The CLI
+ * cannot supply a capability, snapshot, path, outcome or execution evidence.
+ * This function does not itself authenticate a human decision; the native
+ * adapter must do that before passing the exact inspected digest for apply. */
+export function recoverRepositoryTerminalChild(options: {
+  canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
+  repositoryGitDir: string; repositoryGitCommonDir: string;
+  parentDeploymentId: string; childDeploymentId: string; ticket: string;
+  host: Pick<RepositoryChildSettlementHost, "readTicket" | "publishTicket">;
+  expectedObservationDigest?: string;
+  dependencies?: Partial<RepositoryAdmissionDependencies>;
+}): RepositoryChildSettlementResult {
+  const blocked = (reason: string): RepositoryChildSettlementResult => ({ schemaVersion: "pa-child-reconciliation/v1", outcome: "blocked",
+    projection: { lease: false, registry: false, ticket: false }, cleanup: false, diagnostic: settlementDiagnostic(reason) });
+  try {
+    validateCanonicalDeploymentId(options.parentDeploymentId, "parent"); validateCanonicalDeploymentId(options.childDeploymentId, "child");
+    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(options.ticket) || options.parentDeploymentId === options.childDeploymentId
+      || (options.expectedObservationDigest !== undefined && !/^[0-9a-f]{64}$/.test(options.expectedObservationDigest))) throw new Error("invalid identity");
+    const { gitDir } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+    assertExpectedGitIdentity(options.worktreeRoot, gitDir, options.repositoryGitCommonDir);
+    const activePath = join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE);
+    let record: RepositoryChildSettlementRecord | undefined;
+    if (reviewReservationPresent(activePath)) record = readSettlementRecord(activePath);
+    else {
+      // Bounded retained evidence discovery. Never create an index or borrower to
+      // make historical recovery possible. Ambiguity/oversize is a safe refusal.
+      const names = readdirSync(gitDir).filter((name) => /^pa-repository-child-settlement\.[0-9a-f]{64}\.json$/.test(name));
+      if (names.length > 128) throw new Error("retained inventory bound");
+      for (const name of names) {
+        const candidate = readSettlementRecord(join(gitDir, name));
+        if (candidate.intent.borrower.deploymentId !== options.childDeploymentId) continue;
+        if (record) throw new Error("ambiguous retained identity");
+        record = candidate;
+      }
+    }
+    if (!record) return blocked("legacy-proof-unavailable: no retained native terminal execution proof; reports and borrower absence are not authority");
+    const borrower = record.intent.borrower;
+    if (borrower.parentDeploymentId !== options.parentDeploymentId || borrower.deploymentId !== options.childDeploymentId || borrower.ticket !== options.ticket) throw new Error("retained identity conflict");
+    return reconcileRepositoryTerminalChild({ ...options, borrowerToken: borrower.borrowerToken,
+      inspection: options.expectedObservationDigest === undefined,
+      host: { ...options.host, verifyExecution: () => record!.intent.execution },
+    });
+  } catch { return blocked("retained identity or protected evidence conflicts; preserve all existing records"); }
 }
 
 function splitOptionalNulPaths(bytes: Buffer): readonly string[] {

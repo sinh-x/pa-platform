@@ -111,4 +111,14 @@ printf '%s\n' \
   "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l objective-file -r -d 'Versioned JSON objective file'" \
   "complete -c ppa -n '__fish_seen_subcommand_from review; and not __fish_seen_subcommand_from artifact; and __fish_seen_subcommand_from preflight' -l json -d 'JSON report'" \
   >> "$PPA"
+printf '%s\n' \
+  '' \
+  '# Pi-only terminal child reconciliation; apply uses native in-session dispatch' \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and not __fish_seen_subcommand_from setup status remove preflight smoke-tools teardown-smoke reconcile-child' -a reconcile-child -d 'Inspect retained terminal child facts'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l parent-id -r -d 'Exact parent deployment ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l child-id -r -d 'Exact direct child deployment ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l ticket -r -d 'Exact ticket ID'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l apply -d 'Native foreground confirmation required; no shell apply'" \
+  "complete -c ppa -n '__fish_seen_subcommand_from pi; and __fish_seen_subcommand_from reconcile-child' -l json -d 'Versioned redacted result'" \
+  >> "$PPA"
 echo "Generated completions/ppa.fish from completions/pa-core.fish"

@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync } from "node:fs";
+import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { dirname } from "node:path";
 import { getRegistryDbPath } from "../paths.js";
 
@@ -27,9 +28,31 @@ export function getDb(dbPath = getRegistryDbPath()): Database.Database {
 }
 
 /** Existing registry only: no directory creation, migrations, or writable PRAGMAs. */
-export function openReadonlyRegistryDatabase(): Database.Database {
+export function openReadonlyRegistryDatabase(existingFilesOnly = false): Database.Database {
   const nativeBinding = process.env[REGISTRY_NATIVE_BINDING_ENV]?.trim();
-  return new Database(getRegistryDbPath(), { readonly: true, fileMustExist: true, ...(nativeBinding ? { nativeBinding } : {}) });
+  const options = { readonly: true, fileMustExist: true, ...(nativeBinding ? { nativeBinding } : {}) };
+  const path = getRegistryDbPath();
+  if (existingFilesOnly) {
+    const present = (file: string): boolean => {
+      try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("registry evidence is not regular"); return true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    };
+    if (!present(path)) throw new Error("existing registry unavailable");
+    if (!present(`${path}-wal`)) {
+      // SQLite's ordinary readonly opener can allocate missing WAL/SHM files.
+      // A bounded, stable checkpoint image can instead be deserialized in memory.
+      // Never ignore an existing WAL (it may contain newer committed authority).
+      const bytes = Buffer.from(readReviewEvidenceFile(path, 64 * 1024 * 1024, "checkpointed registry"));
+      if (present(`${path}-wal`) || present(`${path}-journal`) || bytes.length < 100 || bytes.subarray(0, 16).toString("binary") !== "SQLite format 3\0"
+        || ![1, 2].includes(bytes[18]!) || ![1, 2].includes(bytes[19]!)) throw new Error("registry checkpoint changed");
+      // Only this private in-memory copy uses rollback header mode. Disk bytes,
+      // registry history and live connection settings are never changed.
+      bytes[18] = 1; bytes[19] = 1;
+      return new Database(bytes, { readonly: true, ...(nativeBinding ? { nativeBinding } : {}) });
+    }
+    if (!present(`${path}-shm`)) throw new Error("existing WAL reader coordination unavailable");
+  }
+  return new Database(path, options);
 }
 
 export function closeDb(): void {

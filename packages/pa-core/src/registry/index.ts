@@ -512,14 +512,20 @@ export interface AdvanceParentAuthoritySnapshotOptions {
 export function readParentChildSettlementRegistry(input: {
   canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
   parentDeploymentId: string; childDeploymentId: string; ticket: string; launchHead: string;
-}): { baseSha: string; headSha: string; authorityEventId: number | null; authorityNote?: string; terminal: RegistryEvent; terminalDigest: string } {
-  const db = getDb();
+}, readonly = false): { baseSha: string; headSha: string; authorityEventId: number | null; authorityNote?: string; terminal: RegistryEvent; terminalDigest: string } {
+  const db = readonly ? openReadonlyRegistryDatabase(true) : getDb();
+  try {
   const fail = (): never => { throw new DeploymentCorrelationConflictError(correlationConflictDiagnostic("settlement registry lineage, terminal evidence or registered identity conflicts")); };
   if (loadReposYaml()[input.canonicalRepoKey]?.path !== input.canonicalRepoRoot) return fail();
-  const parent = queryDeploymentStatus(input.parentDeploymentId);
-  const child = queryDeploymentStatus(input.childDeploymentId);
-  const parentStart = getDeploymentEvents(input.parentDeploymentId).find((event) => event.event === "started");
-  const childEvents = getDeploymentEvents(input.childDeploymentId);
+  const status = (id: string) => {
+    const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? deploymentFromRow(row) : null;
+  };
+  const events = (id: string) => (db.prepare("SELECT * FROM registry_events WHERE deployment_id = ? ORDER BY id").all(id) as Record<string, unknown>[]).map(fromRow);
+  const parent = status(input.parentDeploymentId);
+  const child = status(input.childDeploymentId);
+  const parentStart = events(input.parentDeploymentId).find((event) => event.event === "started");
+  const childEvents = events(input.childDeploymentId);
   const start = childEvents.find((event) => event.event === "started");
   const terminals = childEvents.filter((event) => event.event === "completed" || event.event === "crashed");
   const terminal = terminals[0];
@@ -539,6 +545,7 @@ export function readParentChildSettlementRegistry(input: {
   const latest = db.prepare("SELECT id, note FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND (note LIKE 'direct-child-authority:%' OR note LIKE 'direct-owner-authority:%') ORDER BY id DESC LIMIT 1").get(input.parentDeploymentId) as { id: number; note: string } | undefined;
   return { baseSha: start.branch_base_sha!, headSha: parent.branch_head_sha!, authorityEventId: latest?.id ?? null, ...(latest ? { authorityNote: latest.note } : {}), terminal,
     terminalDigest: createHash("sha256").update(JSON.stringify(terminal)).digest("hex") };
+  } finally { if (readonly) db.close(); }
 }
 
 /**
@@ -795,10 +802,10 @@ export function queryReadonlyDeploymentStatuses(): DeploymentStatus[] {
 }
 
 /** Helper authentication must never initialize or migrate operator registry state. */
-export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: string): {
+export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: string, existingFilesOnly = false): {
   status: DeploymentStatus | null; claim: ReviewAuthorizationClaim | null;
 } {
-  const db = openReadonlyRegistryDatabase();
+  const db = openReadonlyRegistryDatabase(existingFilesOnly);
   try {
     const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
     const starts = db.prepare("SELECT COUNT(*) AS count FROM registry_events WHERE deployment_id = ? AND event = 'started'").get(deployId) as { count: number };
