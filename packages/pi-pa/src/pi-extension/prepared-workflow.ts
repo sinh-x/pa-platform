@@ -9,7 +9,7 @@ import {
   PA_PI_EXECUTION_MODE_ENV, parsePreparationContract, parsePreparedReceipt, preparationIdentity,
   processIsWithinFingerprintLineage, publishNativePreparationRetry, queryDeploymentStatus,
   readProcessFingerprint, resolveRepoExecutionPath, withPreparedWorkflowLocks, workflowDigest,
-  workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
+  executionFailure, executionWorkflowError, workflowError, workflowObject, workflowSha, workflowSynchronous, workflowText, workflowTimestamp,
   type ExecutionHolder, type ExecutionState, type ExecutionCommand, type ExecutionOperationKind, type ExecutionFailure,
   type ExecutionRecovery, type ExecutionRecoveryInventory, type PhaseReport, type PhaseReportReceipt,
   type IdlePreparationReservation, type PreparedReservationLaunch, type PreparationAction, type PreparationContract,
@@ -545,6 +545,31 @@ function executionResult(details: Readonly<Record<string, unknown>>): PiToolResu
   const text = JSON.stringify(details); if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw workflowError();
   return { content: [{ type: "text", text }], details: { ...details } };
 }
+// Snapshot model data without executing accessors. Proxy/reflection failures at
+// this untrusted seam always lose specificity, even if they throw a real error.
+function executionInput(value: unknown): Record<string, unknown> {
+  let remaining = 16_384;
+  const copy = (item: unknown, depth: number): unknown => {
+    if (--remaining < 0 || depth > 64) throw workflowError();
+    if (["function", "symbol", "bigint"].includes(typeof item)) throw workflowError();
+    if (item === null || typeof item !== "object") return item;
+    const array = Array.isArray(item);
+    if (!array && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) throw workflowError();
+    const result: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(item)) {
+      if (array && key === "length") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (typeof key !== "string" || !descriptor || !("value" in descriptor)) throw workflowError();
+      Object.defineProperty(result, key, { value: copy(descriptor.value, depth + 1), enumerable: true });
+    }
+    if (!array) return result;
+    const length = Object.getOwnPropertyDescriptor(item, "length")?.value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > 16_384 || Object.keys(result).length !== length) throw workflowError();
+    return Array.from({ length }, (_, index) => { if (!Object.hasOwn(result, index)) throw workflowError(); return result[index]; });
+  };
+  try { return copy(value, 0) as Record<string, unknown>; }
+  catch { throw executionFailure("EXECUTION_UNKNOWN"); }
+}
 function nativeExecutionCall<T>(action: () => T): T { return workflowSynchronous(action()); }
 function assertExecutionCall(action: () => void): void { if (nativeExecutionCall(action) !== undefined) throw workflowError(); }
 function executionToolName(call: PiToolCall): string {
@@ -574,23 +599,28 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
   return (pi, lifecycle) => {
     const env = { ...(options.env ?? process.env) };
     const native = options.resolveBinding || env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "") ? null : options.nativeAdapter ?? new PiNativeExecutionAdapter();
-    const resolver = options.resolveBinding ?? ((context) => native?.resolve(context)?.binding ?? null);
+    const resolver = options.resolveBinding ?? ((context: unknown, diagnostic = false) => native?.resolve(context, diagnostic)?.binding ?? null);
     if (native) registerNativeExecutionBuiltins(pi, native, lifecycle);
     const pending = new Map<string, { binding: PiExecutionBinding; name: string }>();
     let adopted = false; let closing = false;
     lifecycle?.addShutdownStep(() => { closing = true; });
-    const resolve = (context: unknown) => {
-      const binding = nativeExecutionCall(() => resolver(context));
-      if (binding === null) { if (adopted) throw workflowError(); return null; }
-      if (closing) throw workflowError();
+    const resolve = (context: unknown, diagnostic = false) => {
+      const binding = nativeExecutionCall(() => resolver(context, diagnostic));
+      if (binding === null) { if (adopted) throw executionFailure("EXECUTION_BINDING_UNCERTAIN"); return null; }
+      if (closing) throw executionFailure("EXECUTION_CALLER_STALE");
       workflowSha(binding.bindingIdentity);
       if (!(binding.service instanceof ExecutionCustodyService)) throw workflowError();
       adopted = true;
       return binding;
     };
-    const control = (context: unknown) => { const binding = resolve(context); if (!binding) throw workflowError(); return binding; };
+    const control = (context: unknown) => { const binding = resolve(context, true); if (!binding) throw executionFailure("EXECUTION_NOT_ADOPTED"); return binding; };
     const run = async (action: () => PiToolResult): Promise<PiToolResult> => {
-      try { return await (lifecycle ? lifecycle.trackRegistryAccess(action) : action()); } catch { throw workflowError(); }
+      try {
+        // trackRegistryAccess rejects before invoking action once shutdown starts.
+        // This native lifecycle flag proves that denial without probing effects.
+        if (closing) throw executionFailure("EXECUTION_CALLER_STALE");
+        return await (lifecycle ? lifecycle.trackRegistryAccess(action) : action());
+      } catch (error) { throw executionWorkflowError(error); }
     };
     if (env.PA_TEAM === "builder" && ["orchestrator", "implement"].includes(env.PA_MODE ?? "")) {
       pi.registerTool?.({
@@ -600,9 +630,10 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
           if (signal?.aborted) throw workflowError();
           if (!input || typeof input !== "object") throw workflowError();
           const binding = control(context); const { service, actor } = binding;
+          input = executionInput(input);
           const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
           if (action === "status") { workflowObject(input, ["action"]); return executionResult(projectExecution(service.status(actor))); }
-          if (action === "observe") { const row = workflowObject(input, ["action", "kind"]); if (!binding.observe || !["holder", "inventory", "last-result", "recovery"].includes(String(row.kind))) throw workflowError(); return executionResult({ evidence: nativeExecutionCall(() => binding.observe!(String(row.kind))) }); }
+          if (action === "observe") { const row = workflowObject(input, ["action", "kind"]); if (!binding.observe) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); if (!["holder", "inventory", "last-result", "recovery"].includes(String(row.kind))) throw workflowError(); return executionResult({ evidence: nativeExecutionCall(() => binding.observe!(String(row.kind))) }); }
           let command: ExecutionCommand;
           if (action === "plan") { const row = workflowObject(input, ["action", "plan"]); command = { action, plan: parseExecutionPlan(row.plan) }; }
           else if (action === "select") {
@@ -627,7 +658,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         name: "pa_feature_update", label: "PA Feature Update", description: "Update only the configured ticket feature ref using an exact expected remote HEAD. No arbitrary remote, refspec, force flag or command.",
         parameters: PiFeatureUpdateParams, executionMode: "sequential",
         execute: async (toolCallId, input, signal, _update, context) => run(() => {
-          const row = workflowObject(input, ["candidateSha", "expectedRemoteSha"]);
+          const row = workflowObject(executionInput(input), ["candidateSha", "expectedRemoteSha"]);
           if (signal?.aborted) throw workflowError();
           const candidateSha = workflowSha(row.candidateSha, 40); const expectedRemoteSha = workflowSha(row.expectedRemoteSha, 40);
           const binding = control(context); const { service, actor } = binding;

@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, appendRegistryEvent, getDeploymentEvents, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { closeDb, appendRegistryEvent, getDeploymentEvents, repositoryMutationLeasePath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
@@ -351,6 +351,25 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       await control({ action: "plan", plan: { phaseId: "phase-3", scope: "isolated native direct fixture", paths: ["src/file.ts", "package.json"], requirements: ["AC8", "AC10"], prerequisites: [], checks: ["typecheck"], size: "bounded", complexity: "bounded", rationale: "Exercise direct native custody; not installed qualification." } });
       await select();
       const session = adapter.resolve(context)!;
+      // PAP-263: native liveness and custody checks, not error-text guesses. All
+      // record manipulation here is confined to this test's disposable fixture.
+      const beforeDiagnostics = session.evidence.store.records();
+      appendRegistryEvent({ deployment_id: opts.deployId, team: "builder", event: "pid", timestamp: time, pid: process.pid + 1 });
+      try {
+        for (const input of [{ action: "status" }, { action: "observe", kind: "holder" }]) {
+          await assert.rejects(control(input), /Source: EXECUTION_CALLER_STALE\/caller/);
+        }
+      } finally { appendRegistryEvent({ deployment_id: opts.deployId, team: "builder", event: "pid", timestamp: time, pid: process.pid }); }
+      assert.deepEqual(session.evidence.store.records(), beforeDiagnostics);
+      const implementPath = repositoryMutationLeasePath(f.checkout, "implement");
+      writeFileSync(implementPath, readFileSync(repositoryMutationLeasePath(f.checkout)), { mode: 0o600 });
+      try {
+        // Existing status projection is not sole-holder admission. Observation's
+        // stronger native custody check must still deny before publication.
+        assert.equal((await control({ action: "status" })).details.inFlight, false);
+        await assert.rejects(control({ action: "observe", kind: "holder" }), /Source: EXECUTION_HOLDER_CONFLICT\/custody/);
+        assert.deepEqual(session.evidence.store.records(), beforeDiagnostics);
+      } finally { unlinkSync(implementPath); }
       // An invented completion cannot close a real started operation.
       const write = { path: "src/file.ts", content: "export const value = 1;\n" };
       assert.equal(await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "native-write", input: write }, context), undefined);
@@ -409,8 +428,8 @@ test("native real launch -> actual SDK write/edit/bash -> private results, bound
       assert.equal(getDeploymentEvents(child.deploymentId!).some((event) => event.event === "started"), false); assert.equal(f.gets(), 1);
       const correlationPath = join(f.ai, "deployments", opts.deployId, "prepared-consumption.json");
       const correlationBytes = readFileSync(correlationPath); unlinkSync(correlationPath);
-      assert.throws(() => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } }).resolve(context));
-      assert.throws(() => adapter.resolve(context)); // durable start locator prevents a fresh-module legacy fallback
+      assert.throws(() => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } }).resolve(context), /EXECUTION_BINDING_UNCERTAIN\/binding-resolution/);
+      assert.throws(() => adapter.resolve(context), /EXECUTION_BINDING_UNCERTAIN\/binding-resolution/); // durable start locator prevents a fresh-module legacy fallback
       writeFileSync(correlationPath, correlationBytes, { mode: 0o600 });
       await select(); await execute("bash", { command: "corepack pnpm typecheck", timeout: 30 }); await settle();
       const reporter = new PiNativePhaseReportAdapter({ authority: f.authority, execution: adapter });

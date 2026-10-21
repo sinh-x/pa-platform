@@ -6,7 +6,7 @@ import {
   captureRepositoryGitSnapshot, ExecutionCustodyService, getDeployPaths, getRegistryDbPath, queryReadonlyDeploymentEvents, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot,
   parseExecutionBinding, parseExecutionCommandText, parseSourceVersion, parseReviewEvidenceJson, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readProcessFingerprint,
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
-  workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
+  executionFailure, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
   type PreparedLockOwners, type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
@@ -24,11 +24,20 @@ const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b
 function git(args: readonly string[], cwd: string): Buffer {
   return execFileSync("git", ["--no-optional-locks", ...args], { cwd, timeout: 15_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
 }
-function marker(directory: string): Record<string, unknown> | null {
+function marker(directory: string, executionDiagnostic = false): Record<string, unknown> | null {
+  const rejected = () => executionDiagnostic ? executionFailure("EXECUTION_STORAGE_REJECTED") : workflowError();
   const path = join(directory, "prepared-consumption.json");
-  try { lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw workflowError(); }
-  const stat = lstatSync(path); if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || (process.getuid && stat.uid !== process.getuid())) throw workflowError();
-  return workflowObject(parseReviewEvidenceJson(readReviewEvidenceFile(path, 65_536, "native consumed lineage"), "native consumed lineage"), ["schemaVersion", "deploymentId", "repoKey", "repoRoot", "ticket", "operationId", "receiptId", "grantId", "consumer", "worktreeRoot", "branch", "baseSha", "headSha", "ticketSlotId", "repositoryPermit"]);
+  let stat;
+  try { stat = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw rejected(); }
+  if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || (process.getuid && stat.uid !== process.getuid())) throw rejected();
+  let text: Uint8Array;
+  try { text = readReviewEvidenceFile(path, 65_536, "native consumed lineage"); } catch { throw rejected(); }
+  // Malformed serialized storage is proved by this native record reader, not by
+  // parsing host exception text. Other authority/store failures remain UNKNOWN.
+  let record: unknown;
+  try { record = parseReviewEvidenceJson(text, "native consumed lineage"); } catch { throw rejected(); }
+  try { return workflowObject(record, ["schemaVersion", "deploymentId", "repoKey", "repoRoot", "ticket", "operationId", "receiptId", "grantId", "consumer", "worktreeRoot", "branch", "baseSha", "headSha", "ticketSlotId", "repositoryPermit"]); }
+  catch { throw executionDiagnostic ? executionFailure("EXECUTION_CONTRACT_INVALID") : workflowError(); }
 }
 /** An adopted lineage must not enter the old child admission path without the
  * native launch/settlement producer. Until that producer is qualified this is
@@ -38,11 +47,11 @@ export function assertNativePreparedChildLaunchSupported(parentDirectory: string
   try { lstatSync(getRegistryDbPath()); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw workflowError(); }
   if (nativeStartDigest(parentDeploymentId)) throw workflowError();
 }
-function nativeStartDigest(deploymentId: string): string | null {
+function nativeStartDigest(deploymentId: string, executionDiagnostic = false): string | null {
   const starts = queryReadonlyDeploymentEvents(deploymentId).filter((event) => event.event === "started");
   if (!starts.some((event) => event.note?.startsWith("prepared-native-consumption/"))) return null;
   const match = starts.length === 1 ? /^prepared-native-consumption\/v1:([0-9a-f]{64})$/.exec(starts[0]!.note ?? "") : null;
-  if (!match) throw workflowError(); return match[1]!;
+  if (!match) throw executionDiagnostic ? executionFailure("EXECUTION_BINDING_UNCERTAIN") : workflowError(); return match[1]!;
 }
 interface FileVersion { path: string; kind: "file" | "missing"; sha256: string | null; bytes: number; mode: number }
 export interface NativeScopeSnapshot { readonly git: RepositoryGitSnapshot; readonly files: readonly FileVersion[] }
@@ -118,27 +127,35 @@ export class PiNativeExecutionAdapter {
   readonly #options: NativeExecutionOptions;
   readonly #sessions = new Map<string, NativeExecutionSession>();
   constructor(options: NativeExecutionOptions = {}) { this.#options = options; this.authority = options.authority ?? new PiPreparedNativeAuthority(); }
-  resolve(context: unknown): NativeExecutionSession | null {
+  resolve(context: unknown, diagnostic = false): NativeExecutionSession | null {
     const env = process.env;
-    if (env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "")) return null;
+    if (env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "")) {
+      if (this.#sessions.size) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+      if (diagnostic) throw executionFailure("EXECUTION_UNKNOWN");
+      return null;
+    }
     const id = env.PA_DEPLOYMENT_ID;
-    if (!id || !/^d-[0-9a-f]{6}$/.test(id)) return null;
+    if (!id || !/^d-[0-9a-f]{6}$/.test(id)) {
+      if (this.#sessions.size) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+      if (diagnostic) throw executionFailure("EXECUTION_UNKNOWN");
+      return null;
+    }
     const directory = getDeployPaths(id).deployDir;
     const registry = queryReadonlyHelperRegistry(id).status;
     const parent = registry?.parent_deployment_id;
     const ownerId = parent ?? id;
-    const declared = nativeStartDigest(ownerId);
-    const consumed = marker(parent ? getDeployPaths(parent).deployDir : directory);
-    if (!consumed) { if (declared || this.#sessions.has(id)) throw workflowError(); return null; } // never-adopted legacy only
-    if (declared !== workflowDigest(JSON.stringify(consumed))) throw workflowError();
-    if (parent || env.PA_MODE !== "orchestrator") throw workflowError(); // no implicit child adoption
+    const declared = nativeStartDigest(ownerId, true);
+    const consumed = marker(parent ? getDeployPaths(parent).deployDir : directory, true);
+    if (!consumed) { if (declared || this.#sessions.size) throw executionFailure("EXECUTION_BINDING_UNCERTAIN"); return null; } // never-adopted legacy only
+    if (declared !== workflowDigest(JSON.stringify(consumed))) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
+    if (parent || env.PA_MODE !== "orchestrator") throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); // no implicit child adoption
     const cwd = (context as { cwd?: string } | null)?.cwd;
-    if (cwd !== process.cwd() || env.PA_DEPLOYMENT_DIR !== directory || !registry) throw workflowError();
+    if (cwd !== process.cwd() || env.PA_DEPLOYMENT_DIR !== directory || !registry) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     let session = this.#sessions.get(id);
     if (!session) {
       const authentication = createPiReadonlyHelperCapability(this.#options.helperDependencies).authenticate(cwd);
       authentication.reread();
-      if (authentication.context.role !== "orchestrator" || authentication.context.deploymentId !== id) throw workflowError();
+      if (authentication.context.role !== "orchestrator" || authentication.context.deploymentId !== id) throw executionFailure("EXECUTION_BINDING_CONFLICT");
       session = new NativeExecutionSession(this.authority, this.#options.helperDependencies ?? {}, consumed, authentication.context);
       this.#sessions.set(id, session);
     }
@@ -164,17 +181,21 @@ export class NativeExecutionSession {
   constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown>, physical: HelperContext) {
     this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical; this.#grantId = workflowSha(consumed.grantId);
     const id = workflowText(consumed.deploymentId); const status = queryReadonlyHelperRegistry(id).status;
-    if (!status || consumed.schemaVersion !== "prepared-builder-consumption/v1" || physical.worktreeRoot !== consumed.worktreeRoot || physical.repoRoot !== consumed.repoRoot || physical.repoKey !== consumed.repoKey
-      || physical.ticket !== consumed.ticket || !Number.isSafeInteger(status.effective_timeout_seconds) || status.effective_timeout_seconds! % 60 !== 0) throw workflowError();
+    if (!status) throw executionFailure("EXECUTION_CALLER_STALE");
+    if (consumed.schemaVersion !== "prepared-builder-consumption/v1") throw executionFailure("EXECUTION_CONTRACT_INVALID");
+    if (physical.worktreeRoot !== consumed.worktreeRoot || physical.repoRoot !== consumed.repoRoot || physical.repoKey !== consumed.repoKey
+      || physical.ticket !== consumed.ticket) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    if (!Number.isSafeInteger(status.effective_timeout_seconds) || status.effective_timeout_seconds! % 60 !== 0) throw executionFailure("EXECUTION_CONTRACT_INVALID");
     this.actor = Object.freeze({ deploymentId: id, process: readPiProcessIdentity(id, getDeployPaths(id).deployDir) });
     const native = this.#retained();
     const consumer = authority.retainedConsumer(native.grant, parseSourceVersion(consumed.consumer), id);
     if (consumer.worktreeRoot !== physical.worktreeRoot || consumer.receiptId !== consumed.receiptId || consumer.operationId !== consumed.operationId || consumer.headSha !== consumed.headSha
-      || native.grant.contract.branch !== consumed.branch || native.grant.contract.approvalBaseSha !== consumed.baseSha) throw workflowError();
-    this.contract = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: workflowSha(consumed.operationId), lineageId: id,
+      || native.grant.contract.branch !== consumed.branch || native.grant.contract.approvalBaseSha !== consumed.baseSha) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    try { this.contract = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: workflowSha(consumed.operationId), lineageId: id,
       repoKey: physical.repoKey, repoRoot: physical.repoRoot, worktreeRoot: physical.worktreeRoot, ticket: physical.ticket, branch: consumed.branch, initialHeadSha: consumed.headSha, owner: this.actor,
       bounds: { startedAt: status.started_at, deadlineAt: new Date(Date.parse(status.started_at) + status.effective_timeout_seconds! * 1000).toISOString(), runtimeMinutes: status.effective_timeout_seconds! / 60,
-        consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null } });
+        consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null } }); }
+    catch { throw executionFailure("EXECUTION_CONTRACT_INVALID"); }
     let capacity: PreparedTicketCapacityTransaction | null = null;
     this.locks = {
       repository: (action) => {
@@ -187,7 +208,7 @@ export class NativeExecutionSession {
       },
       worktree: (action) => { if (!capacity) throw workflowError(); return withExecutionWorktreeAdmission(physical.repoRoot, physical.worktreeRoot, capacity, () => action()); },
     };
-    const store = authority.execution(native.active); if (!store) throw workflowError();
+    const store = authority.execution(native.active); if (!store) throw executionFailure("EXECUTION_STORAGE_REJECTED");
     this.evidence = new NativeExecutionEvidence(store, authority.evidenceRoot(), this.locks);
     const host: ExecutionHost = {
       locks: this.locks, now: () => new Date().toISOString(),
@@ -200,7 +221,10 @@ export class NativeExecutionSession {
           for (const path of command.plan.paths) scopedPath(physical.worktreeRoot, path);
         }
       },
-      assertLive: (holder) => { if (!equal(holder, this.actor) || !equal(readProcessFingerprint(holder.process.pid), holder.process)) throw workflowError(); },
+      assertLive: (holder) => {
+        if (!equal(holder, this.actor)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+        if (!equal(readProcessFingerprint(holder.process.pid), holder.process)) throw executionFailure("EXECUTION_CALLER_STALE");
+      },
       verifyEvidence: (source, purpose, state, command) => this.#verify(source, purpose, state, command),
       assertHandover: (state, command) => {
         this.#soleOwner(); this.#assertKnown(state);
@@ -238,8 +262,8 @@ export class NativeExecutionSession {
         if (row.executionId !== this.service.executionId) throw workflowError(); return row.recovery as ExecutionRecovery;
       },
       resolveCandidate: (source) => { const row = this.evidence.read(source, "tool-result") as NativeToolResult; return workflowSha(row.after.git.head, 40); },
-      assertFeatureUpdate: () => { throw workflowError(); }, runGit: () => { throw workflowError(); },
-      recordFeatureUpdateIntent: () => { throw workflowError(); }, recordFeatureUpdate: () => { throw workflowError(); },
+      assertFeatureUpdate: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); }, runGit: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); },
+      recordFeatureUpdateIntent: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); }, recordFeatureUpdate: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); },
     };
   }
   #retained() { return this.#authority.retained({ repoKey: this.#physical.repoKey, repoRoot: this.#physical.repoRoot, ticket: this.#physical.ticket! }, this.#grantId); }
@@ -249,23 +273,25 @@ export class NativeExecutionSession {
     const p = this.#physical; const id = String(this.#consumed.deploymentId); const env = process.env;
     const status = queryReadonlyHelperRegistry(id).status;
     if ((context as { cwd?: string } | null)?.cwd !== p.worktreeRoot || process.cwd() !== p.worktreeRoot || env.PA_DEPLOYMENT_ID !== id || env.PA_DEPLOYMENT_DIR !== getDeployPaths(id).deployDir
-      || env.PA_TEAM !== "builder" || env.PA_MODE !== "orchestrator" || env.PA_TICKET_ID !== p.ticket || env.PA_REPO !== p.worktreeRoot || env.PA_WORKTREE_ROOT !== p.worktreeRoot
-      || !status || status.status !== "running" || status.runtime !== "pi" || status.binary !== "ppa" || status.team !== "builder" || status.mode !== "orchestrator"
-      || status.builder_authority !== "orchestrator" || status.parent_deployment_id || status.repo_root !== p.repoRoot || status.worktree_root !== p.worktreeRoot || status.ticket_id !== p.ticket
-      || nativeStartDigest(id) !== workflowDigest(JSON.stringify(this.#consumed)) || !equal(marker(getDeployPaths(id).deployDir), this.#consumed)) throw workflowError();
+      || env.PA_TEAM !== "builder" || env.PA_MODE !== "orchestrator" || env.PA_TICKET_ID !== p.ticket || env.PA_REPO !== p.worktreeRoot || env.PA_WORKTREE_ROOT !== p.worktreeRoot) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    if (!status || status.status !== "running") throw executionFailure("EXECUTION_CALLER_STALE");
+    if (status.runtime !== "pi" || status.binary !== "ppa" || status.team !== "builder" || status.mode !== "orchestrator"
+      || status.builder_authority !== "orchestrator" || status.parent_deployment_id || status.repo_root !== p.repoRoot || status.worktree_root !== p.worktreeRoot || status.ticket_id !== p.ticket) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    if (nativeStartDigest(id, true) !== workflowDigest(JSON.stringify(this.#consumed)) || !equal(marker(getDeployPaths(id).deployDir, true), this.#consumed)) throw executionFailure("EXECUTION_BINDING_UNCERTAIN");
     const anchor = readPiProcessIdentity(id, getDeployPaths(id).deployDir);
     // During initial construction actor isn't assigned until this check's first
     // caller; all service calls run after the immutable anchor is captured.
-    if (this.actor && !equal(anchor, this.actor.process)) throw workflowError();
-    if (status.pid !== anchor.pid || !equal(readProcessFingerprint(anchor.pid), anchor) || !processIsWithinFingerprintLineage(process.pid, anchor)) throw workflowError();
+    if (this.actor && !equal(anchor, this.actor.process)) throw executionFailure("EXECUTION_CALLER_STALE");
+    if (status.pid !== anchor.pid || !equal(readProcessFingerprint(anchor.pid), anchor) || !processIsWithinFingerprintLineage(process.pid, anchor)) throw executionFailure("EXECUTION_CALLER_STALE");
     const slot = observeReadonlyRepositoryTicketSlot(p.repoRoot, p.ticket!).slot;
     const authority = observeReadonlyRepositoryAuthority(p.gitDir); const owner = authority.owner;
     const native = this.#retained(); const consumer = this.#authority.retainedConsumer(native.grant, parseSourceVersion(this.#consumed.consumer), id);
     if (!owner || owner.deploymentId !== id || owner.canonicalRepoRoot !== p.repoRoot || owner.worktreeRoot !== p.worktreeRoot || owner.repositoryGitDir !== p.gitDir || owner.repositoryGitCommonDir !== p.gitCommonDir
       || owner.ticket !== p.ticket || owner.runtime !== "pi" || owner.team !== "builder" || owner.mode !== "orchestrator"
       || slot.deploymentId !== id || slot.slotToken !== consumer.slotToken || slot.slotId !== this.#consumed.ticketSlotId || slot.repositoryPermit !== this.#consumed.repositoryPermit
-      || !equal(slot.processFingerprint, owner.processFingerprint) || !equal(readProcessFingerprint(owner.processFingerprint.pid), owner.processFingerprint)
-      || !processIsWithinFingerprintLineage(anchor.pid, owner.processFingerprint)) throw workflowError();
+      || !equal(slot.processFingerprint, owner.processFingerprint)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    if (!equal(readProcessFingerprint(owner.processFingerprint.pid), owner.processFingerprint)
+      || !processIsWithinFingerprintLineage(anchor.pid, owner.processFingerprint)) throw executionFailure("EXECUTION_CALLER_STALE");
   }
   #newWork(): void {
     if (!this.#retained().active) throw workflowError();
@@ -273,10 +299,10 @@ export class NativeExecutionSession {
   }
   #authenticateSourceCustody(): void {
     const authentication = createPiReadonlyHelperCapability(this.#helper).authenticate(this.#physical.worktreeRoot); authentication.reread();
-    if (!equal(authentication.context, this.#physical)) throw workflowError();
+    if (!equal(authentication.context, this.#physical)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     this.#soleOwner();
   }
-  #soleOwner(): void { const custody = observeReadonlyRepositoryAuthority(this.#physical.gitDir); if (!custody.owner || custody.borrower || custody.implement || custody.review) throw workflowError(); }
+  #soleOwner(): void { const custody = observeReadonlyRepositoryAuthority(this.#physical.gitDir); if (!custody.owner || custody.borrower || custody.implement || custody.review) throw executionFailure("EXECUTION_HOLDER_CONFLICT"); }
   #known(state: ExecutionState): NativeScopeSnapshot {
     for (let sequence = state.sequence; sequence > 0; sequence -= 1) {
       const event = this.evidence.store.read(`${this.service.executionId}.transaction-${sequence}.json`) as { command: ExecutionCommand };
