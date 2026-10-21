@@ -40,7 +40,7 @@ Unsupported runtime selections reject before allocation or spawn; they are never
 
 Active runtime schemas accept only `opencode` and `pi`. Registry events/status retain opaque string runtime metadata for historical inspection; metadata and session filenames do not grant launch authority. Unsupported or mismatched resumes fail without allocating a new deployment, rewriting history, or suggesting an unavailable executable.
 
-PAPC-066 owns separately approved configuration cleanup. Final paired acceptance requires its compatible merged config, the reviewed exact config pin, candidate-built runtime provenance, independent validation and human UAT. Source cleanup alone does not establish installed readiness, change operator settings, or authorize a host upgrade.
+PAPC-066 is a recommended follow-up for separately approved configuration cleanup, not a ticket-status dependency or merge gate. Paired validation uses the reviewed exact config pin and preserves safety/authority checks; older combined-runtime wording is read-only compatibility, not launch authority. Source cleanup alone does not establish installed readiness, change operator settings, or authorize a host upgrade.
 
 Before a separately authorized rollout, record the candidate/base, lockfile, package output and paired-config SHAs. Rollback uses the prior matched source/package/config pair under operator authority; preserve registry/log/session bytes and live holders, and never convert sessions or infer permission to resume unsupported runtimes. No automatic host uninstall, credential migration, worktree return or history rewrite is performed.
 

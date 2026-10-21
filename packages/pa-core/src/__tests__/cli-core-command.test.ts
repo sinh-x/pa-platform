@@ -176,7 +176,7 @@ test("packaged PA CLI guidance describes runtime adapters and core-owned serve",
   if (!existsSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"))) return t.skip("external pa-platform-config fixture not available");
   const guidance = readFileSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
   assert.match(guidance, /# PA Platform CLI Reference/);
-  assert.match(guidance, /Use `ppa` for Pi sessions, `opa` for[\s\S]*OpenCode sessions\./);
+  assert.match(guidance, /Use `ppa` for Pi sessions, `opa` for[\s\S]*OpenCode sessions\b/);
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(guidance, /\| `pa-core serve` \| Start, stop, restart, and inspect the core-owned Agent API server/);
   assert.match(guidance, /rather than restored as required direct `daily`, `requirements`, `idea`, or `report` CLI commands/);

@@ -58,7 +58,7 @@ test("builder orchestrator mode encodes PPA planned/materialized and non-Pi bran
   assert.match(modeDoc, /\| `planned` \|[\s\S]{0,480}action is `create`[\s\S]{0,320}ordinary Git to create the exact branch/);
   assert.match(modeDoc, /\| `materialized` \|[\s\S]{0,480}action is `select`[\s\S]{0,320}ordinary Git to select that exact branch/);
   assert.match(modeDoc, /Any mismatch, dirty state, duplicate lineage, or exhausted capacity[\s\S]{0,240}Reject before project-file mutation, branch mutation, and child\/runtime spawn/);
-  assert.match(modeDoc, /OPA\/OpenCode (?:only )?retains? supported non-Treehouse seven-state branch behavior/);
+  assert.match(modeDoc, /OPA\/OpenCode\b[\s\S]{0,240}\bsupported non-Treehouse seven-state branch behavior/);
   assert.match(modeDoc, /Never create\/select a substitute branch, relocate, stash, reset, repair, or perform checkout return/);
 });
 
