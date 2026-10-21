@@ -1,6 +1,7 @@
 import { appendRegistryEvent, getDeploymentEvents } from "../registry/index.js";
 import { nowUtc } from "../time.js";
 import type { Rating, RuntimeName } from "../types.js";
+import { assertSupportedRuntime } from "./runtime-config.js";
 import type { DeploymentInvocationChannel } from "./rogue-one.js";
 import type { DeploymentCorrelationEvidence } from "./correlation.js";
 
@@ -38,6 +39,7 @@ export interface StartDeploymentOpts extends DeploymentCorrelationOpts {
  * Emit a "started" registry event for a deployment.
  */
 export function emitStartedEvent(opts: StartDeploymentOpts): void {
+  if (opts.runtime !== undefined) assertSupportedRuntime(opts.runtime);
   appendRegistryEvent({
     deployment_id: opts.deploymentId,
     team: opts.team,

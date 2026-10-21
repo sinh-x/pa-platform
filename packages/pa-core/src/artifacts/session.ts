@@ -23,7 +23,7 @@ export function readReviewRecord(fd: number, context: ReviewContext, sessionId: 
   try {
     const record = JSON.parse(readPrivate(fd, "owner.json", 268_435_456).toString("utf8")) as ReviewRecord;
     if (record.schema !== "pa-artifact-session/v1" || record.sessionId !== sessionId
-        || !context || !["pi", "opencode", "claudecode"].includes(context.adapter)
+        || !context || !["pi", "opencode"].includes(context.adapter)
         || !/^d-[a-f0-9]{6,32}$/.test(context.deployment) || !context.root.startsWith("/")
         || !Number.isSafeInteger(context.ownerPid) || context.ownerPid <= 1
         || typeof context.ownerBirth !== "string" || !/^[a-f0-9-]{36}:[0-9]+$/.test(context.ownerBirth)

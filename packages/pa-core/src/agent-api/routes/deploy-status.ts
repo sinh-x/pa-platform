@@ -113,7 +113,7 @@ export function deployStatusRoutes(resolvePrincipal?: DeploymentEventPrincipalRe
       repositorySlot: optionalEnum(input["repositorySlot"], ["orchestrator", "implement"] as const, "repositorySlot"),
       ...correlation,
       mode: optionalIdentifier(input["mode"], "mode"),
-      runtime: optionalEnum(input["runtime"], ["claude", "opencode", "droid", "pi"] as const, "runtime"),
+      runtime: optionalEnum(input["runtime"], ["opencode", "pi"] as const, "runtime"),
       binary: optionalIdentifier(input["binary"], "binary"),
       resumedFromDeploymentId: optionalCanonicalDeploymentId(input["resumedFromDeploymentId"], "resumedFromDeploymentId"),
     });

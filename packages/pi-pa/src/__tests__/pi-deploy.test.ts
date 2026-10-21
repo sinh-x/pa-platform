@@ -744,6 +744,73 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
   };
 }
 
+test("Pi rejects opaque unsupported resume files before allocation, hooks or preflight", async () => {
+  await withPiEnv(async (root) => {
+    const id = "d-abcdef";
+    const dir = join(root, "deployments", id);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "session-id-unsupported-synthetic.txt");
+    const original = Buffer.from("opaque-history\n");
+    writeFileSync(path, original);
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; }, onDescribe: () => { effects++; } });
+    const result = await deployWithPi({ team: "requirements", mode: "analyze", resume: id }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", /unsupported runtime/);
+    assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
+    assert.equal(effects, 0);
+    assert.deepEqual(readFileSync(path), original);
+    assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
+    assert.equal(existsSync(join(root, "registry.db")), false, "rejected resume must not initialize the registry");
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("early inherited resume rejection preserves the bounded admission diagnostic without allocation", async () => {
+  await withPiEnv(async (root) => {
+    process.env["PA_TEAM"] = "builder"; process.env["PA_MODE"] = "orchestrator";
+    process.env["PA_DEPLOYMENT_ID"] = "d-111111";
+    process.env["PA_DEPLOYMENT_DIR"] = join(root, "parent");
+    let effects = 0;
+    const result = await deployWithPi({ team: "builder", mode: "implement", resume: "d-ffffff" }, stubAdapter({ preflight: async () => { effects++; }, onSpawn: () => { effects++; }, onInstall: () => { effects++; } }));
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(result.reason?.includes(field));
+    assert.ok(result.reason!.length <= 2000); assert.equal(effects, 0);
+    assert.equal(existsSync(join(root, "registry.db")), false);
+    assert.equal(existsSync(join(root, "deployments")), false);
+  });
+});
+
+test("retained adapter rejects invalid selection and opaque recorded runtime before effects", async () => {
+  const supplied: unknown = JSON.parse(process.env["PA_RETIRED_RUNTIME_CASES"] ?? "[]");
+  assert.ok(Array.isArray(supplied) && supplied.every((value) => typeof value === "string" && value !== "pi" && value !== "opencode"));
+  for (const runtime of ["unsupported-synthetic", ...supplied]) await withPiEnv(async (root) => {
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; }, onDescribe: () => { effects++; } });
+    for (const [request, selected] of [[{ team: "requirements", runtime }, adapter], [{ team: "requirements" }, { ...adapter, name: runtime }]] as const) {
+      const result = await deployWithPi(request as never, selected as RuntimeAdapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+      assert.match(result.reason ?? "", /unsupported runtime/);
+    }
+    const id = "d-abcdef"; const dir = join(root, "deployments", id);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, adapter.sessionFileName); writeFileSync(path, "opaque-session\n");
+    appendRegistryEvent({ deployment_id: id, team: "requirements", event: "started", timestamp: "2020-01-01T00:00:00Z", runtime });
+    const before = getDeploymentEvents(id);
+    const result = await deployWithPi({ team: "requirements", resume: id }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", /unsupported runtime/);
+    assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
+    assert.equal(effects, 0); assert.deepEqual(getDeploymentEvents(id), before);
+    closeDb();
+    const registryBefore = readFileSync(join(root, "registry.db"));
+    assert.equal((await deployWithPi({ team: "requirements", resume: id }, adapter)).status, "failed");
+    assert.deepEqual(readFileSync(join(root, "registry.db")), registryBefore, "cold resume inspection never migrates historical records");
+    assert.equal(readFileSync(path, "utf8"), "opaque-session\n");
+    assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
+  });
+});
+
 function writeRogueOneTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "rogue-one.yaml"), [
     "name: rogue-one",

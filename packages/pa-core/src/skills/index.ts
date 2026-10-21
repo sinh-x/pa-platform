@@ -256,7 +256,7 @@ function validateRequiredCredentialFiles(name: string, skillPath: string, metada
 }
 
 function hasOpencodeIncompatibleGuidance(content: string): boolean {
-  const incompatibleCommandPattern = /\b(opencode\s+run|cpa\s+deploy)\b/i;
+  const incompatibleCommandPattern = /\bopencode\s+run\b/i;
   const discouragingPattern = /\b(do\s+not|don't|avoid|never|instead|rather\s+than)\b/i;
   return content.split("\n").some((line) => {
     if (!incompatibleCommandPattern.test(line)) return false;

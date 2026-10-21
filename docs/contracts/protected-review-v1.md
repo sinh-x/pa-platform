@@ -6,7 +6,7 @@ launch repeats static checks and authenticates candidate/readiness evidence,
 uses PAP-232's existing-only selector/reservation and the existing executor,
 and consumes authorization through the registry. Command-local assignments remain
 opaque shell text; they do not extend launcher environment authority.
-OPA/CPA behavior is unchanged. Rollout requires separately approved producers,
+OPA behavior is unchanged. Rollout requires separately approved producers,
 installation/readiness and an actual complete protected review, not source tests.
 
 ## APIs and failure model

@@ -124,7 +124,7 @@
 
           pnpmDeps = pkgs.fetchPnpmDeps {
             inherit (finalAttrs) pname src;
-            hash = "sha256-U0endCfk4nhOnF1y8GQCHP24oAomWgM4cJG9meQFznc=";
+            hash = "sha256-iHborBoIZe9LLALxwipBvuolrhvrDnTdzVkpPWJRvfs=";
             fetcherVersion = 4;
           };
 
@@ -157,7 +157,7 @@
                   --add-flags "$share/packages/pi-pa/dist/axi-policy.js ${name} ${tool.node}/bin/node ${tool}/${tool.axiEntrypoint} ${if name == "gh-axi" then "${pkgs.gh}/bin/gh" else "-"} ${if name == "chrome-devtools-axi" then "${builtins.head tool.dependencies}/${(builtins.head tool.dependencies).mcpEntrypoint}" else "-"}"
               ''}
             '') selectedAxiTools)}
-            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/claudecode-pa $share/packages/droidcode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
+            mkdir -p $share/packages/pa-core $share/packages/opencode-pa $share/packages/pi-pa $share/packages/runtime-host $out/bin $out/share/fish/vendor_completions.d
 
             cp package.json pnpm-lock.yaml pnpm-workspace.yaml $share/
             install -Dm644 ${reviewProvenance} $share/review-runtime-provenance.json
@@ -171,16 +171,6 @@
             cp -r packages/opencode-pa/dist $share/packages/opencode-pa/dist
             mkdir -p $share/packages/opencode-pa/node_modules/@pa-platform
             ln -s ../../../pa-core $share/packages/opencode-pa/node_modules/@pa-platform/pa-core
-            cp packages/claudecode-pa/package.json $share/packages/claudecode-pa/package.json
-            cp -r packages/claudecode-pa/dist $share/packages/claudecode-pa/dist
-            mkdir -p $share/packages/claudecode-pa/node_modules/@pa-platform
-            ln -s ../../../pa-core $share/packages/claudecode-pa/node_modules/@pa-platform/pa-core
-
-            cp packages/droidcode-pa/package.json $share/packages/droidcode-pa/package.json
-            cp -r packages/droidcode-pa/dist $share/packages/droidcode-pa/dist
-            mkdir -p $share/packages/droidcode-pa/node_modules/@pa-platform
-            ln -s ../../../pa-core $share/packages/droidcode-pa/node_modules/@pa-platform/pa-core
-
             cp packages/pi-pa/dist/pi-pa-package.json $share/packages/pi-pa/package.json
             cp packages/pi-pa/dist/THIRD_PARTY_NOTICES.md $share/packages/pi-pa/THIRD_PARTY_NOTICES.md
             cp -r packages/pi-pa/dist $share/packages/pi-pa/dist
@@ -217,14 +207,6 @@
               install -Dm644 completions/opa.fish $out/share/fish/vendor_completions.d/opa.fish
             fi
 
-            if [ -f completions/cpa.fish ]; then
-              install -Dm644 completions/cpa.fish $out/share/fish/vendor_completions.d/cpa.fish
-            fi
-
-            if [ -f completions/dpa.fish ]; then
-              install -Dm644 completions/dpa.fish $out/share/fish/vendor_completions.d/dpa.fish
-            fi
-
             if [ -f completions/ppa.fish ]; then
               install -Dm644 completions/ppa.fish $out/share/fish/vendor_completions.d/ppa.fish
             fi
@@ -238,16 +220,6 @@
 
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/opa \
               --add-flags "$share/packages/opencode-pa/dist/cli.js" \
-              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
-              --prefix PATH : "${runtimePath}"
-
-            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/cpa \
-              --add-flags "$share/packages/claudecode-pa/dist/cli.js" \
-              --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
-              --prefix PATH : "${runtimePath}"
-
-            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/dpa \
-              --add-flags "$share/packages/droidcode-pa/dist/cli.js" \
               --set PA_SQLITE_NATIVE_BINDING "$share/native-addons/node-22/better_sqlite3.node" \
               --prefix PATH : "${runtimePath}"
 
@@ -321,8 +293,6 @@
           pa-platform = defaultPaPlatform;
           pa-core = defaultPaPlatform;
           opa = defaultPaPlatform;
-          cpa = defaultPaPlatform;
-          dpa = defaultPaPlatform;
           ppa = defaultPaPlatform;
           default = defaultPaPlatform;
         });
@@ -368,9 +338,9 @@
             assert builtins.all (name:
               packagesForSystem.${name}.axiSelection == noAxi
                 && packagesForSystem.${name}.selectedAxiTools == {}
-            ) [ "pa-platform" "pa-core" "opa" "cpa" "dpa" "ppa" "default" ];
+            ) [ "pa-platform" "pa-core" "opa" "ppa" "default" ];
             assert builtins.all (name: overlayPackages.${name}.axiSelection == noAxi)
-              [ "pa-platform" "pa-core" "opa" "cpa" "dpa" "ppa" ];
+              [ "pa-platform" "pa-core" "opa" "ppa" ];
             assert (paPlatformFor system {}).axiSelection == noAxi;
             assert packagesForSystem.lavish-axi.managedGate;
             assert packagesForSystem.lavish-axi.axiEntrypoint == "bin/lavish-axi";
@@ -403,8 +373,6 @@
         pa-platform = self.packages.${prev.stdenv.hostPlatform.system}.pa-platform;
         pa-core = self.packages.${prev.stdenv.hostPlatform.system}.pa-core;
         opa = self.packages.${prev.stdenv.hostPlatform.system}.opa;
-        cpa = self.packages.${prev.stdenv.hostPlatform.system}.cpa;
-        dpa = self.packages.${prev.stdenv.hostPlatform.system}.dpa;
         ppa = self.packages.${prev.stdenv.hostPlatform.system}.ppa;
       };
 

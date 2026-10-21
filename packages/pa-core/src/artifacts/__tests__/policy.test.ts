@@ -201,9 +201,9 @@ test("outer End reports non-OK/malformed confirmations and remains retryable whi
   }
 });
 
-test("all three adapters provide only shared artifact lifecycle metadata including background persistence", () => {
+test("both retained adapters provide only shared artifact lifecycle metadata including background persistence", () => {
   const root = new URL("../../../../", import.meta.url);
-  for (const adapter of ["pi-pa", "opencode-pa", "claudecode-pa"]) {
+  for (const adapter of ["pi-pa", "opencode-pa"]) {
     const source = readFileSync(new URL(`${adapter}/src/adapter.ts`, root), "utf8");
     assert.match(source, /PA_ARTIFACT_ADAPTER/);
     assert.match(source, /PA_ARTIFACT_OWNER_PID/);

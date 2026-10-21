@@ -130,8 +130,8 @@ Enumeration is executable `required_cases()` in matrix.py:
 - 5 exact pin/transitive/license/adaptation inventories and inspection tools.
 
 Installed environment checks execute real makeWrapper shells and installed
-adapter constructors. They capture all three adapters' foreground/background ×
-spawn/resume launch environments (12 per selection, 192 total), including exact
+adapter constructors. They capture both retained adapters' foreground/background ×
+spawn/resume launch environments (8 per selection, 128 total), including exact
 PATH/PA_AXI_PATH and owner metadata. Only PPA gains other selected AXI prefixes.
 **Launch capture seams are not real provider/inference or background-runner
 acceptance.** They are explicitly scoped evidence, supplemented by real installed
@@ -140,7 +140,7 @@ prove an entire deployment supervisor path. Only the interpreter-capture helper
 from axi-smoke is reused; its old three-selector/PPA lifecycle/provider suite is
 not relabeled as Lavish coverage.
 
-### Installed runtime: 65 required cases
+### Installed runtime: 44 required cases
 
 `results.json`, schema `pa-lavish-results/v1`, has role/status, required-case IDs,
 cases with evidence, exact counts/missing IDs, command receipts, original and
@@ -149,7 +149,7 @@ budgets, cleanup failures and final kernel observed-effects audit. Worker-only
 `worker-results.json` is **provisional** until the outer observer verifies it.
 No worker JSON or fixture result alone is passing observed-effects evidence.
 
-For **each** ppa/opa/cpa, executable `runtimeKinds` enumerates:
+For **each** ppa/opa, executable `runtimeKinds` enumerates:
 1. deterministic render/manifest repeat (CRLF/Unicode and supported/inert syntax);
 2. inclusive 2 MiB/over-limit source boundaries;
 3. invalid UTF-8/non-regular source;
@@ -176,7 +176,7 @@ real-time idle or browser UI. No OS-crash coverage beyond the recorded injection
 is inferred. Idle clocks run concurrently, with real status polling that must
 not prolong lifetime; no timing acceleration or environment assertion is proof.
 
-### Browser: 47 required cases
+### Browser: 32 required cases
 
 Exact Chrome executable/realpath/version/digest, disposable sandboxed profile,
 actual chrome://sandbox feedback and kernel exec evidence are prerequisites.

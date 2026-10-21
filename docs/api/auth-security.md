@@ -20,7 +20,7 @@ The Agent API is designed for **loopback-only** deployment. The primary access c
 | Rate limiting | None (3-session WS cap only) | Not implemented |
 | Path traversal | Sandbox validation + per-route guards | Active always |
 | Input sanitization | Shell metachar strip for deploy objectives | Active for `POST /api/deploy` |
-| Secret redaction | Adapter stream/body sanitization | Active in `opa`/`cpa`/`dpa` adapters |
+| Secret redaction | Adapter stream/body sanitization | Active in retained deployment adapters |
 
 **Warning:** Binding to `--host 0.0.0.0` exposes the unauthenticated API to the network. Only do this behind a reverse proxy with authentication, or on a trusted private network (e.g., Tailscale).
 
@@ -364,7 +364,7 @@ function sanitizeStreamBody(value: string): string {
 - Max stream body length: 500 characters (truncated with `...`)
 - Applied to: activity log output streamed through the API
 
-This prevents secret leakage through the API's activity endpoints. Similar but not identical patterns are used across `opa` (opencode-pa), `cpa` (claudecode-pa), and `dpa` (droidcode-pa) adapters — each adapter maintains its own list (e.g. `dpa` adds `fk-...` keys and uses case-insensitive global matching; `cpa`/`dpa` match `api_key`/`access_key` variants that `opa` does not).
+This prevents secret leakage through the API's activity endpoints. Retained adapters maintain their own stream/body sanitization alongside the shared core redaction boundary. Runtime retirement does not remove generic credential protections.
 
 ### 6.2 Bash Command Guarding (Tool Layer)
 

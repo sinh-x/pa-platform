@@ -93,7 +93,9 @@ type SubTicketStatus = "open" | "in-progress" | "done";
 The agent runtime that executes a deployment.
 
 ```typescript
-type RuntimeName = "claude" | "opencode" | "droid" | "pi";
+type RuntimeName = "opencode" | "pi";
+// Read-only historical metadata is not an active runtime selection.
+type HistoricalRuntimeName = string;
 ```
 
 ### `AutonomyLevel`
@@ -421,7 +423,7 @@ interface RegistryEvent {
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
-  runtime?: RuntimeName;
+  runtime?: HistoricalRuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
   rogue_one?: boolean;
@@ -459,7 +461,7 @@ interface RegistryEvent {
 | `mode` | `string` | no | Resolved deployment mode. |
 | `fallback` | `boolean` | no | Whether the completion marker was a fallback. |
 | `resumed_from_deployment_id` | `string` | no | If this deployment resumed a prior one, the prior deployment id. |
-| `runtime` | [`RuntimeName`](#runtimename) | no | Runtime that executed the deployment. |
+| `runtime` | `HistoricalRuntimeName` (opaque string) | no | Recorded runtime; not launch authority. |
 | `binary` | `string` | no | Binary path that was spawned. |
 | `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
 | `rogue_one` | `boolean` | no | True only for an explicitly selected rogue-one bare deployment. |
@@ -519,7 +521,7 @@ interface DeploymentStatus {
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
-  runtime?: RuntimeName;
+  runtime?: HistoricalRuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
   rogue_one?: boolean;
@@ -550,7 +552,7 @@ interface DeploymentStatus {
 | `mode` | `string` | no | Resolved deployment mode. |
 | `fallback` | `boolean` | no | Whether the completion was a fallback. |
 | `resumed_from_deployment_id` | `string` | no | Prior deployment id if resumed. |
-| `runtime` | [`RuntimeName`](#runtimename) | no | Runtime. |
+| `runtime` | `HistoricalRuntimeName` (opaque string) | no | Recorded runtime; not launch authority. |
 | `binary` | `string` | no | Binary path. |
 | `effective_timeout_seconds` | `number` | no | Resolved timeout in seconds. |
 | `rogue_one` | `boolean` | no | True for rogue-one deployment evidence. |
@@ -1364,8 +1366,6 @@ interface PlatformConfig {
   defaults?: {
     runtime?: RuntimeName;
     opencode?: { provider?: string; model?: string };
-    claudecode?: { model?: string; minimax_via_claude?: boolean };
-    droidcode?: { model?: string; autonomy?: AutonomyLevel };
   };
 }
 ```
@@ -1380,8 +1380,6 @@ interface PlatformConfig {
 | `provider_defaults` | [`ProviderDefaults`](#providerdefaults) | no | Provider/model defaults. |
 | `defaults.runtime` | [`RuntimeName`](#runtimename) | no | Default runtime. |
 | `defaults.opencode` | `{ provider?: string; model?: string }` | no | opencode defaults. |
-| `defaults.claudecode` | `{ model?: string; minimax_via_claude?: boolean }` | no | claudecode defaults. |
-| `defaults.droidcode` | `{ model?: string; autonomy?: AutonomyLevel }` | no | droidcode defaults. |
 
 ### `ProviderDefaults`
 

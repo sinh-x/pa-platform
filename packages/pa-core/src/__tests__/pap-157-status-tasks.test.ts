@@ -50,7 +50,7 @@ function startDeployment(deploymentId: string, runtime: RuntimeName = "pi", mode
     event: "started",
     timestamp: "2026-08-29T12:00:00.000Z",
     runtime,
-    binary: { pi: "ppa", opencode: "opa", claude: "cpa", droid: "dpa" }[runtime],
+    binary: { pi: "ppa", opencode: "opa" }[runtime],
     ...(mode === undefined ? {} : { mode }),
   });
 }
@@ -174,7 +174,7 @@ test("status detail surfaces distinct registered and worktree roots with the sel
 test("shared default detail appends recorded mode to exactly one Team line across runtimes", async () => {
   await withStatusEnv(async () => {
     const expectedTeamLine = "  Team:     builder/implement";
-    for (const runtime of ["pi", "opencode", "claude", "droid"] as const) {
+    for (const runtime of ["pi", "opencode"] as const) {
       const deploymentId = `d-pap157-team-${runtime}`;
       startDeployment(deploymentId, runtime, "implement");
       const captured = capture();

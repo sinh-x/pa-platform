@@ -20,10 +20,10 @@ assert.equal(evaluation.dependencies.length, expectedDeps.size);
 const root = fs.mkdtempSync('/tmp/pa-lavish-selection-');
 const inherited = '/inherited/synthetic/bin';
 const base = { PATH: inherited, HOME: root, PA_AI_USAGE_HOME: root, TZ: 'UTC', LC_ALL: 'C.UTF-8' };
-const wrappers = Object.fromEntries(['ppa', 'opa', 'cpa', 'pa-core', 'dpa', 'pa-platform-node'].map(n => [n, captureInstalledWrapper(output, n, base)]));
+const wrappers = Object.fromEntries(['ppa', 'opa', 'pa-core', 'pa-platform-node'].map(n => [n, captureInstalledWrapper(output, n, base)]));
 const prefix = selected.length ? [join(share, 'axi-bin'), ...evaluation.dependencies.map(p => `${p}/bin`)].join(':') : '';
 assert.equal(wrappers.ppa[1] ?? '', prefix);
-for (const n of ['opa', 'cpa', 'pa-core', 'dpa', 'pa-platform-node']) {
+for (const n of ['opa', 'pa-core', 'pa-platform-node']) {
   assert.equal(wrappers[n][1] ?? '', '');
   assert.equal(wrappers[n][0].includes('/axi-bin'), false);
 }
@@ -32,7 +32,7 @@ if (prefix) assert.equal(wrappers.ppa[0].startsWith(prefix + ':'), true);
 const realSpawn = cp.spawnSync;
 let captures = [];
 cp.spawnSync = (executable, args, opts) => {
-  assert.ok(['opencode', 'claude'].includes(executable), 'only installed adapter foreground seam');
+  assert.equal(executable, 'opencode', 'only installed adapter foreground seam');
   captures.push({ args, env: opts.env });
   return { status: 0, stdout: '', stderr: '' };
 };
@@ -43,8 +43,7 @@ for(const field of ['dependencies','devDependencies','optionalDependencies']) as
 try {
   const { PiAdapter } = await import(join(share, 'packages/pi-pa/dist/adapter.js'));
   const { OpencodeAdapter } = await import(join(share, 'packages/opencode-pa/dist/adapter.js'));
-  const { ClaudeCodeAdapter } = await import(join(share, 'packages/claudecode-pa/dist/adapter.js'));
-  for (const [adapter, Class] of [['pi', PiAdapter], ['opencode', OpencodeAdapter], ['claudecode', ClaudeCodeAdapter]]) {
+  for (const [adapter, Class] of [['pi', PiAdapter], ['opencode', OpencodeAdapter]]) {
     const dir = join(root, adapter); fs.mkdirSync(dir, { mode: 0o700 });
     const primer = join(dir, 'primer.md'); fs.writeFileSync(primer, 'Synthetic environment capture only.');
     const capture = (args, options) => { captures.push({ args, env: options.env }); return { status: 0, stdout: '', stderr: '' }; };

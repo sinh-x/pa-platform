@@ -939,7 +939,7 @@ test("agent API force cannot bypass runtime validation", async () => {
     const response = await app.request("/api/deploy", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ team: "builder", runtime: "claude", force: true }),
+      body: JSON.stringify({ team: "builder", runtime: "unsupported-synthetic", force: true }),
     });
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: "runtime must be opencode or pi", code: "BAD_REQUEST" });

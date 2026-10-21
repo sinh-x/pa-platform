@@ -171,7 +171,7 @@ test("review-auto selects the exact existing candidate", async (t) => {
         assert.throws(() => validateDeploymentCorrelationEvidence({ treehousePath: worktree, treehouseLeaseId: "lease-1", treehouseLeaseHolder: "pa:generic-repo:ALT-7", branchState: "materialized", branchHeadSha: featureSha }), /requires authority/);
         assert.deepEqual(validateDeploymentCorrelationEvidence({}), {}, "legacy builder correlation remains readable");
         for (const route of [
-          { runtime: "opencode" }, { runtime: "claude" }, { runtime: "droid" },
+          { runtime: "opencode" }, { runtime: "unsupported-synthetic" as RuntimeName },
           { request: { ...fixture.request, dryRun: true } }, { request: { ...fixture.request, resume: "d-abcdef" } },
           { request: { ...fixture.request, team: "builder" } }, { request: { ...fixture.request, mode: "review" } },
         ] as Array<{ runtime?: RuntimeName; request?: DeployRequest }>) {

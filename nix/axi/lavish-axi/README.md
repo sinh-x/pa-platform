@@ -8,7 +8,7 @@ installed/browser behavior or supersede the independent acceptance gates.
 `lib.mkPaPlatform`. Default aliases and overlay select no Lavish. Explicit
 `packages.<system>.lavish-axi` is the separate pinned closure. Selected PPA
 exposes only its native managed gate, not `dist/cli.mjs`. Other AXI versions,
-wrappers and PPA-only selection are unchanged. OPA/CPA runtime integration is
+wrappers and PPA-only selection are unchanged. OPA runtime integration is
 not implemented in this phase. Supported packaging evaluation targets are
 x86_64-linux and aarch64-linux; neither constitutes installed/native acceptance.
 
@@ -112,8 +112,8 @@ never change 0.1.67, weaken policy or treat an env setting as confinement.
 
 ## Phase 3 — owned review and durable feedback
 
-`pa-core` now implements the shared Interface v1 lifecycle under `ppa`, `opa`
-and `cpa`. Render remains independent of selection. Review start resolves only
+`pa-core` now implements the shared Interface v1 lifecycle under `ppa` and `opa`.
+Render remains independent of selection. Review start resolves only
 the installed adjacent selected `axi-tools/lavish-axi` Nix closure, never PATH,
 npm, an environment-selected executable or the upstream CLI. The native public
 `lavish-axi` gate remains metadata/deny-only. Selection supplies assets, not PA

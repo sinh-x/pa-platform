@@ -28,9 +28,7 @@ runtime evidence is compared only with `worktree_root`. Explicit `--repo` key or
 primary-path input still selects the primary root unless PPA explicitly requests
 selection-only `--ticket-worktree` as described below. Symlink aliases, malformed or
 forged metadata, independent clones, stale worktree entries, ambiguous
-common-directory matches, and unrelated repositories remain rejected. OPA,
-CPA, and DPA do not gain this
-exception.
+common-directory matches, and unrelated repositories remain rejected. OPA does not gain this exception.
 
 ### PPA selection-only ticket worktrees
 
@@ -61,7 +59,7 @@ physical checkout with fresh current authentication. Selection rejections use
 one five-field diagnostic bounded to 2,000 characters. No post-spawn immutable
 snapshot or filesystem sandbox is promised.
 
-This is PPA CLI only: builder, OPA/CPA/DPA, direct `pa-core` and Agent API inputs
+This is PPA CLI only: builder, OPA, direct `pa-core` and Agent API inputs
 are excluded. PAPC-038 separately aligns eligible non-builder mode root contracts
 in `pa-platform-config`; do not claim broad mode availability until paired
 validation passes. PAPC-037 owns worktree-local dependencies/late canonical
@@ -83,11 +81,8 @@ or a builder owns the same canonical root. Every `builder/*` mode is
 process-verified owner across ppa and opa. Each authenticated PPA linked
 worktree instead has two independent physical-Git-dir slots: one orchestrator
 slot and one implement slot; every non-orchestrator builder mode uses the
-implement slot. Sibling linked worktrees do not block one another. Claude
-(`cpa`) and Droid (`dpa`) cannot safely supervise this lifecycle, so their
-mutating builder deploys fail with an explicit unsupported-policy result before
-runtime spawn; non-builder and dry-run behavior remains available. Other teams
-remain `non-locking`.
+implement slot. Sibling linked worktrees do not block one another. Unsupported
+runtime selections fail before allocation or spawn. Other teams remain `non-locking`.
 
 PPA has one narrow positive inheritance exception to builder exclusivity. One
 direct **background** Pi `builder/implement` child may borrow the execution slot
@@ -101,7 +96,7 @@ trusted `pa_dirty_borrow_approval` Pi TUI tool. A parent ID, objective text,
 `--force`, or copied environment value is never authority. Ordinary borrowing
 on an already-matching ticket branch does not transfer or rewrite the version-1
 parent lease. The one primary-root transition described below may replace only
-its authoritative Git snapshot before borrower publication. OPA, CPA, Droid,
+its authoritative Git snapshot before borrower publication. OPA,
 foreground children, descendants, other modes, and concurrent siblings have no
 positive inheritance path. Standalone dirty background builders at the registered primary root remain
 rejected. Authenticated linked-worktree PPA foreground and background launches
@@ -281,22 +276,19 @@ dry-run output, and registry metadata.
 |---|---|
 | ppa | Defaults to `openai` / `openai/gpt-6.1-sol`, normalized for Pi as `openai-codex` / `gpt-6.1-sol`; incompatible pairs warn and fall back. |
 | opa | Defaults to `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`; provider-specific model mapping remains in the OpenCode adapter. |
-| cpa | Defaults to `anthropic` / `claude-opus-4-7`; non-Anthropic pairs warn and fall back to the Claude default. |
-| dpa | Defaults to `deepseek-v4-pro`; Droid receives its flat model identifier and adapter-specific provider handling. |
 
 `--agent-model` is rejected because per-agent overrides belong to PAP-148.
 `--team-model` remains a warning-emitting compatibility alias for `--model`
 until PAP-147 removes it. Warnings identify incompatible pairs and the
 command-facing fallback, and pass the existing diagnostic redaction checks.
 
-Runtime selection is handled by the adapter CLI (`opa`, `cpa`, `dpa`, or
-`ppa`). Adapter defaults do not cross-inherit: an absent pair under `ppa` uses
+Runtime selection is handled by the adapter CLI (`opa` or `ppa`). Adapter defaults do not cross-inherit: an absent pair under `ppa` uses
 OpenAI Sol, not a Pi-local model or another adapter's default. Use
 `pa-core serve` for the Agent API server lifecycle; adapters provide deployment
 execution hooks only.
 
-Team YAML and mode objective files should not require Claude Code, OpenCode,
-Droid, or Pi-specific tools directly. Runtime-specific tool guidance is
+Team YAML and mode objective files should not require OpenCode or Pi-specific
+tools directly. Runtime-specific tool guidance is
 injected by `pa-core` primer generation from the active adapter's metadata.
 
 Mode objective files under the operator config repo's `teams/<team>/modes/*.md`
@@ -308,7 +300,7 @@ Examples belong under `docs/examples/`, not under active config directories.
 
 Use `pa-core serve` for the Agent API server lifecycle. Adapters provide deployment execution hooks; they should not own the server lifecycle.
 
-Team YAML and mode objective files should not require Claude Code or opencode-specific tools directly. Runtime-specific tool guidance is injected by `pa-core` primer generation from the active adapter's runtime metadata.
+Team YAML and mode objective files should not require adapter-specific tools directly. Runtime-specific tool guidance is injected by `pa-core` primer generation from the active adapter's runtime metadata.
 
 Mode objective files under the operator config repo's `teams/<team>/modes/*.md` are active configuration. `pa-core` reads them during primer generation and applies template variables such as `{{TODAY}}`, `{{DEPLOY_ID}}`, and `{{TEAM_NAME}}`.
 
@@ -402,7 +394,7 @@ Known limitation (accepted): the token match also matches legitimate generic/HTM
 
 ### Memory-Doc Pointer Mode
 
-Runtimes that load repo memory docs natively (`opencode`, `claude`) receive **path pointers** instead of full re-injected bodies:
+Runtimes that load repo memory docs natively (`opencode`, `pi`) receive **path pointers** instead of full re-injected bodies:
 
 ```
 <memory-doc path="...">
@@ -410,7 +402,7 @@ Runtimes that load repo memory docs natively (`opencode`, `claude`) receive **pa
 </memory-doc>
 ```
 
-`droid` retains full memory-doc injection pending confirmation of native memory-doc loading (PAP-110 / OQ-1). This keeps large `CLAUDE.md`/`AGENTS.md` tails out of opencode/claude primers while preserving discoverability.
+This keeps large `CLAUDE.md`/`AGENTS.md` tails out of retained-runtime primers while preserving discoverability.
 
 ### Primer Size Signal
 

@@ -30,7 +30,7 @@ function validatePlanFirstRequirementsContracts(configRoot: string): number {
     ["builder-owned ordered materialization", /trusted PPA builder\/orchestrator launcher[\s\S]{0,640}reserve(?:s)?[^.\n]{0,160}capacity[\s\S]{0,640}acquire(?:s)? or reuse(?:s)?[\s\S]{0,320}authenticat(?:e|es)[\s\S]{0,5000}(?:ordinary-Git|branch materialization)[\s\S]{0,3600}(?:persist|durable)[\s\S]{0,1800}(?:implementation spawn|builder child\/runtime spawn|spawns? implementation)/iu],
     ["one-lineage/four-ticket capacity", /one active builder lineage per repository\/ticket[\s\S]{0,240}(?:at most|max(?:imum)? of) four active ticket checkouts per canonical repository/iu],
     ["operator-only return", /only Sinh\/operator[\s\S]{0,240}(?:return the checkout|approve checkout return|return of the Treehouse checkout)[\s\S]{0,240}explicit approval/iu],
-    ["adapter and runtime-authority boundaries", /(?=[\s\S]*OPA(?:\/OpenCode)?[\s\S]{0,160}CPA(?:\/Claude Code)?[\s\S]{0,240}no Treehouse (?:behavior )?claim)(?=[\s\S]*PAP-189 runtime)(?=[\s\S]*PAP-215)[\s\S]+/iu],
+    ["adapter and runtime-authority boundaries", /(?=[\s\S]*OPA(?:\/OpenCode)?\s+(?:makes?|has)\s+no Treehouse (?:behavior )?claim)(?=[\s\S]*PAP-189 runtime)(?=[\s\S]*PAP-215)[\s\S]+/iu],
   ] as const;
   const prohibited = [
     "Operator-Prepared Checkout Evidence:",
@@ -71,7 +71,7 @@ function validateRepositoryContracts(configRoot: string): number {
     ["planned create and materialized select", /Branch evidence is planned or materialized for the exact linked branch[\s\S]{0,480}ordinary Git[\s\S]{0,320}create the exact planned branch[\s\S]{0,320}select the exact materialized branch/iu],
     ["one-lineage/four-ticket capacity", /one active builder lineage per repository\/ticket and at most four active ticket checkouts per canonical repository/iu],
     ["mismatch rejection", /conflicting identity, ticket, branch state, base, branch, action, lineage, or capacity evidence rejects before project-file or branch mutation and before builder child\/runtime spawn/iu],
-    ["non-Pi branch boundary", /OPA\/OpenCode and CPA\/Claude Code[\s\S]{0,240}supported non-Treehouse seven-state branch behavior[\s\S]{0,320}no Treehouse claim/iu],
+    ["non-Pi branch boundary", /OPA\/OpenCode\s+(?:only\s+)?retains?\s+supported non-Treehouse seven-state branch behavior[\s\S]{0,320}no Treehouse claim/iu],
   ] as const;
   for (const [label, pattern] of ppaBranchContracts) {
     if (!pattern.test(orchestrator)) throw new Error(`Paired orchestrator is missing PPA branch-gate contract: ${label}`);

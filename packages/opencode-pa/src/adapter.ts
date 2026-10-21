@@ -116,7 +116,7 @@ export class OpencodeAdapter implements RuntimeAdapter {
         "Runtime: opencode via `opa`.",
         "Use `opa` for PA platform deployment and workflow commands; it invokes the updated pa-core command set and avoids the legacy `pa` binary.",
         "Use `pa-core serve` for Agent API server lifecycle; `opa` is the default deployment adapter, not the server owner.",
-        "Use opencode tools exposed in the current session; do not assume Claude-only operational tools exist.",
+        "Use opencode tools exposed in the current session; do not assume unsupported runtime-specific operational tools exist.",
         "Supported providers for `opa deploy`: `ollama-cloud` (default), `minimax`, `openai`, `deepseek`, and `opencode-go`.",
       ].join("\n"),
     };

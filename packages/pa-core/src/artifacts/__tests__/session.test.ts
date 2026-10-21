@@ -65,7 +65,7 @@ async function post(record: ReviewRecord, route: string, body: unknown): Promise
   return fetch(`${origin}/${record.token}/${route}`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(body) });
 }
 
-for (const adapter of ["pi", "opencode", "claudecode"] as const) {
+for (const adapter of ["pi", "opencode"] as const) {
   test(`${adapter}: owned loopback start/status/idempotence, immutable snapshot, durable export and bounded stop`, async t => {
     const f = fixture(t, adapter);
     const start = performance.now();
@@ -506,7 +506,7 @@ test("partial startup reaches bounded failure without listener/signals and remov
 });
 
 test("CLI help and invalid input preserve envelopes/exit mappings across three binary names", async () => isolatedArtifactEnvironment(async () => {
-  for (const binaryName of ["ppa", "opa", "cpa"]) {
+  for (const binaryName of ["ppa", "opa"]) {
     for (const args of [["review", "start", "--host", "0.0.0.0", "--json"], ["review", "feedback", "--session", "bad/path", "--output", "/tmp/a", "--json"]]) {
       const stdout: string[] = [], stderr: string[] = [];
       const code = await runCoreCommand(["artifact", ...args], { binaryName, io: { stdout: s => stdout.push(s), stderr: s => stderr.push(s) } });

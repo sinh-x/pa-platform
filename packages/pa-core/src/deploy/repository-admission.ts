@@ -28,6 +28,7 @@ import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } fro
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
+import { assertSupportedRuntime } from "./runtime-config.js";
 import type { ReviewCheckoutEvidence } from "./plan.js";
 import { validateCanonicalDeploymentId, validateReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { withPreparedRepositoryTicketOwner, type PreparedTicketCapacityTransaction } from "./ticket-concurrency.js";
@@ -69,7 +70,6 @@ const BORROWER_WAIT_POLL_MS = 100;
 const MIN_BORROWER_TIMEOUT_SECONDS = 60;
 const MAX_BORROWER_TIMEOUT_SECONDS = 7_200;
 const STRING_FIELD_LIMIT = 4_096;
-const RUNTIMES: readonly RuntimeName[] = ["claude", "opencode", "droid", "pi"];
 
 export type RepositoryAccess = "read-only" | "exclusive-builder" | "non-locking";
 export type RepositoryEvidenceState = "absent" | "live" | "stale" | "malformed" | "oversized" | "root-conflicting";
@@ -189,7 +189,8 @@ export interface RepositoryMutationLease {
   readonly slot?: RepositoryMutationSlot;
   readonly deploymentId: string;
   readonly deploymentDirectory: string;
-  readonly runtime: RuntimeName;
+  /** Existing ownership evidence remains opaque, including unsupported historical runtimes. */
+  readonly runtime: string;
   readonly mode: string;
   readonly team?: string;
   readonly launchMode?: RepositoryAdmissionLaunchMode;
@@ -775,6 +776,7 @@ export function repositoryDirtyBorrowApprovalPath(parentDeploymentDirectory: str
  * Requirements and other non-exclusive teams return before Git status capture.
  */
 export function resolveRepositoryAdmissionEvidence(options: ResolveRepositoryAdmissionEvidenceOptions): RepositoryAdmissionEvidence {
+  assertSupportedRuntime(options.runtime);
   const canonicalRepoRoot = assertCanonicalRoot(options.canonicalRepoRoot);
   const worktreeRoot = assertCanonicalRoot(options.worktreeRoot ?? canonicalRepoRoot);
   const access = classifyRepositoryAccess(options.team, options.mode);
@@ -1085,6 +1087,7 @@ export function authenticateRepositoryMutationLease(options: {
   expectedEvidenceIdentity?: string;
   dependencies?: Pick<RepositoryAdmissionDependencies, "getProcessFingerprint" | "isDeploymentRunning">;
 }): RepositoryMutationLeaseAuthentication {
+  assertSupportedRuntime(options.runtime);
   const dependencies = {
     getProcessFingerprint: options.dependencies?.getProcessFingerprint ?? readProcessFingerprint,
     isDeploymentRunning: options.dependencies?.isDeploymentRunning ?? ((deploymentId: string) => queryDeploymentStatus(deploymentId)?.status === "running"),
@@ -1130,6 +1133,7 @@ export function inspectRepositoryMutationBorrower(
  * and publishes separate borrower evidence before the adapter spawns the child.
  */
 export function registerRepositoryMutationBorrower(options: RegisterRepositoryMutationBorrowerOptions): RepositoryBorrowRegistration {
+  assertSupportedRuntime(options.runtime);
   const { root, worktree, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
   const borrowerPath = repositoryMutationBorrowerPath(worktree);
   const dependencies = resolveDependencies(options.dependencies);
@@ -1419,6 +1423,7 @@ function safeGitRefComponent(value: string): boolean {
 }
 
 export function acquireRepositoryMutationLease(options: AcquireRepositoryMutationLeaseOptions): RepositoryLeaseAcquisition {
+  assertSupportedRuntime(options.runtime);
   const slot = classifyRepositoryMutationSlot(options.mode);
   const { root, worktree, leasePath, mutexPath, linked } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, slot);
   const dependencies = resolveDependencies(options.dependencies);
@@ -2121,7 +2126,7 @@ function objectEvidence(value: unknown): Partial<RepositoryMutationLease> | unde
   const fingerprint = isProcessFingerprint(row["processFingerprint"]) ? row["processFingerprint"] : undefined;
   return {
     ...(typeof row["deploymentId"] === "string" ? { deploymentId: row["deploymentId"] } : {}),
-    ...(typeof row["runtime"] === "string" && RUNTIMES.includes(row["runtime"] as RuntimeName) ? { runtime: row["runtime"] as RuntimeName } : {}),
+    ...(boundedString(row["runtime"]) ? { runtime: row["runtime"] as string } : {}),
     ...(typeof row["mode"] === "string" ? { mode: row["mode"] } : {}),
     ...(fingerprint ? { processFingerprint: fingerprint } : {}),
   };
@@ -2151,8 +2156,7 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && boundedString(row["deploymentId"])
     && boundedString(row["deploymentDirectory"])
     && isAbsolute(row["deploymentDirectory"] as string)
-    && typeof row["runtime"] === "string"
-    && RUNTIMES.includes(row["runtime"] as RuntimeName)
+    && boundedString(row["runtime"])
     && boundedString(row["mode"])
     && (row["team"] === undefined || boundedString(row["team"]))
     && (row["launchMode"] === undefined || row["launchMode"] === "foreground" || row["launchMode"] === "background" || row["launchMode"] === "dry-run")
@@ -2710,8 +2714,7 @@ function shellCommand(parts: readonly string[]): string {
 }
 
 function runtimeBinary(runtime: RuntimeName): string {
+  assertSupportedRuntime(runtime);
   if (runtime === "pi") return "ppa";
-  if (runtime === "claude") return "cpa";
-  if (runtime === "droid") return "dpa";
   return "opa";
 }

@@ -81,16 +81,10 @@ skills_dir: string  # optional, ~-expandable path
 
 # Platform-wide defaults
 defaults:           # optional
-  runtime: "claude" | "opencode" | "droid" | "pi" # optional; adapter selected by CLI when omitted
+  runtime: "opencode" | "pi" # optional; adapter selected by CLI when omitted
   opencode:                                   # optional
     provider: string                          # optional, default provider for opencode
     model: string                             # optional, default model for opencode
-  claudecode:                                 # optional
-    model: string                             # optional
-    minimax_via_claude: boolean               # optional
-  droidcode:                                  # optional
-    model: string                             # optional
-    autonomy: "low" | "medium" | "high"      # optional
 
 # Provider credentials and model tiers (merged with any <config_dir>/config.yaml)
 provider_defaults: # optional
@@ -113,7 +107,7 @@ provider_defaults: # optional
 | `data_dir` | `~/.local/share/pa-platform` | Overridable by `PA_PLATFORM_DATA` |
 | `teams_dir` | `<platformHome>/teams` (or `<config_dir>/teams` when `config_dir` set) | Overridable by `PA_PLATFORM_TEAMS` |
 | `skills_dir` | `<platformHome>/skills/global` (or `<config_dir>/skills/global`) | Overridable by `PA_PLATFORM_SKILLS` |
-| `defaults.runtime` | (unset — adapter selected by CLI; `opa`/OpenCode is default for the core API) | One of `claude`, `opencode`, `droid`, `pi` |
+| `defaults.runtime` | (unset — adapter selected by CLI; `opa`/OpenCode is default for the core API) | One of `opencode`, `pi`; other selections reject without fallback |
 | `defaults.opencode.provider` | (unset; `--provider` flag or `provider_defaults.default_provider`) | |
 | `provider_defaults.default_provider` | `ollama-cloud` (via `opa deploy --provider` fallback) | |
 
@@ -306,9 +300,9 @@ Admission class is derived from the team for every configured mode:
 `requirements/*` is read-only and bypasses Git status/lease access,
 `builder/*` is exclusive per canonical root, and other teams are non-locking.
 Dirty foreground builders receive an intent/re-read contract; dirty background
-builders reject before spawn. ppa and opa enforce this lifecycle; cpa and dpa
-reject mutating builder execution before spawn because they cannot safely supervise
-ownership. Deploy force is therefore advertised only by ppa/opa, recovers only
+builders reject before spawn. ppa and opa enforce this lifecycle; unsupported runtime
+selections reject before allocation or spawn for every team. Deploy force is
+advertised only by ppa/opa, recovers only
 stale or malformed builder ownership, and does not bypass other guards. Implementation may proceed
 on the exact ticket branch, or create/check out that branch only from clean
 `develop` when `develop` equals `origin/develop`. Dirty or drifted `develop`,
@@ -348,12 +342,12 @@ See [Data Models](./data-models.md) for the full `TeamConfig` / `DeployMode` / `
 
 | Variable | Default | Used by | Description |
 |----------|---------|---------|-------------|
-| `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode`, `claude`, `droid`, or `pi`) |
+| `PA_RUNTIME` | (set by adapters on spawned processes) | `cli/run.ts` | Set on spawned child processes to the adapter name (`opencode` or `pi`) |
 | `PA_MAX_RUNTIME` | (unset → `DEFAULT_DEPLOY_TIMEOUT_SECONDS` = 1800) | `deploy/control.ts` | Deploy timeout in seconds, consulted between the `--timeout` flag and the built-in default. Bounded to `[60, 7200]`; invalid values are rejected before the deployment hook runs |
 
 ### Deployment Context (injected by adapters)
 
-These keys are rendered into the `<deployment-context>` primer block by all four runtime adapters. The full key list is defined by `PA_ENV_KEYS` in `packages/pa-core/src/primer/index.ts`:
+These keys are rendered into the `<deployment-context>` primer block by both retained runtime adapters. The full key list is defined by `PA_ENV_KEYS` in `packages/pa-core/src/primer/index.ts`:
 
 | Variable | Description |
 |----------|-------------|
@@ -386,7 +380,7 @@ The OpenCode adapter (`packages/opencode-pa/src/adapter.ts`) resolves default mo
 | `OPA_OLLAMA_CLOUD_MODEL` | `ollama-cloud/deepseek-v4-pro` | `ollama-cloud` (default provider) |
 | `OPA_OPENCODE_GO_MODEL` | `opencode-go/deepseek-v4-pro` | `opencode-go` |
 
-Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed. `cpa` defaults to `anthropic` / `claude-opus-4-7`; `dpa` defaults to `deepseek-v4-pro`; and `ppa` defaults to configured `openai` / `openai/gpt-6.1-sol`, normalized for Pi commands to `openai-codex` / `gpt-6.1-sol`. An incompatible pair emits a redacted warning and uses the selected adapter's fallback.
+Supported `opa` providers: `minimax`, `openai`, `deepseek`, `ollama-cloud` (default), `opencode-go`. Provider model strings are prefixed with `<provider>/` when a bare model name is passed. `ppa` defaults to configured `openai` / `openai/gpt-6.1-sol`, normalized for Pi commands to `openai-codex` / `gpt-6.1-sol`. An incompatible pair emits a redacted warning and uses the selected adapter's fallback.
 
 ### Command Resolution
 

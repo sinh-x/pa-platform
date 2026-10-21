@@ -232,10 +232,10 @@ test("policy adds no write roots or helper override and rejects unsafe inherited
   assert.deepEqual(readdirSync(root), ["source.md"]);
 });
 
-test("shared dispatcher uses the exact success envelope for ppa/opa/cpa, and errors never emit a success payload", async (t) => {
+test("shared dispatcher uses the exact success envelope for ppa/opa, and errors never emit a success payload", async (t) => {
   const { root, source } = fixture(t);
   await cleanEnvironment(async () => {
-    for (const binary of ["ppa", "opa", "cpa"]) {
+    for (const binary of ["ppa", "opa"]) {
       const out = join(root, binary);
       const result = await cli(["render", "--source", source, "--output-dir", out, "--json"], binary);
       assert.equal(result.code, 0);
@@ -275,7 +275,7 @@ test("shared dispatcher uses the exact success envelope for ppa/opa/cpa, and err
 
 test("review metadata describes implemented ownership/prerequisites and invalid sessions fail closed", async () => {
   await cleanEnvironment(async () => {
-    for (const binary of ["ppa", "opa", "cpa"]) {
+    for (const binary of ["ppa", "opa"]) {
       for (const args of [["--help"], ["render", "--help"], ["review", "--help"], ["review", "start", "--help"]]) {
         const result = await cli(args, binary);
         assert.equal(result.code, 0);
