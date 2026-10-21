@@ -1,13 +1,22 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
+import { MAX_PI_FOREGROUND_COMPLETION_BYTES, PI_FOREGROUND_COMPLETION_FILE, ReviewAuthorizationClaimError, TicketAssociationError, TicketStore, advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, appendEvaluatorResult, appendRegistryEvent, associateDeploymentTicket, claimReviewAuthorization, closeDb, computeDeploymentStatuses, getDb, getDeploymentEvents, queryDeploymentStatus, queryReadonlyDeploymentEvents, queryEvaluatorResultsByTargetDeployment, queryReviewAuthorizationClaim, queryReviewAuthorizationClaims, readPiForegroundCompletion, reconcileTerminalRegistryEvent, reconcileTerminalRegistryEventIfAbsent, writePiForegroundCompletion } from "../index.js";
 
+import { queryReadonlyHelperRegistry } from "../registry/index.js";
 import type { RegistryEvent } from "../types.js";
 import type { ReviewCheckoutCorrelationEvidence } from "../deploy/correlation.js";
+
+// Test processes must not restore a live admitted identity/private state root.
+for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
+const isolatedState = mkdtempSync(join(tmpdir(), "pa-registry-private-tests-"));
+process.env["PA_AI_USAGE_HOME"] = join(isolatedState, "usage");
+process.env["PA_REGISTRY_DB"] = join(isolatedState, "registry.db");
+process.env["PA_PLATFORM_CONFIG"] = join(isolatedState, "config");
+test.after(() => { closeDb(); rmSync(isolatedState, { recursive: true, force: true }); });
 
 interface AssociationFixture {
   root: string;
@@ -64,6 +73,46 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   return caught;
 }
 
+test("terminal child registry CAS is event-idempotent at unchanged HEAD and rejects successors", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const head = "a".repeat(40), next = "b".repeat(40), worktree = "/ticket/PAP-001";
+    const common = { team: "builder", runtime: "pi" as const, binary: "ppa", event: "started" as const, timestamp: "2026-10-21T00:00:00Z",
+      ticket_id: "PAP-001", repo: worktree, repo_root: canonicalRoot, worktree_root: worktree, treehouse_path: worktree,
+      treehouse_lease_id: "fixture-lease", treehouse_lease_holder: "pa:pa-platform:PAP-001", branch_state: "materialized" as const,
+      branch_base_sha: head, branch_head_sha: head, ticket_slot_id: "pa:pa-platform:PAP-001", repository_permit: 1 };
+    appendRegistryEvent({ ...common, deployment_id: "d-238aaa", mode: "orchestrator", builder_authority: "orchestrator" });
+    appendRegistryEvent({ ...common, deployment_id: "d-238bbb", mode: "implement", builder_authority: "parented-implement", parent_deployment_id: "d-238aaa" });
+    appendRegistryEvent({ deployment_id: "d-238bbb", team: "builder", event: "completed", status: "failed", timestamp: "2026-10-21T00:01:00Z" });
+    const launch = getDeploymentEvents("d-238aaa")[0];
+    const input = { parentDeploymentId: "d-238aaa", childDeploymentId: "d-238bbb", expectedBranchHeadSha: head,
+      branchState: "materialized" as const, branchHeadSha: head, settlement: { digest: "c".repeat(64), expectedAuthorityEventId: null } };
+    for (const patch of [{ expectedBranchHeadSha: next }, { branchHeadSha: "short" }, { settlement: { ...input.settlement, digest: "short" } },
+      { settlement: { ...input.settlement, expectedAuthorityEventId: 99 } }]) assert.throws(() => advanceParentAuthoritySnapshot({ ...input, ...patch }));
+    assert.equal(getDeploymentEvents("d-238aaa").length, 1);
+    advanceParentAuthoritySnapshot(input); advanceParentAuthoritySnapshot(input);
+    assert.equal(getDeploymentEvents("d-238aaa").length, 2); assert.deepEqual(getDeploymentEvents("d-238aaa")[0], launch);
+    assert.equal(queryDeploymentStatus("d-238bbb")?.status, "failed");
+    assert.throws(() => advanceParentAuthoritySnapshot({ ...input, settlement: { ...input.settlement, digest: "d".repeat(64) } }));
+    advanceDirectAuthoritySnapshot({ deploymentId: "d-238aaa", repoRoot: canonicalRoot, worktreeRoot: worktree, ticket: "PAP-001", expectedBranchHeadSha: head, branchHeadSha: next });
+    assert.throws(() => advanceParentAuthoritySnapshot(input)); assert.equal(queryDeploymentStatus("d-238aaa")?.branch_head_sha, next);
+    assert.equal(getDeploymentEvents("d-238aaa").length, 3);
+  });
+});
+
+test("legacy direct-child publication replays unchanged HEAD once without changing caller semantics", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const head = "a".repeat(40), worktree = "/ticket/PAP-001";
+    const common = { team: "builder", runtime: "pi" as const, binary: "ppa", event: "started" as const, timestamp: "2026-10-21T00:00:00Z",
+      ticket_id: "PAP-001", repo: worktree, repo_root: canonicalRoot, worktree_root: worktree, treehouse_path: worktree, treehouse_lease_id: "fixture-lease",
+      treehouse_lease_holder: "pa:pa-platform:PAP-001", branch_state: "materialized" as const, branch_base_sha: head, branch_head_sha: head,
+      ticket_slot_id: "pa:pa-platform:PAP-001", repository_permit: 1 };
+    appendRegistryEvent({ ...common, deployment_id: "d-238aaa", mode: "orchestrator", builder_authority: "orchestrator" });
+    appendRegistryEvent({ ...common, deployment_id: "d-238bbb", mode: "implement", builder_authority: "parented-implement", parent_deployment_id: "d-238aaa" });
+    const input = { parentDeploymentId: "d-238aaa", childDeploymentId: "d-238bbb", expectedBranchHeadSha: head, branchState: "materialized" as const, branchHeadSha: head };
+    advanceParentAuthoritySnapshot(input); advanceParentAuthoritySnapshot(input); assert.equal(getDeploymentEvents("d-238aaa").length, 2);
+  });
+});
+
 test("native direct owner projection uses exact predecessor, preserves launch history and replays idempotently", () => {
   withAssociationFixture(({ canonicalRoot }) => {
     const id = "d-256abc", worktree = "/ticket/PAP-001", head = "a".repeat(40), next = "b".repeat(40);
@@ -85,6 +134,27 @@ test("native direct owner projection uses exact predecessor, preserves launch hi
     getDb().exec("DROP TRIGGER reject_direct_projection"); advanceDirectAuthoritySnapshot(second);
     appendRegistryEvent({ deployment_id: id, team: "builder", event: "completed", status: "success", timestamp: "2026-10-18T00:03:00Z" });
     assert.throws(() => advanceDirectAuthoritySnapshot(second)); assert.deepEqual(getDeploymentEvents(id)[0], launch);
+  });
+});
+
+test("allocation-free registry observation handles live WAL and closed checkpoints without creating sidecars", () => {
+  withAssociationFixture(({ root }) => {
+    const path = join(root, "registry.db"), id = "d-238aaa";
+    const initial = readdirSync(root).sort();
+    assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.deepEqual(readdirSync(root).sort(), initial);
+    appendRegistryEvent({ deployment_id: id, team: "builder", event: "started", timestamp: "2026-10-21T00:00:00Z", runtime: "pi", binary: "ppa" });
+    const liveDb = readFileSync(path), liveWal = readFileSync(`${path}-wal`);
+    assert.equal(queryReadonlyHelperRegistry(id, undefined, true).status?.status, "running");
+    assert.deepEqual(readFileSync(path), liveDb); assert.deepEqual(readFileSync(`${path}-wal`), liveWal);
+    renameSync(`${path}-shm`, `${path}-saved-shm`);
+    try { assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.equal(existsSync(`${path}-shm`), false); }
+    finally { renameSync(`${path}-saved-shm`, `${path}-shm`); }
+    closeDb(); const before = readFileSync(path); const inventory = readdirSync(root).sort();
+    assert.equal(existsSync(`${path}-wal`), false);
+    assert.equal(queryReadonlyHelperRegistry(id, undefined, true).status?.status, "running");
+    assert.deepEqual(readFileSync(path), before); assert.deepEqual(readdirSync(root).sort(), inventory);
+    writeFileSync(`${path}-journal`, "unsettled rollback evidence");
+    assert.throws(() => queryReadonlyHelperRegistry(id, undefined, true)); assert.deepEqual(readFileSync(path), before);
   });
 });
 

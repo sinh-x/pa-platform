@@ -9,6 +9,14 @@ import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryG
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PI_REPOSITORY_HANDOFF_FILE, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
+import { getTicketsDir, readProcessFingerprint, REPOSITORY_CHILD_SETTLEMENT_FILE } from "@pa-platform/pa-core";
+
+for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
+const isolatedState = mkdtempSync(join(tmpdir(), "pi-runner-private-tests-"));
+process.env["PA_AI_USAGE_HOME"] = isolatedState;
+process.env["PA_REGISTRY_DB"] = join(isolatedState, "registry.db");
+process.env["PA_PLATFORM_CONFIG"] = join(isolatedState, "config");
+test.after(() => { closeDb(); rmSync(isolatedState, { recursive: true, force: true }); });
 
 class RunnerChild extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -26,9 +34,8 @@ function restore(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBackgroundConfig) => Promise<void>): Promise<void> {
+async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBackgroundConfig) => Promise<void>, deployId = "d-runner-test", recordStart = true): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pi-runner-"));
-  const deployId = "d-runner-test";
   const deployDir = join(root, "deployments", deployId);
   mkdirSync(deployDir, { recursive: true });
   const primerPath = join(deployDir, "primer.md");
@@ -51,7 +58,7 @@ async function withRunnerEnv(fn: (root: string, deployDir: string, config: PiBac
     managed: false,
     skills: [],
   };
-  appendRegistryEvent({ deployment_id: deployId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 81_001, effective_timeout_seconds: 120 });
+  if (recordStart) appendRegistryEvent({ deployment_id: deployId, team: "builder", event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 81_001, effective_timeout_seconds: 120 });
   try {
     await fn(root, deployDir, config);
   } finally {
@@ -91,6 +98,70 @@ function linkedRepository(root: string, branch: string): { primary: string; work
 function terminalEvents(deployId: string) {
   return getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
 }
+
+for (const scenario of ["failed-dirty", "partial-commit", "ticket-conflict"] as const) test(`parented terminal settlement: ${scenario} uses real process-birth and preserves original outcome`, async () => {
+  await withRunnerEnv(async (root, deployDir, config) => {
+    const { primary, worktree, gitDir, gitCommonDir } = linkedRepository(root, "feature/PAP-238-terminal-fixture");
+    const configDir = join(root, "config"); mkdirSync(configDir);
+    writeFileSync(join(configDir, "config.yaml"), `repos:\n  fixture:\n    path: ${primary}\n    prefix: PAP\n`);
+    const keys = ["PA_PLATFORM_CONFIG", "PA_REPO", "PA_WORKTREE_ROOT"];
+    const previous = keys.map((key) => process.env[key]);
+    process.env["PA_PLATFORM_CONFIG"] = configDir; process.env["PA_REPO"] = worktree; process.env["PA_WORKTREE_ROOT"] = worktree;
+    try {
+      const initial = captureRepositoryGitSnapshot(worktree), parentId = "d-238aaa";
+      const ticketDir = getTicketsDir(); mkdirSync(ticketDir, { recursive: true });
+      const linked = { repo: "fixture", branch: initial.branch, state: "materialized", baseSha: initial.head, headSha: initial.head, sha: initial.head };
+      const ticketPath = join(ticketDir, "PAP-238.json");
+      writeFileSync(ticketPath, JSON.stringify({ id: "PAP-238", project: "fixture", title: "terminal fixture", linkedBranches: [linked] }));
+      const binding = { repo: worktree, repo_root: primary, worktree_root: worktree, ticket_id: "PAP-238", runtime: "pi" as const, binary: "ppa",
+        treehouse_path: worktree, treehouse_lease_id: "fixture-lease", treehouse_lease_holder: "pa:fixture:PAP-238", branch_state: "materialized" as const,
+        branch_base_sha: initial.head, branch_head_sha: initial.head, ticket_slot_id: "pa:fixture:PAP-238", repository_permit: 1 as const };
+      appendRegistryEvent({ ...binding, deployment_id: parentId, team: "builder", mode: "orchestrator", builder_authority: "orchestrator", event: "started", timestamp: new Date().toISOString() });
+      appendRegistryEvent({ ...binding, deployment_id: config.deploymentId, team: "builder", mode: "implement", builder_authority: "parented-implement", parent_deployment_id: parentId, event: "started", timestamp: new Date().toISOString() });
+      const parent = acquireRepositoryMutationLease({ canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktree,
+        expectedGitDir: gitDir, expectedGitCommonDir: gitCommonDir, deploymentId: parentId, deploymentDirectory: join(root, "parent"), runtime: "pi", team: "builder",
+        mode: "orchestrator", launchMode: "foreground", ticket: "PAP-238", gitSnapshot: initial });
+      assert.equal(parent.status, "acquired"); if (parent.status !== "acquired") throw new Error("fixture owner denied");
+      const child = registerRepositoryMutationBorrower({ capability: parent.lease.ownershipToken, canonicalRepoKey: "fixture", canonicalRepoRoot: primary,
+        worktreeRoot: worktree, expectedGitDir: gitDir, expectedGitCommonDir: gitCommonDir, parentDeploymentId: parentId, deploymentId: config.deploymentId,
+        deploymentDirectory: deployDir, runtime: "pi", team: "builder", mode: "implement", launchMode: "background", ticket: "PAP-238", branch: initial.branch,
+        timeoutSeconds: 60, gitSnapshot: initial, settlementMutationPaths: ["README.md", "new file.txt"] });
+      assert.equal(child.status, "registered"); if (child.status !== "registered") throw new Error("fixture child denied");
+      config.cwd = worktree; config.repoKey = "fixture"; config.repoRoot = primary; config.worktreeRoot = worktree; config.ticketId = "PAP-238";
+      config.registryEvidence = { ...binding, builder_authority: "parented-implement", parent_deployment_id: parentId };
+      config.repositoryBorrower = { canonicalRepoRoot: primary, worktreeRoot: worktree, repositoryGitDir: gitDir, repositoryGitCommonDir: gitCommonDir,
+        borrowerToken: child.borrower.borrowerToken, parentDeploymentId: parentId, deploymentId: config.deploymentId };
+      const ownerBefore = readFileSync(repositoryMutationLeasePath(worktree));
+      const script = `const fs=require('node:fs'),cp=require('node:child_process');fs.writeFileSync('README.md','authored work\\n');${scenario === "failed-dirty"
+        ? "fs.writeFileSync('new file.txt','preserved\\n');process.exitCode=1;" : "cp.execFileSync('git',['add','README.md']);cp.execFileSync('git',['commit','-m','partial fixture']);"}`;
+      await runPiBackgroundRunner(config, { supervision: { spawnProcess: ((_file, _args, options) => {
+        const runtime = spawn(process.execPath, ["-e", script], options);
+        runtime.once("close", () => {
+          if (scenario !== "failed-dirty") appendRegistryEvent({ deployment_id: config.deploymentId, team: "builder", event: "completed", status: "partial",
+            summary: "original delivery remains partial", timestamp: new Date().toISOString(), exit_code: 0 });
+          if (scenario === "ticket-conflict") writeFileSync(ticketPath, JSON.stringify({ id: "PAP-238", project: "fixture", linkedBranches: [{ ...linked, baseSha: "f".repeat(40) }] }));
+        });
+        return runtime;
+      }) as never } });
+      const final = captureRepositoryGitSnapshot(worktree);
+      assert.equal(queryDeploymentStatus(config.deploymentId)?.status, scenario === "failed-dirty" ? "failed" : "partial");
+      if (scenario === "ticket-conflict") {
+        assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), true);
+        assert.equal(existsSync(join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE)), true);
+        assert.deepEqual(readFileSync(repositoryMutationLeasePath(worktree)), ownerBefore);
+      } else {
+        const owner = inspectRepositoryMutationLease(primary, { worktreeRoot: worktree, getProcessFingerprint: readProcessFingerprint }).lease!;
+        assert.deepEqual(owner.authorityGitSnapshot, final); assert.equal(owner.authorityChildDeploymentId, config.deploymentId);
+        assert.equal(queryDeploymentStatus(parentId)?.branch_head_sha, final.head);
+        assert.equal((JSON.parse(readFileSync(ticketPath, "utf8")) as { linkedBranches: Array<{ headSha: string }> }).linkedBranches[0]?.headSha, final.head);
+        assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), false);
+        assert.equal(existsSync(join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE)), false);
+        assert.equal(final.dirty, scenario === "failed-dirty");
+      }
+      assert.doesNotMatch(JSON.stringify(getDeploymentEvents(config.deploymentId)), new RegExp(child.borrower.borrowerToken));
+    } finally { keys.forEach((key, index) => restore(key, previous[index])); }
+  }, "d-238bbb", false);
+});
 
 test("persistent runner publishes active ownership before finalizing one natural success", async () => {
   await withRunnerEnv(async (_root, deployDir, config) => {

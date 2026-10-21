@@ -20,6 +20,7 @@ import {
   transferRepositoryMutationLease,
   transferRepositoryTicketSlot,
   type RegistryEvent,
+  type ProcessFingerprint,
   type RepositoryGitSnapshot,
   type RepositoryReviewReservation,
   type ValidationEvent,
@@ -42,7 +43,7 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary, withPiNixosPrerequisites } from "./validation-launch.js";
-import { finalizePiReviewCandidate, rereadPiReviewCandidate } from "./deploy.js";
+import { finalizePiReviewCandidate, rereadPiReviewCandidate, reconcilePiTerminalChild, terminalSettlementUnavailable } from "./deploy.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
   readPiProtectedValidationLaunch,
@@ -70,6 +71,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
   const secrets = environmentSecrets(process.env);
   const audit = new PiRedactionAudit(config.deploymentId, deployDir);
   let childPid: number | undefined;
+  let childFingerprint: ProcessFingerprint | undefined;
+  let normalExecutionExit: number | undefined;
   let ready = false;
   let repositoryLease = config.repositoryLease;
   let repositoryBorrower = config.repositoryBorrower;
@@ -197,6 +200,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         onSpawn: (pid) => {
           reviewExecutionTerminated = false;
           childPid = pid;
+          childFingerprint = readProcessFingerprint(pid);
           ready = true;
           writePiSupervisorOwnership(ownershipPath, ownership("active"));
           options.supervision?.onSpawn?.(pid);
@@ -269,6 +273,8 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
     }
 
     if (!ready || !childPid) throw new Error("runner-spawn: Pi child did not expose a process id");
+    if (result.metadata?.["normalExit"] === true && typeof result.metadata["rawExitCode"] === "number"
+      && result.metadata["cleanupVerified"] !== false && !shutdown.signal.aborted) normalExecutionExit = result.metadata["rawExitCode"];
     writePiSupervisorOwnership(ownershipPath, ownership("finalizing"));
     const authority = repositoryLease ?? repositoryBorrower;
     if (authority) {
@@ -288,6 +294,10 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         repositoryGitDir: authority.repositoryGitDir,
         repositoryGitCommonDir: authority.repositoryGitCommonDir,
       });
+      if (config.registryEvidence?.builder_authority === "parented-implement") {
+        terminalRegistryEvidence = { ...config.registryEvidence, branch_head_sha: terminalGitSnapshot.head };
+        config.registryEvidence = terminalRegistryEvidence;
+      }
       if (repositoryLease?.ticketSlot) {
         const refreshed = refreshTicketLinkedBranchHead({
           canonicalRepoKey: repositoryLease.ticketSlot.canonicalRepoKey,
@@ -305,7 +315,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           config.registryEvidence = terminalRegistryEvidence;
         }
       }
-      if (!repositoryLease?.ticketSlot && config.registryEvidence && config.repoKey && config.ticketId) {
+      if (!repositoryLease?.ticketSlot && config.registryEvidence && config.registryEvidence.builder_authority !== "parented-implement" && config.repoKey && config.ticketId) {
         const refreshed = refreshTicketLinkedBranchHead({
           canonicalRepoKey: config.repoKey,
           canonicalRepoRoot: authority.canonicalRepoRoot,
@@ -350,7 +360,17 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
         try { finalizePiReviewCandidate(reviewReservation, deployDir, true); }
         catch { authorityFailure = "Condition: review terminal finalization stopped. Source: trusted supervisor. Reason: durable matching final evidence could not be published; reservation retained. Correction: preserve checkout and lease custody. Resume Action: reconcile terminal evidence before another review."; }
       }
-      if (repositoryBorrowerTransferred && repositoryBorrower) {
+      const exactTerminalChild = repositoryBorrowerTransferred && repositoryBorrower && config.registryEvidence?.builder_authority === "parented-implement";
+      if (exactTerminalChild && repositoryBorrower) {
+        if (normalExecutionExit === undefined || !childFingerprint || !config.repoKey || !config.ticketId) authorityFailure = terminalSettlementUnavailable();
+        else {
+          const settlement = reconcilePiTerminalChild({ ...repositoryBorrower, canonicalRepoKey: config.repoKey,
+            worktreeRoot: repositoryBorrower.worktreeRoot ?? repositoryBorrower.canonicalRepoRoot,
+            childDeploymentId: config.deploymentId, ticket: config.ticketId,
+            execution: { source: "background-supervisor", exitCode: normalExecutionExit, processes: [childFingerprint] } });
+          if (settlement.outcome === "blocked") authorityFailure = settlement.diagnostic ?? terminalSettlementUnavailable();
+        }
+      } else if (repositoryBorrowerTransferred && repositoryBorrower) {
         const finalization = finalizeRepositoryMutationBorrower({
           canonicalRepoRoot: repositoryBorrower.canonicalRepoRoot,
           worktreeRoot: repositoryBorrower.worktreeRoot,
@@ -410,9 +430,17 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
       if (authorityFailure) {
         finalState = "failed";
         const reason = bounded(authorityFailure, secrets, TERMINAL_DIAGNOSTIC_MAX);
-        const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
-        writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
-        audit.observe("background-diagnostic", terminal.diagnostic, secrets);
+        if (exactTerminalChild) {
+          // Settlement failure is not permission to rewrite software partial or
+          // failed outcomes. Retain it separately and leave matching proof intact.
+          writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalStatus: "failed" }));
+          writePiTerminalStatus(deployDir, { type: "agent_end", stopReason: "error", error: reason, timestamp: now().toISOString() });
+          audit.observe("background-diagnostic", reason, secrets);
+        } else {
+          const terminal = finalizeRunnerFailure(config, deployDir, reason, secrets, now());
+          writePiSupervisorOwnership(ownershipPath, ownership("failed", { error: reason, terminalEvent: terminal.event, terminalStatus: terminal.status }));
+          audit.observe("background-diagnostic", terminal.diagnostic, secrets);
+        }
       }
     } finally {
       ensureTerminalRegistryMarker({ deploymentId: config.deploymentId, team: config.team });

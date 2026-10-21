@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { authenticateTicketWorktreeSelection, createPiHooks, deployWithPi, selec
 import { validateDeploymentCorrelationEvidence, validateReviewCheckoutCorrelationEvidence, type RuntimeName } from "@pa-platform/pa-core";
 import { deriveTreehouseLeaseHolder, MAX_TREEHOUSE_JSON_BYTES, TREEHOUSE_TIMEOUT_MS, type TreehouseCommandResult } from "../treehouse.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
+import { runPiManagedProcess } from "../adapter.js";
 
 function result(stdout: unknown, status = 0): TreehouseCommandResult {
   const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(typeof stdout === "string" ? stdout : JSON.stringify(stdout));
@@ -757,7 +758,8 @@ test("ticketed orchestrator acquires an exact free row and materializes the plan
   }
 });
 
-test("ticketed orchestrator retains dual-root identity through direct clean and approved-dirty continuations", async () => {
+for (const scenario of ["continuations", "legacy", "failed-dirty", "partial-commit", "missing-exit-proof", "spawn-throws"] as const) test(`ticketed orchestrator terminal integration: ${scenario}`, async () => {
+  const legacy = scenario === "legacy";
   const root = mkdtempSync(join(tmpdir(), "pi-treehouse-deploy-"));
   const config = join(root, "config");
   const teams = join(root, "teams");
@@ -778,7 +780,7 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
     "  - id: orchestrator", "    label: Orchestrator", "    require_ticket: true",
     "  - id: implement", "    label: Implement", "    require_ticket: true",
   ].join("\n") + "\n");
-  writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({ id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", sha: legacyHead, linkedAt: "2026-09-17T00:00:00Z", linkedBy: "legacy" }] }));
+  writeFileSync(join(tickets, "PAP-1.json"), JSON.stringify({ id: "PAP-1", project: "registered", title: "fixture", linkedBranches: [{ repo: "registered", branch: "feature/PAP-1-work", sha: legacyHead, ...(legacy ? {} : { state: "materialized", baseSha: legacyHead, headSha: legacyHead }), linkedAt: "2026-09-17T00:00:00Z", linkedBy: "fixture" }] }));
   const prior = Object.fromEntries(["PA_PLATFORM_CONFIG", "PA_PLATFORM_TEAMS", "PA_AI_USAGE_HOME", "PA_REGISTRY_DB", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR", "PA_TEAM", "PA_MODE", "PA_TICKET_ID", "PA_REPO", "PA_WORKTREE_ROOT", "PA_TREEHOUSE_LEASE_ID", "PA_TREEHOUSE_LEASE_HOLDER", "PA_TICKET_SLOT", "PA_REPOSITORY_PERMIT"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   const priorCwd = process.cwd();
   process.env["PA_PLATFORM_CONFIG"] = config;
@@ -788,10 +790,32 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
   process.chdir(repo);
   let spawned: SpawnOpts | undefined;
   let spawnCount = 0;
+  let fixtureExecutionError = "";
   const adapter: RuntimeAdapter & { preflight(): Promise<void>; allocateSessionId(): string } = {
     name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "session", preflight: async () => {},
     installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "stub" }), extractActivity: () => [],
-    spawn(opts) { spawned = opts; spawnCount += 1; return { sessionId: opts.sessionId ?? "session", exitCode: 0, metadata: { sessionId: opts.sessionId ?? "session" } }; },
+    async spawn(opts) {
+      spawned = opts; spawnCount += 1;
+      const id = opts.sessionId ?? "session";
+      // Exercise the production normal-exit collector and an actual disposable
+      // execution process; no synthetic PID/birth or success proof is supplied.
+      const parented = opts.executionPlan!.treehouse?.authority === "parented-implement";
+      if (parented && scenario === "spawn-throws") throw new Error("original ambiguous spawn failure");
+      const script = parented && scenario === "failed-dirty"
+        ? "require('node:fs').writeFileSync('README.md','failed authored work\\n');require('node:fs').writeFileSync('new file.txt','preserved\\n');process.exitCode=1;"
+        : parented && scenario === "partial-commit"
+          ? "require('node:fs').writeFileSync('README.md','partial authored work\\n');const cp=require('node:child_process');cp.execFileSync('git',['add','README.md']);cp.execFileSync('git',['commit','-m','partial fixture']);"
+          : "setTimeout(() => {}, 10)";
+      const terminal = await runPiManagedProcess([], opts.executionPlan!.worktreeRoot, { ...process.env, ...opts.env }, opts, id, [], {
+        spawnProcess: ((_file, _args, options) => spawn(process.execPath, ["-e", script], options)) as never,
+        onSpawn: opts.onPid,
+      });
+      if (parented && scenario === "partial-commit" && terminal.status !== 0) fixtureExecutionError = terminal.stderr;
+      if (parented && scenario === "partial-commit") appendRegistryEvent({ deployment_id: opts.deployId, team: "builder", event: "completed", status: "partial",
+        timestamp: new Date().toISOString(), summary: "original partial result", exit_code: 0 });
+      return { sessionId: id, exitCode: terminal.status ?? 1,
+        metadata: parented && scenario === "missing-exit-proof" ? { sessionId: id } : terminal.metadata };
+    },
     resume(opts) { return { sessionId: opts.sessionId, exitCode: 0, metadata: { sessionId: opts.sessionId } }; },
   };
   const leaseJson = { path: worktree, leased: true, lease_id: "lease-1", lease_holder: "pa:registered:PAP-1", leased_at: "2026-09-17T00:00:00Z" };
@@ -819,7 +843,7 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
     assert.equal(plan.environment.PA_TREEHOUSE_LEASE_ID, "lease-1");
     assert.equal(plan.treehouse?.leaseHolder, "pa:registered:PAP-1");
     assert.equal(plan.treehouse?.branch, "feature/PAP-1-work");
-    assert.equal(plan.treehouse?.baseSha, undefined, "immutable planning preserves the unknown legacy base");
+    assert.equal(plan.treehouse?.baseSha, legacy ? undefined : legacyHead, "immutable planning never invents a legacy base");
     assert.equal(plan.treehouse?.headSha, legacyHead);
     assert.equal(Object.isFrozen(plan.treehouse), true);
     const primer = readFileSync(spawned!.primerPath, "utf8");
@@ -828,13 +852,13 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
     assert.match(primer, new RegExp(`^cwd: ${escapeRegExp(worktree)}$`, "m"));
     assert.match(primer, new RegExp(`^repo: ${escapeRegExp(worktree)}$`, "m"));
     assert.match(primer, new RegExp(`^  PA_REPO: ${escapeRegExp(worktree)}$`, "m"));
-    assert.match(primer, new RegExp(`state=materialized, base=unknown, head=${legacyHead}`));
+    assert.match(primer, new RegExp(`state=materialized, base=${legacy ? "unknown" : legacyHead}, head=${legacyHead}`));
     assert.equal(git(["branch", "--show-current"], worktree), "feature/PAP-1-work");
     const persistedAfterLaunch = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ baseSha?: string; headSha: string }> };
-    assert.equal(persistedAfterLaunch.linkedBranches[0]?.baseSha, undefined);
+    assert.equal(persistedAfterLaunch.linkedBranches[0]?.baseSha, legacy ? undefined : legacyHead);
     assert.equal(persistedAfterLaunch.linkedBranches[0]?.headSha, legacyHead);
     const terminalStatus = queryDeploymentStatus(deployment.deploymentId!);
-    assert.equal(terminalStatus?.branch_base_sha, undefined, "registry terminal projection preserves the unknown base");
+    assert.equal(terminalStatus?.branch_base_sha, legacy ? undefined : legacyHead, "registry terminal projection preserves the original base");
     assert.equal(terminalStatus?.branch_head_sha, legacyHead);
     assert.equal(existsSync(repositoryTicketSlotPath(repo, "PAP-1")), false);
     const canonicalAfter = Buffer.concat([Buffer.from(git(["branch", "--show-current"], repo)), Buffer.from(git(["rev-parse", "HEAD"], repo)), execFileSync("git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: repo })]);
@@ -863,7 +887,8 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
     const parentSlotResult = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", deploymentId: parentDeploymentId, deploymentDirectory: parentDir });
     assert.equal(parentSlotResult.status, "acquired");
     if (parentSlotResult.status !== "acquired") return;
-    const parentLease = acquireRepositoryMutationLease({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, worktreeRoot: worktree, deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-1" });
+    const parentLease = acquireRepositoryMutationLease({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, worktreeRoot: worktree, deploymentId: parentDeploymentId, deploymentDirectory: parentDir, runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", ticket: "PAP-1", gitSnapshot: captureRepositoryGitSnapshot(worktree),
+      expectedGitDir: git(["rev-parse", "--absolute-git-dir"], worktree), expectedGitCommonDir: git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree) });
     assert.equal(parentLease.status, "acquired");
     if (parentLease.status !== "acquired") return;
     const linked = JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ branch: string; baseSha?: string; headSha: string }> };
@@ -921,6 +946,41 @@ test("ticketed orchestrator retains dual-root identity through direct clean and 
         io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) },
         hooks: createPiHooks(adapter, { treehouse, observeOperation: (operation) => { operations[operation] += 1; } }),
       });
+      if (legacy) {
+        assert.equal(code, 1, "unknown historical base cannot be invented for settlement");
+        assert.equal(spawnCount, beforeSpawns + 1);
+        assert.equal(queryDeploymentStatus(spawned!.deployId)?.status, "success", "software result is not relabelled");
+        assert.match(stderr.join("\n"), /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), true, "sole proof is retained");
+        assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
+        assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
+        assert.equal(queryDeploymentStatus(parentDeploymentId)?.branch_base_sha, undefined);
+        assert.equal((JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ baseSha?: string }> }).linkedBranches[0]?.baseSha, undefined);
+        return; // No second child, dirty approval or private historical repair.
+      }
+      if (scenario !== "continuations") {
+        const blocked = scenario === "missing-exit-proof" || scenario === "spawn-throws";
+        assert.equal(code, blocked || scenario === "failed-dirty" ? 1 : 0, `${stderr.join("\n")} ${fixtureExecutionError}`);
+        assert.equal(spawnCount, beforeSpawns + 1);
+        assert.equal(queryDeploymentStatus(spawned!.deployId)?.status,
+          scenario === "failed-dirty" ? "failed" : scenario === "partial-commit" ? "partial" : scenario === "spawn-throws" ? "crashed" : "success");
+        const final = captureRepositoryGitSnapshot(worktree);
+        const owner = inspectRepositoryMutationLease(repo, { worktreeRoot: worktree, getProcessFingerprint: readProcessFingerprint }).lease!;
+        assert.equal(existsSync(repositoryMutationBorrowerPath(worktree)), blocked);
+        assert.deepEqual(readFileSync(parentSlotPath), parentSlotBytes);
+        if (blocked) {
+          assert.deepEqual(readFileSync(parentLeasePath), parentLeaseBytes);
+          assert.match(stderr.join("\n"), /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        } else {
+          assert.deepEqual(owner.authorityGitSnapshot, final);
+          assert.equal(owner.authorityChildDeploymentId, spawned!.deployId);
+          assert.equal(queryDeploymentStatus(parentDeploymentId)?.branch_head_sha, final.head);
+          assert.equal((JSON.parse(readFileSync(join(tickets, "PAP-1.json"), "utf8")) as { linkedBranches: Array<{ headSha: string }> }).linkedBranches[0]?.headSha, final.head);
+          assert.equal(final.dirty, scenario === "failed-dirty");
+          if (scenario === "partial-commit") assert.notEqual(final.head, legacyHead);
+        }
+        return;
+      }
       assert.equal(code, 0, stderr.join("\n"));
       assert.equal(spawnCount, beforeSpawns + 1, `${selector}: exactly one child spawn`);
       const plan = spawned?.executionPlan;

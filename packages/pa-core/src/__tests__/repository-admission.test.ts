@@ -45,6 +45,14 @@ import {
 } from "../index.js";
 import { installGitStateRecorder } from "../../../../test/helpers/git-state-recorder.js";
 
+// Test processes never inherit live deployment/task/registry authority.
+for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
+const isolatedState = mkdtempSync(join(tmpdir(), "pa-admission-private-tests-"));
+process.env["PA_AI_USAGE_HOME"] = join(isolatedState, "usage");
+process.env["PA_REGISTRY_DB"] = join(isolatedState, "registry.db");
+process.env["PA_PLATFORM_CONFIG"] = join(isolatedState, "config");
+test.after(() => rmSync(isolatedState, { recursive: true, force: true }));
+
 const snapshot: RepositoryGitSnapshot = Object.freeze({
   branch: "feature/PAP-191-ppa-parent-lease-inheritance",
   head: "a".repeat(40),
