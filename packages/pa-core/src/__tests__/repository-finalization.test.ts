@@ -64,7 +64,7 @@ function fixture(outcome: "success" | "failed" | "partial" = "failed") {
     expectedGitDir: gitDir, expectedGitCommonDir: commonDir, parentDeploymentId: "d-238aaa", deploymentId: "d-238bbb",
     deploymentDirectory: join(dir, "child"), runtime: "pi" as const, team: "builder", mode: "implement", launchMode: "background" as const,
     ticket: "PAP-238", branch: launch.branch, timeoutSeconds: 60, pid: runnerProcess.pid, processFingerprint: runnerProcess,
-    gitSnapshot: launch, dependencies };
+    gitSnapshot: launch, settlementMutationPaths: scope, dependencies };
   const registration = registerRepositoryMutationBorrower(borrowerOptions); assert.equal(registration.status, "registered");
   if (registration.status !== "registered") throw new Error("fixture borrower rejected");
   const binding = { repo: worktree, repo_root: canonical, worktree_root: worktree, ticket_id: "PAP-238", runtime: "pi" as const, binary: "ppa",
@@ -79,7 +79,7 @@ function fixture(outcome: "success" | "failed" | "partial" = "failed") {
   writeFileSync(ticketPath, JSON.stringify({ branch: launch.branch, baseSha: launch.head, headSha: launch.head }));
   let ticketWrites = 0;
   const host: RepositoryChildSettlementHost = {
-    verifyExecution: () => ({ termination: "normal-exit", rawOutcome: { source: "background-supervisor", status: outcome === "partial" ? "failed" : outcome, exitCode: outcome === "success" ? 0 : 1 }, processes: [executionProcess], approvedMutationPaths: scope }),
+    verifyExecution: () => ({ termination: "normal-exit", rawOutcome: { source: "background-supervisor", status: outcome === "partial" ? "failed" : outcome, exitCode: outcome === "success" ? 0 : 1 }, processes: [executionProcess] }),
     readTicket: () => JSON.parse(readFileSync(ticketPath, "utf8")) as ReturnType<RepositoryChildSettlementHost["readTicket"]>,
     publishTicket: (next) => {
       const before = host.readTicket();
@@ -203,7 +203,7 @@ for (const condition of ["live-runner", "uncertain-runner", "reused-runner", "li
     if (condition === "reused-runner") f.running.set(runnerProcess.pid, { ...runnerProcess, startTimeTicks: "999" });
     if (condition === "live-execution") f.running.set(executionProcess.pid, executionProcess);
     if (condition === "reused-execution") f.running.set(executionProcess.pid, { ...executionProcess, startTimeTicks: "999" });
-    if (condition === "missing-execution") f.host.verifyExecution = () => ({ termination: "normal-exit", rawOutcome: { source: "foreground", status: "failed", exitCode: 1 }, processes: [], approvedMutationPaths: scope });
+    if (condition === "missing-execution") f.host.verifyExecution = () => ({ termination: "normal-exit", rawOutcome: { source: "foreground", status: "failed", exitCode: 1 }, processes: [] });
     if (condition === "dead-parent") f.running.delete(parentProcess.pid);
     if (condition === "review") writeFileSync(join(f.gitDir, "pa-repository-review.reservation.json"), "blocking review");
     if (condition === "implement-owner") writeFileSync(join(f.gitDir, "pa-repository-mutation.implement.lease.json"), "blocking owner");
@@ -229,7 +229,8 @@ test("dirty settlement grants no approval; a separately exact fresh receipt is c
     f.dirty(); assert.equal(f.apply().outcome, "reconciled");
     const final = captureRepositoryGitSnapshot(f.worktree);
     f.running.set(runnerProcess.pid, runnerProcess);
-    const next = { ...f.borrowerOptions, deploymentId: "d-238ccc", gitSnapshot: final, expectedGitSnapshot: final };
+    const { settlementMutationPaths: _cleanScope, ...borrowerOptions } = f.borrowerOptions;
+    const next = { ...borrowerOptions, deploymentId: "d-238ccc", gitSnapshot: final, expectedGitSnapshot: final };
     assert.equal(registerRepositoryMutationBorrower(next).status, "rejected");
     const inspection = inspectRepositoryMutationLease(f.canonical, { worktreeRoot: f.worktree, getProcessFingerprint: f.dependencies.getProcessFingerprint! });
     const approvalPath = publishRepositoryDirtyBorrowApproval({ schemaVersion: 1, receiptId: "fresh-one-use-receipt", approvalReference: "fixture-operator-approval",
@@ -378,7 +379,7 @@ test("a registry successor between intent and lease cannot advance the old paren
   } finally { f.dispose(); }
 });
 
-test("the terminal host cannot widen an existing retained dirty approval scope", () => {
+test("retained settlement scope cannot widen an existing consumed dirty approval", () => {
   const f = fixture();
   try {
     // Synthetic protected borrower with a narrower consumed receipt. The host's
@@ -403,7 +404,7 @@ test("two independent processes serialize settlement and later replay without du
       const parent = ${JSON.stringify(parentProcess)};
       const result = reconcileRepositoryTerminalChild({...${JSON.stringify(packet)},
         dependencies:{getProcessFingerprint:pid=>pid===parent.pid?parent:undefined,isProcessAlive:pid=>pid===parent.pid,getCurrentProcessFingerprint:()=>undefined,isDeploymentRunning:id=>id==='d-238aaa'},
-        host:{verifyExecution:()=>({termination:'normal-exit',rawOutcome:{source:'background-supervisor',status:'failed',exitCode:1},processes:[${JSON.stringify(executionProcess)}],approvedMutationPaths:${JSON.stringify(scope)}}),
+        host:{verifyExecution:()=>({termination:'normal-exit',rawOutcome:{source:'background-supervisor',status:'failed',exitCode:1},processes:[${JSON.stringify(executionProcess)}]}),
           readTicket:()=>JSON.parse(readFileSync(${JSON.stringify(f.ticketPath)},'utf8')),
           publishTicket:next=>{const path=${JSON.stringify(f.ticketPath)}; const before=JSON.parse(readFileSync(path,'utf8')); if(before.headSha===next.headSha)return; if(before.headSha!==next.expectedHeadSha)throw Error('CAS'); writeFileSync(path,JSON.stringify({branch:next.branch,baseSha:next.baseSha,headSha:next.headSha}));}}});
       console.log(JSON.stringify(result));`;

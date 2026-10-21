@@ -21,6 +21,8 @@ export interface MaterializeTicketBranchOptions {
   preparedCapacityOwner?: PreparedTicketCapacityTransaction;
   /** Durable operation identity, required for exact post-crash branch/ticket reconciliation. */
   preparationOperationId?: string;
+  /** Trusted terminal owner: exact materialized predecessor, never CLI inputs. */
+  settlement?: { branch: string; baseSha: string; expectedHeadSha: string; headSha: string };
 }
 
 export interface MaterializedTicketBranch {
@@ -38,7 +40,10 @@ export function refreshTicketLinkedBranchHead(options: MaterializeTicketBranchOp
   const worktreeRoot = exactPhysicalPath(options.worktreeRoot, "Treehouse worktree root");
   authenticateLinkedWorktree(options.canonicalRepoKey, canonicalRoot, worktreeRoot);
   const store = options.ticketStore ?? new TicketStore();
-  return withRepositoryTicketTransaction(canonicalRoot, () => {
+  const transaction = <T>(action: () => T): T => options.preparedCapacityOwner
+    ? withPreparedRepositoryTicketOwner(options.preparedCapacityOwner, canonicalRoot, action)
+    : withRepositoryTicketTransaction(canonicalRoot, action);
+  return transaction(() => {
     authenticateLinkedWorktree(options.canonicalRepoKey, canonicalRoot, worktreeRoot);
     const ticket = store.get(options.ticketId);
     if (!ticket) throw diagnostic(`ticket ${options.ticketId} does not exist`, "restore the durable ticket before retrying");
@@ -46,6 +51,11 @@ export function refreshTicketLinkedBranchHead(options: MaterializeTicketBranchOp
     if (linked.state !== "materialized" || !linked.headSha) throw diagnostic("ticket branch is not materialized", "materialize the planned branch through the authenticated checkout flow");
     if (symbolicBranch(runGit, worktreeRoot) !== linked.branch) throw diagnostic("selected checkout is not on the exact ticket branch", "switch only through authenticated ticket materialization");
     const headSha = fullCommit(runGit, worktreeRoot, "HEAD^{commit}", "selected ticket HEAD");
+    const settlement = options.settlement;
+    if (settlement && (linked.branch !== settlement.branch || linked.baseSha !== settlement.baseSha
+      || (linked.headSha !== settlement.expectedHeadSha && linked.headSha !== settlement.headSha) || headSha !== settlement.headSha)) {
+      throw diagnostic("terminal settlement ticket predecessor conflicts", "resume only the matching retained settlement without replacing newer ticket evidence");
+    }
     const branchHead = fullCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}^{commit}`, "ticket branch");
     if (headSha !== branchHead || (linked.baseSha && !isAncestor(runGit, canonicalRoot, linked.baseSha, headSha)) || !isAncestor(runGit, canonicalRoot, linked.headSha, headSha)) {
       throw diagnostic("ticket branch identity, ancestry, or authenticated head evidence is incompatible", "preserve the branch and reconcile replacement or drift under operator control");

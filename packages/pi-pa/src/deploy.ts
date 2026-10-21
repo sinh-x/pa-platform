@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type RepositoryChildSettlementResult } from "@pa-platform/pa-core";
 import { createHash } from "node:crypto";
 import { ReadOnlyHelperFailure, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readReviewEvidenceFile, type ReadOnlyHelperCapability, type ReadOnlyHelperRole, type RepositoryMutationLease } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
@@ -1079,9 +1080,12 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   let activeRepositoryLease: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; slot?: "orchestrator" | "implement"; ownershipToken: string; ticketSlot?: RepositoryTicketSlotHandoff } | undefined;
   let terminalBranchEvidence: { branchState: "materialized"; branchBaseSha?: string; branchHeadSha: string } | undefined;
   let activeRepositoryBorrower: { canonicalRepoRoot: string; worktreeRoot?: string; repositoryGitDir: string; repositoryGitCommonDir: string; borrowerToken: string; parentDeploymentId: string; deploymentId: string; approvedMutationPaths?: string[] } | undefined;
+  let terminalExecution: { fingerprint: ProcessFingerprint; exitCode: number } | undefined;
+  let observedRuntimeFingerprint: ProcessFingerprint | undefined;
+  let runtimeLaunchAttempted = false;
   const finalizeActiveRepositoryAuthority = async (advanceParentAuthority: boolean): Promise<string | undefined> => {
     const failures: string[] = [];
-    if (plan.treehouse && plan.ticket) {
+    if (plan.treehouse && plan.ticket && plan.treehouse.authority !== "parented-implement") {
       try {
         const refreshed = refreshTicketLinkedBranchHead({ canonicalRepoKey: plan.repoKey, canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, ticketId: plan.ticket });
         terminalBranchEvidence = { branchState: "materialized", ...(refreshed.baseSha ? { branchBaseSha: refreshed.baseSha } : {}), branchHeadSha: refreshed.headSha! };
@@ -1090,7 +1094,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       }
     }
     const borrowed = activeRepositoryBorrower;
-    if (borrowed) {
+    if (borrowed && plan.treehouse?.authority === "parented-implement" && runtimeLaunchAttempted) {
+      if (!terminalExecution || !plan.ticket) failures.push(terminalSettlementUnavailable());
+      else {
+        const settlement = reconcilePiTerminalChild({ ...borrowed, canonicalRepoKey: plan.repoKey, ticket: plan.ticket,
+          worktreeRoot: borrowed.worktreeRoot ?? borrowed.canonicalRepoRoot, childDeploymentId: borrowed.deploymentId,
+          execution: { source: "foreground", exitCode: terminalExecution.exitCode, processes: [terminalExecution.fingerprint] } });
+        if (settlement.outcome === "blocked") failures.push(settlement.diagnostic ?? terminalSettlementUnavailable());
+        else activeRepositoryBorrower = undefined;
+      }
+    } else if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
         worktreeRoot: borrowed.worktreeRoot,
@@ -1153,6 +1166,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   };
   emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}` : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
+    // The service authenticates durable terminal evidence, never a success-only
+    // Boolean. Publish original outcome first and keep it even if handover blocks.
+    const exactChild = activeRepositoryBorrower && plan.treehouse?.authority === "parented-implement" && runtimeLaunchAttempted;
+    if (exactChild) {
+      reconcileTerminalRegistryEvent(kind === "completed"
+        ? { deployment_id: deploymentId, team: team.name, event: "completed", timestamp: new Date().toISOString(), status, summary: reason, exit_code: exitCode,
+          ...(logFile ? { log_file: logFile } : {}), ...(staged?.rating ? { rating: staged.rating } : {}), ...(staged?.fallback ? { fallback: true } : {}), ...registryCorrelation(plan) }
+        : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp: new Date().toISOString(), error: reason, exit_code: exitCode, ...registryCorrelation(plan) });
+      if (kind !== "completed") terminalExecution = undefined;
+    }
     const containmentFailure = await finalizeActiveRepositoryAuthority(kind === "completed" && status === "success");
     const safeReason = boundedDiagnostic(containmentFailure ?? reason, env, 2000);
     const resolvedTerminalStatus = containmentFailure ? "failed" : status;
@@ -1163,9 +1186,9 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       : { deployment_id: deploymentId, team: team.name, event: "crashed", timestamp, error: safeReason, exit_code: consistentExitCode, ...registryCorrelation(plan, terminalBranchEvidence) };
     // Reconcile every terminal observation so a later causal failure can replace
     // success/partial while an existing failure remains sticky and exactly once.
-    const authoritative = reconcileTerminalRegistryEvent(requested).event;
+    const authoritative = exactChild ? getDeploymentEvents(deploymentId).find((event) => event.event === "completed" || event.event === "crashed")! : reconcileTerminalRegistryEvent(requested).event;
     observe("registry-diagnostic", authoritative, env);
-    const outcome = registryTerminalOutcome(authoritative, env);
+    const outcome = containmentFailure ? { status: "failed" as const, reason: safeReason } : registryTerminalOutcome(authoritative, env);
     const statusRecord = terminalStatus(outcome.status, outcome.reason, authoritative.timestamp);
     writePiTerminalStatus(deployDir, statusRecord);
     observe("terminal-status", statusRecord, env);
@@ -1377,6 +1400,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     const publishPid = (pid: number): void => {
       if (!Number.isInteger(pid) || pid <= 0 || publishedPid !== undefined) return;
       emitPidEvent({ deploymentId, team: team.name, pid });
+      observedRuntimeFingerprint = readProcessFingerprint(pid);
       publishedPid = pid;
     };
     const spawnOptions = { primerPath, deployId: deploymentId, mode: request.background ? "background" : "foreground", model, ...(request.background ? { timeoutMs: plan.timeoutSeconds * 1000 } : {}), logFile: resolve(deployDir, "pi.log"), env, sessionId, onPid: publishPid, ...(activeRepositoryLease ? { repositoryLease: activeRepositoryLease } : {}), ...(activeRepositoryBorrower ? { repositoryBorrower: activeRepositoryBorrower } : {}), executionPlan: plan } as const;
@@ -1390,8 +1414,15 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     // Release the boundary mutex before supervisor startup; the durable reservation remains blocking.
     dependencies.observeOperation?.("runtime-spawn");
     if (activeReviewReservation) reviewRuntimeTerminated = false;
+    // Before this boundary the launcher can still cancel its own unstarted
+    // borrower through existing matching cleanup. After it, absent native exit
+    // proof must retain the borrower, including thrown/ambiguous spawn failures.
+    runtimeLaunchAttempted = true;
     const result = prior ? await adapter.resume(spawnOptions) : await adapter.spawn(spawnOptions);
     reviewRuntimeTerminated = result.metadata?.["cleanupVerified"] !== false && result.metadata?.["pending"] !== true;
+    const rawExitCode = result.metadata?.["rawExitCode"];
+    if (reviewRuntimeTerminated && observedRuntimeFingerprint && result.metadata?.["normalExit"] === true
+      && typeof rawExitCode === "number" && ![124, 130, 137, 143].includes(rawExitCode)) terminalExecution = { fingerprint: observedRuntimeFingerprint, exitCode: rawExitCode };
     if (result.exitCode !== 0) return completeFailure(result.errorMessage ?? `pi exited with code ${result.exitCode}`, result.exitCode);
     const terminalError = typeof result.metadata?.["terminalError"] === "string" ? result.metadata["terminalError"] : undefined;
     if (terminalError) return completeFailure(terminalError);
@@ -1469,6 +1500,44 @@ function readStagedForegroundCompletion(deployDir: string, deploymentId: string,
     audit.observe("deploy-diagnostic", diagnostic, secrets);
     return undefined;
   }
+}
+
+/** Shared trusted terminal adapter. Capacity -> worktree is the established lock
+ * order; ticket CAS reuses that live owner instead of recursively locking. No
+ * request/CLI actor, status label or final inventory supplies scope authority. */
+export function reconcilePiTerminalChild(input: {
+  canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
+  repositoryGitDir: string; repositoryGitCommonDir: string;
+  parentDeploymentId: string; childDeploymentId: string; ticket: string; borrowerToken: string;
+  execution: { source: "foreground" | "background-supervisor"; exitCode: number; processes: readonly ProcessFingerprint[] };
+}): RepositoryChildSettlementResult {
+  try {
+    return withPreparedTicketCapacity({ canonicalRepoKey: input.canonicalRepoKey, canonicalRepoRoot: input.canonicalRepoRoot }, (owner) => {
+      const store = new TicketStore();
+      return reconcileRepositoryTerminalChild({ ...input, host: {
+        verifyExecution: () => ({ termination: "normal-exit", rawOutcome: { source: input.execution.source,
+          status: input.execution.exitCode === 0 ? "success" : "failed", exitCode: input.execution.exitCode }, processes: input.execution.processes }),
+        readTicket: () => {
+          const ticket = store.get(input.ticket); if (!ticket) throw new Error("terminal ticket unavailable");
+          const linked = requireTicketLinkedBranch(ticket, input.canonicalRepoKey);
+          if (linked.state !== "materialized" || !linked.baseSha || !linked.headSha) throw new Error("terminal materialization unavailable");
+          return { branch: linked.branch, baseSha: linked.baseSha, headSha: linked.headSha };
+        },
+        publishTicket: (next) => { refreshTicketLinkedBranchHead({ canonicalRepoKey: input.canonicalRepoKey, canonicalRepoRoot: input.canonicalRepoRoot,
+          worktreeRoot: input.worktreeRoot, ticketId: input.ticket, ticketStore: store, preparedCapacityOwner: owner,
+          settlement: { branch: next.branch, baseSha: next.baseSha, expectedHeadSha: next.expectedHeadSha, headSha: next.headSha } }); },
+      } });
+    });
+  } catch {
+    return { schemaVersion: "pa-child-reconciliation/v1", outcome: "blocked", projection: { lease: false, registry: false, ticket: false }, cleanup: false,
+      diagnostic: terminalSettlementUnavailable() };
+  }
+}
+export function terminalSettlementUnavailable(): string {
+  return formatBoundedFiveFieldDiagnostic({ condition: "terminal child factual settlement blocked", source: "trusted Pi terminal executor",
+    reason: "matching normal-exit, process-birth, scope or ticket publication evidence is unavailable",
+    correction: "preserve original outcomes, checkout and protected matching evidence; do not run legacy cleanup",
+    resumeAction: "reconcile only the same proved settlement; no replacement child or approval replay is authorized" });
 }
 
 function stagedCompletionSummary(status: PiForegroundCompletion["status"]): string {

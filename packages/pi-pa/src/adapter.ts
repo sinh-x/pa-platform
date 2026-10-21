@@ -652,7 +652,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   const child = spawnProcess("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let completion!: Promise<PiCommandResult>;
   completion = new Promise((resolveResult) => {
-    let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
+    let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let normalExit = false; let rawExitCode: number | undefined; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
     const protocol = new PiToolProtocolInspector();
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
     const settle = (status: number | null, error?: Error): void => {
@@ -660,7 +660,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       if (timer) clearTimer(timer);
       if (onShutdown) supervision.shutdownSignal?.removeEventListener("abort", onShutdown);
       settled = true;
-      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const requestCleanup = (status: number, error: Error): void => {
       if (settled || cleanupPending) return;
@@ -698,7 +698,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
     };
     const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(stderr + text, MAX_STDERR); };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
-    child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code) => { directClosed = true; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
+    child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code, signal) => { directClosed = true; normalExit = !cleanupPending && code !== null && signal == null; rawExitCode = code ?? undefined; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
     if (supervision.shutdownSignal) {
       onShutdown = () => {
@@ -1109,7 +1109,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const setTimer = supervision.setTimeout ?? ((callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds));
   const clearTimer = supervision.clearTimeout ?? ((timeout: NodeJS.Timeout) => clearTimeout(timeout));
   const processExists = supervision.processExists ?? piProcessExists;
-  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let gracefulExitTimer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined; let processExitObservedAt: number | undefined; let lastInterruptAt: number | undefined; let inputLine = "";
+  let stdout = ""; let carry = ""; let terminalError = ""; let settled = false; let exited = false; let evidenceFinished = false; let normalExit = false; let rawExitCode: number | undefined; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let gracefulExitTimer: NodeJS.Timeout | undefined; let cleanupStatus = 1; let cleanupError: Error | undefined; let processExitObservedAt: number | undefined; let lastInterruptAt: number | undefined; let inputLine = "";
   const previousRaw = input.isTTY ? input.isRaw : undefined;
   const previousFlowing = input.readableFlowing;
   let inputFlowOwned = false;
@@ -1137,7 +1137,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       const restoreError = restoreTerminal();
       const finalError = error ?? restoreError;
       const finalStatus = finalError && status === 0 ? 1 : status;
-      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: pty.pid, sessionId: id, ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
+      resolveResult({ status: finalStatus, stdout, stderr: "", ...(finalError ? { spawnError: finalError } : {}), metadata: { pid: pty.pid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
     const finishEvidence = (): void => {
       if (evidenceFinished) return;
@@ -1166,6 +1166,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const finishExit = (exitCode: number, signal?: number): void => {
       if (settled || exited) return;
       exited = true;
+      normalExit = !cleanupPending && !signal; rawExitCode = exitCode;
       if (cleanupPending) {
         if (exitCode !== 0 && cleanupStatus === 0) {
           cleanupStatus = exitCode;

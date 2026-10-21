@@ -224,6 +224,8 @@ export interface RepositoryMutationLease {
   readonly branchTransitioned?: true;
 }
 
+export type RepositoryChildMutationScope = { readonly kind: "repository" } | { readonly kind: "paths"; readonly paths: readonly string[] };
+
 /** Separate evidence for the one direct child borrowing a version 1 parent lease. */
 export interface RepositoryMutationBorrower {
   readonly schemaVersion: 1;
@@ -245,6 +247,8 @@ export interface RepositoryMutationBorrower {
   readonly registeredAt: string;
   readonly timeoutSeconds: number;
   readonly launchGitSnapshot: RepositoryGitSnapshot;
+  /** Admission-owned scope, independent of outcome/final inventory. Missing on legacy borrowers. */
+  readonly settlementMutationScope?: RepositoryChildMutationScope;
   readonly repositoryMetadataIdentity?: string;
   readonly approvedMutationPaths?: readonly string[];
   readonly dirtyApprovalReceiptId?: string;
@@ -317,6 +321,8 @@ export interface RegisterRepositoryMutationBorrowerOptions {
   readonly expectedGitSnapshot?: RepositoryGitSnapshot;
   /** Deterministic seam for the mutex-held Git snapshot. */
   readonly gitSnapshot?: RepositoryGitSnapshot;
+  /** Trusted launcher-only narrowing of ordinary clean repository authority. Never a CLI/environment authority input. */
+  readonly settlementMutationPaths?: readonly string[];
   /** Exact parent-owned one-use approval path, required only for dirty admission. */
   readonly dirtyApprovalPath?: string;
   readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
@@ -1279,6 +1285,10 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       dirtyApprovalReceiptId = approval.receiptId;
     }
 
+    if (options.settlementMutationPaths !== undefined && (!options.settlementMutationPaths.length || !isExactPathArray(options.settlementMutationPaths, worktree)
+      || (approvedMutationPaths && (options.settlementMutationPaths.length !== approvedMutationPaths.length
+        || options.settlementMutationPaths.some((path) => !approvedMutationPaths.includes(path)))))) return reject("approved-path-containment", "trusted launch scope conflicts with the admitted exact path authority");
+
     if (linked) {
       const implementLeasePath = repositoryMutationLeasePath(worktree, "implement");
       const implementInspection = inspectLeaseUnlocked(root, implementLeasePath, dependencies.getProcessFingerprint);
@@ -1316,6 +1326,8 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       registeredAt: dependencies.now().toISOString(),
       timeoutSeconds: options.timeoutSeconds,
       launchGitSnapshot: gitSnapshot,
+      settlementMutationScope: approvedMutationPaths || options.settlementMutationPaths
+        ? { kind: "paths" as const, paths: [...(approvedMutationPaths ?? options.settlementMutationPaths!)] } : { kind: "repository" as const },
       ...(lease.repositoryMetadataIdentity ? { repositoryMetadataIdentity: lease.repositoryMetadataIdentity } : {}),
       ...(approvedMutationPaths ? { approvedMutationPaths } : {}),
       ...(dirtyApprovalReceiptId ? { dirtyApprovalReceiptId } : {}),
@@ -1701,7 +1713,6 @@ export interface RepositoryChildSettlementHost {
     readonly termination: "normal-exit";
     readonly rawOutcome: { readonly source: "foreground" | "background-supervisor"; readonly status: "success" | "partial" | "failed"; readonly exitCode: number };
     readonly processes: readonly ProcessFingerprint[];
-    readonly approvedMutationPaths: readonly string[];
   };
   readTicket(): { readonly branch: string; readonly baseSha: string; readonly headSha: string };
   publishTicket(input: { readonly branch: string; readonly baseSha: string; readonly expectedHeadSha: string; readonly headSha: string; readonly settlementDigest: string }): void;
@@ -1779,7 +1790,7 @@ function readSettlementRecord(path: string): RepositoryChildSettlementRecord {
     || !["foreground", "background-supervisor"].includes(intent.execution.rawOutcome.source)
     || !["success", "partial", "failed"].includes(intent.execution.rawOutcome.status) || !Number.isInteger(intent.execution.rawOutcome.exitCode)
     || !Array.isArray(intent.execution.processes) || !intent.execution.processes.every(isProcessFingerprint)
-    || !Array.isArray(intent.execution.approvedMutationPaths) || !intent.execution.approvedMutationPaths.every((path) => typeof path === "string")
+    || !isChildMutationScope(intent.borrower.settlementMutationScope, intent.borrower.worktreeRoot ?? intent.borrower.canonicalRepoRoot)
     || !validTimestamp(intent.createdAt) || !["intent", "lease", "registry", "ticket", "published", "cleanup", "complete"].includes(value.stage)
     || !/^[0-9a-f]{64}$/.test(value.digest) || value.digest !== settlementHash(intent)
     || intent.terminal?.event !== "completed" || intent.terminal.deployment_id !== intent.borrower.deploymentId
@@ -1878,7 +1889,7 @@ export function reconcileRepositoryTerminalChild(options: {
           || !["success", "partial", "failed"].includes(execution.rawOutcome.status) || !Number.isInteger(execution.rawOutcome.exitCode)
           || [124, 130, 137, 143].includes(execution.rawOutcome.exitCode) || !execution.processes.length || !execution.processes.every((process) => isProcessFingerprint(process)
           && dependencies.getProcessFingerprint(process.pid) === undefined && !dependencies.isProcessAlive(process.pid))
-          || !execution.approvedMutationPaths.length || !isExactPathArray(execution.approvedMutationPaths, worktree)) throw new Error("execution termination or retained scope unavailable");
+          || !isChildMutationScope(borrower.settlementMutationScope, worktree)) throw new Error("execution termination or retained scope unavailable");
         const registry = readParentChildSettlementRegistry({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree,
           parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head });
         const parentValue = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
@@ -1910,14 +1921,15 @@ export function reconcileRepositoryTerminalChild(options: {
           || !repositoryGitSnapshotsEqual(intent.finalSnapshot, finalSnapshot)) throw new Error("retained evidence or current Git drift");
         // Preserve even noncompliant observed facts in the intent, but never
         // publish usable authority or clean up its blocking record.
-        const approved = new Set(execution.approvedMutationPaths);
-        if (borrower.approvedMutationPaths && (borrower.approvedMutationPaths.length !== approved.size
+        const scope = borrower.settlementMutationScope!;
+        const approved = scope.kind === "paths" ? new Set(scope.paths) : undefined;
+        if (borrower.approvedMutationPaths && (!approved || borrower.approvedMutationPaths.length !== approved.size
           || borrower.approvedMutationPaths.some((path) => !approved.has(path)))) throw new Error("original approved scope conflict");
-        if (finalSnapshot.statusEntries.some((entry) => entry.kind === "unmerged" || !approved.has(entry.path)
-          || (entry.sourcePath !== undefined && !approved.has(entry.sourcePath)) || hasSymlinkTraversal(worktree, entry.path)
-          || (entry.sourcePath !== undefined && hasSymlinkTraversal(worktree, entry.sourcePath)))) throw new Error("final inventory outside retained approved scope");
+        const allowed = (path: string) => isExactPathArray([path], worktree) && (!approved || approved.has(path)) && !hasSymlinkTraversal(worktree, path);
+        if (finalSnapshot.statusEntries.some((entry) => entry.kind === "unmerged" || !allowed(entry.path)
+          || (entry.sourcePath !== undefined && !allowed(entry.sourcePath)))) throw new Error("final inventory outside retained approved scope");
         const changedPaths = splitOptionalNulPaths(gitBytes(dependencies.runGit(["diff", "--name-only", "--no-renames", "-z", borrower.launchGitSnapshot.head, finalSnapshot.head, "--"], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir })));
-        if (changedPaths.some((path) => !approved.has(path) || hasSymlinkTraversal(worktree, path))) throw new Error("committed inventory outside retained approved scope");
+        if (changedPaths.some((path) => !allowed(path))) throw new Error("committed inventory outside retained approved scope");
         dependencies.runGit(["merge-base", "--is-ancestor", intent.baseSha, finalSnapshot.head], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
         dependencies.runGit(["merge-base", "--is-ancestor", borrower.launchGitSnapshot.head, finalSnapshot.head], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
         const advanced = settlementAdvancedParent(intent);
@@ -2539,6 +2551,13 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && (row["branchTransitioned"] === undefined || row["branchTransitioned"] === true);
 }
 
+function isChildMutationScope(value: unknown, worktree: string): value is RepositoryChildMutationScope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return row["kind"] === "repository" ? Object.keys(row).length === 1
+    : row["kind"] === "paths" && Object.keys(row).length === 2 && Array.isArray(row["paths"]) && row["paths"].length > 0 && isExactPathArray(row["paths"], worktree);
+}
+
 function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutationBorrower {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
@@ -2565,6 +2584,7 @@ function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutati
     && Number(row["timeoutSeconds"]) >= MIN_BORROWER_TIMEOUT_SECONDS
     && Number(row["timeoutSeconds"]) <= MAX_BORROWER_TIMEOUT_SECONDS
     && isGitSnapshot(row["launchGitSnapshot"])
+    && (row["settlementMutationScope"] === undefined || isChildMutationScope(row["settlementMutationScope"], (row["worktreeRoot"] ?? row["canonicalRepoRoot"]) as string))
     && (row["repositoryMetadataIdentity"] === undefined || (typeof row["repositoryMetadataIdentity"] === "string" && /^[0-9a-f]{64}$/.test(row["repositoryMetadataIdentity"])))
     && (row["approvedMutationPaths"] === undefined || isExactPathArray(row["approvedMutationPaths"], (row["worktreeRoot"] ?? row["canonicalRepoRoot"]) as string))
     && (row["dirtyApprovalReceiptId"] === undefined || boundedString(row["dirtyApprovalReceiptId"]))
