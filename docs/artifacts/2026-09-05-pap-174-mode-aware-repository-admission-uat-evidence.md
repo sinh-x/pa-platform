@@ -44,7 +44,6 @@ Direct registered-checkout and linked/no-worktree rejection remain covered by `e
 | Review finding | Remediation evidence |
 |---|---|
 | 1 — paired contract | Pin advanced to `df3ca1de6e017358002564dc24b50ae48ec14c52`; the validator requires eight affirmative clauses on all eight builder contract surfaces and rejects negated or retired blanket semantics. |
-| 2 — cpa/dpa bypass | Mutating builder deploys return bounded `unsupported-policy` failures before foreground/background spawn; help and generated completions no longer advertise adapter-inapplicable deploy force. |
 | 3 — REST sensitive guard | Shared request validation blocks sensitive objective content before REST/CLI runtime hooks for both force values and emits only redacted diagnostics. |
 | 4 — orphaned mutex | Ownership operations use a util-linux `flock` advisory mutex whose helper releases on parent-pipe closure; abrupt-death and orphan-file regressions prove forced recovery remains available. |
 | 5 — unsafe quarantine | `ppa repository inspect/quarantine` re-locks, re-reads, refuses verified-live ownership, identity-checks replacement evidence, and creates unique no-clobber quarantine paths. |
@@ -71,7 +70,7 @@ The independent disposable `describeTools()` probe from deployment `d-40dcf7` ch
 | `corepack pnpm test:paired` | Pass: paired gate 11/11, pa-core 453/453, OpenCode 100/100; 564/564 total, zero failures/skips. |
 | `corepack pnpm typecheck` | Pass: all 6 workspace projects after the final behavior and evidence edits. |
 | `corepack pnpm build` | Pass: all 6 workspace projects after the final behavior and evidence edits. |
-| `corepack pnpm test` | Pass: 869 tests, 868 passed, 0 failed, 1 intentional `PPA_STORE_OUTPUT`-gated skip. Breakdown: pa-core 453/453; Pi source validation 5/5; Droid 78/78; Claude 49/49; OpenCode 100/100; Pi 182/183; runtime-host 1/1. |
+| `corepack pnpm test` | Pass: 869 tests, 868 passed, 0 failed, 1 intentional `PPA_STORE_OUTPUT`-gated skip. Retained-package subset of that historical total: pa-core 453/453; Pi source validation 5/5; OpenCode 100/100; Pi 182/183; runtime-host 1/1. |
 | `corepack pnpm completions` | Pass: deterministic regeneration produced no checked-in completion delta. |
 | `corepack pnpm secrets:scan` | Pass on the final source/test/evidence diff. |
 | `git diff --check` | Pass on the final source/test/evidence diff. |

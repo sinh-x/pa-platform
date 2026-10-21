@@ -175,7 +175,7 @@ test("Nix selected-output wiring uses managed bins and only selected declared de
   assert.match(flake, /tool: \[ tool\.node \] \+\+ tool\.dependencies\) \(builtins\.attrValues selectedAxiTools\)/);
   assert.match(flake, /makeWrapper \$\{tool.node\}\/bin\/node \$share\/axi-bin\/\$\{name\}/);
   assert.match(flake, /dist\/axi-policy\.js/);
-  for (const name of ["pa-core", "opa", "cpa", "dpa", "pa-platform-node"]) {
+  for (const name of ["pa-core", "opa", "pa-platform-node"]) {
     const block = flake.split(` $out/bin/${name} \\\n`)[1]?.split("\n\n")[0];
     assert.ok(block, name);
     assert.match(block, /--prefix PATH : "\$\{runtimePath\}"/);

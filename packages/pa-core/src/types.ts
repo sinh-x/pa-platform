@@ -1,6 +1,8 @@
 // Ported from PA types.ts at frozen PA source on 2026-04-26; runtime adapter fields are additive for pa-platform.
 
-export type RuntimeName = "claude" | "opencode" | "droid" | "pi";
+/** Active execution only; persisted runtime metadata is deliberately opaque. */
+export type RuntimeName = "opencode" | "pi";
+export type HistoricalRuntimeName = string;
 export type ApiRuntimeName = "opencode" | "pi";
 export type DeploymentInvocationChannel = "cli" | "agent-api";
 export type ProviderName = string;
@@ -154,7 +156,7 @@ export interface RegistryEvent {
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
-  runtime?: RuntimeName;
+  runtime?: HistoricalRuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
   rogue_one?: boolean;
@@ -249,7 +251,7 @@ export interface DeploymentStatus {
   mode?: string;
   fallback?: boolean;
   resumed_from_deployment_id?: string;
-  runtime?: RuntimeName;
+  runtime?: HistoricalRuntimeName;
   binary?: string;
   effective_timeout_seconds?: number;
   rogue_one?: boolean;
@@ -286,8 +288,6 @@ export interface PlatformConfig {
   defaults?: {
     runtime?: RuntimeName;
     opencode?: { provider?: string; model?: string };
-    claudecode?: { model?: string; minimax_via_claude?: boolean };
-    droidcode?: { model?: string; autonomy?: AutonomyLevel };
   };
 }
 

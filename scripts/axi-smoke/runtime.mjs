@@ -102,7 +102,7 @@ try {
   const inherited = '/inherited/gh-axi:/inherited/quota-axi:/inherited/bin::';
   const captureWrapper = (output, name) => captureInstalledWrapper(output, name, { ...baseEnv, PATH: inherited });
   active = 'installed-path';
-  const baselinePrefixes = Object.fromEntries(['pa-core', 'opa', 'cpa', 'dpa', 'pa-platform-node'].map(name => [name, captureWrapper(outputs['0'], name)[0]]));
+  const baselinePrefixes = Object.fromEntries(['pa-core', 'opa', 'pa-platform-node'].map(name => [name, captureWrapper(outputs['0'], name)[0]]));
   for (let mask = 0; mask < 8; mask++) {
     const output = outputs[String(mask)];
     assert.match(output, /^\/nix\/store\//);
@@ -129,7 +129,7 @@ try {
     assert.deepEqual(pluginPackage.imports, {});
     assert.deepEqual(provenance.selectedSources, []);
     for (const artifact of ['native-addons/node-22/better_sqlite3.node', 'native-addons/pi-node-24/better_sqlite3.node', 'packages/pi-pa/dist/pi-extension/index.js']) assert.equal(fs.existsSync(join(share, artifact)), true);
-    for (const name of ['pa-core', 'opa', 'cpa', 'dpa', 'ppa']) {
+    for (const name of ['pa-core', 'opa', 'ppa']) {
       command(join(output, 'bin', name), ['--help'], fixtureEnv);
       assert.equal(fs.existsSync(join(output, 'share/fish/vendor_completions.d', `${name}.fish`)), true);
     }

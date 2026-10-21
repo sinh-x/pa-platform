@@ -25,11 +25,13 @@ Ticket: PAP-041
 
 ## External Session-Visible Skills (5)
 
-- `avo-timetracker` -> `/home/sinh/.claude/skills/avo-timetracker` (`SKILL.md`)
-- `handnote-combiner` -> `/home/sinh/.claude/skills/handnote-combiner` (`SKILL.md`)
-- `jq-yq` -> `/home/sinh/.claude/skills/jq-yq` (`SKILL.md`)
-- `skill-creator` -> `/home/sinh/.claude/skills/skill-creator` (`SKILL.md`, `LICENSE.txt`, `scripts/`)
-- `terse-mode` -> `/home/sinh/.claude/skills/terse-mode` (`SKILL.md`)
+Original external locations remain in Git history; they are not current packaged runtime guidance.
+
+- `avo-timetracker` (`SKILL.md`)
+- `handnote-combiner` (`SKILL.md`)
+- `jq-yq` (`SKILL.md`)
+- `skill-creator` (`SKILL.md`, `LICENSE.txt`, `scripts/`)
+- `terse-mode` (`SKILL.md`)
 
 ## Notes
 

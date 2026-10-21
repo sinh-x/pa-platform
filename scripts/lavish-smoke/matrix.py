@@ -20,7 +20,7 @@ TOOLS = dict(zip(('gh-axi', 'chrome-devtools-axi', 'quota-axi', 'lavish-axi'),
                  ('0.1.35', '0.1.38', '0.1.56', '0.1.67')))
 OPTIONS = ('enableGhAxi', 'enableChromeDevtoolsAxi', 'enableQuotaAxi', 'enableLavishAxi')
 SYSTEMS = ('x86_64-linux', 'aarch64-linux')
-ALIASES = ('pa-platform', 'pa-core', 'ppa', 'opa', 'cpa', 'dpa', 'default')
+ALIASES = ('pa-platform', 'pa-core', 'ppa', 'opa', 'default')
 INVALID = {'string': '"true"', 'integer': '1', 'null': 'null', 'list': '[]', 'set': '{}'}
 STORE = re.compile(r'/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/\s]+')
 
@@ -208,7 +208,7 @@ class Matrix:
             context.write_text(json.dumps({'output': out, 'mask': mask, 'evaluation': self.data['evaluations'][f'x86_64-linux/{mask}'], 'tools': self.data['tools']}))
             stdout, _ = self.command([str(Path(out)/'bin/pa-platform-node'), str(self.repo/'scripts/lavish-smoke/selection.mjs'), str(context)])
             evidence = json.loads(stdout)
-            require(evidence['status'] == 'passed' and evidence['adapterLaunchCaptures'] == 12, 'installed environment incomplete')
+            require(evidence['status'] == 'passed' and evidence['adapterLaunchCaptures'] == 8, 'installed environment incomplete')
             self.account.passed(f'installed:{mask}', evidence)
         require(len(set(self.data['outputs'].values())) == 16, 'non-distinct selections')
         require(sha(self.repo/'flake.lock') == self.data['flakeLockSha256'], 'lock drift')

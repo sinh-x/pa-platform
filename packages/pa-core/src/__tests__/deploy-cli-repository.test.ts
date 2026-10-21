@@ -25,7 +25,7 @@ test("Pi protected objective-file transport is bounded/fatal UTF-8 and preserves
     writeFileSync(path, Buffer.from([0x7b, 0xff, 0x7d]));
     const malformed = parseDeployArgs(args, "ppa"); assert.ok("error" in malformed);
     if ("error" in malformed) assert.match(malformed.error, /UTF-8/);
-    assert.ok("fields" in parseDeployArgs(args, "cpa"));
+    assert.ok("fields" in parseDeployArgs(args, "opa"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -284,7 +284,7 @@ test("ticket-worktree early CLI rejections are bounded five-field diagnostics re
       ["--" + "x".repeat(2500)], ["--ticket-worktree=false"], ["--ticket-worktree", "false"],
       ["--objective", "api_key=sk-" + "x".repeat(60)],
     ];
-    for (const binaryName of ["ppa", "opa", "cpa", "dpa", "pa-core"]) {
+    for (const binaryName of ["ppa", "opa", "pa-core"]) {
       for (const defect of defects) for (const first of [false, true]) {
         const output = capture();
         const args = ["deploy", "requirements", ...(first ? ["--ticket-worktree"] : []), ...defect, ...(!first ? ["--ticket-worktree"] : [])];
@@ -389,7 +389,7 @@ test("ticket-worktree intent reaches only the eligible PPA CLI adapter boundary"
     }
 
     let rejectedHookCalls = 0;
-    for (const binaryName of ["opa", "cpa", "dpa", "pa-core"]) {
+    for (const binaryName of ["opa", "pa-core"]) {
       const captured = capture();
       const code = await runCoreCommand(["deploy", "requirements", "--mode", "analyze", "--ticket", "PAP-234", "--ticket-worktree"], {
         binaryName,
@@ -449,7 +449,7 @@ test("Agent API exposes no ticket-worktree request capability", async () => {
     const deploy = () => { hookCalls += 1; return { status: "pending" as const, deploymentId: "d-forbidden" }; };
     const api = createAgentApiApp({ hooks: { runtimeHooks: { opencode: { deploy }, pi: { deploy } } } });
     try {
-      for (const runtime of [undefined, "pi", "opencode", "claude", "droid"]) {
+      for (const runtime of [undefined, "pi", "opencode", "unsupported-synthetic"]) {
         for (const ticketWorktree of [true, false, null, "true", {}, 1]) {
           const response = await api.app.request("/api/deploy", {
             method: "POST",
@@ -476,14 +476,14 @@ test("source completions define a PPA-only ticket-worktree generation contract",
   assert.match(source, /^# PPA_ONLY_DEPLOY_OPTION ticket-worktree$/m);
   assert.doesNotMatch(source, /complete -c pa-core .* -l ticket-worktree/);
   assert.match(generator, /complete -c ppa -n __ppa_deploy_completing -l ticket-worktree/);
-  assert.equal((generator.match(/PPA_ONLY_DEPLOY_OPTION ticket-worktree/g) ?? []).length, 4, "one PPA replacement and three non-PPA removals are required");
+  assert.equal((generator.match(/PPA_ONLY_DEPLOY_OPTION ticket-worktree/g) ?? []).length, 2, "one PPA replacement and one non-PPA removal are required");
 });
 
 test("generated completions and paired rollout documentation preserve PPA-only selection", () => {
   const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   const completion = (binary: string) => readFileSync(join(repositoryRoot, "completions", `${binary}.fish`), "utf8");
   assert.match(completion("ppa"), /complete -c ppa .* -l ticket-worktree .*non-builder; --ticket required/);
-  for (const binary of ["pa-core", "opa", "cpa", "dpa"]) assert.doesNotMatch(completion(binary), /complete .* -l ticket-worktree|--ticket-worktree/);
+  for (const binary of ["pa-core", "opa"]) assert.doesNotMatch(completion(binary), /complete .* -l ticket-worktree|--ticket-worktree/);
   for (const doc of ["api/cli-reference.md", "pi-pa.md", "runtime-neutral-config.md"]) {
     const text = readFileSync(join(repositoryRoot, "docs", doc), "utf8");
     assert.match(text, /--ticket-worktree/); assert.match(text, /PAPC-038/);
@@ -507,14 +507,10 @@ test("five-field repository diagnostics reserve every field under hostile long v
 test("ppa and opa deploy help document force and the registered-path-only contract", async () => {
   const opa = capture();
   const ppa = capture();
-  const cpa = capture();
-  const dpa = capture();
   const core = capture();
   const branch = capture();
   assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "opa", io: opa.io }), 0);
   assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "ppa", io: ppa.io }), 0);
-  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "cpa", io: cpa.io }), 0);
-  assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "dpa", io: dpa.io }), 0);
   assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName: "pa-core", io: core.io }), 0);
   assert.equal(await runCoreCommand(["branch", "--help"], { io: branch.io }), 0);
   for (const output of [opa.stdout.join("\n"), ppa.stdout.join("\n")]) {
@@ -532,7 +528,7 @@ test("ppa and opa deploy help document force and the registered-path-only contra
   assert.match(ppa.stdout.join("\n"), /status-only selection, no new authority or return rights/);
   assert.match(ppa.stdout.join("\n"), /resume requires the same ticket and physical checkout/);
   assert.match(ppa.stdout.join("\n"), /Agent API.*paired config validation \(PAPC-038\)/);
-  for (const output of [opa, cpa, dpa, core].map((captured) => captured.stdout.join("\n"))) {
+  for (const output of [opa, core].map((captured) => captured.stdout.join("\n"))) {
     assert.doesNotMatch(output, /--ticket-worktree/);
   }
   assert.match(branch.stdout.join("\n"), /create uses the exact registered root/i);

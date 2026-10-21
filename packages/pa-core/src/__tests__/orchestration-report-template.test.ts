@@ -44,7 +44,7 @@ test("orchestration report template carries plan-first PPA branch resume evidenc
   assert.match(template, /Branch-gate outcome: <PPA planned\/create or materialized\/select persisted result; or supported non-Treehouse outcome>/);
   assert.match(template, /persisted planned\/create or materialized\/select result and an already-current exact linked branch/);
   assert.match(template, /only the orchestrator may have performed that ordinary-Git action after authenticated evidence agreement/);
-  assert.match(template, /OPA\/OpenCode and CPA\/Claude Code retain supported non-Treehouse exact-branch handling/);
+  assert.match(template, /OPA\/OpenCode\b[\s\S]{0,160}\bretains? supported non-Treehouse exact-branch handling/);
   assert.match(template, /No path may stash, reset, repair, relocate, or substitute a checkout/);
 });
 

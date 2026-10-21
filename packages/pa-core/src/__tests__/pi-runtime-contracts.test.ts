@@ -135,7 +135,7 @@ test("deploy request runtime accepts Pi and rejects unsupported runtimes", () =>
   const pi = validateDeployRequestFields({ team: "builder", runtime: "pi" });
   assert.equal("error" in pi, false);
   if (!("error" in pi)) assert.equal(pi.request.runtime, "pi");
-  assert.deepEqual(validateDeployRequestFields({ team: "builder", runtime: "claude" }), { error: "runtime must be opencode or pi" });
+  assert.deepEqual(validateDeployRequestFields({ team: "builder", runtime: "unsupported-synthetic" }), { error: "runtime must be opencode or pi" });
 });
 
 test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawning on invalid input", async () => {
@@ -152,7 +152,7 @@ test("REST deploy defaults to OpenCode and dispatches explicit Pi without spawni
 
   const omitted = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder" }) });
   const pi = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "pi" }) });
-  const invalid = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "claude" }) });
+  const invalid = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: "builder", runtime: "unsupported-synthetic" }) });
 
   assert.equal(omitted.status, 202);
   assert.equal(pi.status, 202);

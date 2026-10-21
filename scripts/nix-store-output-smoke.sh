@@ -76,16 +76,15 @@ for system in "${supported_systems[@]}"; do
       assert packages.pa-platform.drvPath == expected;
       assert packages.pa-core.drvPath == expected;
       assert packages.opa.drvPath == expected;
-      assert packages.cpa.drvPath == expected;
-      assert packages.dpa.drvPath == expected;
       assert packages.ppa.drvPath == expected;
       assert packages.default.drvPath == expected;
       assert overlay.pa-platform.drvPath == expected;
       assert overlay.pa-core.drvPath == expected;
       assert overlay.opa.drvPath == expected;
-      assert overlay.cpa.drvPath == expected;
-      assert overlay.dpa.drvPath == expected;
       assert overlay.ppa.drvPath == expected;
+      # Exact public inventories also prove that no extra runtime aliases survive.
+      assert builtins.attrNames packages == [ "chrome-devtools-axi" "chrome-devtools-mcp" "default" "gh-axi" "lavish-axi" "opa" "pa-core" "pa-platform" "ppa" "quota-axi" ];
+      assert builtins.attrNames overlay == [ "opa" "pa-core" "pa-platform" "ppa" ];
       true
   ' >/dev/null
 done
@@ -124,6 +123,9 @@ if [[ $(printf '%s\n' "${outputs[@]}" | sort -u | wc -l) -ne 4 ]]; then
 fi
 
 smoke_root=$(mktemp -d)
+# Packaged status/help must never initialize or migrate the operator registry.
+export PA_AI_USAGE_HOME="$smoke_root/ai-usage"
+export PA_REGISTRY_DB="$smoke_root/registry.db"
 trap 'printf "nix-smoke temporary-evidence=%s\\n" "$smoke_root" >&2' EXIT
 actual_pi=${PAP167_REAL_PI:-$(command -v pi)}
 expected_pi_node=${PAP183_EXPECTED_PI_NODE_VERSION:-v24.19.0}
@@ -138,7 +140,20 @@ for variant in "${variant_names[@]}"; do
   node22_addon="$store_output/share/pa-platform/native-addons/node-22/better_sqlite3.node"
   pi_addon="$store_output/share/pa-platform/native-addons/pi-node-24/better_sqlite3.node"
 
-  for command in "opa status" "ppa status" "opa --help" "ppa --help"; do
+  # Closed inventories prove absence, including unadvertised stale wrappers,
+  # package bodies and completions, in every native plugin variant.
+  STORE_OUTPUT="$store_output" "$store_output/bin/pa-platform-node" --input-type=module --eval '
+    import assert from "node:assert/strict";
+    import { readdirSync } from "node:fs";
+    import { join } from "node:path";
+    const root = process.env.STORE_OUTPUT;
+    for (const [path, expected] of [
+      ["bin", ["opa", "pa-core", "pa-platform-node", "ppa"]],
+      ["share/pa-platform/packages", ["opencode-pa", "pa-core", "pi-pa", "runtime-host"]],
+      ["share/fish/vendor_completions.d", ["opa.fish", "pa-core.fish", "ppa.fish"]],
+    ]) assert.deepEqual(readdirSync(join(root, path)).sort(), expected.sort(), path);
+  '
+  for command in "pa-core --help" "opa status" "ppa status" "opa --help" "ppa --help"; do
     "$store_output/bin/${command%% *}" ${command#* } >/dev/null
   done
   for artifact in \

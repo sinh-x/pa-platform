@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 export const here = dirname(fileURLToPath(import.meta.url));
 export const CHROME = '/home/sinh/.nix-profile/bin/google-chrome-stable';
-export const adapters = { ppa: 'pi', opa: 'opencode', cpa: 'claudecode' };
+export const adapters = { ppa: 'pi', opa: 'opencode' };
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export const digest = path => hash(fs.readFileSync(path));

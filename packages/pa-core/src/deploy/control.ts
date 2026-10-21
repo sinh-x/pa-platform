@@ -1,5 +1,6 @@
 import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
 import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
+import { assertSupportedRuntime } from "./runtime-config.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import { MAX_REVIEW_OBJECTIVE_BYTES } from "../validation/review-contract.js";
@@ -91,6 +92,7 @@ export interface CoreExecutionHooks {
 }
 
 export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks, cliDeployRuntime: ApiRuntimeName = "opencode"): CoreExecutionHooks {
+  assertSupportedRuntime(cliDeployRuntime);
   const cliDeployHooks = cliDeployRuntime === "pi" ? pi : opencode;
   return { ...opencode, readOnlyHelperContext: cliDeployHooks.readOnlyHelperContext, deploy: cliDeployHooks.deploy, deployPreflight: cliDeployHooks.deployPreflight, runtimeHooks: { opencode, pi } };
 }

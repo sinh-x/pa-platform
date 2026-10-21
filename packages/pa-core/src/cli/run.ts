@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { RuntimeAdapter } from "../runtime-api/types.js";
 import type { RuntimeName } from "../types.js";
+import { assertSupportedRuntime } from "../deploy/runtime-config.js";
 import { resolveBinary } from "../agent-api/ws/session-hub.js";
 
 export interface RunCliOptions {
@@ -25,6 +26,7 @@ export interface RunCliResult {
  */
 export async function runCli(options: RunCliOptions): Promise<RunCliResult> {
   const { adapter, binaryName, args = [], env = {}, cwd = process.cwd() } = options;
+  assertSupportedRuntime(adapter.name);
   const binaryPath = resolveBinary({
     devMode: Boolean(process.env["PA_DEV_MODE"]),
     explicitPath: process.env["PA_OPENCODE_BINARY"] ?? binaryName,
@@ -62,10 +64,9 @@ export async function runCli(options: RunCliOptions): Promise<RunCliResult> {
 }
 
 export function createMockRuntimeAdapter(name: RuntimeName = "opencode"): RuntimeAdapter {
+  assertSupportedRuntime(name);
   const defaults: Record<RuntimeName, { defaultModel: string; sessionFileName: string }> = {
     opencode: { defaultModel: "sonnet", sessionFileName: "session-id-opencode.txt" },
-    claude: { defaultModel: "claude-opus-4-7", sessionFileName: "session-id-claude.txt" },
-    droid: { defaultModel: "deepseek-v4-pro", sessionFileName: "session-id-droid.txt" },
     pi: { defaultModel: "", sessionFileName: "session-id-pi.txt" },
   };
   const { defaultModel, sessionFileName } = defaults[name];

@@ -118,22 +118,6 @@ function deployHelpProfile(binaryName: string): DeployHelpProfile {
       defaultDescription: "PPA uses OpenAI Sol (`openai-codex` / `gpt-6.1-sol`)",
     };
   }
-  if (binaryName === "cpa") {
-    return {
-      runtime: "Claude Code",
-      providerDescription: "Claude provider (`anthropic` only)",
-      modelDescription: "Claude model",
-      defaultDescription: "CPA uses `anthropic` / `claude-opus-4-7`",
-    };
-  }
-  if (binaryName === "dpa") {
-    return {
-      runtime: "Droid",
-      providerDescription: "Droid provider (adapter-specific)",
-      modelDescription: "Droid model (default: `deepseek-v4-pro`)",
-      defaultDescription: "DPA uses its documented adapter default (`deepseek-v4-pro` when unset)",
-    };
-  }
   return {
     runtime: "OpenCode",
     providerDescription: "Model provider (`minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`; default: `ollama-cloud`)",
@@ -172,9 +156,7 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
     io.stdout("                     Dry-run authenticates without spawning; resume requires the same ticket and physical checkout.");
     io.stdout("                     Excluded from builder, other binaries and Agent API; eligible mode rollout requires paired config validation (PAPC-038).");
   }
-  if (binaryName !== "cpa" && binaryName !== "dpa") {
-    io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
-  }
+  io.stdout("  --force             Recover stale or malformed builder ownership evidence; never overrides a live owner or other guards");
   io.stdout("  --timeout <seconds>    Override deployment timeout");
   io.stdout("  --resume <id>          Resume a prior deployment");
   io.stdout("  --autonomy <low|medium|high>  Override autonomy level (default: medium)");
@@ -204,6 +186,15 @@ export function printDeployHelp(io: Required<CliIo>, binaryName = "opa"): void {
 }
 
 export async function runDeployCommand(argv: string[], io: Required<CliIo>, hooks: CoreExecutionHooks, binaryName = "opa"): Promise<number> {
+  if (!["pa-core", "opa", "ppa"].includes(binaryName)) {
+    io.stderr(formatBoundedFiveFieldDiagnostic({
+      condition: "unsupported deployment adapter", source: "CLI deploy admission",
+      reason: "only retained runtime adapters may execute deployments",
+      correction: "use ppa or opa explicitly; historical records remain read-only",
+      resumeAction: "start a supported deployment or resume its matching retained-runtime session",
+    }));
+    return 1;
+  }
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     printDeployHelp(io, binaryName);
     return 0;
@@ -249,10 +240,6 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
       io.stderr(boundaryError);
       return 1;
     }
-  }
-  if ((binaryName === "cpa" || binaryName === "dpa") && validated.request.force) {
-    io.stderr(`${binaryName}: --force is unsupported because this adapter does not execute exclusive builder deployments; use ppa or opa for builder ownership enforcement`);
-    return 1;
   }
   if (validated.request.listModes || validated.request.validate) {
     try {
@@ -415,7 +402,7 @@ function ticketWorktreeBoundaryError(binaryName: string, request: DeployRequest)
     return ticketWorktreeDiagnostic({
       source: "CLI binary and trusted invocation channel",
       reason: `--ticket-worktree is available only to ppa deploy through the CLI; observed binary=${binaryName} channel=${request.invocationChannel ?? "unset"}`,
-      correction: "use ppa deploy from Pi; opa, cpa, dpa, direct pa-core, and Agent API invocations are unsupported",
+      correction: "use ppa deploy from Pi; other adapters, direct pa-core, and Agent API invocations are unsupported",
       resumeAction: "retry through the PPA CLI without changing adapter or API permissions",
     });
   }

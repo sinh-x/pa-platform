@@ -65,14 +65,14 @@ jobs:
       - name: Check generated completions
         run: |
           pnpm run completions
-          git diff --exit-code -- completions/pa-core.fish completions/opa.fish completions/cpa.fish completions/dpa.fish completions/ppa.fish
+          git diff --exit-code -- completions/pa-core.fish completions/opa.fish completions/ppa.fish
 
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
 
       - name: Check fish completions
         run: |
-          for completion in completions/{pa-core,opa,cpa,dpa,ppa}.fish; do
+          for completion in completions/{pa-core,opa,ppa}.fish; do
             fish --no-execute "$completion"
           done
 

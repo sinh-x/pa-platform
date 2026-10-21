@@ -15,7 +15,7 @@ import time
 SYSTEMS = ("x86_64-linux", "aarch64-linux")
 TOOLS = {"gh-axi": "0.1.35", "chrome-devtools-axi": "0.1.38", "quota-axi": "0.1.56"}
 OPTIONS = ("enableGhAxi", "enableChromeDevtoolsAxi", "enableQuotaAxi")
-ALIASES = ("pa-platform", "pa-core", "opa", "cpa", "dpa", "ppa", "default")
+ALIASES = ("pa-platform", "pa-core", "opa", "ppa", "default")
 RUNTIME_CASES = ("installed-path", "installed-metadata", "installed-prerequisites",
                  "installed-policy-denials", "startup-authority", "quota-denials",
                  "quota-providers", "quota-states", "quota-pinned-expiry", "browser-concurrent",

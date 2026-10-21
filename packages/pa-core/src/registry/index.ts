@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { getDb, openReadonlyRegistryDatabase } from "./db.js";
 import type { AssociateDeploymentTicketInput, AssociateDeploymentTicketResult, DeploymentStatus, EvaluatorResult, Rating, RegistryEvent, ReviewAuthorizationClaim, ReviewAuthorizationClaimInput, TicketAssociatedRegistryEvent } from "../types.js";
 import { parseTimestamp } from "../time.js";
+import { getRegistryDbPath } from "../paths.js";
 import { validateDeploymentCorrelationEvidence } from "../deploy/correlation.js";
 import { formatBoundedFiveFieldDiagnostic, loadReposYaml } from "../repos.js";
 import { TicketStore } from "../tickets/store.js";
@@ -811,6 +812,16 @@ export function queryReadonlyHelperRegistry(deployId: string, authorizationId?: 
     const starts = db.prepare("SELECT COUNT(*) AS count FROM registry_events WHERE deployment_id = ? AND event = 'started'").get(deployId) as { count: number };
     if (starts.count !== 1) throw new Error("helper registry requires exactly one immutable launch");
     return { status: row ? deploymentFromRow(row) : null, claim: authorizationId ? queryReviewAuthorizationClaimRow(db, authorizationId) : null };
+  } finally { db.close(); }
+}
+
+/** Resume inspection must not allocate, initialize or migrate registry state. */
+export function queryReadonlyDeploymentStatus(deployId: string): DeploymentStatus | null {
+  if (!existsSync(getRegistryDbPath())) return null;
+  const db = openReadonlyRegistryDatabase();
+  try {
+    const row = db.prepare("SELECT * FROM deployments WHERE deployment_id = ?").get(deployId) as Record<string, unknown> | undefined;
+    return row ? deploymentFromRow(row) : null;
   } finally { db.close(); }
 }
 

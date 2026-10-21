@@ -546,7 +546,7 @@ test("direct deletion stays denied with active-adapter trash guidance", () => {
   assert.equal(cleanup.target, '"$status_file"');
   assert.equal(cleanup.guidance, `opa trash move "$status_file" --reason 'Replace direct deletion denied by PA safety policy' --yes`);
 
-  assert.equal(formatTrashMoveGuidance("/tmp/file", "dpa"), `dpa trash move '/tmp/file' --reason 'Replace direct deletion denied by PA safety policy' --yes`);
+  assert.equal(formatTrashMoveGuidance("/tmp/file", "ppa"), `ppa trash move '/tmp/file' --reason 'Replace direct deletion denied by PA safety policy' --yes`);
 });
 
 test("context-aware policy p95 stays below 5 ms after warm-up", (t) => {

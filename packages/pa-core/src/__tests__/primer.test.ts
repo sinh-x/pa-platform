@@ -75,9 +75,9 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 function assertNoBannedOpencodeOperationalReferences(primer: string): void {
   assert.doesNotMatch(primer, /(^|[\s`'"(=:{])pa\s+(board|bulletin|daily|deploy|health|idea|registry|remove-timer|report|repos|requirements|schedule|serve|status|teams|ticket|timers|trash)\b/m);
-  assert.doesNotMatch(primer, /\.claude\/skills|~\/\.claude\/skills|\/home\/[^\s"`<>]+\/\.claude\/skills/);
+  assert.doesNotMatch(primer, /(?:~|\/home\/[^\s"`<>]+)\/\.[a-z][\w-]*\/skills/);
   assert.doesNotMatch(primer, /TeamCreate|SendMessage|AskUserQuestion|ScheduleWakeup/);
-  assert.doesNotMatch(primer, /Claude Code team deployments may use|\buse\s+Agent\b|\bAgent\b\s+tool/i);
+  assert.doesNotMatch(primer, /unsupported runtime team deployments may use|\buse\s+Agent\b|\bAgent\b\s+tool/i);
   assert.doesNotMatch(primer, /--interactive\b/);
 }
 
@@ -107,7 +107,7 @@ test("generatePrimer renders opencode-specific tool guidance", () => {
   assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(primer, /`opa` is the default deployment adapter, not the server owner/);
   assert.match(primer, /Task-style delegation/);
-  assert.match(primer, /Do not assume Claude-only operational tools exist/);
+  assert.match(primer, /Do not assume unsupported runtime-specific operational tools exist/);
   assert.match(primer, /## Active Bulletins/);
   assert.match(primer, /opa bulletin list/);
   assert.match(primer, /## Deployment Instructions/);
@@ -172,10 +172,10 @@ test("generatePrimer adapts PA CLI references to opa for opencode", () => {
       "# PA CLI Reference",
       "All agents have access to the `pa` CLI.",
       "Run `pa deploy builder` and `pa ticket list`.",
-      "Always `unset CLAUDECODE` before nested `pa deploy`.",
+      "Always `unset LEGACY_AGENT_ENV` before nested `pa deploy`.",
       "```bash",
-      "unset CLAUDECODE && pa deploy requirements --background",
-      "CLAUDECODE=0 pa status d-123456",
+      "unset LEGACY_AGENT_ENV && pa deploy requirements --background",
+      "LEGACY_AGENT_ENV=0 pa status d-123456",
       "pa registry complete d-123456",
       "```",
       "Project key `pa` remains unchanged.",
@@ -203,7 +203,7 @@ deploy_modes:
     assert.match(primer, /opa status d-123456/);
     assert.match(primer, /opa registry complete d-123456/);
     assert.match(primer, /Project key `pa` remains unchanged/);
-    assert.match(primer, /Always `unset CLAUDECODE` before nested `opa deploy`/);
+    assert.match(primer, /Always `unset LEGACY_AGENT_ENV` before nested `opa deploy`/);
     assertNoBannedOpencodeOperationalReferences(primer);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -221,8 +221,6 @@ agents:
 `);
   const cases = [
     ["opencode", "opa"],
-    ["claude", "cpa"],
-    ["droid", "dpa"],
     ["pi", "ppa"],
   ] as const;
 
@@ -447,7 +445,7 @@ deploy_modes:
     objective: Implement work
 `);
   const lifecycleGuidance = /status updates? are prohibited\. Report completion through the ticket comment and persistent artifact output; status transitions belong to the parent flow or orchestrator\./;
-  for (const runtime of ["opencode", "claude", "droid"] as const) {
+  for (const runtime of ["opencode", "pi"] as const) {
     const primer = generatePrimer({ runtime, teamConfig: builderTeam, mode: "implement" });
     assert.match(primer, lifecycleGuidance, `${runtime} must include report-only lifecycle guidance`);
     assert.doesNotMatch(primer, /advance status only after required artifacts exist/,
@@ -471,8 +469,8 @@ deploy_modes:
   const opencodePrimer = generatePrimer({ runtime: "opencode", teamConfig: builderTeam, mode: "implement" });
   assert.doesNotMatch(opencodePrimer, /opa evaluate --evaluate-deployment/);
 
-  const claudePrimer = generatePrimer({ runtime: "claude", teamConfig: builderTeam, mode: "implement" });
-  assert.doesNotMatch(claudePrimer, /cpa evaluate --evaluate-deployment/);
+  const piPrimer = generatePrimer({ runtime: "pi", teamConfig: builderTeam, mode: "implement" });
+  assert.doesNotMatch(piPrimer, /ppa evaluate --evaluate-deployment/);
 });
 
 test("generatePrimer never requests evaluator self-launch", () => {
@@ -491,57 +489,12 @@ deploy_modes:
   const opencodePrimer = generatePrimer({ runtime: "opencode", teamConfig: evaluatorTeam, mode: "deployment-review" });
   assert.doesNotMatch(opencodePrimer, /opa evaluate --evaluate-deployment/);
 
-  const claudePrimer = generatePrimer({ runtime: "claude", teamConfig: evaluatorTeam, mode: "deployment-review" });
-  assert.doesNotMatch(claudePrimer, /cpa evaluate --evaluate-deployment/);
+  const piPrimer = generatePrimer({ runtime: "pi", teamConfig: evaluatorTeam, mode: "deployment-review" });
+  assert.doesNotMatch(piPrimer, /ppa evaluate --evaluate-deployment/);
 });
 
-test("generatePrimer renders claude-specific tool guidance", () => {
-  const primer = generatePrimer({ runtime: "claude", teamConfig: team });
-  assert.match(primer, /Runtime: claude/);
-  assert.match(primer, /TeamCreate/);
-  assert.match(primer, /Write clear requirements/);
-});
-
-test("generatePrimer renders claude active bulletins, procedures, and deployment instructions", () => {
-  const claudeTeam = parseTeamYamlContent(`
-name: builder
-description: Builder team
-objective: Build things
-agents:
-  - name: builder-agent
-    role: Builds things
-deploy_modes:
-  - id: implement
-    label: Implement
-    skills:
-      - name: pa-startup
-        inject-as: shared-skill
-      - name: pa-ticket-workflow
-        inject-as: shared-skill
-      - name: pa-session-log
-        inject-as: shared-skill
-`);
-  const primer = generatePrimer({ runtime: "claude", teamConfig: claudeTeam, mode: "implement" });
-  assert.match(primer, /Runtime: claude/);
-  assert.match(primer, /## Active Bulletins/);
-  assert.match(primer, /Before starting work, run `cpa bulletin list`/);
-  assert.match(primer, /## Available Procedures/);
-  assert.match(primer, /pa-startup: startup order/);
-  assert.match(primer, /pa-ticket-workflow: ticket claim/);
-  assert.match(primer, /pa-session-log: session logs/);
-  assert.match(primer, /## Deployment Instructions/);
-  assert.match(primer, /Use `cpa` for PA platform workflow commands/);
-  assert.match(primer, /Use `pa-core serve` for Agent API server lifecycle/);
-  assert.match(primer, /Skill \(slash commands\), AskUserQuestion, Agent, TeamCreate, SendMessage, and ScheduleWakeup/);
-  assert.match(primer, /finalize registry state with `cpa registry complete`/);
-  // claude branch must NOT swap in opa idioms
-  assert.doesNotMatch(primer, /opa bulletin list/);
-  assert.doesNotMatch(primer, /Use `opa` for PA platform workflow commands/);
-  assert.doesNotMatch(primer, /opa registry complete/);
-});
-
-test("generatePrimer adapts PA CLI references to cpa for claude runtime", () => {
-  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-claude-"));
+test("generatePrimer adapts PA CLI references to ppa for Pi runtime", () => {
+  const root = mkdtempSync(join(tmpdir(), "pa-core-primer-pi-"));
   try {
     mkdirSync(join(root, "pa-cli"));
     writeFileSync(join(root, "pa-cli", "SKILL.md"), [
@@ -565,22 +518,22 @@ deploy_modes:
         inject-as: shared-skill
 `);
 
-    const primer = generatePrimer({ runtime: "claude", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
-    assert.match(primer, /# CPA CLI Reference/);
-    assert.match(primer, /`cpa` CLI/);
-    assert.match(primer, /Run cpa deploy builder and cpa ticket list/);
+    const primer = generatePrimer({ runtime: "pi", teamConfig: teamWithSkill, mode: "implement", skillsDir: root });
+    assert.match(primer, /# PPA CLI Reference/);
+    assert.match(primer, /`ppa` CLI/);
+    assert.match(primer, /Run ppa deploy builder and ppa ticket list/);
     assert.match(primer, /Project key `pa` remains unchanged/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("createMockRuntimeAdapter supplies claude defaults", async () => {
+test("createMockRuntimeAdapter supplies retained defaults", async () => {
   const { createMockRuntimeAdapter } = await import("../cli/run.js");
-  const claudeMock = createMockRuntimeAdapter("claude");
-  assert.equal(claudeMock.name, "claude");
-  assert.equal(claudeMock.defaultModel, "claude-opus-4-7");
-  assert.equal(claudeMock.sessionFileName, "session-id-claude.txt");
+  const piMock = createMockRuntimeAdapter("pi");
+  assert.equal(piMock.name, "pi");
+  assert.equal(piMock.defaultModel, "");
+  assert.equal(piMock.sessionFileName, "session-id-pi.txt");
   const opencodeMock = createMockRuntimeAdapter("opencode");
   assert.equal(opencodeMock.defaultModel, "sonnet");
   assert.equal(opencodeMock.sessionFileName, "session-id-opencode.txt");
@@ -853,7 +806,7 @@ deploy_modes:
     solo: false
     objective: Orchestrate sub-deploys
 `);
-  for (const runtime of ["opencode", "claude", "droid"] as const) {
+  for (const runtime of ["opencode"] as const) {
     const primer = generatePrimer({ runtime, teamConfig: orchestratorTeam, mode: "orchestrator" });
     assert.doesNotMatch(primer, /This is a solo deployment/, `orchestrator mode must not be solo for runtime ${runtime}`);
     assert.match(primer, /This is a team-mode deployment/, `orchestrator mode must be team-mode for runtime ${runtime}`);
@@ -1467,7 +1420,7 @@ test("generatePrimer builder/orchestrator fixture drops >=150 lines between full
   const memoryBody = Array.from({ length: 200 }, (_, i) => `Line ${i}: memory doc content line for testing the natively-loaded tail.`).join("\n");
   const fullExtra = [
     "## Memory Docs",
-    "The following instruction files were explicitly included to emulate Claude Code memory for opencode deployments. Follow them unless they conflict with this deployment primer.",
+    "The following instruction files were explicitly included to provide compatible project memory for opencode deployments. Follow them unless they conflict with this deployment primer.",
     '<memory-doc path="/home/sinh/.claude/CLAUDE.md">',
     memoryBody,
     "</memory-doc>",
@@ -1493,32 +1446,6 @@ test("generatePrimer builder/orchestrator fixture drops >=150 lines between full
   const pointerLines = pointerPrimer.split("\n").length;
   const drop = baselineLines - pointerLines;
   assert.ok(drop >= 150, `expected >=150 line drop, got ${drop} (baseline ${baselineLines}, pointer ${pointerLines})`);
-});
-
-test("generatePrimer droid fixture keeps full memory-doc body injection per OQ-1 native-load matrix (FR-4, OQ-1)", (t) => {
-  const builder = parseExternalBuilder();
-  if (!builder) return t.skip("external pa-platform-config fixture not available or still uses removed runtimes schema");
-  // droidcode-pa deploy.ts defaults to MEMORY_DOC_POINTER_MODE = false (OQ-1 unconfirmed), so full bodies stay injected.
-  const fullExtra = [
-    "## Memory Docs",
-    "The following instruction files were explicitly included to emulate memory for droid deployments. Follow them unless they conflict with this deployment primer.",
-    '<memory-doc path="/repo/CLAUDE.md">',
-    "# Repo Memory\nKeep this content visible to droid.",
-    "</memory-doc>",
-  ].join("\n");
-  const primer = generatePrimer({
-    runtime: "droid",
-    teamConfig: builder,
-    mode: "implement",
-    objective: "Implement PAP-110 phase 3.",
-    resolveFile: resolveConfigFile,
-    skillsDir: configPath("skills", "global"),
-    extraInstructions: fullExtra,
-  });
-  assert.match(primer, /## Memory Docs/);
-  assert.match(primer, /<memory-doc path=.*CLAUDE\.md">/);
-  assert.match(primer, /Keep this content visible to droid/);
-  assert.doesNotMatch(primer, /loaded natively by droid/);
 });
 
 test("generatePrimer demotes inlined skill headings so they stop colliding with primer top-level sections (FR-5, AC4)", () => {
@@ -2005,7 +1932,7 @@ deploy_modes:
     }),
   });
 
-  for (const runtime of ["opencode", "pi", "claude", "droid"] as const) {
+  for (const runtime of ["opencode", "pi"] as const) {
     for (const mode of builder.deploy_modes ?? []) {
       const primer = generatePrimer({ runtime, teamConfig: builder, mode: mode.id, repositoryAdmission });
       assert.match(primer, /Mandatory Dirty Repository Intent Contract/);

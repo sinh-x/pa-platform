@@ -30,7 +30,7 @@ test("buildSkillRegistryReport inventories skills and validates metadata", () =>
       "---",
       "name: broken-skill",
       "platforms: [other-platform]",
-      "runtimes: [claude]",
+      "runtimes: [unsupported-synthetic]",
       "---",
       "run `opencode run` directly",
     ].join("\n"));

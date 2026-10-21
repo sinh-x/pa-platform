@@ -1,6 +1,6 @@
 # CLI Reference
 
-Complete reference for the pa-platform command-line interface. The runtime-neutral core is exposed as `pa-core` (package `@pa-platform/pa-core`), with `opa`, `cpa`, `dpa`, and `ppa` adapter binaries. All adapters wrap the shared `runCoreCommand`; provider/model defaults and mappings are adapter-specific.
+Complete reference for the pa-platform command-line interface. The runtime-neutral core is exposed as `pa-core` (package `@pa-platform/pa-core`), with `opa` and `ppa` adapter binaries. All adapters wrap the shared `runCoreCommand`; provider/model defaults and mappings are adapter-specific.
 
 > **Source of truth:** `packages/pa-core/src/cli/commands/` (command implementations), `packages/pa-core/src/cli/core-command.ts` (dispatch), and each adapter's `adapter.ts` (provider/model mapping).
 > **Last updated:** 2026-09-07
@@ -35,7 +35,7 @@ Complete reference for the pa-platform command-line interface. The runtime-neutr
 
 ## Conventions
 
-- **Binary:** Use `opa`, `cpa`, `dpa`, or `ppa` for adapter-backed deployments, or `pa-core` for the runtime-neutral core. All dispatch through `runCoreCommand`.
+- **Binary:** Use `opa` or `ppa` for adapter-backed deployments, or `pa-core` for the runtime-neutral core. All dispatch through `runCoreCommand`.
 - **Help:** Every command accepts `--help` / `-h` (and bare `help` for most). With no arguments, most commands print their help text.
 - **Boolean flags** are presence-only (`--flag`); **value flags** require the next argument to be a non-flag value (`--flag value`).
 - **Exit codes:** `0` on success, `1` on error (error message written to stderr).
@@ -120,7 +120,7 @@ opa status --team builder --recent 5
 
 ### Default single-deployment detail
 
-Default `status <deploy-id>` uses the same detail formatter through `opa`, `cpa`, `dpa`, and `ppa`. It emits exactly one Team line. A non-empty recorded mode is appended to the team with a slash—for example, `  Team:     builder/implement`. If mode is absent or empty, the exact team-only fallback remains `  Team:     builder`; no slash or synthetic mode is added. This formatting uses fields already loaded with the deployment, performs no additional file or database I/O, and does not add a Team/mode header to status lists, `--activity`, `--wait`, `--report`, or `--artifacts`. The change is intentionally limited to human-readable default detail; registry storage, events, and structured APIs retain separate team and mode fields.
+Default `status <deploy-id>` uses the same detail formatter through `opa` and `ppa`. It emits exactly one Team line. A non-empty recorded mode is appended to the team with a slash—for example, `  Team:     builder/implement`. If mode is absent or empty, the exact team-only fallback remains `  Team:     builder`; no slash or synthetic mode is added. This formatting uses fields already loaded with the deployment, performs no additional file or database I/O, and does not add a Team/mode header to status lists, `--activity`, `--wait`, `--report`, or `--artifacts`. The change is intentionally limited to human-readable default detail; registry storage, events, and structured APIs retain separate team and mode fields.
 
 For an admitted protected Pi `requirements/review-auto`, the existing header
 also renders exactly three candidate lines from optional `review_checkout`:
@@ -156,7 +156,7 @@ Markers are shared with Pi's Alt+I view: `○` pending, `▶` in progress, `✓`
 
 Status checks the file size and rejects snapshots larger than 5 MiB before JSON parsing. Missing, malformed, unsupported-version, deployment-mismatched, oversized, or unreadable evidence produces a bounded, non-fatal `Session tasks: unavailable` section with a `Tasks unavailable` reason. The otherwise valid deployment lookup still exits 0. The rendered task section never exceeds 50 KiB or 2,000 lines; when either limit would be exceeded it keeps the header and emits an explicit count-bearing omission notice. ANSI escapes and terminal control characters are removed, and embedded line separators are normalized so each task occupies one terminal-safe row.
 
-Task snapshots and task sections are Pi-only: status does not extract tasks from OpenCode, Claude Code, or Droid, mutate todos, aggregate child task lists, or change status list/`--activity`/`--wait`/`--report`/`--artifacts` structures. Managed Pi instructions require two-or-more-step work to initialize todos after discovery and before the first target-repository mutation, complete or cancel the prior active task before the next phase starts, and complete or cancel an active task before shutdown. These lifecycle checkpoints are guidance and observable evidence, not a deployment completion gate.
+Task snapshots and task sections are Pi-only: status does not extract tasks from OpenCode or unsupported historical runtimes, mutate todos, aggregate child task lists, or change status list/`--activity`/`--wait`/`--report`/`--artifacts` structures. Managed Pi instructions require two-or-more-step work to initialize todos after discovery and before the first target-repository mutation, complete or cancel the prior active task before the next phase starts, and complete or cancel an active task before shutdown. These lifecycle checkpoints are guidance and observable evidence, not a deployment completion gate.
 
 The task snapshot/status path uses no new external runtime dependency. It remains compatible with Node.js `>=22.19.0` and Pi APIs available since `>=0.80.8`; the synchronized `pi-pa` package currently requires Pi `>=0.84.4`.
 
@@ -192,7 +192,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 | `--evaluate-deployment <id>` | deploy-id | Generate evaluator primer objective for a completed deployment |
 | `--repo <key\|path>` | repository key or exact configured path | Select a registered project. Explicit nested paths, linked worktrees, independent clones, symlink aliases, and unknown paths are rejected before runtime spawn. When omitted, adapters normally infer and execute at the registered root; PPA alone may authenticate and preserve an existing linked-worktree CWD. A live PPA orchestrator may address its direct background `builder/implement` child by registered key or exact canonical root; that identifier does not select execution, which remains in the protected parent worktree. Protected fresh Pi `requirements/review-auto` instead selects the sole existing leased ticket candidate before planning; key/canonical path identifies canonical identity, not execution. Explicit linked-worktree paths remain invalid. Other standalone PPA inputs and non-Pi behavior are unchanged. |
 | `--ticket <id>` | ticket id | Associate deployment with a ticket |
-| `--ticket-worktree` | — | PPA CLI only: select the ticket's sole existing authenticated Treehouse checkout from canonical CWD; requires exact `--ticket` and a non-builder team. No allocation or new authority; supports dry-run/background/same-checkout resume. Excluded from OPA/CPA/DPA, direct pa-core and Agent API. |
+| `--ticket-worktree` | — | PPA CLI only: select the ticket's sole existing authenticated Treehouse checkout from canonical CWD; requires exact `--ticket` and a non-builder team. No allocation or new authority; supports dry-run/background/same-checkout resume. Excluded from OPA, direct pa-core and Agent API. |
 | `--timeout <seconds>` | int (60–7200) | Override deployment timeout |
 | `--resume <id>` | deploy-id | Resume a prior deployment |
 | `--autonomy <low\|medium\|high>` | level | Override autonomy level (default: medium) |
@@ -202,7 +202,7 @@ Deploy a team configuration. Generates a primer and invokes the runtime adapter 
 
 | Flag | Value | Description |
 |------|-------|-------------|
-| `--provider <name>` | provider | Adapter provider override; `opa`: `minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`; `cpa`: `anthropic`; `ppa`: `openai` or `openai-codex`; `dpa`: adapter-specific |
+| `--provider <name>` | provider | Adapter provider override; `opa`: `minimax`, `openai`, `deepseek`, `ollama-cloud`, `opencode-go`; `ppa`: `openai` or `openai-codex` |
 | `--model <name>` | model | Override the selected flat mode model or adapter default |
 | `--team-model <name>` | model | Deprecated warning alias for `--model`; final removal is PAP-147 |
 | `--agent-model <name>` | model | Rejected; per-agent overrides are PAP-148 |
@@ -246,7 +246,7 @@ validation. PAPC-037 owns worktree-local dependencies/late canonical
 reconciliation; PAPC-031/PAPC-036 cover related integration policy. See
 [Pi integration](../pi-pa.md#opt-in-existing-ticket-worktree-selection-ppa-cli-only).
 
-**Repository admission:** ordinary omitted-flag `requirements/*` modes bypass Git status and ownership-lease access; explicit ticket-worktree selection additionally inspects Git and owner/borrower evidence. Protected fresh, non-dry-run Pi `requirements/review-auto` is the existing-only selection exception described below: it authenticates a clean exact candidate and reserves it read-only, without acquiring builder mutation ownership. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Ordinary authenticated linked worktrees launch dirty in foreground or background without admission edits; protected Pi review-auto instead requires a clean exact candidate. Dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; cpa and dpa reject mutating builder deploys with a bounded unsupported-policy result before spawn and do not advertise `--force`. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
+**Repository admission:** ordinary omitted-flag `requirements/*` modes bypass Git status and ownership-lease access; explicit ticket-worktree selection additionally inspects Git and owner/borrower evidence. Protected fresh, non-dry-run Pi `requirements/review-auto` is the existing-only selection exception described below: it authenticates a clean exact candidate and reserves it read-only, without acquiring builder mutation ownership. Registered-primary `builder/*` execution retains its existing exclusive owner. For every PPA CWD-inferred linked worktree, canonical identity remains in `repo_root` and immutable plan `repoRoot`, while runtime `PA_REPO`, `worktree_root`/`PA_WORKTREE_ROOT`, registry `repo`, project access, snapshots, and Pi CWD identify the exact authenticated execution root. Canonical evidence is compared only with the registered key/root pair and runtime evidence only with `worktree_root`; mismatches reject before Pi/native-host preflight or spawn. Authenticated Treehouse ticket builders additionally require exact lease, ticket, branch, lineage, slot, permit, clean/approved-dirty, and selector evidence. Ownership evidence is stored in its physical per-worktree Git directory, with one orchestrator slot plus one implement slot (all non-orchestrator builder modes share implement); sibling worktrees are independent. Ordinary authenticated linked worktrees launch dirty in foreground or background without admission edits; protected Pi review-auto instead requires a clean exact candidate. Dirty primary-root background builders (including REST defaults) still reject before spawn. ppa and opa enforce their supported ownership lifecycle; unsupported runtimes reject before allocation or spawn. Other teams remain non-locking. `--dry-run`, `--list-modes`, and `--validate` never mutate builder ownership.
 
 PPA builder admission separately permits this authenticated exception: a process-verified,
 registry-running Pi `builder/orchestrator` owner may launch one direct background
@@ -296,7 +296,7 @@ Standalone PPA `builder/implement` still requires omitted `--repo` from the exac
 free authenticated linked checkout; explicit key/path and canonical-root
 execution reject. Dirty registered-primary background builders still reject;
 authenticated linked-worktree PPA backgrounds use the linked-worktree policy
-above. OPA has exclusion awareness only—positive OPA, CPA, and Droid inheritance
+above. OPA has exclusion awareness only—positive OPA inheritance
 is outside this contract, and their selector behavior is unchanged.
 
 Configuration evidence from the dedicated dirty-direct-borrower policy ticket
@@ -397,7 +397,7 @@ ownership, lease, capacity, checkout or ticket updates.
 Quarantine remains canonical-only and does not consume read-only helper authority.
 Quarantine reacquires the crash-safe advisory mutex, re-reads evidence, refuses process-verified live ownership, rejects an identity mismatch, and uses a unique no-clobber destination. Do not replace this operation with a raw `mv` of the lease path.
 
-**Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, `cpa` uses `anthropic` / `claude-opus-4-7`, `dpa` uses `deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-6.1-sol`, normalized to Pi's `openai-codex` / `gpt-6.1-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
+**Adapter defaults:** An absent flat mode pair uses the selected adapter default: `opa` uses `ollama-cloud` / `ollama-cloud/deepseek-v4-pro`, and `ppa` uses configured `openai` / `openai/gpt-6.1-sol`, normalized to Pi's `openai-codex` / `gpt-6.1-sol`. Incompatible pairs warn on stderr and in deployment activity before fallback. See [Configuration](./configuration.md).
 
 ---
 
@@ -588,7 +588,7 @@ Display the project board with ticket columns. CWD-aware: defaults to the curren
 | `--all` | — | Show all tickets across all projects, including backlog and archived |
 | `--include-archived` | — | Show archived tickets alongside non-archived (keeps current project scope) |
 
-**Project resolution:** `--all` disables project scoping; `--project` resolves via `repos.yaml` (exact key, prefix, or path basename); otherwise CWD is detected. Live authenticated PPA linked-CWD inference uses the canonical registered project after an immediate evidence reread, without migrating/initializing the registry. Missing or invalid linked deployment evidence rejects; it never falls back to another project. Explicit `--all`/`--project` remain neutral data selections and grant no checkout authority. Outside a registered repo, use one of those explicit selectors. OPA/CPA inference remains canonical-only.
+**Project resolution:** `--all` disables project scoping; `--project` resolves via `repos.yaml` (exact key, prefix, or path basename); otherwise CWD is detected. Live authenticated PPA linked-CWD inference uses the canonical registered project after an immediate evidence reread, without migrating/initializing the registry. Missing or invalid linked deployment evidence rejects; it never falls back to another project. Explicit `--all`/`--project` remain neutral data selections and grant no checkout authority. Outside a registered repo, use one of those explicit selectors. OPA inference remains canonical-only.
 
 **Default exclude tags:** `backlog` and `archived` (unless `--all` or `--include-archived`). Ticket types `fyi` and `work-report` are always excluded from the board view.
 
@@ -627,7 +627,7 @@ Creates and checks out a feature branch from `develop` (or `origin/develop`) usi
 
 **Usage:** `branch validate`
 
-Validates the current branch against the configured branch pattern. Live protected PPA orchestrator, parented/standalone implement, worker consistency-only and review-auto helpers authenticate and immediately reread their role-specific evidence, then read the **admitted worktreeRoot** branch, not the canonical repoRoot branch. Canonical-root naming behavior is unchanged: exit 0 if conforming; base (`main`/`develop`) and nonconforming branches warn and still exit 0. Actual authentication or command failure exits nonzero. Environment-only or unauthenticated standalone linked calls reject; OPA/CPA and `branch create` remain canonical-only.
+Validates the current branch against the configured branch pattern. Live protected PPA orchestrator, parented/standalone implement, worker consistency-only and review-auto helpers authenticate and immediately reread their role-specific evidence, then read the **admitted worktreeRoot** branch, not the canonical repoRoot branch. Canonical-root naming behavior is unchanged: exit 0 if conforming; base (`main`/`develop`) and nonconforming branches warn and still exit 0. Actual authentication or command failure exits nonzero. Environment-only or unauthenticated standalone linked calls reject; OPA and `branch create` remain canonical-only.
 
 PPA helper failures distinguish `helper-incompatible`, `authority-rejected` and
 `command-unavailable`, with a bounded five-field diagnostic (Condition, Source,
@@ -1259,4 +1259,4 @@ opa repos list --json
 | repos | 1 | list |
 | **Total** | **46** (50 counting `ticket subticket` sub-subcommands) | |
 
-All commands and flags above are derived from `packages/pa-core/src/cli/commands/` and `packages/pa-core/src/cli/core-command.ts`. The `opa`, `cpa`, `dpa`, and `ppa` binaries delegate to `runCoreCommand` with their adapter hooks; adapter-specific provider/model defaults and mappings are documented under [deploy](#deploy) and in [Configuration](./configuration.md).
+All commands and flags above are derived from `packages/pa-core/src/cli/commands/` and `packages/pa-core/src/cli/core-command.ts`. The `opa` and `ppa` binaries delegate to `runCoreCommand` with their adapter hooks; adapter-specific provider/model defaults and mappings are documented under [deploy](#deploy) and in [Configuration](./configuration.md).

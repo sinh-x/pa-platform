@@ -17,7 +17,7 @@ pa-platform.lib.mkPaPlatform "x86_64-linux" {
 
 All four selectors are strict booleans, independently default **false**;
 strings, integers, null, lists and sets reject. Default aliases (`default`,
-`pa-platform`, `pa-core`, `ppa`, `opa`, `cpa`, `dpa`) and default overlay select
+`pa-platform`, `pa-core`, `ppa`, `opa`) and default overlay select
 nothing. Explicit standalone `packages.<system>.lavish-axi` is not selection
 of a PA output. Other AXI pins/exposure remain PPA-only: gh 0.1.35,
 chrome-devtools 0.1.38, quota 0.1.56, chrome-devtools-mcp 1.10.1. No new
@@ -33,12 +33,12 @@ The admitted store basename is exactly
 Packaged asset directories/files must be root-owned and non-writable; store
 hardlink deduplication is allowed, not mutable companion/source hardlinks.
 
-Adapters supply shared `PA_ARTIFACT_ADAPTER` (`pi`, `opencode`, `claudecode`)
+Adapters supply shared `PA_ARTIFACT_ADAPTER` (`pi`, `opencode`)
 and `PA_ARTIFACT_OWNER_PID` lifecycle metadata, binding deployment ID/directory
 and an actual ancestor's PID plus Linux boot/start identity. Background launches
 resolve the adapter's private active supervisor record; resume preserves the
 selection/owner seam. Do not invent ownership metadata to adopt another
-session. No PPA Treehouse/lease behavior is implied for OPA/CPA. Installed
+session. No PPA Treehouse/lease behavior is implied for OPA. Installed
 foreground/background/resume captures remain an independent validation gate.
 
 Manual URL opening uses an operator-owned browser; PA never opens/provisions one.
@@ -49,7 +49,7 @@ actually enabled sandbox. Missing/incompatible browser is
 
 ## Commands and envelopes
 
-Substitute `opa` or `cpa` for `ppa` without changing arguments:
+Substitute `opa` for `ppa` without changing arguments:
 
 ```sh
 ppa artifact render --source /absolute/document.md --output-dir /absolute/new-companion --json
