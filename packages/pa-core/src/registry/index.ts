@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb, openReadonlyRegistryDatabase } from "./db.js";
@@ -500,6 +501,44 @@ export interface AdvanceParentAuthoritySnapshotOptions {
   branchState: "materialized";
   branchHeadSha: string;
   timestamp?: string;
+  /** Opt-in durable settlement CAS. Existing terminal callers retain their contract. */
+  settlement?: {
+    digest: string;
+    expectedAuthorityEventId: number | null;
+  };
+}
+
+/** Runtime-only evidence read for the shared settlement owner, never report text. */
+export function readParentChildSettlementRegistry(input: {
+  canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
+  parentDeploymentId: string; childDeploymentId: string; ticket: string; launchHead: string;
+}): { baseSha: string; headSha: string; authorityEventId: number | null; authorityNote?: string; terminal: RegistryEvent; terminalDigest: string } {
+  const db = getDb();
+  const fail = (): never => { throw new DeploymentCorrelationConflictError(correlationConflictDiagnostic("settlement registry lineage, terminal evidence or registered identity conflicts")); };
+  if (loadReposYaml()[input.canonicalRepoKey]?.path !== input.canonicalRepoRoot) return fail();
+  const parent = queryDeploymentStatus(input.parentDeploymentId);
+  const child = queryDeploymentStatus(input.childDeploymentId);
+  const parentStart = getDeploymentEvents(input.parentDeploymentId).find((event) => event.event === "started");
+  const childEvents = getDeploymentEvents(input.childDeploymentId);
+  const start = childEvents.find((event) => event.event === "started");
+  const terminals = childEvents.filter((event) => event.event === "completed" || event.event === "crashed");
+  const terminal = terminals[0];
+  if (!parent || !child || !parentStart || !start || !terminal || terminals.length !== 1
+    || parent.status !== "running" || parentStart.team !== "builder" || parentStart.mode !== "orchestrator"
+    || parentStart.runtime !== "pi" || parentStart.binary !== "ppa" || parentStart.builder_authority !== "orchestrator"
+    || start.team !== "builder" || start.mode !== "implement" || start.runtime !== "pi" || start.binary !== "ppa"
+    || start.builder_authority !== "parented-implement" || start.parent_deployment_id !== input.parentDeploymentId
+    || start.branch_head_sha !== input.launchHead || start.ticket_id !== input.ticket
+    || start.repo_root !== input.canonicalRepoRoot || start.worktree_root !== input.worktreeRoot || start.repo !== input.worktreeRoot
+    || child.status === "running" || terminal.event !== "completed"
+    || !["success", "failed", "partial"].includes(terminal.status ?? "")
+    || child.status !== terminal.status || terminal.exit_code === 124 || terminal.exit_code === 130 || terminal.exit_code === 137 || terminal.exit_code === 143
+    || !/^[0-9a-f]{40}$/.test(start.branch_base_sha ?? "")) return fail();
+  const fields = ["ticket_id", "repo", "repo_root", "worktree_root", "treehouse_path", "treehouse_lease_id", "treehouse_lease_holder", "branch_state", "branch_base_sha", "ticket_slot_id", "repository_permit"] as const;
+  if (fields.some((key) => start[key] !== parent[key] || parent[key] !== parentStart[key])) return fail();
+  const latest = db.prepare("SELECT id, note FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND (note LIKE 'direct-child-authority:%' OR note LIKE 'direct-owner-authority:%') ORDER BY id DESC LIMIT 1").get(input.parentDeploymentId) as { id: number; note: string } | undefined;
+  return { baseSha: start.branch_base_sha!, headSha: parent.branch_head_sha!, authorityEventId: latest?.id ?? null, ...(latest ? { authorityNote: latest.note } : {}), terminal,
+    terminalDigest: createHash("sha256").update(JSON.stringify(terminal)).digest("hex") };
 }
 
 /**
@@ -538,6 +577,21 @@ export function advanceParentAuthoritySnapshot(options: AdvanceParentAuthoritySn
       || matchingFields.some((field) => exactChildStart[field] !== exactParent[field])) {
       fail("the child immutable start is not the exact direct child of the current parent authority snapshot");
     }
+    const settlement = options.settlement;
+    const note = settlement ? `direct-child-authority:${options.childDeploymentId}:${settlement.digest}` : `direct-child-authority:${options.childDeploymentId}`;
+    const latestAuthority = db.prepare("SELECT id, note, branch_head_sha FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND (note LIKE 'direct-child-authority:%' OR note LIKE 'direct-owner-authority:%') ORDER BY id DESC LIMIT 1").get(options.parentDeploymentId) as { id: number; note: string; branch_head_sha: string } | undefined;
+    const replay = db.prepare("SELECT id, branch_head_sha FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND note = ? ORDER BY id LIMIT 1").get(options.parentDeploymentId, note) as { id: number; branch_head_sha: string } | undefined;
+    if (replay) {
+      if (replay.branch_head_sha === options.branchHeadSha && exactParent["branch_head_sha"] === options.branchHeadSha
+        && latestAuthority?.id === replay.id) return;
+      fail("settlement replay conflicts with a successor or final projection");
+    }
+    if (settlement && (!/^[0-9a-f]{64}$/.test(settlement.digest)
+      || !/^[0-9a-f]{40}$/.test(options.expectedBranchHeadSha) || !/^[0-9a-f]{40}$/.test(options.branchHeadSha)
+      || (latestAuthority?.id ?? null) !== settlement.expectedAuthorityEventId
+      || exactParent["branch_state"] !== "materialized" || exactParent["branch_head_sha"] !== options.expectedBranchHeadSha)) {
+      fail("durable settlement requires the exact authority event and HEAD predecessor");
+    }
     if (exactParent["branch_state"] !== "materialized"
       || exactParent["branch_head_sha"] !== options.expectedBranchHeadSha) {
       const existing = db.prepare("SELECT id FROM registry_events WHERE deployment_id = ? AND event = 'updated' AND note = ? AND branch_head_sha = ? ORDER BY id LIMIT 1")
@@ -555,7 +609,7 @@ export function advanceParentAuthoritySnapshot(options: AdvanceParentAuthoritySn
       team: "builder",
       event: "updated",
       timestamp: options.timestamp ?? new Date().toISOString(),
-      note: `direct-child-authority:${options.childDeploymentId}`,
+      note,
       branch_state: options.branchState,
       branch_base_sha: typeof exactParent["branch_base_sha"] === "string" ? exactParent["branch_base_sha"] : undefined,
       branch_head_sha: options.branchHeadSha,

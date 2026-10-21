@@ -23,8 +23,8 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { advanceDirectAuthoritySnapshot, queryDeploymentStatus } from "../registry/index.js";
-import { formatBoundedFiveFieldDiagnostic, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
+import { advanceDirectAuthoritySnapshot, advanceParentAuthoritySnapshot, readParentChildSettlementRegistry, queryDeploymentStatus } from "../registry/index.js";
+import { formatBoundedFiveFieldDiagnostic, loadReposYaml, MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
 import { validateBranchNameForTicket } from "../tickets/git-validation.js";
 import type { RuntimeName } from "../types.js";
@@ -54,6 +54,18 @@ export interface RepositoryReviewFinalEvidence {
 export const REPOSITORY_MUTATION_LEASE_FILE = "pa-repository-mutation.lease.json";
 export const REPOSITORY_MUTATION_BORROWER_FILE = "pa-repository-mutation.borrower.json";
 export const REPOSITORY_IMPLEMENT_LEASE_FILE = "pa-repository-mutation.implement.lease.json";
+export const REPOSITORY_CHILD_SETTLEMENT_FILE = "pa-repository-child-settlement.json";
+export const MAX_REPOSITORY_CHILD_SETTLEMENT_BYTES = 1_048_576;
+
+function settlementPending(gitDir: string): boolean {
+  return reviewReservationPresent(join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE));
+}
+
+function settlementDiagnostic(reason: string): string {
+  return formatBoundedFiveFieldDiagnostic({ condition: "terminal child settlement blocked", source: "protected repository settlement owner",
+    reason, correction: "preserve the exact checkout and retained proof; reconcile the named evidence with its runtime owner",
+    resumeAction: "resume the same settlement only after the conflict is resolved; do not launch another writer or reuse approval" });
+}
 const REPOSITORY_SLOT_MUTEX_ANCHOR = "pa-repository-mutation.slots";
 export const REPOSITORY_DIRTY_BORROW_APPROVAL_FILE = "repository-dirty-borrow.approval.json";
 export const MAX_REPOSITORY_LEASE_BYTES = 64 * 1024;
@@ -204,6 +216,8 @@ export interface RepositoryMutationLease {
   readonly ticket?: string;
   readonly repositoryGitDir?: string;
   readonly repositoryGitCommonDir?: string;
+  /** Physical birth identity captured by the existing lease owner. */
+  readonly repositoryMetadataIdentity?: string;
   readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
   /** Local remote-tracking HEAD captured with the initial develop snapshot; never fetched. */
   readonly initialDevelopRemoteHead?: string;
@@ -231,6 +245,7 @@ export interface RepositoryMutationBorrower {
   readonly registeredAt: string;
   readonly timeoutSeconds: number;
   readonly launchGitSnapshot: RepositoryGitSnapshot;
+  readonly repositoryMetadataIdentity?: string;
   readonly approvedMutationPaths?: readonly string[];
   readonly dirtyApprovalReceiptId?: string;
   readonly finalizationState?: "finalizing";
@@ -452,6 +467,15 @@ function repositoryPhysicalGitDir(worktreeRoot: string): string {
   }
 }
 
+function repositoryMetadataIdentity(root: string, worktree: string, gitDir: string, commonDir: string): string {
+  const identities = [root, worktree, join(worktree, ".git"), gitDir, commonDir].map((path) => {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink()) throw new Error("symlinked repository metadata");
+    return `${path}:${stat.dev}:${stat.ino}`;
+  });
+  return createHash("sha256").update(JSON.stringify(identities)).digest("hex");
+}
+
 function repositoryPhysicalGitCommonDir(worktreeRoot: string): string {
   const root = assertCanonicalRoot(worktreeRoot);
   try {
@@ -502,7 +526,7 @@ export function withVacantPreparationWorktree<T>(canonicalRepoRoot: string, work
     return withMutationMutex(location.mutexPath, () => {
       const assertVacant = (): void => {
         assertExpectedGitIdentity(location.worktree, location.gitDir, common);
-        for (const name of [REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
+        for (const name of [REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_MUTATION_LEASE_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE, REPOSITORY_REVIEW_RESERVATION_FILE]) {
           try { lstatSync(join(location.gitDir, name)); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
           throw new Error("preparation worktree has retained execution or review custody; preserve it for its owner");
@@ -532,6 +556,7 @@ export function withExecutionWorktreeAdmission<T>(canonicalRepoRoot: string, wor
       let active = true;
       const transaction: ExecutionWorktreeTransaction = Object.freeze({ advanceDirectSnapshot(input: Parameters<ExecutionWorktreeTransaction["advanceDirectSnapshot"]>[0]) {
         if (!active) throw new Error("native execution transaction expired");
+        if (settlementPending(location.gitDir)) throw new Error(settlementDiagnostic("unresolved settlement blocks direct authority advancement"));
         assertExpectedGitIdentity(location.worktree, location.gitDir, common);
         const inspection = inspectLeaseUnlocked(location.root, location.leasePath, readProcessFingerprint);
         const lease = inspection.lease;
@@ -639,7 +664,7 @@ function assertIdleReviewCustody(checkout: ReviewCheckoutEvidence, dependencies:
   const root = checkout.repoRoot;
   const gitDir = checkout.repositoryGitDir;
   // Even stale/malformed implement evidence is blocking; review never repairs builder state.
-  for (const file of [REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE]) {
+  for (const file of [REPOSITORY_CHILD_SETTLEMENT_FILE, REPOSITORY_IMPLEMENT_LEASE_FILE, REPOSITORY_MUTATION_BORROWER_FILE]) {
     if (reviewReservationPresent(join(gitDir, file))) throw reviewReservationError("active or unresolved implement ownership/borrower evidence blocks review");
   }
   const leasePath = join(gitDir, REPOSITORY_MUTATION_LEASE_FILE);
@@ -957,6 +982,7 @@ export function publishRepositoryDirtyBorrowApproval(
   const approvalPath = repositoryDirtyBorrowApprovalPath(approval.parentDeploymentDirectory);
   const resolvedDependencies = resolveDependencies(dependencies);
   return withMutationMutex(mutexPath, () => {
+    if (settlementPending(repositoryPhysicalGitDir(worktree))) throw new Error(settlementDiagnostic("unresolved settlement blocks fresh dirty approval"));
     if (!isRepositoryDirtyBorrowApproval(approval)) throw new Error("dirty-borrow-approval: generated receipt is invalid or incomplete");
     validateRepositoryDirtyBorrowScope(worktree, approval.snapshot, approval.classifications, approval.plannedNewPaths);
     const inspection = inspectLeaseUnlocked(root, leasePath, resolvedDependencies.getProcessFingerprint);
@@ -987,6 +1013,7 @@ export function removeRepositoryDirtyBorrowApproval(options: {
 }): "removed" | "absent" | "replacement-preserved" {
   const { root, worktree, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
   return withMutationMutex(mutexPath, () => {
+    if (settlementPending(repositoryPhysicalGitDir(worktree))) return "replacement-preserved";
     const approval = readValidApprovalUnlocked(options.approvalPath);
     if (approval === undefined) return "absent";
     if (!approval || approval.canonicalRepoRoot !== root || (approval.worktreeRoot ?? root) !== worktree || !secureStringsEqual(approval.receiptId, options.receiptId)) return "replacement-preserved";
@@ -1019,6 +1046,7 @@ export function observeReadonlyRepositoryAuthority(repositoryGitDir: string): {
   readonly review?: RepositoryReviewReservation;
   readonly identity: string;
 } {
+  if (settlementPending(repositoryGitDir)) throw new Error(settlementDiagnostic("unresolved settlement blocks usable helper authority"));
   const digest = createHash("sha256");
   const read = (name: string): unknown => {
     const path = join(repositoryGitDir, name);
@@ -1091,6 +1119,7 @@ export function authenticateRepositoryMutationLease(options: {
   };
   const { root, worktree, leasePath, mutexPath } = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator");
   return withMutationMutex(mutexPath, () => {
+    if (settlementPending(repositoryPhysicalGitDir(worktree))) return { status: "rejected", reason: "malformed" };
     const inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
     if (inspection.state !== "live") return { status: "rejected", reason: inspection.state };
     if (!inspection.lease || !inspection.evidenceIdentity) return { status: "rejected", reason: "malformed" };
@@ -1141,6 +1170,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       diagnostic: formatRepositoryBorrowerDiagnostic({ category, reason, canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree, slot: "implement" }),
       ...(borrower ? { borrower } : {}),
     });
+    if (settlementPending(repositoryPhysicalGitDir(worktree))) return reject("settlement-pending", "unresolved terminal settlement blocks every borrower, including force, without consuming approval");
     try { assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir); }
     catch (error) { return reject("repository-identity", error instanceof Error ? error.message : String(error)); }
     if (reviewReservationPresent(repositoryReviewReservationPath(worktree))) {
@@ -1286,6 +1316,7 @@ export function registerRepositoryMutationBorrower(options: RegisterRepositoryMu
       registeredAt: dependencies.now().toISOString(),
       timeoutSeconds: options.timeoutSeconds,
       launchGitSnapshot: gitSnapshot,
+      ...(lease.repositoryMetadataIdentity ? { repositoryMetadataIdentity: lease.repositoryMetadataIdentity } : {}),
       ...(approvedMutationPaths ? { approvedMutationPaths } : {}),
       ...(dirtyApprovalReceiptId ? { dirtyApprovalReceiptId } : {}),
     });
@@ -1424,6 +1455,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(mutexPath, () => {
     assertExpectedGitIdentity(worktree, options.expectedGitDir, options.expectedGitCommonDir);
+    if (settlementPending(repositoryPhysicalGitDir(worktree))) return { status: "rejected", evidenceState: "malformed", leasePath,
+      diagnostic: settlementDiagnostic("unresolved terminal settlement blocks new ownership, including force") };
     if (reviewReservationPresent(repositoryReviewReservationPath(worktree))) {
       return { status: "rejected", evidenceState: "live", leasePath,
         diagnostic: reviewReservationError("read-only review reservation blocks new builder ownership, including force requests").message };
@@ -1554,7 +1587,8 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       preLaunchGitSnapshot: Object.freeze({ ...gitSnapshot }),
       ...(options.ticket ? { ticket: boundedRequired(options.ticket, "ticket") } : {}),
       ...(options.expectedGitDir && options.expectedGitCommonDir
-        ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir }
+        ? { repositoryGitDir: options.expectedGitDir, repositoryGitCommonDir: options.expectedGitCommonDir,
+          repositoryMetadataIdentity: repositoryMetadataIdentity(root, worktree, options.expectedGitDir, options.expectedGitCommonDir) }
         : {}),
       ...(options.branchTransitionPolicy ? { branchTransitionPolicy: Object.freeze({ ...options.branchTransitionPolicy }) } : {}),
       ...(initialDevelopRemoteHead ? { initialDevelopRemoteHead } : {}),
@@ -1655,6 +1689,335 @@ export function releaseRepositoryMutationBorrower(options: {
     unlinkSync(borrowerPath);
     return { status: "released" };
   });
+}
+
+/** Trusted adapters supply owner operations, not model snapshots or approval flags.
+ * publishTicket must use the ticket owner's exact predecessor CAS and be replay-safe.
+ * verifyExecution supplies independently retained runtime process/scope evidence;
+ * it is NOT an operator confirmation or an execution/retry capability. */
+export interface RepositoryChildSettlementHost {
+  verifyExecution(borrower: Readonly<RepositoryMutationBorrower>): {
+    /** Runtime-classified normal exit, never inferred from a status label. */
+    readonly termination: "normal-exit";
+    readonly rawOutcome: { readonly source: "foreground" | "background-supervisor"; readonly status: "success" | "partial" | "failed"; readonly exitCode: number };
+    readonly processes: readonly ProcessFingerprint[];
+    readonly approvedMutationPaths: readonly string[];
+  };
+  readTicket(): { readonly branch: string; readonly baseSha: string; readonly headSha: string };
+  publishTicket(input: { readonly branch: string; readonly baseSha: string; readonly expectedHeadSha: string; readonly headSha: string; readonly settlementDigest: string }): void;
+  /** Test-only interruption seam. Production adapters must not provide it. */
+  boundary?(stage: RepositoryChildSettlementStage): void;
+}
+
+export type RepositoryChildSettlementStage = "intent" | "lease" | "registry" | "ticket" | "published" | "cleanup" | "complete";
+interface RepositoryChildSettlementIntent {
+  readonly schemaVersion: "pa-child-settlement/v1";
+  readonly borrower: RepositoryMutationBorrower;
+  readonly parent: RepositoryMutationLease;
+  readonly gitDir: string;
+  readonly gitCommonDir: string;
+  readonly baseSha: string;
+  readonly expectedAuthorityEventId: number | null;
+  readonly terminal: ReturnType<typeof readParentChildSettlementRegistry>["terminal"];
+  readonly terminalDigest: string;
+  readonly execution: ReturnType<RepositoryChildSettlementHost["verifyExecution"]>;
+  readonly finalSnapshot: RepositoryGitSnapshot;
+  readonly createdAt: string;
+}
+interface RepositoryChildSettlementRecord {
+  readonly intent: RepositoryChildSettlementIntent;
+  readonly digest: string;
+  readonly stage: RepositoryChildSettlementStage;
+  readonly firstFailure?: string;
+}
+export interface RepositoryChildSettlementResult {
+  readonly schemaVersion: "pa-child-reconciliation/v1";
+  readonly outcome: "reconciled" | "already-reconciled" | "blocked";
+  readonly canonicalRepoKey?: string;
+  readonly canonicalRepoRoot?: string;
+  readonly worktreeRoot?: string;
+  readonly parentId?: string;
+  readonly childId?: string;
+  readonly ticket?: string;
+  readonly branch?: string;
+  readonly head?: string;
+  readonly snapshotDigest?: string;
+  readonly settlementDigest?: string;
+  readonly softwareOutcome?: "success" | "partial" | "failed";
+  readonly executionOutcome?: "success" | "partial" | "failed";
+  readonly projection: { readonly lease: boolean; readonly registry: boolean; readonly ticket: boolean };
+  readonly cleanup: boolean;
+  readonly diagnostic?: string;
+}
+
+function settlementHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function readSettlementPrivate(path: string, maximum: number): unknown {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size === 0 || stat.size > maximum) throw new Error("insecure private evidence");
+    const bytes = Buffer.alloc(maximum + 1);
+    let size = 0;
+    while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, null); if (!count) break; size += count; }
+    const after = fstatSync(fd);
+    const current = lstatSync(path);
+    if (stat.dev !== current.dev || stat.ino !== current.ino || size !== stat.size || size > maximum || stat.size !== after.size || stat.ctimeMs !== after.ctimeMs) throw new Error("private evidence changed");
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size))) as unknown;
+  } finally { closeSync(fd); }
+}
+function readSettlementRecord(path: string): RepositoryChildSettlementRecord {
+  const value = readSettlementPrivate(path, MAX_REPOSITORY_CHILD_SETTLEMENT_BYTES) as RepositoryChildSettlementRecord;
+  const intent = value?.intent;
+  if (!intent || intent.schemaVersion !== "pa-child-settlement/v1" || !isRepositoryMutationBorrower(intent.borrower)
+    || !isRepositoryMutationLease(intent.parent) || Buffer.byteLength(JSON.stringify(intent.parent)) > MAX_REPOSITORY_LEASE_BYTES
+    || Buffer.byteLength(JSON.stringify(intent.borrower)) > MAX_REPOSITORY_BORROWER_BYTES || !isCompleteGitSnapshot(intent.finalSnapshot)
+    || !isCompleteGitSnapshot(intent.borrower.launchGitSnapshot) || !isCompleteGitSnapshot(intent.parent.preLaunchGitSnapshot)
+    || !/^[0-9a-f]{40}$/.test(intent.finalSnapshot.head) || !/^[0-9a-f]{40}$/.test(intent.baseSha)
+    || intent.execution?.termination !== "normal-exit" || !intent.execution.rawOutcome
+    || !["foreground", "background-supervisor"].includes(intent.execution.rawOutcome.source)
+    || !["success", "partial", "failed"].includes(intent.execution.rawOutcome.status) || !Number.isInteger(intent.execution.rawOutcome.exitCode)
+    || !Array.isArray(intent.execution.processes) || !intent.execution.processes.every(isProcessFingerprint)
+    || !Array.isArray(intent.execution.approvedMutationPaths) || !intent.execution.approvedMutationPaths.every((path) => typeof path === "string")
+    || !validTimestamp(intent.createdAt) || !["intent", "lease", "registry", "ticket", "published", "cleanup", "complete"].includes(value.stage)
+    || !/^[0-9a-f]{64}$/.test(value.digest) || value.digest !== settlementHash(intent)
+    || intent.terminal?.event !== "completed" || intent.terminal.deployment_id !== intent.borrower.deploymentId
+    || !["success", "partial", "failed"].includes(intent.terminal.status ?? "")
+    || intent.terminalDigest !== settlementHash(intent.terminal)
+    || (value.firstFailure !== undefined && !["authentication", "intent", "lease", "registry", "ticket", "published", "cleanup", "complete"].includes(value.firstFailure))) throw new Error("invalid settlement evidence");
+  return value;
+}
+/** Atomic, exclusive private writes, file and directory fsync before dependent effects. */
+function writeSettlementPrivate(path: string, value: unknown, exclusive = false): void {
+  const body = `${JSON.stringify(value)}\n`;
+  if (Buffer.byteLength(body) > MAX_REPOSITORY_CHILD_SETTLEMENT_BYTES) throw new Error("settlement evidence exceeds bound");
+  const temporary = temporaryPath(path, randomUUID());
+  try {
+    const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+    if (exclusive) linkSync(temporary, path); else renameSync(temporary, path);
+  } finally { if (reviewReservationPresent(temporary)) unlinkSync(temporary); }
+  fsyncReviewDirectory(resolve(path, ".."));
+}
+function settlementAdvancedParent(intent: RepositoryChildSettlementIntent): RepositoryMutationLease {
+  return { ...intent.parent, authorityGitSnapshot: intent.finalSnapshot, authorityUpdatedAt: intent.createdAt, authorityChildDeploymentId: intent.borrower.deploymentId };
+}
+
+/** Opt-in shared factual settlement. Existing terminal callers are deliberately
+ * unchanged until adapter integration. No outcome rewrite, admission, branch
+ * action, check execution or checkout/capacity allocation occurs here. */
+export function reconcileRepositoryTerminalChild(options: {
+  canonicalRepoKey: string; canonicalRepoRoot: string; worktreeRoot: string;
+  repositoryGitDir: string; repositoryGitCommonDir: string;
+  parentDeploymentId: string; childDeploymentId: string; ticket: string;
+  borrowerToken: string;
+  host: RepositoryChildSettlementHost;
+  dependencies?: Partial<RepositoryAdmissionDependencies>;
+}): RepositoryChildSettlementResult {
+  let record: RepositoryChildSettlementRecord | undefined;
+  let stage = "authentication";
+  const projection = { lease: false, registry: false, ticket: false };
+  let cleanup = false;
+  const result = (outcome: RepositoryChildSettlementResult["outcome"], reason?: string): RepositoryChildSettlementResult => {
+    const intent = record?.intent;
+    return { schemaVersion: "pa-child-reconciliation/v1", outcome,
+      ...(intent ? { canonicalRepoKey: intent.borrower.canonicalRepoKey, canonicalRepoRoot: intent.borrower.canonicalRepoRoot,
+        worktreeRoot: intent.borrower.worktreeRoot ?? intent.borrower.canonicalRepoRoot,
+        parentId: intent.parent.deploymentId, childId: intent.borrower.deploymentId, ticket: intent.borrower.ticket,
+        branch: intent.finalSnapshot.branch, head: intent.finalSnapshot.head, snapshotDigest: intent.finalSnapshot.digestSha256,
+        settlementDigest: record!.digest, softwareOutcome: intent.terminal.status as "success" | "partial" | "failed", executionOutcome: intent.execution.rawOutcome.status } : {}),
+      projection: { ...projection }, cleanup, ...(reason ? { diagnostic: settlementDiagnostic(reason) } : {}) };
+  };
+  try {
+    const location = repositoryLeaseLocation(options.canonicalRepoRoot, options.worktreeRoot, "orchestrator", options.repositoryGitDir);
+    const { root, worktree, gitDir, leasePath, mutexPath } = location;
+    assertPhysicalDirectory(root, "canonical repository root"); assertPhysicalDirectory(worktree, "authenticated worktree");
+    assertExpectedGitIdentity(worktree, gitDir, options.repositoryGitCommonDir);
+    if (loadReposYaml()[options.canonicalRepoKey]?.path !== root || repositoryPhysicalGitCommonDir(root) !== options.repositoryGitCommonDir) throw new Error("registered canonical identity conflicts");
+    const dependencies = resolveDependencies(options.dependencies);
+    return withMutationMutex(mutexPath, () => {
+      const activePath = join(gitDir, REPOSITORY_CHILD_SETTLEMENT_FILE);
+      const borrowerPath = join(gitDir, REPOSITORY_MUTATION_BORROWER_FILE);
+      // Keyed to the protected borrower capability, not an agent's narrative ID.
+      if (!boundedString(options.borrowerToken)) return result("blocked", "protected borrower authentication failed");
+      const key = settlementHash([options.childDeploymentId, options.borrowerToken]);
+      const retainedPath = join(gitDir, `pa-repository-child-settlement.${key}.json`);
+      let authenticatedRecord = false;
+      try {
+        assertExpectedGitIdentity(worktree, gitDir, options.repositoryGitCommonDir);
+        if (repositoryPhysicalGitCommonDir(root) !== options.repositoryGitCommonDir) throw new Error("canonical common directory conflict");
+        if (reviewReservationPresent(join(gitDir, REPOSITORY_REVIEW_RESERVATION_FILE))
+          || (location.linked && reviewReservationPresent(join(gitDir, REPOSITORY_IMPLEMENT_LEASE_FILE)))) throw new Error("competing custody");
+        const active = reviewReservationPresent(activePath);
+        const retained = reviewReservationPresent(retainedPath);
+        if (active || retained) record = readSettlementRecord(active ? activePath : retainedPath);
+        let borrower: RepositoryMutationBorrower;
+        if (record) borrower = record.intent.borrower;
+        else {
+          if (!reviewReservationPresent(borrowerPath)) return result("blocked", "legacy-proof-unavailable: absent borrower has no retained runtime settlement proof");
+          const value = readSettlementPrivate(borrowerPath, MAX_REPOSITORY_BORROWER_BYTES);
+          if (!isRepositoryMutationBorrower(value)) throw new Error("invalid borrower");
+          borrower = value;
+        }
+        if (!borrower.repositoryMetadataIdentity || borrower.repositoryMetadataIdentity !== repositoryMetadataIdentity(root, worktree, gitDir, options.repositoryGitCommonDir)) throw new Error("legacy physical proof unavailable or replaced");
+        if (borrower.canonicalRepoKey !== options.canonicalRepoKey || borrower.canonicalRepoRoot !== root || (borrower.worktreeRoot ?? root) !== worktree
+          || borrower.parentDeploymentId !== options.parentDeploymentId || borrower.deploymentId !== options.childDeploymentId || borrower.ticket !== options.ticket
+          || !secureStringsEqual(borrower.borrowerToken, options.borrowerToken) || !isCompleteGitSnapshot(borrower.launchGitSnapshot)
+          || !/^[0-9a-f]{40}$/.test(borrower.launchGitSnapshot.head)) throw new Error("borrower binding conflict");
+        if (reviewReservationPresent(borrowerPath)) {
+          const current = readSettlementPrivate(borrowerPath, MAX_REPOSITORY_BORROWER_BYTES);
+          if (settlementHash(current) !== settlementHash(borrower)) throw new Error("borrower replacement");
+        } else if (!record) throw new Error("borrower proof absent");
+        const observed = dependencies.getProcessFingerprint(borrower.processFingerprint.pid);
+        const current = dependencies.getCurrentProcessFingerprint();
+        const matchingExecutor = current && fingerprintsEqual(borrower.processFingerprint, current) && fingerprintsEqual(current, observed);
+        if (!matchingExecutor && (observed !== undefined || dependencies.isProcessAlive(borrower.processFingerprint.pid))) throw new Error("executor live, reused or uncertain");
+        const execution = options.host.verifyExecution(borrower);
+        if (execution.termination !== "normal-exit" || !execution.rawOutcome || !["foreground", "background-supervisor"].includes(execution.rawOutcome.source)
+          || !["success", "partial", "failed"].includes(execution.rawOutcome.status) || !Number.isInteger(execution.rawOutcome.exitCode)
+          || [124, 130, 137, 143].includes(execution.rawOutcome.exitCode) || !execution.processes.length || !execution.processes.every((process) => isProcessFingerprint(process)
+          && dependencies.getProcessFingerprint(process.pid) === undefined && !dependencies.isProcessAlive(process.pid))
+          || !execution.approvedMutationPaths.length || !isExactPathArray(execution.approvedMutationPaths, worktree)) throw new Error("execution termination or retained scope unavailable");
+        const registry = readParentChildSettlementRegistry({ canonicalRepoKey: options.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree,
+          parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head });
+        const parentValue = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
+        if (!isRepositoryMutationLease(parentValue)) throw new Error("parent evidence invalid");
+        const parent = parentValue;
+        if (parent.canonicalRepoKey !== borrower.canonicalRepoKey || parent.canonicalRepoRoot !== root || (parent.worktreeRoot ?? root) !== worktree
+          || parent.deploymentId !== borrower.parentDeploymentId || parent.ticket !== borrower.ticket || parent.runtime !== "pi" || parent.mode !== "orchestrator"
+          || parent.repositoryGitDir !== gitDir || parent.repositoryGitCommonDir !== options.repositoryGitCommonDir || parent.repositoryMetadataIdentity !== borrower.repositoryMetadataIdentity
+          || !fingerprintsEqual(parent.processFingerprint, borrower.parentProcessFingerprint)
+          || !fingerprintsEqual(parent.processFingerprint, dependencies.getProcessFingerprint(parent.processFingerprint.pid))
+          || !dependencies.isDeploymentRunning(parent.deploymentId) || !isCompleteGitSnapshot(parent.preLaunchGitSnapshot)) throw new Error("parent owner terminal or replaced");
+        authenticatedRecord = true;
+        const finalSnapshot = captureRepositoryGitSnapshot(worktree, dependencies.runGit, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
+        if (!isCompleteGitSnapshot(finalSnapshot) || !/^[0-9a-f]{40}$/.test(finalSnapshot.head) || finalSnapshot.branch !== borrower.branch) throw new Error("complete final identity unavailable");
+        if (!record) {
+          const previous = parent.authorityGitSnapshot ?? parent.preLaunchGitSnapshot;
+          if (!isCompleteGitSnapshot(previous) || previous.branch !== borrower.branch || previous.head !== borrower.launchGitSnapshot.head) throw new Error("parent predecessor mismatch");
+          const intent: RepositoryChildSettlementIntent = { schemaVersion: "pa-child-settlement/v1", borrower, parent, gitDir,
+            gitCommonDir: options.repositoryGitCommonDir, baseSha: registry.baseSha, expectedAuthorityEventId: registry.authorityEventId,
+            terminal: registry.terminal, terminalDigest: registry.terminalDigest, execution, finalSnapshot, createdAt: dependencies.now().toISOString() };
+          record = { intent, digest: settlementHash(intent), stage: "intent" };
+          stage = "intent";
+          writeSettlementPrivate(activePath, record, true);
+          options.host.boundary?.("intent");
+        }
+        const intent = record.intent;
+        if (intent.gitDir !== gitDir || intent.gitCommonDir !== options.repositoryGitCommonDir || intent.baseSha !== registry.baseSha
+          || intent.terminalDigest !== registry.terminalDigest || settlementHash(intent.execution) !== settlementHash(execution)
+          || !repositoryGitSnapshotsEqual(intent.finalSnapshot, finalSnapshot)) throw new Error("retained evidence or current Git drift");
+        // Preserve even noncompliant observed facts in the intent, but never
+        // publish usable authority or clean up its blocking record.
+        const approved = new Set(execution.approvedMutationPaths);
+        if (borrower.approvedMutationPaths && (borrower.approvedMutationPaths.length !== approved.size
+          || borrower.approvedMutationPaths.some((path) => !approved.has(path)))) throw new Error("original approved scope conflict");
+        if (finalSnapshot.statusEntries.some((entry) => entry.kind === "unmerged" || !approved.has(entry.path)
+          || (entry.sourcePath !== undefined && !approved.has(entry.sourcePath)) || hasSymlinkTraversal(worktree, entry.path)
+          || (entry.sourcePath !== undefined && hasSymlinkTraversal(worktree, entry.sourcePath)))) throw new Error("final inventory outside retained approved scope");
+        const changedPaths = splitOptionalNulPaths(gitBytes(dependencies.runGit(["diff", "--name-only", "--no-renames", "-z", borrower.launchGitSnapshot.head, finalSnapshot.head, "--"], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir })));
+        if (changedPaths.some((path) => !approved.has(path) || hasSymlinkTraversal(worktree, path))) throw new Error("committed inventory outside retained approved scope");
+        dependencies.runGit(["merge-base", "--is-ancestor", intent.baseSha, finalSnapshot.head], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
+        dependencies.runGit(["merge-base", "--is-ancestor", borrower.launchGitSnapshot.head, finalSnapshot.head], worktree, { repositoryGitDir: gitDir, repositoryGitCommonDir: options.repositoryGitCommonDir });
+        const advanced = settlementAdvancedParent(intent);
+        const parentMatches = (value: unknown) => settlementHash(value) === settlementHash(advanced);
+        const assertGit = () => {
+          assertExpectedGitIdentity(worktree, gitDir, intent.gitCommonDir);
+          if (borrower.repositoryMetadataIdentity !== repositoryMetadataIdentity(root, worktree, gitDir, intent.gitCommonDir)) throw new Error("physical metadata replaced before effect");
+          if (!repositoryGitSnapshotsEqual(captureRepositoryGitSnapshot(worktree, dependencies.runGit, { repositoryGitDir: gitDir, repositoryGitCommonDir: intent.gitCommonDir }), intent.finalSnapshot)) throw new Error("Git drift before effect");
+          const owner = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
+          if (!parentMatches(owner) && (projection.lease || settlementHash(owner) !== settlementHash(intent.parent))) throw new Error("parent replacement before effect");
+          if (!fingerprintsEqual(intent.parent.processFingerprint, dependencies.getProcessFingerprint(intent.parent.processFingerprint.pid))
+            || !dependencies.isDeploymentRunning(intent.parent.deploymentId)) throw new Error("parent terminated before effect");
+          if (reviewReservationPresent(borrowerPath) && settlementHash(readSettlementPrivate(borrowerPath, MAX_REPOSITORY_BORROWER_BYTES)) !== settlementHash(borrower)) throw new Error("borrower replacement before effect");
+          const observed = readParentChildSettlementRegistry({ canonicalRepoKey: borrower.canonicalRepoKey, canonicalRepoRoot: root, worktreeRoot: worktree,
+            parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId, ticket: borrower.ticket, launchHead: borrower.launchGitSnapshot.head });
+          const predecessor = observed.authorityEventId === intent.expectedAuthorityEventId && observed.headSha === borrower.launchGitSnapshot.head;
+          const published = observed.authorityNote === `direct-child-authority:${borrower.deploymentId}:${record!.digest}` && observed.headSha === intent.finalSnapshot.head;
+          if ((!predecessor && !published) || (projection.registry && !published) || observed.terminalDigest !== intent.terminalDigest) throw new Error("registry successor before effect");
+        };
+        const assertTicket = (head: string) => {
+          const ticket = options.host.readTicket();
+          if (ticket.branch !== borrower.branch || ticket.baseSha !== intent.baseSha || ticket.headSha !== head) throw new Error("ticket projection conflict");
+        };
+        const publishRegistry = () => advanceParentAuthoritySnapshot({ parentDeploymentId: borrower.parentDeploymentId, childDeploymentId: borrower.deploymentId,
+          expectedBranchHeadSha: borrower.launchGitSnapshot.head, branchState: "materialized", branchHeadSha: intent.finalSnapshot.head,
+          timestamp: intent.createdAt, settlement: { digest: record!.digest, expectedAuthorityEventId: intent.expectedAuthorityEventId } });
+        const progress = (next: RepositoryChildSettlementStage) => {
+          const order: readonly RepositoryChildSettlementStage[] = ["intent", "lease", "registry", "ticket", "published", "cleanup", "complete"];
+          if (order.indexOf(next) <= order.indexOf(record!.stage)) return;
+          record = { ...record!, stage: next }; writeSettlementPrivate(activePath, record); options.host.boundary?.(next);
+        };
+        if (retained && !active) {
+          if (record.stage !== "complete" || !parentMatches(parent) || reviewReservationPresent(borrowerPath)) throw new Error("completed replay conflicts with successor");
+          assertGit(); projection.lease = true; publishRegistry(); projection.registry = true; assertTicket(intent.finalSnapshot.head); projection.ticket = true; cleanup = true;
+          return result("already-reconciled");
+        }
+        // Authenticate the ticket tuple before the first authority effect, not
+        // merely after publishing the lease/registry. A retained intent still
+        // blocks admission if this cross-store preflight detects a conflict.
+        const initialTicket = options.host.readTicket();
+        if (initialTicket.branch !== borrower.branch || initialTicket.baseSha !== intent.baseSha
+          || (initialTicket.headSha !== borrower.launchGitSnapshot.head && initialTicket.headSha !== intent.finalSnapshot.head)) throw new Error("ticket identity or predecessor conflict");
+        stage = "lease";
+        assertGit();
+        const currentParent = readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES);
+        if (!parentMatches(currentParent)) {
+          if (settlementHash(currentParent) !== settlementHash(intent.parent)) throw new Error("parent predecessor or successor conflict");
+          // Preserve the stricter existing lease bound; oversize blocks before any cleanup.
+          assertLease(advanced); writeSettlementPrivate(leasePath, advanced);
+        }
+        if (!parentMatches(readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES))) throw new Error("parent readback conflict");
+        projection.lease = true; progress("lease");
+        stage = "registry"; assertGit(); publishRegistry(); projection.registry = true; progress("registry");
+        stage = "ticket"; assertGit();
+        const before = options.host.readTicket();
+        if (before.branch !== borrower.branch || before.baseSha !== intent.baseSha || (before.headSha !== borrower.launchGitSnapshot.head && before.headSha !== intent.finalSnapshot.head)) throw new Error("ticket predecessor conflict");
+        if (before.headSha !== intent.finalSnapshot.head) options.host.publishTicket({ branch: borrower.branch, baseSha: intent.baseSha, expectedHeadSha: borrower.launchGitSnapshot.head, headSha: intent.finalSnapshot.head, settlementDigest: record.digest });
+        assertTicket(intent.finalSnapshot.head); projection.ticket = true; progress("ticket");
+        stage = "published"; assertGit();
+        if (!parentMatches(readSettlementPrivate(leasePath, MAX_REPOSITORY_LEASE_BYTES))) throw new Error("parent changed before cleanup");
+        publishRegistry(); assertTicket(intent.finalSnapshot.head); progress("published");
+        stage = "cleanup"; assertGit(); assertTicket(intent.finalSnapshot.head);
+        // The durable published proof is fsynced before any transient deletion.
+        if (reviewReservationPresent(borrowerPath)) {
+          if (settlementHash(readSettlementPrivate(borrowerPath, MAX_REPOSITORY_BORROWER_BYTES)) !== settlementHash(borrower)) throw new Error("replacement borrower preserved");
+          unlinkSync(borrowerPath); fsyncReviewDirectory(gitDir);
+        }
+        if (borrower.dirtyApprovalReceiptId) {
+          const approvalPath = repositoryDirtyBorrowApprovalPath(intent.parent.deploymentDirectory);
+          if (reviewReservationPresent(approvalPath)) {
+            const approval = readSettlementPrivate(approvalPath, MAX_REPOSITORY_DIRTY_APPROVAL_BYTES);
+            if (!isRepositoryDirtyBorrowApproval(approval)) throw new Error("approval cleanup evidence invalid");
+            if (secureStringsEqual(approval.receiptId, borrower.dirtyApprovalReceiptId)) {
+              unlinkSync(approvalPath); fsyncReviewDirectory(intent.parent.deploymentDirectory);
+            }
+          }
+        }
+        cleanup = true; progress("cleanup");
+        stage = "complete"; assertGit(); assertTicket(intent.finalSnapshot.head);
+        record = { ...record, stage: "complete" };
+        if (reviewReservationPresent(retainedPath)) {
+          if (readSettlementRecord(retainedPath).digest !== record.digest) throw new Error("completion collision");
+        } else writeSettlementPrivate(retainedPath, record, true);
+        unlinkSync(activePath); fsyncReviewDirectory(gitDir); options.host.boundary?.("complete");
+        return result("reconciled");
+      } catch {
+        // Never surface arbitrary host/Git/database error messages (may contain
+        // capabilities). Keep the first causal stage across every retry.
+        if (authenticatedRecord && record && reviewReservationPresent(activePath) && !record.firstFailure) {
+          try { record = { ...record, firstFailure: stage }; writeSettlementPrivate(activePath, record); } catch { /* sole durable proof remains blocking */ }
+        }
+        return result("blocked", `conflicting or unavailable ${stage} evidence; first failure=${record?.firstFailure ?? stage}`);
+      }
+    });
+  } catch { return result("blocked", "repository identity, serialization or protected evidence unavailable"); }
+}
+
+function splitOptionalNulPaths(bytes: Buffer): readonly string[] {
+  if (bytes.length > 0 && bytes[bytes.length - 1] !== 0) throw new Error("incomplete changed-path inventory");
+  return bytes.length === 0 ? [] : splitNulFields(bytes).map(decodeGitPath);
 }
 
 export function finalizeRepositoryMutationBorrower(options: {
@@ -1912,6 +2275,7 @@ export function quarantineRepositoryMutationLease(options: {
   const leasePath = repositoryMutationLeasePath(root);
   const dependencies = resolveDependencies(options.dependencies);
   return withMutationMutex(leasePath, () => {
+    if (settlementPending(repositoryPhysicalGitDir(root))) return { status: "rejected", evidenceState: "malformed", diagnostic: settlementDiagnostic("unresolved settlement blocks quarantine") };
     const inspection = inspectLeaseUnlocked(root, leasePath, dependencies.getProcessFingerprint);
     if (inspection.state === "absent") {
       return { status: "rejected", evidenceState: "absent", diagnostic: boundDiagnostic(`Repository quarantine: repo=${boundedField(options.canonicalRepoKey, 160)} root=${boundedField(root, 700)}; state=absent; reason=ownership evidence no longer exists.`) };
@@ -2082,6 +2446,7 @@ function inspectBorrowerUnlocked(
 }
 
 function readValidLeaseUnlocked(path: string): RepositoryMutationLease | null | undefined {
+  if (settlementPending(resolve(path, ".."))) return null;
   if (!existsSync(path)) return undefined;
   if (statSync(path).size > MAX_REPOSITORY_LEASE_BYTES) return null;
   try {
@@ -2093,6 +2458,7 @@ function readValidLeaseUnlocked(path: string): RepositoryMutationLease | null | 
 }
 
 function readValidBorrowerUnlocked(path: string): RepositoryMutationBorrower | null | undefined {
+  if (settlementPending(resolve(path, ".."))) return null;
   if (!existsSync(path)) return undefined;
   if (statSync(path).size > MAX_REPOSITORY_BORROWER_BYTES) return null;
   try {
@@ -2167,6 +2533,7 @@ function isRepositoryMutationLease(value: unknown): value is RepositoryMutationL
     && ((row["repositoryGitDir"] === undefined && row["repositoryGitCommonDir"] === undefined)
       || (boundedString(row["repositoryGitDir"]) && isAbsolute(row["repositoryGitDir"] as string)
         && boundedString(row["repositoryGitCommonDir"]) && isAbsolute(row["repositoryGitCommonDir"] as string)))
+    && (row["repositoryMetadataIdentity"] === undefined || (typeof row["repositoryMetadataIdentity"] === "string" && /^[0-9a-f]{64}$/.test(row["repositoryMetadataIdentity"])))
     && (row["branchTransitionPolicy"] === undefined || isBranchTransitionPolicy(row["branchTransitionPolicy"]))
     && (row["initialDevelopRemoteHead"] === undefined || (typeof row["initialDevelopRemoteHead"] === "string" && /^[0-9a-f]{40}$/.test(row["initialDevelopRemoteHead"])))
     && (row["branchTransitioned"] === undefined || row["branchTransitioned"] === true);
@@ -2198,6 +2565,7 @@ function isRepositoryMutationBorrower(value: unknown): value is RepositoryMutati
     && Number(row["timeoutSeconds"]) >= MIN_BORROWER_TIMEOUT_SECONDS
     && Number(row["timeoutSeconds"]) <= MAX_BORROWER_TIMEOUT_SECONDS
     && isGitSnapshot(row["launchGitSnapshot"])
+    && (row["repositoryMetadataIdentity"] === undefined || (typeof row["repositoryMetadataIdentity"] === "string" && /^[0-9a-f]{64}$/.test(row["repositoryMetadataIdentity"])))
     && (row["approvedMutationPaths"] === undefined || isExactPathArray(row["approvedMutationPaths"], (row["worktreeRoot"] ?? row["canonicalRepoRoot"]) as string))
     && (row["dirtyApprovalReceiptId"] === undefined || boundedString(row["dirtyApprovalReceiptId"]))
     && ((row["dirtyApprovalReceiptId"] === undefined) === (row["approvedMutationPaths"] === undefined))
