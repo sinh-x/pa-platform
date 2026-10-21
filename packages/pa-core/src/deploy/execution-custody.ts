@@ -90,7 +90,9 @@ export function parseExecutionCustody(value: unknown): ExecutionCustody {
 }
 export function parseExecutionBounds(value: unknown): ExecutionBounds {
   const row = workflowObject(value, ["startedAt", "deadlineAt", "runtimeMinutes", "consecutiveNoProgress", "replacementsUsed", "reviewCap", "reviewsUsed", "unresolvedFailureRef"]);
-  const runtimeMinutes = integer(row["runtimeMinutes"], 60, 240);
+  // Ordinary launcher bounds may be shorter than optional preparation's
+  // separately enforced 60-minute minimum. Never inflate their deadline.
+  const runtimeMinutes = integer(row["runtimeMinutes"], 1, 240);
   const startedAt = workflowTimestamp(row["startedAt"]); const deadlineAt = workflowTimestamp(row["deadlineAt"]);
   const consecutiveNoProgress = integer(row["consecutiveNoProgress"], 0, 3);
   const unresolvedFailureRef = nullableText(row["unresolvedFailureRef"]);

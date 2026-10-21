@@ -4,11 +4,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { closeDb, appendRegistryEvent, getDeploymentEvents, repositoryMutationLeasePath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
+import { closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
 import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "../prepared-native.js";
-import { PiNativeExecutionAdapter } from "../execution-native.js";
+import { PiNativeExecutionAdapter, ORDINARY_NATIVE_EXECUTION_START } from "../execution-native.js";
 import { PiNativePhaseReportAdapter } from "../phase-report-native.js";
 import { recordPiProcessIdentity, recordPiReadonlyRoleProcessIdentity } from "../process-identity.js";
 import { createPiPreparationHost, createPiPreparationTool, createPiWorkflowPolicyModule, createPiExecutionModule, createPiPhaseReportModule, resolveNativePiPreparationBinding, type PiPreparationCaller, type PiPreparationContext } from "../pi-extension/prepared-workflow.js";
@@ -529,6 +529,186 @@ test("AC6 real prepared deploy rejects dirty candidate before transfer/spawn and
   assert.equal(readFileSync(marker, "utf8"), "preserve unknown work\n");
   const reservation = JSON.parse(readFileSync(preparedRepositoryTicketReservationPath(f.repo, "PAP-256"), "utf8"));
   assert.equal(reservation.occupancy, "idle-ready"); assert.equal(reservation.repositoryPermit, 1);
+}));
+
+async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; opts: SpawnOpts; git: (args: string[], cwd?: string) => string }) => Promise<void>) {
+  const previousEnv = process.env; const previousCwd = process.cwd(); process.env = { ...previousEnv };
+  for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+  let bodyFailure: unknown;
+  try { await fixture(async (f) => {
+    const git = (args: string[], cwd = f.repo) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(["symbolic-ref", "HEAD", "refs/heads/develop"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+    git(["config", "commit.gpgsign", "false"]); mkdirSync(join(f.root, "empty-hooks")); git(["config", "core.hooksPath", join(f.root, "empty-hooks")]);
+    writeFileSync(join(f.repo, "README.md"), "ordinary fixture\n"); git(["add", "README.md"]); git(["commit", "-m", "ordinary base"]);
+    const base = git(["rev-parse", "HEAD"]); const checkout = join(f.root, "checkout");
+    git(["worktree", "add", "-b", "feature/PAP-256-fixture", checkout, base]);
+    writeFileSync(f.ticketPath, JSON.stringify({ ...f.ticket, status: "implementing", title: "Ordinary fixture", linkedBranches: [{ repo: f.caller.repoKey, branch: "feature/PAP-256-fixture", state: "materialized", baseSha: base, headSha: base, sha: base }] }));
+    Object.assign(process.env, { PA_AI_USAGE_HOME: f.ai, PA_REGISTRY_DB: join(f.ai, "registry.db"), PA_PLATFORM_HOME: f.root });
+    save(join(f.root, "teams/builder.yaml"), "name: builder\ndescription: Fixture\nobjective: Implement\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n    require_ticket: true\n");
+    let spawns = 0; let forbidden = 0;
+    const treehouse = new TreehouseClient({ run(args, cwd) {
+      assert.equal(cwd, f.repo);
+      if (args[0] === "--version") return { status: 0, stdout: Buffer.from("v3.1.3\n"), stderr: Buffer.alloc(0) };
+      if (args[0] === "status") return { status: 0, stdout: Buffer.from(JSON.stringify([{ name: "1", path: checkout, status: "leased", branch: "feature/PAP-256-fixture", detached: false, flavor: "git", lease_id: "ordinary-fixture-lease", lease_holder: "pa:fixture-repo:PAP-256", leased_at: time, processes: [] }])), stderr: Buffer.alloc(0) };
+      forbidden++; throw new Error("ordinary launch must reuse the existing lease");
+    } });
+    const adapter: RuntimeAdapter & { preflight(): Promise<void> } = { name: "pi", defaultModel: "", sessionFileName: "session-id-pi.txt", allocateSessionId: () => "ordinary-fixture-session", async preflight() {},
+      installHooks() {}, describeTools: () => ({ runtime: "pi", markdown: "fixture tools" }), extractActivity: () => [], resume() { forbidden++; throw new Error("no resume migration"); },
+      async spawn(opts) {
+        spawns++; const inherited = process.env; process.env = { ...inherited, ...opts.env, TEST_PRIVATE_TOKEN: "ordinary-private-token" }; process.chdir(checkout);
+        try { await run({ ...f, checkout, base, treehouse, opts, git }); }
+        catch (error) { bodyFailure = error; throw error; }
+        finally { process.chdir(previousCwd); process.env = inherited; }
+        return { sessionId: opts.sessionId!, exitCode: 0, metadata: { sessionId: opts.sessionId } };
+      } };
+    const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: f.caller.repoKey, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: f.authority });
+    if (bodyFailure) throw bodyFailure;
+    assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1); assert.equal(forbidden, 0);
+    assert.equal(git(["rev-parse", "HEAD"]), base); assert.equal(git(["branch", "--show-current"]), "develop");
+    assert.deepEqual(readdirSync(f.native), [], "optional policy, qualification and grants remain absent");
+  }); } finally { closeDb(); process.chdir(previousCwd); process.env = previousEnv; }
+}
+
+test("PAP-264 ordinary optional-inactive launch uses actual SDK effects, exact ordered checks, first failure/reload/replan and commit", () => ordinaryFixture(async (f) => {
+  const directory = join(f.ai, "deployments", f.opts.deployId); const context = { cwd: f.checkout };
+  const start = getDeploymentEvents(f.opts.deployId).find((event) => event.event === "started")!;
+  assert.equal(start.note, ORDINARY_NATIVE_EXECUTION_START); assert.equal(start.effective_timeout_seconds, 1800);
+  assert.equal(existsSync(join(directory, "prepared-consumption.json")), false);
+  const freshAdapter = () => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
+  assert.throws(() => freshAdapter().resolve(context), "missing Pi process proof must deny before storage/effects");
+  assert.equal(f.authority.execution(), null);
+  assert.equal(recordPiProcessIdentity(f.opts.deployId, directory, process.pid), true); f.opts.onPid?.(process.pid);
+  let adapter = freshAdapter(); let runtime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi);
+  await runtime.dispatch("session_start", {}, context);
+  let session = adapter.resolve(context)!;
+  const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+  const observe = async (kind: string) => (await control({ action: "observe", kind })).details.evidence as SourceVersion;
+  const select = async () => { const holder = await observe("holder"); await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder }); };
+  const settle = async () => control({ action: "settle", evidence: await observe("inventory") });
+  const reload = async () => {
+    const before = session.service.status(session.actor);
+    adapter = freshAdapter(); runtime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi); await runtime.dispatch("session_start", {}, context);
+    session = adapter.resolve(context)!; assert.deepEqual(session.service.status(session.actor), before);
+  };
+  let sequence = 0;
+  const execute = async (name: string, input: Record<string, unknown>, claimPass = false) => {
+    const id = `ordinary-${++sequence}`;
+    assert.equal(await runtime.dispatch("tool_call", { toolName: name, toolCallId: id, input }, context), undefined);
+    let failed = false; let result: unknown;
+    try { result = await runtime.tools.get(name)!.execute(id, input, undefined, undefined, context); } catch (error) { failed = true; result = String(error); }
+    await runtime.dispatch("tool_execution_end", { toolName: name, toolCallId: id, result: claimPass ? { exitCode: 0, text: "PASS" } : result, isError: claimPass ? false : failed }, context);
+    return { failed, result };
+  };
+  const deny = async (name: string, input: Record<string, unknown>) => {
+    const before = session.evidence.store.records(); const head = f.git(["rev-parse", "HEAD"], f.checkout);
+    const response = await runtime.dispatch("tool_call", { toolName: name, toolCallId: `denied-${++sequence}`, input }, context) as { block: boolean; reason: string };
+    assert.equal(response.block, true); assert.ok(response.reason.length <= 2000); assert.match(response.reason, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+    assert.doesNotMatch(response.reason, /ordinary-private-token|bootId|startTimeTicks/);
+    assert.deepEqual(session.evidence.store.records(), before); assert.equal(f.git(["rev-parse", "HEAD"], f.checkout), head);
+  };
+  const plan = { phaseId: "phase-2", scope: "ordinary source/check fixture", paths: ["src/file.ts", "package.json"], requirements: ["FR2", "FR3", "FR4", "FR6", "FR10", "AC1", "AC3", "AC5"], prerequisites: [], checks: ["corepack pnpm typecheck", "git diff --check"], size: "L", complexity: "high", rationale: "Actual isolated SDK evidence, not packaged/loaded/human acceptance." };
+  await control({ action: "plan", plan }); await select();
+  assert.equal(session.contract.bounds.runtimeMinutes, 30);
+  const coldRuntime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(coldRuntime.pi);
+  const beforeColdDispatch = session.evidence.store.records();
+  assert.equal((await coldRuntime.dispatch("tool_call", { toolName: "write", toolCallId: "unguarded-startup", input: { path: "src/file.ts", content: "forbidden" } }, context) as { block: boolean }).block, true);
+  assert.deepEqual(session.evidence.store.records(), beforeColdDispatch);
+  await deny("bash", { command: "git commit -m 'premature'" });
+  await deny("bash", { command: "git diff --check" }); // wrong named order
+  await deny("bash", { command: "corepack pnpm typecheck; true" });
+  await deny("write", { path: join(f.repo, "README.md"), content: "forbidden" });
+  await execute("write", { path: "src/file.ts", content: "export const value = 1;\n" });
+  await execute("edit", { path: "src/file.ts", edits: [{ oldText: "value = 1", newText: "value = 2" }] });
+  assert.match(readFileSync(join(f.checkout, "src/file.ts"), "utf8"), /value = 2/);
+  const manager = JSON.parse(readFileSync(new URL("../../../../package.json", import.meta.url), "utf8")).packageManager;
+  const packageJson = (exit: number) => JSON.stringify({ name: "ordinary-fixture", packageManager: manager, scripts: { typecheck: `node -e \"console.log(process.env.TEST_PRIVATE_TOKEN);console.error('actual ordinary stderr');process.exit(${exit})\"` } });
+  await execute("write", { path: "package.json", content: packageJson(2) });
+  assert.equal((await execute("bash", { command: plan.checks[0], timeout: 30 }, true)).failed, true);
+  const original = session.service.status(session.actor).originalFailure!;
+  assert.equal(original.exitCode, 2); assert.equal(original.command, plan.checks[0]);
+  const failedResult = session.evidence.read(original.output, "tool-result") as { process: { stdout: Parameters<typeof session.evidence.blob>[0]; stderr: Parameters<typeof session.evidence.blob>[0] } };
+  assert.match(session.evidence.blob(failedResult.process.stdout).toString(), /ordinary-private-token/);
+  assert.match(session.evidence.blob(failedResult.process.stderr).toString(), /actual ordinary stderr/);
+  await reload(); assert.deepEqual(session.service.status(session.actor).originalFailure, original);
+  await settle(); await control({ action: "attempt", evidence: await observe("recovery") });
+  await control({ action: "plan", plan }); await reload();
+  assert.equal(session.service.status(session.actor).bounds.consecutiveNoProgress, 1);
+  assert.equal(session.service.status(session.actor).bounds.replacementsUsed, 0); assert.equal(session.service.status(session.actor).bounds.reviewsUsed, 0);
+  await select(); await execute("write", { path: "package.json", content: packageJson(0) });
+  await deny("bash", { command: "git commit -m 'failure cannot be erased'" });
+  const passed = await execute("bash", { command: plan.checks[0], timeout: 30 }); assert.equal(passed.failed, false);
+  assert.doesNotMatch(JSON.stringify(passed.result), /ordinary-private-token/);
+  await execute("bash", { command: plan.checks[1], timeout: 30 });
+  await settle();
+  // Resolution must reference the successful exact original check, not the later diff check.
+  const passedEvidence = session.reportFacts().checks.findLast((check) => check.command === plan.checks[0] && check.exitCode === 0)!.output!;
+  await control({ action: "resolve", evidence: passedEvidence }); await select();
+  await execute("bash", { command: "git add -- package.json src/file.ts" });
+  await execute("bash", { command: "git commit -m 'ordinary SDK phase fixture'" });
+  const committed = session.service.status(session.actor); assert.notEqual(committed.candidateSha, f.base);
+  assert.deepEqual(committed.passedChecks, {}); assert.deepEqual(committed.acceptance, {});
+  await reload(); assert.equal(session.service.status(session.actor).candidateSha, committed.candidateSha);
+  assert.deepEqual(getDeploymentEvents(f.opts.deployId).find((event) => event.event === "started"), start);
+  await deny("bash", { command: "git commit -m 'old passes cannot authorize candidate'" });
+  await settle();
+  assert.equal(getDeploymentEvents(f.opts.deployId).filter((event) => event.event === "started" && event.mode === "implement").length, 0);
+  assert.equal(existsSync(join(directory, "prepared-consumption.json")), false); assert.deepEqual(readdirSync(f.native), []);
+}));
+
+test("PAP-264 ordinary drift, adopted correlation loss/reload and started operations deny without fallback or SDK effects", () => ordinaryFixture(async (f) => {
+  const context = { cwd: f.checkout }; const directory = join(f.ai, "deployments", f.opts.deployId);
+  recordPiProcessIdentity(f.opts.deployId, directory, process.pid); f.opts.onPid?.(process.pid);
+  const fresh = () => new PiNativeExecutionAdapter({ authority: f.authority, helperDependencies: { treehouse: f.treehouse } });
+  getDb().prepare("UPDATE registry_events SET note = NULL WHERE deployment_id = ? AND event = 'started'").run(f.opts.deployId);
+  try {
+    assert.throws(() => fresh().resolve(context), /EXECUTION_CAPABILITY_UNSUPPORTED\/capability/);
+    assert.equal(f.authority.execution(), null, "missing direct support creates no execution storage");
+  } finally { getDb().prepare("UPDATE registry_events SET note = ? WHERE deployment_id = ? AND event = 'started'").run(ORDINARY_NATIVE_EXECUTION_START, f.opts.deployId); }
+  const adapter = fresh(); const runtime = executionRuntime(); createPiExecutionModule({ nativeAdapter: adapter })(runtime.pi); await runtime.dispatch("session_start", {}, context);
+  const session = adapter.resolve(context)!; const control = (input: Record<string, unknown>) => runtime.tools.get("pa_execution")!.execute("control", input, undefined, undefined, context);
+  await control({ action: "plan", plan: { phaseId: "phase-2", scope: "ordinary denial fixture", paths: ["src/file.ts"], requirements: ["AC3", "AC5"], prerequisites: [], checks: ["typecheck"], size: "L", complexity: "high", rationale: "Zero forbidden effects before actual SDK dispatch." } });
+  const holder = (await control({ action: "observe", kind: "holder" })).details.evidence;
+  await control({ action: "select", executor: "orchestrator-direct", holder, handover: holder });
+  const write = { path: "src/file.ts", content: "forbidden drift write" };
+  const assertDenied = async () => {
+    const records = session.evidence.store.records();
+    const result = await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "denied", input: write }, context) as { block: boolean };
+    assert.equal(result.block, true);
+    await assert.rejects(runtime.tools.get("write")!.execute("denied", write, undefined, undefined, context));
+    assert.throws(() => fresh().resolve(context));
+    assert.equal(existsSync(join(f.checkout, "src/file.ts")), false); assert.deepEqual(session.evidence.store.records(), records);
+  };
+  for (const [key, value] of [["PA_TICKET_ID", "PAP-999"], ["PA_REPO", f.repo], ["PA_WORKTREE_ROOT", f.repo], ["PA_DEPLOYMENT_DIR", f.root]] as const) {
+    const before = process.env[key]; process.env[key] = value; try { await assertDenied(); } finally { process.env[key] = before; }
+  }
+  appendRegistryEvent({ deployment_id: f.opts.deployId, team: "builder", event: "pid", timestamp: time, pid: process.pid + 1 });
+  try { await assertDenied(); } finally { appendRegistryEvent({ deployment_id: f.opts.deployId, team: "builder", event: "pid", timestamp: time, pid: process.pid }); }
+  const slotPath = repositoryTicketSlotPath(f.repo, "PAP-256"); const slotBytes = readFileSync(slotPath);
+  writeFileSync(slotPath, JSON.stringify({ ...JSON.parse(slotBytes.toString()), slotToken: "drift" }));
+  try { await assertDenied(); } finally { writeFileSync(slotPath, slotBytes); }
+  const ticketBytes = readFileSync(f.ticketPath); const ticket = JSON.parse(ticketBytes.toString()); ticket.linkedBranches[0].baseSha = "f".repeat(40); writeFileSync(f.ticketPath, JSON.stringify(ticket));
+  try { await assertDenied(); } finally { writeFileSync(f.ticketPath, ticketBytes); }
+  // Same physical checkout but wrong branch or HEAD, restored only in this disposable fixture.
+  const gitDir = f.git(["rev-parse", "--absolute-git-dir"], f.checkout); const headBytes = readFileSync(join(gitDir, "HEAD"));
+  writeFileSync(join(gitDir, "HEAD"), `ref: refs/heads/develop\n`);
+  try { await assertDenied(); } finally { writeFileSync(join(gitDir, "HEAD"), headBytes); }
+  f.git(["commit", "--allow-empty", "-m", "external drift"], f.checkout);
+  try { await assertDenied(); } finally { f.git(["update-ref", "refs/heads/feature/PAP-256-fixture", f.base], f.checkout); }
+  // Simulate loss of immutable correlation in the disposable registry. Even a
+  // config rollback cannot re-enable legacy built-ins once its journal exists.
+  const teamPath = join(f.root, "teams/builder.yaml"); const teamBytes = readFileSync(teamPath);
+  writeFileSync(teamPath, `${teamBytes.toString()}  - id: implement\n    label: Implement\n`);
+  getDb().prepare("UPDATE registry_events SET note = NULL WHERE deployment_id = ? AND event = 'started'").run(f.opts.deployId);
+  try { await assertDenied(); } finally {
+    getDb().prepare("UPDATE registry_events SET note = ? WHERE deployment_id = ? AND event = 'started'").run(ORDINARY_NATIVE_EXECUTION_START, f.opts.deployId); writeFileSync(teamPath, teamBytes);
+  }
+  assert.equal(await runtime.dispatch("tool_call", { toolName: "write", toolCallId: "started", input: write }, context), undefined);
+  const reloaded = fresh().resolve(context)!; assert.equal(reloaded.service.status(reloaded.actor).operation?.id, "started");
+  await assert.rejects(runtime.tools.get("write")!.execute("another-id", write, undefined, undefined, context));
+  assert.equal((await runtime.dispatch("tool_call", { toolName: "edit", toolCallId: "overlap", input: { path: "src/file.ts", edits: [] } }, context) as { block: boolean }).block, true);
+  const holderAgain = session.observe("holder");
+  assert.throws(() => session.service.apply(session.actor, { action: "select", executor: "implement-child", holder: session.actor, handover: holderAgain }));
+  assert.equal(existsSync(join(f.checkout, "src/file.ts")), false); assert.equal(reloaded.service.status(reloaded.actor).operation?.id, "started");
 }));
 
 test("AC6 actual preflight revocation stops prepared spawn while retaining the same checkout/reservation", () => resourceFixture(async (f) => {

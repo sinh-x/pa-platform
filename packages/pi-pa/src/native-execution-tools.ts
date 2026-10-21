@@ -1,5 +1,5 @@
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
-import { workflowError } from "@pa-platform/pa-core";
+import { executionFailure, workflowError } from "@pa-platform/pa-core";
 import type { PiNativeExecutionAdapter, NativeExecutionSession } from "./execution-native.js";
 import type { PiRuntime, PiSessionLifecycle, PiToolDefinition, PiToolResult } from "./pi-extension/index.js";
 
@@ -7,14 +7,15 @@ function publicResult(result: unknown, session: NativeExecutionSession): PiToolR
   const value = JSON.parse(JSON.stringify(result), (_key, item: unknown) => typeof item === "string" ? session.publicText(item) : item) as PiToolResult;
   return { ...value, details: value.details ?? {} };
 }
-/** Install only after an authenticated consumed lineage is observed. Legacy and
- * inactive sessions retain Pi's actual built-ins, not merely equivalent mocks.
+/** Install only after authenticated ordinary or consumed lineage is observed.
+ * Independently admitted pre-migration bootstrap sessions retain actual built-ins.
  * Native tool_call records precede these lower SDK operation boundaries. */
-export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNativeExecutionAdapter, lifecycle?: PiSessionLifecycle): void {
+export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNativeExecutionAdapter, lifecycle?: PiSessionLifecycle): () => boolean {
   let installed = false;
   pi.on?.("session_start", (_event, context) => {
     if (installed) return;
     const session = adapter.resolve(context); if (!session) return;
+    if (!pi.registerTool) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
     const cwd = session.contract.worktreeRoot;
     for (const name of ["bash", "write", "edit"] as const) {
       const template = name === "bash" ? createBashTool(cwd) : name === "write" ? createWriteTool(cwd) : createEditTool(cwd);
@@ -57,4 +58,5 @@ export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNative
     }
     installed = true;
   });
+  return () => installed;
 }
