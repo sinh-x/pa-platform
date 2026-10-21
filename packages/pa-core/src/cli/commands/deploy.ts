@@ -1,4 +1,4 @@
-import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { DEFAULT_DEPLOY_TIMEOUT_SECONDS, assertDeployResumeMode, DeployModeSelectionError, MAX_DEPLOY_TIMEOUT_SECONDS, MIN_DEPLOY_TIMEOUT_SECONDS, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks, DeployRequest } from "../../deploy/index.js";
 import { formatBoundedFiveFieldDiagnostic, resolveRepoExecutionPath } from "../../repos.js";
 import { readGuardedLocalTextFile, assertNoSensitiveMatch } from "../../sensitive-patterns.js";
@@ -271,6 +271,19 @@ export async function runDeployCommand(argv: string[], io: Required<CliIo>, hook
   }
   if (!hooks.deploy) {
     reject("Deployment execution requires an adapter hook");
+    return 1;
+  }
+
+  // Validate selected configuration before adapter preflight, Git or ticket initialization.
+  // Keep the request (and binaryName) intact: a missing selection is not a default rewrite.
+  try {
+    const team = loadTeamConfig(resolved.request.team);
+    resolveDeployMode(team, resolved.request.mode);
+    assertDeployResumeMode(team, resolved.request.resume);
+  }
+  catch (error) {
+    if (!(error instanceof DeployModeSelectionError)) throw error;
+    io.stderr(error.message);
     return 1;
   }
 

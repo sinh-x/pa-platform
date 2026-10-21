@@ -181,6 +181,64 @@ function readDryRunBody(root: string, stdout: string[]): string {
   return activity.map((event) => event.body).join("\n");
 }
 
+test("OPA strict mode admission rejects retired/unknown/default, force, resume and inherited requests without effects", async () => {
+  await withOpaEnv(async (root, gitState) => {
+    const effects: string[] = [];
+    const adapter: RuntimeAdapter = { ...createStubAdapter({ exitCode: 0 }),
+      describeTools: () => { effects.push("tools"); return { runtime: "opencode", markdown: "stub" }; },
+      installHooks: () => { effects.push("hooks"); }, spawn: () => { effects.push("spawn"); return { exitCode: 0 }; },
+      resume: () => { effects.push("resume"); return { exitCode: 0 }; } };
+    const snapshots = (): Record<string, string> => {
+      const files: Record<string, string> = {};
+      const walk = (dir: string): void => { for (const item of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, item.name); if (item.isDirectory()) walk(path); else files[path] = readFileSync(path).toString("base64");
+      } }; walk(root); return files;
+    };
+    const keys = ["PA_TEAM", "PA_MODE", "PA_DEPLOYMENT_ID", "PA_DEPLOYMENT_DIR"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      for (const inherited of [false, true]) {
+        for (const key of keys) delete process.env[key];
+        if (inherited) Object.assign(process.env, { PA_TEAM: "builder", PA_MODE: "orchestrator", PA_DEPLOYMENT_ID: "d-111111", PA_DEPLOYMENT_DIR: join(root, "parent") });
+        for (const request of [
+          { mode: "implement" }, { mode: "implement", force: true }, { mode: "implement", resume: "d-111111", force: true },
+          { mode: "implement", background: true }, { mode: "private-sentinel" }, { mode: "x".repeat(5000) }, {},
+        ]) {
+          writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+            `default_mode: ${Object.keys(request).length ? "orchestrator" : "private-sentinel"}`, "deploy_modes:", "  - id: orchestrator", "    label: Orchestrator"].join("\n"));
+          const before = snapshots();
+          const result = await deployWithOpencode({ team: "builder", ...request }, adapter);
+          assert.equal(result.status, "failed"); assert.equal(result.mode, null); assert.equal(result.deploymentId, undefined);
+          assert.match(result.reason!, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+          assert.ok(result.reason!.length <= 2000); assert.doesNotMatch(result.reason!, /private-sentinel|x{50}|d-111111/);
+          assert.deepEqual(snapshots(), before, "rejected gate has zero deployment, registry, lease, branch or project effects");
+        }
+      }
+      assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+      writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+        "default_mode: orchestrator", "deploy_modes:", "  - id: orchestrator", "    label: Orchestrator"].join("\n"));
+      appendRegistryEvent({ deployment_id: "d-222222", team: "builder", mode: "implement", runtime: "opencode", event: "started", timestamp: new Date().toISOString() });
+      const history = getDeploymentEvents("d-222222");
+      for (const mode of [undefined, "orchestrator"]) {
+        const result = await deployWithOpencode({ team: "builder", ...(mode ? { mode } : {}), resume: "d-222222", force: true }, adapter);
+        assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+        assert.match(result.reason!, /deployment mode selection rejected/);
+      }
+      assert.deepEqual(getDeploymentEvents("d-222222"), history);
+      assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+      assert.equal(existsSync(join(root, "deployments")), false);
+      for (const id of ["orchestrator", "implement"]) {
+        writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+          `default_mode: ${id}`, "deploy_modes:", `  - id: ${id}`, "    label: Selected"].join("\n"));
+        let mode: string | undefined;
+        const result = await deployWithOpencode({ team: "builder" }, { ...createStubAdapter({ exitCode: 0 }),
+          spawn: (options) => { mode = options.executionPlan?.mode; assert.equal(options.executionPlan?.treehouse, undefined); return { exitCode: 0 }; } });
+        assert.equal(result.status, "success", result.reason); assert.equal(mode, id, "exact configured mode, no Pi custody claim");
+      }
+    } finally { for (const key of keys) restore(key, previous[key]); }
+  });
+});
+
 test("opa rogue-one reaches the normal hook/spawn seam with fixed bare evidence", async () => {
   await withOpaEnv(async (root, gitState) => {
     writeRogueOneTeamConfig(root);

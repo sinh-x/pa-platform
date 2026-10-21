@@ -155,7 +155,7 @@ test("review-auto rejects candidate binding drift and concurrent borrowers", asy
         const reservation = reserve(); const reservationPath = repositoryReviewReservationPath(worktree);
         assert.equal(statSync(reservationPath).mode & 0o777, 0o600);
         const plan = resolveExecutionPlan({ request: selected.planningRequest, cwd: selected.planningCwd, runtime: "pi",
-          teamConfig: { name: "requirements", description: "fixture", objective: "fixture", agents: [], default_mode: "review-auto" },
+          teamConfig: { name: "requirements", description: "fixture", objective: "fixture", agents: [], default_mode: "review-auto", deploy_modes: [{ id: "review-auto", label: "Review Auto" }] },
           deploymentId: "d-222222", deploymentDir: dir, activityLogPath: join(dir, "activity.jsonl"), environment: {}, timeoutSeconds: 60 });
         assert.equal(plan.worktreeRoot, worktree); assert.equal(plan.repoRoot, repo); assert.equal(plan.repositoryAdmission.ownershipIntent, "none");
         const launch: PiProtectedValidationLaunch = { schemaVersion: "pi-protected-validation/v1", deploymentId: "d-222222",
@@ -743,6 +743,63 @@ function stubAdapter(options: { preflight?: () => Promise<void>; result?: (sessi
     describeTools() { options.onDescribe?.(); return { runtime: "pi", markdown: "stub" }; },
   };
 }
+
+test("Pi strict mode entry rejects retired/unknown/default, force, resume and inherited child before all effects", async () => {
+  await withPiEnv(async (root, gitState) => {
+    const effects: string[] = [];
+    const adapter = stubAdapter({ preflight: async () => { effects.push("preflight"); }, onInstall: () => effects.push("hooks"),
+      onDescribe: () => effects.push("tools"), onSpawn: () => effects.push("spawn"), onResume: () => effects.push("resume") });
+    const dependencies: PiDeployDependencies = { observeOperation: (operation) => effects.push(operation),
+      treehouse: new TreehouseClient({ run: () => { effects.push("treehouse"); throw new Error("forbidden"); } }),
+      queryParentDeploymentStatus: () => { effects.push("parent-query"); return null; } };
+    const snapshots = (): Record<string, string> => {
+      const files: Record<string, string> = {};
+      const walk = (dir: string): void => { for (const item of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, item.name); if (item.isDirectory()) walk(path); else files[path] = readFileSync(path).toString("base64");
+      } }; walk(root); return files;
+    };
+    const inherited = { PA_TEAM: "builder", PA_MODE: "orchestrator", PA_DEPLOYMENT_ID: "d-111111", PA_DEPLOYMENT_DIR: join(root, "parent"), PA_REPO: process.cwd(), PA_TICKET_ID: "PAP-198" };
+    for (const child of [false, true]) await withInheritedEnvironment(child ? inherited : {}, async () => {
+      for (const request of [
+        { mode: "implement" }, { mode: "implement", force: true }, { mode: "implement", resume: "d-111111", force: true },
+        { mode: "implement", background: true }, { mode: "private-sentinel" }, { mode: "x".repeat(5000) }, {},
+      ]) {
+        writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+          `default_mode: ${Object.keys(request).length ? "orchestrator" : "private-sentinel"}`, "deploy_modes:", "  - id: orchestrator", "    label: Orchestrator"].join("\n"));
+        const before = snapshots();
+        const result = await deployWithPi({ team: "builder", ticket: "PAP-198", ...request }, adapter, undefined, dependencies);
+        assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined); assert.equal(result.mode, null);
+        assert.match(result.reason!, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.ok(result.reason!.length <= 2000); assert.doesNotMatch(result.reason!, /private-sentinel|x{50}|d-111111/);
+        assert.deepEqual(snapshots(), before, "mode gate creates no workspace, registry, lease, ticket, branch or project changes");
+        const preflight = await createPiHooks(adapter, dependencies).deployPreflight!({ team: "builder", ...request });
+        assert.match(preflight!.reason, /deployment mode selection rejected/);
+      }
+    });
+    assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+    writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+      "default_mode: orchestrator", "deploy_modes:", "  - id: orchestrator", "    label: Orchestrator"].join("\n"));
+    appendRegistryEvent({ deployment_id: "d-222222", team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+    const history = getDeploymentEvents("d-222222");
+    for (const mode of [undefined, "orchestrator"]) {
+      const result = await deployWithPi({ team: "builder", ...(mode ? { mode } : {}), resume: "d-222222", force: true }, adapter, undefined, dependencies);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+      assert.match(result.reason!, /deployment mode selection rejected/);
+    }
+    assert.deepEqual(getDeploymentEvents("d-222222"), history, "historical implement remains readable and unchanged");
+    assert.deepEqual(effects, []); assert.deepEqual(gitState.readCommands(), []);
+    assert.equal(existsSync(join(root, "deployments")), false);
+    // Valid exact/default and separately configured legacy selections remain launchable.
+    for (const id of ["orchestrator", "implement"]) {
+      writeFileSync(join(root, "teams", "builder.yaml"), ["name: builder", "description: fixture", "objective: Build", "agents: []",
+        `default_mode: ${id}`, "deploy_modes:", `  - id: ${id}`, "    label: Selected"].join("\n"));
+      const selected: string[] = [];
+      const result = await deployWithPi({ team: "builder", dryRun: true }, stubAdapter({ onDescribe: () => selected.push(id) }));
+      assert.equal(result.status, "pending", result.reason); assert.deepEqual(selected, [id]);
+      assert.match(readFileSync(join(root, "deployments", result.deploymentId!, "primer.md"), "utf8"), new RegExp(`mode: ${id}`));
+    }
+  });
+});
 
 function writeRogueOneTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "rogue-one.yaml"), [

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { isRogueOneTeam, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
+import { assertDeployResumeMode, DeployModeSelectionError, isRogueOneTeam, resolveDeployMode, validateDeployRequestFields, withResolvedDeployTimeout } from "../../deploy/index.js";
 import type { CoreExecutionHooks as AgentApiHooks, DeployRequest } from "../../deploy/index.js";
 import { loadTeamConfig, validateTeamSkillReferences } from "../../teams/index.js";
 import type { SessionManager } from "../ws/session-hub.js";
@@ -22,6 +22,9 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
       if (controlResponse) return c.json(controlResponse, 202);
       const resolved = withResolvedDeployTimeout(parsed.request);
       if ("error" in resolved) return c.json({ error: resolved.error, code: "BAD_REQUEST" }, 400);
+      const team = loadTeamConfig(resolved.request.team);
+      resolveDeployMode(team, resolved.request.mode);
+      assertDeployResumeMode(team, resolved.request.resume);
       const selectedRuntime = resolved.request.runtime ?? "opencode";
       const deployRequest = {
         ...resolved.request,
@@ -42,7 +45,7 @@ export function deployControlRoutes(hooks: AgentApiHooks = {}, sessionManager?: 
       return c.json(response, 202);
     } catch (error) {
       // PAP-042 AC2 phone contract: always 202 with structured failed JSON — never 500, never throws
-      return c.json({ status: "failed", reason: boundedControlDiagnostic(error), team: parsed.request.team, mode: parsed.request.mode ?? null }, 202);
+      return c.json({ status: "failed", reason: boundedControlDiagnostic(error), team: parsed.request.team, mode: error instanceof DeployModeSelectionError ? null : parsed.request.mode ?? null }, 202);
     }
   });
 

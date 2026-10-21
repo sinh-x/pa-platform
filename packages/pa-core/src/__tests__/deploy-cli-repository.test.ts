@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { createAgentApiApp, DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
+import { appendRegistryEvent, closeDb, createAgentApiApp, DEFAULT_DEPLOY_TIMEOUT_SECONDS, MAX_REPOSITORY_DIAGNOSTIC_CHARS, formatBoundedFiveFieldDiagnostic, generatePrimer, runCoreCommand, type DeployRequest, type TeamConfig } from "../index.js";
 
 import { parseDeployArgs } from "../cli/commands/deploy.js";
 
@@ -37,6 +37,14 @@ const teamConfig: TeamConfig = {
   default_mode: "implement",
   deploy_modes: [{ id: "implement", label: "Implement" }],
 };
+
+function writeFixtureTeams(root: string): string {
+  const teams = join(root, "fixture-teams"); mkdirSync(teams);
+  writeFileSync(join(teams, "builder.yaml"), JSON.stringify(teamConfig));
+  writeFileSync(join(teams, "requirements.yaml"), JSON.stringify({ name: "requirements", description: "Requirements", objective: "Analyze", agents: [],
+    default_mode: "analyze", deploy_modes: [{ id: "analyze", label: "Analyze" }] }));
+  return teams;
+}
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -72,6 +80,7 @@ function createFixture(name: string): Fixture {
   mkdirSync(join(aiUsage, "tickets"), { recursive: true });
   initializeRepo(repo);
   initializeRepo(otherRepo);
+  writeFixtureTeams(root);
   git(["remote", "add", "origin", "git@github.com:owner/project.git"], repo);
   git(["worktree", "add", "-b", `feature/${name}`, worktree], repo);
   writeFileSync(join(config, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n    remote_url: git@github.com:owner/project.git\n  other:\n    path: ${otherRepo}\n`);
@@ -97,7 +106,9 @@ async function withFixture(name: string, callback: (fixture: Fixture) => Promise
   const fixture = createFixture(name);
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
   const previousAiUsage = process.env["PA_AI_USAGE_HOME"];
+  const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const originalCwd = process.cwd();
+  process.env["PA_PLATFORM_TEAMS"] = join(fixture.root, "fixture-teams");
   process.env["PA_PLATFORM_CONFIG"] = fixture.config;
   process.env["PA_AI_USAGE_HOME"] = fixture.aiUsage;
   try {
@@ -108,9 +119,68 @@ async function withFixture(name: string, callback: (fixture: Fixture) => Promise
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
     if (previousAiUsage === undefined) delete process.env["PA_AI_USAGE_HOME"];
     else process.env["PA_AI_USAGE_HOME"] = previousAiUsage;
+    if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"];
+    else process.env["PA_PLATFORM_TEAMS"] = previousTeams;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 }
+
+test("CLI and API reject retired/unknown explicit and default modes before preflight, repository resolution or hooks", async () => {
+  await withFixture("strict-modes", async (fixture) => {
+    const teams = join(fixture.root, "teams"); mkdirSync(teams);
+    const previousTeams = process.env["PA_PLATFORM_TEAMS"];
+    const previousRegistry = process.env["PA_REGISTRY_DB"];
+    process.env["PA_PLATFORM_TEAMS"] = teams;
+    process.env["PA_REGISTRY_DB"] = join(fixture.root, "registry.db");
+    appendRegistryEvent({ deployment_id: "d-222222", team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: new Date().toISOString() });
+    const configure = (defaultMode: string) => writeFileSync(join(teams, "builder.yaml"), [
+      "name: builder", "description: fixture", "objective: Build", "agents: []", `default_mode: ${defaultMode}`,
+      "deploy_modes:", "  - id: orchestrator", "    label: Orchestrator",
+    ].join("\n"));
+    let preflights = 0; const seen: DeployRequest[] = [];
+    const hooks = { deployPreflight: () => { preflights++; return undefined; }, deploy: (request: DeployRequest) => {
+      seen.push(request); return { status: "pending" as const, deploymentId: "d-111111" };
+    } };
+    const api = createAgentApiApp({ hooks: { runtimeHooks: { pi: hooks, opencode: hooks } } });
+    try {
+      process.chdir(fixture.repo);
+      for (const binaryName of ["ppa", "opa"]) {
+        for (const entry of [
+          { mode: "implement" }, { mode: "implement", force: true }, { mode: "implement", resume: "d-111111" },
+          { mode: "implement", background: true, force: true }, { mode: "private-sentinel" }, { mode: "x".repeat(4000) },
+          { resume: "d-222222", force: true }, { mode: "orchestrator", resume: "d-222222" }, {},
+        ]) {
+          configure(Object.keys(entry).length ? "orchestrator" : "private-sentinel");
+          const output = capture();
+          const flags = [...("mode" in entry ? ["--mode", entry.mode!] : []),
+            ...("force" in entry ? ["--force"] : []), ...("resume" in entry ? ["--resume", entry.resume!] : []),
+            ...("background" in entry ? ["--background"] : [])];
+          // An invalid repository would otherwise reject first: selection must own this stop.
+          assert.equal(await runCoreCommand(["deploy", "builder", ...flags, "--repo", "/must-not-resolve"], { binaryName, io: output.io, hooks }), 1);
+          const diagnostic = output.stderr.join("\n"); assertFiveFieldDiagnostic(diagnostic);
+          assert.match(diagnostic, /deployment mode selection rejected/); assert.doesNotMatch(diagnostic, /private-sentinel|x{50}|must-not-resolve/);
+          const response = await api.app.request("/api/deploy", { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ team: "builder", runtime: binaryName === "ppa" ? "pi" : "opencode", ...entry, repo: "/must-not-resolve" }) });
+          assert.equal(response.status, 202, "preserve phone failure envelope");
+          const body = await response.json() as { status: string; reason: string; mode: string | null };
+          assert.equal(body.status, "failed"); assert.equal(body.mode, null); assertFiveFieldDiagnostic(body.reason);
+          assert.doesNotMatch(JSON.stringify(body), /private-sentinel|x{50}|must-not-resolve/);
+        }
+      }
+      assert.equal(preflights, 0); assert.deepEqual(seen, []);
+      configure("orchestrator");
+      for (const binaryName of ["ppa", "opa"]) {
+        const output = capture();
+        assert.equal(await runCoreCommand(["deploy", "builder", "--mode", "orchestrator", "--repo", "registered"], { binaryName, io: output.io, hooks }), 0, output.stderr.join("\n"));
+      }
+      assert.equal(preflights, 2); assert.deepEqual(seen.map((request) => request.mode), ["orchestrator", "orchestrator"]);
+    } finally {
+      api.cleanup(); closeDb();
+      if (previousRegistry === undefined) delete process.env["PA_REGISTRY_DB"]; else process.env["PA_REGISTRY_DB"] = previousRegistry;
+      if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"]; else process.env["PA_PLATFORM_TEAMS"] = previousTeams;
+    }
+  });
+});
 
 test("deploy CLI resolves omitted repository identity from the exact configured root", async () => {
   await withFixture("cwd", async (fixture) => {
@@ -574,6 +644,8 @@ test("deploy and evaluate accept dotted registry keys and exact paths containing
   initializeRepo(repo);
   writeFileSync(join(config, "config.yaml"), `repos:\n  registered.repo:\n    path: ${repo}\n`);
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousTeams = process.env["PA_PLATFORM_TEAMS"];
+  process.env["PA_PLATFORM_TEAMS"] = writeFixtureTeams(root);
   process.env["PA_PLATFORM_CONFIG"] = config;
   try {
     for (const repoInput of ["registered.repo", repo]) {
@@ -596,6 +668,8 @@ test("deploy and evaluate accept dotted registry keys and exact paths containing
   } finally {
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"];
+    else process.env["PA_PLATFORM_TEAMS"] = previousTeams;
     rmSync(root, { recursive: true, force: true });
   }
 });

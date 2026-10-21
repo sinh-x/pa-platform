@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveExecutionPlan, type ExecutionPlan } from "../deploy/plan.js";
-import type { DeployRequest } from "../deploy/control.js";
+import { DeployModeSelectionError, resolveDeployMode, validateDeployRequestFields, type DeployRequest } from "../deploy/control.js";
 import { MAX_REPOSITORY_DIAGNOSTIC_CHARS } from "../repos.js";
 import { repositoryMutationLeasePath, type RepositoryAdmissionOperation, type RepositoryGitSnapshot } from "../deploy/repository-admission.js";
 import type { TeamConfig } from "../types.js";
@@ -24,6 +24,58 @@ function team(skill?: string): TeamConfig {
     }],
   };
 }
+
+test("strict mode resolution rejects unknown explicit/default and retired selections without substitution or input disclosure", () => {
+  const orchestrator = { id: "orchestrator", label: "Orchestrator", require_ticket: true };
+  const directOnly: TeamConfig = { ...team(), default_mode: "orchestrator", deploy_modes: [orchestrator] };
+  assert.equal(resolveDeployMode(directOnly), orchestrator);
+  assert.equal(resolveDeployMode(directOnly, "orchestrator"), orchestrator);
+  assert.equal(resolveDeployMode(team(), "implement")?.id, "implement", "old configured bootstrap remains distinct");
+  assert.equal(resolveDeployMode({ ...team(), default_mode: undefined, deploy_modes: undefined }), undefined);
+  assert.equal(resolveDeployMode({ ...directOnly, name: "rogue-one", default_mode: "unused" }, "implement"), undefined, "fixed bare rogue-one is intentional");
+  for (const id of ["implement", "private-sentinel", "", "\u0000private-sentinel", "x".repeat(5000)]) {
+    for (const explicit of [true, false]) {
+      assert.throws(() => resolveDeployMode(explicit ? directOnly : { ...directOnly, default_mode: id }, explicit ? id : undefined), (error: unknown) => {
+        assert.ok(error instanceof DeployModeSelectionError);
+        assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+        assert.ok(error.message.length <= 2000);
+        assert.doesNotMatch(error.message, /private-sentinel|x{50}|\u0000/);
+        return true;
+      });
+    }
+  }
+  assert.throws(() => resolveDeployMode({ ...directOnly, deploy_modes: [orchestrator, orchestrator] }), DeployModeSelectionError);
+  for (const mode of ["", null, {}, 1, "\u0000private-sentinel"]) {
+    const result = validateDeployRequestFields({ team: "builder", mode });
+    assert.ok("error" in result);
+    if ("error" in result) assert.match(result.error, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+  }
+});
+
+test("immutable planning revalidates the original request before repository, skill or admission effects", () => {
+  const configured = { id: "orchestrator", label: "Orchestrator" };
+  const directOnly: TeamConfig = { ...team(), default_mode: "orchestrator", deploy_modes: [configured] };
+  const effects: string[] = [];
+  for (const request of [
+    { mode: "implement" }, { mode: "implement", force: true }, { mode: "implement", resume: "d-111111" },
+    { mode: "implement", background: true, force: true }, { mode: "private-sentinel" }, {},
+  ]) {
+    assert.throws(() => resolveExecutionPlan({
+      request: { team: "builder", repo: "/must-not-resolve", ...request },
+      teamConfig: Object.keys(request).length ? directOnly : { ...directOnly, default_mode: "private-sentinel" },
+      mode: configured, runtime: "pi", deploymentId: "d-111111", deploymentDir: "/must-not-write",
+      activityLogPath: "/must-not-write/activity.jsonl", environment: {}, timeoutSeconds: 60,
+      captureRepositoryGitSnapshot: () => { effects.push("git"); throw new Error("forbidden"); },
+      observeRepositoryAdmissionOperation: (operation) => effects.push(operation),
+    }), DeployModeSelectionError);
+  }
+  assert.deepEqual(effects, []);
+  assert.throws(() => resolveExecutionPlan({ request: { team: "builder", mode: "orchestrator" },
+    teamConfig: directOnly, mode: { id: "implement", label: "stale selection" }, runtime: "pi",
+    deploymentId: "d-111111", deploymentDir: "/must-not-write", activityLogPath: "/must-not-write/activity.jsonl",
+    environment: {}, timeoutSeconds: 60,
+  }), DeployModeSelectionError);
+});
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
