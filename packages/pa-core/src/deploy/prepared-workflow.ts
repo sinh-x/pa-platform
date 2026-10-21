@@ -72,6 +72,91 @@ export function workflowError(): Error {
     resumeAction: "resume only with matching supported authority; optional automation remains inactive",
   }));
 }
+/** Static public categories only; this table and its errors confer no execution authority. */
+const EXECUTION_DIAGNOSTICS = Object.freeze({
+  EXECUTION_NOT_ADOPTED: Object.freeze({
+    stage: "binding-resolution",
+    reason: "no durable or retained native adoption indicators and no binding",
+    correction: "Sinh/runtime owner: optional controls unavailable; consider ordinary bootstrap only through its separate admission, never as a grant from this error",
+    resumeAction: "resume optional controls only with independently authenticated native adoption and binding",
+  }),
+  EXECUTION_BINDING_UNCERTAIN: Object.freeze({
+    stage: "binding-resolution",
+    reason: "adoption indicator present but counterpart missing or conflicting, or retained resolver disappeared",
+    correction: "native authority/launcher owner: preserve retained state and reconcile the exact binding through supported tooling",
+    resumeAction: "resume only after supported exact binding reconciliation; never use legacy fallback",
+  }),
+  EXECUTION_CAPABILITY_UNSUPPORTED: Object.freeze({
+    stage: "capability",
+    reason: "validated context reached an absent or unsupported execution or observation port",
+    correction: "runtime capability owner: deliver and qualify the separately scoped port or retain denial; do not activate or trial-spawn to diagnose",
+    resumeAction: "resume only with the separately qualified supported capability and matching authority",
+  }),
+  EXECUTION_CONTRACT_INVALID: Object.freeze({
+    stage: "contract",
+    reason: "native schema, version or field validation rejected the contract",
+    correction: "contract producer/runtime owner: supply matching supported evidence through its legitimate producer; never translate or edit protected bytes",
+    resumeAction: "resume only with matching supported contract evidence from its legitimate producer",
+  }),
+  EXECUTION_STORAGE_REJECTED: Object.freeze({
+    stage: "persistence",
+    reason: "native protected-store checks rejected inaccessible, insecure or malformed storage",
+    correction: "protected persistence owner: inspect via supported owner tooling and preserve state; no agent repair or alternate-path read",
+    resumeAction: "resume only after the persistence owner supplies supported acceptable storage evidence",
+  }),
+  EXECUTION_CALLER_STALE: Object.freeze({
+    stage: "caller",
+    reason: "process, session or registry liveness check proved a stale caller",
+    correction: "launcher/operator owner: reconcile actual lineage and termination through supported tooling",
+    resumeAction: "resume only with an authenticated live caller",
+  }),
+  EXECUTION_BINDING_CONFLICT: Object.freeze({
+    stage: "binding-validation",
+    reason: "authenticated ticket, root, branch, consumer or caller correlation disagrees",
+    correction: "launcher/authority owner: reconcile exact supported identity; no branch rewrite, substitution or evidence laundering",
+    resumeAction: "resume only with matching authenticated identity and correlation",
+  }),
+  EXECUTION_HOLDER_CONFLICT: Object.freeze({
+    stage: "custody",
+    reason: "validated owner, borrower, implement or review observations proved an incompatible holder or unsettled operation",
+    correction: "custody owner: preserve barriers and settle through the supported owner procedure",
+    resumeAction: "resume dependent work only after supported settlement and sole-holder proof",
+  }),
+  EXECUTION_UNKNOWN: Object.freeze({
+    stage: "fallback",
+    reason: "unclassified failure or insufficient safe evidence; cause remains unproven",
+    correction: "runtime maintainer/operator: retain original private evidence at its owner and obtain supported sanitized diagnostic evidence",
+    resumeAction: "attribute cause or resume only after supported sanitized evidence and matching authority are established",
+  }),
+});
+export type ExecutionFailureCode = keyof typeof EXECUTION_DIAGNOSTICS;
+// Identity is deliberately out-of-band: no instanceof, property reads, coercion or
+// reflection on caught values (including proxies). Copies/wrappers lose specificity.
+const executionFailures = new WeakMap<object, ExecutionFailureCode>();
+
+/** Trusted internal proving checks only. Never pass model/record data as a code. */
+export function executionFailure(code: ExecutionFailureCode): Error {
+  // Retain the allowlist even for untyped callers; reject without coercing input.
+  const safeCode = typeof code === "string" && Object.hasOwn(EXECUTION_DIAGNOSTICS, code) ? code : "EXECUTION_UNKNOWN";
+  const diagnostic = EXECUTION_DIAGNOSTICS[safeCode];
+  const error = new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "execution workflow stopped",
+    source: `${safeCode}/${diagnostic.stage}`,
+    reason: diagnostic.reason,
+    correction: diagnostic.correction,
+    resumeAction: diagnostic.resumeAction,
+  }));
+  executionFailures.set(error, safeCode);
+  return Object.freeze(error);
+}
+
+/** Trusted internal catches only; untrusted seams must use a fresh UNKNOWN failure. */
+export function executionWorkflowError(caught: unknown): Error {
+  const code = caught !== null && (typeof caught === "object" || typeof caught === "function")
+    ? executionFailures.get(caught) : undefined;
+  return executionFailure(code ?? "EXECUTION_UNKNOWN");
+}
+
 export function workflowObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) throw workflowError();
