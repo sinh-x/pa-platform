@@ -8,7 +8,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { parseReviewMatrixArtifact, parseReviewObjective, runCoreCommand, type Ticket } from "@pa-platform/pa-core";
 import { createHash } from "node:crypto";
 import { inspectReviewPreflight, formatReviewPreflight, runReviewPreflightCommand, reviewPreflightDependencies } from "../review-preflight.js";
@@ -56,6 +56,124 @@ test("all three producer profiles share compatible text/JSON decisions, deferred
     } finally { fs.rmSync(seed.root, { recursive: true, force: true }); }
   }
 });
+function rewriteSyntheticMatrix(seed: ReturnType<typeof setup>, change: (payload: string) => string): void {
+  const path = resolve(seed.root, seed.objective.matrixSource.slice("requirements:".length));
+  const original = fs.readFileSync(path, "utf8");
+  const payload = JSON.stringify(parseReviewMatrixArtifact(Buffer.from(original), seed.objective.matrixSource).matrix);
+  const changedPayload = change(payload);
+  let changed = original.replace(/(```json\n)[\s\S]*?(\n```)/, (_match, open: string, close: string) => open + changedPayload + close);
+  const section = changed.slice(changed.indexOf("### Full Validation Matrix"), changed.indexOf("## After Matrix"));
+  const digest = createHash("sha256").update(section).digest("hex");
+  const oldDigest = seed.objective.matrixAuthoritySha256;
+  changed = changed.replace(oldDigest, digest); seed.objective.matrixAuthoritySha256 = digest;
+  seed.ticket.comments.forEach((comment) => { comment.content = comment.content.replace(oldDigest, digest); });
+  fs.writeFileSync(path, changed);
+}
+function withoutStaticEffects(t: TestContext, seed: ReturnType<typeof setup>, run: () => void): void {
+  const before = snapshot(seed.root);
+  const forbidden = (): never => { throw new Error("PAP-235 static side effect"); };
+  const traps = [
+    ...["writeFileSync", "appendFileSync", "mkdirSync", "renameSync", "unlinkSync", "rmSync", "chmodSync", "truncateSync", "writeSync", "createWriteStream"].map((key) => t.mock.method(fs, key as "writeFileSync", forbidden)),
+    t.mock.method(fs.promises, "writeFile", forbidden), t.mock.method(fs.promises, "mkdir", forbidden),
+    ...["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"].map((key) => t.mock.method(cp, key as "spawn", forbidden)),
+    t.mock.method(net, "connect", forbidden), t.mock.method(net, "createConnection", forbidden),
+    t.mock.method(http, "request", forbidden), t.mock.method(http, "get", forbidden),
+    t.mock.method(https, "request", forbidden), t.mock.method(https, "get", forbidden), t.mock.method(globalThis, "fetch", forbidden),
+  ];
+  const open = fs.openSync;
+  t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+    assert.equal(typeof args[1], "number");
+    assert.equal((args[1] as number) & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND), 0);
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  try { run(); assert.ok(traps.every((trap) => trap.mock.callCount() === 0)); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); assert.equal(snapshot(seed.root), before); }
+  for (const name of ["deployments", "reservations", "claims"]) assert.equal(fs.existsSync(resolve(seed.root, name)), false);
+}
+const inlineCommandCases = [
+  ["exact historical NODE_ENV=test TZ=UTC assignment pair", `NODE_ENV=test TZ=UTC node -e 'if(process.env.NODE_ENV!=="test" || process.env.TZ!=="UTC") process.exit(1)'`],
+  ["leading trailing and internal shell whitespace", " \tNODE_ENV=test  TZ=UTC\tprintf '%s' 'café'\r\n\n "],
+  ["quoted command-local value containing spaces", `NODE_ENV='test mode' printf '%s' "quoted value"`],
+  ["multiple command-local assignments", `NODE_ENV=test TZ=UTC CI=1 printf '%s' "$NODE_ENV"`],
+  ["opaque env -u NODE_ENV command text", `env -u NODE_ENV TZ=UTC node -e 'if(process.env.NODE_ENV!==undefined) process.exit(1)'`],
+] as const;
+for (const escaped of [false, true]) for (const [name, command] of inlineCommandCases) test(`preflight preserves ${name} and command order without effects or launch authority (${escaped ? "escaped" : "literal"} JSON)`, (t) => {
+  const seed = setup();
+  try {
+    const originalMatrix = parseReviewMatrixArtifact(raw("producer-node-pnpm.md"), seed.objective.matrixSource).matrix;
+    const commands = ["printf before", command, "printf after"].map((shell, i) => ({ ...originalMatrix.commands[0]!, id: `ordered-${i}`, command: shell }));
+    rewriteSyntheticMatrix(seed, () => {
+      const payload = JSON.stringify({ ...originalMatrix, commands, commandCount: commands.length, outputs: commands.map((c) => `${c.id}: fixture only`) });
+      return escaped ? payload.replace(/NODE_ENV/g, "\\u004eODE_ENV") : payload;
+    });
+    withoutStaticEffects(t, seed, () => {
+      const evidence = inspectReviewPreflight({ ticket: seed.objective.ticket, objective: JSON.stringify(seed.objective) }, seed.dependencies);
+      assert.equal(evidence.report.status, "compatible", JSON.stringify(evidence.report));
+      assert.ok(evidence.report.checks.every((check) => check.status === "passed"));
+      assert.deepEqual(evidence.artifact!.matrix.commands, commands);
+      assert.deepEqual(Buffer.from(evidence.artifact!.matrix.commands[1]!.command), Buffer.from(command));
+      assert.deepEqual(evidence.artifact!.matrix.environment, originalMatrix.environment);
+      assert.deepEqual(Object.keys(evidence.artifact!.matrix.environment).sort(), ["PA_REPO", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256", "PA_MATRIX_APPROVAL_EVIDENCE", "PATH", "PA_TICKET_ID", "CI", "HOME", "LANG", "TZ"].sort());
+      assert.equal(Object.hasOwn(evidence.artifact!.matrix.environment, "NODE_ENV"), false);
+      assert.ok(evidence.report.deferredLaunchChecks.length >= 5);
+      assert.match(formatReviewPreflight(evidence.report), /not launch authorization/);
+    });
+  } finally { fs.rmSync(seed.root, { recursive: true, force: true }); }
+});
+const invalidLauncherCases = [
+  ["extra launcher NODE_ENV", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"NODE_ENV":{"literal":"test"}', "REVIEW_FIELD"],
+  ["launcher-name prefix collision TZ_EXTRA", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"TZ_EXTRA":{"literal":"UTC"}', "REVIEW_FIELD"],
+  ["missing required launcher TZ", ',"TZ":{"literal":"UTC"}', "", "REVIEW_FIELD"],
+  ["decoded duplicate launcher TZ", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"\\u0054Z":{"literal":"UTC"}', "REVIEW_DUPLICATE_KEY"],
+  ["wrong launcher binding", '"PA_REPO":{"binding":"worktreeRoot"}', '"PA_REPO":{"binding":"featureSha"}', "REVIEW_FIELD"],
+  ["literal replaced by binding", '"TZ":{"literal":"UTC"}', '"TZ":{"binding":"trustedPath"}', "REVIEW_FIELD"],
+  ["mixed binding and literal declaration", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC","binding":"trustedPath"}', "REVIEW_FIELD"],
+  ["empty launcher literal", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":""}', "REVIEW_FIELD"],
+  ["malformed empty launcher declaration", '"TZ":{"literal":"UTC"}', '"TZ":{}', "REVIEW_FIELD"],
+] as const;
+for (const [name, from, to, code] of invalidLauncherCases) test(`preflight rejects ${name} before any allocation claim command or reviewer`, (t) => {
+  const seed = setup();
+  try {
+    const originalCommand = parseReviewMatrixArtifact(raw("producer-node-pnpm.md"), seed.objective.matrixSource).matrix.commands[0]!.command;
+    rewriteSyntheticMatrix(seed, (payload) => {
+      assert.ok(payload.includes(from));
+      return payload.replace(from, to).replace(JSON.stringify(originalCommand), JSON.stringify(inlineCommandCases[0][1]));
+    });
+    withoutStaticEffects(t, seed, () => {
+      const evidence = inspectReviewPreflight({ ticket: seed.objective.ticket, objective: JSON.stringify(seed.objective) }, seed.dependencies);
+      assert.equal(evidence.report.status, "incompatible"); assert.equal(evidence.artifact, undefined);
+      assert.ok(evidence.report.checks.some((check) => check.id === "artifact.schema" && check.status === "failed"));
+      assert.ok(evidence.report.diagnostics.some((d) => d.code === code && d.source.startsWith("matrix.environment")), JSON.stringify(evidence.report));
+      assert.doesNotMatch(JSON.stringify(evidence.report), /review-auth:/);
+    });
+  } finally { fs.rmSync(seed.root, { recursive: true, force: true }); }
+});
+const driftCases: Array<[string, string, (seed: ReturnType<typeof setup>) => void]> = [
+  ["raw matrix whitespace drift", "objective.matrixAuthoritySha256", (seed) => {
+    const path = resolve(seed.root, seed.objective.matrixSource.slice("requirements:".length));
+    fs.writeFileSync(path, fs.readFileSync(path, "utf8").replace("Policy: parser", "Policy:  parser"));
+  }],
+  ["approved command text drift", "objective.matrixAuthoritySha256", (seed) => {
+    const path = resolve(seed.root, seed.objective.matrixSource.slice("requirements:".length));
+    fs.writeFileSync(path, fs.readFileSync(path, "utf8").replace("fixture only", "fixture changed"));
+  }],
+  ["stale matrix approval", "approval.binding", (seed) => { seed.ticket.comments[0]!.content = seed.ticket.comments[0]!.content.replace(seed.objective.matrixAuthoritySha256, "0".repeat(64)); }],
+  ["candidate HEAD binding drift", "ticket.linkedBranches.headSha", (seed) => { seed.ticket.linkedBranches[0]!.headSha = "c".repeat(40); }],
+  ["readiness candidate binding drift", "readiness.featureSha", (seed) => { seed.ticket.comments[1]!.content = seed.ticket.comments[1]!.content.replace(seed.objective.featureSha, "c".repeat(40)); }],
+];
+for (const [name, source, change] of driftCases) test(`preflight rejects ${name} at the static boundary without effects`, (t) => {
+  const seed = setup();
+  try {
+    change(seed);
+    withoutStaticEffects(t, seed, () => {
+      const report = inspectReviewPreflight({ ticket: seed.objective.ticket, objective: JSON.stringify(seed.objective) }, seed.dependencies).report;
+      assert.equal(report.status, "incompatible");
+      assert.ok(report.diagnostics.some((d) => d.code === "REVIEW_BINDING" && d.source === source), JSON.stringify(report));
+    });
+  } finally { fs.rmSync(seed.root, { recursive: true, force: true }); }
+});
+
 test("external-project readiness binds its candidate independently from the installed PPA source", () => {
   const seed = setup("mvm-179-migrated");
   try {
