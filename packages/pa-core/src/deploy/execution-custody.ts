@@ -57,6 +57,8 @@ export interface IdlePreparationReservation {
   readonly retainedAt: string;
   /** Native consuming launcher only; never included in receipt/status/tool projections. */
   readonly launch?: PreparedReservationLaunch;
+  /** Dedicated staged test lineage; never ordinary prepared-product approval. */
+  readonly purpose?: "requirements-test-workflow/v1";
 }
 export const DEFAULT_EXECUTION_BOUNDS = Object.freeze({ runtimeMinutes: 120, noProgressLimit: 3, replacementLimit: 3, reviewCap: 3 });
 function integer(value: unknown, minimum: number, maximum: number): number {
@@ -115,7 +117,9 @@ export function executionBoundStop(value: ExecutionBounds, now: string): boolean
 }
 export function parseIdlePreparationReservation(value: unknown): IdlePreparationReservation {
   const hasLaunch = value !== null && typeof value === "object" && Object.hasOwn(value, "launch");
-  const row = workflowObject(value, ["schemaVersion", "repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "occupancy", "lineageId", "custody", "receiptId", "retainedAt", ...(hasLaunch ? ["launch"] : [])]);
+  const hasPurpose = value !== null && typeof value === "object" && Object.hasOwn(value, "purpose");
+  const row = workflowObject(value, ["schemaVersion", "repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "occupancy", "lineageId", "custody", "receiptId", "retainedAt", ...(hasLaunch ? ["launch"] : []), ...(hasPurpose ? ["purpose"] : [])]);
+  if (hasPurpose && row.purpose !== "requirements-test-workflow/v1") throw workflowError();
   const repoKey = workflowText(row["repoKey"]); const ticket = workflowText(row["ticket"]);
   const occupancy = row["occupancy"];
   if (row["schemaVersion"] !== "prepared-reservation/v1" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoKey)
@@ -136,7 +140,7 @@ export function parseIdlePreparationReservation(value: unknown): IdlePreparation
   return Object.freeze({ schemaVersion: "prepared-reservation/v1", repoKey, repoRoot: workflowPath(row["repoRoot"]), ticket,
     operationId: workflowSha(row["operationId"]), reservationId: workflowSha(row["reservationId"]),
     repositoryPermit: integer(row["repositoryPermit"], 1, MAX_REPOSITORY_TICKET_SLOTS) as 1 | 2 | 3 | 4,
-    occupancy: occupancy as ReservationOccupancy, lineageId, custody, receiptId, retainedAt: workflowTimestamp(row["retainedAt"]), ...(launch ? { launch } : {}) });
+    occupancy: occupancy as ReservationOccupancy, lineageId, custody, receiptId, retainedAt: workflowTimestamp(row["retainedAt"]), ...(launch ? { launch } : {}), ...(hasPurpose ? { purpose: "requirements-test-workflow/v1" as const } : {}) });
 }
 /** Pure capacity validator: does not acquire, transfer or reclaim any existing permit. */
 export function assertReservationInventory(values: readonly unknown[]): readonly IdlePreparationReservation[] {

@@ -1,6 +1,6 @@
 # requirements-test-workflow/v1 — phase-1 contract
 
-Status: **staged, inactive; source model only**. Owner: PAP-265, approved requirements
+Status: **staged, inactive; phase-1 source model plus phase-2 internal native transaction adapter**. Owner: PAP-265, approved requirements
 `2026-10-22-pap-265-requirements-tested-oracle.md`, section 13 phase 1;
 approval `PAP-265#c-20261021223147279`. Audience: core contract, Pi native launcher,
 capacity/custody, assertion collector and PAPC-065 consumer implementors.
@@ -27,7 +27,8 @@ its stronger confinement wording before any activation.
 its argument. There is no activation flag, environment selector, authority-root
 parameter, callback-based authority injector, public request command, constructor,
 new approval database or parallel reservation owner in this phase. Helpers are not
-exported from the package index. Existing fresh/amendment/preparation/review
+exported wholesale from the package index. Phase 2 selectively exports pure
+parsers/replay/types for the Pi consumer; none authenticates a caller or admits effects. Existing fresh/amendment/preparation/review
 contracts, OPA/CPA, auto/spike, signing/hooks, review caps and inactive PAP-254 retain
 their exact meanings. A v1 packet is never translated into legacy authority.
 
@@ -340,6 +341,61 @@ activation is executed by this source suite.
 | AC11 | TS11, TS12, TS13 all interruption points, retained unknown/cancel barriers, bounded retry/amendment | Phase 2 actual crash reconciliation/operator-notify/full-capacity/idempotent finalization with counters retained; phase 4 installed |
 | AC12 | TS01, TS04, TS14 no index/authority injection/new-route selection/legacy reinterpretation | Phase 4 retained legacy regression, exact PAPC-065 grammar and tools/audit owner compatibility, actual clean installed qualification and separate explicit Sinh activation |
 | AC13 | TS15 complete mapping, TS14 safe diagnostics; source-only evidence class | Phase 4 all source/installed matrix variants; independent full review/CI/semantic oracle/human UAT and later activation, each separately reported |
+
+## Phase-2 internal transaction adapter (not an activated route)
+
+`packages/pi-pa/src/requirements-test-native.ts` composes the existing
+`ProtectedWorkflowStore`, shared ticket capacity, vacant/execution worktree mutexes,
+`TreehouseClient` and exact-base ticket materialization. It is not a public CLI,
+new generic builder mode, activation method or core authority export.
+`requestPiRequirementsTestNative` reuses foreground caller authentication and then
+rejects the inactive capability. Generic product preparation explicitly rejects
+retained test intents/reservations, including missing-resource and cancelled cases;
+no legacy reconstruction or second reservation is allowed.
+
+The internal `RequirementsTestNativeService` requires native authority and executor
+ports. Those are trusted embedding dependencies, NOT JSON/environment/tool options.
+No default success executor/approval producer is installed. Native operator capture,
+complete result/audit/oracle/final-pair producers belong to phase 3; exact installed
+qualification, SDK composition and separate activation belong to phase 4/later
+rollout. Source fixtures supplying these ports do not establish installed readiness.
+
+Authority must independently authenticate original approved bytes, live foreground
+canonical parent, separate exact test-only approval and pair; retained settlement
+has a distinct non-new-work authorization. Final approval must resolve the complete
+protected phase-3 history, original results, independent review and exact final
+sources, not a caller prefix or replay result. Executor ports prepare/inspect a
+parked native process with registry correlation, authenticate it, release it only
+after persisted launch snapshot, and prove actual process/registry settlement.
+Unknown release is inspected, never blindly reissued. None of these ports receives
+an agent-selected authority root or a `passed` Boolean.
+
+Native records use `requirements-test-native/v1`, immutable chained request/action
+intents and outcomes in the EXISTING operations store. Request binds canonical
+tuple, raw authorization identity, native decision and original bounds/counters.
+Each resource/branch/process intent precedes its effect. Exceptions preserve private
+originals and unknown barriers. Full capacity records known zero-resource failure;
+only an independently authenticated explicit manual retry of that exact failure can
+advance the same operation, incrementing the retained counter. Cancellation never
+returns/merges/deletes/cleans or removes a retained reservation.
+
+Dedicated reservations add optional `purpose:"requirements-test-workflow/v1"` to
+`prepared-reservation/v1`. They share the old/prepared permit directory and mutex;
+idle/uncertain/settled records still occupy one of four permits. Test-author custody
+uses `implement-child` only as a dedicated carrier, not generic builder borrowing.
+Actual process absence plus native terminal registry is required before settlement.
+Only after independently verified final approval and actual Git/content checks does
+one atomic compare-and-swap transfer the SAME reservation/lease/lineage to a parked
+product holder at exactly the approved test HEAD. Its launch snapshot precedes
+release. An explicit amendment preserves resource/permit/lineage and old native
+journals, requires exact previous source/history/HEAD/files/counters plus renewed
+approval, and changes the operation only through the existing capacity owner.
+
+The native source suite uses disposable registered Git repositories, actual shared
+locks/publication and barrier processes; Treehouse replies, approval capture and
+phase-3 results/review are labelled source fixtures. It does not run installed
+Treehouse, repository test commands, a model/composer canary, semantic oracle review,
+human UAT, or activation. AC5–8 actual tools/results/review remain phase-3 obligations.
 
 FR1–4/6–12 and NFR1–6 are modeled here only as specified above. FR5 native behavior,
 shared-owner races, durable authentication, independent real Git proof, original

@@ -270,7 +270,8 @@ test("TS14 AC12/AC13/NFR6: diagnostics redact synthetic canaries, five fields <=
     });
   }
   const index = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
-  assert.ok(!index.includes("requirements-test-workflow"), "pure helpers not exposed as public admission authority");
+  assert.ok(!/export \* from .*requirements-test-workflow/.test(index), "no wholesale authority/constructor exports");
+  assert.ok(!/export.*(?:NativeAuthority|NativeService).*requirements-test/.test(index), "native authority injection is not a public core export");
 });
 test("TS15 AC13: complete source/native/installed/semantic/human mapping is explicit, no fake AC5/6 pass stubs", () => {
   const doc = readFileSync(new URL("../../../../docs/contracts/requirements-test-workflow-v1.md", import.meta.url), "utf8");

@@ -14,6 +14,7 @@ import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolv
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
+import { assertNoRequirementsTestLegacyFallback } from "./requirements-test-native.js";
 import { createPiPreparationHost, type PiPreparationCaller } from "./pi-extension/prepared-workflow.js";
 import { PreparedWorkflowService, repositoryTicketSlotId, workflowDigest, workflowError, type PreparedReceipt, type SourceVersion } from "@pa-platform/pa-core";
 import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
@@ -432,6 +433,9 @@ export interface PiPreparedBuilderAdmission {
  * unrequested intent preserves ordinary independent CLI admission. */
 export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repoRoot: string; ticket: string; deploymentId: string; deploymentDirectory: string; timeoutSeconds?: number }, dependencies: Pick<PiDeployDependencies, "treehouse" | "preparedAuthority"> = {}): PiPreparedBuilderAdmission | undefined {
   const authority = dependencies.preparedAuthority ?? new PiPreparedNativeAuthority();
+  // Retained test routes require their exact native continuation. Never borrow
+  // legacy final-pair approval or reconstruct a missing test resource.
+  assertNoRequirementsTestLegacyFallback(input, authority);
   const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint) throw workflowError();
   const caller: PiPreparationCaller = { deploymentId: input.deploymentId, repoKey: input.repoKey, repoRoot: input.repoRoot, ticket: input.ticket,
     callerIdentity: workflowDigest(JSON.stringify(["native-prepared-builder", input.deploymentId, fingerprint])) };
