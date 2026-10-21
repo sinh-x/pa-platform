@@ -14,7 +14,7 @@ import {
 import { createPiHooks, deployWithPi, piReviewCheckoutCorrelation, selectPiReviewCandidateBeforePlanning, reservePiReviewCandidate, rereadPiReviewCandidate } from "../deploy.js";
 import { assertVersionedRuntimeProvenance, authorizeVersionedReview, createVersionedValidationLaunch, evaluateVersionedPrerequisites, revalidateVersionedReview } from "../review-v1-launch.js";
 import { requireReviewPreflight } from "../review-preflight.js";
-import { PI_VALIDATION_HANDOFF_FILE, runPiValidationBeforeReviewer, writePiProtectedValidationLaunch } from "../validation-supervisor.js";
+import { PI_VALIDATION_HANDOFF_FILE, readPiProtectedValidationLaunch, runPiValidationBeforeReviewer, writePiProtectedValidationLaunch } from "../validation-supervisor.js";
 import { redactPiProtectedReviewPrimer, type PiBackgroundConfig } from "../adapter.js";
 import { runPiBackgroundRunner } from "../background-runner.js";
 import { TreehouseClient } from "./treehouse-fixture.js";
@@ -133,6 +133,60 @@ test("physical distinct-worktree v1 selector/contract/executor fixtures cover al
     assert.doesNotMatch(readFileSync(resolve(root, "evidence/ledger.json"), "utf8"), /review-auth:/);
   }));
 });
+const inlineExecutionCases = [
+  ["exact historical NODE_ENV=test TZ=UTC assignment pair", `NODE_ENV=test TZ=UTC node -e 'if(process.env.NODE_ENV!=="test" || process.env.TZ!=="UTC") process.exit(1)'`],
+  ["leading trailing and internal shell whitespace", ` \tNODE_ENV=test  TZ=UTC\tnode -e 'if(process.env.NODE_ENV!=="test" || process.env.TZ!=="UTC") process.exit(1)'\n\n `],
+  ["quoted command-local value containing spaces", `NODE_ENV='test mode' node -e 'if(process.env.NODE_ENV!=="test mode") process.exit(1)'`],
+  ["multiple command-local assignments override only local TZ", `NODE_ENV=test TZ=Pacific/Honolulu CI=local node -e 'if(process.env.NODE_ENV!=="test" || process.env.TZ!=="Pacific/Honolulu" || process.env.CI!=="local") process.exit(1)'`],
+  ["opaque env -u NODE_ENV command text", `NODE_ENV=test env -u NODE_ENV TZ=UTC node -e 'if(process.env.NODE_ENV!==undefined || process.env.TZ!=="UTC") process.exit(1)'`],
+] as const;
+for (const [name, command] of inlineExecutionCases) test(`physical v1 executor preserves and executes ${name} without launcher or next-command leakage (synthetic readiness)`, () => isolated(async (root) => {
+  const seed = fixture(root, "producer-node-pnpm", (matrix) => {
+    matrix.commands.push({ ...matrix.commands[0]!, id: "inline", command }, { ...matrix.commands[0]!, id: "isolation",
+      command: `node -e 'if(process.env.NODE_ENV!==undefined || process.env.TZ!=="UTC" || process.env.CI!=="1") process.exit(1)'` });
+    matrix.commandCount = matrix.commands.length;
+    matrix.outputs.push("inline: exact command-local values", "isolation: no ambient or previous command leakage");
+  });
+  // Keep the fixture's synthetic version probe, but execute real Node for payloads.
+  const node = seed.a.matrix.prerequisites.find((p) => p.kind === "tool" && p.name === "node");
+  assert.ok(node?.kind === "tool");
+  writeFileSync(resolve(root, "bin/node"), `#!/bin/sh\nif [ "$*" = '--version' ]; then printf '%s\\n' '${node.version}'; else exec '${process.execPath}' "$@"; fi\n`, { mode: 0o755 });
+  const ambientNodeEnv = process.env.NODE_ENV; process.env.NODE_ENV = "ambient-must-not-leak";
+  try {
+    const expected = seed.a.matrix.commands.map((c) => c.command);
+    const launch = await createVersionedValidationLaunch(seed.input, seed.dependencies);
+    launch.reservation = reservePiReviewCandidate({ checkout: seed.checkout, deploymentId: seed.deploymentId, authorizationId: seed.o.reviewAuthorizationId }, { treehouse: seed.treehouse });
+    const path = resolve(seed.deploymentDirectory, PI_VALIDATION_HANDOFF_FILE);
+    writePiProtectedValidationLaunch(path, launch);
+    const reread = readPiProtectedValidationLaunch(path);
+    const handoff = reread.validationHandoff as ValidationHandoff;
+    assert.deepEqual(handoff.manifest.commands.map((c) => c.command), expected);
+    assert.deepEqual(Object.keys(handoff.manifest.environment).sort(), ["PA_REPO", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256", "PA_MATRIX_APPROVAL_EVIDENCE", "PATH", "PA_TICKET_ID", "CI", "HOME", "LANG", "TZ"].sort());
+    assert.equal(Object.hasOwn(handoff.manifest.environment, "NODE_ENV"), false);
+    assert.equal(handoff.manifest.environment.TZ, "UTC");
+    assert.equal(handoff.manifest.repository.worktreeRoot, seed.candidate);
+    let reviewers = 0;
+    const result = await runPiValidationBeforeReviewer(reread, {
+      evidenceRoot: resolve(root, "evidence"), ledgerPath: resolve(root, "evidence/ledger.json"),
+      beforeExecute: () => { rereadPiReviewCandidate(seed.checkout, { treehouse: seed.treehouse }); revalidateVersionedReview(reread, seed.dependencies); },
+      beforeReviewer: () => { rereadPiReviewCandidate(seed.checkout, { treehouse: seed.treehouse }); revalidateVersionedReview(reread, seed.dependencies); },
+      startReviewer: () => { reviewers++; },
+    });
+    assert.equal(result.admitted, true, JSON.stringify(result));
+    if (!result.admitted) assert.fail("isolated execution rejected");
+    assert.equal(result.validation.ledger?.result, "passed", JSON.stringify(result.validation.ledger));
+    assert.deepEqual(result.validation.ledger.commands.map((c) => c.command), expected);
+    for (const entry of result.validation.ledger.commands) {
+      assert.equal(entry.status, "passed"); assert.equal(entry.exitCode, 0); assert.equal(entry.cwd, seed.candidate);
+      assert.ok(entry.stdout); assert.ok(entry.stderr);
+      assert.equal(readFileSync(resolve(root, "evidence", entry.stderr.path), "utf8"), "");
+    }
+    assert.equal(reviewers, 1); assert.equal(queryReviewAuthorizationClaims().length, 1);
+    assert.equal(git(seed.candidate, "status", "--porcelain"), "");
+    assert.equal(git(seed.canonical, "rev-parse", "HEAD"), seed.a.matrix.repository.baseSha);
+  } finally { if (ambientNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = ambientNodeEnv; }
+}));
+
 test("compatible v1 dry-run redacts authorization from the persisted primer without consuming authority", async () => isolated(async (root) => {
   const seed = fixture(root, "producer-node-pnpm");
   const teams = resolve(root, "config/teams"); mkdirSync(teams); process.env.PA_PLATFORM_TEAMS = teams;
@@ -229,6 +283,46 @@ test("v1 replay and post-preflight approval drift reject before project commands
   assert.throws(() => revalidateVersionedReview(launch, seed.dependencies), /approval.author/);
   assert.equal(existsSync(resolve(root, "evidence/ledger.json")), false);
 }));
+test("v1 active same-ticket/branch review rejects a fresh authorization without another claim or executor", () => isolated(async (root) => {
+  const seed = fixture(root, "producer-node-pnpm");
+  await createVersionedValidationLaunch(seed.input, seed.dependencies);
+  const deploymentId = "d-235def"; const deploymentDirectory = resolve(root, "deployments", deploymentId); mkdirSync(deploymentDirectory);
+  const objective = JSON.stringify({ ...seed.o, reviewAuthorizationId: "review-auth:12345678-1234-4234-8234-123456789abc" });
+  appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "review-auto", runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(),
+    ticket_id: seed.o.ticket, objective, repo: seed.candidate, repo_root: seed.canonical, worktree_root: seed.candidate, review_checkout: piReviewCheckoutCorrelation(seed.checkout) });
+  await assert.rejects(createVersionedValidationLaunch({ ...seed.input, deploymentId, deploymentDirectory,
+    request: { ...seed.request, objective }, plan: { ...seed.input.plan, environment: { ...seed.input.plan.environment, PA_DEPLOYMENT_DIR: deploymentDirectory } } }, seed.dependencies), /active review|running requirements\/review-auto/);
+  assert.equal(queryReviewAuthorizationClaims().length, 1);
+  assert.equal(existsSync(resolve(root, "evidence/ledger.json")), false);
+}));
+
+for (const drift of ["raw matrix", "approval", "manifest command"] as const) test(`v1 ${drift} drift at before-execution boundary starts zero executors or reviewers`, () => isolated(async (root) => {
+  const seed = fixture(root, "producer-node-pnpm");
+  const launch = await createVersionedValidationLaunch(seed.input, seed.dependencies);
+  launch.reservation = reservePiReviewCandidate({ checkout: seed.checkout, deploymentId: seed.deploymentId, authorizationId: seed.o.reviewAuthorizationId }, { treehouse: seed.treehouse });
+  if (drift === "raw matrix") writeFileSync(seed.artifactPath, readFileSync(seed.artifactPath, "utf8").replace('"timeoutSeconds": 5', '"timeoutSeconds": 6'));
+  if (drift === "approval") {
+    const ticket = JSON.parse(readFileSync(seed.ticketPath, "utf8")); ticket.comments[0].author = "other";
+    writeFileSync(seed.ticketPath, JSON.stringify(ticket));
+  }
+  if (drift === "manifest command") {
+    const handoff = launch.validationHandoff as ValidationHandoff;
+    handoff.manifest.commands[0]!.command = "printf forged"; handoff.manifestSha256 = digestValidationManifest(handoff.manifest);
+  }
+  let executions = 0; let reviewers = 0;
+  const result = await runPiValidationBeforeReviewer(launch, {
+    evidenceRoot: resolve(root, "evidence"), ledgerPath: resolve(root, "evidence/ledger.json"),
+    beforeExecute: () => { revalidateVersionedReview(launch, seed.dependencies); },
+    beforeReviewer: () => { revalidateVersionedReview(launch, seed.dependencies); },
+    execute: async () => { executions++; throw new Error("unexpected execution"); },
+    startReviewer: () => { reviewers++; },
+  });
+  assert.equal(result.admitted, false); assert.equal(result.reviewerStarted, false);
+  assert.equal(executions, 0); assert.equal(reviewers, 0);
+  assert.equal(existsSync(resolve(root, "evidence/ledger.json")), false);
+  assert.equal(queryReviewAuthorizationClaims().length, 1, "post-launch drift retains the already consumed claim");
+}));
+
 test("v1 failed, timed-out and crashed matrices retain failed ledgers even if a diagnostic reviewer starts", async (t) => {
   for (const mode of ["failure", "timeout", "crash"] as const) await t.test(mode, () => isolated(async (root) => {
     const seed = fixture(root, "nx-055-migrated", (matrix) => {

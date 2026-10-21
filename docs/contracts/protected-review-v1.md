@@ -162,6 +162,34 @@ retain exact whitespace/inline assignments. Do not infer launcher variables from
 command strings (PAP-235). `cwd` is contained relative to the later authenticated
 worktree, not the canonical root. `commandCount` equals the complete array length.
 
+### PAP-235 inline-assignment regression evidence
+
+`NODE_ENV=test TZ=UTC node ...` is approved command-local shell text, not two
+additional launcher declarations. The v1 implementation already preserves this
+separation; PAP-235 adds regressions without changing the parser or allowlist:
+
+- `review-contract.test.ts` and `review-preflight.test.ts` compare literal and
+  JSON-escaped command strings, whitespace, quotes, order and `env -u` text.
+  Unknown/prefix-collision/missing/decoded-duplicate environment keys and malformed
+  declarations still reject; static preflight is checked for absence of effects.
+- `review-worktree-contract.test.ts` transports the exact historical pair through
+  a persisted/reread handoff into the real shell executor at a distinct physical
+  candidate. It checks ordered ledger commands and local values, quoted/multiple
+  assignments, unsets, no ambient NODE_ENV inheritance and no next-command
+  NODE_ENV/TZ/CI leakage. Drift, replay and active-review exclusion remain enforced.
+
+These are isolated source regressions with synthetic readiness, tool-version
+probes and Treehouse evidence; payload execution uses real Bash/Node. The real
+installed-readiness rejection control remains in place with its durable
+matrix-start accounting and zero claims. No production defect was reproduced in
+v1, so no legacy fallback, command rewriting or environment expansion is needed.
+Passing these fixtures does **not** authenticate candidate-built installation,
+paired producers, PAP-235 completion, live readiness, an independent full matrix,
+CI or human UAT, and grants no MVM-177 retry or counter reset. The separate
+completion/readiness integration disposition remains required.
+
+### Outputs and pass criteria
+
 `outputs` contains one string per ordered command, `"<id>: <nonempty description>"`.
 `passCriteria` has exactly these mandatory literals:
 

@@ -87,6 +87,55 @@ test("formatting whitespace is permitted, shell whitespace is unchanged, authori
   }
 });
 
+const inlineCommandCases = [
+  ["exact historical NODE_ENV=test TZ=UTC assignment pair", `NODE_ENV=test TZ=UTC node -e 'if(process.env.NODE_ENV!=="test" || process.env.TZ!=="UTC") process.exit(1)'`],
+  ["leading trailing and internal shell whitespace", " \tNODE_ENV=test  TZ=UTC\tprintf '%s' 'café'\r\n\n "],
+  ["quoted command-local value containing spaces", `NODE_ENV='test mode' printf '%s' "quoted value"`],
+  ["multiple command-local assignments", `NODE_ENV=test TZ=UTC CI=1 printf '%s' "$NODE_ENV"`],
+  ["opaque env -u NODE_ENV command text", `env -u NODE_ENV TZ=UTC node -e 'if(process.env.NODE_ENV!==undefined) process.exit(1)'`],
+] as const;
+const launcherNames = ["PA_REPO", "PA_FEATURE_SHA", "PA_MATRIX_SOURCE", "PA_MATRIX_AUTHORITY_SHA256", "PA_MATRIX_APPROVAL_EVIDENCE", "PATH", "PA_TICKET_ID", "CI", "HOME", "LANG", "TZ"].sort();
+function artifactWithPayload(payload: string): Buffer {
+  const original = fixture(`${names[0]}.md`).toString();
+  let changed = original.replace(/(```json\n)[\s\S]*?(\n```)/, (_match, open: string, close: string) => open + payload + close);
+  const section = changed.slice(changed.indexOf("### Full Validation Matrix"), changed.indexOf("## After Matrix"));
+  changed = changed.replace(objective().matrixAuthoritySha256, digest(Buffer.from(section)));
+  return Buffer.from(changed);
+}
+for (const escaped of [false, true]) for (const [name, command] of inlineCommandCases) test(`parser/artifact preserve ${name} and command order with exactly eleven launcher names (${escaped ? "escaped" : "literal"} JSON)`, () => {
+  const m = artifact().matrix; const originalEnvironment = structuredClone(m.environment);
+  m.commands = ["printf before", command, "printf after"].map((shell, i) => ({ ...m.commands[0]!, id: `ordered-${i}`, command: shell }));
+  m.commandCount = m.commands.length; m.outputs = m.commands.map((c) => `${c.id}: fixture only`);
+  // Also decode JSON escapes: source spelling is not permission to rewrite shell text.
+  const payload = escaped ? JSON.stringify(m).replace(/NODE_ENV/g, "\\u004eODE_ENV") : JSON.stringify(m);
+  const parsed = parseReviewMatrix(payload); const a = parseReviewMatrixArtifact(artifactWithPayload(payload), m.source);
+  assert.deepEqual(parsed.commands, m.commands); assert.deepEqual(a.matrix.commands, m.commands);
+  assert.deepEqual(Buffer.from(a.matrix.commands[1]!.command), Buffer.from(command));
+  assert.deepEqual(a.matrix.environment, originalEnvironment);
+  assert.deepEqual(Object.keys(parsed.environment).sort(), launcherNames); assert.equal(Object.keys(parsed.environment).length, 11);
+  assert.equal(Object.hasOwn(parsed.environment, "NODE_ENV"), false);
+  const o = { ...objective(), matrixAuthoritySha256: a.digest };
+  assertReviewContractAgreement(o, a, { ticket: o.ticket, repository: a.matrix.repository, approval: approval(o) });
+});
+const invalidLauncherCases = [
+  ["extra launcher NODE_ENV", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"NODE_ENV":{"literal":"test"}', "REVIEW_FIELD"],
+  ["launcher-name prefix collision TZ_EXTRA", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"TZ_EXTRA":{"literal":"UTC"}', "REVIEW_FIELD"],
+  ["missing required launcher TZ", ',"TZ":{"literal":"UTC"}', "", "REVIEW_FIELD"],
+  ["decoded duplicate launcher TZ", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC"},"\\u0054Z":{"literal":"UTC"}', "REVIEW_DUPLICATE_KEY"],
+  ["wrong launcher binding", '"PA_REPO":{"binding":"worktreeRoot"}', '"PA_REPO":{"binding":"featureSha"}', "REVIEW_FIELD"],
+  ["literal replaced by binding", '"TZ":{"literal":"UTC"}', '"TZ":{"binding":"trustedPath"}', "REVIEW_FIELD"],
+  ["mixed binding and literal declaration", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":"UTC","binding":"trustedPath"}', "REVIEW_FIELD"],
+  ["empty launcher literal", '"TZ":{"literal":"UTC"}', '"TZ":{"literal":""}', "REVIEW_FIELD"],
+  ["malformed empty launcher declaration", '"TZ":{"literal":"UTC"}', '"TZ":{}', "REVIEW_FIELD"],
+] as const;
+for (const [name, from, to, code] of invalidLauncherCases) test(`parser/artifact reject ${name} despite opaque inline assignments`, () => {
+  const m = artifact().matrix; m.commands[0]!.command = inlineCommandCases[0][1];
+  const payload = JSON.stringify(m); assert.ok(payload.includes(from));
+  const invalid = payload.replace(from, to);
+  rejects(() => parseReviewMatrix(invalid), code);
+  rejects(() => parseReviewMatrixArtifact(artifactWithPayload(invalid), m.source), code);
+});
+
 test("observational schema inspectors aggregate independent fields without partial authority", () => {
   const o = objective();
   assert.equal(parseReviewObjective(JSON.stringify({ ...o, ticket: "ALT-7", branch: "feature/ALT-7-generic" })).ticket, "ALT-7");
