@@ -3,7 +3,7 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { publishNativePreparationRetry, readNativePreparationRetry, type NativePreparationRetry, PREPARATION_ACTIONS, PreparedWorkflowService, type PreparationHost, type PreparationOutcome, type PreparationAction, type PreparationStepContext, inactiveOperatorProjection, MAX_PROTECTED_WORKFLOW_BYTES, parseActivationProjection, parsePreparationContract, parsePreparedReceipt, preparationIdentity, PreparationJournal, preparedCapability, ProtectedWorkflowStore, requirePreparedCapability, withPreparedWorkflowLocks, workflowDigest, workflowError, WORKFLOW_OUTPUT_LIMITS, type PreparationContract, type PreparedLockScope, type PublicationBoundary, type WorkflowJournalEntry } from "../deploy/prepared-workflow.js";
+import { executionFailure, executionWorkflowError, type ExecutionFailureCode, publishNativePreparationRetry, readNativePreparationRetry, type NativePreparationRetry, PREPARATION_ACTIONS, PreparedWorkflowService, type PreparationHost, type PreparationOutcome, type PreparationAction, type PreparationStepContext, inactiveOperatorProjection, MAX_PROTECTED_WORKFLOW_BYTES, parseActivationProjection, parsePreparationContract, parsePreparedReceipt, preparationIdentity, PreparationJournal, preparedCapability, ProtectedWorkflowStore, requirePreparedCapability, withPreparedWorkflowLocks, workflowDigest, workflowError, WORKFLOW_OUTPUT_LIMITS, type PreparationContract, type PreparedLockScope, type PublicationBoundary, type WorkflowJournalEntry } from "../deploy/prepared-workflow.js";
 import { assertReceiptReservationBinding, assertReservationInventory, assertUnresetExecutionBounds, DEFAULT_EXECUTION_BOUNDS, executionBoundStop, parseExecutionBounds, parseExecutionCustody, parseIdlePreparationReservation, PREPARED_LOCK_ORDER, projectReservation } from "../deploy/execution-custody.js";
 
 const sha = "a".repeat(40); const digest = "b".repeat(64); const time = "2026-10-17T00:00:00.000Z";
@@ -248,6 +248,123 @@ test("NFR6/NFR8: bounded five-field diagnostics and exact output limits; no hidd
   assert.ok(diagnostic.length <= 2_000); assert.ok(diagnostic.split(/\s+/u).length <= 1_000);
   assert.deepEqual(WORKFLOW_OUTPUT_LIMITS, { markdown: 1_048_576, html: 4_194_304, diff: 10_485_760 });
   // These constants do not assert Phase 4 report/redaction/rendering or human delivery is delivered.
+});
+
+const executionDiagnosticCases = [
+  ["EXECUTION_NOT_ADOPTED", "binding-resolution",
+    "no durable or retained native adoption indicators and no binding",
+    "Sinh/runtime owner: optional controls unavailable; consider ordinary bootstrap only through its separate admission, never as a grant from this error",
+    "resume optional controls only with independently authenticated native adoption and binding"],
+  ["EXECUTION_BINDING_UNCERTAIN", "binding-resolution",
+    "adoption indicator present but counterpart missing or conflicting, or retained resolver disappeared",
+    "native authority/launcher owner: preserve retained state and reconcile the exact binding through supported tooling",
+    "resume only after supported exact binding reconciliation; never use legacy fallback"],
+  ["EXECUTION_CAPABILITY_UNSUPPORTED", "capability",
+    "validated context reached an absent or unsupported execution or observation port",
+    "runtime capability owner: deliver and qualify the separately scoped port or retain denial; do not activate or trial-spawn to diagnose",
+    "resume only with the separately qualified supported capability and matching authority"],
+  ["EXECUTION_CONTRACT_INVALID", "contract",
+    "native schema, version or field validation rejected the contract",
+    "contract producer/runtime owner: supply matching supported evidence through its legitimate producer; never translate or edit protected bytes",
+    "resume only with matching supported contract evidence from its legitimate producer"],
+  ["EXECUTION_STORAGE_REJECTED", "persistence",
+    "native protected-store checks rejected inaccessible, insecure or malformed storage",
+    "protected persistence owner: inspect via supported owner tooling and preserve state; no agent repair or alternate-path read",
+    "resume only after the persistence owner supplies supported acceptable storage evidence"],
+  ["EXECUTION_CALLER_STALE", "caller",
+    "process, session or registry liveness check proved a stale caller",
+    "launcher/operator owner: reconcile actual lineage and termination through supported tooling",
+    "resume only with an authenticated live caller"],
+  ["EXECUTION_BINDING_CONFLICT", "binding-validation",
+    "authenticated ticket, root, branch, consumer or caller correlation disagrees",
+    "launcher/authority owner: reconcile exact supported identity; no branch rewrite, substitution or evidence laundering",
+    "resume only with matching authenticated identity and correlation"],
+  ["EXECUTION_HOLDER_CONFLICT", "custody",
+    "validated owner, borrower, implement or review observations proved an incompatible holder or unsettled operation",
+    "custody owner: preserve barriers and settle through the supported owner procedure",
+    "resume dependent work only after supported settlement and sole-holder proof"],
+  ["EXECUTION_UNKNOWN", "fallback",
+    "unclassified failure or insufficient safe evidence; cause remains unproven",
+    "runtime maintainer/operator: retain original private evidence at its owner and obtain supported sanitized diagnostic evidence",
+    "attribute cause or resume only after supported sanitized evidence and matching authority are established"],
+] as const satisfies readonly (readonly [ExecutionFailureCode, string, string, string, string])[];
+
+for (const [code, stage, reason, correction, resume] of executionDiagnosticCases) {
+  test(`PAP-263 Phase 1: ${code} has exact static stage, five fields and bounded deterministic text`, () => {
+    const expected = `Condition: execution workflow stopped. Source: ${code}/${stage}. Reason: ${reason}. Correction: ${correction}. Resume Action: ${resume}.`;
+    const failure = executionFailure(code);
+    assert.equal(failure.message, expected);
+    assert.equal(executionFailure(code).message, expected);
+    assert.ok(Object.isFrozen(failure));
+    assert.ok(failure.message.length <= 2_000);
+    assert.doesNotMatch(failure.message, /\.\.\./); // no formatter truncation of fixed guidance
+    for (const label of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) {
+      assert.equal(failure.message.split(label).length - 1, 1);
+    }
+    assert.deepEqual(failure.message.match(/EXECUTION_[A-Z_]+/g), [code]);
+    // Only module-owned identity survives nested trusted catches; no leaf is guessed.
+    let caught: unknown = failure;
+    for (let depth = 0; depth < 3; depth += 1) {
+      try { throw caught; } catch (error) { caught = executionWorkflowError(error); }
+      assert.ok(caught instanceof Error);
+      assert.equal(caught.message, expected);
+    }
+  });
+}
+
+test("PAP-263 Phase 1: unknown and spoofed exceptions never mint classification or disclose private values", () => {
+  const unknown = executionFailure("EXECUTION_UNKNOWN").message;
+  const sentinel = "PRIVATE-EXCEPTION-SENTINEL /private/fixture token:PRIVATE process-fingerprint:PRIVATE";
+  for (const [code] of executionDiagnosticCases) {
+    const authentic = executionFailure(code);
+    for (const forged of [
+      code, { code }, { code, stage: "custody", message: sentinel, stack: sentinel },
+      new Error(sentinel), Object.assign(new Error(sentinel), { code }),
+      { ...authentic }, Object.create(authentic), Object.create(Object.getPrototypeOf(authentic)),
+      new Error(authentic.message), new Error(sentinel, { cause: authentic }),
+      JSON.parse(JSON.stringify(authentic)) as unknown,
+      new Proxy(authentic, {}),
+    ]) {
+      const sanitized = executionWorkflowError(forged);
+      assert.equal(sanitized.message, unknown);
+      assert.equal("cause" in sanitized, false);
+      assert.doesNotMatch(sanitized.message, /PRIVATE|\/private\/|fingerprint|token:/);
+    }
+  }
+  for (const input of [undefined, null, true, false, 0, 1n, Symbol("private"), "x".repeat(20_000)]) {
+    assert.equal(executionWorkflowError(input).message, unknown);
+  }
+  // Runtime allowlist also protects untyped calls to the internal constructor.
+  for (const invalid of ["__proto__", "constructor", "toString", "EXECUTION_FORGED", {}, null]) {
+    assert.equal(executionFailure(invalid as ExecutionFailureCode).message, unknown);
+  }
+});
+
+test("PAP-263 Phase 1: hostile accessors, coercion and revoked proxies are not inspected", () => {
+  let invocations = 0;
+  const hostile = (): never => { invocations += 1; throw new Error("PRIVATE-HOSTILE-SENTINEL"); };
+  const accessors = Object.create(null) as Record<string | symbol, unknown>;
+  for (const key of ["code", "stage", "message", "stack", "cause", "name", "then", "toString", Symbol.toPrimitive]) {
+    Object.defineProperty(accessors, key, { get: hostile });
+  }
+  const handler: ProxyHandler<object> = {
+    get: hostile, has: hostile, ownKeys: hostile, getPrototypeOf: hostile,
+    getOwnPropertyDescriptor: hostile, isExtensible: hostile, apply: hostile,
+  };
+  const revoked = Proxy.revocable({}, handler); revoked.revoke();
+  const unknown = executionFailure("EXECUTION_UNKNOWN").message;
+  for (const input of [accessors, new Proxy({}, handler), new Proxy(() => undefined, handler), revoked.proxy]) {
+    assert.equal(executionWorkflowError(input).message, unknown);
+    assert.equal(executionFailure(input as ExecutionFailureCode).message, unknown);
+  }
+  assert.equal(invocations, 0);
+});
+
+test("PAP-263 Phase 1: default non-execution workflowError remains byte-identical and unclassified", () => {
+  const expected = "Condition: prepared workflow stopped. Source: versioned contract or protected persistence. Reason: missing, insecure, unsupported, conflicting or uncertain evidence. Correction: preserve state; reconcile evidence with the owning service/operator. Resume Action: resume only with matching supported authority; optional automation remains inactive.";
+  assert.equal(workflowError().message, expected);
+  assert.equal(executionWorkflowError(workflowError()).message, executionFailure("EXECUTION_UNKNOWN").message);
+  assert.equal(workflowError().message, expected);
 });
 
 /** Isolated trusted-host fake. Never imports PA config/HOME or invokes real leases. */

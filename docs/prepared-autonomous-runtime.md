@@ -340,6 +340,92 @@ reconciliation; it is not an automatic privileged retry. The mandatory native
 adapter must authenticate both configured origin and push URL, persist private
 command/output/exit evidence, and verify scope/custody before this primitive runs.
 
+## Execution-control diagnostics (PAP-263)
+
+`pa_execution status` and `pa_execution observe` retain their existing success
+shapes and denials. Execution failures now use one static, non-secret five-field
+message: **Condition**, **Source**, **Reason**, **Correction**, **Resume Action**.
+Source contains one schema-owned code/stage; the whole message is at most 2,000
+JavaScript characters. No exception text, stack, protected path, token, process
+fingerprint or record is interpolated. Preparation/report/default `workflowError()`
+and generic safety/hook denials retain their existing messages.
+
+The first **proven** failing boundary in the existing check order wins. A generic
+host/store exception is not parsed for its cause: it remains `EXECUTION_UNKNOWN`.
+An authentic internal classification survives trusted catches; copied, code-shaped,
+wrapped or getter-bearing exceptions do not mint a classification. Model-input
+reflection failures lose specificity even if they throw an authentic error.
+Classification adds no authority probes, resource effects, repairs or retries.
+
+| Code / stage | Proven evidence category | Correction owner / supported resume condition |
+|---|---|---|
+| `EXECUTION_NOT_ADOPTED` / binding-resolution | No native binding and no durable/retained adoption indicator observed by the native resolver. | Sinh/runtime owner: optional controls are unavailable. Ordinary builder bootstrap may only be considered through its separate, independently authenticated admission; this error grants nothing. Optional controls require independently authenticated adoption and binding. |
+| `EXECUTION_BINDING_UNCERTAIN` / binding-resolution | Adoption locator/marker disagreement, a missing counterpart, or a retained resolver disappearing. | Native authority/launcher owner: preserve retained state and reconcile the exact binding through supported tooling. Resume only after supported exact reconciliation; **never legacy fallback**. |
+| `EXECUTION_CAPABILITY_UNSUPPORTED` / capability | An authenticated native context reaches an unsupported executor/port, or a resolved binding lacks observation capability. | Runtime capability owner: deliver/qualify the separately scoped port or retain denial. Resume only with supported capability and matching authority, never a trial spawn or activation to diagnose. |
+| `EXECUTION_CONTRACT_INVALID` / contract | The native record/binding schema, version or field validator proves rejection. | Contract producer/runtime owner: supply matching supported evidence through its legitimate producer. Do not translate or edit protected bytes. |
+| `EXECUTION_STORAGE_REJECTED` / persistence | The native marker reader proves an inaccessible/insecure/malformed record, or the required native execution store is absent. | Protected persistence owner: preserve state and inspect with supported owner tooling. Resume only with acceptable supported storage evidence; no agent mkdir/chmod/repair or alternate-path read. |
+| `EXECUTION_CALLER_STALE` / caller | Native process/registry liveness or session-shutdown check proves the caller stale. | Launcher/operator owner: reconcile actual lineage/termination; resume only with an authenticated live caller. |
+| `EXECUTION_BINDING_CONFLICT` / binding-validation | Native authenticated root/ticket/branch/consumer/caller correlation disagrees. | Launcher/authority owner: reconcile exact supported identity. No branch rewrite, evidence substitution or laundering. |
+| `EXECUTION_HOLDER_CONFLICT` / custody | Native sole-owner observation proves incompatible owner/borrower/implement/review custody. | Custody owner: preserve barriers. Dependent work requires supported settlement and sole-holder proof. |
+| `EXECUTION_UNKNOWN` / fallback | Unclassified failure or insufficient safely attributable evidence. | Runtime maintainer/operator: retain private evidence with its owner and obtain supported sanitized diagnostics before attributing cause or resuming under matching authority. |
+
+### Continuation is not admission
+
+- Optional-control failure neither proves that ordinary builder bootstrap is
+  blocked nor grants direct/delegated execution. Use only the ordinary launch
+  owner's independently admitted workflow when the lineage is genuinely
+  never-adopted; do not launch merely to test a diagnostic hypothesis.
+- Any durable or retained native adoption indicator prevents legacy fallback,
+  including marker loss, revocation, module reload and missing counterpart
+  evidence. Preserve journals, original failures, in-flight barriers and counters.
+- `status` is a projection, **not sole-holder proof**. A valid status can coexist
+  with a denied holder observation: the latter retains its stronger native
+  custody/scope checks and publishes evidence on success. It is not an effect-free
+  diagnostic probe. A missing observation port rejects before publication.
+- Unsupported native delegation/review/feature-update/rebase paths remain denied.
+  No diagnostic advises activation, protected receipt editing, counter reset,
+  checkout return or bypassing an admission decision. PAP-262 owns preparation
+  qualification; PAP-241 owns parented-admission projection. Neither is assumed
+  to fix this incident or supply execution capability.
+
+### Incident and provenance ledger
+
+| Evidence / freshness | Proven | Explicitly not established |
+|---|---|---|
+| Incident PAPC-047 / d-7b9dfa, retained 2026-10-18 intake | One status and one observe-holder call returned the same generic prepared-workflow stop; visible root/branch identity agreed. CLI metadata reported ppa 0.1.141. | Exact loaded extension/module/config/source pairing and concrete failing native check. **Historical root cause remains unproven.** Identity agreement and a generic error do not prove inactive automation, holder conflict or blocked ordinary bootstrap. |
+| Requirements source investigation at `7fa2e7ce9eebe79a4eddbe099382b8d3564cac4f`, 2026-10-18 | Source null-binding controls and outer catch-all formatting collapsed distinct failures. Current installed command/config metadata identified `/nix/store/a8ibb1z76dwxh9lkm32pnmj8gxg475sz-pa-platform-0.1.141/bin/ppa`; local configured=no. | That store being the incident's actually loaded module; current metadata is not historical loading evidence. No incident protected receipts were inspected. |
+| Implementation continuation d-f90a86, 2026-10-21 | Worktree package version 0.1.142; materialized implementation base `8a51d613a4c7534aff67cad8dfc4cea4ae349481`, approved separately by Sinh. Source/local fixture checks are recorded in phase reports. | Production installation, qualification/activation, resolved prior custody, independent review, CI or human UAT. No source checkout is asserted to be the installed runtime. |
+| Future exact-candidate installed smoke | On actual success, its ledger records timestamp, clean Git Feature SHA, physical Nix output, compiled-module hashes, packaged version/config pin and real isolated case results. | Running production Pi loading that output, clean registered-config pairing by itself, historical incident cause, live admission or readiness approval. Until executed, no installed result exists. |
+
+`node scripts/pap-263-installed-execution-diagnostics-smoke.mjs` has a fixed
+**zero-argument** interface. Run it only at the independently admitted matrix
+boundary, after committing the exact candidate. It checks clean Git/candidate
+identity, invokes fixed `nix build --no-link --json --no-update-lock-file
+.#pa-platform` argv, authenticates packaged source/config/version and physical
+compiled modules, then runs a private temporary driver using the output's
+`pa-platform-node`. No checkout TS/tsx or caller-selected runtime/root/receipt/argv
+is used. `PA_FEATURE_SHA`, when present, is only an equality check against Git.
+
+The child receives isolated config/state paths, no inherited PA/PI credentials or
+Node options, and disposable registry/marker/service fixtures. IO/process/network
+tripwires reject out-of-fixture writes, outside-store/fixture reads, child processes
+and network attempts; native SQLite is explicitly fixed to the fixture database.
+These tripwires are not a general OS sandbox. Fixture setup/publication writes are
+reported separately from zero outside writes, subprocesses and network attempts.
+There is no production policy, qualification, resource allocation, deployment,
+checkout return or receipt repair. The result ledger distinguishes nine formatter
+and trusted-catch categories from the actual native marker/locator cases; it does
+not pretend every injected category is a real installed custody journey. Raw build,
+OS and child exception text is withheld from public failure output; only the fixed
+failing stage and supported owner action are emitted. Successful installed smoke
+is isolated software evidence, not activation or human product acceptance.
+
+The approved requirements-owned ten-command independent matrix, real paired review
+readiness, required CI and current-candidate ten-scenario human UAT remain separate
+acceptance gates. The originally signed matrix base and separately approved
+materialized implementation base must be reconciled by their owner before review;
+neither these docs nor a local phase pass revises signed matrix authority.
+
 ## Report publication and settlement primitives
 
 Report input requires identity/attempt/outcome/timestamps, full base/candidate or
