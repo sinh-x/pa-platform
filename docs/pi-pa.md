@@ -1121,7 +1121,44 @@ caller-owned stdin state is preserved. This ownership-aware restoration lets the
 wrapper exit naturally after child-exit evidence and cleanup even when its parent
 keeps the stdin writer open; PPA does not force termination with `process.exit()`.
 
-Pi-owned content filtering is disabled. Foreground output and Pi-originated
+### Expected startup diagnostics
+
+Ticket-branch materialization probes the **exact local ref** with Git's
+`show-ref --exists`, capturing only that optional probe's stderr. Its documented
+exit status 2 means absent; every lookup/invocation failure is still an error,
+and a present ref must resolve to a commit. Only a planned absent branch can be
+created at the approved base. Missing materialized branches are not recreated.
+Required-ref and checkout diagnostics keep their existing presentation. A Git
+version without `--exists` fails closed rather than guessing absence.
+
+PPA also omits this one expected **presentation** line for a fresh Pi **1.0.4**
+launch, only when `<uuid>` is the exact allocated session UUID:
+
+```text
+Warning: No project session found with id '<uuid>'; creating a new session with that id.
+```
+
+The foreground PTY and managed pipe/background runner use the same bounded
+startup gate, derived from spawn/resume intent and the successful runtime-version
+probe, not environment flags or session-file existence. The gate recognizes at
+most one complete first line; ANSI controls and CRLF are normalized only in its
+comparison view. It closes on any nonmatching complete line, pipe stdout event,
+the 4096-byte cap, EOF, or a match, flushing unknown/incomplete bytes unchanged.
+It adds no timer, retry, version probe or child process. JSON stdout is never
+filtered. Resume warnings, wrong UUIDs, other/unknown versions (including the
+supported 0.84.4 development dependency), near matches and later/duplicate output
+remain visible. Older background configs without startup context pass through.
+
+Original bytes remain in the existing `pi.log`/structured diagnostic sinks under
+their existing bounds, audit, retention and access policies. This is not log
+redaction: the warning is omitted only from terminal presentation and managed
+stderr failure summaries. Session arguments, persisted identity, history,
+nonzero process status, cleanup, admission and checkout policy are unchanged.
+The regression fixtures are not evidence of live Pi UAT.
+
+### Pi content preservation and shadow audit
+
+Pi-owned content filtering is otherwise disabled. Foreground output and Pi-originated
 `pi.log`, `pi-output.jsonl`, activity records, terminal-status sidecars, registry
 diagnostics, and failure paths preserve protected values, credential-shaped
 text, credential-named fields, and reasoning metadata such as signatures or

@@ -206,6 +206,7 @@ export async function runPiBackgroundRunner(config: PiBackgroundConfig, options:
           options.supervision?.onSpawn?.(pid);
         },
       },
+      config.startup,
     );
     let result: PiCommandResult;
     if (config.validationHandoffPath) {

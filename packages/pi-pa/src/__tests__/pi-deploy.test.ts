@@ -4192,6 +4192,57 @@ test("ticketed, standalone, resume, and evaluator foreground routes share deferr
   });
 });
 
+test("PAP-267 AC-3/5/6: shared requirements/builder foreground startup preserves persisted UUID, resume and no-spawn gates", async () => {
+  for (const team of ["requirements", "builder"]) await withPiEnv(async (root, gitState) => {
+    const mode = team === "requirements" ? "analyze" : "implement";
+    const id = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
+    const warning = `Warning: No project session found with id '${id}'; creating a new session with that id.\r\n`;
+    const output: string[] = [], invocations: string[][] = [];
+    const adapter = new PiAdapter({ cwd: join(root, "repo"), versionProbe: () => "1.0.4", nativeRegistryProbe: () => undefined,
+      sessionIdFactory: () => id, supervision: {
+        spawnPty: (_file, args) => {
+          invocations.push(args);
+          const pty = new ForegroundDeploymentPty(() => {});
+          setImmediate(() => { pty.emitData(warning); pty.emitExit(0); });
+          return pty as never;
+        },
+        input: new ForegroundDeploymentInput() as never,
+        output: { write: (chunk: string) => { output.push(chunk); return true; } } as never,
+        persistLine: () => {},
+      } });
+    const dryRun = await deployWithPi({ team, mode, dryRun: true }, adapter);
+    assert.equal(dryRun.status, "pending", dryRun.reason); assert.equal(invocations.length, 0);
+    const initial = await deployWithPi({ team, mode }, adapter);
+    assert.equal(initial.status, "success", initial.reason); assert.equal(invocations.length, 1);
+    assert.equal(output.join(""), "");
+    const dir = getDeployPaths(initial.deploymentId!).deployDir;
+    const path = join(dir, "session-id-pi.txt");
+    assert.equal(readFileSync(path, "utf8"), id + "\n");
+    assert.equal(readFileSync(join(dir, "pi.log"), "utf8"), warning);
+    const operationsBeforeResume = gitState.readOperations();
+    const resumed = await deployWithPi({ team, mode, resume: initial.deploymentId! }, adapter);
+    assert.equal(resumed.status, "success", resumed.reason); assert.equal(invocations.length, 2);
+    assert.equal(output.join(""), warning);
+    assert.equal(readFileSync(path, "utf8"), id + "\n");
+    assert.deepEqual(gitState.readOperations(), operationsBeforeResume);
+    for (const args of invocations) assert.equal(args[args.indexOf("--session-id") + 1], id);
+    assert.equal(readFileSync(join(getDeployPaths(resumed.deploymentId!).deployDir, "session-id-pi.txt"), "utf8"), id + "\n");
+    for (const state of ["absent", "empty"]) {
+      if (state === "absent") rmSync(path); else writeFileSync(path, "\n");
+      const rejected = await deployWithPi({ team, mode, resume: initial.deploymentId! }, adapter);
+      assert.equal(rejected.status, "failed");
+      assert.match(rejected.reason ?? "", /no Pi session id recorded|empty Pi session id recorded/);
+      assert.equal(invocations.length, 2);
+      if (state === "absent") assert.equal(existsSync(path), false); else assert.equal(readFileSync(path, "utf8"), "\n");
+    }
+    if (team === "builder") {
+      writeFileSync(join(root, "repo", "dirty.txt"), "no spawn\n");
+      const rejected = await deployWithPi({ team, mode, background: true }, adapter);
+      assert.equal(rejected.status, "failed"); assert.equal(invocations.length, 2);
+    }
+  });
+});
+
 test("Pi preflight failure is controlled, actionable, and leaves no session file", async () => {
   await withPiEnv(async () => {
     let spawned = 0;

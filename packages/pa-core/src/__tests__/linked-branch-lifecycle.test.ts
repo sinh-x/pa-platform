@@ -20,13 +20,19 @@ function withLinkedBranchEnv(fn: (context: { root: string; repo: string; tickets
   execFileSync("git", ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" });
   writeFileSync(join(config, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n    feature_branch_pattern: "feature/<ticket>-<topic>"\n  other:\n    path: ${repo}\n    prefix: OTH\n    develop_branch: develop\n`);
 
-  const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  // Never let fixture ticket/registry writers inherit the admitted agent session.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_|PI_|GIT_)/.test(key)));
+  for (const key of Object.keys(inherited)) delete process.env[key];
   process.env["PA_PLATFORM_CONFIG"] = config;
+  process.env["PA_AI_USAGE_HOME"] = root;
+  process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
+  process.env["GIT_CONFIG_NOSYSTEM"] = "1";
   try {
     fn({ root, repo, tickets, store: new TicketStore(tickets, { privileged: true }) });
   } finally {
-    if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
-    else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
+    Object.assign(process.env, inherited);
     rmSync(root, { recursive: true, force: true });
   }
 }
