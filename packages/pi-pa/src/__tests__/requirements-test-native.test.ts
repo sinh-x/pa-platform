@@ -949,6 +949,19 @@ test("AC5/AC6/AC7 source-native: genuine Pi SDK definitions enforce exact file/c
   } finally { await f.cleanup(); }
 });
 
+test("AC1 native holder: unsupported runtime role rejects before authority/resource lookup, never defaults to test", async () => {
+  const f = await fixture(); let lookups = 0;
+  try {
+    const { PiRequirementsTestAuthority } = await import("../requirements-test-native.js"), { PiRestrictedTestExecutor } = await import("../background-runner.js");
+    class NoLookup extends PiPreparedNativeAuthority { override operations(): never { lookups++; throw new Error("SOURCE authority unexpectedly consulted"); } }
+    const authority = new PiRequirementsTestAuthority({ native: new NoLookup({ root: join(f.root, "native") }) }), executor = new PiRestrictedTestExecutor(authority);
+    const resource: TestResource = { repository: f.auth.repository, worktreeRoot: f.worktree, leaseId: f.lease.leaseId, leaseHolder: f.lease.leaseHolder,
+      reservationId: digest("unselected-reservation"), repositoryPermit: 1, lineageId: "unselected-source-lineage" };
+    await assert.rejects(executor.prepareAsync("unsupported" as "test", digest("unselected-intent"), resource), /Condition:/);
+    assert.throws(() => executor.inspect("unsupported" as "test", digest("unselected-intent"), resource), /Condition:/);
+    assert.equal(lookups, 0); assert.equal(f.inventory().length, 0); assert.equal(f.allocationCount(), 0);
+  } finally { await f.cleanup(); }
+});
 for (const scenario of ["normal", "admission-response-loss"] as const) test(`AC9/AC10/AC11 source: real product SDK adopts new consumption, preserves oracle and same native owners (${scenario})`, async (t) => {
   const f = await fixture(undefined, true), previousRegistry = process.env.PA_REGISTRY_DB;
   let child: ChildProcess | undefined, childError = "", stage = 0;

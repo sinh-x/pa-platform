@@ -882,7 +882,7 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
   start(): never { throw workflowError(); }
   async prepareAsync(role: "test" | "product", intentId: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch> {
     if (role === "product") return this.#product.prepareAsync(role, intentId, resource, signal);
-    if (signal?.aborted) throw workflowError();
+    if (role !== "test" || signal?.aborted) throw workflowError();
     const store = this.authority.native.operations(); if (!store) throw workflowError();
     const records = store.records().map((name) => store.read(name) as Record<string, unknown>);
     const request = records.find((row) => row.schemaVersion === "requirements-test-native/v1" && row.step === "test-process" && row.state === "intent"
@@ -926,6 +926,7 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
   }
   inspect(role: "test" | "product", intentId: string, resource: TestResource): RequirementsTestLaunch {
     if (role === "product") return this.#product.inspect(role, intentId, resource);
+    if (role !== "test") throw workflowError();
     const owner = restrictedOwner(this.authority, intentId);
     if (!isDeepStrictEqual(owner.resource, resource)) throw workflowError();
     const row = parkedRead(join(owner.directory, "restricted-spawned.json")); const fingerprint = row?.process as ProcessFingerprint | undefined;
@@ -941,6 +942,7 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
   }
   assertParked(launch: RequirementsTestLaunch, resource: TestResource, role: "test" | "product"): void {
     if (role === "product") return this.#product.assertParked(launch, resource, role);
+    if (role !== "test") throw workflowError();
     const owner = this.#owner(launch); if (!isDeepStrictEqual(resource, owner.resource)) throw workflowError();
     // Service calls this inside its capacity/worktree transaction. Validate
     // process/registry/SDK facts here without recursively taking that mutex.
