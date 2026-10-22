@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -148,6 +149,22 @@ test("bundle pipeline emits only selected artifacts, imports, notices, and immut
       rmSync(outputRoot, { recursive: true, force: true });
     }
   }
+});
+
+test("PAP-264 smoke rejects arguments and non-candidate CWD before Nix or package imports", () => {
+  const root = mkdtempSync(join(tmpdir(), "pap264-entry-"));
+  const script = resolve(REPOSITORY_ROOT, "scripts/pap-264-installed-direct-admission-smoke.mjs");
+  try {
+    for (const [cwd, args] of [[REPOSITORY_ROOT, ["PRIVATE_SENTINEL"]], [root, []]]) {
+      const result = spawnSync(process.execPath, [script, ...args], { cwd, env: { PATH: root, HOME: root }, encoding: "utf8", timeout: 10000 });
+      assert.equal(result.error, undefined); assert.equal(result.signal, null); assert.equal(result.status, 1); assert.equal(result.stderr, "");
+      const ledger = JSON.parse(result.stdout);
+      assert.equal(ledger.status, "failed"); assert.equal(ledger.readinessApproval, false);
+      assert.match(ledger.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(ledger.diagnostic.length <= 2000); assert.doesNotMatch(result.stdout, /PRIVATE_SENTINEL|\/tmp\/|stack/);
+      assert.match(ledger.diagnostic, /installed-smoke\/prerequisites/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("CI and Nix inputs require recursive exact sources and both Linux sharp artifacts", () => {

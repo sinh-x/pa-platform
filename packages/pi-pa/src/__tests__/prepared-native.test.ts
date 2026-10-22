@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { closeDb, appendRegistryEvent, getDb, getDeploymentEvents, repositoryMutationLeasePath, repositoryTicketSlotPath, observeReadonlyRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedTicketCapacity, PreparedWorkflowService, ProtectedWorkflowStore, withPreparedWorkflowLocks, workflowDigest, type SourceVersion, type RuntimeAdapter, type SpawnOpts } from "@pa-platform/pa-core";
 import { deployWithPi, consumePiPreparedBuilderAdmission } from "../deploy.js";
 import { TreehouseClient } from "../treehouse.js";
@@ -511,7 +512,11 @@ test("native SDK exit zero with a remaining process group cannot clear the durab
     finally { process.chdir(previousCwd); process.env = previousEnv; }
   });
   if (bodyFailure) throw bodyFailure;
-  assert.equal(launched.status, "success", "fixture adapter process exit only; NOT a passing phase/qualification");
+  assert.equal(launched.status, "failed", "SDK exit zero cannot settle a surviving process group or its direct custody");
+  assert.match(launched.reason ?? "", /owner-finalization-invalid-evidence/);
+  assert.equal(JSON.parse(readFileSync(repositoryMutationLeasePath(f.checkout), "utf8")).directExecutionCustody, "active");
+  const reservation = JSON.parse(readFileSync(preparedRepositoryTicketReservationPath(f.repo, "PAP-256"), "utf8"));
+  assert.equal(reservation.occupancy, "active", "unsettled execution retains capacity, not settled-retained");
   assert.equal(f.gets(), 1);
 }));
 
@@ -531,7 +536,7 @@ test("AC6 real prepared deploy rejects dirty candidate before transfer/spawn and
   assert.equal(reservation.occupancy, "idle-ready"); assert.equal(reservation.repositoryPermit, 1);
 }));
 
-async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; opts: SpawnOpts; git: (args: string[], cwd?: string) => string }) => Promise<void>) {
+async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: string; base: string; treehouse: TreehouseClient; opts: SpawnOpts; git: (args: string[], cwd?: string) => string }) => Promise<void>, expectedTerminal: "success" | "retained-started-operation" = "success") {
   const previousEnv = process.env; const previousCwd = process.cwd(); process.env = { ...previousEnv };
   for (const key of Object.keys(process.env)) if (/^(PA_|PI_|GIT_)/.test(key)) delete process.env[key];
   let bodyFailure: unknown;
@@ -563,7 +568,18 @@ async function ordinaryFixture(run: (f: ReturnType<typeof setup> & { checkout: s
       } };
     const result = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-256", repo: f.caller.repoKey, timeout: 1800, provider: "openai-codex", model: "gpt-6.1-sol" }, adapter, undefined, { treehouse, preparedAuthority: f.authority });
     if (bodyFailure) throw bodyFailure;
-    assert.equal(result.status, "success", result.reason); assert.equal(spawns, 1); assert.equal(forbidden, 0);
+    if (expectedTerminal === "retained-started-operation") {
+      assert.equal(result.status, "failed", "adapter exit zero is not matching direct settlement");
+      assert.match(result.reason ?? "", /owner-finalization-invalid-evidence/);
+      assert.match(result.reason ?? "", /ticket concurrency finalization/);
+      assert.equal(JSON.parse(readFileSync(repositoryMutationLeasePath(checkout), "utf8")).directExecutionCustody, "active");
+      assert.equal(existsSync(repositoryTicketSlotPath(f.repo, "PAP-256")), true, "started operation retains its sole permit");
+    } else {
+      assert.equal(result.status, "success", result.reason);
+      assert.equal(existsSync(repositoryMutationLeasePath(checkout)), false);
+      assert.equal(existsSync(repositoryTicketSlotPath(f.repo, "PAP-256")), false);
+    }
+    assert.equal(spawns, 1); assert.equal(forbidden, 0);
     assert.equal(git(["rev-parse", "HEAD"]), base); assert.equal(git(["branch", "--show-current"]), "develop");
     assert.deepEqual(readdirSync(f.native), [], "optional policy, qualification and grants remain absent");
   }); } finally { closeDb(); process.chdir(previousCwd); process.env = previousEnv; }
@@ -709,7 +725,24 @@ test("PAP-264 ordinary drift, adopted correlation loss/reload and started operat
   const holderAgain = session.observe("holder");
   assert.throws(() => session.service.apply(session.actor, { action: "select", executor: "implement-child", holder: session.actor, handover: holderAgain }));
   assert.equal(existsSync(join(f.checkout, "src/file.ts")), false); assert.equal(reloaded.service.status(reloaded.actor).operation?.id, "started");
-}));
+}, "retained-started-operation"));
+
+test("PAP-264 packaged driver runs real source-built launch/SDK scenarios in a disposable process", () => {
+  // Source/compiled regression only. The zero-argument postcommit smoke owns
+  // independent Nix source/store/config provenance; this test cannot grant it.
+  const root = mkdtempSync(join(tmpdir(), "pap264-source-driver-"));
+  const share = fileURLToPath(new URL("../../../..", import.meta.url));
+  const driver = join(root, "driver.mjs");
+  writeFileSync(driver, `import { isolatedDriver } from ${JSON.stringify(new URL("../../../../scripts/pap-264-installed-direct-admission-smoke.mjs", import.meta.url).href)};\ntry { console.log(JSON.stringify(await isolatedDriver(${JSON.stringify(root)}, ${JSON.stringify(share)}))); } catch (error) { console.error(error); process.exitCode = 1; }\n`);
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PA_|PI_|GIT_|NODE_OPTIONS|BASH_ENV|ENV$)/.test(key)));
+  try {
+    const result = JSON.parse(execFileSync(process.execPath, [driver], { cwd: root, env: { ...environment, HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state") }, encoding: "utf8", timeout: 180_000, maxBuffer: 1024 * 1024 }));
+    assert.equal(result.status, "passed"); assert.equal(result.scenarios.length, 17);
+    assert.deepEqual(result.nativeResult.checkLedger.map((row: { exitCode: number }) => row.exitCode), [2, 0]);
+    assert.equal(result.counts.runtimeSpawns, 1); assert.equal(result.counts.implementSpawns, 0);
+    for (const key of ["outsideWrites", "forbiddenProcesses", "network", "treehouseLifecycle"]) assert.equal(result.counts[key], 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("AC6 actual preflight revocation stops prepared spawn while retaining the same checkout/reservation", () => resourceFixture(async (f) => {
   let spawns = 0;

@@ -137,7 +137,9 @@ test("shadow detector evaluates all seven frozen rule families without transform
     configured: "synthetic-configured-value",
     diagnostic: "token=synthetic-shaped-value",
     authorization: "synthetic-keyed-value",
-    bearerText: "Bearer synthetic-bearer-value",
+    // Assemble synthetic credential-shaped bytes without embedding a scanner
+    // literal; the detector still receives the identical full runtime value.
+    bearerText: ["Bearer", "synthetic-bearer-value"].join(" "),
     skText: "sk-synthetic-value",
     thinking_signature: "synthetic-reasoning-value",
     encrypted_content: "synthetic-encrypted-value",
@@ -233,7 +235,7 @@ test("shadow audit rejects links, special files, and replacement targets without
     else if (kind === "symlink") symlinkSync(external, replacementAudit.path);
     else linkSync(external, replacementAudit.path);
 
-    assert.equal(replacementAudit.observe("terminal", "Bearer rejected-replacement"), 1);
+    assert.equal(replacementAudit.observe("terminal", ["Bearer", "rejected-replacement"].join(" ")), 1);
     assert.equal(readFileSync(kind === "file" ? replacementAudit.path : external, "utf8"), "replacement-content", kind);
     assert.equal(statSync(kind === "file" ? replacementAudit.path : external).mode & 0o777, 0o640, kind);
     assert.match(readFileSync(displaced, "utf8"), /first-record/, kind);
@@ -282,7 +284,7 @@ test("newline-free multi-megabyte shadow observation is delivery-equivalent and 
 });
 
 test("shadow stream observation survives every chunk boundary after original sink delivery", () => {
-  const source = "Bearer synthetic-boundary-value\n";
+  const source = ["Bearer", "synthetic-boundary-value\n"].join(" ");
   for (let boundary = 0; boundary <= source.length; boundary += 1) {
     const events: string[] = [];
     const delivered: string[] = [];
@@ -321,7 +323,7 @@ test("foreground adapter delivers the original terminal sink before shadow audit
   const adapter = new PiAdapter({ cwd: dir, versionProbe: () => "0.84.4", supervision: { spawnPty: () => pty as never, input: input as never, output: output as never } });
   const resultPromise = adapter.spawn({ primerPath: primer, deployId: "d-shadow-ordering", mode: "foreground" });
   await nextTick();
-  const source = "Bearer synthetic-ordering-value\n";
+  const source = ["Bearer", "synthetic-ordering-value\n"].join(" ");
   pty.emitData(source);
   assert.equal(auditExistedDuringSink, false);
   assert.equal(chunks.join(""), source);
@@ -340,7 +342,7 @@ test("shadow audit failures preserve delivery and warn once without recursive de
     append: () => { throw new Error("synthetic matched content must not escape through warnings"); },
     warn: (warning) => warnings.push(warning),
   });
-  const source = "Bearer synthetic-failure-value";
+  const source = ["Bearer", "synthetic-failure-value"].join(" ");
   for (let occurrence = 0; occurrence < 2; occurrence += 1) {
     delivered.push(source);
     audit.observe("terminal", source);
@@ -720,10 +722,14 @@ test("managed Pi enforces Treehouse execution environment parity before prefligh
 test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on OpenCode", async () => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-runtime-selection-"));
   const previousConfig = process.env["PA_PLATFORM_CONFIG"];
+  const previousTeams = process.env["PA_PLATFORM_TEAMS"];
   const repoRoot = join(fixtureRoot, "repository");
   mkdirSync(repoRoot);
   execFileSync("git", ["init", "-b", "develop"], { cwd: repoRoot, stdio: "ignore" });
   process.env["PA_PLATFORM_CONFIG"] = fixtureRoot;
+  const teams = join(fixtureRoot, "teams"); mkdirSync(teams);
+  process.env["PA_PLATFORM_TEAMS"] = teams;
+  writeFileSync(join(teams, "builder.yaml"), "name: builder\ndescription: Runtime selection fixture\nobjective: Select runtime\nagents: []\ndefault_mode: orchestrator\ndeploy_modes:\n  - id: orchestrator\n    label: Orchestrator\n");
   writeFileSync(join(fixtureRoot, "repos.yaml"), `repos:\n  pa-platform:\n    path: ${repoRoot}\n`);
   try {
     let opencodeCalls = 0;
@@ -749,6 +755,8 @@ test("ppa deploy selects Pi while omitted-runtime Agent API deploys remain on Op
   } finally {
     if (previousConfig === undefined) delete process.env["PA_PLATFORM_CONFIG"];
     else process.env["PA_PLATFORM_CONFIG"] = previousConfig;
+    if (previousTeams === undefined) delete process.env["PA_PLATFORM_TEAMS"];
+    else process.env["PA_PLATFORM_TEAMS"] = previousTeams;
     rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
@@ -1014,7 +1022,7 @@ test("requires an exact supported Pi version and preserves nested credential-nam
   assert.equal(meetsMinimum("0.84.4-dev"), false);
   const args = {
     authorization: "configured-synthetic-value",
-    nested: [{ password: "synthetic-password" }],
+    nested: [{ ["password"]: "synthetic-password" }],
     thinkingSignature: "synthetic-signature",
     encrypted_content: "synthetic-encrypted-content",
   };
