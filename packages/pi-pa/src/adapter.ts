@@ -4,6 +4,8 @@ import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, 
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { StringDecoder } from "node:string_decoder";
+import { PiStartupPresentation, validPiStartupContext, type PiStartupContext } from "./startup-diagnostics.js";
 import { spawn as spawnPty, type IPty } from "node-pty";
 import { appendActivityEvent, createActivityEvent, formatBoundedFiveFieldDiagnostic, getDeployPaths, parseTimestamp, type ActivityEvent, type HookConfig, type RepositoryBorrowerHandoff, type RepositoryLeaseHandoff, type ResumeOpts, type RuntimeAdapter, type SpawnOpts, type SpawnResult, type ToolReference } from "@pa-platform/pa-core";
 import { auditPiValueFromEnvironment, environmentSecrets, PiRedactionAudit, StreamingPiRedactionAuditor } from "./diagnostics.js";
@@ -74,6 +76,7 @@ export interface PiBackgroundConfig {
   primerPath: string;
   logFile: string;
   sessionId: string;
+  startup?: PiStartupContext;
   model?: string;
   provider?: string;
   managed: boolean;
@@ -170,6 +173,7 @@ export class PiAdapter implements RuntimeAdapter {
   private readonly nativeRegistryProbe: () => PiNativeHostEvidence | undefined | Promise<PiNativeHostEvidence | undefined>;
   private readonly versionTimeoutMs: number;
   private preflightPromise?: Promise<void>;
+  private runtimeVersion = "";
   private readonly sessionIdFactory: () => string;
   private readonly secretValues: string[];
   private readonly supervision: PiSupervisionOptions;
@@ -221,6 +225,7 @@ export class PiAdapter implements RuntimeAdapter {
         if (versionResult.status === "rejected") throw versionResult.reason;
         if (!meetsMinimum(versionResult.value)) throw new Error(`Pi version must be 0.84.4 or later; detected '${versionResult.value || "unknown"}'.`);
         if (nativeResult.status === "rejected") throw nativeResult.reason;
+        this.runtimeVersion = versionResult.value.length <= 128 ? versionResult.value : "unknown";
       })();
       this.preflightPromise = probe;
       void probe.catch(() => { if (this.preflightPromise === probe) this.preflightPromise = undefined; });
@@ -269,6 +274,7 @@ export class PiAdapter implements RuntimeAdapter {
     finally { this.preflightPromise = undefined; }
     const id = resumeId ?? opts.sessionId ?? this.allocateSessionId();
     const interactive = opts.mode === "foreground";
+    const startup: PiStartupContext = { fresh: resumeId === undefined, version: this.runtimeVersion };
     const normalized = normalizePiRuntimeConfig(opts.env?.["PA_PROVIDER"], opts.model);
     const args = interactive ? ["--session-id", id] : ["--print", "--mode", "json", "--session-id", id];
     if (normalized.model) args.push("--model", normalized.model);
@@ -290,10 +296,10 @@ export class PiAdapter implements RuntimeAdapter {
     const result = this.runCommand
       ? await this.runCommand(args, { cwd, env: piEnv })
       : interactive
-        ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision)
+        ? await runPiForeground(args, cwd, piEnv, opts, id, secrets, this.supervision, startup)
         : opts.mode === "background"
-          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision, protectedValidationLaunch })
-          : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision);
+          ? await launchPiBackgroundRunner({ cwd, env, opts, id, model: normalized.model, provider: normalized.provider, secrets, supervision: this.supervision, protectedValidationLaunch, startup })
+          : await runPiManagedProcess(args, cwd, piEnv, opts, id, secrets, this.supervision, startup);
     if (this.runCommand && !interactive) {
       result.metadata = { ...(result.metadata ?? {}), ...persistOutput(opts, result.stdout, result.stderr, secrets, audit) };
     }
@@ -635,7 +641,7 @@ export function inspectPiToolProtocol(events: Array<Record<string, unknown>>): {
   return { outcomes: inspector.outcomes(), diagnostic: inspector.diagnostic() };
 }
 function parsePiLine(line: string, deployId: string, secrets: string[] = []): ActivityEvent { try { const value = JSON.parse(line) as unknown; return Array.isArray(value) ? normalizePiEvent({ type: "message", content: value }, deployId, secrets) : normalizePiEvent(value as Record<string, unknown>, deployId, secrets); } catch { return createActivityEvent({ deployId, kind: "text", source: "pi", body: line.slice(0, MAX_BODY) }); } }
-export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}): Promise<PiCommandResult> {
+export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions = {}, startup?: PiStartupContext): Promise<PiCommandResult> {
   env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const spawnProcess = supervision.spawnProcess ?? spawn;
   const now = supervision.now ?? Date.now;
@@ -654,11 +660,17 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
   completion = new Promise((resolveResult) => {
     let stdout = ""; let stderr = ""; let carry = ""; let terminalError = ""; let settled = false; let directClosed = false; let normalExit = false; let rawExitCode: number | undefined; let cleanupPending = false; let cleanupVerified = false; let timer: NodeJS.Timeout | undefined; let cleanupDeadline = 0; let cleanupStatus = 1; let cleanupError: Error | undefined; let onShutdown: (() => void) | undefined;
     const protocol = new PiToolProtocolInspector();
+    const presentation = new PiStartupPresentation(id, startup);
+    const rawDecoder = new StringDecoder("utf8"), visibleDecoder = new StringDecoder("utf8");
+    let rawStderr = "";
+    const presentStderr = (bytes: Buffer): void => { stderr = tail(stderr + visibleDecoder.write(bytes), MAX_STDERR); };
     const outputPath = resolve(dirname(opts.primerPath), "pi-output.jsonl");
     const settle = (status: number | null, error?: Error): void => {
       if (settled) return;
       if (timer) clearTimer(timer);
       if (onShutdown) supervision.shutdownSignal?.removeEventListener("abort", onShutdown);
+      presentStderr(presentation.close());
+      stderr = tail(stderr + visibleDecoder.end(), MAX_STDERR);
       settled = true;
       resolveResult({ status, stdout, stderr, ...(error ? { spawnError: error } : {}), metadata: { pid: child.pid, sessionId: id, normalExit, ...(rawExitCode !== undefined ? { rawExitCode } : {}), ...(terminalError ? { terminalError } : {}), ...(cleanupPending ? { cleanupVerified } : {}) } });
     };
@@ -688,7 +700,7 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
       try {
         if (carry) { observeProtocolLine(protocol, carry); terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
         if (opts.logFile) {
-          const log = stdout + stderr;
+          const log = stdout + rawStderr + rawDecoder.end();
           writeLog(opts.logFile, log, "utf8");
           audit.observe("pi-log", log, secrets);
         }
@@ -696,7 +708,24 @@ export function runPiManagedProcess(args: string[], cwd: string, env: NodeJS.Pro
         settle(status, error);
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }
     };
-    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => { const text = chunk.toString("utf8"); if (stream === "stdout") { stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY); const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY); for (const line of lines) { observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets); try { persist(line, outputPath); } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; } } } else stderr = tail(stderr + text, MAX_STDERR); };
+    const consume = (chunk: Buffer, stream: "stdout" | "stderr"): void => {
+      if (stream === "stderr") {
+        rawStderr = tail(rawStderr + rawDecoder.write(chunk), MAX_STDERR);
+        presentStderr(presentation.push(chunk));
+        return;
+      }
+      // JSON stdout is never filtered. Its first event ends stderr startup,
+      // even when it interleaves with a partial warning on the other pipe.
+      presentStderr(presentation.close());
+      const text = chunk.toString("utf8");
+      stdout = tail(stdout + text, MAX_CAPTURE); carry = tail(carry + text, MAX_CARRY);
+      const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
+      for (const line of lines) {
+        observeProtocolLine(protocol, line); terminalError ||= terminalErrorFromLine(line, secrets);
+        try { persist(line, outputPath); }
+        catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); return; }
+      }
+    };
     child.stdout?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stdout"); }); child.stderr?.on("data", (chunk: Buffer) => { if (!cleanupPending) consume(chunk, "stderr"); });
     child.once("error", (error) => { if (!cleanupPending) settle(null, error); }); child.once("close", (code, signal) => { directClosed = true; normalExit = !cleanupPending && code !== null && signal == null; rawExitCode = code ?? undefined; if (!cleanupPending) finish(code ?? 1, code === 0 ? undefined : new Error(`Pi exited with code ${code ?? 1}`)); });
     if (opts.timeoutMs) timer = setTimer(() => requestCleanup(124, new Error("Pi deployment timed out")), opts.timeoutMs);
@@ -737,6 +766,7 @@ interface BackgroundLaunchInput {
   secrets: string[];
   supervision: PiSupervisionOptions;
   protectedValidationLaunch?: PiProtectedValidationLaunch;
+  startup: PiStartupContext;
 }
 
 async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<PiCommandResult> {
@@ -765,6 +795,7 @@ async function launchPiBackgroundRunner(input: BackgroundLaunchInput): Promise<P
     primerPath: input.opts.primerPath,
     logFile: input.opts.logFile ?? resolve(deployDir, "pi.log"),
     sessionId: input.id,
+    startup: input.startup,
     ...(input.model ? { model: input.model } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
     managed: plan !== undefined,
@@ -965,7 +996,7 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
     && typeof registry.branch_head_sha === "string" && /^[0-9a-f]{40}$/.test(registry.branch_head_sha)
     && typeof registry.ticket_slot_id === "string" && (registry.repository_permit === 1 || registry.repository_permit === 2 || registry.repository_permit === 3 || registry.repository_permit === 4)
   );
-  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validValidationHandoffPath || !validRepositoryEvidence || !validRegistryEvidence || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
+  if (value.schemaVersion !== 1 || typeof value.ownershipToken !== "string" || typeof value.deploymentId !== "string" || typeof value.team !== "string" || typeof value.cwd !== "string" || typeof value.primerPath !== "string" || typeof value.logFile !== "string" || typeof value.sessionId !== "string" || typeof value.managed !== "boolean" || !Array.isArray(value.skills) || !value.skills.every((skill) => typeof skill === "string") || !validRepositoryHandoffPath || !validValidationHandoffPath || !validRepositoryEvidence || !validRegistryEvidence || !validPiStartupContext(value.startup) || value.repositoryLease !== undefined || value.repositoryBorrower !== undefined) {
     throw new Error("runner-readiness: Pi background configuration is malformed");
   }
   return value as PiBackgroundConfig;
@@ -1090,7 +1121,7 @@ function boundedRunnerDiagnostic(error: unknown, _secrets: string[]): string { r
 
 function readableIsFlowing(input: NodeJS.ReadStream): boolean { return input.readableFlowing === true; }
 
-function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions): Promise<PiCommandResult> {
+function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, opts: SpawnOpts, id: string, secrets: string[], supervision: PiSupervisionOptions, startup?: PiStartupContext): Promise<PiCommandResult> {
   env = browserLifecycleEnvironment({ ...env, PA_DEPLOYMENT_ID: opts.deployId, PA_DEPLOYMENT_DIR: dirname(opts.primerPath) });
   const deployDir = dirname(opts.primerPath);
   const terminalAtLaunch = readPiTerminalStatus(deployDir);
@@ -1114,7 +1145,11 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
   const previousFlowing = input.readableFlowing;
   let inputFlowOwned = false;
   const appendForegroundLog = opts.logFile ? (value: string): void => appendLog(opts.logFile!, value, "utf8") : undefined;
+  const presentation = new PiStartupPresentation(id, startup);
   const terminalAudit = new StreamingPiRedactionAuditor(audit, "terminal-output", secrets);
+  const present = (bytes: Buffer): void => {
+    if (bytes.length) deliverToPiSinkThenObserve(bytes.toString("utf8"), (visible) => { output.write(visible); }, (visible) => { terminalAudit.push(visible); });
+  };
   const logAudit = opts.logFile ? new StreamingPiRedactionAuditor(audit, "pi-log", secrets) : undefined;
 
   const completion = new Promise<PiCommandResult>((resolveResult) => {
@@ -1142,6 +1177,7 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
     const finishEvidence = (): void => {
       if (evidenceFinished) return;
       evidenceFinished = true;
+      present(presentation.close());
       if (carry) { terminalError ||= terminalErrorFromLine(carry, secrets); persist(carry, outputPath); carry = ""; }
       terminalAudit.flush();
       logAudit?.flush();
@@ -1288,7 +1324,8 @@ function runPiForeground(args: string[], cwd: string, env: NodeJS.ProcessEnv, op
       if (settled || cleanupPending) return;
       try {
         stdout = tail(stdout + chunk, MAX_CAPTURE); carry = tail(carry + chunk, MAX_CARRY);
-        deliverToPiSinkThenObserve(chunk, (original) => { output.write(original); appendForegroundLog?.(original); }, (original) => { terminalAudit.push(original); logAudit?.push(original); });
+        present(presentation.push(Buffer.from(chunk, "utf8")));
+        deliverToPiSinkThenObserve(chunk, (original) => { appendForegroundLog?.(original); }, (original) => { logAudit?.push(original); });
         const lines = carry.split("\n"); carry = tail(lines.pop() ?? "", MAX_CARRY);
         for (const line of lines) { terminalError ||= terminalErrorFromLine(line, secrets); persist(line, outputPath); }
       } catch (error) { requestCleanup(1, error instanceof Error ? error : new Error(String(error))); }

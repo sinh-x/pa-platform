@@ -1045,6 +1045,33 @@ test("foreground Pi relays terminal input, output, resize, interrupt, and exit s
   assert.deepEqual(output.chunks, ["visible\n"]);
 });
 
+test("PAP-267 AC-3/6: fresh PTY warning presentation is quiet but raw logs, resume history and outcomes survive", async () => {
+  const id = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
+  const warning = `Warning: No project session found with id '${id}'; creating a new session with that id.\r\n`;
+  for (const resume of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-startup-pty-"));
+    try {
+      const primerPath = join(dir, "primer.md"), logFile = join(dir, "pi.log"), history = join(dir, "session-history");
+      writeFileSync(primerPath, "work"); writeFileSync(history, "existing session history\n");
+      const pty = new FakePiPty(), input = new FakePiInput(), output = new FakePiOutput();
+      let args: string[] = [];
+      const adapter = new PiAdapter({ cwd: dir, env: {}, versionProbe: () => "1.0.4", nativeRegistryProbe: () => undefined,
+        supervision: { spawnPty: (_file, argv) => { args = argv; return pty as never; }, input: input as never, output: output as never, persistLine: () => {} } });
+      const opts = { primerPath, logFile, deployId: "d-startup-pty", mode: "foreground" as const, sessionId: id };
+      const running = resume ? adapter.resume(opts) : adapter.spawn(opts);
+      await nextTick();
+      for (const char of warning) pty.emitData(char);
+      pty.emitData("real session failure\r\n"); pty.emitExit(7);
+      const result = await running;
+      assert.equal(output.chunks.join(""), (resume ? warning : "") + "real session failure\r\n");
+      assert.equal(readFileSync(logFile, "utf8"), warning + "real session failure\r\n");
+      assert.equal(result.exitCode, 7); assert.equal(result.sessionId, id); assert.equal(result.metadata?.["sessionId"], id);
+      assert.deepEqual(args.slice(0, 2), ["--session-id", id]);
+      assert.equal(readFileSync(history, "utf8"), "existing session history\n");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
 test("foreground stdin flow owned by PPA is paused and raw state is restored on success, failure, and cleanup settlement", async () => {
   for (const item of [
     { name: "success", initialRaw: false, expectedExitCode: 0 },
