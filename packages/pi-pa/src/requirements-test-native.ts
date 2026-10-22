@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   assessTestWorkflow, captureRepositoryGitSnapshot, executionBoundStop, loadRepoEntry,
@@ -110,6 +110,38 @@ interface NativeRecord {
   readonly value: unknown;
 }
 const STEPS: readonly Step[] = ["reservation", "allocation", "branch", "test-process", "test-start", "test-settlement", "product-process", "product-transfer", "product-start"];
+const CAPACITY_RETRY_VERSION = "requirements-test-native-capacity-retry/v1";
+function loadNativeRecords(store: ProtectedWorkflowStore, auth: TestAuthorization, digest: string): readonly NativeRecord[] {
+  const id = identity(auth.operationId); const names = store.records().filter((name) => name.startsWith(`${id}.`));
+  if (!names.length) return [];
+  if (!names.includes(`${id}.intent.json`) || names.length > 128) throw workflowError();
+  const records: NativeRecord[] = []; let previous = digest;
+  for (let sequence = 0; sequence < names.length; sequence++) {
+    const name = sequence === 0 ? `${id}.intent.json` : `${id}.transaction-${sequence}.json`;
+    if (!names.includes(name)) throw workflowError();
+    const row = workflowObject(store.read(name), ["schemaVersion", "operationId", "authorizationSha256", "sequence", "previousSha256", "step", "state", "value"]);
+    if (row.schemaVersion !== VERSION || row.operationId !== auth.operationId || row.authorizationSha256 !== digest || row.sequence !== sequence || row.previousSha256 !== previous
+      || !["request", "cancel", "capacity-retry", ...STEPS].includes(String(row.step)) || !["intent", "observed", "failed", "unknown", "cancelled"].includes(String(row.state))) throw workflowError();
+    const record = row as unknown as NativeRecord;
+    if (sequence === 0 && (record.step !== "request" || record.state !== "intent")) throw workflowError();
+    records.push(record); previous = workflowDigest(JSON.stringify(record));
+  }
+  return records;
+}
+function capacityRetryState(auth: TestAuthorization, records: readonly NativeRecord[], capacity: PreparedTicketCapacityTransaction) {
+  const last = records.at(-1);
+  const failures = records.filter((row) => row.state === "failed" || row.state === "unknown");
+  const retriesUsed = auth.retriesUsed + records.filter((row) => row.step === "capacity-retry").length + 1;
+  if (!last || last.step !== "reservation" || last.state !== "failed"
+    || !same(last.value, { reason: "not-ready-capacity", operatorNotificationRequired: true, retry: "operator-manual-only" })
+    || records.some((row) => row.state === "unknown" || row.state === "cancelled" || row.step === "cancel" || (row.state === "observed" && row.step !== "capacity-retry"))
+    || capacity.inventory().some((row) => row.ticket === auth.repository.ticket)
+    || retriesUsed > auth.retryLimit || auth.bounds.consecutiveNoProgress + failures.length >= 3) throw workflowError();
+  return Object.freeze({ failure: reference("capacity-failure", last), retriesUsed, bounds: auth.bounds });
+}
+function capacityRetryId(auth: TestAuthorization, failure: SourceVersion, retriesUsed: number): string {
+  return workflowDigest(JSON.stringify([CAPACITY_RETRY_VERSION, auth.operationId, failure, retriesUsed]));
+}
 /** Staged native transaction adapter. Uses the existing protected store and
  * shared capacity -> worktree -> publication owners, no second workflow DB.
  * Internal embedding API only; no Pi tool, generic deploy flag or core export.
@@ -135,21 +167,7 @@ export class RequirementsTestNativeService {
     return { raw, auth, sha256 };
   }
   #load(auth: TestAuthorization, digest: string): readonly NativeRecord[] {
-    const id = identity(auth.operationId); const names = this.options.store.records().filter((name) => name.startsWith(`${id}.`));
-    if (!names.length) return [];
-    if (!names.includes(`${id}.intent.json`) || names.length > 128) throw workflowError();
-    const records: NativeRecord[] = []; let previous = digest;
-    for (let sequence = 0; sequence < names.length; sequence++) {
-      const name = sequence === 0 ? `${id}.intent.json` : `${id}.transaction-${sequence}.json`;
-      if (!names.includes(name)) throw workflowError();
-      const row = workflowObject(this.options.store.read(name), ["schemaVersion", "operationId", "authorizationSha256", "sequence", "previousSha256", "step", "state", "value"]);
-      if (row.schemaVersion !== VERSION || row.operationId !== auth.operationId || row.authorizationSha256 !== digest || row.sequence !== sequence || row.previousSha256 !== previous
-        || !["request", "cancel", "capacity-retry", ...STEPS].includes(String(row.step)) || !["intent", "observed", "failed", "unknown", "cancelled"].includes(String(row.state))) throw workflowError();
-      const record = row as unknown as NativeRecord;
-      if (sequence === 0 && (record.step !== "request" || record.state !== "intent")) throw workflowError();
-      records.push(record); previous = workflowDigest(JSON.stringify(record));
-    }
-    return records;
+    return loadNativeRecords(this.options.store, auth, digest);
   }
   #append(scope: PreparedLockScope, auth: TestAuthorization, digest: string, records: readonly NativeRecord[], step: NativeRecord["step"], state: NativeRecord["state"], value: unknown): NativeRecord {
     const sequence = records.length;
@@ -350,7 +368,8 @@ export class RequirementsTestNativeService {
       synchronous(() => this.options.authority.assertAuthorization(auth, sha256));
       if (executionBoundStop(auth.bounds, this.#now())) throw workflowError();
       const records = this.#load(auth, sha256);
-      if (records.some((row) => row.step === "cancel" || row.state === "cancelled" || row.state === "failed")) throw workflowError();
+      const lastRetry = records.reduce((last, row, index) => row.step === "capacity-retry" ? index : last, -1);
+      if (records.some((row, index) => row.step === "cancel" || row.state === "cancelled" || (row.state === "failed" && index > lastRetry))) throw workflowError();
       return records;
     };
     const preparing = this.#locked(auth, (capacity, scope) => {
@@ -590,13 +609,7 @@ export class RequirementsTestNativeService {
     const { auth, sha256 } = this.#authorization(operationId); const decision = parseSourceVersion(decisionInput);
     this.#locked(auth, (capacity, scope) => {
       const records = this.#load(auth, sha256);
-      const failures = records.filter((row) => row.step === "reservation" && row.state === "failed");
-      const last = records.at(-1);
-      if (!last || last !== failures.at(-1) || !same(last.value, { reason: "not-ready-capacity", operatorNotificationRequired: true, retry: "operator-manual-only" })
-        || records.some((row) => row.state === "observed" && row.step !== "capacity-retry") || capacity.inventory().some((row) => row.ticket === auth.repository.ticket)) throw workflowError();
-      const retriesUsed = auth.retriesUsed + records.filter((row) => row.step === "capacity-retry").length + 1;
-      if (retriesUsed > auth.retryLimit) throw workflowError();
-      const failure = reference("capacity-failure", last);
+      const { failure, retriesUsed } = capacityRetryState(auth, records, capacity);
       synchronous(() => this.options.authority.assertCapacityRetry(auth, decision, failure, retriesUsed));
       this.#append(scope, auth, sha256, records, "capacity-retry", "observed", { decision, failure, retriesUsed, bounds: auth.bounds });
     });
@@ -620,8 +633,9 @@ export class RequirementsTestNativeService {
   #status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activation: false }> {
     const { auth, sha256 } = this.#authorization(operationId, false);
     const records = this.#load(auth, sha256);
-    return Object.freeze({ schemaVersion: VERSION, state: !records.length ? "unrequested" : records.some((row) => ["unknown", "failed", "cancelled"].includes(row.state)
-        || (row.state === "intent" && row.step !== "request" && !records.some((other) => other.step === row.step && other.state === "observed"))) ? "blocked" : "retained",
+    const lastRetry = records.reduce((last, row, index) => row.step === "capacity-retry" ? index : last, -1);
+    return Object.freeze({ schemaVersion: VERSION, state: !records.length ? "unrequested" : records.some((row, index) => ["unknown", "cancelled"].includes(row.state) || (row.state === "failed" && index > lastRetry)
+        || (row.state === "intent" && row.step !== "request" && !(row.step === "reservation" && index < lastRetry) && !records.some((other) => other.step === row.step && other.state === "observed"))) ? "blocked" : "retained",
       effects: records.filter((row) => row.state === "observed").length, activation: false });
   }
 }
@@ -661,6 +675,58 @@ export function verifyRequirementsTestGit(auth: TestAuthorization, resource: Tes
 
 const AUTHORITY_VERSION = "requirements-test-native-authorization/v1";
 const POLICY_VERSION = "requirements-test-native-selection/v1";
+const QUALIFICATION_VERSION = "requirements-test-native-qualification/v2";
+const MODEL_TRANSPORT_VERSION = "requirements-test-model-transport/v1";
+export interface RequirementsTestModelTransport {
+  readonly schemaVersion: typeof MODEL_TRANSPORT_VERSION;
+  readonly runtime: PreparedNativeRuntime;
+  readonly endpoint: string;
+  readonly modelId: string;
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  readonly process: ExecutionHolder["process"];
+  readonly source: SourceVersion;
+  readonly outcome: "qualified";
+}
+/** Fixed numeric loopback, explicit high port, fixed API path: no DNS, URL
+ * credentials, interpolation, arbitrary headers, remote endpoint or redirect. */
+function modelEndpoint(value: unknown): string {
+  if (typeof value !== "string" || !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}\/v1$/.test(value)) throw workflowError();
+  const url = new URL(value);
+  if (Number(url.port) < 1024 || Number(url.port) > 65535 || url.href !== value) throw workflowError();
+  return value;
+}
+export function parseRequirementsTestModelTransport(value: unknown, runtime: PreparedNativeRuntime): RequirementsTestModelTransport {
+  const row = workflowObject(value, ["schemaVersion", "runtime", "endpoint", "modelId", "contextWindow", "maxTokens", "process", "source", "outcome"]);
+  if (row.schemaVersion !== MODEL_TRANSPORT_VERSION || !same(row.runtime, runtime) || row.outcome !== "qualified"
+    || typeof row.modelId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(row.modelId)
+    || !Number.isSafeInteger(row.contextWindow) || Number(row.contextWindow) < 4096 || Number(row.contextWindow) > 1_048_576
+    || !Number.isSafeInteger(row.maxTokens) || Number(row.maxTokens) < 1 || Number(row.maxTokens) > 32_768 || Number(row.maxTokens) > Number(row.contextWindow)) throw workflowError();
+  modelEndpoint(row.endpoint); parseSourceVersion(row.source);
+  const process = workflowObject(row.process, ["pid", "startTimeTicks", "bootId"]);
+  if (!Number.isSafeInteger(process.pid) || Number(process.pid) < 1 || Number(process.pid) > 2_147_483_647 || typeof process.startTimeTicks !== "string" || !/^[0-9]+$/.test(process.startTimeTicks)
+    || typeof process.bootId !== "string" || !process.bootId) throw workflowError();
+  // Clone nested values as well; callers cannot change a validated snapshot.
+  return Object.freeze({ ...row, runtime: Object.freeze({ ...runtime }), process: Object.freeze({ ...process }), source: parseSourceVersion(row.source) }) as unknown as RequirementsTestModelTransport;
+}
+function assertModelListener(transport: RequirementsTestModelTransport): void {
+  if (!same(readProcessFingerprint(transport.process.pid), transport.process)) throw workflowError();
+  const sockets = new Set(readdirSync(`/proc/${transport.process.pid}/fd`).flatMap((name) => {
+    try { const match = /^socket:\[([0-9]+)\]$/.exec(readlinkSync(`/proc/${transport.process.pid}/fd/${name}`)); return match ? [match[1]!] : []; }
+    catch { return []; }
+  }));
+  const address = `0100007F:${Number(new URL(transport.endpoint).port).toString(16).toUpperCase().padStart(4, "0")}`;
+  // Fixed kernel procfs path, bounded native read (not ordinary evidence-file
+  // parsing, which intentionally rejects procfs aliases/zero-size pseudo-files).
+  const fd = openSync("/proc/net/tcp", "r"), buffer = Buffer.alloc(1_048_577); let bytes = 0;
+  try {
+    while (bytes < buffer.length) { const count = readSync(fd, buffer, bytes, buffer.length - bytes, null); if (!count) break; bytes += count; }
+  } finally { closeSync(fd); }
+  if (bytes === buffer.length || !buffer.subarray(0, bytes).toString("utf8").split("\n").some((line) => {
+    const fields = line.trim().split(/\s+/); return fields[1] === address && fields[3] === "0A" && sockets.has(fields[9]!);
+  })) throw workflowError();
+}
+
 export interface PiRequirementsTestAuthorityOptions {
   /** Isolated source-test seams only; never exposed by tool/CLI/env input. */
   readonly native?: PiPreparedNativeAuthority;
@@ -688,10 +754,11 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     if (!value.packageVersion || realpathSync(value.storeRoot) !== value.storeRoot) throw workflowError(); return value;
   }
   #qualification(): SourceVersion {
-    const facts = this.#facts(); const id = workflowDigest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
+    const facts = this.#facts(); const id = workflowDigest(JSON.stringify([QUALIFICATION_VERSION, facts]));
     const value = this.#store().read(`${id}.intent.json`);
-    const row = workflowObject(value, ["schemaVersion", "runtime", "native", "installed", "pairing", "toolsAuditDecision"]);
-    if (row.schemaVersion !== "requirements-test-native-qualification/v1" || !same(row.runtime, facts)) throw workflowError();
+    const row = workflowObject(value, ["schemaVersion", "runtime", "native", "installed", "pairing", "toolsAuditDecision", "modelTransport"]);
+    if (row.schemaVersion !== QUALIFICATION_VERSION || !same(row.runtime, facts)) throw workflowError();
+    this.#modelTransport(parseSourceVersion(row.modelTransport));
     for (const kind of ["native", "installed", "pairing", "toolsAuditDecision"]) {
       const ref = parseSourceVersion(row[kind]); const match = /^requirements-test-qualification-evidence:([0-9a-f]{64})$/.exec(ref.ref);
       if (!match || ref.version !== "requirements-test-qualification-evidence/v1") throw workflowError();
@@ -702,6 +769,22 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
       parseSourceVersion(item.source);
     }
     return reference("qualification", value);
+  }
+  #modelTransport(input: SourceVersion): RequirementsTestModelTransport {
+    const ref = parseSourceVersion(input), match = /^requirements-test-model-transport:([0-9a-f]{64})$/.exec(ref.ref);
+    if (!match || ref.version !== MODEL_TRANSPORT_VERSION) throw workflowError();
+    const value = this.#store().read(`${match[1]}.intent.json`);
+    if (ref.sha256 !== workflowDigest(JSON.stringify(value))) throw workflowError();
+    const transport = parseRequirementsTestModelTransport(value, this.#facts());
+    assertModelListener(transport); return transport;
+  }
+  /** Protected exact-pair producer only. No tool/JSON/env endpoint or credential
+   * options. Revalidated before allocation, SDK construction and each request. */
+  modelTransport(auth: TestAuthorization): RequirementsTestModelTransport {
+    this.assertAuthorization(auth, workflowDigest(this.readAuthorization(auth.operationId)));
+    const id = workflowDigest(JSON.stringify([QUALIFICATION_VERSION, this.#facts()]));
+    const row = this.#store().read(`${id}.intent.json`) as { modelTransport: SourceVersion };
+    return this.#modelTransport(row.modelTransport);
   }
   #policyId(repo: { key: string; root: string }): string { return workflowDigest(JSON.stringify([POLICY_VERSION, repo, this.#facts()])); }
   selection(caller: PiPreparationCaller): Readonly<{ active: boolean; runtime: PreparedNativeRuntime; qualification: SourceVersion }> {
@@ -766,7 +849,7 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     const caller = { deploymentId: auth.parent.holder.deploymentId, repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, callerIdentity: "0".repeat(64) };
     const selection = this.selection(caller); const facts = selection.runtime;
     if (!selection.active || auth.pair.runtimeSha !== facts.sourceSha || auth.pair.configSha !== facts.configSha || !same(auth.pair.qualification, selection.qualification)) throw workflowError();
-    const qualificationId = workflowDigest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
+    const qualificationId = workflowDigest(JSON.stringify([QUALIFICATION_VERSION, facts]));
     const qualification = this.#store().read(`${qualificationId}.intent.json`) as { toolsAuditDecision: SourceVersion };
     if (!same(auth.pair.toolsAuditDecision, qualification.toolsAuditDecision)) throw workflowError();
   }
@@ -832,7 +915,7 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     const history = this.readFinalHistory(auth);
     if (history.some((raw) => parseTestWorkflowEvent(raw).data.action === "test-settled")) return;
     const status = queryDeploymentStatus(launch.holder.deploymentId);
-    if (readProcessFingerprint(launch.holder.process.pid) || !status || !["success", "partial", "failed", "crashed"].includes(status.status)
+    if (readProcessFingerprint(launch.holder.process.pid) || !status || !["success", "partial"].includes(status.status)
       || status.pid !== launch.holder.process.pid || status.requirements_test?.operationId !== auth.operationId || status.requirements_test.authorizationSha256 !== workflowDigest(this.readAuthorization(auth.operationId))) throw workflowError();
     const head = snapshot(resource.worktreeRoot); if (head.dirty || head.branch !== auth.repository.branch) throw workflowError();
     const commits = git(["rev-list", "--reverse", `${auth.repository.selectedHeadSha}..${head.head}`], resource.worktreeRoot).toString("utf8").trim().split("\n").filter(Boolean);
@@ -918,7 +1001,53 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     if (!same(parseTestAuthorization(this.readPreviousAuthorization(next)), previous)) throw workflowError();
     testWorkflowInvalidation(this.readAuthorization(previous.operationId), this.readAuthorization(next.operationId), this.readFinalHistory(previous));
   }
-  assertCapacityRetry(_auth: TestAuthorization, _decision: SourceVersion, _failure: SourceVersion, _retriesUsed: number): void { throw workflowError(); }
+  /** Only a fresh foreground decision may permit another zero-effect capacity
+   * attempt. UI is outside locks; the complete failure chain is reread under the
+   * shared owner before publication. This never retries or clears effects itself. */
+  async captureCapacityRetry(context: PiPreparationContext, operationId: string, toolCallId: string, signal?: AbortSignal): Promise<SourceVersion> {
+    const caller = this.#authenticate(context), raw = this.readAuthorization(operationId), auth = parseTestAuthorization(raw);
+    const current = () => {
+      this.assertAuthorization(auth, workflowDigest(raw));
+      if (signal?.aborted || context.mode !== "tui" || !context.ui?.select || !toolCallId || toolCallId.length > 256
+        || caller.deploymentId !== auth.parent.holder.deploymentId || caller.repoKey !== auth.repository.key || caller.repoRoot !== auth.repository.root || caller.ticket !== auth.repository.ticket
+        || !same(this.#authenticate(context), caller) || !processIsWithinFingerprintLineage(process.pid, auth.parent.holder.process)
+        || executionBoundStop(auth.bounds, new Date().toISOString())) throw workflowError();
+    };
+    const preview = () => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, (capacity) => {
+      current(); return capacityRetryState(auth, loadNativeRecords(this.#store(), auth, workflowDigest(raw)), capacity);
+    });
+    const initial = preview();
+    const accept = "Retry this unchanged zero-effect capacity failure once";
+    const answer = await context.ui!.select(`Manual capacity retry only; no queue, resource reclaim, new authorization, counter reset or product authority. Exact authorization ${workflowDigest(raw)}; failure and retained bounds ${JSON.stringify(initial)}`, [accept, "Cancel"], signal ? { signal } : undefined);
+    if (answer !== accept) throw workflowError();
+    current();
+    return withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, (capacity) => {
+      current();
+      if (!same(capacityRetryState(auth, loadNativeRecords(this.#store(), auth, workflowDigest(raw)), capacity), initial)) throw workflowError();
+      return run();
+    }), worktree: (run) => run() }, (scope) => {
+      const id = capacityRetryId(auth, initial.failure, initial.retriesUsed);
+      const value = { schemaVersion: CAPACITY_RETRY_VERSION, operationId, authorizationSha256: workflowDigest(raw), ...initial, caller,
+        toolCallId, decisionId: workflowDigest(randomUUID()), capturedAt: new Date().toISOString() };
+      this.#store().publish(scope, `${id}.intent.json`, value);
+      return Object.freeze({ ref: `requirements-test-capacity-retry:${id}`, version: CAPACITY_RETRY_VERSION, sha256: workflowDigest(JSON.stringify(value)) });
+    });
+  }
+  assertCapacityRetry(auth: TestAuthorization, decisionInput: SourceVersion, failureInput: SourceVersion, retriesUsed: number): void {
+    const decision = parseSourceVersion(decisionInput), failure = parseSourceVersion(failureInput);
+    const id = capacityRetryId(auth, failure, retriesUsed);
+    const value = this.#store().read(`${id}.intent.json`);
+    const row = workflowObject(value, ["schemaVersion", "operationId", "authorizationSha256", "failure", "retriesUsed", "bounds", "caller", "toolCallId", "decisionId", "capturedAt"]);
+    const raw = this.readAuthorization(auth.operationId); this.assertAuthorization(auth, workflowDigest(raw));
+    const caller = workflowObject(row.caller, ["deploymentId", "repoKey", "repoRoot", "ticket", "callerIdentity"]);
+    if (row.schemaVersion !== CAPACITY_RETRY_VERSION || decision.ref !== `requirements-test-capacity-retry:${id}` || decision.version !== CAPACITY_RETRY_VERSION
+      || decision.sha256 !== workflowDigest(JSON.stringify(value)) || row.operationId !== auth.operationId || row.authorizationSha256 !== workflowDigest(raw)
+      || !same(row.failure, failure) || row.retriesUsed !== retriesUsed || !same(row.bounds, auth.bounds)
+      || caller.deploymentId !== auth.parent.holder.deploymentId || caller.repoKey !== auth.repository.key || caller.repoRoot !== auth.repository.root || caller.ticket !== auth.repository.ticket
+      || typeof row.toolCallId !== "string" || !row.toolCallId || row.toolCallId.length > 256
+      || executionBoundStop(auth.bounds, new Date().toISOString())) throw workflowError();
+    workflowSha(caller.callerIdentity); workflowSha(row.decisionId); workflowTimestamp(row.capturedAt);
+  }
 }
 
 /** Actual foreground caller authentication is reused, not an env route selector.

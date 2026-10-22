@@ -236,7 +236,7 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
     Type.Object({ schemaVersion: version, action: Type.Literal("selection-status") }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("activate") }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("authorize"), authorization: Type.String({ maxLength: 65536 }) }, { additionalProperties: false }),
-    Type.Object({ schemaVersion: version, action: Type.Union([Type.Literal("request"), Type.Literal("status"), Type.Literal("cancel"), Type.Literal("settle"), Type.Literal("review-oracle")]), operationId: operation }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Union([Type.Literal("request"), Type.Literal("status"), Type.Literal("cancel"), Type.Literal("settle"), Type.Literal("review-oracle"), Type.Literal("retry-capacity")]), operationId: operation }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("approve-final"), operationId: operation, requirements: Type.String() }, { additionalProperties: false }),
   ]);
   let mutating = false;
@@ -249,9 +249,9 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
         const { PiRestrictedTestExecutor } = await import("../background-runner.js");
         const authority = new PiRequirementsTestAuthority();
         const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
-        const keys = ["schemaVersion", "action", ...(action === "authorize" ? ["authorization"] : ["request", "status", "cancel", "settle", "review-oracle", "approve-final"].includes(action) ? ["operationId", ...(action === "approve-final" ? ["requirements"] : [])] : [])];
+        const keys = ["schemaVersion", "action", ...(action === "authorize" ? ["authorization"] : ["request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity"].includes(action) ? ["operationId", ...(action === "approve-final" ? ["requirements"] : [])] : [])];
         const row = workflowObject(input, keys);
-        if (row.schemaVersion !== "requirements-test-native/v1" || !["selection-status", "activate", "authorize", "request", "status", "cancel", "settle", "review-oracle", "approve-final"].includes(action) || signal?.aborted) throw workflowError();
+        if (row.schemaVersion !== "requirements-test-native/v1" || !["selection-status", "activate", "authorize", "request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity"].includes(action) || signal?.aborted) throw workflowError();
         if (action === "selection-status") return executionResult({ schemaVersion: "requirements-test-native-status/v1", ...authority.selection(caller), activationPerformed: false });
         if (mutating) throw workflowError(); mutating = true;
         try {
@@ -268,7 +268,11 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
           const service = new RequirementsTestNativeService({ store, authority, executor: new PiRestrictedTestExecutor(authority), tickets: authority.native.tickets() });
           if (action === "request") return executionResult(await service.requestAsync(operationId, signal));
           if (action === "status") return executionResult(service.status(operationId));
-          if (action === "cancel") service.cancel(operationId);
+          if (action === "retry-capacity") {
+            const decision = await authority.captureCapacityRetry(context, operationId, id, signal);
+            service.retryCapacity(operationId, decision);
+          }
+          else if (action === "cancel") service.cancel(operationId);
           else if (action === "settle") service.settleTest(operationId);
           else await authority.captureReview(context, operationId, action === "approve-final" ? workflowText(row.requirements) : undefined, signal);
           return executionResult(service.status(operationId));

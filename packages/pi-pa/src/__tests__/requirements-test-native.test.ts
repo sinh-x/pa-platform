@@ -3,6 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import test, { after } from "node:test";
 import type { RequirementsTestLaunch, RequirementsTestNativeAuthority, RequirementsTestNativeExecutor, RequirementsTestNativeOptions } from "../requirements-test-native.js";
 import type { TestAuthorization, TestGitEvidence, TestResource, TestWorkflowEvent, TestEventData } from "../../../pa-core/src/deploy/requirements-test-workflow.js";
@@ -370,8 +371,23 @@ test("AC11/AC12: cancel retains original effects and prevents resumed test work,
   } finally { await f.cleanup(); }
 });
 
-test("AC2/AC9 source integration: concrete native operator capture uses exact qualified selection, private records, live registry and source rereads", async () => {
+for (const scenario of ["long-text", "failure"] as const) test(`AC2/AC9 source integration: native capture, retry and keyless SDK ${scenario} retain exact private evidence`, async (t) => {
   const f = await fixture(); const previousRegistry = process.env.PA_REGISTRY_DB; let sdkChild: ChildProcess | undefined;
+  let mode: "text" | "long-text" | "failure" | "redirect" | "hang" | "oversize" = "text";
+  const requests: { url: string; authorization?: string; body: Record<string, unknown> }[] = [];
+  // Deterministic source protocol fixture, NOT an actual model/provider canary,
+  // installed qualification or a production service. No credentials are read.
+  const server = createServer(async (request, response) => {
+    const parts: Buffer[] = []; for await (const part of request) parts.push(Buffer.from(part));
+    requests.push({ url: request.url!, authorization: request.headers.authorization, body: JSON.parse(Buffer.concat(parts).toString("utf8")) });
+    if (mode === "redirect") { response.writeHead(302, { Location: "http://127.0.0.1:1/forbidden" }); response.end(); return; }
+    if (mode === "failure") { response.writeHead(503, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: { message: "source-fixture-endpoint-failure" + ".".repeat(70_000) } })); return; }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (mode === "hang") { response.flushHeaders(); return; }
+    if (mode === "oversize") { response.end(Buffer.alloc(16_777_217, 32)); return; }
+    response.end(`data: ${JSON.stringify({ id: "source-protocol", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "keyless source protocol observation" + (mode === "long-text" ? ".".repeat(70_000) : "") }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "source-protocol", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   try {
     core.closeDb(); process.env.PA_REGISTRY_DB = join(f.root, "capture-registry.db");
     const { PiRequirementsTestAuthority } = await import("../requirements-test-native.js");
@@ -395,8 +411,13 @@ test("AC2/AC9 source integration: concrete native operator capture uses exact qu
       const id = digest(`explicit-synthetic-${kind}`), value = { schemaVersion: "requirements-test-qualification-evidence/v1", runtime: facts, kind, source: source(`SYNTHETIC-${kind}-NOT-ACTUAL-QUALIFICATION`), outcome: "qualified" };
       publish(f.store, id, value); refs[kind] = { ref: `requirements-test-qualification-evidence:${id}`, version: "requirements-test-qualification-evidence/v1", sha256: digest(JSON.stringify(value)) };
     }
-    const qualificationId = digest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
-    publish(f.store, qualificationId, { schemaVersion: "requirements-test-native-qualification/v1", runtime: facts, ...refs });
+    const address = server.address(); assert.ok(address && typeof address !== "string");
+    const transport = { schemaVersion: "requirements-test-model-transport/v1", runtime: facts, endpoint: `http://127.0.0.1:${address.port}/v1`, modelId: "source-fixture-only", contextWindow: 8192, maxTokens: 1024,
+      process: readProcessFingerprint(process.pid)!, source: source("SYNTHETIC-TRANSPORT-NOT-ACTUAL-QUALIFICATION"), outcome: "qualified" };
+    const modelId = digest("synthetic-keyless-transport"); publish(f.store, modelId, transport);
+    const modelRef = { ref: `requirements-test-model-transport:${modelId}`, version: transport.schemaVersion, sha256: digest(JSON.stringify(transport)) };
+    const qualificationId = digest(JSON.stringify(["requirements-test-native-qualification/v2", facts]));
+    publish(f.store, qualificationId, { schemaVersion: "requirements-test-native-qualification/v2", runtime: facts, ...refs, modelTransport: modelRef });
     assert.equal(authority.selection(caller).active, false);
     await authority.select(context); // ONLY isolated synthetic policy, never real activation
     const selected = authority.selection(caller); assert.equal(selected.active, true);
@@ -413,8 +434,81 @@ test("AC2/AC9 source integration: concrete native operator capture uses exact qu
     authority.assertAuthorization(auth, digest(raw)); assert.equal(authority.readAuthorization(auth.operationId), raw);
     const decision = authority.authorizationDecision(auth); assert.ok(decision.sha256);
     assert.equal(f.effects.prepare, 0); assert.equal(f.allocationCount(), 0); assert.equal(f.inventory().length, 0);
+    await t.test("keyless transport parses strict bindings; URL/credential/version/runtime/bounds drift is not qualification", async () => {
+      const { parseRequirementsTestModelTransport } = await import("../requirements-test-native.js");
+      assert.deepEqual(parseRequirementsTestModelTransport(transport, facts), transport);
+      for (const endpoint of ["https://remote.invalid/v1", "http://localhost:1234/v1", "http://127.0.0.1:1234/v1?token=x", "http://user:password@127.0.0.1:1234/v1", "http://127.0.0.1:80/v1", "http://127.0.0.1:99999/v1", "http://127.0.0.1:1234/other", "http://127.0.0.2:1234/v1"]) assert.throws(() => parseRequirementsTestModelTransport({ ...transport, endpoint }, facts));
+      for (const delta of [{ apiKey: "forbidden" }, { headers: {} }, { schemaVersion: "legacy" }, { maxTokens: 0 }, { maxTokens: 32769 }, { maxTokens: 9000 }, { contextWindow: 0 }, { process: { ...transport.process, pid: 0 } }, { runtime: { ...facts, configSha: "0".repeat(40) } }, { modelId: "$ENV" }, { outcome: "pending" }]) assert.throws(() => parseRequirementsTestModelTransport({ ...transport, ...delta }, facts));
+      assert.equal(requests.length, 0); assert.equal(f.allocationCount(), 0);
+    });
+    await t.test("genuine SDK uses only the qualified keyless endpoint; no auth, retries or redirects", async () => {
+      const { createRequirementsTestModelRuntime } = await import("../background-runner.js");
+      const { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+      const runtime = await createRequirementsTestModelRuntime(authority, auth, f.root);
+      const { session } = await createAgentSession({ cwd: f.repo, agentDir: f.root, modelRuntime: runtime.modelRuntime, model: runtime.model, thinkingLevel: "off", noTools: "all", tools: [],
+        sessionManager: SessionManager.inMemory(f.repo), settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+        resourceLoader: { getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }), getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }), getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }), getSystemPrompt: () => "Source protocol fixture only.", getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {} } });
+      try {
+        await session.prompt("Observe only this isolated keyless protocol.", { expandPromptTemplates: false });
+        assert.equal(session.getLastAssistantText(), "keyless source protocol observation");
+        assert.equal(requests.length, 1); assert.equal(requests[0]!.authorization, undefined); assert.equal(requests[0]!.url, "/v1/chat/completions"); assert.equal(requests[0]!.body.model, transport.modelId);
+        mode = "redirect"; const redirect = await runtime.modelRuntime.completeSimple(runtime.model, { messages: [{ role: "user", content: "reject redirects", timestamp: Date.now() }] });
+        assert.equal(redirect.stopReason, "error"); assert.equal(requests.length, 2, "redirect must not trigger a second request or provider retry");
+        mode = "failure"; const failure = await runtime.modelRuntime.completeSimple(runtime.model, { messages: [{ role: "user", content: "retain failure", timestamp: Date.now() }] });
+        assert.equal(failure.stopReason, "error"); assert.equal(requests.length, 3, "503 must not retry");
+        mode = "hang";
+        const aborted = await runtime.modelRuntime.completeSimple(runtime.model, { messages: [{ role: "user", content: "cancel bounded request", timestamp: Date.now() }] }, { signal: AbortSignal.timeout(200) });
+        assert.equal(aborted.stopReason, "aborted"); assert.equal(requests.length, 4);
+        mode = "oversize";
+        const oversized = await runtime.modelRuntime.completeSimple(runtime.model, { messages: [{ role: "user", content: "reject over-budget stream", timestamp: Date.now() }] });
+        assert.equal(oversized.stopReason, "error"); assert.equal(requests.length, 5);
+        mode = scenario;
+      } finally { await session.abort(); session.dispose(); }
+      assert.equal(f.allocationCount(), 0); assert.equal(f.inventory().length, 0);
+    });
+    const capacityService = new RequirementsTestNativeService({ ...f.options, authority, tickets: native.tickets(), now: () => new Date().toISOString() });
+    await t.test("native retry rejects no failure, forged decisions and non-foreground capture without effects", async () => {
+      await assert.rejects(authority.captureCapacityRetry(context, auth.operationId, "no-capacity-failure"));
+      assert.throws(() => authority.assertCapacityRetry(auth, source("forged-decision"), source("forged-failure"), 1));
+      assert.equal(f.allocationCount(), 0);
+    });
+    const occupied = [2, 3, 4, 5].map((n) => {
+      const directory = join(f.root, `legacy-slot-${n}`); mkdirSync(directory);
+      const row = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: f.repo, ticket: `PAP-${n}`, deploymentId: `d-44444${n}`, deploymentDirectory: directory });
+      assert.equal(row.status, "acquired"); if (row.status !== "acquired") throw new Error("fixture capacity"); return row.slot;
+    });
+    assert.throws(() => capacityService.request(auth.operationId));
+    const beforeRetry = f.records();
+    await t.test("native retry cancellation, RPC and source drift preserve full-capacity failure and counters", async () => {
+      await assert.rejects(authority.captureCapacityRetry({ ...context, mode: "rpc" }, auth.operationId, "rpc"));
+      await assert.rejects(authority.captureCapacityRetry({ ...context, ui: { select: async () => "Cancel" } }, auth.operationId, "cancel"));
+      const path = join(sourceRoot, "assertions.md"), original = readFileSync(path);
+      try {
+        await assert.rejects(authority.captureCapacityRetry({ ...context, ui: { select: async (_title, choices) => { writeFileSync(path, "changed while dialog open"); return choices[0]; } } }, auth.operationId, "drift"));
+      } finally { writeFileSync(path, original); }
+      assert.deepEqual(f.records(), beforeRetry); assert.equal(f.inventory().length, 4); assert.equal(f.allocationCount(), 0);
+    });
+    await t.test("native retry binds exact failure/raw authorization/bounds, consumes once and never queues", async () => {
+      const retry = await authority.captureCapacityRetry(context, auth.operationId, "exact-manual-retry");
+      const failureRow = f.records().at(-1)!;
+      const failure = { ref: "requirements-test-native:capacity-failure", version: "requirements-test-native/v1", sha256: digest(JSON.stringify(failureRow)) };
+      authority.assertCapacityRetry(auth, retry, failure, 1);
+      for (const forged of [{ ...retry, version: "legacy" }, { ...retry, sha256: "0".repeat(64) }, { ...retry, ref: "requirements-test-capacity-retry:" + "0".repeat(64) }]) assert.throws(() => authority.assertCapacityRetry(auth, forged, failure, 1));
+      assert.throws(() => authority.assertCapacityRetry(auth, retry, { ...failure, sha256: "0".repeat(64) }, 1));
+      assert.throws(() => authority.assertCapacityRetry(auth, retry, failure, 2));
+      capacityService.retryCapacity(auth.operationId, retry);
+      assert.equal(capacityService.status(auth.operationId).state, "retained", "historical capacity failure is retained, not a new automatic retry or current blocker");
+      assert.throws(() => capacityService.retryCapacity(auth.operationId, retry));
+      await assert.rejects(authority.captureCapacityRetry(context, auth.operationId, "replay-used"));
+      assert.equal(f.records().filter((row) => row.step === "capacity-retry").length, 1);
+      assert.equal(f.allocationCount(), 0); assert.equal(f.effects.prepare, 0);
+    });
+    // Only the legacy owner releases its own isolated fixture slot. The retry
+    // operation performs no release/reclaim and no automatic subsequent request.
+    assert.equal(core.releaseRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: f.repo, ticket: occupied[0]!.ticket,
+      slotToken: occupied[0]!.slotToken, slotId: occupied[0]!.slotId, repositoryPermit: occupied[0]!.repositoryPermit }).status, "released");
     // Source-only end-to-end owner composition: actual shared locks/store,
-    // dedicated registry, real child and real no-credential SDK. The synthetic
+    // dedicated registry, real child and real keyless SDK. The synthetic
     // operator/pair and Treehouse replies above are NOT installed qualification.
     const { PiRestrictedTestExecutor } = await import("../background-runner.js");
     const reqModule = new URL("../requirements-test-native.ts", import.meta.url).href, preparedModule = new URL("../prepared-native.ts", import.meta.url).href, runnerModule = new URL("../background-runner.ts", import.meta.url).href;
@@ -432,16 +526,36 @@ test("AC2/AC9 source integration: concrete native operator capture uses exact qu
     assert.equal(readProcessFingerprint(sdkChild.pid), undefined, "actual SDK process must settle, not only registry");
     const launch = f.records().find((row) => row.step === "test-process" && row.state === "observed")?.value as RequirementsTestLaunch | undefined;
     assert.ok(launch, existsSync(join(f.root, "sdk-bootstrap-error.json")) ? readFileSync(join(f.root, "sdk-bootstrap-error.json"), "utf8") : "restricted SDK must park before any release");
-    const status = core.queryDeploymentStatus(launch.holder.deploymentId); assert.equal(status?.status, "failed"); assert.equal(status?.builder_authority, undefined); assert.equal(status?.requirements_test?.operationId, auth.operationId);
+    const status = core.queryDeploymentStatus(launch.holder.deploymentId); assert.equal(status?.status, scenario === "failure" ? "failed" : "partial"); assert.equal(status?.builder_authority, undefined); assert.equal(status?.requirements_test?.operationId, auth.operationId);
     executor.assertSettled(launch);
-    assert.throws(() => service.settleTest(auth.operationId), "a missing model/test run cannot create an accepted oracle");
-    assert.equal(f.inventory()[0]!.occupancy, "settled-retained"); assert.equal(f.allocationCount(), 1);
+    const terminal = f.store.records().map((name) => f.store.read(name) as { kind?: string; payload?: { intentId: string; nativeDetail: { name: string; bytes: number; sha256: string }; failed: boolean; truncated: boolean } })
+      .find((row) => row.kind === "requirements-test-runtime-terminal");
+    assert.ok(terminal?.payload); assert.equal(terminal.payload.failed, scenario === "failure"); assert.equal(terminal.payload.truncated, false);
+    if (scenario === "long-text") assert.ok(terminal.payload.nativeDetail.bytes > 65_536, "long original model conversation must not overflow the protected journal envelope");
+    const { NativeExecutionEvidence } = await import("../native-execution-evidence.js");
+    const originalEvidence = new NativeExecutionEvidence(f.store, join(f.root, "native/operations"), { repository: (run) => run(), worktree: (run) => run() });
+    const original = JSON.parse(originalEvidence.blob(terminal.payload.nativeDetail).toString("utf8")) as { messages: { role: string; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string }[] }[] };
+    if (scenario === "failure") assert.ok(original.messages.some((message) => message.role === "assistant" && message.stopReason === "error" && message.errorMessage?.includes("source-fixture-endpoint-failure")));
+    else assert.ok(original.messages.some((message) => message.role === "assistant" && message.stopReason === "stop" && message.content?.some((part) => part.type === "text" && part.text!.length > 65_536)));
+    assert.throws(() => service.settleTest(auth.operationId), "neither a failed model nor a text-only protocol fixture with no tests can create an accepted oracle");
+    assert.equal(f.inventory().find((row) => row.ticket === auth.repository.ticket)!.occupancy, "settled-retained"); assert.equal(f.allocationCount(), 1);
     await assert.rejects(service.continueProductAsync(auth.operationId)); assert.equal(f.allocationCount(), 1);
+    await t.test("qualified keyless test capability does not mint a product holder or reuse legacy builder authority", async () => {
+      const inventory = f.inventory(), records = f.store.records(), beforeRequests = requests.length;
+      const resource = (f.records().find((row) => row.step === "test-start" && row.state === "observed")!.value as { resource: TestResource }).resource;
+      await assert.rejects(executor.prepareAsync("product", digest("not-a-final-approved-product-intent"), resource));
+      assert.throws(() => executor.inspect("product", digest("not-a-final-approved-product-intent"), resource));
+      assert.throws(() => assertNoRequirementsTestLegacyFallback({ repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket }, native));
+      assert.deepEqual(f.inventory(), inventory); assert.deepEqual(f.store.records(), records); assert.equal(requests.length, beforeRequests); assert.equal(f.allocationCount(), 1);
+    });
     const different = parseTestAuthorization(JSON.stringify({ ...auth, checks: auth.checks.map((check, index) => index ? check : { ...check, command: `${check.command} changed` }) }));
     assert.throws(() => authority.assertAuthorization(different, digest(JSON.stringify(different))));
     writeFileSync(join(sourceRoot, "assertions.md"), "material source drift\n");
     assert.throws(() => authority.assertAuthorization(auth, digest(raw)));
     authority.assertRetainedAuthorization(auth, digest(raw)); // retained history is not new work
+    server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done()));
+    assert.throws(() => authority.selection(caller), "a live PID with no exact listening socket is not a model transport");
+    authority.assertRetainedAuthorization(auth, digest(raw));
   } finally {
     if (sdkChild?.pid && readProcessFingerprint(sdkChild.pid)) {
       sdkChild.kill("SIGTERM"); const until = Date.now() + 5_000;
@@ -450,6 +564,7 @@ test("AC2/AC9 source integration: concrete native operator capture uses exact qu
       if (sdkChild.exitCode === null && sdkChild.signalCode === null) await new Promise<void>((done) => sdkChild!.once("exit", () => done()));
     }
     assert.equal(sdkChild?.pid ? readProcessFingerprint(sdkChild.pid) : undefined, undefined);
+    server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done()));
     core.closeDb(); if (previousRegistry === undefined) delete process.env.PA_REGISTRY_DB; else process.env.PA_REGISTRY_DB = previousRegistry; await f.cleanup();
   }
 });

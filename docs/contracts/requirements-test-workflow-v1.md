@@ -364,8 +364,9 @@ The internal `RequirementsTestNativeService` requires native authority and execu
 ports. Those are trusted embedding dependencies, NOT JSON/environment/tool options.
 No default success executor/approval producer is installed. The native capture,
 restricted SDK definitions and dedicated registry owner below now supply concrete
-producers. Complete phase-3 validation, actual installed qualification, model
-transport and product-holder admission remain separate incomplete boundaries.
+producers. The later direct continuation adds a protected keyless model-transport
+consumer and manual capacity-retry capture. Complete phase-3 validation, actual
+installed qualification and product-holder admission remain incomplete boundaries.
 Source fixtures supplying dependencies do not establish installed readiness.
 
 Authority must independently authenticate original approved bytes, live foreground
@@ -474,7 +475,9 @@ strict discriminated object (unknown fields reject):
 - `{schemaVersion,action:"authorize",authorization:<raw JSON string>}`: a separate
   native test-only dialog displays the complete packet and raw SHA-256. Fresh
   caller, process, sources, pair and environment rereads precede immutable capture.
-- `{schemaVersion,action:"request"|"status"|"cancel"|"settle"|"review-oracle",operationId:<digest>}`.
+- `{schemaVersion,action:"request"|"status"|"cancel"|"settle"|"review-oracle"|"retry-capacity",operationId:<digest>}`.
+  `retry-capacity` captures and consumes one exact native manual decision; it does
+  not execute `request`, queue, reclaim a slot or clear unknown effects.
 - `{schemaVersion,action:"approve-final",operationId:<digest>,requirements:<attached final source ref>}`.
 
 There is no product-launch, generic shell, delegation, authority-root or arbitrary
@@ -484,9 +487,15 @@ implementation run. The pure model's `runtimeAuthorized:false` remains accurate.
 
 `PiRequirementsTestAuthority` resolves fixed native roots through the existing
 `PiPreparedNativeAuthority` store and independently pins installed Nix provenance
-and clean exact config revision. Dedicated qualification requires four protected
-source-bound evidence records (`native`, `installed`, `pairing`, `toolsAuditDecision`)
-for those exact facts. It is not today's prepared policy or post-final grant.
+and clean exact config revision. Dedicated qualification uses the explicitly
+versioned protected record `requirements-test-native-qualification/v2`, identified
+by SHA-256 of `JSON.stringify([schemaVersion, runtime])`. Its exact fields are
+`{schemaVersion,runtime,native,installed,pairing,toolsAuditDecision,modelTransport}`.
+The four existing protected source-bound evidence records (`native`, `installed`,
+`pairing`, `toolsAuditDecision`) and the keyless transport below must bind those
+exact facts. A v1 qualification lacking model transport is rejected, never silently
+upgraded or treated as executable readiness. Wire authorization/event v1 and legacy
+prepared policy remain unchanged. It is not today's prepared policy or post-final grant.
 Qualification production/installed assessment remain phase-4 work; fixture
 qualification records are explicitly synthetic and cannot qualify the installed
 route. Activation is a distinct exact native UI capture. Test authorization then
@@ -517,7 +526,8 @@ settlement. Cancellation records retain custody/resources and revoke new native
 actions; no cleanup/return is introduced.
 
 The dedicated process constructs a genuine Pi SDK session with no discovered
-extensions, context, skills, prompts, user settings or credential store. Its only
+extensions, context, skills, prompts, user settings or host credential store. It
+selects only the qualified keyless model below, never an ambient default. Its only
 active definitions are SDK-backed exact-path `write`/`edit`, exact-path `read` and
 `check({checkId})`. There is no bash, deploy, branch or arbitrary-environment tool.
 Lower file operations use no-follow dirfd traversal and reject hardlink/symlink
@@ -547,13 +557,112 @@ wrong-output rationales, not agent-invented text. Final-pair capture rereads the
 existing 13-check/pair/matrix/approval producer and binds the reviewed exact oracle.
 These are implementation producers, not claims of semantic/human acceptance.
 
-**Remaining production blockers:** the no-credential SDK currently has no qualified
-model transport; an attempted prompt without one fails retained, not ready. The
-concrete executor rejects product-role preparation; the async same-reservation
-transaction is tested with real barrier processes and explicitly fixture-authored
-approvals/registry, not an admitted production builder. The native capacity-retry
-capture is not yet composed (no automatic retry). Phase-3 producer validation,
-phase-4 qualification/PAPC-065 compatibility, independent review/CI and actual
-human UAT remain pending. No fixture/help/status/merge or this document enables
-selection or establishes installed/human PASS. Phase 2 is not accepted by these
-source changes.
+### Qualified keyless model transport consumer (staged, not qualified here)
+
+`modelTransport` is a SourceVersion with
+`ref:"requirements-test-model-transport:<64-hex protected record id>"`,
+`version:"requirements-test-model-transport/v1"` and SHA-256 of the exact stored
+JSON rendering. It resolves only within the existing protected operations store,
+not a file/URL/model-selected root. The referenced record has exactly:
+
+`{schemaVersion:"requirements-test-model-transport/v1",runtime,endpoint,modelId,
+contextWindow,maxTokens,process,source,outcome:"qualified"}`.
+
+- `runtime` equals the independently authenticated installed source/config/package/
+  store tuple. `source` is the independent qualifier's immutable evidence reference;
+  neither this consumer nor a native tool produces qualification.
+- `endpoint` is exactly `http://127.0.0.1:<port>/v1`, port 1024–65535. No DNS, other
+  host, URL credentials/query/fragment, alternate path, custom header, key, command,
+  interpolation or remote URL is accepted. `modelId` is 1–128 ASCII characters
+  matching `[A-Za-z0-9][A-Za-z0-9._/-]*`. Context is 4096–1048576 tokens; max output
+  is 1–32768 tokens and no greater than context.
+- `process` is the exact live broker process fingerprint. Linux kernel TCP-listener
+  and `/proc/<pid>/fd` socket ownership must independently agree on the exact
+  numeric loopback endpoint. A live unrelated PID or copied qualified receipt is
+  insufficient. Broker exit/restart/listener loss requires owning requalification,
+  never automatic discovery or launch. This remains a trusted-host observation,
+  not protection against malicious same-user replacement/races.
+
+The consumer revalidates qualification/listener before selection, authorization,
+allocation, SDK construction and every model request. It uses an explicit model,
+empty in-memory credential storage, disabled catalog refresh, and the supported
+Pi OpenAI-completions streaming implementation. Only POST to that exact endpoint's
+`/chat/completions` is accepted; no authorization header or caller headers are
+forwarded. Fetch omits credentials and rejects redirects. SDK/provider automatic
+retries are disabled. Request bytes are bounded to 16 MiB; cumulative response
+bytes to 16 MiB; requests to 128; model output to the qualified token cap and every
+request to the original workflow deadline/cancellation signal. The broker is
+separately provisioned/approved by its owner; the runner never launches a broker,
+reads upstream credentials, or grants any production/network-service effects.
+A keyless fixture server proves only native SDK/protocol behavior, not useful
+model behavior, operator/installed qualification or semantic oracle acceptance.
+
+Original model messages, selected transport and terminal failures remain private
+native stream evidence. The 64-KiB protected terminal journal envelope contains
+only the native blob reference and actual truncation/failure flags, not the whole
+conversation. A transcript exceeding its 16-MiB private stream budget is explicitly
+truncated/failed, never silently complete. Assistant error/aborted terminal messages
+cannot be promoted to successful authoring even if the SDK prompt resolves normally;
+a failed/crashed model holder cannot produce settled oracle evidence. Missing/invalid
+transport rejects before resource effects; a later transport failure retains
+resources and original failures, never oracle readiness.
+
+### Native explicit manual capacity retry
+
+Only a proven last `reservation/failed` record with the fixed full-capacity,
+operator-notification/manual-only result is eligible. No observed resource/action,
+unknown/cancelled effect or same-ticket reservation may exist. Original bounds,
+no-progress failures and retry counts remain; three no-progress failures, deadline
+or exhausted retry allowance blocks. Historical full-capacity failures stay in the
+journal after retry and still count against limits; they are not current status
+blockers after the exact explicit retry is observed.
+
+The foreground requirements caller receives the exact authorization digest,
+failure reference, next retry count and unchanged bounds. Cancellation/non-exact
+choice creates no decision. Native caller/process/source/pair/environment and the
+complete native chain/capacity inventory are reread after the dialog under existing
+locks. The immutable protected record is:
+
+`{schemaVersion:"requirements-test-native-capacity-retry/v1",operationId,
+authorizationSha256,failure,retriesUsed,bounds,caller,toolCallId,decisionId,capturedAt}`.
+
+Its id is SHA-256 of `JSON.stringify([schemaVersion,operationId,failure,retriesUsed])`.
+The returned SourceVersion uses `ref:"requirements-test-capacity-retry:<id>"`,
+that version, and SHA-256 of the stored JSON rendering. Public JSON cannot mint it.
+Consumption authenticates every binding and appends one existing-owner
+`capacity-retry/observed` record. Repeated consumption or use for a different failure,
+count, source or bounds rejects. Capture/consume does not request allocation or
+release/reclaim capacity; a later explicit request resumes the same operation.
+Async request validation honors only this exact superseding retry, never clears
+unknown failures or resets counters.
+
+### Remaining production product boundary / next owner slice
+
+**Phase 2 remains unaccepted.** The concrete executor still rejects product-role
+preparation. A qualified keyless test runner and a final-pair digest are not ordinary
+builder execution/adoption authority. The async same-reservation transaction is
+source-tested with real barrier processes and explicitly fixture-authored
+approvals/registry, not an admitted production builder. A direct negative test
+retains this denial even with qualified source-fixture keyless test capability.
+
+The next production slice must bridge the new exact final-approved history into
+existing native builder admission/execution owners, not open generic tools or
+forge a legacy `prepared-builder-consumption/v1` grant. Concrete affected owners:
+`requirements-test-native.ts` (before-effect final/transfer and service event
+producers), `deploy.ts` (same retained reservation/lease admission),
+`execution-native.ts` (new-version consumed binding, process/custody and oracle
+immutability without implicit legacy adoption), `background-runner.ts` (parked
+product release and actual settlement), and their owned core registry/custody
+correlations/regressions as needed. Product executor preparation must independently
+recheck settled test process/registry and exact final pair, produce an explicitly
+versioned product correlation/consumption, atomically transfer the existing sole
+holder/reservation, inherit original bounds/counters and start at exact approved
+test HEAD. Product-intent/consumed history must be native-produced. No second
+acquisition, phase relabeling, counter reset, generic fallback or oracle weakening
+is authorized. Existing native execution currently recognizes only legacy
+prepared-consumption markers and builder ownership: merely removing the product
+role rejection would be an unsafe authority bypass, not completion.
+
+Phase-3 producer validation, phase-4 qualification/PAPC-065 compatibility,
+independent review/CI and actual human UAT remain pending. No fixture/help/status/
+merge or this document enables selection or establishes installed/human PASS.

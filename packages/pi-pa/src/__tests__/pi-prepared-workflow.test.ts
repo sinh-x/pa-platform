@@ -188,9 +188,15 @@ test("actual PA module dispatch registers the bounded tool only for foreground i
     const tools = new Map<string, PiToolDefinition>();
     registerPaToolsModule({ registerTool: (tool) => tools.set(tool.name, tool as PiToolDefinition) });
     assert.ok(tools.has("pa_preparation")); assert.equal(Check(tools.get("pa_preparation")!.parameters, { action: "retry", source: "forged" }), false);
+    const testTool = tools.get("pa_requirements_test"); assert.ok(testTool);
+    const retry = { schemaVersion: "requirements-test-native/v1", action: "retry-capacity", operationId: digest };
+    assert.equal(Check(testTool.parameters, retry), true);
+    for (const extra of [{ decision: source("forged") }, { retriesUsed: 0 }, { endpoint: "http://127.0.0.1:1234/v1" }, { authority: "/tmp/forged" }, { activate: true }]) assert.equal(Check(testTool.parameters, { ...retry, ...extra }), false);
+    assert.equal(Check(testTool.parameters, { ...retry, action: "continue-product" }), false);
+    assert.equal(Check(testTool.parameters, { ...retry, schemaVersion: "prepared-workflow/v1" }), false);
     process.env.PA_MODE = "analyze-auto";
     const other: string[] = []; registerPaToolsModule({ registerTool: (tool) => other.push(tool.name) });
-    assert.equal(other.includes("pa_preparation"), false);
+    assert.equal(other.includes("pa_preparation"), false); assert.equal(other.includes("pa_requirements_test"), false);
   } finally { for (const [index, key] of keys.entries()) { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; } }
 });
 

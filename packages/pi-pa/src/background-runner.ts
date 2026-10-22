@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { streamSimple as streamKeylessCompletions } from "@earendil-works/pi-ai/api/openai-completions";
 import { PiRequirementsTestAuthority, type RequirementsTestLaunch, type RequirementsTestNativeExecutor } from "./requirements-test-native.js";
 import { RequirementsTestTools } from "./native-execution-tools.js";
 import { NativeExecutionEvidence } from "./native-execution-evidence.js";
@@ -979,10 +980,44 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
   }
 }
 
+/** Keyless qualified loopback transport. SDK/provider retry, ambient credentials,
+ * proxy/model discovery, remote URLs and redirect following are not fallbacks.
+ * A source fixture server is a protocol test, never model/installed qualification. */
+export async function createRequirementsTestModelRuntime(authority: PiRequirementsTestAuthority, auth: ReturnType<typeof parseTestAuthorization>, directory: string) {
+  const transport = authority.modelTransport(auth);
+  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(directory, "models-cache.json"), allowModelNetwork: false, refreshOnCreate: false });
+  const provider = "pa-requirements-test-keyless";
+  let requestsUsed = 0, outputBytes = 0;
+  const request: typeof fetch = async (input, init) => {
+    if (++requestsUsed > 128) throw workflowError();
+    if (!isDeepStrictEqual(authority.modelTransport(auth), transport)) throw workflowError();
+    const url = input instanceof Request ? input.url : String(input);
+    if (url !== `${transport.endpoint}/chat/completions` || init?.method !== "POST" || typeof init.body !== "string" || Buffer.byteLength(init.body) > 16_777_216
+      || JSON.parse(init.body).model !== transport.modelId) throw workflowError();
+    const remaining = Date.parse(auth.bounds.deadlineAt) - Date.now(); if (remaining <= 0) throw workflowError();
+    const response = await fetch(url, { method: "POST", body: init.body, headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      redirect: "error", credentials: "omit", signal: AbortSignal.any([...(init.signal ? [init.signal] : []), AbortSignal.timeout(remaining)]) });
+    if (!response.body) return response;
+    const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, controller) {
+      outputBytes += chunk.byteLength; if (outputBytes > 16_777_216) throw workflowError(); controller.enqueue(chunk);
+    } }));
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+  modelRuntime.registerProvider(provider, { api: "openai-completions", baseUrl: transport.endpoint, apiKey: "pa-keyless-not-a-secret", authHeader: false,
+    models: [{ id: transport.modelId, name: transport.modelId, reasoning: false, input: ["text"], contextWindow: transport.contextWindow, maxTokens: transport.maxTokens,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    streamSimple: (model, context, options) => {
+      if (model.api !== "openai-completions" || model.provider !== provider || model.id !== transport.modelId || model.baseUrl !== transport.endpoint) throw workflowError();
+      return streamKeylessCompletions({ ...model, api: "openai-completions" }, context, { ...options, env: {}, apiKey: "pa-keyless-not-a-secret", headers: {}, fetch: request, maxRetries: 0, maxTokens: transport.maxTokens });
+    },
+  });
+  const model = modelRuntime.getModel(provider, transport.modelId); if (!model) throw workflowError();
+  return { modelRuntime, model, transport };
+}
+
 /** No resource/extension/settings/auth discovery. Creates a genuine Pi SDK
- * session with only the four bounded definitions. Provider-driven execution may
- * fail without a separately configured non-secret model transport; failure is
- * retained, never converted into oracle readiness. */
+ * session with only the four bounded definitions and an explicit qualified
+ * keyless model. Transport/SDK failure is retained, never oracle readiness. */
 export async function runRequirementsTestHolder(intentId: string, authority = new PiRequirementsTestAuthority()): Promise<void> {
   const owner = restrictedOwner(authority, intentId); const raw = authority.readAuthorization(owner.operationId); const auth = parseTestAuthorization(raw);
   const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint || process.cwd() !== owner.resource.worktreeRoot) throw workflowError();
@@ -1001,10 +1036,10 @@ export async function runRequirementsTestHolder(intentId: string, authority = ne
     getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }), getSystemPrompt: () => "Author only the exact authorized tests/harness. Use approved check IDs. No product work, delegation, credentials or production. Tools/audit are NOT an OS sandbox.",
     getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
   };
-  // Empty credentials and no models.json/catalog/network lookup. Never expose
-  // parent deployment/task/activity/registry environment or credential stores.
-  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(owner.directory, "models-cache.json"), allowModelNetwork: false, refreshOnCreate: false });
-  const { session } = await createAgentSession({ cwd: owner.resource.worktreeRoot, agentDir: owner.directory, resourceLoader: resources, modelRuntime,
+  // Independently selected model and transport; no default-model fallback or
+  // parent deployment/task/activity/registry environment/credential discovery.
+  const { modelRuntime, model, transport } = await createRequirementsTestModelRuntime(authority, auth, owner.directory);
+  const { session } = await createAgentSession({ cwd: owner.resource.worktreeRoot, agentDir: owner.directory, resourceLoader: resources, modelRuntime, model, thinkingLevel: "off",
     settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0 } }), sessionManager: SessionManager.inMemory(owner.resource.worktreeRoot),
     tools: tools.tools.map((tool) => tool.name), customTools: tools.tools, noTools: "builtin" });
   const shutdown = new AbortController(); const abort = () => { shutdown.abort(); void session.abort(); };
@@ -1030,14 +1065,24 @@ export async function runRequirementsTestHolder(intentId: string, authority = ne
       await session.prompt(`Exact approved test-only packet: ${raw}`, { expandPromptTemplates: false });
       await session.agent.waitForIdle(); settlement = tools.settled(); break;
     }
-    if (!started || shutdown.signal.aborted || !settlement) throw workflowError();
+    if (!started || shutdown.signal.aborted || !settlement || session.messages.some((message) => message.role === "assistant" && ["error", "aborted"].includes(message.stopReason))) throw workflowError();
   } catch (error) { failure = error; }
   finally {
     clearTimeout(timer); process.removeListener("SIGTERM", abort); process.removeListener("SIGINT", abort);
     await session.abort(); session.dispose();
   }
-  const original = evidence.publish("requirements-test-runtime-terminal", { intentId, process: fingerprint, started, settlement,
-    failure: failure instanceof Error ? { name: failure.name, message: failure.message, stack: failure.stack ?? null } : failure ? "unknown" : null, cancelled: shutdown.signal.aborted });
+  // Protected journal records are bounded to 64 KiB. Keep the complete private
+  // transcript/error in the existing native stream owner, not inside a journal
+  // envelope that would strand an otherwise settled long model conversation.
+  const detail = evidence.sink(workflowDigest(JSON.stringify([intentId, "requirements-test-model-terminal/v1"])), "stdout");
+  const complete = detail.write(Buffer.from(JSON.stringify({
+    failure: failure instanceof Error ? { name: failure.name, message: failure.message, stack: failure.stack ?? null } : failure ? "unknown" : null,
+    transport, messages: session.messages,
+  })));
+  const nativeDetail = detail.close();
+  if (!complete) failure = workflowError();
+  const original = evidence.publish("requirements-test-runtime-terminal", { intentId, process: fingerprint, started, settlement, nativeDetail,
+    truncated: !complete, failed: Boolean(failure), cancelled: shutdown.signal.aborted });
   parkedWrite(join(owner.directory, "restricted-stopped.json"), { intentId, process: fingerprint, original, started });
   appendRegistryEvent({ deployment_id: owner.deploymentId, team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: failure || shutdown.signal.aborted ? "failed" : "partial",
     summary: "Dedicated test process ended; oracle/product approval is separate.", requirements_test: owner.correlation });
