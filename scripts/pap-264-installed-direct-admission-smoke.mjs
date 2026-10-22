@@ -5,9 +5,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Serialized into a separate process after package authentication. The exported
@@ -322,6 +321,27 @@ export async function isolatedDriver(root, share) {
   } finally { process.stdout.write = stdout; core.closeDb(); process.chdir(root); }
 }
 
+// Resolve under the same packaged Node and ESM import conditions used by the
+// driver, anchored to the adapter package rather than this source checkout.
+// Resolution does not evaluate SDK code. Main authenticates the store first.
+export function sdkProvenance(store, run) {
+  const adapter = join(store, "share/pa-platform/packages/pi-pa");
+  const name = "@earendil-works/pi-coding-agent";
+  const packageRoot = realpathSync(join(adapter, "node_modules", name));
+  const inside = (base, path) => {
+    const rel = relative(base, path);
+    return rel !== "" && !isAbsolute(rel) && rel !== ".." && !rel.startsWith("../");
+  };
+  assert.ok(inside(store, packageRoot));
+  const resolved = run(join(store, "bin/pa-platform-node"), ["--input-type=module", "--eval",
+    `process.stdout.write(import.meta.resolve(${JSON.stringify(name)}))`], adapter).trim();
+  const module = realpathSync(fileURLToPath(resolved));
+  assert.ok(inside(packageRoot, module));
+  const version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version;
+  assert.equal(version, JSON.parse(readFileSync(join(adapter, "package.json"), "utf8")).dependencies[name]);
+  return { module, sha256: createHash("sha256").update(readFileSync(module)).digest("hex"), version };
+}
+
 export async function main() {
   let stage = "prerequisites"; let temporary;
   try {
@@ -359,11 +379,7 @@ export async function main() {
       "packages/pi-pa/dist/pi-extension/prepared-workflow.js", "packages/opencode-pa/dist/deploy.js"];
     const modules = paths.map((path) => { const absolute = join(share, path); assert.equal(realpathSync(absolute), absolute); return { path, sha256: createHash("sha256").update(readFileSync(absolute)).digest("hex") }; });
     for (const path of ["package.json", "packages/pa-core/package.json", "packages/pi-pa/package.json", "packages/opencode-pa/package.json"]) assert.equal(JSON.parse(readFileSync(join(share, path), "utf8")).version, version);
-    const require = createRequire(join(share, "packages/pi-pa/package.json"));
-    const sdkModule = realpathSync(require.resolve("@earendil-works/pi-coding-agent"));
-    assert.ok(sdkModule.startsWith("/nix/store/"));
-    const sdk = { module: sdkModule, sha256: createHash("sha256").update(readFileSync(sdkModule)).digest("hex"),
-      version: JSON.parse(readFileSync(join(share, "packages/pi-pa/node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8")).version };
+    const sdk = sdkProvenance(store, run);
     assert.equal(git(["rev-parse", "HEAD"]).trim(), featureSha); clean();
     stage = "isolated-driver";
     const driver = join(temporary, "driver.mjs");

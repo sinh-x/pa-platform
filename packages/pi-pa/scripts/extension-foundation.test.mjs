@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { sdkProvenance } from "../../../scripts/pap-264-installed-direct-admission-smoke.mjs";
 import { bundleExtensionSources } from "./bundle-extension-sources.mjs";
 import {
   PACKAGE_ROOT,
@@ -165,6 +168,47 @@ test("PAP-264 smoke rejects arguments and non-candidate CWD before Nix or packag
       assert.match(ledger.diagnostic, /installed-smoke\/prerequisites/);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("PAP-264 SDK provenance resolves import-only exports with packaged Node, without evaluating SDK code", () => {
+  const store = mkdtempSync(join(tmpdir(), "pap264-esm-"));
+  const adapter = join(store, "share/pa-platform/packages/pi-pa");
+  const name = "@earendil-works/pi-coding-agent";
+  const sdk = join(adapter, "node_modules", name);
+  const module = join(sdk, "dist/index.js");
+  const bytes = "throw new Error('SDK must not be evaluated for provenance');\n";
+  const calls = [];
+  const run = (command, args, cwd) => {
+    calls.push({ command, args, cwd });
+    const result = spawnSync(command, args, { cwd, env: { PATH: store, HOME: store }, encoding: "utf8", timeout: 10000 });
+    assert.equal(result.error, undefined); assert.equal(result.signal, null); assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  try {
+    mkdirSync(join(store, "bin"), { recursive: true });
+    symlinkSync(process.execPath, join(store, "bin/pa-platform-node"));
+    mkdirSync(join(sdk, "dist"), { recursive: true });
+    writeFileSync(join(adapter, "package.json"), JSON.stringify({ type: "module", dependencies: { [name]: "0.84.4" } }));
+    const manifest = { name, version: "0.84.4", type: "module", exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } } };
+    writeFileSync(join(sdk, "package.json"), JSON.stringify(manifest)); writeFileSync(module, bytes);
+    assert.throws(() => createRequire(join(adapter, "package.json")).resolve(name), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
+    assert.deepEqual(sdkProvenance(store, run), { module, sha256: createHash("sha256").update(bytes).digest("hex"), version: "0.84.4" });
+    assert.equal(calls.length, 1); assert.equal(calls[0].command, join(store, "bin/pa-platform-node")); assert.equal(calls[0].cwd, adapter);
+    assert.deepEqual(calls[0].args.slice(0, 2), ["--input-type=module", "--eval"]);
+    // A decoy require branch must not be hashed as the runtime's ESM module.
+    manifest.exports["."].require = "./dist/require.cjs";
+    writeFileSync(join(sdk, "package.json"), JSON.stringify(manifest)); writeFileSync(join(sdk, "dist/require.cjs"), "decoy");
+    assert.equal(sdkProvenance(store, run).module, module);
+    writeFileSync(join(sdk, "package.json"), JSON.stringify({ ...manifest, version: "0.84.3" }));
+    assert.throws(() => sdkProvenance(store, run));
+    writeFileSync(join(sdk, "package.json"), JSON.stringify(manifest));
+    // Even a resolver URL pointing at another package/store file is rejected.
+    assert.throws(() => sdkProvenance(store, () => pathToFileURL(join(adapter, "package.json")).href));
+    assert.throws(() => sdkProvenance(store, () => "node:fs"));
+    // Realpath validation also rejects an export symlink escaping the SDK.
+    rmSync(module); symlinkSync(join(adapter, "package.json"), module);
+    assert.throws(() => sdkProvenance(store, run));
+  } finally { rmSync(store, { recursive: true, force: true }); }
 });
 
 test("CI and Nix inputs require recursive exact sources and both Linux sharp artifacts", () => {
