@@ -15,8 +15,9 @@ import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolv
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
+import { assertNoRequirementsTestLegacyFallback, PiRequirementsTestAuthority, type RequirementsProductConsumption } from "./requirements-test-native.js";
 import { createPiPreparationHost, type PiPreparationCaller } from "./pi-extension/prepared-workflow.js";
-import { PreparedWorkflowService, repositoryTicketSlotId, workflowDigest, workflowError, type PreparedReceipt, type SourceVersion } from "@pa-platform/pa-core";
+import { PreparedWorkflowService, repositoryTicketSlotId, workflowDigest, workflowError, workflowObject, parseSourceVersion, parseTestAuthorization, parseReviewEvidenceJson, withPreparedWorkflowLocks, withExecutionWorktreeAdmission, queryReadonlyDeploymentEvents, type PreparedTicketCapacityTransaction, type ExecutionBounds, type PreparedReceipt, type SourceVersion } from "@pa-platform/pa-core";
 import { approvedPiNixosDeploymentId, assertPiApprovedReviewReference, authorizePiReviewSelection, createPiProtectedValidationLaunch, isPiProtectedReviewRequest, withPiReviewCandidateAtMatrixBoundary } from "./validation-launch.js";
 import type { PiProtectedValidationLaunch } from "./validation-supervisor.js";
 import { inspectReviewPreflight, formatReviewPreflight } from "./review-preflight.js";
@@ -420,6 +421,127 @@ export interface PiDeployDependencies {
   readonly observeOperation?: (operation: "checkout" | "branch" | "slot" | "permit" | "lineage" | "runtime-spawn") => void;
 }
 
+const PRODUCT_MARKER = "requirements-product-consumption.json";
+export interface PiRequirementsProductExecution {
+  readonly consumed: Record<string, unknown>;
+  readonly bounds: ExecutionBounds;
+  readonly lineageId: string;
+  readonly authority: PiRequirementsTestAuthority;
+  readonly reference: SourceVersion;
+  readonly value: RequirementsProductConsumption;
+  assertCaller(context: unknown): void;
+  assertCurrent(): void;
+  assertOracle(): void;
+  environment(): NodeJS.ProcessEnv;
+}
+function readProductMarker(directory: string): SourceVersion | null {
+  const path = join(directory, PRODUCT_MARKER); let stat;
+  try { stat = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw workflowError(); }
+  if (stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw workflowError();
+  return parseSourceVersion(parseReviewEvidenceJson(readReviewEvidenceFile(path, 65_536, "native product consumption marker"), "native product consumption marker"));
+}
+/** Dedicated native product admission. It cannot be selected through generic
+ * deploy JSON and never calls legacy preparation, checkout or capacity acquire. */
+export function admitPiRequirementsProduct(authority: PiRequirementsTestAuthority, operationId: string, dependencies: PiReadonlyHelperDependencies = {}): SourceVersion {
+  const store = authority.native.operations(); if (!store) throw workflowError();
+  const auth = parseTestAuthorization(authority.readAuthorization(operationId));
+  let reference!: SourceVersion, capacityOwner!: PreparedTicketCapacityTransaction;
+  const preflight = authority.retainedProductPreflight(operationId);
+  withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, (owner) => { capacityOwner = owner; return run(); }),
+    worktree: (run) => withExecutionWorktreeAdmission(auth.repository.root, preflight.resource.worktreeRoot, capacityOwner, () => run()) }, (scope) => {
+    reference = authority.captureProductConsumption(scope, operationId);
+  });
+  const value = authority.productConsumption(reference), { binding, launch } = value, resource = binding.resource;
+  withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, () => {
+    const physical = resolveRepoExecutionPath(undefined, resource.worktreeRoot, { allowLinkedWorktreeCwd: true });
+    const registry = queryDeploymentStatus(launch.holder.deploymentId);
+    const starts = queryReadonlyDeploymentEvents(launch.holder.deploymentId).filter((event) => event.event === "started");
+    const lease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(auth.repository.root, auth.repository.key, auth.repository.ticket, resource.worktreeRoot);
+    const capacity = observeReadonlyRepositoryTicketSlot(auth.repository.root, auth.repository.ticket), slot = capacity.slot;
+    if (JSON.stringify(capacity.reservation) !== JSON.stringify(value.reservation)) throw workflowError();
+    if (!registry || registry.status !== "running" || registry.pid !== launch.holder.process.pid || registry.team !== "builder" || registry.mode !== "orchestrator"
+      || registry.runtime !== "pi" || registry.binary !== "ppa" || registry.builder_authority !== "orchestrator" || registry.parent_deployment_id || registry.requirements_test
+      || starts.length !== 1 || starts[0]!.note !== `requirements-product-launch/v1:${workflowDigest(JSON.stringify(binding))}`
+      || lease.leaseId !== resource.leaseId || lease.leaseHolder !== resource.leaseHolder || physical.repoKey !== auth.repository.key || physical.repoRoot !== auth.repository.root
+      || slot.deploymentId !== launch.holder.deploymentId || slot.deploymentDirectory !== launch.deploymentDirectory || slot.repositoryPermit !== resource.repositoryPermit
+      || JSON.stringify(slot.processFingerprint) !== JSON.stringify(launch.holder.process)
+      || JSON.stringify(readPiProcessIdentity(launch.holder.deploymentId, launch.deploymentDirectory)) !== JSON.stringify(launch.holder.process)) throw workflowError();
+    const id = workflowDigest(JSON.stringify(["requirements-product-admission/v1", reference]));
+    const name = `${id}.intent.json`, intent = { schemaVersion: "requirements-product-admission/v1", reference, holder: launch.holder, physical };
+    const existing = store.records().includes(name);
+    if (existing && JSON.stringify(store.read(name)) !== JSON.stringify(intent)) throw workflowError();
+    const current = inspectRepositoryMutationLease(auth.repository.root, { worktreeRoot: resource.worktreeRoot, getProcessFingerprint: readProcessFingerprint });
+    if (existing) {
+      if (current.state !== "live" || !current.lease || current.lease.deploymentId !== launch.holder.deploymentId
+        || JSON.stringify(current.lease.processFingerprint) !== JSON.stringify(launch.holder.process)
+        || !repositoryGitSnapshotsEqual(current.lease.preLaunchGitSnapshot, value.launchSnapshot)) throw workflowError();
+    } else {
+      if (current.state !== "absent") throw workflowError();
+      const acquired = acquireRepositoryMutationLease({ canonicalRepoKey: physical.repoKey, canonicalRepoRoot: physical.repoRoot, worktreeRoot: physical.worktreeRoot,
+        expectedGitDir: physical.gitDir, expectedGitCommonDir: physical.gitCommonDir, deploymentId: launch.holder.deploymentId, deploymentDirectory: launch.deploymentDirectory,
+        runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "background", ticket: auth.repository.ticket, pid: launch.holder.process.pid, processFingerprint: launch.holder.process,
+        beforePublish: (nativeLease) => {
+          // Exact capacity -> worktree -> publication ordering, using the
+          // existing admission owner's critical section, not a parallel lease.
+          authority.assertProductCurrent(value);
+          if (!repositoryGitSnapshotsEqual(nativeLease.preLaunchGitSnapshot, value.launchSnapshot)
+            || JSON.stringify(observeReadonlyRepositoryTicketSlot(auth.repository.root, auth.repository.ticket).reservation) !== JSON.stringify(value.reservation)) throw workflowError();
+          const freshLease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(auth.repository.root, auth.repository.key, auth.repository.ticket, resource.worktreeRoot);
+          if (JSON.stringify(freshLease) !== JSON.stringify(lease)) throw workflowError();
+          withPreparedWorkflowLocks({ repository: (run) => run(), worktree: (run) => run() }, (scope) => store.publish(scope, name, intent));
+        } });
+      if (acquired.status !== "acquired" || !repositoryGitSnapshotsEqual(acquired.lease.preLaunchGitSnapshot, value.launchSnapshot)) throw workflowError();
+    }
+    const path = join(launch.deploymentDirectory, PRODUCT_MARKER), body = `${JSON.stringify(reference)}\n`;
+    if (readProductMarker(launch.deploymentDirectory)) { if (JSON.stringify(readProductMarker(launch.deploymentDirectory)) !== JSON.stringify(reference)) throw workflowError(); }
+    else {
+      const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try { writeFileSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+      const directory = openSync(launch.deploymentDirectory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+    }
+  });
+  return reference;
+}
+/** Existing-only new-version adoption. Neither a marker nor a constructor grants
+ * execution: native consumption, registry/process, capacity and lease all reread. */
+export function resolvePiRequirementsProductExecution(authority: PiRequirementsTestAuthority, deploymentId: string, dependencies: PiReadonlyHelperDependencies = {}): PiRequirementsProductExecution | null {
+  if (!/^d-[0-9a-f]{6}$/.test(deploymentId)) throw workflowError();
+  const directory = join(authority.native.aiUsageRoot, "deployments", deploymentId), reference = readProductMarker(directory);
+  const declared = queryReadonlyDeploymentEvents(deploymentId).filter((event) => event.event === "started" && event.note?.startsWith("requirements-product-launch/"));
+  if (!reference) { if (declared.length) throw workflowError(); return null; }
+  const value = authority.productConsumption(reference), { binding, launch } = value, resource = binding.resource;
+  if (launch.holder.deploymentId !== deploymentId || launch.deploymentDirectory !== directory || declared.length !== 1
+    || declared[0]!.note !== `requirements-product-launch/v1:${workflowDigest(JSON.stringify(binding))}`) throw workflowError();
+  const consumed = { schemaVersion: value.schemaVersion, operationId: binding.operationId, deploymentId, repoKey: resource.repository.key, repoRoot: resource.repository.root,
+    worktreeRoot: resource.worktreeRoot, ticket: resource.repository.ticket, branch: resource.repository.branch, baseSha: resource.repository.baseSha,
+    headSha: binding.oracle.testHeadSha, ticketSlotId: repositoryTicketSlotId(resource.repository.key, resource.repository.ticket), repositoryPermit: resource.repositoryPermit, consumption: reference };
+  const assertCaller = (context: unknown) => {
+    if ((context as { cwd?: string })?.cwd !== resource.worktreeRoot || process.cwd() !== resource.worktreeRoot
+      || JSON.stringify(authority.productConsumption(reference)) !== JSON.stringify(value) || JSON.stringify(readProductMarker(directory)) !== JSON.stringify(reference)
+      || JSON.stringify(readProcessFingerprint(launch.holder.process.pid)) !== JSON.stringify(launch.holder.process)
+      || !processIsWithinFingerprintLineage(process.pid, launch.holder.process)) throw workflowError();
+    const physical = resolveRepoExecutionPath(undefined, resource.worktreeRoot, { allowLinkedWorktreeCwd: true });
+    const custody = observeReadonlyRepositoryAuthority(physical.gitDir), owner = custody.owner;
+    const status = queryReadonlyHelperRegistry(deploymentId).status;
+    const lease = (dependencies.treehouse ?? new TreehouseClient()).authenticatePrepared(resource.repository.root, resource.repository.key, resource.repository.ticket, resource.worktreeRoot);
+    const capacity = observeReadonlyRepositoryTicketSlot(resource.repository.root, resource.repository.ticket), slot = capacity.slot;
+    if (JSON.stringify(capacity.reservation) !== JSON.stringify(value.reservation)) throw workflowError();
+    if (!owner || custody.borrower || custody.implement || custody.review || owner.deploymentId !== deploymentId || owner.ticket !== resource.repository.ticket
+      || owner.canonicalRepoKey !== resource.repository.key || owner.canonicalRepoRoot !== resource.repository.root || owner.worktreeRoot !== resource.worktreeRoot
+      || owner.repositoryGitDir !== physical.gitDir || owner.repositoryGitCommonDir !== physical.gitCommonDir || owner.runtime !== "pi" || owner.team !== "builder" || owner.mode !== "orchestrator"
+      || !repositoryGitSnapshotsEqual(owner.preLaunchGitSnapshot, value.launchSnapshot) || JSON.stringify(owner.processFingerprint) !== JSON.stringify(launch.holder.process)
+      || !status || status.status !== "running" || status.pid !== launch.holder.process.pid || status.team !== "builder" || status.mode !== "orchestrator" || status.runtime !== "pi" || status.binary !== "ppa"
+      || status.builder_authority !== "orchestrator" || status.parent_deployment_id || status.requirements_test || status.repo !== resource.worktreeRoot || status.repo_root !== resource.repository.root
+      || status.ticket_id !== resource.repository.ticket || status.worktree_root !== resource.worktreeRoot || status.treehouse_path !== resource.worktreeRoot
+      || status.treehouse_lease_id !== resource.leaseId || status.treehouse_lease_holder !== resource.leaseHolder || status.branch_base_sha !== resource.repository.baseSha
+      || slot.deploymentId !== deploymentId || slot.repositoryPermit !== resource.repositoryPermit || slot.slotId !== status.ticket_slot_id
+      || JSON.stringify(slot.processFingerprint) !== JSON.stringify(launch.holder.process) || lease.leaseId !== resource.leaseId || lease.leaseHolder !== resource.leaseHolder) throw workflowError();
+  };
+  return Object.freeze({ consumed, bounds: binding.bounds, lineageId: resource.lineageId, authority, reference, value, assertCaller,
+    assertCurrent: () => { assertCaller({ cwd: process.cwd() }); authority.assertProductCurrent(value); }, assertOracle: () => authority.assertProductOracle(value),
+    environment: () => authority.productEnvironment(value) });
+}
 export interface PiPreparedBuilderAdmission {
   readonly timeoutSeconds: number;
   readonly correlationSha256: string;
@@ -433,6 +555,9 @@ export interface PiPreparedBuilderAdmission {
  * unrequested intent preserves ordinary independent CLI admission. */
 export function consumePiPreparedBuilderAdmission(input: { repoKey: string; repoRoot: string; ticket: string; deploymentId: string; deploymentDirectory: string; timeoutSeconds?: number }, dependencies: Pick<PiDeployDependencies, "treehouse" | "preparedAuthority"> = {}): PiPreparedBuilderAdmission | undefined {
   const authority = dependencies.preparedAuthority ?? new PiPreparedNativeAuthority();
+  // Retained test routes require their exact native continuation. Never borrow
+  // legacy final-pair approval or reconstruct a missing test resource.
+  assertNoRequirementsTestLegacyFallback(input, authority);
   const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint) throw workflowError();
   const caller: PiPreparationCaller = { deploymentId: input.deploymentId, repoKey: input.repoKey, repoRoot: input.repoRoot, ticket: input.ticket,
     callerIdentity: workflowDigest(JSON.stringify(["native-prepared-builder", input.deploymentId, fingerprint])) };

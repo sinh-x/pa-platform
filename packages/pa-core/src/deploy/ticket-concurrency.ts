@@ -60,14 +60,18 @@ export type RepositoryTicketSlotAuthentication =
 /** Existing protected capacity observation, with no mutex or capacity update. */
 export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string,
   getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined = readProcessFingerprint,
-): { readonly slot: RepositoryTicketSlot; readonly identity: string } {
+): { readonly slot: RepositoryTicketSlot; readonly identity: string; readonly reservation?: IdlePreparationReservation } {
   const path = executionSlotPath(canonicalRepoRoot, ticket, false);
   const stat = lstatSync(path);
   if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper capacity evidence is not protected");
   const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_TICKET_SLOT_BYTES, "helper capacity");
-  const slot: unknown = path.endsWith(".prepared.json") ? preparedSlotView(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))) : JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const reservation = path.endsWith(".prepared.json") ? parseIdlePreparationReservation(value) : undefined;
+  const slot: unknown = reservation ? preparedSlotView(reservation) : value;
   if (!isSlot(slot) || !fingerprintsEqual(slot.processFingerprint, getProcessFingerprint(slot.processFingerprint.pid))) throw new Error("helper capacity evidence is malformed or stale");
-  return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex") };
+  // Private native observation, never a public projection. Preserve the full
+  // new-route identity rather than authenticating only its legacy slot view.
+  return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex"), ...(reservation ? { reservation } : {}) };
 }
 
 export function authenticateRepositoryTicketSlot(options: {
@@ -308,6 +312,8 @@ function preparedSlotView(value: unknown): RepositoryTicketSlot | null | undefin
   try {
     const row = parseIdlePreparationReservation(value);
     if (row.occupancy === "settled-retained") return undefined;
+    // Test authors use implement-child, never an ordinary builder slot. Only
+    // the native final-approved transfer can expose the retained product holder.
     if (row.occupancy !== "active" || !row.launch || row.custody.state !== "orchestrator-direct" || !row.custody.holder || row.custody.inFlightOperation !== null) return null;
     return Object.freeze({ schemaVersion: 1, slotToken: row.launch.slotToken, slotId: repositoryTicketSlotId(row.repoKey, row.ticket),
       canonicalRepoKey: row.repoKey, canonicalRepoRoot: row.repoRoot, ticket: row.ticket, deploymentId: row.custody.holder.deploymentId,
@@ -361,6 +367,17 @@ function isSlot(value: unknown): value is RepositoryTicketSlot {
     && typeof row["acquiredAt"] === "string" && Number.isFinite(Date.parse(row["acquiredAt"] as string));
 }
 
+/** Strict identity reader for complete native capacity snapshots; parsing grants
+ * no slot/admission authority and never tests liveness or mutates storage. */
+export function parseRepositoryTicketSlot(value: unknown): RepositoryTicketSlot {
+  const keys = ["schemaVersion", "slotToken", "slotId", "canonicalRepoKey", "canonicalRepoRoot", "ticket", "deploymentId", "deploymentDirectory", "repositoryPermit", "processFingerprint", "acquiredAt"];
+  if (!isSlot(value) || Object.keys(value).length !== keys.length || Object.keys(value).some((key) => !keys.includes(key))) throw new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "ticket capacity snapshot rejected", source: "existing ticket-slot identity reader", reason: "incomplete or malformed occupied slot",
+    correction: "preserve existing custody and reconcile the exact owner record", resumeAction: "read only a complete matching capacity snapshot",
+  }));
+  return Object.freeze(structuredClone(value));
+}
+
 function assertSlot(slot: RepositoryTicketSlot): void {
   const body = `${JSON.stringify(slot, null, 2)}\n`;
   if (!isSlot(slot) || Buffer.byteLength(body) > MAX_REPOSITORY_TICKET_SLOT_BYTES) throw new Error("ticket-concurrency: generated slot evidence is invalid or oversized");
@@ -402,8 +419,12 @@ export interface PreparedTicketCapacityTransaction {
   readonly inventory: () => readonly (RepositoryTicketSlot | IdlePreparationReservation)[];
   readonly reserve: (input: {
     ticket: string; operationId: string; reservationId: string; retainedAt: string;
+    purpose?: "requirements-test-workflow/v1";
   }) => { readonly status: "reserved"; readonly reservation: IdlePreparationReservation } | { readonly status: "capacity" };
   readonly update: (expected: IdlePreparationReservation, next: IdlePreparationReservation) => IdlePreparationReservation;
+  /** Native explicitly approved test amendment only. Retains the resource/permit/
+   * lineage and original history; no generic reservation or legacy migration. */
+  readonly amendTestOperation: (expected: IdlePreparationReservation, operationId: string) => IdlePreparationReservation;
 }
 const activePreparedCapacityOwners = new WeakMap<PreparedTicketCapacityTransaction, string>();
 /** Reuse a live owner without recursively acquiring the same repository mutex. */
@@ -448,11 +469,23 @@ export function withPreparedTicketCapacity<T>(options: {
     };
     const transaction = Object.freeze<PreparedTicketCapacityTransaction>({
       inventory,
+      amendTestOperation(expectedInput, operationId) {
+        assertActive();
+        const expected = parseIdlePreparationReservation(expectedInput);
+        const current = inventory().find((row) => row.ticket === expected.ticket);
+        if (!current || JSON.stringify(current) !== JSON.stringify(expected) || expected.purpose !== "requirements-test-workflow/v1"
+          || expected.occupancy !== "settled-retained" || expected.custody.state !== "idle" || !/^[0-9a-f]{64}$/.test(operationId)
+          || operationId === expected.operationId) throw new Error("test amendment retained custody conflicts");
+        const next = parseIdlePreparationReservation({ ...expected, operationId });
+        if (inventory().some((row) => row.ticket !== expected.ticket && capacityRowsConflict(row, next))) throw new Error("test amendment operation conflicts");
+        publishPreparedCapacity(preparedRepositoryTicketReservationPath(root, next.ticket), next, true, options.boundary);
+        return next;
+      },
       reserve(input) {
         const rows = inventory();
         const existing = rows.find((row) => row.ticket === input.ticket);
         if (existing) {
-          if (!("operationId" in existing) || existing.operationId !== input.operationId || existing.reservationId !== input.reservationId) throw new Error("prepared ticket already has different custody");
+          if (!("operationId" in existing) || existing.operationId !== input.operationId || existing.reservationId !== input.reservationId || existing.purpose !== input.purpose) throw new Error("prepared ticket already has different custody");
           syncPreparedCapacityDirectory(root);
           return { status: "reserved" as const, reservation: existing };
         }
@@ -460,7 +493,7 @@ export function withPreparedTicketCapacity<T>(options: {
         if (!permit) return { status: "capacity" as const };
         const reservation = parseIdlePreparationReservation({ schemaVersion: "prepared-reservation/v1", repoKey: key, repoRoot: root,
           ticket: input.ticket, operationId: input.operationId, reservationId: input.reservationId, repositoryPermit: permit,
-          occupancy: "preparing", lineageId: null, custody: { state: "idle", holder: null, inFlightOperation: null }, receiptId: null, retainedAt: input.retainedAt });
+          occupancy: "preparing", lineageId: null, custody: { state: "idle", holder: null, inFlightOperation: null }, receiptId: null, retainedAt: input.retainedAt, ...(input.purpose ? { purpose: input.purpose } : {}) });
         if (rows.some((row) => capacityRowsConflict(row, reservation))) throw new Error("prepared capacity operation or lineage already reserved");
         publishPreparedCapacity(preparedRepositoryTicketReservationPath(root, reservation.ticket), reservation, false, options.boundary);
         return { status: "reserved" as const, reservation };
@@ -470,17 +503,22 @@ export function withPreparedTicketCapacity<T>(options: {
         const expected = parseIdlePreparationReservation(expectedInput); const next = parseIdlePreparationReservation(nextInput);
         const current = inventory().find((row) => row.ticket === expected.ticket);
         if (!current || !("operationId" in current) || JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("prepared capacity compare-and-swap failed");
-        for (const field of ["repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "retainedAt"] as const) {
+        for (const field of ["repoKey", "repoRoot", "ticket", "operationId", "reservationId", "repositoryPermit", "retainedAt", "purpose"] as const) {
           if (next[field] !== expected[field]) throw new Error("prepared capacity identity changed");
         }
         if (JSON.stringify(next) === JSON.stringify(expected)) { syncPreparedCapacityDirectory(root); return current; }
         if (inventory().some((row) => row.ticket !== expected.ticket && capacityRowsConflict(row, next))) throw new Error("prepared capacity operation or lineage conflicts");
+        const testLineage = expected.purpose === "requirements-test-workflow/v1";
         const allowed = expected.occupancy === "preparing" ? ["idle-ready", "uncertain-retained"]
           : expected.occupancy === "idle-ready" ? ["active", "uncertain-retained"]
-          : expected.occupancy === "active" ? ["uncertain-retained"] : [];
+          : expected.occupancy === "active" ? ["uncertain-retained", ...(testLineage ? ["settled-retained"] : [])]
+          : expected.occupancy === "settled-retained" && testLineage ? ["active", "uncertain-retained"] : [];
+        if (testLineage && expected.occupancy === "active" && next.occupancy === "settled-retained"
+          && (!expected.custody.holder || expected.custody.inFlightOperation !== null
+            || fingerprintsEqual(expected.custody.holder.process, dependencies.getProcessFingerprint(expected.custody.holder.process.pid)))) throw new Error("test holder remains live or unsettled");
         if (!allowed.includes(next.occupancy) || (expected.receiptId !== null && next.receiptId !== expected.receiptId)
           || (expected.lineageId !== null && next.lineageId !== expected.lineageId)) throw new Error("prepared capacity transition denied");
-        if (next.occupancy === "active" && (next.custody.state !== "orchestrator-direct" || !next.custody.holder || next.custody.inFlightOperation !== null
+        if (next.occupancy === "active" && ((next.custody.state !== "orchestrator-direct" && !(testLineage && next.custody.state === "implement-child")) || !next.custody.holder || next.custody.inFlightOperation !== null
           || !fingerprintsEqual(next.custody.holder.process, dependencies.getProcessFingerprint(next.custody.holder.process.pid)))) throw new Error("prepared capacity holder is not live");
         publishPreparedCapacity(preparedRepositoryTicketReservationPath(root, next.ticket), next, true, options.boundary);
         return next;

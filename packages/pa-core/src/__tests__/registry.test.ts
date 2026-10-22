@@ -73,6 +73,27 @@ function expectAssociationError(fn: () => unknown, code: TicketAssociationError[
   return caught;
 }
 
+test("PAP-265 dedicated test correlation is immutable, round-trips, and cannot borrow builder/review authority", () => {
+  withAssociationFixture(({ canonicalRoot }) => {
+    const correlation = { schemaVersion: "requirements-test-custody/v1" as const, operationId: "1".repeat(64), authorizationSha256: "2".repeat(64), intentId: "3".repeat(64), parentDeploymentId: "d-265aaa", repoKey: "pa-platform", repoRoot: canonicalRoot,
+      worktreeRoot: "/ticket/PAP-001", ticket: "PAP-001", branch: "feature/PAP-001-oracle", baseSha: "a".repeat(40), initialHeadSha: "b".repeat(40), leaseId: "fixture-lease", leaseHolder: "pa:pa-platform:PAP-001", reservationId: "4".repeat(64), lineageId: "test-fixture-lineage", repositoryPermit: 2 as const };
+    const start: RegistryEvent = { deployment_id: "d-265bbb", team: "requirements", mode: "test-author", runtime: "pi", binary: "ppa", event: "started", timestamp: "2026-10-22T02:00:00Z", pid: process.pid,
+      ticket_id: correlation.ticket, repo: correlation.worktreeRoot, repo_root: canonicalRoot, worktree_root: correlation.worktreeRoot, requirements_test: correlation };
+    appendRegistryEvent(start); appendRegistryEvent(start);
+    assert.deepEqual(queryDeploymentStatus(start.deployment_id)?.requirements_test, correlation);
+    assert.deepEqual(queryReadonlyDeploymentEvents(start.deployment_id)[0]?.requirements_test, correlation);
+    assert.equal(getDeploymentEvents(start.deployment_id).length, 1);
+    for (const mutation of [{ requirements_test: { ...correlation, intentId: "f".repeat(64) } }, { builder_authority: "orchestrator" as const }, { mode: "analyze" }, { repo: canonicalRoot }, { requirements_test: { ...correlation, operationId: "f".repeat(40) } }]) {
+      assert.throws(() => appendRegistryEvent({ ...start, ...mutation }));
+    }
+    assert.throws(() => appendRegistryEvent({ deployment_id: start.deployment_id, team: "requirements", event: "completed", timestamp: "2026-10-22T02:01:00Z", requirements_test: { ...correlation, reservationId: "e".repeat(64) } }));
+    appendRegistryEvent({ deployment_id: start.deployment_id, team: "requirements", event: "completed", timestamp: "2026-10-22T02:01:00Z", status: "partial", requirements_test: correlation });
+    assert.deepEqual(queryDeploymentStatus(start.deployment_id)?.requirements_test, correlation);
+    assert.equal(queryDeploymentStatus(start.deployment_id)?.builder_authority, undefined);
+    assert.deepEqual(computeDeploymentStatuses(getDeploymentEvents(start.deployment_id))[0]?.requirements_test, correlation);
+  });
+});
+
 test("terminal child registry CAS is event-idempotent at unchanged HEAD and rejects successors", () => {
   withAssociationFixture(({ canonicalRoot }) => {
     const head = "a".repeat(40), next = "b".repeat(40), worktree = "/ticket/PAP-001";

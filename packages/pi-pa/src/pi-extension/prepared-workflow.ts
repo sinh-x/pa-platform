@@ -48,7 +48,10 @@ export interface PiPreparationContext {
   readonly mode: "tui" | "rpc" | "json" | "print";
   readonly cwd: string;
   readonly sessionManager?: { getSessionId(): string };
-  readonly ui?: { select(title: string, choices: string[], options?: { signal?: AbortSignal }): Promise<string | undefined> };
+  readonly ui?: {
+    select(title: string, choices: string[], options?: { signal?: AbortSignal }): Promise<string | undefined>;
+    input?(title: string, placeholder?: string, options?: { signal?: AbortSignal }): Promise<string | undefined>;
+  };
 }
 export interface PiPreparedWorkflowOptions {
   readonly env?: NodeJS.ProcessEnv;
@@ -222,6 +225,65 @@ export function createPiPreparedWorkflowModule(options: PiPreparedWorkflowOption
   };
 }
 export const registerPreparedWorkflowModule: PiExtensionModule = createPiPreparedWorkflowModule();
+
+/** Dedicated new-version request/status. Fixed native qualification/capture and
+ * parked executor composition; no builder deploy flag or legacy grant adapter. */
+export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, lifecycle) => {
+  if (!isInteractivePreparationEnvironment()) return;
+  const version = Type.Literal("requirements-test-native/v1");
+  const operation = Type.String({ pattern: "^[0-9a-f]{64}$" });
+  const parameters = Type.Union([
+    Type.Object({ schemaVersion: version, action: Type.Literal("selection-status") }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Literal("activate") }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Literal("authorize"), authorization: Type.String({ maxLength: 65536 }) }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Union([Type.Literal("request"), Type.Literal("status"), Type.Literal("cancel"), Type.Literal("settle"), Type.Literal("review-oracle"), Type.Literal("retry-capacity"), Type.Literal("continue-product"), Type.Literal("settle-product")]), operationId: operation }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Literal("approve-final"), operationId: operation, requirements: Type.String() }, { additionalProperties: false }),
+  ]);
+  let mutating = false;
+  pi.registerTool?.({ name: "pa_requirements_test", label: "PA Requirements Test", description: "Strict staged tested-oracle workflow. Test authoring requires separate exact activation and test-only approval. Product continuation additionally authenticates the exact final pair/oracle and settled same-resource holder; no legacy grant or sandbox is implied.", parameters, executionMode: "sequential",
+    execute: async (id, input, signal, _update, rawContext) => {
+      const run = async () => {
+        const context = rawContext as PiPreparationContext;
+        const caller = authenticatePiPreparationCaller(context, process.env);
+        const { PiRequirementsTestAuthority, RequirementsTestNativeService } = await import("../requirements-test-native.js");
+        const { PiRestrictedTestExecutor } = await import("../background-runner.js");
+        const authority = new PiRequirementsTestAuthority();
+        const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
+        const keys = ["schemaVersion", "action", ...(action === "authorize" ? ["authorization"] : ["request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity", "continue-product", "settle-product"].includes(action) ? ["operationId", ...(action === "approve-final" ? ["requirements"] : [])] : [])];
+        const row = workflowObject(input, keys);
+        if (row.schemaVersion !== "requirements-test-native/v1" || !["selection-status", "activate", "authorize", "request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity", "continue-product", "settle-product"].includes(action) || signal?.aborted) throw workflowError();
+        if (action === "selection-status") return executionResult({ schemaVersion: "requirements-test-native-status/v1", ...authority.selection(caller), activationPerformed: false });
+        if (mutating) throw workflowError(); mutating = true;
+        try {
+          if (action === "activate") { await authority.select(context, signal); return executionResult({ state: "selected", productAuthority: false }); }
+          if (action === "authorize") {
+            if (typeof row.authorization !== "string") throw workflowError();
+            const auth = await authority.capture(context, row.authorization, id, signal);
+            return executionResult({ state: "authorized-test-only", operationId: auth.operationId, authorizationSha256: workflowDigest(row.authorization) });
+          }
+          const operationId = workflowSha(row.operationId);
+          const auth = authority.readAuthorization(operationId); const parsed = JSON.parse(auth) as { repository: { ticket: string; key: string; root: string }; parent: { holder: { deploymentId: string } } };
+          if (parsed.parent.holder.deploymentId !== caller.deploymentId || parsed.repository.ticket !== caller.ticket || parsed.repository.key !== caller.repoKey || parsed.repository.root !== caller.repoRoot) throw workflowError();
+          const store = authority.native.operations(); if (!store) throw workflowError();
+          const service = new RequirementsTestNativeService({ store, authority, executor: new PiRestrictedTestExecutor(authority), tickets: authority.native.tickets() });
+          if (action === "request") return executionResult(await service.requestAsync(operationId, signal));
+          if (action === "continue-product") return executionResult(await service.continueProductAsync(operationId, signal));
+          if (action === "status") return executionResult(service.status(operationId));
+          if (action === "retry-capacity") {
+            const decision = await authority.captureCapacityRetry(context, operationId, id, signal);
+            service.retryCapacity(operationId, decision);
+          }
+          else if (action === "cancel") service.cancel(operationId);
+          else if (action === "settle") service.settleTest(operationId);
+          else if (action === "settle-product") service.settleProduct(operationId);
+          else await authority.captureReview(context, operationId, action === "approve-final" ? workflowText(row.requirements) : undefined, signal);
+          return executionResult(service.status(operationId));
+        } finally { mutating = false; }
+      };
+      try { return await (lifecycle ? lifecycle.trackRegistryAccess(run) : run()); } catch { throw workflowError(); }
+    },
+  });
+};
 
 export function resolveNativePiPreparationBinding(caller: PiPreparationCaller, authority: PiPreparedNativeAuthority, reauthenticate: () => PiPreparationCaller): PiPreparationBinding | null {
   const grant = authority.resolve(caller); if (!grant) return null;

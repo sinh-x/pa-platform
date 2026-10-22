@@ -117,6 +117,25 @@ function familyDependencies(live: readonly ProcessFingerprint[]): RepositoryAdmi
   };
 }
 
+test("PAP-265 native before-publication intent is synchronous and precedes the existing lease effect", () => {
+  for (const reject of ["throw", "boolean", "promise", "valid"]) {
+    const root = fixture(`native-intent-${reject}`), owner = fingerprint(); let calls = 0;
+    try {
+      const options = { canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-abc123", deploymentDirectory: join(root, "deployment"), runtime: "pi" as const, mode: "orchestrator",
+        pid: owner.pid, processFingerprint: owner, gitSnapshot: snapshot, dependencies: dependencies(owner), beforePublish: () => {
+          calls++; assert.equal(existsSync(repositoryMutationLeasePath(root)), false);
+          if (reject === "throw") throw new Error("SOURCE private intent publication failed");
+          if (reject === "boolean") return true;
+          if (reject === "promise") return Promise.resolve();
+          writeFileSync(join(root, "native-intent.json"), "durable SOURCE intent before lease\n", { flag: "wx", mode: 0o600 });
+        } };
+      if (reject === "valid") { const result = acquireRepositoryMutationLease(options); assert.equal(result.status, "acquired"); assert.ok(existsSync(join(root, "native-intent.json"))); }
+      else { assert.throws(() => acquireRepositoryMutationLease(options)); assert.equal(inspectRepositoryMutationLease(root, { getProcessFingerprint: dependencies(owner).getProcessFingerprint }).state, "absent"); }
+      assert.equal(calls, 1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
 const transitionPolicy = Object.freeze({
   developBranch: "develop",
   executionFeatureBranchPattern: "feature/<ticket>-<topic>",

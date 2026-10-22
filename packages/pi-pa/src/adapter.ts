@@ -233,6 +233,13 @@ export class PiAdapter implements RuntimeAdapter {
     return this.preflightPromise;
   }
 
+  /** Dedicated selection is NOT a SpawnOpts/env/config flag. Only the separately
+   * qualified foreground native boundary composes its protected parked executor.
+   * Generic adapter callers reject before preflight/effects, including resume. */
+  prepareRequirementsTestHolder(): never {
+    throw new Error("Condition: dedicated Pi test holder unavailable. Source: Pi lifecycle owner. Reason: restricted runner and protected operator composition are unqualified. Correction: retain inactive selection and qualify the exact runtime/config pair. Resume Action: use only a separately activated native request after composition; generic spawn cannot substitute.");
+  }
+
   allocateSessionId(): string { return this.sessionIdFactory(); }
   private async run(opts: SpawnOpts, resumeId?: string): Promise<SpawnResult> {
     const plan = opts.executionPlan;
@@ -974,6 +981,10 @@ export function readPiBackgroundConfig(path: string): PiBackgroundConfig {
   const body = readFileSync(path, "utf8");
   if (Buffer.byteLength(body) > MAX_BACKGROUND_CONFIG_BYTES) throw new Error(`runner-readiness: Pi background configuration exceeds ${MAX_BACKGROUND_CONFIG_BYTES} bytes`);
   const value = JSON.parse(body) as Partial<PiBackgroundConfig>;
+  // The ordinary JSON handoff cannot select the dedicated transport or carry
+  // test authorization. Unknown new-route activation fields fail before spawn.
+  const allowed = new Set(["schemaVersion", "ownershipToken", "deploymentId", "team", "cwd", "repoKey", "repoRoot", "worktreeRoot", "repositorySlot", "ticketId", "primerPath", "logFile", "sessionId", "model", "provider", "managed", "skills", "trustedExtension", "timeoutMs", "repositoryHandoffPath", "validationHandoffPath", "registryEvidence"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error("runner-readiness: Pi background configuration contains unsupported fields");
   const repositoryHandoffPath = value.repositoryHandoffPath;
   const validRepositoryHandoffPath = repositoryHandoffPath === undefined || (typeof repositoryHandoffPath === "string" && resolve(repositoryHandoffPath) === repositoryHandoffPath);
   const validationHandoffPath = value.validationHandoffPath;

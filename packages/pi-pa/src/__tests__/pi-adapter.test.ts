@@ -7,10 +7,39 @@ import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
+import { closeDb, composeRuntimeHooks, createAgentApiApp, runCoreCommand } from "@pa-platform/pa-core";
 import { buildPiBackgroundArgs, inspectPiToolProtocol, meetsMinimum, normalizePiEvent, PiAdapter, projectPiActivity, readPiBackgroundConfig, writePiSupervisorOwnership } from "../adapter.js";
 import { detectPiRedactionMatches, PiRedactionAudit, StreamingPiRedactionAuditor, type PiRedactionAuditRecord } from "../diagnostics.js";
 import { writePiTerminalStatus } from "../terminal-status.js";
+
+// Never inherit a live deployment's ticket/tasks/activity/registry principal.
+for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
+const isolatedState = mkdtempSync(join(tmpdir(), "pi-adapter-private-tests-"));
+process.env["PA_AI_USAGE_HOME"] = isolatedState;
+process.env["PA_REGISTRY_DB"] = join(isolatedState, "registry.db");
+process.env["PA_PLATFORM_CONFIG"] = join(isolatedState, "config");
+test.after(() => { closeDb(); rmSync(isolatedState, { recursive: true, force: true }); });
+
+test("dedicated holder selection is unavailable before any generic Pi effect", () => {
+  let effects = 0;
+  const adapter = new PiAdapter({ cwd: "/nonexistent-dedicated-root", env: { PA_REQUIREMENTS_TEST_ACTIVE: "true", PA_MODE: "analyze" },
+    versionProbe: () => { effects++; return "1.0.4"; }, nativeRegistryProbe: () => { effects++; return undefined; }, runCommand: () => { effects++; throw new Error("must not run"); } });
+  for (let i = 0; i < 2; i++) assert.throws(() => adapter.prepareRequirementsTestHolder(), /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/);
+  assert.equal(effects, 0);
+});
+
+test("ordinary background JSON cannot smuggle a dedicated parked/release activation", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-parked-config-denial-"));
+  const path = join(root, "config.json");
+  const base = { schemaVersion: 1, ownershipToken: "ordinary-fixture", deploymentId: "d-265abc", team: "requirements", cwd: root, primerPath: join(root, "primer.md"), logFile: join(root, "pi.log"), sessionId: "fixture", managed: false, skills: [] };
+  try {
+    writeFileSync(path, JSON.stringify(base)); assert.deepEqual(readPiBackgroundConfig(path), base);
+    for (const field of ["parked", "requirementsTest", "restrictedHolderReady", "release", "testAuthorization"]) {
+      writeFileSync(path, JSON.stringify({ ...base, [field]: true }));
+      assert.throws(() => readPiBackgroundConfig(path), /unsupported fields/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 class FakePiChild extends EventEmitter {
   readonly stdout = new EventEmitter();

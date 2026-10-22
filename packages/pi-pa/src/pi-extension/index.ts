@@ -11,7 +11,7 @@ import { registerContextUiModule } from "./context-ui.js";
 import { registerGitContextUiModule } from "./git-context-ui.js";
 import { registerDirtyBorrowApprovalModule } from "./dirty-borrow-approval.js";
 import { registerChildReconciliationModule } from "../child-reconciliation.js";
-import { registerExecutionCustodyModule, registerPhaseReportModule, registerPreparedWorkflowModule, registerWorkflowPolicyModule } from "./prepared-workflow.js";
+import { registerExecutionCustodyModule, registerPhaseReportModule, registerPreparedWorkflowModule, registerWorkflowPolicyModule, registerRequirementsTestWorkflowModule } from "./prepared-workflow.js";
 import {
   registerBundledEditorsModule,
   createBundledEditorsModule,
@@ -190,6 +190,7 @@ export const registerPaToolsModule: PiExtensionModule = (pi, lifecycle) => {
   registerChildReconciliationModule(pi, lifecycle);
   registerPreparedWorkflowModule(pi, lifecycle);
   registerWorkflowPolicyModule(pi, lifecycle);
+  registerRequirementsTestWorkflowModule(pi, lifecycle);
   registerPhaseReportModule(pi, lifecycle);
   pi.on?.("tool_call", (call) => {
     const decision = interceptToolCall(call);

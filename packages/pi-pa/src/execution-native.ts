@@ -10,7 +10,8 @@ import {
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
   type PreparedLockOwners, type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
-import { createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
+import { createPiReadonlyHelperCapability, resolvePiRequirementsProductExecution, type PiRequirementsProductExecution, type PiReadonlyHelperDependencies } from "./deploy.js";
+import { PiRequirementsTestAuthority } from "./requirements-test-native.js";
 import { readPiProcessIdentity } from "./process-identity.js";
 import { PiPreparedNativeAuthority } from "./prepared-native.js";
 import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess, type NativeBlob, type NativeProcessResult } from "./native-execution-evidence.js";
@@ -44,8 +45,10 @@ function marker(directory: string, executionDiagnostic = false): Record<string, 
  * a conservative stop BEFORE child capacity, branch, borrower or spawn effects. */
 export function assertNativePreparedChildLaunchSupported(parentDirectory: string, parentDeploymentId: string): void {
   if (marker(parentDirectory)) throw workflowError();
+  try { lstatSync(join(parentDirectory, "requirements-product-consumption.json")); throw workflowError(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw workflowError(); }
   try { lstatSync(getRegistryDbPath()); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw workflowError(); }
-  if (nativeStartDigest(parentDeploymentId)) throw workflowError();
+  if (nativeStartDigest(parentDeploymentId) || queryReadonlyDeploymentEvents(parentDeploymentId).some((event) => event.event === "started" && event.note?.startsWith("requirements-product-launch/"))) throw workflowError();
 }
 function nativeStartDigest(deploymentId: string, executionDiagnostic = false): string | null {
   const starts = queryReadonlyDeploymentEvents(deploymentId).filter((event) => event.event === "started");
@@ -118,6 +121,7 @@ export interface NativeExecutionReportFacts {
 export interface NativeExecutionOptions {
   readonly authority?: PiPreparedNativeAuthority;
   readonly helperDependencies?: PiReadonlyHelperDependencies;
+  readonly productAuthority?: PiRequirementsTestAuthority;
 }
 /** Concrete native direct-holder adapter. Its only bootstrap is the already
  * consumed reservation + launch process anchor + existing admission owners.
@@ -143,6 +147,17 @@ export class PiNativeExecutionAdapter {
     const directory = getDeployPaths(id).deployDir;
     const registry = queryReadonlyHelperRegistry(id).status;
     const parent = registry?.parent_deployment_id;
+    const product = resolvePiRequirementsProductExecution(this.#options.productAuthority ?? new PiRequirementsTestAuthority({ native: this.authority }), id, this.#options.helperDependencies);
+    if (product) {
+      if (parent || env.PA_MODE !== "orchestrator" || marker(directory) || nativeStartDigest(id)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+      let session = this.#sessions.get(id);
+      if (!session) {
+        const authentication = createPiReadonlyHelperCapability(this.#options.helperDependencies).authenticate(process.cwd()); authentication.reread();
+        session = new NativeExecutionSession(this.authority, this.#options.helperDependencies ?? {}, product.consumed, authentication.context, product);
+        this.#sessions.set(id, session);
+      }
+      session.assertCaller(context); return session;
+    }
     const ownerId = parent ?? id;
     const declared = nativeStartDigest(ownerId, true);
     const consumed = marker(parent ? getDeployPaths(parent).deployDir : directory, true);
@@ -175,25 +190,31 @@ export class NativeExecutionSession {
   readonly #consumed: Record<string, unknown>;
   readonly #physical: HelperContext;
   readonly #initial: NativeScopeSnapshot;
-  readonly #grantId: string;
+  readonly #grantId: string | null;
+  readonly #product: PiRequirementsProductExecution | undefined;
   readonly #resultLinks = new Map<string, SourceVersion>();
   readonly #started = new Set<string>();
-  constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown>, physical: HelperContext) {
-    this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical; this.#grantId = workflowSha(consumed.grantId);
+  constructor(authority: PiPreparedNativeAuthority, helper: PiReadonlyHelperDependencies, consumed: Record<string, unknown>, physical: HelperContext, product?: PiRequirementsProductExecution) {
+    this.#authority = authority; this.#helper = helper; this.#consumed = consumed; this.#physical = physical; this.#product = product; this.#grantId = product ? null : workflowSha(consumed.grantId);
     const id = workflowText(consumed.deploymentId); const status = queryReadonlyHelperRegistry(id).status;
     if (!status) throw executionFailure("EXECUTION_CALLER_STALE");
-    if (consumed.schemaVersion !== "prepared-builder-consumption/v1") throw executionFailure("EXECUTION_CONTRACT_INVALID");
+    if (consumed.schemaVersion !== (product ? "requirements-product-consumption/v1" : "prepared-builder-consumption/v1")) throw executionFailure("EXECUTION_CONTRACT_INVALID");
+    if (product && !equal(product.consumed, consumed)) throw executionFailure("EXECUTION_BINDING_CONFLICT");
     if (physical.worktreeRoot !== consumed.worktreeRoot || physical.repoRoot !== consumed.repoRoot || physical.repoKey !== consumed.repoKey
       || physical.ticket !== consumed.ticket) throw executionFailure("EXECUTION_BINDING_CONFLICT");
-    if (!Number.isSafeInteger(status.effective_timeout_seconds) || status.effective_timeout_seconds! % 60 !== 0) throw executionFailure("EXECUTION_CONTRACT_INVALID");
+    if (!Number.isSafeInteger(status.effective_timeout_seconds) || (!product && status.effective_timeout_seconds! % 60 !== 0)) throw executionFailure("EXECUTION_CONTRACT_INVALID");
     this.actor = Object.freeze({ deploymentId: id, process: readPiProcessIdentity(id, getDeployPaths(id).deployDir) });
-    const native = this.#retained();
-    const consumer = authority.retainedConsumer(native.grant, parseSourceVersion(consumed.consumer), id);
-    if (consumer.worktreeRoot !== physical.worktreeRoot || consumer.receiptId !== consumed.receiptId || consumer.operationId !== consumed.operationId || consumer.headSha !== consumed.headSha
-      || native.grant.contract.branch !== consumed.branch || native.grant.contract.approvalBaseSha !== consumed.baseSha) throw executionFailure("EXECUTION_BINDING_CONFLICT");
-    try { this.contract = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: workflowSha(consumed.operationId), lineageId: id,
+    let active: boolean;
+    if (product) { product.assertCaller({ cwd: process.cwd() }); product.assertCurrent(); active = true; }
+    else {
+      const native = this.#retained(); active = native.active;
+      const consumer = authority.retainedConsumer(native.grant, parseSourceVersion(consumed.consumer), id);
+      if (consumer.worktreeRoot !== physical.worktreeRoot || consumer.receiptId !== consumed.receiptId || consumer.operationId !== consumed.operationId || consumer.headSha !== consumed.headSha
+        || native.grant.contract.branch !== consumed.branch || native.grant.contract.approvalBaseSha !== consumed.baseSha) throw executionFailure("EXECUTION_BINDING_CONFLICT");
+    }
+    try { this.contract = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: workflowSha(consumed.operationId), lineageId: product?.lineageId ?? id,
       repoKey: physical.repoKey, repoRoot: physical.repoRoot, worktreeRoot: physical.worktreeRoot, ticket: physical.ticket, branch: consumed.branch, initialHeadSha: consumed.headSha, owner: this.actor,
-      bounds: { startedAt: status.started_at, deadlineAt: new Date(Date.parse(status.started_at) + status.effective_timeout_seconds! * 1000).toISOString(), runtimeMinutes: status.effective_timeout_seconds! / 60,
+      bounds: product?.bounds ?? { startedAt: status.started_at, deadlineAt: new Date(Date.parse(status.started_at) + status.effective_timeout_seconds! * 1000).toISOString(), runtimeMinutes: status.effective_timeout_seconds! / 60,
         consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null } }); }
     catch { throw executionFailure("EXECUTION_CONTRACT_INVALID"); }
     let capacity: PreparedTicketCapacityTransaction | null = null;
@@ -208,7 +229,7 @@ export class NativeExecutionSession {
       },
       worktree: (action) => { if (!capacity) throw workflowError(); return withExecutionWorktreeAdmission(physical.repoRoot, physical.worktreeRoot, capacity, () => action()); },
     };
-    const store = authority.execution(native.active); if (!store) throw executionFailure("EXECUTION_STORAGE_REJECTED");
+    const store = authority.execution(active); if (!store) throw executionFailure("EXECUTION_STORAGE_REJECTED");
     this.evidence = new NativeExecutionEvidence(store, authority.evidenceRoot(), this.locks);
     const host: ExecutionHost = {
       locks: this.locks, now: () => new Date().toISOString(),
@@ -218,7 +239,10 @@ export class NativeExecutionSession {
         if (typeof command !== "string" && ["finish", "settle"].includes(command.action)) this.#authenticateSourceCustody();
         if (typeof command !== "string" && command.action === "plan") {
           if (command.plan.checks.some((name) => !Object.hasOwn(CHECKS, name))) throw workflowError();
-          for (const path of command.plan.paths) scopedPath(physical.worktreeRoot, path);
+          for (const path of command.plan.paths) {
+            scopedPath(physical.worktreeRoot, path);
+            if (product?.value.binding.oracle.files.some((file) => path === file.path || path.startsWith(`${file.path}/`) || file.path.startsWith(`${path}/`))) throw workflowError();
+          }
         }
       },
       assertLive: (holder) => {
@@ -241,7 +265,7 @@ export class NativeExecutionSession {
       this.#initial = descriptor.initial as NativeScopeSnapshot;
     } else {
       this.#initial = captureNativeScope(physical.worktreeRoot);
-      if (!native.active || this.#initial.git.head !== consumed.headSha || names(this.#initial.git).length) throw workflowError();
+      if (!active || this.#initial.git.head !== consumed.headSha || names(this.#initial.git).length) throw workflowError();
     }
     const state = this.service.initialize(this.actor);
     if (!exists) {
@@ -266,10 +290,11 @@ export class NativeExecutionSession {
       recordFeatureUpdateIntent: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); }, recordFeatureUpdate: () => { throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED"); },
     };
   }
-  #retained() { return this.#authority.retained({ repoKey: this.#physical.repoKey, repoRoot: this.#physical.repoRoot, ticket: this.#physical.ticket! }, this.#grantId); }
+  #retained() { if (!this.#grantId || this.#product) throw workflowError(); return this.#authority.retained({ repoKey: this.#physical.repoKey, repoRoot: this.#physical.repoRoot, ticket: this.#physical.ticket! }, this.#grantId); }
   /** Audit/finish authority deliberately does not require unchanged HEAD. New
    * source work independently takes the full strict helper reread below. */
   assertCaller(context: unknown): void {
+    if (this.#product) { this.#product.assertCaller(context); return; }
     const p = this.#physical; const id = String(this.#consumed.deploymentId); const env = process.env;
     const status = queryReadonlyHelperRegistry(id).status;
     if ((context as { cwd?: string } | null)?.cwd !== p.worktreeRoot || process.cwd() !== p.worktreeRoot || env.PA_DEPLOYMENT_ID !== id || env.PA_DEPLOYMENT_DIR !== getDeployPaths(id).deployDir
@@ -294,7 +319,8 @@ export class NativeExecutionSession {
       || !processIsWithinFingerprintLineage(anchor.pid, owner.processFingerprint)) throw executionFailure("EXECUTION_CALLER_STALE");
   }
   #newWork(): void {
-    if (!this.#retained().active) throw workflowError();
+    if (this.#product) this.#product.assertCurrent();
+    else if (!this.#retained().active) throw workflowError();
     this.#authenticateSourceCustody();
   }
   #authenticateSourceCustody(): void {
@@ -355,6 +381,7 @@ export class NativeExecutionSession {
     const plan = start.state.plan!;
     let settlementError: string | null = null;
     let scopeValid = after.git.branch === this.contract.branch && names(after.git).every((path) => plan.paths.includes(path));
+    if (this.#product) { try { this.#product.assertOracle(); } catch { scopeValid = false; settlementError = "Reviewed oracle changed; preserve effects and renew affected approvals before continuation."; } }
     if (after.git.head !== start.intent.before.git.head) {
       try {
         const commits = git(["rev-list", `${start.intent.before.git.head}..${after.git.head}`], this.#physical.worktreeRoot).toString("utf8").trim().split("\n");
@@ -392,7 +419,7 @@ export class NativeExecutionSession {
     if (!this.#started.has(operationId) || start.intent.toolName !== "bash" || start.intent.command !== command || cwd !== this.#physical.worktreeRoot) throw workflowError();
     const remaining = (Date.parse(start.state.bounds.deadlineAt) - Date.now()) / 1000;
     try {
-      const result = await runNativeExecutionProcess({ evidence: this.evidence, intent: start.source, command, cwd, timeoutSeconds: Math.min(timeout, remaining), signal });
+      const result = await runNativeExecutionProcess({ evidence: this.evidence, intent: start.source, command, cwd, timeoutSeconds: Math.min(timeout, remaining), signal, ...(this.#product ? { env: this.#product.environment() } : {}) });
       this.#activeProcess = result; return result;
     } catch (error) { if (error instanceof NativeProcessEvidenceError) this.#unprovenProcess = error.evidence; throw workflowError(); }
   }

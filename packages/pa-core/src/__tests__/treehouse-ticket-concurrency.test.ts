@@ -3,12 +3,18 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { acquireRepositoryTicketSlot, authenticateRepositoryTicketSlot, MAX_REPOSITORY_TICKET_SLOT_BYTES, releaseRepositoryTicketSlot, repositoryTicketSlotPath, withVacantPreparationWorktree, type ProcessFingerprint } from "../deploy/index.js";
 import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
 import { observeReadonlyRepositoryTicketSlot, transferRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedRepositoryTicketOwner, withPreparedTicketCapacity, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
 import { parseIdlePreparationReservation } from "../deploy/execution-custody.js";
+
+// Ticket/materialization fixtures must never inherit the invoking deployment's
+// mutation principal, task snapshot or activity writer.
+const inheritedDeployment = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PA_(DEPLOYMENT|TICKET|ACTIVITY|TASK|TEAM|MODE)|PI_)/.test(key)));
+for (const key of Object.keys(inheritedDeployment)) delete process.env[key];
+after(() => Object.assign(process.env, inheritedDeployment));
 
 function git(args: string[], cwd: string, encoding: BufferEncoding | null = "utf8"): string | Buffer {
   return execFileSync("git", args, { cwd, encoding, stdio: ["ignore", "pipe", "pipe"] });
@@ -246,7 +252,7 @@ test("sparse planned ticket branch materializes once at exact local develop and 
 });
 
 
-test("AC3/AC4: independent preparation processes reserve at most four tickets and exit without releasing ready capacity", async () => {
+test("AC3/AC4: independent preparation/test processes share four retained tickets after requester exit", async () => {
   const root = mkdtempSync(join(tmpdir(), "pa-prepared-capacity-race-"));
   const repo = initializeRepo(root);
   const moduleUrl = new URL("../deploy/ticket-concurrency.ts", import.meta.url).href;
@@ -254,7 +260,8 @@ test("AC3/AC4: independent preparation processes reserve at most four tickets an
     const api = await import(process.env.PA_SLOT_MODULE_URL);
     const number = Number(process.env.PA_SLOT_NUMBER);
     const result = api.withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: process.env.PA_SLOT_REPO }, tx => tx.reserve({
-      ticket: "PAP-" + number, operationId: number.toString(16).padStart(64, "0"), reservationId: (number + 100).toString(16).padStart(64, "0"), retainedAt: "2026-10-17T00:00:00.000Z"
+      ticket: "PAP-" + number, operationId: number.toString(16).padStart(64, "0"), reservationId: (number + 100).toString(16).padStart(64, "0"), retainedAt: "2026-10-17T00:00:00.000Z",
+      ...(number % 2 ? { purpose: "requirements-test-workflow/v1" } : {})
     }));
     process.stdout.write(JSON.stringify(result) + "\\n");
   `;
@@ -524,6 +531,8 @@ test("AC6: consumed reservation is the ordinary slot view; transfer and terminal
   const observed = observeReadonlyRepositoryTicketSlot(repo, "PAP-1", fingerprints);
   const handoff = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: observed.slot.slotToken, slotId: observed.slot.slotId, repositoryPermit: observed.slot.repositoryPermit };
   assert.equal(observed.slot.deploymentId, "d-123abc"); assert.equal(observed.slot.repositoryPermit, 1);
+  const complete = withPreparedTicketCapacity(options, (tx) => tx.inventory()[0]);
+  assert.deepEqual(observed.reservation, complete, "private observation retains operation/reservation/lineage, not only the ordinary slot projection");
   assert.throws(() => statSync(repositoryTicketSlotPath(repo, "PAP-1"))); // no second slot file
   const authenticate = (processFingerprint: ProcessFingerprint) => authenticateRepositoryTicketSlot({ ...handoff, deploymentId: "d-123abc", deploymentDirectory: root, processFingerprint, dependencies: { getProcessFingerprint: fingerprints } });
   assert.equal(authenticate(first).status, "authenticated");
