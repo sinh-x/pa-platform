@@ -338,7 +338,7 @@ export function sdkProvenance(store, run) {
   const module = realpathSync(fileURLToPath(resolved));
   assert.ok(inside(packageRoot, module));
   const version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version;
-  assert.equal(version, JSON.parse(readFileSync(join(adapter, "package.json"), "utf8")).dependencies[name]);
+  assert.equal(version, JSON.parse(readFileSync(join(adapter, "package.json"), "utf8")).devDependencies[name]);
   return { module, sha256: createHash("sha256").update(readFileSync(module)).digest("hex"), version };
 }
 

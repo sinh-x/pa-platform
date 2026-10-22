@@ -188,7 +188,10 @@ test("PAP-264 SDK provenance resolves import-only exports with packaged Node, wi
     mkdirSync(join(store, "bin"), { recursive: true });
     symlinkSync(process.execPath, join(store, "bin/pa-platform-node"));
     mkdirSync(join(sdk, "dist"), { recursive: true });
-    writeFileSync(join(adapter, "package.json"), JSON.stringify({ type: "module", dependencies: { [name]: "0.84.4" } }));
+    // Match the real adapter: runtime-supplied SDK is a wildcard peer with an
+    // exact development/build pin, not a production dependency.
+    writeFileSync(join(adapter, "package.json"), JSON.stringify({ type: "module", dependencies: {},
+      peerDependencies: { [name]: "*" }, devDependencies: { [name]: "0.84.4" } }));
     const manifest = { name, version: "0.84.4", type: "module", exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } } };
     writeFileSync(join(sdk, "package.json"), JSON.stringify(manifest)); writeFileSync(module, bytes);
     assert.throws(() => createRequire(join(adapter, "package.json")).resolve(name), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
