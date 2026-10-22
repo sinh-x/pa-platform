@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
+import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
 import { OpencodeAdapter, opencodeJsonToActivityEvent, resolveOpencodeRuntimeConfig } from "./adapter.js";
 
 function buildPaEnvVars(args: {
@@ -126,19 +126,33 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   try {
     assertMatchingRuntime(adapter.name, "opencode");
     if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "opencode");
-    if (request.resume) priorSession = readPriorSession(request.resume, adapter.sessionFileName);
   } catch (error) {
     return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
   }
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
-  const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
-  const deployDir = ensureDeployDir(deploymentId);
   const teamConfig = loadTeamConfig(request.team);
-  const selectedMode = selectDeployMode(teamConfig, isRogueOneTeam(teamConfig.name) ? undefined : request.mode);
+  let selectedMode: DeployMode | undefined;
+  try {
+    selectedMode = resolveDeployMode(teamConfig, request.mode);
+    assertDeployResumeMode(teamConfig, request.resume);
+  }
+  catch (error) {
+    if (error instanceof DeployModeSelectionError) return { status: "failed" as const, team: request.team, mode: null, reason: error.message };
+    throw error;
+  }
+  // Preserve strict mode precedence while rejecting unsupported resume history
+  // before any deployment allocation or runtime effects.
+  try {
+    if (request.resume) priorSession = readPriorSession(request.resume, adapter.sessionFileName);
+  } catch (error) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
+  }
+  const deploymentId = `d-${randomBytes(3).toString("hex")}`;
+  const deployDir = ensureDeployDir(deploymentId);
   const runtimeConfig = resolveOpencodeRuntimeConfig(resolveRuntimeConfig({ runtime: "opencode", request, team: teamConfig, mode: selectedMode, local: { provider: "ollama-cloud" } }));
   const provider = runtimeConfig.provider!;
   const model = runtimeConfig.model!;
@@ -344,11 +358,6 @@ function emitResolutionWarning(config: { warning?: string }, deploymentId: strin
   const warning = redactDiagnostic(config.warning);
   if (diagnostics) diagnostics.stderr(warning); else process.stderr.write(`${warning}\n`);
   appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "error", source: "opencode", body: warning, metadata: { resolution: "fallback" } }), activityLogPath);
-}
-
-function selectDeployMode(teamConfig: TeamConfig, requestedMode?: string): DeployMode | undefined {
-  const modeId = requestedMode ?? teamConfig.default_mode;
-  return modeId ? teamConfig.deploy_modes?.find((mode) => mode.id === modeId) : undefined;
 }
 
 function firstLine(text: string): string {

@@ -600,7 +600,7 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
     const env = { ...(options.env ?? process.env) };
     const native = options.resolveBinding || env.PA_TEAM !== "builder" || !["orchestrator", "implement"].includes(env.PA_MODE ?? "") ? null : options.nativeAdapter ?? new PiNativeExecutionAdapter();
     const resolver = options.resolveBinding ?? ((context: unknown, diagnostic = false) => native?.resolve(context, diagnostic)?.binding ?? null);
-    if (native) registerNativeExecutionBuiltins(pi, native, lifecycle);
+    const nativeBuiltinsReady = native ? registerNativeExecutionBuiltins(pi, native, lifecycle) : null;
     const pending = new Map<string, { binding: PiExecutionBinding; name: string }>();
     let adopted = false; let closing = false;
     lifecycle?.addShutdownStep(() => { closing = true; });
@@ -680,6 +680,9 @@ export function createPiExecutionModule(options: PiExecutionOptions = {}): PiExt
         const name = executionToolName(call);
         if (name === "pa_execution" || name === "pa_feature_update" || name === "pa_phase_report" || readOnlyExecutionCall(name, call.input)) return;
         const binding = resolve(context); if (!binding) return;
+        // A failed/not-yet-observed startup must never dispatch an unguarded
+        // built-in after binding discovery. A hook alone is not SDK support.
+        if (nativeBuiltinsReady && !nativeBuiltinsReady()) throw executionFailure("EXECUTION_CAPABILITY_UNSUPPORTED");
         const id = workflowText(call.toolCallId); if (pending.has(id)) throw workflowError();
         const state = binding.service.status(binding.actor);
         assertExecutionCall(() => binding.assertToolCall(call, context, state));

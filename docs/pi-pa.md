@@ -116,6 +116,50 @@ Print, JSON, and RPC execution loads the same extension and commands but does no
 
 The native `pa_ticket` tool accepts the typed actions `read`, `show`, `list`, and `comment`. `read` is an exact read-only alias for `show`; only `comment` mutates ticket data and it retains ticket-store serialization. Unknown actions report the accepted action set. Safety interception evaluates declared path fields and bounded shell operands rather than arbitrary question or todo prose. Direct shell deletion remains denied with a complete `ppa trash move <target> --reason '<non-empty>' --yes` alternative.
 
+## Ordinary direct orchestration (PAP-264)
+
+With a direct-only builder configuration (configured `orchestrator`, no
+`implement`), PPA binds ordinary source/check custody to its actual authenticated
+launcher, registry/process incarnation, physical ticket checkout, lease and
+capacity owner. Optional preparation qualification/activation is not required.
+Unknown explicit/default modes and retired implement/child/resume requests fail
+before resource or runtime effects, including under force. Retained OPA shares
+mode rejection, not Pi/Treehouse source custody.
+
+A missing direct binding is a stop, never an implement or rogue-one fallback.
+Live, malformed or uncertain legacy custody prevents takeover. Reload retains
+started operations, original failed checks and limits. Writes invalidate affected
+checks/acceptance, named checks must pass in order before commit, and independent
+review retains its separate exact-candidate read-only reservation.
+
+Run the packaged isolated check from the clean, committed candidate root:
+
+```bash
+node scripts/pap-264-installed-direct-admission-smoke.mjs
+```
+
+The zero-argument command builds that exact Git candidate with the locked Nix
+inputs and authenticates its source SHA, physical output, package/config pin and
+compiled module hashes **before** importing package code in a disposable process.
+The existing Treehouse JSON port returns one disposable existing checkout and the
+provider-free adapter executes real launch admission and actual SDK write/edit,
+native Bash/check, failure/recheck, reload, commit and settlement operations.
+CLI/API/PPA/OPA invalid selections and legacy/custody denials are checked for zero
+forbidden effects. Its bounded JSON ledger distinguishes real fixture writes,
+Git/mutex/native-shell processes and deliberately failing fixture checks from
+outside-fixture writes, Treehouse lifecycle effects and implement/provider spawns.
+Node IO/process/network tripwires are not a general OS sandbox; SQLite and fixed
+Git/shell descendants operate on disposable paths. No operator storage or
+production qualification/activation receipts are used.
+
+Packaged pin identity is **not** clean merged config pairing. In particular, the
+PAPC-047 staged direct-only config must be reconciled by its owner before rollout;
+this command does not edit that repository or change the platform pin. Source
+regressions, packaged-isolated results, actual loaded operator runtime selection,
+protected PAP-232/PAP-235 readiness, independent review/CI and human UAT remain
+separately attributable. A passing smoke neither installs a runtime nor approves
+activation, merge or checkout return.
+
 ## Authenticated read-only helpers
 
 Inside a live protected PPA deployment, these inferred commands use its admitted

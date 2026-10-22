@@ -546,7 +546,8 @@ test("background orchestrator runner waits for child finalization before releasi
     writeFileSync(join(repo, "README.md"), "# parent fixture\n");
     runGit(repo, ["add", "README.md"]);
     runGit(repo, ["commit", "-m", "initial"]);
-    const snapshot = { branch: "feature/PAP-191-background-parent", head: "c".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    runGit(repo, ["checkout", "-b", "feature/PAP-191-background-parent"]);
+    const snapshot = captureRepositoryGitSnapshot(repo);
     const acquired = acquireRepositoryMutationLease({
       canonicalRepoKey: "pa-platform", canonicalRepoRoot: repo, deploymentId: config.deploymentId,
       deploymentDirectory: deployDir, runtime: "pi", team: "builder", mode: "orchestrator", gitSnapshot: snapshot,
@@ -605,7 +606,7 @@ test("borrowed runner transfers process identity, scrubs implementation env/conf
     assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repo }).status, 0);
     const committed = spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"], { cwd: repo, encoding: "utf8" });
     assert.equal(committed.status, 0, committed.stderr);
-    const snapshot = { branch: "feature/PAP-191-runner-test", head: "b".repeat(40), stagedCount: 0, unstagedCount: 0, untrackedCount: 0, dirty: false, statusSummary: "" } as const;
+    const snapshot = captureRepositoryGitSnapshot(repo);
     const parentDeploymentId = "d-parent-runner";
     const parentDir = join(root, "deployments", parentDeploymentId);
     mkdirSync(parentDir, { recursive: true });

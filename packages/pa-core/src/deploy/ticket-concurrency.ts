@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { readReviewEvidenceFile } from "../validation/review-contract.js";
-import { readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
+import { observeReadonlyRepositoryAuthority, readProcessFingerprint, type ProcessFingerprint } from "./repository-admission.js";
+import { queryReadonlyDeploymentEvents, queryReadonlyHelperRegistry } from "../registry/index.js";
 import { parseIdlePreparationReservation, type IdlePreparationReservation } from "./execution-custody.js";
 
 export const MAX_REPOSITORY_TICKET_SLOTS = 4;
@@ -141,7 +142,7 @@ export function acquireRepositoryTicketSlot(options: {
   const slotPath = repositoryTicketSlotPath(root, options.ticket);
   return withTicketMutex(root, () => {
     const live: Array<RepositoryTicketSlot | IdlePreparationReservation> = [];
-    let recovered = 0;
+    const recovered = 0;
     for (const path of ticketEvidencePaths(directory)) {
       const inspected = inspectSlot(path, dependencies.getProcessFingerprint);
       if (inspected.state === "live" || inspected.state === "prepared") {
@@ -156,16 +157,10 @@ export function acquireRepositoryTicketSlot(options: {
         live.push(row);
         continue;
       }
-      if (inspected.state === "stale") {
-        quarantine(path, dependencies.now, dependencies.createToken);
-        recovered += 1;
-        continue;
-      }
-      if (!options.force || inspected.state === "invalid-preparation") {
-        return { status: "rejected", reason: "invalid-evidence", slotPath, diagnostic: ticketDiagnostic(options, `persisted ticket-slot evidence is ${inspected.state} at ${path}`, inspected.state === "invalid-preparation" ? "preserve durable preparation capacity for operator reconciliation; --force cannot reclaim it" : "preserve the file and reconcile or retry with --force only after proving no recorded process is live") };
-      }
-      quarantine(path, dependencies.now, dependencies.createToken);
-      recovered += 1;
+      // Legacy capacity remains occupied/uncertain until its matching owner
+      // settles it. PID death and --force are not finalization proof.
+      return { status: "rejected", reason: "invalid-evidence", slotPath,
+        diagnostic: ticketDiagnostic(options, "persisted ticket capacity is stale or uncertain", "preserve capacity until matching terminal settlement; force cannot reclaim it") };
     }
     if (live.some((slot) => slot.ticket === options.ticket)) {
       return { status: "rejected", reason: "duplicate-ticket", slotPath, diagnostic: ticketDiagnostic(options, `ticket ${options.ticket} already has a process-verified live builder slot`, "wait for the matching deployment to reach verified terminal finalization") };
@@ -230,6 +225,31 @@ export function releaseRepositoryTicketSlot(options: RepositoryTicketSlotHandoff
     if (slot === undefined) return { status: "absent" };
     if (slot === null || !slotMatchesHandoff(slot, options)) return { status: "invalid-evidence" };
     if (!secureEqual(slot.slotToken, options.slotToken)) return { status: "token-mismatch" };
+    // Every terminal caller (including the background runner) must retain the
+    // permit if matching worktree custody failed to settle. Registry binding,
+    // not a caller-selected path, identifies that checkout.
+    try {
+      const events = queryReadonlyDeploymentEvents(slot.deploymentId);
+      if (events.length === 0) {
+        // Allocation precedes immutable launch publication. Only the actual
+        // allocating process may roll back that launchless reservation; absence
+        // of registry evidence or PID death never authorizes external recovery.
+        const current = readProcessFingerprint(process.pid);
+        if (!current || !fingerprintsEqual(slot.processFingerprint, current)) return { status: "invalid-evidence" };
+      } else {
+        const status = queryReadonlyHelperRegistry(slot.deploymentId).status;
+        if (!status || status.repo_root !== slot.canonicalRepoRoot || status.ticket_id !== slot.ticket
+          || (status.ticket_slot_id !== undefined && status.ticket_slot_id !== slot.slotId)
+          || (status.repository_permit !== undefined && status.repository_permit !== slot.repositoryPermit)
+          || !status.worktree_root) return { status: "invalid-evidence" };
+        const worktree = physicalRoot(status.worktree_root);
+        const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        if (physicalRoot(common) !== physicalGitCommonDir(slot.canonicalRepoRoot)) return { status: "invalid-evidence" };
+        const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        const custody = observeReadonlyRepositoryAuthority(gitDir);
+        if (custody.owner || custody.borrower || custody.implement || custody.review) return { status: "invalid-evidence" };
+      }
+    } catch { return { status: "invalid-evidence" }; }
     if (path.endsWith(".prepared.json")) {
       const reservation = parseIdlePreparationReservation(readCapacityRecord(path));
       if (reservation.occupancy !== "active" || reservation.custody.inFlightOperation !== null) return { status: "invalid-evidence" };
@@ -384,12 +404,6 @@ function writeSlot(path: string, slot: RepositoryTicketSlot): void {
   assertSlot(slot);
   writeFileSync(path, `${JSON.stringify(slot, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
   chmodSync(path, 0o600);
-}
-
-function quarantine(path: string, now: () => Date, createToken: () => string): void {
-  const destination = `${path}.quarantine.${now().toISOString().replace(/[:.]/g, "-")}.${required(createToken(), "quarantine token")}`;
-  linkSync(path, destination);
-  unlinkSync(path);
 }
 
 /**
@@ -588,7 +602,7 @@ function resolvedDependencies(overrides?: Partial<RepositoryTicketSlotDependenci
 function ticketDiagnostic(options: { canonicalRepoKey: string; canonicalRepoRoot: string; ticket: string }, reason: string, resume: string): string {
   return formatBoundedFiveFieldDiagnostic({
     condition: "repository ticket concurrency admission",
-    source: `atomic ticket-slot/permit transaction for repo=${options.canonicalRepoKey} root=${options.canonicalRepoRoot} ticket=${options.ticket}`,
+    source: "atomic repository ticket-slot/permit transaction",
     reason,
     correction: "preserve Treehouse leases and repository state; reconcile only matching PA slot evidence",
     resumeAction: resume,

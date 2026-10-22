@@ -301,6 +301,27 @@ test("review reservation serializes cross-process borrowers and owners", async (
   }
 });
 
+test("PAP-264 opaque historical runtimes stay readable and cannot authorize direct takeover", () => {
+  const root = fixture("historical-runtime"); const old = fingerprint(43900); const next = fingerprint(43901);
+  try {
+    const seeded = acquire(root, old); assert.equal(seeded.status, "acquired");
+    const path = repositoryMutationLeasePath(root);
+    const original = JSON.parse(readFileSync(path, "utf8"));
+    for (const runtime of ["claude", "droid", "historical-runtime-not-selected"]) {
+      const bytes = Buffer.from(JSON.stringify({ ...original, runtime })); writeFileSync(path, bytes);
+      assert.equal(inspectRepositoryMutationLease(root, dependencies()).lease?.runtime, runtime);
+      for (const force of [false, true]) {
+        const result = acquire(root, next, { force, deps: dependencies(next) });
+        assert.equal(result.status, "rejected"); assert.deepEqual(readFileSync(path), bytes);
+        assert.ok(result.diagnostic.length <= 2000); assert.doesNotMatch(result.diagnostic, /historical-runtime-not-selected|test-boot-id/);
+      }
+      const inspected = inspectRepositoryMutationLease(root, dependencies());
+      assert.equal(quarantineRepositoryMutationLease({ canonicalRepoKey: "fixture", canonicalRepoRoot: root, expectedEvidenceIdentity: inspected.evidenceIdentity!, dependencies: dependencies() }).status, "rejected");
+      assert.deepEqual(readFileSync(path), bytes);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("repository access classification is deterministic and requirements need no Git or lease operation", () => {
   assert.equal(classifyRepositoryAccess("requirements", "analyze"), "read-only");
   assert.equal(classifyRepositoryAccess("requirements/reviewer", "review"), "read-only");
@@ -483,7 +504,7 @@ test("50 simultaneous cross-process ppa/opa contenders yield exactly one owner w
   }
 });
 
-test("PID reuse is stale, force quarantines exact bytes, and lease mode is 0600", () => {
+test("PID reuse is stale, force preserves exact bytes, and lease mode is 0600", () => {
   const root = fixture("pid-reuse");
   const original = fingerprint(42001, "old-start");
   try {
@@ -498,9 +519,9 @@ test("PID reuse is stale, force quarantines exact bytes, and lease mode is 0600"
     const rejected = acquire(root, reused, { deps: staleDeps });
     assert.equal(rejected.status, "rejected");
     const recovered = acquire(root, reused, { force: true, token: "replacement-token", deps: staleDeps });
-    assert.equal(recovered.status, "acquired");
-    assert.ok(recovered.quarantinedPath);
-    assert.deepEqual(readFileSync(recovered.quarantinedPath!), exactBytes);
+    assert.equal(recovered.status, "rejected");
+    assert.deepEqual(readFileSync(leasePath), exactBytes);
+    assert.equal(readdirSync(join(root, ".git")).some((name) => name.includes("quarantine")), false);
     assert.equal(statSync(leasePath).mode & 0o777, 0o600);
     assert.ok(statSync(leasePath).size <= MAX_REPOSITORY_LEASE_BYTES);
   } finally {
@@ -508,7 +529,7 @@ test("PID reuse is stale, force quarantines exact bytes, and lease mode is 0600"
   }
 });
 
-test("malformed, oversized, and root-conflicting evidence reject without force and recover with force", () => {
+test("malformed, oversized, and root-conflicting evidence reject even with force", () => {
   for (const evidenceCase of ["malformed", "oversized", "root-conflicting"] as const) {
     const root = fixture(evidenceCase);
     const leasePath = repositoryMutationLeasePath(root);
@@ -532,16 +553,18 @@ test("malformed, oversized, and root-conflicting evidence reject without force a
       assert.equal(rejected.evidenceState, evidenceCase);
       assert.deepEqual(readFileSync(leasePath), bytes);
       const recovered = acquire(root, replacement, { force: true, token: "recovered", deps: replacementDeps });
-      assert.equal(recovered.status, "acquired");
-      assert.ok(recovered.quarantinedPath);
-      assert.deepEqual(readFileSync(recovered.quarantinedPath!), bytes);
+      assert.equal(recovered.status, "rejected");
+      assert.deepEqual(readFileSync(leasePath), bytes);
+      assert.match(recovered.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(recovered.diagnostic.length <= 2000);
+      assert.doesNotMatch(recovered.diagnostic, /definitely-not-json|wrong-root-token|test-boot-id/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
 });
 
-test("abrupt owner death releases the advisory mutex so force recovery can proceed", { timeout: 15_000 }, async () => {
+test("abrupt owner death releases the advisory mutex without clearing unresolved custody", { timeout: 15_000 }, async () => {
   const root = fixture("abrupt-mutex-owner");
   const leasePath = repositoryMutationLeasePath(root);
   const mutexPath = join(root, ".git", "pa-repository-mutation.lease.lock");
@@ -577,14 +600,15 @@ test("abrupt owner death releases the advisory mutex so force recovery can proce
 
     const owner = fingerprint(43500);
     const recovered = acquire(root, owner, { force: true, token: "post-crash-owner", deps: dependencies(owner) });
-    assert.equal(recovered.status, "acquired");
+    assert.equal(recovered.status, "rejected");
+    assert.equal(readFileSync(leasePath, "utf8"), "{ malformed before abrupt recovery\n");
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("an orphaned mutex file cannot block inspection or forced stale recovery", () => {
+test("an orphaned mutex file cannot block inspection or launder stale custody", () => {
   const root = fixture("orphaned-mutex");
   const oldOwner = fingerprint(43501);
   const replacement = fingerprint(43502);
@@ -594,8 +618,7 @@ test("an orphaned mutex file cannot block inspection or forced stale recovery", 
     const staleDeps = dependencies(replacement);
     assert.equal(inspectRepositoryMutationLease(root, staleDeps).state, "stale");
     const recovered = acquire(root, replacement, { force: true, token: "replacement", deps: staleDeps });
-    assert.equal(recovered.status, "acquired");
-    assert.ok(recovered.quarantinedPath);
+    assert.equal(recovered.status, "rejected");
     assert.equal(readFileSync(join(root, ".git", "pa-repository-mutation.lease.lock"), "utf8"), "orphaned-owner-bytes\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -636,18 +659,19 @@ test("safe manual quarantine rejects replacement and verified-live races", () =>
       dependencies: dependencies(),
     });
     assert.equal(mismatch.status, "rejected");
-    if (mismatch.status === "rejected") assert.equal(mismatch.evidenceState, "identity-mismatch");
+    if (mismatch.status === "rejected") assert.equal(mismatch.evidenceState, "malformed");
     assert.equal(readFileSync(leasePath, "utf8"), "{ replacement-malformed\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("safe manual quarantine uses the mutex and a unique no-clobber destination", () => {
+test("retained OPA manual quarantine uses the mutex and a unique no-clobber destination", () => {
   const root = fixture("quarantine-no-clobber");
   const owner = fingerprint(43701);
   try {
-    assert.equal(acquire(root, owner, { token: "stale-owner" }).status, "acquired");
+    assert.equal(acquireRepositoryMutationLease({ canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-opa", deploymentDirectory: join(root, "deployment"),
+      runtime: "opencode", mode: "implement", pid: owner.pid, processFingerprint: owner, ownershipToken: "stale-owner", gitSnapshot: snapshot, dependencies: dependencies(owner) }).status, "acquired");
     const inspection = inspectRepositoryMutationLease(root, dependencies());
     assert.ok(inspection.evidenceIdentity);
     const leasePath = repositoryMutationLeasePath(root);
@@ -700,7 +724,8 @@ test("transfer and release are atomic, token-owned, and preserve replacement own
     const updated = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: root, ownershipToken: "owner-token", gitSnapshot: changedSnapshot });
     assert.equal(updated.status, "updated");
     if (updated.status === "updated") {
-      assert.equal(repositoryGitSnapshotsEqual(updated.lease!.preLaunchGitSnapshot, changedSnapshot), true);
+      assert.equal(repositoryGitSnapshotsEqual(updated.lease!.preLaunchGitSnapshot, snapshot), true);
+      assert.equal(repositoryGitSnapshotsEqual(updated.lease!.authorityGitSnapshot!, changedSnapshot), true);
       assert.deepEqual(updated.lease!.processFingerprint, owner);
     }
     assert.deepEqual(transferRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "intruder", nextProcessFingerprint: supervisor, dependencies: dependencies(supervisor) }), { status: "token-mismatch" });
@@ -769,6 +794,11 @@ test("authenticated direct child registration is separate, bounded, mode 0600, a
     assert.doesNotMatch(readFileSync(borrowerPath, "utf8"), /private-parent-capability/);
     assert.equal(inspectRepositoryMutationBorrower(root, deps).state, "live");
     assert.deepEqual(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: "wrong" }), { status: "token-mismatch" });
+    const borrowerBytes = readFileSync(borrowerPath);
+    for (const expectedProcessFingerprint of [child, readProcessFingerprint(process.pid)!]) {
+      assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken, expectedProcessFingerprint }).status, "invalid-evidence");
+      assert.deepEqual(readFileSync(borrowerPath), borrowerBytes, "rollback cannot erase transferred or foreign-process custody");
+    }
     assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken }).status, "released");
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), leaseBytes);
   } finally {
@@ -1275,7 +1305,7 @@ test("every dirty Git category rejects borrowing with and without force before e
   }
 });
 
-test("live siblings and abnormal-parent borrowers gate release and force while fingerprint-stale evidence is recoverable", () => {
+test("live siblings and abnormal-parent borrowers gate release and force even after PID death", () => {
   const root = fixture("borrow-lifecycle");
   const parent = fingerprint(45901);
   const launcher = fingerprint(45902);
@@ -1314,8 +1344,12 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
     assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
 
     const replacement = fingerprint(45905);
+    const borrowerBytes = readFileSync(repositoryMutationBorrowerPath(root));
     const recovered = acquire(root, replacement, { force: true, deps: familyDependencies([replacement]) });
-    assert.equal(recovered.status, "acquired");
+    assert.equal(recovered.status, "rejected");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: root, ownershipToken: "family-capability", dependencies: familyDependencies([replacement]) }).status, "borrower-invalid");
+    assert.deepEqual(readFileSync(repositoryMutationBorrowerPath(root)), borrowerBytes);
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(root)), parentBytes);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1323,11 +1357,12 @@ test("live siblings and abnormal-parent borrowers gate release and force while f
 
 test("matching borrower finalization advances live parent authority and admits the next clean child", () => {
   const root = fixture("borrow-finalization");
+  const snapshot = completeCleanSnapshot(root, "a".repeat(40));
   const parent = fingerprint(45911);
   const firstProcess = fingerprint(45912);
   const secondProcess = fingerprint(45913);
   const liveFamily = familyDependencies([parent, firstProcess, secondProcess]);
-  const finalSnapshot = Object.freeze({ ...snapshot, head: "b".repeat(40) });
+  const finalSnapshot = completeCleanSnapshot(root, "b".repeat(40));
   try {
     const acquired = acquireRepositoryMutationLease({
       canonicalRepoKey: "fixture", canonicalRepoRoot: root, deploymentId: "d-parent", deploymentDirectory: join(root, "parent"),
@@ -1397,8 +1432,9 @@ test("matching borrower finalization advances live parent authority and admits t
   }
 });
 
-test("borrower finalization handles token mismatch, uncertain liveness, verified death, and invalid evidence explicitly", () => {
+test("borrower finalization handles token mismatch, uncertainty, death without proof, and matching terminal execution", () => {
   const root = fixture("borrow-finalization-statuses");
+  const snapshot = completeCleanSnapshot(root, "a".repeat(40));
   const parent = fingerprint(45915);
   const runner = fingerprint(45916);
   const contender = fingerprint(45917);
@@ -1446,7 +1482,13 @@ test("borrower finalization handles token mismatch, uncertain liveness, verified
       canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken, deploymentId: "d-runner", finalGitSnapshot: snapshot,
       dependencies: { ...liveFamily, getProcessFingerprint: (pid) => pid === parent.pid ? parent : undefined, isProcessAlive: () => false },
     });
-    assert.equal(afterDeath.status, "finalized");
+    assert.equal(afterDeath.status, "invalid-evidence");
+    assert.notEqual(inspectRepositoryMutationBorrower(root).state, "absent");
+    const terminal = finalizeRepositoryMutationBorrower({
+      canonicalRepoRoot: root, borrowerToken: registration.borrower.borrowerToken, deploymentId: "d-runner", finalGitSnapshot: snapshot,
+      dependencies: { ...liveFamily, getCurrentProcessFingerprint: () => runner },
+    });
+    assert.equal(terminal.status, "finalized");
     assert.equal(inspectRepositoryMutationBorrower(root).state, "absent");
 
     const malformed = registerRepositoryMutationBorrower({
@@ -1499,9 +1541,9 @@ test("parent finalization waits until borrower mismatch and stops at timeout plu
         getProcessFingerprint: (pid) => pid === released.parent.pid ? released.parent : childLive && pid === released.child.pid ? released.child : undefined,
       },
     });
-    assert.equal(result.status, "released");
+    assert.equal(result.status, "borrower-invalid");
     assert.equal(result.waitedMs, 100);
-    assert.equal(inspectRepositoryMutationLease(released.root).state, "absent");
+    assert.notEqual(inspectRepositoryMutationLease(released.root).state, "absent");
   } finally {
     rmSync(released.root, { recursive: true, force: true });
   }
@@ -1621,7 +1663,7 @@ test("Git-state recorder covers every NFR-7 mutation category and preserves allo
   }
 });
 
-test("linked worktrees store physical per-worktree evidence and admit one orchestrator plus one implement slot independently", () => {
+test("linked worktrees admit only one source/check owner and preserve uncertain legacy implement evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "pa-repository-linked-slots-"));
   const primary = join(root, "primary");
   const worktreeA = join(root, "worktree-a");
@@ -1662,12 +1704,12 @@ test("linked worktrees store physical per-worktree evidence and admit one orches
     const implementB = acquireSlot(worktreeB, "implement", owners[5]!);
 
     assert.equal(orchestratorA.status, "acquired");
-    assert.equal(implementA.status, "acquired");
+    assert.equal(implementA.status, "rejected");
     assert.equal(duplicateOrchestratorA.status, "rejected");
     assert.equal(duplicateImplementA.status, "rejected");
     assert.equal(orchestratorB.status, "acquired");
-    assert.equal(implementB.status, "acquired");
-    if (orchestratorA.status !== "acquired" || implementA.status !== "acquired" || orchestratorB.status !== "acquired" || implementB.status !== "acquired") assert.fail("expected all independent slots to acquire");
+    assert.equal(implementB.status, "rejected");
+    if (orchestratorA.status !== "acquired" || orchestratorB.status !== "acquired") assert.fail("expected independent worktrees to acquire");
 
     const gitDirA = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktreeA);
     const gitDirB = git(["rev-parse", "--path-format=absolute", "--git-dir"], worktreeB);
@@ -1676,9 +1718,8 @@ test("linked worktrees store physical per-worktree evidence and admit one orches
     assert.equal(orchestratorB.leasePath, join(gitDirB, "pa-repository-mutation.lease.json"));
     assert.equal(implementB.leasePath, join(gitDirB, "pa-repository-mutation.implement.lease.json"));
     assert.equal(statSync(orchestratorA.leasePath).mode & 0o777, 0o600);
-    assert.equal(statSync(implementA.leasePath).mode & 0o777, 0o600);
+    assert.equal(existsSync(implementA.leasePath), false);
 
-    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "implement", ownershipToken: implementA.lease.ownershipToken, dependencies: deps }).status, "released");
     assert.equal(existsSync(orchestratorA.leasePath), true, "implement release must preserve orchestrator evidence");
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: orchestratorA.lease.ownershipToken, dependencies: deps }).status, "released");
 
@@ -1696,13 +1737,20 @@ test("linked worktrees store physical per-worktree evidence and admit one orches
       deploymentId: "d-replacement", deploymentDirectory: join(root, "d-replacement"), runtime: "pi", team: "builder", mode: "orchestrator", launchMode: "foreground", force: true,
       pid: replacementOwner.pid, processFingerprint: replacementOwner, gitSnapshot: snapshot, dependencies: familyDependencies([replacementOwner]),
     });
-    assert.equal(recovered.status, "acquired");
-    if (recovered.status !== "acquired") assert.fail("stale slot was not recovered");
-    assert.ok(recovered.quarantinedPath?.startsWith(`${stale.leasePath}.quarantine.`));
-    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: stale.lease.ownershipToken, dependencies: familyDependencies([replacementOwner]) }).status, "token-mismatch");
-    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: recovered.lease.ownershipToken, dependencies: familyDependencies([replacementOwner]) }).status, "released");
+    assert.equal(recovered.status, "rejected");
+    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: stale.lease.ownershipToken, dependencies: familyDependencies([replacementOwner]) }).status, "released");
 
-    assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "implement", ownershipToken: implementB.lease.ownershipToken, dependencies: deps }).status, "released");
+    // Each historical implement shape excludes a fresh direct owner, including
+    // stale, opaque retired-runtime, malformed and live-but-invalid evidence.
+    const implementPath = repositoryMutationLeasePath(worktreeA, "implement");
+    for (const bytes of ["{ legacy-private-sentinel", JSON.stringify({ ...stale.lease, runtime: "opaque-retired-runtime", slot: "implement" }), JSON.stringify({ processFingerprint: owners[1] })]) {
+      writeFileSync(implementPath, bytes, { mode: 0o600 });
+      const before = readFileSync(implementPath);
+      assert.equal(acquireSlot(worktreeA, "orchestrator", replacementOwner).status, "rejected");
+      assert.deepEqual(readFileSync(implementPath), before);
+      assert.equal(existsSync(stale.leasePath), false);
+    }
+
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeB, slot: "orchestrator", ownershipToken: orchestratorB.lease.ownershipToken, dependencies: deps }).status, "released");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1746,6 +1794,8 @@ test("linked-worktree inherited borrower occupies only that worktree's implement
     assert.equal(borrower.status, "registered");
     if (borrower.status !== "registered") assert.fail("borrower did not register");
 
+    const parentBytes = readFileSync(repositoryMutationLeasePath(worktreeA));
+    const borrowerBytes = readFileSync(repositoryMutationBorrowerPath(worktreeA));
     const blocked = acquireRepositoryMutationLease({
       canonicalRepoKey: "fixture", canonicalRepoRoot: primary, worktreeRoot: worktreeA,
       deploymentId: "d-contender", deploymentDirectory: join(root, "d-contender"), runtime: "pi", team: "builder", mode: "implement", launchMode: "foreground",
@@ -1758,11 +1808,12 @@ test("linked-worktree inherited borrower occupies only that worktree's implement
     });
     assert.equal(blocked.status, "rejected");
     if (blocked.status === "rejected") {
-      assert.match(blocked.diagnostic, /state|borrower-state/);
-      assert.ok(blocked.diagnostic.includes(`repo_root=${primary}`));
-      assert.ok(blocked.diagnostic.includes(`worktree_root=${worktreeA}`));
-      assert.match(blocked.diagnostic, /slot=implement/);
-      assert.match(blocked.diagnostic, /process-verified live borrower/);
+      assert.match(blocked.diagnostic, /retained legacy owner evidence blocks a second source\/check holder/);
+      assert.match(blocked.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(blocked.diagnostic.length <= 2000);
+      assert.equal(blocked.diagnostic.includes(primary), false);
+      assert.equal(blocked.diagnostic.includes(worktreeA), false);
+      assert.doesNotMatch(blocked.diagnostic, /ownershipToken|borrowerToken|startTimeTicks|bootId/);
     }
 
     const staleBlocked = acquireRepositoryMutationLease({
@@ -1772,12 +1823,12 @@ test("linked-worktree inherited borrower occupies only that worktree's implement
     });
     assert.equal(staleBlocked.status, "rejected");
     if (staleBlocked.status === "rejected") {
-      assert.ok(staleBlocked.diagnostic.includes(`repo_root=${primary}`));
-      assert.ok(staleBlocked.diagnostic.includes(`worktree_root=${worktreeA}`));
-      assert.match(staleBlocked.diagnostic, /slot=implement/);
-      assert.match(staleBlocked.diagnostic, /borrower evidence is stale/);
+      assert.equal(staleBlocked.diagnostic, blocked.diagnostic, "earlier owner exclusion must not disclose borrower liveness");
     }
 
+    assert.deepEqual(readFileSync(repositoryMutationLeasePath(worktreeA)), parentBytes);
+    assert.deepEqual(readFileSync(repositoryMutationBorrowerPath(worktreeA)), borrowerBytes);
+    assert.equal(existsSync(repositoryMutationLeasePath(worktreeA, "implement")), false);
     assert.equal(admittedSibling.status, "acquired");
     assert.equal(releaseRepositoryMutationBorrower({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, borrowerToken: borrower.borrower.borrowerToken }).status, "released");
     assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: primary, worktreeRoot: worktreeA, slot: "orchestrator", ownershipToken: parentLease.lease.ownershipToken, dependencies: deps }).status, "released");

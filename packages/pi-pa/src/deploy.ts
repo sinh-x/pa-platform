@@ -7,10 +7,10 @@ import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentS
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
+import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
-import { assertNativePreparedChildLaunchSupported } from "./execution-native.js";
+import { assertNativePreparedChildLaunchSupported, ORDINARY_NATIVE_EXECUTION_START } from "./execution-native.js";
 import { normalizePiRuntimeConfig, PI_DEFAULT_MODEL, PI_DEFAULT_PROVIDER, resolvePiRuntimeConfig } from "./runtime-normalization.js";
 import { clearPiForegroundCompletion, ensurePiTerminalStatus, readPiForegroundCompletion, writePiTerminalStatus, type PiForegroundCompletion } from "./terminal-status.js";
 import { TreehouseClient } from "./treehouse.js";
@@ -705,7 +705,15 @@ export function createPiHooks(adapter: RuntimeAdapter = new PiAdapter(), depende
     readOnlyHelperContext: createPiReadonlyHelperCapability({ treehouse: dependencies.treehouse, getProcessFingerprint: dependencies.getProcessFingerprint }),
     deployPreflight: (request) => {
       const team = loadTeamConfig(request.team);
-      const mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+      let mode: ReturnType<typeof resolveDeployMode>;
+      try {
+        mode = resolveDeployMode(team, request.mode);
+        assertDeployResumeMode(team, request.resume);
+      }
+      catch (error) {
+        if (error instanceof DeployModeSelectionError) return { reason: error.message };
+        throw error;
+      }
       if (team.name !== "requirements" || mode?.id !== "review-auto") return undefined;
       const { report } = (dependencies.reviewPreflight ?? inspectReviewPreflight)({ ticket: request.ticket ?? "", objective: request.objective ?? "" });
       return report.status === "compatible" ? undefined : { reason: formatReviewPreflight(report) };
@@ -722,7 +730,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   try {
     assertMatchingRuntime(adapter.name, "pi");
     if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "pi");
-    if (request.resume) prior = readSession(request.resume, adapter.sessionFileName);
   } catch (error) {
     const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
@@ -737,14 +744,26 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
   const rogueModeDiagnostic = rogueOneModeWarning(request.team, request.mode);
   request = normalizeRogueOneDeployRequest(request);
   let team: TeamConfig;
-  let mode: ReturnType<typeof selectMode>;
+  let mode: ReturnType<typeof resolveDeployMode>;
   try {
     team = loadTeamConfig(request.team);
     if (request.ticketWorktree && team.name === "builder") throw new Error("resolved builder team cannot request selection-only intent");
-    mode = selectMode(team, isRogueOneTeam(team.name) ? undefined : request.mode);
+    mode = resolveDeployMode(team, request.mode);
+    assertDeployResumeMode(team, request.resume);
   } catch (error) {
+    if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
+  }
+  // Strict mode rejection precedes resume-file inspection; unsupported historical
+  // runtime rejection still precedes workspace/registry allocation and hooks.
+  try {
+    if (request.resume) prior = readSession(request.resume, adapter.sessionFileName);
+  } catch (error) {
+    const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
+      : inheritedAttempt ? inheritedAdmissionFailure(detail, request.repo ?? "unknown", process.cwd()) : detail;
+    return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
   // Pure static gate precedes ID/workspace allocation, audits, registry and runtime probes.
   // Dry-run is observational too and must not masquerade as successful review admission.
@@ -1115,6 +1134,22 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         if (settlement.outcome === "blocked") failures.push(settlement.diagnostic ?? terminalSettlementUnavailable());
         else activeRepositoryBorrower = undefined;
       }
+    } else if (borrowed && !runtimeLaunchAttempted) {
+      // Registration can precede a rejecting preflight reread. This is rollback
+      // by the original allocating process, not terminal settlement after spawn.
+      // Never route a transferred/live/uncertain runner through this path.
+      const inspection = inspectRepositoryMutationBorrower(borrowed.canonicalRepoRoot, { getProcessFingerprint: readProcessFingerprint,
+        worktreeRoot: borrowed.worktreeRoot, repositoryGitDir: borrowed.repositoryGitDir });
+      const current = readProcessFingerprint(process.pid);
+      const recorded = inspection.borrower?.processFingerprint;
+      if (inspection.state !== "live" || inspection.borrower?.deploymentId !== borrowed.deploymentId || !current || !recorded
+        || recorded.pid !== current.pid || recorded.startTimeTicks !== current.startTimeTicks || recorded.bootId !== current.bootId) {
+        failures.push(terminalSettlementUnavailable());
+      } else {
+        const rollback = releaseRepositoryMutationBorrower({ ...borrowed, expectedProcessFingerprint: current });
+        if (rollback.status === "released" || rollback.status === "absent") activeRepositoryBorrower = undefined;
+        else failures.push(terminalSettlementUnavailable());
+      }
     } else if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
@@ -1176,7 +1211,8 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       activeRepositoryLease = undefined;
     }
   };
-  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}` : undefined });
+  emitStartedEvent({ deploymentId, team: team.name, mode: plan.mode, ticketWorktreeSelection: plan.ticketWorktreeSelection ? JSON.stringify(plan.ticketWorktreeSelection) : undefined, ...deploymentCorrelation(plan), primer: `deployments/${deploymentId}/primer.md`, agents: plan.rogue_one ? [] : team.agents.map((agent) => agent.name), models: model ? { team: model } : {}, ticketId: plan.ticket, objective: plan.objective, provider, repo: plan.repositoryCwd, repoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositorySlot: plan.repositoryAdmission.slot, runtime: "pi", binary: "ppa", resumedFromDeploymentId: request.resume, effectiveTimeoutSeconds: plan.timeoutSeconds, rogueOne: plan.rogue_one, invocationChannel: plan.invocation_channel, note: preparedBuilderAdmission ? `prepared-native-consumption/v1:${preparedBuilderAdmission.correlationSha256}`
+    : plan.treehouse?.authority === "orchestrator" && !team.deploy_modes?.some((entry) => entry.id === "implement") ? ORDINARY_NATIVE_EXECUTION_START : undefined });
   const writeTerminal = async (kind: "completed" | "crashed", status: "success" | "partial" | "failed", reason: string, exitCode: number, logFile?: string, staged?: { rating?: Rating; fallback?: boolean }): Promise<{ status: "success" | "failed"; reason: string; authorityFailure: boolean }> => {
     // The service authenticates durable terminal evidence, never a success-only
     // Boolean. Publish original outcome first and keep it even if handover blocks.
@@ -1395,7 +1431,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         }
         const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositoryGitDir: activeRepositoryLease.repositoryGitDir, slot: activeRepositoryLease.slot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
         if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
-        plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
+        plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.authorityGitSnapshot ?? update.lease!.preLaunchGitSnapshot);
       }
       if (!stable) throw new Error("repository-admission: Git state did not stabilize after Pi preflight; ownership was released and no runtime was started");
     } else {
@@ -1798,7 +1834,6 @@ function inheritedParentContext(): { parentDeploymentId: string; parentDeploymen
   const parentIdentity = process.env["PA_TEAM"] === "builder" && process.env["PA_MODE"] === "orchestrator" && Boolean(parentDeploymentId) && Boolean(parentDeploymentDirectory);
   return parentIdentity ? { parentDeploymentId, parentDeploymentDirectory } : undefined;
 }
-function selectMode(team: TeamConfig, id?: string) { return (id ?? team.default_mode) ? team.deploy_modes?.find((item) => item.id === (id ?? team.default_mode)) : undefined; }
 function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Partial<Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string>> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", ...(isRogueOneTeam(team.name) ? { PA_ROGUE_ONE: "1" } : {}), [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }
 function readSession(id: string, expected: string): string {
   const dir = getDeployPaths(id).deployDir;

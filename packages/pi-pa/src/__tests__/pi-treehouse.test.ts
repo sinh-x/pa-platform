@@ -588,8 +588,16 @@ test("selection fails closed on stale, malformed-live, oversized, registry-confl
       assert.deepEqual(readFileSync(borrowerPath), before);
     }
     rmSync(borrowerPath);
-    selectionOwner(fixture, "implement");
+    // Competing owners are no longer admissible. Inject retained corrupt evidence
+    // only in this disposable fixture to reach the read-only ambiguity guard.
+    const competingPath = repositoryMutationLeasePath(fixture.worktree, "implement");
+    const competingId = "d-ddeeff";
+    appendRegistryEvent({ deployment_id: competingId, team: "builder", mode: "implement", runtime: "pi", event: "started", timestamp: new Date().toISOString(),
+      ticket_id: "PAP-1", repo: fixture.worktree, repo_root: fixture.repo, worktree_root: fixture.worktree });
+    writeFileSync(competingPath, JSON.stringify({ ...owner.lease, deploymentId: competingId, mode: "implement", slot: "implement" }));
+    const competingBytes = readFileSync(competingPath);
     assert.throws(() => fixture.authenticate(), /ambiguous builder owners/);
+    assert.deepEqual(readFileSync(competingPath), competingBytes);
     assert.deepEqual(readFileSync(owner.leasePath), ownerBytes);
     fixture.assertNeutral();
   } finally { fixture.dispose(); }
@@ -824,6 +832,10 @@ for (const scenario of ["continuations", "legacy", "failed-dirty", "partial-comm
   const malformedTreehouse = new TreehouseClient({ run: () => result([{ ...leaseJson, path: "relative" }]) });
   const canonicalBefore = Buffer.concat([Buffer.from(git(["branch", "--show-current"], repo)), Buffer.from(git(["rev-parse", "HEAD"], repo)), execFileSync("git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], { cwd: repo })]);
   try {
+    // Existing-only custody readers deliberately refuse to create a missing
+    // registry. Initialize this disposable administrative registry first, as on
+    // an installed host; do not fabricate launch/terminal events for rollback.
+    assert.equal(queryDeploymentStatus("d-no-launch"), null);
     const rejected = await deployWithPi({ team: "builder", mode: "orchestrator", ticket: "PAP-1", repo: "registered", timeout: 60 }, adapter, undefined, { treehouse: malformedTreehouse });
     assert.equal(rejected.status, "failed");
     assert.match(rejected.reason ?? "", /absolute normalized path/);

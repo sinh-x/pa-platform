@@ -1,5 +1,7 @@
 import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
-import type { ApiRuntimeName, AutonomyLevel } from "../types.js";
+import type { ApiRuntimeName, AutonomyLevel, DeployMode, TeamConfig } from "../types.js";
+import { isRogueOneTeam } from "./rogue-one.js";
+import { queryReadonlyDeploymentStatus } from "../registry/index.js";
 import { assertSupportedRuntime } from "./runtime-config.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
@@ -39,6 +41,40 @@ export interface DeployRequest {
   sanitizedCharsRemoved?: number;
   /** Trusted internal provenance; API/CLI parsers never accept this from user fields. */
   invocationChannel?: DeploymentInvocationChannel;
+}
+
+/** Schema-owned text only: supplied IDs and private configuration never enter a denial. */
+export class DeployModeSelectionError extends Error {
+  constructor(source: "explicit request" | "configured default" | "execution plan") {
+    super(formatBoundedFiveFieldDiagnostic({
+      condition: "deployment mode selection rejected",
+      source,
+      reason: "the selected mode is unknown, retired, ambiguous or inconsistent with the selected team configuration",
+      correction: "select exactly one available configured mode or correct the configured default; force, resume and child requests cannot substitute another mode",
+      resumeAction: "retry the original entry point only after its mode selection is valid; preserve existing custody and history",
+    }));
+    this.name = "DeployModeSelectionError";
+  }
+}
+
+/** No requested/default substitution. Teams without either selection retain their base profile. */
+export function resolveDeployMode(team: TeamConfig, requestedMode?: string): DeployMode | undefined {
+  // Rogue-one is an intentional fixed bare profile, not a configured-mode fallback.
+  if (isRogueOneTeam(team.name)) return undefined;
+  const id = requestedMode ?? team.default_mode;
+  if (id === undefined) return undefined;
+  const matches = team.deploy_modes?.filter((mode) => mode.id === id) ?? [];
+  if (typeof id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(id) || matches.length !== 1) {
+    throw new DeployModeSelectionError(requestedMode !== undefined ? "explicit request" : "configured default");
+  }
+  return matches[0];
+}
+
+/** A resume target never converts a retired historical mode into current launch authority. */
+export function assertDeployResumeMode(team: TeamConfig, resume?: string): void {
+  if (!resume || isRogueOneTeam(team.name)) return;
+  const prior = queryReadonlyDeploymentStatus(resume);
+  if (prior?.mode !== undefined) resolveDeployMode(team, prior.mode);
 }
 
 export interface DeployTimeoutResolutionInput {
@@ -146,7 +182,9 @@ export function validateDeployRequestFields(body: Record<string, unknown>, optio
   if (!team?.trim()) return { error: "team is required" };
   if (Object.prototype.hasOwnProperty.call(body, "runtime") && (runtime === undefined || !runtime.trim() || (runtime !== "opencode" && runtime !== "pi"))) return { error: "runtime must be opencode or pi" };
   if (!isSafeIdentifier(team)) return { error: "Invalid team name" };
-  if (mode && !isSafeIdentifier(mode)) return { error: "Invalid mode name" };
+  if (Object.prototype.hasOwnProperty.call(body, "mode") && (mode === undefined || !isSafeIdentifier(mode))) {
+    return { error: new DeployModeSelectionError("explicit request").message };
+  }
   if (evaluateDeployment && !/^d-[a-z0-9]{6}$/.test(evaluateDeployment)) return { error: "Invalid evaluate deployment id" };
   if (repo && !isSafeRepoSpecifier(repo)) return { error: "Invalid repo name" };
   if (ticket && !/^[A-Z][A-Z0-9]+-[0-9]+$/.test(ticket)) return { error: "Invalid ticket ID" };
