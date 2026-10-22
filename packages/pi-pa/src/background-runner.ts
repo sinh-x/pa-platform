@@ -1,4 +1,7 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -13,6 +16,7 @@ import {
   formatBoundedFiveFieldDiagnostic,
   getDeployPaths,
   readProcessFingerprint,
+  queryDeploymentStatus,
   reconcileTerminalRegistryEvent,
   refreshTicketLinkedBranchHead,
   releaseRepositoryTicketSlot,
@@ -563,6 +567,244 @@ function categoryForRunnerError(error: unknown): string {
 
 function bounded(value: string, _secrets: string[], max: number): string {
   return value.length > max ? `${value.slice(0, Math.max(0, max - 3))}...` : value;
+}
+
+/** Internal inert transport only. This binding is correlation, NOT authority.
+ * It carries no prompt, command, environment, trust root or builder/review token.
+ * Existing capacity/reservation owners must authorize and publish custody before
+ * any future restricted runner can be attached. No such attachment exists here. */
+export interface PiParkedTestBinding {
+  readonly schemaVersion: "pi-parked-test/v1";
+  readonly intentId: string;
+  readonly authorizationSha256: string;
+  readonly deploymentId: string;
+  readonly parentDeploymentId: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly headSha: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly reservationId: string;
+  readonly lineageId: string;
+  readonly repositoryPermit: 1 | 2 | 3 | 4;
+  readonly deadline: string;
+}
+export interface PiParkedTestObservation {
+  readonly bindingSha256: string;
+  readonly process?: ProcessFingerprint;
+  readonly state: "intent" | "spawned" | "parked" | "stopped" | "settled" | "unknown";
+  readonly registryCorrelated: boolean;
+  /** PID/parked/registry are not qualified restricted-tool admission. */
+  readonly restrictedHolderReady: false;
+}
+const PARKED_VERSION = "pi-parked-test/v1";
+const PARKED_MAX_BYTES = 16_384;
+const PARKED_WAIT_MS = 4_000;
+const parkedDigest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function parkedStop(): Error {
+  return new Error("Condition: parked Pi lifecycle blocked. Source: native supervisor transport and retained evidence. Reason: exact correlation, process settlement or qualified restricted runner is unproven. Correction: preserve the same intent, process, reservation and original records; reconcile through their owners. Resume Action: inspect the first unproven action, never replay spawn/release or fall back to generic Pi.");
+}
+function physicalDirectory(path: string): void {
+  const stat = lstatSync(path);
+  if (resolve(path) !== path || realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) throw parkedStop();
+}
+function parkedBinding(input: PiParkedTestBinding): PiParkedTestBinding {
+  const keys = ["schemaVersion", "intentId", "authorizationSha256", "deploymentId", "parentDeploymentId", "repoKey", "repoRoot", "worktreeRoot", "ticket", "branch", "baseSha", "headSha", "leaseId", "leaseHolder", "reservationId", "lineageId", "repositoryPermit", "deadline"];
+  if (!input || typeof input !== "object" || Object.keys(input).length !== keys.length || Object.keys(input).some((key) => !keys.includes(key))
+    || input.schemaVersion !== PARKED_VERSION || !/^[0-9a-f]{64}$/.test(input.intentId) || !/^[0-9a-f]{64}$/.test(input.authorizationSha256)
+    || !/^[0-9a-f]{64}$/.test(input.reservationId) || !/^[0-9a-f]{40}$/.test(input.baseSha) || !/^[0-9a-f]{40}$/.test(input.headSha)
+    || !/^d-[0-9a-f]{6}$/.test(input.deploymentId) || !/^d-[0-9a-f]{6}$/.test(input.parentDeploymentId) || input.deploymentId === input.parentDeploymentId
+    || !/^[a-z][a-z0-9-]{0,63}$/.test(input.repoKey) || input.leaseHolder !== `pa:${input.repoKey}:${input.ticket}`
+    || !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(input.ticket) || typeof input.branch !== "string" || !input.branch.startsWith(`feature/${input.ticket}-`)
+    || ![1, 2, 3, 4].includes(input.repositoryPermit) || input.repoRoot === input.worktreeRoot
+    || !Number.isFinite(Date.parse(input.deadline)) || new Date(input.deadline).toISOString() !== input.deadline
+    || [input.branch, input.leaseId, input.leaseHolder, input.lineageId].some((value) => typeof value !== "string" || value.length === 0 || value.length > 1024 || /[\x00-\x1f\x7f]/.test(value))) throw parkedStop();
+  physicalDirectory(input.repoRoot); physicalDirectory(input.worktreeRoot);
+  // Copy prevents caller mutation while async prepare/settle is in progress.
+  return Object.freeze(structuredClone(input));
+}
+function parkedWrite(path: string, value: unknown): void {
+  const body = JSON.stringify(value);
+  if (Buffer.byteLength(body) > PARKED_MAX_BYTES) throw parkedStop();
+  const fd = openSync(path, "wx", 0o600);
+  try { writeFileSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+  const directory = openSync(dirname(path), "r");
+  try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+function parkedRead(path: string): Record<string, unknown> | undefined {
+  let stat;
+  try { stat = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw parkedStop(); }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > PARKED_MAX_BYTES) throw parkedStop();
+  const row: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!row || typeof row !== "object" || Array.isArray(row)) throw parkedStop();
+  return row as Record<string, unknown>;
+}
+// Fixed owner program, not repository code, Pi prompt, shell or generic runner.
+// Only IPC initialization is accepted; no CLI/JSON activation switch. It never
+// imports Pi or exposes tools, even if a caller sends a forged release message.
+const PARKED_PROGRAM = String.raw`
+const fs = require('node:fs');
+let initialized = false, directory, digest, fingerprint, deadlineTimer;
+function write(name, value) {
+  const path = directory + '/' + name + '.json', temporary = path + '.tmp';
+  const fd = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.linkSync(temporary, path); fs.unlinkSync(temporary);
+  const dir = fs.openSync(directory, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+}
+function stop(reason) {
+  if (initialized) { try { write('stopped', { bindingSha256: digest, process: fingerprint, reason }); } catch { process.exit(2); } }
+  process.exit(0);
+}
+const initial = setTimeout(() => stop('initialization-unknown'), 4000);
+process.on('SIGTERM', () => stop('cancelled'));
+process.on('SIGINT', () => stop('cancelled'));
+process.on('disconnect', () => { /* retain parked state until original deadline */ });
+process.on('message', message => {
+  if (initialized || !message || message.type !== 'initialize') return;
+  directory = message.directory; digest = message.bindingSha256;
+  const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+  fingerprint = { pid: process.pid, startTimeTicks: stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19], bootId: fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() };
+  if (JSON.stringify(fingerprint) !== JSON.stringify(message.process)) process.exit(2);
+  const remaining = Date.parse(message.deadline) - Date.now();
+  if (!(remaining > 0 && remaining <= 7200000)) process.exit(2);
+  initialized = true; clearTimeout(initial);
+  deadlineTimer = setTimeout(() => stop('deadline'), remaining);
+  write('parked', { bindingSha256: digest, process: fingerprint, restrictedHolderReady: false });
+  if (process.connected) process.send({ type: 'parked', bindingSha256: digest });
+});
+`;
+
+/** Existing supervisor owner's dedicated prepare/inspect/release/settle transport.
+ * Source-level internal embedding only; constructing it grants no admission.
+ * It starts a real inert supervisor, NOT a restricted Pi executor. Release is
+ * intentionally unreachable until actual native restrictions are composed.
+ * Records are immutable retained evidence, not a capacity/approval database. */
+export class PiParkedTestTransport {
+  constructor(readonly deploymentDirectory: string) {
+    try {
+      physicalDirectory(deploymentDirectory);
+      const stat = lstatSync(deploymentDirectory);
+      if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw parkedStop();
+    } catch { throw parkedStop(); }
+  }
+  #directory(binding: PiParkedTestBinding): string { return resolve(this.deploymentDirectory, `pi-parked-${binding.intentId}`); }
+  #records(input: PiParkedTestBinding): { binding: PiParkedTestBinding; directory: string; bindingSha256: string } {
+    const binding = parkedBinding(input), directory = this.#directory(binding), bindingSha256 = parkedDigest(binding);
+    physicalDirectory(directory);
+    const stat = lstatSync(directory);
+    if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw parkedStop();
+    const intent = parkedRead(resolve(directory, "intent.json"));
+    if (!intent || intent.bindingSha256 !== bindingSha256 || !isDeepStrictEqual(intent.binding, binding)) throw parkedStop();
+    return { binding, directory, bindingSha256 };
+  }
+  async prepare(input: PiParkedTestBinding, signal?: AbortSignal): Promise<PiParkedTestObservation> {
+    try { return await this.#prepare(input, signal); } catch { throw parkedStop(); }
+  }
+  async #prepare(input: PiParkedTestBinding, signal?: AbortSignal): Promise<PiParkedTestObservation> {
+    const binding = parkedBinding(input), remaining = Date.parse(binding.deadline) - Date.now();
+    if (signal?.aborted || !(remaining > 0 && remaining <= 7_200_000)) throw parkedStop();
+    const directory = this.#directory(binding), bindingSha256 = parkedDigest(binding);
+    // Exclusive directory is the native spawn-intent barrier across controllers.
+    // Existing/partial/unknown intent is INSPECT ONLY, even if no PID was saved.
+    mkdirSync(directory, { mode: 0o700 });
+    parkedWrite(resolve(directory, "intent.json"), { bindingSha256, binding });
+    const child = spawn(process.execPath, ["--eval", PARKED_PROGRAM], {
+      cwd: this.deploymentDirectory, env: {}, detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    // Preserve original native failure privately; public stops remain fixed.
+    // Errors never remove/retry the intent or manufacture process absence.
+    child.on("error", (error) => {
+      try { parkedWrite(resolve(directory, "failure.json"), { bindingSha256, name: error.name, message: error.message, stack: error.stack ?? null }); } catch { /* original event remains unproven */ }
+    });
+    const processIdentity = child.pid ? readProcessFingerprint(child.pid) : undefined;
+    if (!processIdentity) throw parkedStop();
+    parkedWrite(resolve(directory, "spawned.json"), { bindingSha256, process: processIdentity });
+    child.send({ type: "initialize", directory, bindingSha256, process: processIdentity, deadline: binding.deadline }, () => {});
+    child.unref(); child.channel?.unref();
+    const stop = (): void => { void this.settle(binding).catch(() => { /* retain stop intent and unknown registry barrier */ }); };
+    signal?.addEventListener("abort", stop, { once: true });
+    try {
+      const end = Date.now() + Math.min(PARKED_WAIT_MS, remaining);
+      while (Date.now() < end) {
+        if (signal?.aborted) { stop(); throw parkedStop(); }
+        const observed = this.inspect(binding);
+        if (observed.state === "parked") return observed;
+        if (observed.state === "unknown" || observed.state === "stopped" || observed.state === "settled") throw parkedStop();
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      throw parkedStop();
+    } finally { signal?.removeEventListener("abort", stop); }
+  }
+  inspect(input: PiParkedTestBinding): PiParkedTestObservation {
+    try { return this.#inspect(input); } catch { throw parkedStop(); }
+  }
+  #inspect(input: PiParkedTestBinding): PiParkedTestObservation {
+    const { binding, directory, bindingSha256 } = this.#records(input);
+    const spawned = parkedRead(resolve(directory, "spawned.json"));
+    const parked = parkedRead(resolve(directory, "parked.json"));
+    const stopped = parkedRead(resolve(directory, "stopped.json"));
+    const stopIntent = parkedRead(resolve(directory, "stop-intent.json"));
+    const processIdentity = spawned?.process as ProcessFingerprint | undefined;
+    if (parkedRead(resolve(directory, "failure.json"))) throw parkedStop();
+    if ((spawned && (spawned.bindingSha256 !== bindingSha256 || !processIdentity || !Number.isSafeInteger(processIdentity.pid) || processIdentity.pid <= 0 || typeof processIdentity.startTimeTicks !== "string" || typeof processIdentity.bootId !== "string"))
+      || [parked, stopped, stopIntent].some((row) => row && (row.bindingSha256 !== bindingSha256 || !isDeepStrictEqual(row.process, processIdentity)))) throw parkedStop();
+    if (parked && parked.restrictedHolderReady !== false) throw parkedStop();
+    const status = queryDeploymentStatus(binding.deploymentId);
+    const correlated = Boolean(status && processIdentity && status.pid === processIdentity.pid
+      && status.runtime === "pi" && status.binary === "ppa" && status.team === "requirements" && status.mode === "test-author"
+      && status.builder_authority === undefined && status.repository_slot === undefined
+      && status.parent_deployment_id === undefined && status.ticket_id === binding.ticket
+      && status.repo_root === binding.repoRoot && status.repo === binding.worktreeRoot && status.worktree_root === binding.worktreeRoot
+      // Existing Treehouse fields require BUILDER authority. Do not borrow it or
+      // relax that schema: ordinary lifecycle objective is only a digest pointer
+      // to the complete immutable transport binding, NEVER custody/approval.
+      && status.treehouse_path === undefined && status.treehouse_lease_id === undefined && status.treehouse_lease_holder === undefined
+      && status.ticket_slot_id === undefined && status.repository_permit === undefined
+      && status.objective === `${PARKED_VERSION}:${bindingSha256}`);
+    const live = Boolean(processIdentity && isDeepStrictEqual(readProcessFingerprint(processIdentity.pid), processIdentity));
+    const terminal = status && ["success", "partial", "failed", "crashed"].includes(status.status);
+    const state: PiParkedTestObservation["state"] = !spawned ? "intent" : live
+      ? stopped || stopIntent ? "unknown" : parked ? "parked" : "spawned"
+      : stopped ? correlated && terminal ? "settled" : "stopped" : "unknown";
+    return Object.freeze({ bindingSha256, ...(processIdentity ? { process: Object.freeze({ ...processIdentity }) } : {}), state, registryCorrelated: correlated, restrictedHolderReady: false });
+  }
+  release(input: PiParkedTestBinding): never {
+    // Even perfect transport/process/registry facts cannot forge restricted-tool
+    // readiness or final product authority. There is NO generic prompt fallback.
+    this.inspect(input);
+    throw parkedStop();
+  }
+  async settle(input: PiParkedTestBinding): Promise<PiParkedTestObservation> {
+    try { return await this.#settle(input); } catch { throw parkedStop(); }
+  }
+  async #settle(input: PiParkedTestBinding): Promise<PiParkedTestObservation> {
+    const { directory, bindingSha256 } = this.#records(input);
+    let observed = this.inspect(input);
+    if (observed.state === "settled") return observed;
+    if (!observed.process) throw parkedStop();
+    const intentPath = resolve(directory, "stop-intent.json");
+    if (!parkedRead(intentPath)) {
+      parkedWrite(intentPath, { bindingSha256, process: observed.process });
+      if (isDeepStrictEqual(readProcessFingerprint(observed.process.pid), observed.process)) {
+        try { process.kill(observed.process.pid, "SIGTERM"); } catch { throw parkedStop(); }
+      }
+    }
+    // Lost stop response is inspection only. Do not send again, release capacity,
+    // write a success registry marker, remove records, return or alter a checkout.
+    const end = Date.now() + PARKED_WAIT_MS;
+    while (Date.now() < end) {
+      observed = this.inspect(input);
+      if (observed.state === "settled") return observed;
+      if (observed.state === "stopped" || (observed.state === "unknown" && !isDeepStrictEqual(readProcessFingerprint(observed.process!.pid), observed.process))) break;
+      await new Promise((done) => setTimeout(done, 10));
+    }
+    throw parkedStop();
+  }
 }
 
 function isEntrypoint(): boolean {

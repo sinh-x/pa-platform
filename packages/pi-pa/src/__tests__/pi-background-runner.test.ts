@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { acquireRepositoryMutationLease, appendRegistryEvent, captureRepositoryGitSnapshot, closeDb, finalizeRepositoryMutationBorrower, getDeploymentEvents, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, queryDeploymentStatus, readActivityEvents, registerRepositoryMutationBorrower, releaseRepositoryMutationLease, repositoryMutationBorrowerPath, repositoryMutationLeasePath } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PI_REPOSITORY_HANDOFF_FILE, PiAdapter, PI_BACKGROUND_CONFIG_FILE, PI_SUPERVISOR_FILE, readPiBackgroundConfig, readPiSupervisorOwnership, writePiRepositoryHandoff, writePiSupervisorOwnership, type PiBackgroundConfig } from "../adapter.js";
-import { runPiBackgroundRunner } from "../background-runner.js";
+import { PiParkedTestTransport, runPiBackgroundRunner, type PiParkedTestBinding } from "../background-runner.js";
 import { readPiTerminalStatus } from "../terminal-status.js";
 import { getTicketsDir, readProcessFingerprint, REPOSITORY_CHILD_SETTLEMENT_FILE } from "@pa-platform/pa-core";
 
@@ -17,6 +17,163 @@ process.env["PA_AI_USAGE_HOME"] = isolatedState;
 process.env["PA_REGISTRY_DB"] = join(isolatedState, "registry.db");
 process.env["PA_PLATFORM_CONFIG"] = join(isolatedState, "config");
 test.after(() => { closeDb(); rmSync(isolatedState, { recursive: true, force: true }); });
+
+// Real native parking process; registry authorizations below are SOURCE FIXTURES,
+// not installed/native operator qualification or restricted Pi readiness.
+async function withParkedTransport(run: (transport: PiParkedTestTransport, binding: PiParkedTestBinding, directory: string) => Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "pi-parked-native-"));
+  const repoRoot = join(root, "canonical"), worktreeRoot = join(root, "worktree"), directory = join(root, "deployment");
+  for (const path of [repoRoot, worktreeRoot, directory]) mkdirSync(path, { mode: 0o700 });
+  const binding: PiParkedTestBinding = { schemaVersion: "pi-parked-test/v1", intentId: "1".repeat(64), authorizationSha256: "2".repeat(64), deploymentId: "d-265abc", parentDeploymentId: "d-265def",
+    repoKey: "fixture", repoRoot, worktreeRoot, ticket: "PAP-265", branch: "feature/PAP-265-parked", baseSha: "a".repeat(40), headSha: "b".repeat(40), leaseId: "source-fixture-lease", leaseHolder: "pa:fixture:PAP-265",
+    reservationId: "3".repeat(64), lineageId: "source-fixture-lineage", repositoryPermit: 1, deadline: new Date(Date.now() + 30_000).toISOString() };
+  const transport = new PiParkedTestTransport(directory);
+  const previous = process.env["PA_REGISTRY_DB"]; process.env["PA_REGISTRY_DB"] = join(root, "registry.db");
+  try { await run(transport, binding, directory); }
+  finally {
+    // Fixture teardown of ONLY this inert process, never a real ticket resource.
+    try { await transport.settle(binding); } catch { /* registry absent is intentionally unproven */ }
+    const until = Date.now() + 5_000;
+    let pid: number | undefined;
+    try { pid = transport.inspect(binding).process?.pid; } catch { /* no process */ }
+    while (pid && readProcessFingerprint(pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10));
+    assert.equal(pid ? readProcessFingerprint(pid) : undefined, undefined, "fixture must prove actual process absence");
+    closeDb(); restore("PA_REGISTRY_DB", previous); rmSync(root, { recursive: true, force: true });
+  }
+}
+function correlateParked(transport: PiParkedTestTransport, binding: PiParkedTestBinding, extra: Record<string, unknown> = {}): void {
+  const pid = transport.inspect(binding).process!.pid;
+  appendRegistryEvent({ deployment_id: binding.deploymentId, team: "requirements", mode: "test-author", event: "started", timestamp: new Date().toISOString(),
+    pid, runtime: "pi", binary: "ppa", ticket_id: binding.ticket, repo: binding.worktreeRoot, repo_root: binding.repoRoot, worktree_root: binding.worktreeRoot,
+    objective: `pi-parked-test/v1:${transport.inspect(binding).bindingSha256}`, ...extra });
+}
+function terminalParked(binding: PiParkedTestBinding): void {
+  appendRegistryEvent({ deployment_id: binding.deploymentId, team: "requirements", event: "completed", status: "partial", timestamp: new Date().toISOString(), summary: "inert source fixture cancelled; not a qualified executor" });
+}
+
+test("dedicated transport separates spawned PID, inert parked acknowledgement, registry and restricted readiness", () => withParkedTransport(async (transport, binding, directory) => {
+  const preparing = transport.prepare(binding);
+  const spawned = transport.inspect(binding);
+  assert.equal(spawned.state, "spawned"); assert.ok(spawned.process); assert.equal(spawned.restrictedHolderReady, false);
+  assert.throws(() => transport.release(binding), /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/);
+  const parked = await preparing;
+  assert.equal(parked.state, "parked"); assert.equal(parked.registryCorrelated, false); assert.equal(parked.restrictedHolderReady, false);
+  correlateParked(transport, binding);
+  assert.equal(transport.inspect(binding).registryCorrelated, true);
+  assert.equal(transport.inspect(binding).restrictedHolderReady, false);
+  assert.throws(() => transport.release(binding)); // even exact PID/registry is NOT a qualified tool holder
+  assert.deepEqual(readdirSync(binding.worktreeRoot), []); assert.deepEqual(readdirSync(binding.repoRoot), []);
+  assert.deepEqual(readdirSync(directory), [`pi-parked-${binding.intentId}`]);
+  const native = join(directory, `pi-parked-${binding.intentId}`);
+  assert.equal(statSync(join(native, "intent.json")).mode & 0o777, 0o600);
+  assert.equal(statSync(native).mode & 0o777, 0o700);
+  terminalParked(binding);
+  // Terminal registry cannot settle a process that is still genuinely live.
+  assert.equal(transport.inspect(binding).state, "parked");
+  const settled = await transport.settle(binding);
+  assert.equal(settled.state, "settled"); assert.equal(settled.restrictedHolderReady, false);
+  assert.equal(readProcessFingerprint(spawned.process.pid), undefined);
+  const before = readdirSync(native).map((name) => [name, readFileSync(join(native, name)).toString("base64")]);
+  assert.deepEqual(await new PiParkedTestTransport(directory).settle(binding), settled);
+  assert.deepEqual(readdirSync(native).map((name) => [name, readFileSync(join(native, name)).toString("base64")]), before);
+}));
+
+test("lost prepare response is inspect-only across controllers and duplicate/fresh prepare never respawns", () => withParkedTransport(async (transport, binding, directory) => {
+  const first = transport.prepare(binding);
+  await assert.rejects(new PiParkedTestTransport(directory).prepare(binding));
+  const parked = await first;
+  const recovered = new PiParkedTestTransport(directory);
+  assert.deepEqual(recovered.inspect(binding), parked);
+  await assert.rejects(recovered.prepare(binding));
+  assert.deepEqual(recovered.inspect(binding).process, parked.process);
+  for (let i = 0; i < 2; i++) assert.throws(() => recovered.release(binding));
+  assert.deepEqual(readdirSync(binding.worktreeRoot), []);
+}));
+
+test("cancelled transport retains stop intent and real death; missing terminal registry stays unproven", () => withParkedTransport(async (transport, binding, directory) => {
+  const parked = await transport.prepare(binding); correlateParked(transport, binding);
+  await assert.rejects(transport.settle(binding));
+  assert.equal(transport.inspect(binding).state, "stopped");
+  assert.equal(readProcessFingerprint(parked.process!.pid), undefined);
+  const path = join(directory, `pi-parked-${binding.intentId}`, "stop-intent.json"), original = readFileSync(path);
+  await assert.rejects(new PiParkedTestTransport(directory).settle(binding));
+  assert.deepEqual(readFileSync(path), original); // no repeated stop or fabricated registry success
+  terminalParked(binding);
+  assert.equal((await transport.settle(binding)).state, "settled");
+}));
+
+for (const extra of [{ pid: process.pid }, { ticket_id: "PAP-999" }, { runtime: "opencode" }, { mode: "review-auto" }, { objective: "pi-parked-test/v1:copied-public-text" }, { worktree_root: "/wrong-root" }]) {
+  test(`dedicated transport rejects wrong native registry correlation ${Object.keys(extra)[0]}`, () => withParkedTransport(async (transport, binding) => {
+    await transport.prepare(binding); correlateParked(transport, binding, extra);
+    assert.equal(transport.inspect(binding).registryCorrelated, false);
+    assert.throws(() => transport.release(binding)); terminalParked(binding);
+    await assert.rejects(transport.settle(binding)); // even terminal wrong context cannot settle custody
+    assert.equal(transport.inspect(binding).state, "stopped");
+  }));
+}
+
+test("binding drift, malformed identities, unknown fields and pre-cancel reject without new process effects", () => withParkedTransport(async (transport, binding, directory) => {
+  const variants = [{ ...binding, intentId: "A".repeat(64) }, { ...binding, baseSha: "a".repeat(39) }, { ...binding, authorizationSha256: "f".repeat(63) },
+    { ...binding, repoRoot: binding.worktreeRoot }, { ...binding, deadline: new Date(Date.now() - 1).toISOString() }, { ...binding, deadline: new Date(Date.now() + 7_300_000).toISOString() },
+    { ...binding, restrictedHolderReady: true }, { ...binding, branch: undefined }];
+  for (const variant of variants) await assert.rejects(transport.prepare(variant as PiParkedTestBinding), (error: unknown) => {
+    assert.ok(error instanceof Error); assert.ok(error.message.length <= 2_000); assert.match(error.message, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/); return true;
+  });
+  const cancelled = new AbortController(); cancelled.abort(); await assert.rejects(transport.prepare(binding, cancelled.signal));
+  assert.deepEqual(readdirSync(directory), []);
+  await transport.prepare(binding);
+  for (const variant of [{ ...binding, authorizationSha256: "e".repeat(64) }, { ...binding, headSha: "c".repeat(40) }, { ...binding, reservationId: "4".repeat(64) }, { ...binding, lineageId: "wrong-lineage" }]) {
+    assert.throws(() => transport.inspect(variant)); assert.throws(() => transport.release(variant)); await assert.rejects(transport.settle(variant));
+  }
+}));
+
+test("unknown spawn intent blocks replay without repair", () => withParkedTransport(async (transport, binding, directory) => {
+  const native = join(directory, `pi-parked-${binding.intentId}`); mkdirSync(native, { mode: 0o700 });
+  await assert.rejects(transport.prepare(binding));
+  assert.throws(() => transport.inspect(binding));
+  assert.deepEqual(readdirSync(native), []); // partial intent is not absence, never repaired
+}));
+
+test("inert holder inherits no credentials/environment and runs outside the ticket tree", () => withParkedTransport(async (transport, binding, directory) => {
+  const parked = await transport.prepare(binding);
+  const pid = parked.process!.pid;
+  // The sole inherited NODE_CHANNEL_FD is Node's IPC plumbing, not host/session authority.
+  const environment = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(Boolean);
+  assert.ok(environment.every((entry) => entry.startsWith("NODE_CHANNEL_FD=") || entry.startsWith("NODE_CHANNEL_SERIALIZATION_MODE=")));
+  assert.deepEqual(readdirSync(binding.worktreeRoot), []);
+  const spawnRecord = readFileSync(join(directory, `pi-parked-${binding.intentId}`, "spawned.json"), "utf8");
+  assert.doesNotMatch(spawnRecord, /ownershipToken|borrowerToken|authorizationId|prompt|command/);
+}));
+
+test("unexpected process death is unknown even with a terminal registry and never replays spawn", () => withParkedTransport(async (transport, binding) => {
+  const parked = await transport.prepare(binding); correlateParked(transport, binding);
+  process.kill(parked.process!.pid, "SIGKILL");
+  const until = Date.now() + 5_000;
+  while (readProcessFingerprint(parked.process!.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10));
+  terminalParked(binding);
+  assert.equal(transport.inspect(binding).state, "unknown");
+  await assert.rejects(transport.prepare(binding)); await assert.rejects(transport.settle(binding));
+}));
+
+test("insecure or forged parked receipt is not restricted readiness", () => withParkedTransport(async (transport, binding, directory) => {
+  await transport.prepare(binding);
+  const path = join(directory, `pi-parked-${binding.intentId}`, "parked.json");
+  chmodSync(path, 0o644); assert.throws(() => transport.inspect(binding)); chmodSync(path, 0o600);
+  const original = readFileSync(path, "utf8");
+  const forged = JSON.parse(original) as Record<string, unknown>; forged.restrictedHolderReady = true;
+  writeFileSync(path, JSON.stringify(forged)); assert.throws(() => transport.inspect(binding)); assert.throws(() => transport.release(binding));
+  writeFileSync(path, original);
+}));
+
+test("deadline stops the real inert holder but never invents registry settlement", () => withParkedTransport(async (transport, original) => {
+  const binding = { ...original, deadline: new Date(Date.now() + 1_500).toISOString() };
+  const parked = await transport.prepare(binding);
+  const until = Date.now() + 5_000;
+  while (readProcessFingerprint(parked.process!.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10));
+  assert.equal(readProcessFingerprint(parked.process!.pid), undefined);
+  assert.equal(transport.inspect(binding).state, "stopped"); assert.throws(() => transport.release(binding));
+  await assert.rejects(transport.prepare(binding));
+}));
 
 class RunnerChild extends EventEmitter {
   readonly stdout = new EventEmitter();

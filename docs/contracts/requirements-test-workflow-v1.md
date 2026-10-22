@@ -370,6 +370,55 @@ after persisted launch snapshot, and prove actual process/registry settlement.
 Unknown release is inspected, never blindly reissued. None of these ports receives
 an agent-selected authority root or a `passed` Boolean.
 
+### Staged existing-owner parked transport (not executor qualification)
+
+`PiParkedTestTransport` in the existing Pi background supervisor now implements a
+real **inert native supervisor** prepare/inspect/settle boundary. It does not start
+Pi, expose tools, execute repository tests/product code, or accept a prompt/shell/
+environment packet. Its fixed owner program receives initialization over private
+IPC only, with empty inherited environment and an absolute positive deadline
+(maximum two hours). This is process transport, **not a restricted Pi tool runner**
+and not an OS sandbox. The ordinary adapter's dedicated-holder selection rejects
+before preflight or effects. Ordinary background JSON cannot activate this route.
+
+The internal `pi-parked-test/v1` correlation binding is strict: intent and original
+authorization SHA-256, distinct child/parent deployment IDs, canonical key/root,
+worktree/ticket/branch/base/HEAD, exact lease/holder, retained reservation/lineage/
+permit, and deadline. These are non-authoritative pointers to existing owners,
+not a second approval or capacity store. A private deployment directory contains
+an exclusively created intent directory and immutable owner-only intent, actual
+process-birth, parked and stop records. Intent publication/fsync precedes spawn;
+parked acknowledgement follows actual birth verification. Concurrent duplicate,
+partial intent, lost prepare response and unknown process state are inspect-only;
+there is no automatic respawn or record repair. Stop intent precedes cancellation;
+a lost stop response is inspected without repeating the signal. Original deadline
+is retained on disconnect. No checkout/reservation cleanup or return occurs.
+
+Observations separately report `spawned`, `parked`, registry correlation and
+`restrictedHolderReady:false`. Registry correlation independently reads the actual
+registry row and compares PID, dedicated role, roots/ticket and an immutable
+objective digest pointer to the entire transport binding. Existing Treehouse
+registry fields require builder authority and are deliberately NOT reused. This
+ordinary lifecycle pointer is NOT authority or dedicated custody; copied public
+text cannot make `restrictedHolderReady` true or release executable work. A
+supported dedicated resource/custody correlation producer remains unimplemented,
+as do native operator approval, shared-owner reservation authentication and the
+restricted runner. Settlement requires actual matching process absence,
+original stopped receipt AND an exactly correlated explicit terminal registry row;
+registry-only, crash-without-receipt and missing/unknown settlement remain blocked.
+The transport never writes a success registry marker or releases a shared permit.
+`release` remains unconditionally unreachable, even with exact parked/registry
+facts: no generic Pi prompt can fill the missing restricted executor.
+
+Production composition is still incomplete: the synchronous native transaction
+executor port is not yet adapted to this asynchronous transport, native operator/
+qualified restricted-tool producers are absent, and same-reservation product
+transfer needs their authenticated composition. No live new-route launch, installed
+qualification, final-approval chronology, human UAT or activation is claimed by
+these source transport tests. They use real inert processes with explicitly
+fixture-authored registry rows and exercise actual process-birth/death, premature
+release, drift, cancellation, response loss, retained records and old-route suites.
+
 Native records use `requirements-test-native/v1`, immutable chained request/action
 intents and outcomes in the EXISTING operations store. Request binds canonical
 tuple, raw authorization identity, native decision and original bounds/counters.
