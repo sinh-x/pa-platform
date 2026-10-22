@@ -22,8 +22,8 @@ function resultFor(check: TestCheck): TestProcessResult {
 function retained(auth: TestAuthorization): TestResource {
   return { repository: auth.repository, worktreeRoot: "/synthetic/ticket", leaseId: "synthetic-lease", leaseHolder: "pa:example:EX-1", reservationId: digest("reservation"), repositoryPermit: 1, lineageId: "one-lineage" };
 }
-function inventory(auth: TestAuthorization, owner = processHolder()): readonly IdlePreparationReservation[] {
-  return [{ schemaVersion: "prepared-reservation/v1", repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, operationId: auth.operationId, reservationId: digest("reservation"), repositoryPermit: 1, occupancy: "active", lineageId: "one-lineage", custody: { state: "implement-child", holder: owner, inFlightOperation: null }, receiptId: digest("receipt"), retainedAt: auth.bounds.startedAt }];
+function inventory(auth: TestAuthorization, owner = processHolder(), state: "implement-child" | "orchestrator-direct" = "implement-child"): readonly IdlePreparationReservation[] {
+  return [{ schemaVersion: "prepared-reservation/v1", repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, operationId: auth.operationId, reservationId: digest("reservation"), repositoryPermit: 1, occupancy: "active", lineageId: "one-lineage", custody: { state, holder: owner, inFlightOperation: null }, receiptId: digest("receipt"), retainedAt: auth.bounds.startedAt }];
 }
 function append(authText: string, history: readonly string[], data: TestEventData, overrides: Partial<TestWorkflowEvent> = {}): string[] {
   const auth = parseTestAuthorization(authText);
@@ -44,7 +44,7 @@ function fixture() {
   history = append(authText, history, { action: "final-approved", owner: "sinh", oracle, reviewSha256: digest(history[4]!), pair: { requirements: source("final-requirements"), uat: source("final-uat"), matrix: { ...source("raw-matrix"), ref: source("final-requirements").ref }, matrixApproval: source("matrix-approval"), finalChecks: source("13-checks"), finalCheckCount: 13 }, decision: source("whole-document-exact-approval") });
   history = append(authText, history, { action: "product-intent", resource, initialHeadSha: sha("d"), finalApprovalSha256: digest(history[5]!), intentId: digest("product-intent") });
   const product = processHolder("d-333333", 404);
-  history = append(authText, history, { action: "product-consumed", resource, initialHeadSha: sha("d"), intentId: digest("product-intent"), holder: product, previousHolder: processHolder(), inventory: inventory(auth, product), launchSnapshot: source("product-snapshot-before-spawn"), registry: source("product-registry") });
+  history = append(authText, history, { action: "product-consumed", resource, initialHeadSha: sha("d"), intentId: digest("product-intent"), holder: product, previousHolder: processHolder(), inventory: inventory(auth, product, "orchestrator-direct"), launchSnapshot: source("product-snapshot-before-spawn"), registry: source("product-registry") });
   return { auth, authText, history };
 }
 type KeyPath = readonly (string | number)[];
@@ -197,6 +197,8 @@ test("TS10 AC10: continuation is exact retained transfer at approved test HEAD, 
   rejectsModel(7, ["data", "holder"], processHolder("d-222222", 999));
   rejectsModel(7, ["data", "holder"], processHolder("d-111111", 999));
   rejectsModel(7, ["data", "previousHolder"], processHolder("d-444444"));
+  rejectsModel(7, ["data", "inventory", 0, "custody", "state"], "implement-child");
+  rejectsModel(2, ["data", "inventory", 0, "custody", "state"], "orchestrator-direct");
   rejectsModel(7, ["data", "inventory", 0, "custody", "holder"], processHolder());
   for (const recycled of [processHolder("d-222222", 999), processHolder("d-111111", 999)]) {
     const alias = altered(7, ["data", "holder"], recycled);

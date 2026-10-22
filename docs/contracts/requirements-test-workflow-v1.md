@@ -229,10 +229,13 @@ these remain occupied legacy slots, never test authority. Inventory 1–4 rows r
 legacy rows, including idle/settled-retained resources. Unique
 canonical ticket/operation/reservation/permit/lineage; same canonical key/root.
 The matching active row binds operation/reservation/permit/lineage and exactly one
-custody holder with no in-flight operation. Existing `implement-child` custody is
-a serialization carrier in this model, NOT test-author admission or a new builder
-mode grant. Dedicated test-holder integration belongs to the native owner later.
-No mutex, permit acquisition, database or process ownership is implemented here.
+custody holder with no in-flight operation. Test-holder events require
+`implement-child`; product-consumed events require `orchestrator-direct`, matching
+the native transfer owner. Swapping those roles rejects; this corrects a staged
+model/transaction mismatch, not legacy authority. Both are serialization carriers
+in this model, NOT test-author admission or a new builder mode grant. Dedicated
+holder authentication belongs to the native owner. No mutex, permit acquisition,
+database or process ownership is implemented by pure replay.
 
 ## Results, Git, review and final bindings
 
@@ -636,6 +639,51 @@ release/reclaim capacity; a later explicit request resumes the same operation.
 Async request validation honors only this exact superseding retry, never clears
 unknown failures or resets counters.
 
+### Native product chronology and terminal retention (staged transaction)
+
+The internal sync/async continuation now publishes the existing strict
+`product-intent` event after its durable `product-process/intent` barrier and before
+executor preparation. Its intent id is SHA-256 of
+`JSON.stringify([operationId,"product-process"])`; finalApprovalSha256 pins the
+original final-approved event, not the current journal tail. Missing/no-op event
+producers block before product spawn. After exact test settlement and same-resource
+custody transfer, the service persists the launch snapshot and publishes
+`product-consumed` before executor release. The event binds the actual parked
+holder/registry, previous author, exact approved test HEAD and shared inventory.
+Both publications use the existing native event producer/store, not model input.
+
+Final preflight reads/replays the COMPLETE service history, selects only its exact
+final-approved prefix and rereads the final pair. Later product stages are not
+new approvals. Native product events must additionally match the service's own
+process/transfer/start publications and the current same-ticket reservation.
+Rehashed copied intent/registry/snapshot/slot bindings and removed events reject.
+Unrelated capacity rows may change; their historical inventory snapshot does not
+freeze other tickets. Repeated continuation authenticates the existing holder
+without a second reservation, process or release. A lost response at a pre-spawn
+or pre-release barrier is inspect-only; lack of original proof stays blocked, even
+when that means retaining an inert parked holder until owning cancellation.
+
+Cancellation selects the latest product intent/holder rather than signalling only
+the settled test author. An aborted async continuation attempts the same native
+cancellation; unknown process effects stay retained. Internal `settleProduct`
+requires the admitted product publication, original released process and actual
+process-absence/terminal-registry proof. It adds immutable
+`product-settlement/intent` and `/observed` native transaction records and changes
+only same-holder occupancy to `settled-retained`. It is idempotent across lost
+responses. If release acknowledgement was lost, only the original native start
+proof plus actual terminal settlement can close that same start barrier; release
+is never repeated and the original unknown record is retained. Missing start proof
+remains blocked even when the parked process has died. Settlement captures
+changed/dirty product Git state without approving it or reapplying the initial
+clean-test-HEAD gate. It grants no product PASS, source
+approval, linked-head update, new execution, permit release, merge or return.
+No product-launch/settlement option is added to the public native tool grammar.
+
+These transaction cases use real disposable Git/locks/processes and explicitly
+modeled approval/registry ports. They are SOURCE evidence, not actual product
+execution adoption, installed qualification, semantic review, human UAT or
+activation. The concrete production executor's product-role denial is unchanged.
+
 ### Remaining production product boundary / next owner slice
 
 **Phase 2 remains unaccepted.** The concrete executor still rejects product-role
@@ -648,8 +696,8 @@ retains this denial even with qualified source-fixture keyless test capability.
 The next production slice must bridge the new exact final-approved history into
 existing native builder admission/execution owners, not open generic tools or
 forge a legacy `prepared-builder-consumption/v1` grant. Concrete affected owners:
-`requirements-test-native.ts` (before-effect final/transfer and service event
-producers), `deploy.ts` (same retained reservation/lease admission),
+`requirements-test-native.ts` (connect the staged authenticated product
+publications to the concrete executor), `deploy.ts` (same retained reservation/lease admission),
 `execution-native.ts` (new-version consumed binding, process/custody and oracle
 immutability without implicit legacy adoption), `background-runner.ts` (parked
 product release and actual settlement), and their owned core registry/custody
@@ -657,8 +705,9 @@ correlations/regressions as needed. Product executor preparation must independen
 recheck settled test process/registry and exact final pair, produce an explicitly
 versioned product correlation/consumption, atomically transfer the existing sole
 holder/reservation, inherit original bounds/counters and start at exact approved
-test HEAD. Product-intent/consumed history must be native-produced. No second
-acquisition, phase relabeling, counter reset, generic fallback or oracle weakening
+test HEAD. The native-produced product-intent/consumed transaction above must be
+bound to that execution/admission protocol; it is not by itself a consumed builder
+binding. No second acquisition, phase relabeling, counter reset, generic fallback or oracle weakening
 is authorized. Existing native execution currently recognizes only legacy
 prepared-consumption markers and builder ownership: merely removing the product
 role rejection would be an unsafe authority bypass, not completion.

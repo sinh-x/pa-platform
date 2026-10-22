@@ -296,9 +296,9 @@ export interface TestWorkflowAssessment {
   readonly authorizationSha256: string; readonly historySha256: readonly string[]; readonly retriesUsed: number; readonly elapsedMs: number;
   readonly bounds: ExecutionBounds; readonly resource: TestResource | null; readonly oracle: OracleBinding | null;
 }
-function capacity(auth: TestAuthorization, retained: TestResource, owner: ExecutionHolder, inventory: TestCapacityInventory): void {
+function capacity(auth: TestAuthorization, retained: TestResource, owner: ExecutionHolder, inventory: TestCapacityInventory, custody: "implement-child" | "orchestrator-direct"): void {
   const row = inventory.find((entry) => entry.ticket === auth.repository.ticket);
-  if (!same(retained.repository, auth.repository) || inventory.some((entry) => ("repoKey" in entry ? entry.repoKey : entry.canonicalRepoKey) !== auth.repository.key || ("repoRoot" in entry ? entry.repoRoot : entry.canonicalRepoRoot) !== auth.repository.root) || !row || !("operationId" in row) || row.operationId !== auth.operationId || row.reservationId !== retained.reservationId || row.repositoryPermit !== retained.repositoryPermit || row.lineageId !== retained.lineageId || row.occupancy !== "active" || row.custody.state !== "implement-child" || row.custody.inFlightOperation !== null || !same(row.custody.holder, owner)) throw stop();
+  if (!same(retained.repository, auth.repository) || inventory.some((entry) => ("repoKey" in entry ? entry.repoKey : entry.canonicalRepoKey) !== auth.repository.key || ("repoRoot" in entry ? entry.repoRoot : entry.canonicalRepoRoot) !== auth.repository.root) || !row || !("operationId" in row) || row.operationId !== auth.operationId || row.reservationId !== retained.reservationId || row.repositoryPermit !== retained.repositoryPermit || row.lineageId !== retained.lineageId || row.occupancy !== "active" || row.custody.state !== custody || row.custody.inFlightOperation !== null || !same(row.custody.holder, owner)) throw stop();
 }
 /**
  * Replay ONLY a source model. A copied/rehashed journal is NOT native chronology.
@@ -336,7 +336,7 @@ export function assessTestWorkflow(authorizationInput: string | Uint8Array, hist
           case "intent-recorded": intentId = value.intentId; break;
           case "test-holder-active": {
             if (value.intentId !== intentId || value.holder.deploymentId === auth.parent.holder.deploymentId) throw stop();
-            capacity(auth, value.resource, value.holder, value.inventory); retained = value.resource; author = value.holder; launchElapsedMs = entry.elapsedMs; break;
+            capacity(auth, value.resource, value.holder, value.inventory, "implement-child"); retained = value.resource; author = value.holder; launchElapsedMs = entry.elapsedMs; break;
           }
           case "test-settled": {
             if (!same(value.holder, author) || value.results.length !== auth.checks.length) throw stop();
@@ -360,7 +360,7 @@ export function assessTestWorkflow(authorizationInput: string | Uint8Array, hist
             productIntent = value.intentId; break;
           case "product-consumed":
             if (!same(value.resource, retained) || value.initialHeadSha !== exactOracle?.testHeadSha || value.intentId !== productIntent || !same(value.previousHolder, author) || value.holder.deploymentId === author?.deploymentId || value.holder.deploymentId === auth.parent.holder.deploymentId) throw stop();
-            capacity(auth, value.resource, value.holder, value.inventory); break;
+            capacity(auth, value.resource, value.holder, value.inventory, "orchestrator-direct"); break;
         }
         stage++;
       }

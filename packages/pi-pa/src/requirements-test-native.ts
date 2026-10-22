@@ -98,7 +98,7 @@ export interface RequirementsTestNativeOptions {
   /** Isolated fault tests only; throwing preserves intent/effects/resources. */
   readonly boundary?: (point: string) => void;
 }
-type Step = "reservation" | "allocation" | "branch" | "test-process" | "test-start" | "test-settlement" | "product-process" | "product-transfer" | "product-start";
+type Step = "reservation" | "allocation" | "branch" | "test-process" | "test-start" | "test-settlement" | "product-process" | "product-transfer" | "product-start" | "product-settlement";
 interface NativeRecord {
   readonly schemaVersion: typeof VERSION;
   readonly operationId: string;
@@ -109,7 +109,7 @@ interface NativeRecord {
   readonly state: "intent" | "observed" | "failed" | "unknown" | "cancelled";
   readonly value: unknown;
 }
-const STEPS: readonly Step[] = ["reservation", "allocation", "branch", "test-process", "test-start", "test-settlement", "product-process", "product-transfer", "product-start"];
+const STEPS: readonly Step[] = ["reservation", "allocation", "branch", "test-process", "test-start", "test-settlement", "product-process", "product-transfer", "product-start", "product-settlement"];
 const CAPACITY_RETRY_VERSION = "requirements-test-native-capacity-retry/v1";
 function loadNativeRecords(store: ProtectedWorkflowStore, auth: TestAuthorization, digest: string): readonly NativeRecord[] {
   const id = identity(auth.operationId); const names = store.records().filter((name) => name.startsWith(`${id}.`));
@@ -207,7 +207,7 @@ export class RequirementsTestNativeService {
       reservationId: row.reservationId, repositoryPermit: row.repositoryPermit, lineageId: row.lineageId ?? `test-${auth.operationId}` };
   }
   #runStep<T>(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, step: Step,
-    perform: () => T, reconcile: () => T, validate: (value: T) => void): T {
+    perform: () => T, reconcile: () => T, validate: (value: T) => void, beforeEffect?: () => void): T {
     let records = this.#load(auth, digest);
     const lastRetry = records.reduce((last, record, index) => record.step === "capacity-retry" ? index : last, -1);
     if (records.some((record, index) => record.step === "cancel" || record.state === "cancelled" || (record.state === "failed" && index > lastRetry))) throw workflowError();
@@ -222,6 +222,7 @@ export class RequirementsTestNativeService {
       this.#append(scope, auth, digest, records, step, "intent", { intentId: workflowDigest(JSON.stringify([auth.operationId, step])) });
     }
     records = this.#load(auth, digest);
+    beforeEffect?.();
     try {
       const value = workflowSynchronous(pending ? reconcile() : perform());
       validate(value);
@@ -380,6 +381,7 @@ export class RequirementsTestNativeService {
       if (observed) return { kind: "observed" as const, launch: observed.value as RequirementsTestLaunch };
       const pending = records.some((row) => row.step === processStep);
       if (!pending) this.#append(scope, auth, sha256, records, processStep, "intent", { intentId: processIntent, resource });
+      if (role === "product") this.#productIntent(auth, sha256, capacity, scope, resource);
       return { kind: pending ? "inspect" as const : "prepare" as const };
     }, resource.worktreeRoot);
     let launch: RequirementsTestLaunch;
@@ -410,6 +412,7 @@ export class RequirementsTestNativeService {
       const records = retained(); const row = this.#row(auth, capacity);
       if (!same(this.#resource(auth, records, capacity), resource)) throw workflowError();
       if (records.some((entry) => entry.step === startStep)) {
+        if (role === "product") this.#assertProductConsumed(auth, records, capacity);
         synchronous(() => this.options.executor.assertStarted(launch, startIntent));
         const pending = records.find((entry) => entry.step === startStep && entry.state === "intent");
         if (!pending || !same(row.custody.holder, launch.holder) || row.occupancy !== "active") throw workflowError();
@@ -440,6 +443,7 @@ export class RequirementsTestNativeService {
       this.#append(scope, auth, sha256, this.#load(auth, sha256), startStep, "intent", { resource, launch, launchSnapshot: initial });
       if (role === "test") this.options.authority.recordEvent?.(scope, auth, { action: "test-holder-active", intentId: workflowDigest(JSON.stringify([auth.operationId, "reservation"])), resource, holder: launch.holder,
         inventory: capacity.inventory(), registry: launch.registry, launchSnapshot: reference("launch-snapshot", initial) });
+      else this.#productConsumed(auth, sha256, capacity, scope, resource, launch, initial);
       return true;
     }, resource.worktreeRoot);
     if (!release) return;
@@ -469,13 +473,14 @@ export class RequirementsTestNativeService {
       const started = this.#load(auth, digest).some((row) => row.step === `${role}-start`);
       if (started) synchronous(() => this.options.executor.assertStarted(launch, workflowDigest(JSON.stringify([auth.operationId, `${role}-start`]))));
       else synchronous(() => this.options.executor.assertParked(launch, resource, role));
-    });
+    }, role === "product" ? () => this.#productIntent(auth, digest, capacity, scope, resource) : undefined);
   }
   #start(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, role: "test" | "product", launch: RequirementsTestLaunch, resource: TestResource): void {
     const records = this.#load(auth, digest); const step = `${role}-start` as const;
     // Never reissue a release after a lost response. Independently prove the
     // original release before closing its barrier, or remain blocked.
     if (records.some((record) => record.step === step)) {
+      if (role === "product") this.#assertProductConsumed(auth, records, capacity);
       synchronous(() => this.options.executor.assertStarted(launch, workflowDigest(JSON.stringify([auth.operationId, step]))));
       if (!records.some((record) => record.step === step && record.state === "observed")) {
         const intent = records.find((record) => record.step === step && record.state === "intent");
@@ -489,6 +494,7 @@ export class RequirementsTestNativeService {
     synchronous(() => this.options.authority.assertAuthorization(auth, digest));
     synchronous(() => this.options.executor.assertParked(launch, resource, role));
     this.#append(scope, auth, digest, records, step, "intent", { resource, launch, launchSnapshot: initial });
+    if (role === "product") this.#productConsumed(auth, digest, capacity, scope, resource, launch, initial);
     try {
       synchronous(() => this.options.executor.start(launch, workflowDigest(JSON.stringify([auth.operationId, step]))));
       this.#append(scope, auth, digest, this.#load(auth, digest), step, "observed", { resource, launch, launchSnapshot: initial });
@@ -499,6 +505,7 @@ export class RequirementsTestNativeService {
   settleTest(operationId: string): void { nativeGuard(() => this.#settleTest(operationId)); }
   #settleTest(operationId: string): void {
     const { auth, sha256 } = this.#authorization(operationId, false);
+    const lease = this.#observed<TreehouseLeaseEvidence>(this.#load(auth, sha256), "allocation");
     this.#locked(auth, (capacity, scope) => {
       const records = this.#load(auth, sha256); const resource = this.#resource(auth, records, capacity);
       const launch = this.#observed<RequirementsTestLaunch>(records, "test-process");
@@ -527,14 +534,21 @@ export class RequirementsTestNativeService {
         ticketStore: this.options.tickets, preparedCapacityOwner: capacity, runGit: git, settlement: { branch: auth.repository.branch, baseSha: auth.repository.baseSha, expectedHeadSha: auth.repository.selectedHeadSha, headSha: value.snapshot.head } });
       this.options.authority.recordTestSettlement?.(scope, auth, resource, launch);
       this.#append(scope, auth, sha256, this.#load(auth, sha256), "test-settlement", "observed", value);
-    });
+    }, lease.path);
   }
   #final(auth: TestAuthorization, records: readonly NativeRecord[], capacity: PreparedTicketCapacityTransaction): { assessment: TestWorkflowAssessment; resource: TestResource } {
     if (records.some((record) => record.step === "cancel" || record.state === "cancelled")) throw workflowError();
     const raw = this.options.authority.readAuthorization(auth.operationId);
     if (workflowDigest(raw) !== records[0]?.authorizationSha256) throw workflowError();
     const history = workflowSynchronous(this.options.authority.readFinalHistory(auth));
-    const assessment = assessTestWorkflow(raw, history);
+    const complete = assessTestWorkflow(raw, history);
+    if (!["final-approved", "product-intent", "product-consumed"].includes(complete.state)) throw workflowError();
+    // Authenticate the exact final-approved prefix of the COMPLETE native chain.
+    // Later product events cannot become a new final approval or an arbitrary
+    // caller-selected prefix. Their own process/transfer publications are checked
+    // below before any dependent action.
+    const finalIndex = history.findIndex((entry) => parseTestWorkflowEvent(entry).data.action === "final-approved");
+    const assessment = assessTestWorkflow(raw, history.slice(0, finalIndex + 1));
     if (assessment.state !== "final-approved" || !assessment.resource || !assessment.oracle) throw workflowError();
     synchronous(() => this.options.authority.assertFinalApproval(auth, assessment));
     const resource = this.#resource(auth, records, capacity);
@@ -558,7 +572,60 @@ export class RequirementsTestNativeService {
     const ticket = this.options.tickets.get(auth.repository.ticket); if (!ticket) throw workflowError();
     const linked = requireTicketLinkedBranch(ticket, auth.repository.key);
     if (linked.state !== "materialized" || linked.baseSha !== auth.repository.baseSha || linked.branch !== auth.repository.branch || linked.headSha !== event.git.testHeadSha) throw workflowError();
+    const current = this.#row(auth, capacity);
+    if (current.occupancy !== "settled-retained") {
+      const product = this.#observed<RequirementsTestLaunch>(records, "product-process");
+      if (current.occupancy !== "active" || current.custody.state !== "orchestrator-direct" || current.custody.inFlightOperation !== null
+        || !same(current.custody.holder, product.holder) || !records.some((row) => row.step === "product-transfer" && row.state === "intent")) throw workflowError();
+    } else if (current.custody.state !== "idle") throw workflowError();
+    const productIntent = events.find((value) => value.action === "product-intent");
+    const productConsumed = events.find((value) => value.action === "product-consumed");
+    if ((!productIntent && records.some((row) => row.step === "product-process" && row.state === "observed"))
+      || (!productConsumed && records.some((row) => row.step === "product-start" && row.state === "observed"))) throw workflowError();
+    if (productIntent?.action === "product-intent") {
+      const intentId = workflowDigest(JSON.stringify([auth.operationId, "product-process"]));
+      const intents = records.filter((row) => row.step === "product-process" && row.state === "intent");
+      if (intents.length !== 1 || (intents[0]!.value as { intentId?: unknown }).intentId !== intentId
+        || productIntent.intentId !== intentId || !same(productIntent.resource, resource)
+        || productIntent.initialHeadSha !== assessment.oracle.testHeadSha || productIntent.finalApprovalSha256 !== assessment.historySha256.at(-1)) throw workflowError();
+    }
+    if (productConsumed?.action === "product-consumed") {
+      const product = this.#observed<RequirementsTestLaunch>(records, "product-process");
+      const transfer = this.#observed<unknown>(records, "product-transfer");
+      const start = records.find((row) => row.step === "product-start" && row.state === "intent")?.value as { resource: TestResource; launch: RequirementsTestLaunch; launchSnapshot: RepositoryGitSnapshot } | undefined;
+      const row = this.#row(auth, capacity);
+      if (!productIntent || !start || !same(start.resource, resource) || !same(start.launch, product)
+        || start.launchSnapshot.head !== assessment.oracle.testHeadSha || start.launchSnapshot.statusPorcelainV2Base64 !== ""
+        || !same(transfer, { resource, previousHolder: launch.holder, holder: product.holder, finalApprovalSha256: assessment.historySha256.at(-1), initialHeadSha: assessment.oracle.testHeadSha })
+        || !same(productConsumed.holder, product.holder) || !same(productConsumed.previousHolder, launch.holder)
+        || !same(productConsumed.registry, product.registry) || !same(productConsumed.launchSnapshot, reference("launch-snapshot", start.launchSnapshot))
+        || row.occupancy !== "active" || row.custody.state !== "orchestrator-direct" || row.custody.inFlightOperation !== null || !same(row.custody.holder, product.holder)
+        || !same(productConsumed.inventory.find((entry) => entry.ticket === auth.repository.ticket), row)) throw workflowError();
+    }
     return { assessment, resource };
+  }
+  #productIntent(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, resource: TestResource): void {
+    const { assessment } = this.#final(auth, this.#load(auth, digest), capacity);
+    if (!this.options.authority.recordEvent) throw workflowError();
+    synchronous(() => this.options.authority.recordEvent!(scope, auth, { action: "product-intent", resource, initialHeadSha: assessment.oracle!.testHeadSha,
+      finalApprovalSha256: assessment.historySha256.at(-1)!, intentId: workflowDigest(JSON.stringify([auth.operationId, "product-process"])) }));
+    this.#final(auth, this.#load(auth, digest), capacity);
+    if (!["product-intent", "product-consumed"].includes(assessTestWorkflow(this.options.authority.readAuthorization(auth.operationId), this.options.authority.readFinalHistory(auth)).state)) throw workflowError();
+    this.options.boundary?.("product-intent:published");
+  }
+  #productConsumed(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, resource: TestResource, launch: RequirementsTestLaunch, initial: RepositoryGitSnapshot): void {
+    const { assessment } = this.#final(auth, this.#load(auth, digest), capacity);
+    const author = this.#observed<RequirementsTestLaunch>(this.#load(auth, digest), "test-process");
+    if (!this.options.authority.recordEvent) throw workflowError();
+    synchronous(() => this.options.authority.recordEvent!(scope, auth, { action: "product-consumed", resource, initialHeadSha: assessment.oracle!.testHeadSha,
+      intentId: workflowDigest(JSON.stringify([auth.operationId, "product-process"])), holder: launch.holder, previousHolder: author.holder,
+      inventory: capacity.inventory(), launchSnapshot: reference("launch-snapshot", initial), registry: launch.registry }));
+    this.#assertProductConsumed(auth, this.#load(auth, digest), capacity);
+    this.options.boundary?.("product-consumed:published");
+  }
+  #assertProductConsumed(auth: TestAuthorization, records: readonly NativeRecord[], capacity: PreparedTicketCapacityTransaction): void {
+    this.#final(auth, records, capacity);
+    if (assessTestWorkflow(this.options.authority.readAuthorization(auth.operationId), this.options.authority.readFinalHistory(auth)).state !== "product-consumed") throw workflowError();
   }
   /** Same resource/reservation/lineage, exact approved test HEAD; no allocation,
    * reservation call, branch construction, legacy preparation or fallback. */
@@ -575,7 +642,10 @@ export class RequirementsTestNativeService {
       }, lease.path);
       await this.#asyncLifecycle(operationId, "product", final.resource, signal);
       return Object.freeze({ state: "product-active", resource: final.resource, initialHeadSha: final.assessment.oracle!.testHeadSha });
-    } catch { throw workflowError(); }
+    } catch {
+      if (signal?.aborted) { try { this.cancel(operationId); } catch { /* retain unknown product/process effects */ } }
+      throw workflowError();
+    }
   }
   #continueProduct(operationId: string): Readonly<{ state: "product-active"; resource: TestResource; initialHeadSha: string }> {
     const { auth, sha256 } = this.#authorization(operationId);
@@ -602,6 +672,50 @@ export class RequirementsTestNativeService {
       return Object.freeze({ state: "product-active" as const, resource, initialHeadSha: assessment.oracle!.testHeadSha });
     }, lease.path);
   }
+  /** Factual terminal closure only, including after cancellation/deadline/source
+   * drift. It does not bless product changes, renew approval, refresh a linked
+   * HEAD, release a permit or return resources. The execution owner audits them.
+   * Actual terminal registry AND original process absence remain mandatory. */
+  settleProduct(operationId: string): void { nativeGuard(() => {
+    const { auth, sha256 } = this.#authorization(operationId, false);
+    const lease = this.#observed<TreehouseLeaseEvidence>(this.#load(auth, sha256), "allocation");
+    this.#locked(auth, (capacity, scope) => {
+      let records = this.#load(auth, sha256); const resource = this.#resource(auth, records, capacity);
+      const history = this.options.authority.readFinalHistory(auth), complete = assessTestWorkflow(this.options.authority.readAuthorization(auth.operationId), history);
+      const consumed = history.map((entry) => parseTestWorkflowEvent(entry).data).find((value) => value.action === "product-consumed");
+      const launch = this.#observed<RequirementsTestLaunch>(records, "product-process");
+      const intent = records.find((record) => record.step === "product-start" && record.state === "intent");
+      const start = intent?.value as { launch: RequirementsTestLaunch; resource: TestResource; launchSnapshot: RepositoryGitSnapshot } | undefined;
+      const observed = records.find((record) => record.step === "product-start" && record.state === "observed");
+      if (complete.state !== "product-consumed" || consumed?.action !== "product-consumed" || !same(consumed.resource, resource) || !start
+        || !same(consumed.holder, launch.holder) || !same(consumed.registry, launch.registry) || !same(start.launch, launch) || !same(start.resource, resource)
+        || start.launchSnapshot.head !== consumed.initialHeadSha || !same(consumed.launchSnapshot, reference("launch-snapshot", start.launchSnapshot))
+        || (observed && !same(observed.value, start))) throw workflowError();
+      synchronous(() => this.options.executor.assertSettled(launch));
+      if (same(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) throw workflowError();
+      // A released holder may finish (and advance product HEAD) before its
+      // acknowledgement is observed. Close that original barrier only through
+      // retained native start proof + actual terminal settlement, never by
+      // reissuing release or reapplying the initial test-HEAD admission gate.
+      if (!observed) {
+        synchronous(() => this.options.executor.assertStarted(launch, workflowDigest(JSON.stringify([auth.operationId, "product-start"]))));
+        this.#append(scope, auth, sha256, records, "product-start", "observed", start);
+        records = this.#load(auth, sha256);
+      }
+      const row = this.#row(auth, capacity), completed = records.find((record) => record.step === "product-settlement" && record.state === "observed");
+      if (completed) { if (row.occupancy !== "settled-retained" || row.custody.state !== "idle") throw workflowError(); return; }
+      const value = { launch, resource, snapshot: snapshot(resource.worktreeRoot) };
+      const pending = records.find((record) => record.step === "product-settlement" && record.state === "intent");
+      if (pending && !same(pending.value, value)) throw workflowError();
+      if (!pending) this.#append(scope, auth, sha256, records, "product-settlement", "intent", value);
+      if (row.occupancy === "active") {
+        if (row.custody.state !== "orchestrator-direct" || !same(row.custody.holder, launch.holder) || row.custody.inFlightOperation !== null) throw workflowError();
+        capacity.update(row, parseIdlePreparationReservation({ ...row, occupancy: "settled-retained", custody: { state: "idle", holder: null, inFlightOperation: null } }));
+      } else if (row.occupancy !== "settled-retained" || row.custody.state !== "idle" || !pending) throw workflowError();
+      this.options.boundary?.("product-settlement:capacity-updated");
+      this.#append(scope, auth, sha256, this.#load(auth, sha256), "product-settlement", "observed", value);
+    }, lease.path);
+  }); }
   /** Native operator-only manual retry of proven full-capacity/zero-resource
    * failure. Unknown allocation/process/branch failures are never cleared here. */
   retryCapacity(operationId: string, decisionInput: SourceVersion): void { nativeGuard(() => this.#retryCapacity(operationId, decisionInput)); }
@@ -621,11 +735,14 @@ export class RequirementsTestNativeService {
       const records = this.#load(auth, sha256);
       if (!records.length) throw workflowError();
       if (!records.some((record) => record.step === "cancel")) this.#append(scope, auth, sha256, records, "cancel", "cancelled", { retained: true, evidence: reference("cancellation", auth.operationId) });
-      const launched = records.find((record) => record.step === "test-process" && record.state === "observed");
+      // A final-approved product holder supersedes the already-settled author.
+      // Never leave it running by sending cancellation only to the old test PID.
+      const role = records.some((record) => record.step === "product-process") ? "product" : "test";
+      const launched = records.find((record) => record.step === `${role}-process` && record.state === "observed");
       if (launched) this.options.executor.cancel?.(launched.value as RequirementsTestLaunch);
-      else if (records.some((record) => record.step === "test-process" && record.state === "intent") && this.options.executor.cancel) {
+      else if (records.some((record) => record.step === `${role}-process` && record.state === "intent") && this.options.executor.cancel) {
         const resource = this.#resource(auth, records, capacity);
-        this.options.executor.cancel(this.options.executor.inspect("test", workflowDigest(JSON.stringify([auth.operationId, "test-process"])), resource));
+        this.options.executor.cancel(this.options.executor.inspect(role, workflowDigest(JSON.stringify([auth.operationId, `${role}-process`])), resource));
       }
     });
   }
@@ -983,8 +1100,11 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
   }
   assertFinalApproval(auth: TestAuthorization, assessment: TestWorkflowAssessment): void {
     const history = this.readFinalHistory(auth);
-    if (assessment.state !== "final-approved" || !same(assessTestWorkflow(this.readAuthorization(auth.operationId), history), assessment)) throw workflowError();
-    const final = parseTestWorkflowEvent(history.at(-1)!).data;
+    const complete = assessTestWorkflow(this.readAuthorization(auth.operationId), history);
+    const finalIndex = history.findIndex((entry) => parseTestWorkflowEvent(entry).data.action === "final-approved");
+    if (!["final-approved", "product-intent", "product-consumed"].includes(complete.state) || assessment.state !== "final-approved"
+      || !same(assessTestWorkflow(this.readAuthorization(auth.operationId), history.slice(0, finalIndex + 1)), assessment)) throw workflowError();
+    const final = parseTestWorkflowEvent(history[finalIndex]!).data;
     if (final.action !== "final-approved") throw workflowError();
     const caller = { deploymentId: auth.parent.holder.deploymentId, repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, callerIdentity: "0".repeat(64) };
     const pair = this.native.preview(caller, final.pair.requirements.ref);

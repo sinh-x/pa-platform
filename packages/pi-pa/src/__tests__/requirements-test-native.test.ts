@@ -66,6 +66,17 @@ async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
   const authority: RequirementsTestNativeAuthority = {
     readAuthorization: () => raw,
     authorizationDecision: () => source("unit-modeled-test-decision"),
+    recordEvent(_scope, _auth, data) {
+      // Pre-product approvals/results remain explicitly modeled fixture evidence.
+      // Product chronology is emitted by the actual service at its effect boundary.
+      if (!["product-intent", "product-consumed"].includes(data.action)) return;
+      const prior = history.map((entry) => core.parseTestWorkflowEvent(entry)).find((entry) => entry.data.action === data.action);
+      if (prior) { assert.deepEqual(prior.data, data); return; }
+      const entry: TestWorkflowEvent = { schemaVersion: "requirements-test-workflow/v1", kind: "event", operationId: auth.operationId,
+        authorizationSha256: digest(raw), sequence: history.length + 1, previousSha256: digest(history.at(-1) ?? raw), bounds: auth.bounds,
+        retriesUsed: auth.retriesUsed, elapsedMs: (history.length + 1) * 1000, evidence: source(`service-product-event-${history.length}`), data };
+      assessTestWorkflow(raw, [...history, JSON.stringify(entry)]); history.push(JSON.stringify(entry));
+    },
     assertAuthorization(value, sha) {
       const record = store.read(`${grantId}.intent.json`) as { raw: string; sha256: string };
       assert.equal(record.sha256, sha); assert.equal(record.raw, raw); assert.equal(value.operationId, auth.operationId);
@@ -88,7 +99,8 @@ async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
     return { status: 0, stdout: Buffer.from(JSON.stringify({ path: worktree, leased: true, lease_id: lease.leaseId, lease_holder: lease.leaseHolder })), stderr: Buffer.alloc(0) };
   } });
   const processes = new Map<string, { child: ChildProcess; launch: RequirementsTestLaunch; started: string; terminal: string; parked: string }>();
-  const effects = { prepare: 0, start: 0 };
+  const effects = { prepare: 0, start: 0, cancel: 0 };
+  const cancelled = new Set<string>();
   const executor: RequirementsTestNativeExecutor = {
     prepare(role, intent, resource) {
       effects.prepare++;
@@ -118,6 +130,11 @@ async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
       record.child.stdin!.write(`${intent}\n`); waitFile(record.started); assert.equal(readFileSync(record.started, "utf8"), intent);
     },
     assertStarted(launch, intent) { assert.equal(readFileSync(join(launch.deploymentDirectory, "started"), "utf8"), intent); },
+    cancel(launch) {
+      if (cancelled.has(launch.holder.deploymentId)) return;
+      cancelled.add(launch.holder.deploymentId); effects.cancel++;
+      if (JSON.stringify(readProcessFingerprint(launch.holder.process.pid)) === JSON.stringify(launch.holder.process)) process.kill(launch.holder.process.pid, "SIGTERM");
+    },
     assertSettled(launch) {
       assert.equal(readProcessFingerprint(launch.holder.process.pid), undefined);
       const record = JSON.parse(readFileSync(join(launch.deploymentDirectory, "terminal"), "utf8")); assert.deepEqual(record.holder, launch.holder); assert.equal(record.state, "terminal");
@@ -128,7 +145,7 @@ async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
   const stop = async (launch?: RequirementsTestLaunch, registry = true) => {
     for (const record of processes.values()) {
       if (launch && record.launch.holder.process.pid !== launch.holder.process.pid) continue;
-      if (record.child.exitCode === null) { record.child.stdin!.write("stop\n"); await new Promise<void>((resolve) => record.child.once("exit", () => resolve())); }
+      if (record.child.exitCode === null && record.child.signalCode === null) { record.child.stdin!.write("stop\n"); await new Promise<void>((resolve) => record.child.once("exit", () => resolve())); }
       if (registry) writeFileSync(record.terminal, JSON.stringify({ holder: record.launch.holder, state: "terminal" }), { mode: 0o600 });
     }
   };
@@ -305,6 +322,261 @@ test("AC9/AC10: independently read actual Git/content + final chain, same-resour
     assert.throws(() => f.service.request(f.auth.operationId)); assert.equal(f.effects.prepare, 2, "no mixed legacy/new second author");
   } finally { await f.cleanup(); }
 });
+for (const asynchronous of [false, true]) {
+  const route = asynchronous ? "async" : "sync";
+  const executorFor = (f: Awaited<ReturnType<typeof fixture>>): RequirementsTestNativeExecutor => ({ ...f.options.executor,
+    prepareAsync: async (...args) => f.options.executor.prepare(...args), startAsync: async (...args) => f.options.executor.start(...args) });
+  test(`AC9/AC10 ${route}: product native chronology precedes process/release and replays idempotently at exact final approval`, async () => {
+    const f = await fixture();
+    try {
+      const executor = executorFor(f);
+      const prepare = executor.prepare, start = executor.start;
+      executor.prepare = (role, ...args) => {
+        if (role === "product") {
+          assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "product-intent");
+          assert.equal(f.records().filter((entry) => entry.step === "product-process" && entry.state === "intent").length, 1);
+          if (asynchronous) assert.equal(f.inventory()[0]!.occupancy, "settled-retained"); // sync ports already hold the capacity mutex
+        }
+        return prepare(role, ...args);
+      };
+      executor.start = (launch, ...args) => {
+        if (launch.holder.deploymentId !== "d-222222") {
+          assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "product-consumed");
+          const consumed = core.parseTestWorkflowEvent(f.history().at(-1)!).data; assert.ok(consumed.action === "product-consumed");
+          const row = consumed.inventory[0]!; assert.ok("custody" in row); assert.equal(row.custody.state, "orchestrator-direct");
+          assert.deepEqual(row.custody.holder, launch.holder);
+          if (asynchronous) assert.deepEqual(f.inventory()[0], row);
+        }
+        return start(launch, ...args);
+      };
+      executor.prepareAsync = async (...args) => executor.prepare(...args);
+      executor.startAsync = async (...args) => executor.start(...args);
+      const service = new RequirementsTestNativeService({ ...f.options, executor });
+      const resource = f.service.request(f.auth.operationId).resource; f.final(resource); await f.stop(); service.settleTest(f.auth.operationId);
+      const approved = [...f.history()], before = f.inventory()[0]!;
+      const continued = asynchronous ? await service.continueProductAsync(f.auth.operationId) : service.continueProduct(f.auth.operationId);
+      const history = [...f.history()];
+      assert.deepEqual(history.slice(0, approved.length), approved, "original final approval is immutable, not relabeled as consumption");
+      assert.equal(assessTestWorkflow(f.raw(), history).state, "product-consumed");
+      const intent = core.parseTestWorkflowEvent(history.at(-2)!).data;
+      assert.equal(intent.action, "product-intent"); assert.ok(intent.action === "product-intent");
+      assert.equal(intent.finalApprovalSha256, digest(approved.at(-1)!)); assert.equal(intent.initialHeadSha, continued.initialHeadSha);
+      assert.equal(intent.intentId, digest(JSON.stringify([f.auth.operationId, "product-process"])));
+      const resumed = new RequirementsTestNativeService({ ...f.options, executor });
+      if (asynchronous) await resumed.continueProductAsync(f.auth.operationId); else resumed.continueProduct(f.auth.operationId);
+      assert.deepEqual(f.history(), history); assert.equal(f.effects.prepare, 2); assert.equal(f.effects.start, 2);
+      assert.equal(f.allocationCount(), 1); const after = f.inventory()[0]!;
+      assert.ok("reservationId" in before && "reservationId" in after); assert.equal(after.reservationId, before.reservationId);
+      assert.equal(after.repositoryPermit, before.repositoryPermit); assert.equal(after.lineageId, before.lineageId);
+    } finally { await f.cleanup(); }
+  });
+  for (const point of ["product-intent:published", "product-start:intent", "product-consumed:published"]) {
+    test(`AC9/AC11 ${route}: crash at ${point} never respawns or reissues an unproven product release`, async () => {
+      let armed = false, crashed = false;
+      const f = await fixture((actual) => { if (armed && !crashed && actual === point) { crashed = true; throw new Error("native-product-publication-response-loss"); } });
+      try {
+        const executor = executorFor(f), service = new RequirementsTestNativeService({ ...f.options, executor });
+        const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); service.settleTest(f.auth.operationId); armed = true;
+        if (asynchronous) await assert.rejects(service.continueProductAsync(f.auth.operationId)); else assert.throws(() => service.continueProduct(f.auth.operationId));
+        assert.equal(crashed, true); const before = { ...f.effects };
+        const resumed = new RequirementsTestNativeService({ ...f.options, executor, boundary: undefined });
+        if (asynchronous) await assert.rejects(resumed.continueProductAsync(f.auth.operationId)); else assert.throws(() => resumed.continueProduct(f.auth.operationId));
+        assert.deepEqual(f.effects, before); assert.equal(f.effects.prepare, point === "product-intent:published" ? 1 : 2);
+        assert.equal(f.effects.start, 1, "no product code released after an uncertain pre-release boundary");
+        assert.equal(f.inventory().length, 1); assert.equal(f.allocationCount(), 1); assert.equal(existsSync(f.worktree), true);
+      } finally { await f.cleanup(); }
+    });
+  }
+}
+test("AC9: a missing/no-op native event producer blocks product before spawn, not just before release", async () => {
+  for (const recordEvent of [undefined, () => {}]) {
+    const f = await fixture();
+    try {
+      const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+      const service = new RequirementsTestNativeService({ ...f.options, authority: { ...f.options.authority, recordEvent } });
+      assert.throws(() => service.continueProduct(f.auth.operationId)); assert.equal(f.effects.prepare, 1); assert.equal(f.effects.start, 1);
+      assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "final-approved");
+    } finally { await f.cleanup(); }
+  }
+});
+test("AC4/AC10: product replay authenticates its own reservation without freezing unrelated ticket capacity", async () => {
+  const f = await fixture();
+  try {
+    const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    f.service.continueProduct(f.auth.operationId); const history = [...f.history()];
+    const added = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: f.repo, ticket: "PAP-2", deploymentId: "d-444444", deploymentDirectory: f.root });
+    assert.equal(added.status, "acquired"); f.service.continueProduct(f.auth.operationId);
+    assert.deepEqual(f.history(), history); assert.equal(f.inventory().length, 2); assert.equal(f.effects.prepare, 2); assert.equal(f.effects.start, 2);
+    assert.equal(f.allocationCount(), 1);
+  } finally { await f.cleanup(); }
+});
+test("AC4/AC10: conflicting active custody blocks product before parked process preparation", async () => {
+  const f = await fixture();
+  try {
+    const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    withPreparedTicketCapacity({ canonicalRepoKey: "registered", canonicalRepoRoot: f.repo }, (capacity) => {
+      const row = capacity.inventory()[0]!; assert.ok("custody" in row);
+      capacity.update(row, core.parseIdlePreparationReservation({ ...row, occupancy: "active", custody: { state: "orchestrator-direct", holder: f.auth.parent.holder, inFlightOperation: null } }));
+    });
+    assert.throws(() => f.service.continueProduct(f.auth.operationId)); assert.equal(f.effects.prepare, 1); assert.equal(f.effects.start, 1);
+    assert.equal(f.allocationCount(), 1); assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "final-approved");
+  } finally { await f.cleanup(); }
+});
+test("AC11 async: cancellation during product prepare reconciles/cancels that exact pending process without respawn", async () => {
+  const f = await fixture();
+  try {
+    const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    const controller = new AbortController();
+    const executor: RequirementsTestNativeExecutor = { ...f.options.executor,
+      async prepareAsync(role, intent, resource) { const launch = f.options.executor.prepare(role, intent, resource); controller.abort(); return launch; },
+      startAsync: async (...args) => f.options.executor.start(...args),
+    };
+    const service = new RequirementsTestNativeService({ ...f.options, executor });
+    await assert.rejects(service.continueProductAsync(f.auth.operationId, controller.signal));
+    assert.equal(f.effects.cancel, 1); await f.stop();
+    const product = [...f.processes.values()].at(-1)!.launch;
+    assert.equal(readProcessFingerprint(product.holder.process.pid), undefined);
+    assert.equal(f.effects.prepare, 2); assert.equal(f.effects.start, 1); assert.equal(f.inventory()[0]!.occupancy, "settled-retained");
+    const before = { ...f.effects }; await assert.rejects(service.continueProductAsync(f.auth.operationId)); assert.deepEqual(f.effects, before);
+    assert.equal(f.allocationCount(), 1); assert.equal(service.status(f.auth.operationId).state, "blocked");
+  } finally { await f.cleanup(); }
+});
+test("AC10/AC11: product cancellation targets the current holder; factual settlement retains resources and is idempotent", async () => {
+  const f = await fixture();
+  try {
+    const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    f.service.continueProduct(f.auth.operationId);
+    const row = f.inventory()[0]!; assert.ok("custody" in row); const holder = row.custody.holder!;
+    assert.throws(() => f.service.settleProduct(f.auth.operationId), "live PID or missing terminal registry cannot settle");
+    f.service.cancel(f.auth.operationId); f.service.cancel(f.auth.operationId);
+    assert.equal(f.effects.cancel, 1); assert.equal(f.service.status(f.auth.operationId).state, "blocked");
+    await f.stop(undefined, false); assert.equal(readProcessFingerprint(holder.process.pid), undefined);
+    assert.throws(() => f.service.settleProduct(f.auth.operationId), "process absence alone is not terminal registry");
+    await f.stop(); const cancelledHistory = [...f.history()]; f.service.settleProduct(f.auth.operationId);
+    const count = f.records().length; f.service.settleProduct(f.auth.operationId); assert.equal(f.records().length, count);
+    assert.deepEqual(f.history(), cancelledHistory, "settlement creates neither approval nor product PASS");
+    const after = f.inventory()[0]!; assert.ok("reservationId" in after && "reservationId" in row); assert.ok("custody" in after);
+    assert.equal(after.occupancy, "settled-retained"); assert.equal(after.custody.state, "idle"); assert.equal(after.reservationId, row.reservationId);
+    assert.equal(after.repositoryPermit, row.repositoryPermit); assert.equal(after.lineageId, row.lineageId);
+    assert.equal(existsSync(resource.worktreeRoot), true); assert.equal(f.allocationCount(), 1);
+    assert.throws(() => f.service.continueProduct(f.auth.operationId));
+  } finally { await f.cleanup(); }
+});
+for (const point of ["product-settlement:intent", "product-settlement:capacity-updated", "product-settlement:observed"]) {
+  test(`AC11: product terminal crash at ${point} resumes only the same settled process/reservation`, async () => {
+    let armed = false, crashed = false;
+    const f = await fixture((actual) => { if (armed && !crashed && actual === point) { crashed = true; throw new Error("native-product-terminal-response-loss"); } });
+    try {
+      const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+      f.service.continueProduct(f.auth.operationId); const before = f.inventory()[0]!;
+      // Product code can change HEAD. Factual settlement must capture/retain it,
+      // never reapply the pre-launch clean-test-HEAD gate or approve the changes.
+      writeFileSync(join(f.worktree, "src/product.txt"), "SOURCE fixture product effect\n"); git(f.worktree, "add", "src/product.txt"); git(f.worktree, "commit", "-m", "source fixture product effect");
+      await f.stop(); armed = true; assert.throws(() => f.service.settleProduct(f.auth.operationId)); assert.equal(crashed, true);
+      const resumed = new RequirementsTestNativeService({ ...f.options, boundary: undefined }); resumed.settleProduct(f.auth.operationId);
+      const after = f.inventory()[0]!; assert.equal(after.occupancy, "settled-retained"); assert.ok("reservationId" in after && "reservationId" in before);
+      assert.equal(after.reservationId, before.reservationId); assert.equal(after.repositoryPermit, before.repositoryPermit);
+      assert.equal(f.effects.prepare, 2); assert.equal(f.effects.start, 2); assert.equal(f.allocationCount(), 1);
+      const settled = f.records().find((entry) => entry.step === "product-settlement" && entry.state === "observed")!;
+      assert.equal((settled.value as { snapshot: { head: string } }).snapshot.head, git(f.worktree, "rev-parse", "HEAD"));
+      assert.equal(readFileSync(join(f.worktree, "src/product.txt"), "utf8"), "SOURCE fixture product effect\n");
+    } finally { await f.cleanup(); }
+  });
+}
+for (const asynchronous of [false, true]) for (const released of [false, true]) {
+  test(`AC11 ${asynchronous ? "async" : "sync"}: terminal release-response loss requires original start proof (${released ? "released" : "never released"}), no release replay`, async () => {
+    const f = await fixture();
+    try {
+      const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+      const start: RequirementsTestNativeExecutor["start"] = (...args) => {
+        if (released) f.options.executor.start(...args);
+        throw new Error("SOURCE fixture lost release response");
+      };
+      const executor: RequirementsTestNativeExecutor = { ...f.options.executor, start,
+        prepareAsync: async (...args) => f.options.executor.prepare(...args), startAsync: async (...args) => start(...args) };
+      const service = new RequirementsTestNativeService({ ...f.options, executor });
+      if (asynchronous) await assert.rejects(service.continueProductAsync(f.auth.operationId)); else assert.throws(() => service.continueProduct(f.auth.operationId));
+      assert.equal(f.records().some((row) => row.step === "product-start" && row.state === "observed"), false);
+      assert.equal(f.records().some((row) => row.step === "product-start" && row.state === "unknown"), true);
+      if (released) {
+        writeFileSync(join(f.worktree, "src/product.txt"), "source product effect after lost response\n");
+        git(f.worktree, "add", "src/product.txt"); git(f.worktree, "commit", "-m", "source effect after release response loss");
+      }
+      await f.stop(); const effects = { ...f.effects }, history = [...f.history()];
+      if (released) {
+        service.settleProduct(f.auth.operationId); service.settleProduct(f.auth.operationId);
+        assert.equal(f.inventory()[0]!.occupancy, "settled-retained");
+        assert.equal(f.records().filter((row) => row.step === "product-start" && row.state === "observed").length, 1);
+        assert.equal(f.records().filter((row) => row.step === "product-start" && row.state === "unknown").length, 1, "original uncertainty is not erased");
+      } else {
+        assert.throws(() => service.settleProduct(f.auth.operationId)); assert.equal(f.inventory()[0]!.occupancy, "active");
+        assert.equal(f.records().some((row) => row.step === "product-start" && row.state === "observed"), false);
+      }
+      assert.deepEqual(f.effects, effects); assert.deepEqual(f.history(), history); assert.equal(f.effects.start, released ? 2 : 1); assert.equal(f.allocationCount(), 1);
+    } finally { await f.cleanup(); }
+  });
+}
+test("AC9 native final reader: only the authenticated exact final-approved prefix survives later product events", async () => {
+  const f = await fixture();
+  try {
+    const { PiRequirementsTestAuthority } = await import("../requirements-test-native.js");
+    const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    const history = [...f.history()]; const final = JSON.parse(history.at(-1)!);
+    const matrixApprovalEvidence = "SOURCE-ONLY-final-matrix-approval";
+    final.data.pair.matrixApproval = { ref: "requirements-test-native:native-matrix-approval", version: "requirements-test-native/v1", sha256: digest(JSON.stringify(matrixApprovalEvidence)) };
+    history[history.length - 1] = JSON.stringify(final); f.setHistory(history);
+    let changed = false;
+    class PreviewFixture extends PiPreparedNativeAuthority {
+      override preview(): ReturnType<InstanceType<typeof PiPreparedNativeAuthority>["preview"]> {
+        // Exact final-pair source reader is a fixture here. This test targets the
+        // real prefix validation algorithm, not installed/signoff qualification.
+        return { ...final.data.pair, matrixApprovalEvidence, requirements: changed ? source("changed-final-source") : final.data.pair.requirements } as ReturnType<InstanceType<typeof PiPreparedNativeAuthority>["preview"]>;
+      }
+    }
+    class FinalReader extends PiRequirementsTestAuthority {
+      override readAuthorization(): string { return f.raw(); }
+      override readFinalHistory(): readonly string[] { return f.history(); }
+    }
+    const reader = new FinalReader({ native: new PreviewFixture({ root: join(f.root, "native") }) });
+    const approved = assessTestWorkflow(f.raw(), f.history()); reader.assertFinalApproval(f.auth, approved);
+    const service = new RequirementsTestNativeService({ ...f.options, authority: { ...f.options.authority, assertFinalApproval: (auth, assessment) => reader.assertFinalApproval(auth, assessment) } });
+    service.continueProduct(f.auth.operationId); reader.assertFinalApproval(f.auth, approved);
+    assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "product-consumed");
+    assert.throws(() => reader.assertFinalApproval(f.auth, assessTestWorkflow(f.raw(), f.history())), "consumption itself is not final signoff");
+    assert.throws(() => reader.assertFinalApproval(f.auth, assessTestWorkflow(f.raw(), history.slice(0, -1))), "earlier oracle approval is not final signoff");
+    const before = { ...f.effects }; changed = true;
+    assert.throws(() => reader.assertFinalApproval(f.auth, approved)); assert.throws(() => service.continueProduct(f.auth.operationId));
+    assert.deepEqual(f.effects, before); assert.equal(f.allocationCount(), 1);
+  } finally { await f.cleanup(); }
+});
+for (const mutation of ["intent-id", "consumed-registry", "launch-snapshot", "missing-intent", "missing-consumed", "inventory-launch"]) {
+  test(`AC9/AC10: copied/rehashed ${mutation} cannot replace native product publications`, async () => {
+    const f = await fixture();
+    try {
+      const { resource } = f.service.request(f.auth.operationId); f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+      f.service.continueProduct(f.auth.operationId); const history = f.history().map((raw) => JSON.parse(raw));
+      if (mutation === "missing-intent" || mutation === "missing-consumed") f.setHistory(f.history().slice(0, mutation === "missing-intent" ? 6 : 7));
+      else {
+        const last = history.at(-1)!;
+        if (mutation === "intent-id") {
+          for (const entry of history.slice(-2)) (entry.data as { intentId: string }).intentId = digest("copied-product-intent");
+          last.previousSha256 = digest(JSON.stringify(history.at(-2)!));
+        } else {
+          assert.equal(last.data.action, "product-consumed"); assert.ok(last.data.action === "product-consumed");
+          if (mutation === "consumed-registry") last.data.registry = source("copied-registry");
+          if (mutation === "launch-snapshot") last.data.launchSnapshot = source("copied-launch-snapshot");
+          if (mutation === "inventory-launch") (last.data.inventory[0] as { launch: { slotToken: string } }).launch.slotToken = "copied-native-slot-token";
+        }
+        f.setHistory(history.map((row) => JSON.stringify(row)));
+        // Model replay accepts internally consistent copies; the production
+        // service must reject their mismatch with its actual effect publications.
+        assert.equal(assessTestWorkflow(f.raw(), f.history()).state, "product-consumed");
+      }
+      const before = { ...f.effects }; assert.throws(() => f.service.continueProduct(f.auth.operationId));
+      assert.deepEqual(f.effects, before); assert.equal(f.allocationCount(), 1);
+    } finally { await f.cleanup(); }
+  });
+}
 for (const mutation of ["test-head", "product-commit", "missing-lease", "forged-history", "file-digest", "wrong-resource", "cancelled-intent"])  {
   test(`AC9/AC10: ${mutation} blocks product before process preparation; no legacy fallback`, async () => {
     const f = await fixture();
