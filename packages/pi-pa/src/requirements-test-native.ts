@@ -1,22 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   assessTestWorkflow, captureRepositoryGitSnapshot, executionBoundStop, loadRepoEntry,
   materializeTicketBranch, parseIdlePreparationReservation, parseTestAuthorization,
   ProtectedWorkflowStore, readProcessFingerprint, requireTicketLinkedBranch,
-  parseSourceVersion, parseTestWorkflowEvent, readReviewEvidenceFile, refreshTicketLinkedBranchHead, requirementsTestCapability, resolveRepoExecutionPath, withExecutionWorktreeAdmission,
+  parseReviewEvidenceJson, parseSourceVersion, parseTestWorkflowEvent, readReviewEvidenceFile, refreshTicketLinkedBranchHead, requirementsTestCapability, resolveRepoExecutionPath, withExecutionWorktreeAdmission,
   withPreparedTicketCapacity, withPreparedWorkflowLocks, withVacantPreparationWorktree,
   testWorkflowInvalidation, workflowDigest, workflowError, workflowObject, workflowSha, workflowSynchronous,
   type ExecutionHolder, type IdlePreparationReservation, type PreparedLockScope,
   type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion,
-  type TestAuthorization, type TestGitEvidence, type TestResource, type TestWorkflowAssessment,
-  type TicketStore,
+  type TestAuthorization, type TestGitEvidence, type TestResource, type TestWorkflowAssessment, type TestEventData, type TestProcessResult,
+  queryDeploymentStatus, processIsWithinFingerprintLineage, workflowTimestamp, type TicketStore,
 } from "@pa-platform/pa-core";
-import { authenticatePiPreparationCaller, type PiPreparationContext } from "./pi-extension/prepared-workflow.js";
-import { PiPreparedNativeAuthority } from "./prepared-native.js";
+import { authenticatePiPreparationCaller, type PiPreparationCaller, type PiPreparationContext } from "./pi-extension/prepared-workflow.js";
+import { PiPreparedNativeAuthority, currentPreparedNativeRuntime, type PreparedNativeRuntime } from "./prepared-native.js";
 import { TreehouseClient, type TreehouseLeaseEvidence } from "./treehouse.js";
+import { NativeExecutionEvidence, type NativeProcessResult } from "./native-execution-evidence.js";
 
 const VERSION = "requirements-test-native/v1";
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -44,6 +45,8 @@ function reference(kind: string, value: unknown): SourceVersion {
  * Phase 3 supplies native operator/tool/result producers; phase 4 qualifies them.
  * No default success implementation, fake executor or activation is provided. */
 export interface RequirementsTestNativeAuthority {
+  recordEvent?(scope: PreparedLockScope, authorization: TestAuthorization, data: TestEventData): void;
+  recordTestSettlement?(scope: PreparedLockScope, authorization: TestAuthorization, resource: TestResource, launch: RequirementsTestLaunch): void;
   /** Return original approved bytes from the existing protected store. */
   readAuthorization(operationId: string): string;
   authorizationDecision(authorization: TestAuthorization): SourceVersion;
@@ -67,6 +70,9 @@ export interface RequirementsTestLaunch {
   readonly registry: SourceVersion;
 }
 export interface RequirementsTestNativeExecutor {
+  /** Production parked lifecycle. No lock scope/capacity handle crosses await. */
+  prepareAsync?(role: "test" | "product", intentId: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch>;
+  startAsync?(launch: RequirementsTestLaunch, intentId: string, signal?: AbortSignal): Promise<void>;
   /** Create a parked native process/registry anchor; no test/product code yet.
    * Called only after durable spawn intent. Missing capability MUST throw. */
   prepare(role: "test" | "product", intentId: string, resource: TestResource): RequirementsTestLaunch;
@@ -80,6 +86,7 @@ export interface RequirementsTestNativeExecutor {
   assertStarted(launch: RequirementsTestLaunch, intentId: string): void;
   /** Actual process absence AND terminal registry, retaining original failures. */
   assertSettled(launch: RequirementsTestLaunch): void;
+  cancel?(launch: RequirementsTestLaunch): void;
 }
 export interface RequirementsTestNativeOptions {
   readonly store: ProtectedWorkflowStore;
@@ -178,9 +185,8 @@ export class RequirementsTestNativeService {
   }
   #resource(auth: TestAuthorization, records: readonly NativeRecord[], capacity: PreparedTicketCapacityTransaction): TestResource {
     const row = this.#row(auth, capacity); const lease = this.#lease(auth, this.#observed<TreehouseLeaseEvidence>(records, "allocation"));
-    if (!row.lineageId) throw workflowError();
     return { repository: auth.repository, worktreeRoot: lease.path, leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
-      reservationId: row.reservationId, repositoryPermit: row.repositoryPermit, lineageId: row.lineageId };
+      reservationId: row.reservationId, repositoryPermit: row.repositoryPermit, lineageId: row.lineageId ?? `test-${auth.operationId}` };
   }
   #runStep<T>(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, step: Step,
     perform: () => T, reconcile: () => T, validate: (value: T) => void): T {
@@ -220,7 +226,7 @@ export class RequirementsTestNativeService {
   /** Records request before capacity/Treehouse/branch/process effects. Does not
    * automatically retry a full-capacity request or completed release operation. */
   request(operationId: string): Readonly<{ state: "test-active"; resource: TestResource }> { return nativeGuard(() => this.#request(operationId)); }
-  #request(operationId: string): Readonly<{ state: "test-active"; resource: TestResource }> {
+  #request(operationId: string, deferProcess = false): Readonly<{ state: "test-active"; resource: TestResource }> {
     const { auth, sha256 } = this.#authorization(operationId);
     // Validate immutable source and branch-plan bindings BEFORE reserving or
     // asking Treehouse for anything. Rejections here have zero resource effects.
@@ -238,6 +244,8 @@ export class RequirementsTestNativeService {
       let records = this.#load(auth, sha256);
       if (!records.length) this.#append(scope, auth, sha256, records, "request", "intent", { repository: auth.repository, approval: parseSourceVersion(this.options.authority.authorizationDecision(auth)), bounds: auth.bounds, retriesUsed: auth.retriesUsed, elapsedMs: auth.elapsedMs });
       records = this.#load(auth, sha256);
+      this.options.authority.recordEvent?.(scope, auth, { action: "authorized", owner: "sinh", decision: this.options.authority.authorizationDecision(auth) });
+      this.options.authority.recordEvent?.(scope, auth, { action: "intent-recorded", intentId: workflowDigest(JSON.stringify([auth.operationId, "reservation"])) });
       const amend = (): IdlePreparationReservation => {
         const previousRaw = workflowSynchronous(this.options.authority.readPreviousAuthorization(auth));
         const previous = parseTestAuthorization(previousRaw);
@@ -303,6 +311,9 @@ export class RequirementsTestNativeService {
       if (row.occupancy === "preparing") row = capacity.update(row, parseIdlePreparationReservation({ ...row, occupancy: "idle-ready", receiptId: workflowDigest(JSON.stringify([auth.operationId, lease])) }));
       const resource: TestResource = { repository: auth.repository, worktreeRoot: lease.path, leaseId: lease.leaseId, leaseHolder: lease.leaseHolder,
         reservationId: reserved.reservationId, repositoryPermit: reserved.repositoryPermit, lineageId: reserved.lineageId ?? `test-${auth.operationId}` };
+      // Async composition stops here with durable exclusive reservation. The
+      // internal marker is never returned as test-active to a native caller.
+      if (deferProcess) return Object.freeze({ state: "test-active" as const, resource });
       const launch = this.#launch(auth, sha256, capacity, scope, "test", resource);
       row = this.#row(auth, capacity);
       if (row.occupancy === "idle-ready" || (auth.amendment && row.occupancy === "settled-retained")) capacity.update(row, parseIdlePreparationReservation({ ...row, occupancy: "active", lineageId: resource.lineageId,
@@ -312,6 +323,123 @@ export class RequirementsTestNativeService {
       return Object.freeze({ state: "test-active" as const, resource });
       });
     });
+  }
+  /** Native request uses short synchronous transactions around bounded async
+   * parked actions. A pending intent is inspect-only across service instances. */
+  async requestAsync(operationId: string, signal?: AbortSignal): Promise<Readonly<{ state: "test-active"; resource: TestResource }>> {
+    try {
+      if (signal?.aborted || !this.options.executor.prepareAsync || !this.options.executor.startAsync) throw workflowError();
+      const { resource } = this.#request(operationId, true);
+      await this.#asyncLifecycle(operationId, "test", resource, signal);
+      const { auth, sha256 } = this.#authorization(operationId);
+      const launch = this.#observed<RequirementsTestLaunch>(this.#load(auth, sha256), "test-process");
+      if (!same(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) throw workflowError();
+      return Object.freeze({ state: "test-active", resource });
+    } catch {
+      if (signal?.aborted) { try { this.cancel(operationId); } catch { /* cancellation/unknown effects remain retained */ } }
+      throw workflowError();
+    }
+  }
+  async #asyncLifecycle(operationId: string, role: "test" | "product", resource: TestResource, signal?: AbortSignal): Promise<void> {
+    const { auth, sha256 } = this.#authorization(operationId);
+    const processStep = `${role}-process` as const, startStep = `${role}-start` as const;
+    const processIntent = workflowDigest(JSON.stringify([auth.operationId, processStep]));
+    const startIntent = workflowDigest(JSON.stringify([auth.operationId, startStep]));
+    const retained = () => {
+      if (signal?.aborted) throw workflowError();
+      synchronous(() => this.options.authority.assertAuthorization(auth, sha256));
+      if (executionBoundStop(auth.bounds, this.#now())) throw workflowError();
+      const records = this.#load(auth, sha256);
+      if (records.some((row) => row.step === "cancel" || row.state === "cancelled" || row.state === "failed")) throw workflowError();
+      return records;
+    };
+    const preparing = this.#locked(auth, (capacity, scope) => {
+      const records = retained();
+      if (!same(this.#resource(auth, records, capacity), resource)) throw workflowError();
+      if (role === "product") this.#final(auth, records, capacity);
+      const observed = records.find((row) => row.step === processStep && row.state === "observed");
+      if (observed) return { kind: "observed" as const, launch: observed.value as RequirementsTestLaunch };
+      const pending = records.some((row) => row.step === processStep);
+      if (!pending) this.#append(scope, auth, sha256, records, processStep, "intent", { intentId: processIntent, resource });
+      return { kind: pending ? "inspect" as const : "prepare" as const };
+    }, resource.worktreeRoot);
+    let launch: RequirementsTestLaunch;
+    try {
+      launch = preparing.kind === "observed" ? preparing.launch : preparing.kind === "inspect"
+        ? this.options.executor.inspect(role, processIntent, resource)
+        : await this.options.executor.prepareAsync!(role, processIntent, resource, signal);
+      this.#locked(auth, (capacity, scope) => {
+        const records = retained();
+        parseSourceVersion(launch.registry);
+        if (!same(this.#resource(auth, records, capacity), resource) || launch.holder.deploymentId === auth.parent.holder.deploymentId
+          || !same(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)
+          || realpathSync(launch.deploymentDirectory) !== launch.deploymentDirectory) throw workflowError();
+        if (records.some((row) => row.step === startStep)) synchronous(() => this.options.executor.assertStarted(launch, startIntent));
+        else synchronous(() => this.options.executor.assertParked(launch, resource, role));
+        const old = records.find((row) => row.step === processStep && row.state === "observed");
+        if (old && !same(old.value, launch)) throw workflowError();
+        if (!old) this.#append(scope, auth, sha256, records, processStep, "observed", launch);
+      }, resource.worktreeRoot);
+    } catch {
+      this.#locked(auth, (_capacity, scope) => {
+        const records = this.#load(auth, sha256);
+        if (!records.some((row) => row.step === processStep && row.state === "unknown")) this.#append(scope, auth, sha256, records, processStep, "unknown", { retained: true });
+      }, resource.worktreeRoot);
+      throw workflowError();
+    }
+    const release = this.#locked(auth, (capacity, scope) => {
+      const records = retained(); const row = this.#row(auth, capacity);
+      if (!same(this.#resource(auth, records, capacity), resource)) throw workflowError();
+      if (records.some((entry) => entry.step === startStep)) {
+        synchronous(() => this.options.executor.assertStarted(launch, startIntent));
+        const pending = records.find((entry) => entry.step === startStep && entry.state === "intent");
+        if (!pending || !same(row.custody.holder, launch.holder) || row.occupancy !== "active") throw workflowError();
+        if (!records.some((entry) => entry.step === startStep && entry.state === "observed")) this.#append(scope, auth, sha256, records, startStep, "observed", pending.value);
+        return false;
+      }
+      const initialHead = role === "test" ? auth.repository.selectedHeadSha : this.#final(auth, records, capacity).assessment.oracle!.testHeadSha;
+      const initial = clean(resource.worktreeRoot, auth.repository.branch, initialHead);
+      synchronous(() => this.options.executor.assertParked(launch, resource, role));
+      if (role === "test") {
+        if (!["idle-ready", ...(auth.amendment ? ["settled-retained"] : [])].includes(row.occupancy)) throw workflowError();
+        capacity.update(row, parseIdlePreparationReservation({ ...row, occupancy: "active", lineageId: resource.lineageId,
+          custody: { state: "implement-child", holder: launch.holder, inFlightOperation: null }, launch: { slotToken: randomUUID(), deploymentDirectory: launch.deploymentDirectory, acquiredAt: this.#now() } }));
+      } else {
+        const { assessment } = this.#final(auth, records, capacity);
+        const author = this.#observed<RequirementsTestLaunch>(records, "test-process");
+        if (author.holder.deploymentId === launch.holder.deploymentId || !row.launch) throw workflowError();
+        const transfer = { resource, previousHolder: author.holder, holder: launch.holder, finalApprovalSha256: assessment.historySha256.at(-1), initialHeadSha: initialHead };
+        const pending = records.find((entry) => entry.step === "product-transfer" && entry.state === "intent");
+        if (pending && !same(pending.value, transfer)) throw workflowError();
+        if (!pending) this.#append(scope, auth, sha256, this.#load(auth, sha256), "product-transfer", "intent", transfer);
+        if (row.occupancy === "settled-retained") capacity.update(row, parseIdlePreparationReservation({ ...row, occupancy: "active", custody: { state: "orchestrator-direct", holder: launch.holder, inFlightOperation: null },
+          launch: { ...row.launch, deploymentDirectory: launch.deploymentDirectory } }));
+        else if (!pending || row.occupancy !== "active" || !same(row.custody.holder, launch.holder)) throw workflowError();
+        this.options.boundary?.("product-transfer:capacity-updated");
+        if (!records.some((entry) => entry.step === "product-transfer" && entry.state === "observed")) this.#append(scope, auth, sha256, this.#load(auth, sha256), "product-transfer", "observed", transfer);
+      }
+      this.#append(scope, auth, sha256, this.#load(auth, sha256), startStep, "intent", { resource, launch, launchSnapshot: initial });
+      if (role === "test") this.options.authority.recordEvent?.(scope, auth, { action: "test-holder-active", intentId: workflowDigest(JSON.stringify([auth.operationId, "reservation"])), resource, holder: launch.holder,
+        inventory: capacity.inventory(), registry: launch.registry, launchSnapshot: reference("launch-snapshot", initial) });
+      return true;
+    }, resource.worktreeRoot);
+    if (!release) return;
+    try {
+      await this.options.executor.startAsync!(launch, startIntent, signal);
+      this.#locked(auth, (capacity, scope) => {
+        const records = retained(); const row = this.#row(auth, capacity);
+        if (!same(this.#resource(auth, records, capacity), resource) || row.occupancy !== "active" || !same(row.custody.holder, launch.holder)) throw workflowError();
+        synchronous(() => this.options.executor.assertStarted(launch, startIntent));
+        const pending = records.find((entry) => entry.step === startStep && entry.state === "intent"); if (!pending) throw workflowError();
+        this.#append(scope, auth, sha256, records, startStep, "observed", pending.value);
+      }, resource.worktreeRoot);
+    } catch {
+      this.#locked(auth, (_capacity, scope) => {
+        const records = this.#load(auth, sha256);
+        if (!records.some((row) => row.step === startStep && row.state === "unknown")) this.#append(scope, auth, sha256, records, startStep, "unknown", { retained: true });
+      }, resource.worktreeRoot);
+      throw workflowError();
+    }
   }
   #launch(auth: TestAuthorization, digest: string, capacity: PreparedTicketCapacityTransaction, scope: PreparedLockScope, role: "test" | "product", resource: TestResource): RequirementsTestLaunch {
     const intentId = workflowDigest(JSON.stringify([auth.operationId, `${role}-process`]));
@@ -378,6 +506,7 @@ export class RequirementsTestNativeService {
       this.options.boundary?.("test-settlement:capacity-updated");
       refreshTicketLinkedBranchHead({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root, worktreeRoot: resource.worktreeRoot, ticketId: auth.repository.ticket,
         ticketStore: this.options.tickets, preparedCapacityOwner: capacity, runGit: git, settlement: { branch: auth.repository.branch, baseSha: auth.repository.baseSha, expectedHeadSha: auth.repository.selectedHeadSha, headSha: value.snapshot.head } });
+      this.options.authority.recordTestSettlement?.(scope, auth, resource, launch);
       this.#append(scope, auth, sha256, this.#load(auth, sha256), "test-settlement", "observed", value);
     });
   }
@@ -415,6 +544,20 @@ export class RequirementsTestNativeService {
   /** Same resource/reservation/lineage, exact approved test HEAD; no allocation,
    * reservation call, branch construction, legacy preparation or fallback. */
   continueProduct(operationId: string): Readonly<{ state: "product-active"; resource: TestResource; initialHeadSha: string }> { return nativeGuard(() => this.#continueProduct(operationId)); }
+  async continueProductAsync(operationId: string, signal?: AbortSignal): Promise<Readonly<{ state: "product-active"; resource: TestResource; initialHeadSha: string }>> {
+    try {
+      if (signal?.aborted || !this.options.executor.prepareAsync || !this.options.executor.startAsync) throw workflowError();
+      const { auth, sha256 } = this.#authorization(operationId);
+      const lease = this.#observed<TreehouseLeaseEvidence>(this.#load(auth, sha256), "allocation");
+      const final = this.#locked(auth, (capacity) => {
+        const records = this.#load(auth, sha256); const result = this.#final(auth, records, capacity); const row = this.#row(auth, capacity);
+        if (row.occupancy !== "settled-retained" && !(row.occupancy === "active" && records.some((entry) => entry.step === "product-transfer" && entry.state === "intent"))) throw workflowError();
+        return result;
+      }, lease.path);
+      await this.#asyncLifecycle(operationId, "product", final.resource, signal);
+      return Object.freeze({ state: "product-active", resource: final.resource, initialHeadSha: final.assessment.oracle!.testHeadSha });
+    } catch { throw workflowError(); }
+  }
   #continueProduct(operationId: string): Readonly<{ state: "product-active"; resource: TestResource; initialHeadSha: string }> {
     const { auth, sha256 } = this.#authorization(operationId);
     const initialRecords = this.#load(auth, sha256); const lease = this.#observed<TreehouseLeaseEvidence>(initialRecords, "allocation");
@@ -461,17 +604,24 @@ export class RequirementsTestNativeService {
   cancel(operationId: string): void { nativeGuard(() => this.#cancel(operationId)); }
   #cancel(operationId: string): void {
     const { auth, sha256 } = this.#authorization(operationId, false);
-    this.#locked(auth, (_capacity, scope) => {
+    this.#locked(auth, (capacity, scope) => {
       const records = this.#load(auth, sha256);
       if (!records.length) throw workflowError();
       if (!records.some((record) => record.step === "cancel")) this.#append(scope, auth, sha256, records, "cancel", "cancelled", { retained: true, evidence: reference("cancellation", auth.operationId) });
+      const launched = records.find((record) => record.step === "test-process" && record.state === "observed");
+      if (launched) this.options.executor.cancel?.(launched.value as RequirementsTestLaunch);
+      else if (records.some((record) => record.step === "test-process" && record.state === "intent") && this.options.executor.cancel) {
+        const resource = this.#resource(auth, records, capacity);
+        this.options.executor.cancel(this.options.executor.inspect("test", workflowDigest(JSON.stringify([auth.operationId, "test-process"])), resource));
+      }
     });
   }
   status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activation: false }> { return nativeGuard(() => this.#status(operationId)); }
   #status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activation: false }> {
     const { auth, sha256 } = this.#authorization(operationId, false);
     const records = this.#load(auth, sha256);
-    return Object.freeze({ schemaVersion: VERSION, state: !records.length ? "unrequested" : records.some((row) => ["unknown", "failed", "cancelled"].includes(row.state)) ? "blocked" : "retained",
+    return Object.freeze({ schemaVersion: VERSION, state: !records.length ? "unrequested" : records.some((row) => ["unknown", "failed", "cancelled"].includes(row.state)
+        || (row.state === "intent" && row.step !== "request" && !records.some((other) => other.step === row.step && other.state === "observed"))) ? "blocked" : "retained",
       effects: records.filter((row) => row.state === "observed").length, activation: false });
   }
 }
@@ -507,6 +657,268 @@ export function verifyRequirementsTestGit(auth: TestAuthorization, resource: Tes
     }
     if (realpathSync(part) !== part || workflowDigest(readReviewEvidenceFile(part, 16_777_216, "native test content")) !== file.sha256) throw workflowError();
   }
+}
+
+const AUTHORITY_VERSION = "requirements-test-native-authorization/v1";
+const POLICY_VERSION = "requirements-test-native-selection/v1";
+export interface PiRequirementsTestAuthorityOptions {
+  /** Isolated source-test seams only; never exposed by tool/CLI/env input. */
+  readonly native?: PiPreparedNativeAuthority;
+  readonly runtime?: () => PreparedNativeRuntime;
+  readonly authenticate?: (context: PiPreparationContext) => PiPreparationCaller;
+}
+/** Concrete operator capture/reader, sharing existing protected workflow storage.
+ * Dedicated qualification and explicit activation are NOT legacy post-final
+ * grants. Source checkout and env/public JSON cannot select production roots. */
+export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthority {
+  readonly native: PiPreparedNativeAuthority;
+  readonly #runtime: () => PreparedNativeRuntime;
+  readonly #authenticate: (context: PiPreparationContext) => PiPreparationCaller;
+  constructor(options: PiRequirementsTestAuthorityOptions = {}) {
+    this.native = options.native ?? new PiPreparedNativeAuthority();
+    this.#runtime = options.runtime ?? currentPreparedNativeRuntime;
+    this.#authenticate = options.authenticate ?? ((context) => authenticatePiPreparationCaller(context, process.env));
+  }
+  #store(): ProtectedWorkflowStore { const store = this.native.operations(); if (!store) throw workflowError(); return store; }
+  #publish(repo: { key: string; root: string }, id: string, value: unknown): void {
+    withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: repo.key, canonicalRepoRoot: repo.root }, () => run()), worktree: (run) => run() }, (scope) => this.#store().publish(scope, `${id}.intent.json`, value));
+  }
+  #facts(): PreparedNativeRuntime {
+    const value = this.#runtime(); workflowSha(value.sourceSha, 40); workflowSha(value.configSha, 40);
+    if (!value.packageVersion || realpathSync(value.storeRoot) !== value.storeRoot) throw workflowError(); return value;
+  }
+  #qualification(): SourceVersion {
+    const facts = this.#facts(); const id = workflowDigest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
+    const value = this.#store().read(`${id}.intent.json`);
+    const row = workflowObject(value, ["schemaVersion", "runtime", "native", "installed", "pairing", "toolsAuditDecision"]);
+    if (row.schemaVersion !== "requirements-test-native-qualification/v1" || !same(row.runtime, facts)) throw workflowError();
+    for (const kind of ["native", "installed", "pairing", "toolsAuditDecision"]) {
+      const ref = parseSourceVersion(row[kind]); const match = /^requirements-test-qualification-evidence:([0-9a-f]{64})$/.exec(ref.ref);
+      if (!match || ref.version !== "requirements-test-qualification-evidence/v1") throw workflowError();
+      const evidence = this.#store().read(`${match[1]}.intent.json`);
+      const item = workflowObject(evidence, ["schemaVersion", "runtime", "kind", "source", "outcome"]);
+      if (item.schemaVersion !== ref.version || !same(item.runtime, facts) || item.kind !== kind || item.outcome !== "qualified"
+        || workflowDigest(JSON.stringify(evidence)) !== ref.sha256) throw workflowError();
+      parseSourceVersion(item.source);
+    }
+    return reference("qualification", value);
+  }
+  #policyId(repo: { key: string; root: string }): string { return workflowDigest(JSON.stringify([POLICY_VERSION, repo, this.#facts()])); }
+  selection(caller: PiPreparationCaller): Readonly<{ active: boolean; runtime: PreparedNativeRuntime; qualification: SourceVersion }> {
+    const runtime = this.#facts(), qualification = this.#qualification(); const id = this.#policyId({ key: caller.repoKey, root: caller.repoRoot });
+    if (!this.#store().records().includes(`${id}.intent.json`)) return Object.freeze({ active: false, runtime, qualification });
+    const row = workflowObject(this.#store().read(`${id}.intent.json`), ["schemaVersion", "repoKey", "repoRoot", "runtime", "qualification", "caller", "decisionId"]);
+    if (row.schemaVersion !== POLICY_VERSION || row.repoKey !== caller.repoKey || row.repoRoot !== caller.repoRoot || !same(row.runtime, runtime) || !same(row.qualification, qualification)) throw workflowError();
+    workflowSha(row.decisionId); return Object.freeze({ active: true, runtime, qualification });
+  }
+  async select(context: PiPreparationContext, signal?: AbortSignal): Promise<void> {
+    const caller = this.#authenticate(context); const preview = this.selection(caller);
+    if (context.mode !== "tui" || !context.ui?.select || preview.active || signal?.aborted) throw workflowError();
+    const accept = "Activate only this qualified requirements-test pair";
+    const answer = await context.ui.select(`Separate new-route activation, NOT test approval or product approval: ${JSON.stringify(preview)}. Tools/audit only, NOT a sandbox.`, [accept, "Cancel"], signal ? { signal } : undefined);
+    if (signal?.aborted || answer !== accept) throw workflowError();
+    const fresh = this.#authenticate(context);
+    if (!same(fresh, caller) || !same(this.selection(fresh), preview)) throw workflowError();
+    this.#publish({ key: caller.repoKey, root: caller.repoRoot }, this.#policyId({ key: caller.repoKey, root: caller.repoRoot }), { schemaVersion: POLICY_VERSION, repoKey: caller.repoKey, repoRoot: caller.repoRoot, runtime: preview.runtime,
+      qualification: preview.qualification, caller, decisionId: workflowDigest(randomUUID()) });
+  }
+  environmentSources(): readonly { name: "CI" | "LANG" | "TZ" | "PATH"; source: SourceVersion }[] {
+    return (["CI", "LANG", "TZ", "PATH"] as const).map((name) => ({ name, source: reference(`environment-${name}`, this.#environment()[name]) }));
+  }
+  #environment(): Record<"CI" | "LANG" | "TZ" | "PATH", string> {
+    const directories = [...new Set((process.env.PATH ?? "").split(":").filter(Boolean).flatMap((path) => {
+      try { const physical = realpathSync(path); const info = lstatSync(physical);
+        return info.isDirectory() && info.uid === 0 && !(info.mode & 0o022) && (physical.startsWith("/nix/store/") || physical === "/usr/bin" || physical === "/bin") ? [physical] : [];
+      } catch { return []; }
+    }))];
+    if (!directories.length) throw workflowError();
+    return { CI: "1", LANG: "C.UTF-8", TZ: "UTC", PATH: directories.join(":") };
+  }
+  checkEnvironment(auth: TestAuthorization, checkId: string): NodeJS.ProcessEnv {
+    const check = auth.checks.find((entry) => entry.id === checkId); if (!check || !check.environment.some((item) => item.name === "PATH")) throw workflowError();
+    const values = this.#environment(); const result: NodeJS.ProcessEnv = {};
+    for (const item of check.environment) { if (!same(item.source, reference(`environment-${item.name}`, values[item.name]))) throw workflowError(); result[item.name] = values[item.name]; }
+    return result;
+  }
+  #sources(auth: TestAuthorization): void {
+    const ticket = this.native.tickets().get(auth.repository.ticket); if (!ticket || ticket.project !== auth.repository.key) throw workflowError();
+    for (const source of [auth.contract, auth.assertions, ...auth.checks.map((check) => check.input)]) {
+      const path = source.ref.replace(/^(?:requirements|uat):/, "");
+      if (!path.startsWith("agent-teams/requirements/artifacts/") || /[\\\\%?#\x00-\x1f]/.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")
+        || !ticket.doc_refs.some((ref) => ref.path === path)) throw workflowError();
+      const actual = resolve(this.native.aiUsageRoot, path);
+      if (workflowDigest(readReviewEvidenceFile(actual, 1_048_576, "native test approval source")) !== source.sha256) throw workflowError();
+    }
+  }
+  #parent(auth: TestAuthorization): void {
+    const status = queryDeploymentStatus(auth.parent.holder.deploymentId);
+    const registered = loadRepoEntry(auth.repository.key);
+    if (!registered || registered.path !== auth.repository.root || realpathSync(auth.repository.root) !== auth.repository.root
+      || !status || status.status !== "running" || status.team !== "requirements" || status.mode !== "analyze" || status.runtime !== "pi" || status.binary !== "ppa"
+      || status.rogue_one || status.builder_authority || status.repository_slot || status.requirements_test
+      || status.treehouse_path || status.ticket_slot_id || status.repository_permit || status.review_checkout
+      || status.ticket_id !== auth.repository.ticket || status.repo_root !== auth.repository.root || status.repo !== auth.repository.root || status.worktree_root !== auth.repository.root
+      || status.pid !== auth.parent.holder.process.pid || !same(readProcessFingerprint(status.pid), auth.parent.holder.process)) throw workflowError();
+  }
+  #binding(auth: TestAuthorization): void {
+    this.#parent(auth); this.#sources(auth);
+    for (const check of auth.checks) this.checkEnvironment(auth, check.id);
+    const caller = { deploymentId: auth.parent.holder.deploymentId, repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, callerIdentity: "0".repeat(64) };
+    const selection = this.selection(caller); const facts = selection.runtime;
+    if (!selection.active || auth.pair.runtimeSha !== facts.sourceSha || auth.pair.configSha !== facts.configSha || !same(auth.pair.qualification, selection.qualification)) throw workflowError();
+    const qualificationId = workflowDigest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
+    const qualification = this.#store().read(`${qualificationId}.intent.json`) as { toolsAuditDecision: SourceVersion };
+    if (!same(auth.pair.toolsAuditDecision, qualification.toolsAuditDecision)) throw workflowError();
+  }
+  #id(operationId: string): string { return workflowDigest(JSON.stringify([AUTHORITY_VERSION, workflowSha(operationId)])); }
+  async capture(context: PiPreparationContext, raw: string, toolCallId: string, signal?: AbortSignal): Promise<TestAuthorization> {
+    const auth = parseTestAuthorization(raw); const caller = this.#authenticate(context);
+    this.#binding(auth);
+    const current = readProcessFingerprint(process.pid);
+    if (context.mode !== "tui" || !context.ui?.select || signal?.aborted || !current
+      || caller.deploymentId !== auth.parent.holder.deploymentId || caller.repoKey !== auth.repository.key || caller.repoRoot !== auth.repository.root || caller.ticket !== auth.repository.ticket
+      || !processIsWithinFingerprintLineage(process.pid, auth.parent.holder.process) || !toolCallId || toolCallId.length > 256) throw workflowError();
+    const accept = "Approve this exact test-only authorization";
+    const answer = await context.ui.select(`STANDALONE TEST-ONLY decision. No product implementation, credentials, production, delegation or return. Tools/audit, NOT a sandbox. Exact raw SHA256 ${workflowDigest(raw)}; complete packet ${raw}`, [accept, "Cancel"], signal ? { signal } : undefined);
+    if (signal?.aborted || answer !== accept || !same(this.#authenticate(context), caller)) throw workflowError();
+    this.#binding(auth);
+    if (executionBoundStop(auth.bounds, new Date().toISOString())) throw workflowError();
+    this.#publish(auth.repository, this.#id(auth.operationId), { schemaVersion: AUTHORITY_VERSION, raw, authorizationSha256: workflowDigest(raw), caller, process: current, toolCallId, decisionId: workflowDigest(randomUUID()), capturedAt: new Date().toISOString() });
+    this.assertAuthorization(auth, workflowDigest(raw)); return auth;
+  }
+  #record(operationId: string): Record<string, unknown> {
+    const row = workflowObject(this.#store().read(`${this.#id(operationId)}.intent.json`), ["schemaVersion", "raw", "authorizationSha256", "caller", "process", "toolCallId", "decisionId", "capturedAt"]);
+    if (row.schemaVersion !== AUTHORITY_VERSION || typeof row.raw !== "string" || workflowDigest(row.raw) !== row.authorizationSha256 || parseTestAuthorization(row.raw).operationId !== operationId) throw workflowError();
+    workflowSha(row.decisionId); workflowTimestamp(row.capturedAt); return row;
+  }
+  readAuthorization(operationId: string): string { return this.#record(operationId).raw as string; }
+  authorizationDecision(auth: TestAuthorization): SourceVersion { return reference("operator-test-only-decision", this.#record(auth.operationId)); }
+  assertRetainedAuthorization(auth: TestAuthorization, rawSha256: string): void {
+    const row = this.#record(auth.operationId);
+    if (row.authorizationSha256 !== rawSha256 || !same(parseTestAuthorization(row.raw as string), auth)) throw workflowError();
+  }
+  assertAuthorization(auth: TestAuthorization, rawSha256: string): void {
+    this.assertRetainedAuthorization(auth, rawSha256); this.#binding(auth);
+    if (this.#store().records().some((name) => {
+      const row = this.#store().read(name) as Record<string, unknown>;
+      return row.schemaVersion === VERSION && row.operationId === auth.operationId && row.step === "cancel";
+    })) throw workflowError();
+  }
+  /** History is read from the same service-owned store, never a tool prefix. */
+  readFinalHistory(auth: TestAuthorization): readonly string[] {
+    const id = workflowDigest(JSON.stringify(["requirements-test-native-history/v1", auth.operationId]));
+    const names = this.#store().records().filter((name) => name.startsWith(`${id}.`));
+    const result: string[] = [];
+    for (let i = 1; i <= names.length; i++) {
+      const value = this.#store().read(`${id}.transaction-${i}.json`); const row = workflowObject(value, ["raw", "sha256"]);
+      if (typeof row.raw !== "string" || workflowDigest(row.raw) !== row.sha256) throw workflowError();
+      const event = parseTestWorkflowEvent(row.raw); if (event.operationId !== auth.operationId || event.sequence !== i) throw workflowError(); result.push(row.raw);
+    }
+    assessTestWorkflow(this.readAuthorization(auth.operationId), result); return Object.freeze(result);
+  }
+  recordEvent(scope: PreparedLockScope, auth: TestAuthorization, data: TestEventData): void {
+    const raw = this.readAuthorization(auth.operationId); this.assertRetainedAuthorization(auth, workflowDigest(raw));
+    const history = this.readFinalHistory(auth); const prior = history.map((entry) => parseTestWorkflowEvent(entry)).find((entry) => entry.data.action === data.action);
+    if (prior) { if (!same(prior.data, data)) throw workflowError(); return; }
+    const recorded = Math.max(auth.elapsedMs, Date.now() - Date.parse(auth.bounds.startedAt), history.length ? parseTestWorkflowEvent(history.at(-1)!).elapsedMs : 0);
+    const entry = { schemaVersion: "requirements-test-workflow/v1", kind: "event", operationId: auth.operationId, authorizationSha256: workflowDigest(raw), sequence: history.length + 1,
+      previousSha256: workflowDigest(history.at(-1) ?? raw), bounds: auth.bounds, retriesUsed: auth.retriesUsed, elapsedMs: recorded,
+      evidence: reference("native-sequence", { operationId: auth.operationId, sequence: history.length + 1, data }), data };
+    const next = JSON.stringify(entry); assessTestWorkflow(raw, [...history, next]);
+    const id = workflowDigest(JSON.stringify(["requirements-test-native-history/v1", auth.operationId]));
+    this.#store().publish(scope, `${id}.transaction-${history.length + 1}.json`, { raw: next, sha256: workflowDigest(next) });
+  }
+  recordTestSettlement(scope: PreparedLockScope, auth: TestAuthorization, resource: TestResource, launch: RequirementsTestLaunch): void {
+    const history = this.readFinalHistory(auth);
+    if (history.some((raw) => parseTestWorkflowEvent(raw).data.action === "test-settled")) return;
+    const status = queryDeploymentStatus(launch.holder.deploymentId);
+    if (readProcessFingerprint(launch.holder.process.pid) || !status || !["success", "partial", "failed", "crashed"].includes(status.status)
+      || status.pid !== launch.holder.process.pid || status.requirements_test?.operationId !== auth.operationId || status.requirements_test.authorizationSha256 !== workflowDigest(this.readAuthorization(auth.operationId))) throw workflowError();
+    const head = snapshot(resource.worktreeRoot); if (head.dirty || head.branch !== auth.repository.branch) throw workflowError();
+    const commits = git(["rev-list", "--reverse", `${auth.repository.selectedHeadSha}..${head.head}`], resource.worktreeRoot).toString("utf8").trim().split("\n").filter(Boolean);
+    const evidence: TestGitEvidence = { baseSha: auth.repository.baseSha, initialHeadSha: auth.repository.selectedHeadSha, testHeadSha: head.head,
+      ancestry: [auth.repository.baseSha, ...git(["rev-list", "--reverse", "--ancestry-path", `${auth.repository.baseSha}..${auth.repository.selectedHeadSha}`], resource.worktreeRoot).toString("utf8").trim().split("\n").filter(Boolean)],
+      commits: commits.map((sha) => {
+        const parentSha = git(["show", "-s", "--format=%P", sha], resource.worktreeRoot).toString("utf8").trim();
+        const paths = git(["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", parentSha, sha], resource.worktreeRoot).toString("utf8").split("\0").filter(Boolean);
+        const content = (at: string, path: string): string | null => git(["ls-tree", "-z", at, "--", path], resource.worktreeRoot).length ? workflowDigest(git(["show", `${at}:${path}`], resource.worktreeRoot)) : null;
+        return { sha, parentSha, changes: paths.map((path) => ({ path, previousPath: null, beforeSha256: content(parentSha, path), afterSha256: content(sha, path) })) };
+      }), files: auth.paths.map((entry) => ({ path: entry.path, sha256: workflowDigest(git(["show", `${head.head}:${entry.path}`], resource.worktreeRoot)) })), porcelainV2Base64: head.statusPorcelainV2Base64!, inventory: reference("native-git-inventory", head) };
+    verifyRequirementsTestGit(auth, resource, evidence);
+    const native = new NativeExecutionEvidence(this.#store(), join(this.native.root, "operations"), { repository: (run) => run(), worktree: (run) => run() });
+    const checks = this.#store().records().map((name) => this.#store().read(name) as { kind?: string; payload?: { authorizationSha256: string; check: unknown; candidate: string; result: NativeProcessResult; startedAt: string; finishedAt: string } })
+      .filter((row) => row.kind === "requirements-test-check" && row.payload?.authorizationSha256 === workflowDigest(this.readAuthorization(auth.operationId))).map((row) => row.payload!);
+    if (checks.length !== auth.checks.length) throw workflowError();
+    const results: TestProcessResult[] = auth.checks.map((check) => {
+      const matches = checks.filter((row) => same(row.check, check)); if (matches.length !== 1) throw workflowError(); const found = matches[0]!; const process = found.result;
+      const frame = workflowObject(native.read(process.frame, "process-frame"), ["intent", "process", "groupId", "sessionId", "executable"]);
+      const stdout = native.blob(process.stdout); const stderr = native.blob(process.stderr);
+      // Native harness protocol reserves 42 for a completed intended assertion
+      // rejection. Ordinary import/runner exits (normally 1) and stderr faults
+      // cannot be relabelled RED by an earlier stdout marker.
+      if (process.exitCode !== (check.kind === "baseline" ? 0 : 42) || stderr.length !== 0) throw workflowError();
+      const observation = workflowObject(parseReviewEvidenceJson(stdout, "native test assertion frame"), ["schemaVersion", "assertion", "outcome", "reason"]);
+      if (observation.schemaVersion !== "requirements-test-assertion/v1" || !process.groupSettled || found.candidate !== head.head) throw workflowError();
+      const started = Date.parse(found.startedAt) - Date.parse(auth.bounds.startedAt), finished = Date.parse(found.finishedAt) - Date.parse(auth.bounds.startedAt);
+      return { checkId: check.id, command: check.command, cwd: check.cwd, environment: check.environment, candidateSha: found.candidate, input: check.input,
+        process: { deploymentId: launch.holder.deploymentId, process: frame.process as ExecutionHolder["process"] }, stdout: reference("native-stdout", process.stdout), stderr: reference("native-stderr", process.stderr), assertionEvidence: reference("native-assertion", observation),
+        exitCode: process.exitCode, signal: process.signal, disposition: process.timedOut ? "timeout" : process.aborted ? "cancelled" : "exited", startedElapsedMs: started, finishedElapsedMs: finished, durationMs: finished - started,
+        outputBytes: process.stdout.bytes + process.stderr.bytes, truncated: process.outputLimitExceeded, observations: [{ assertion: String(observation.assertion), outcome: observation.outcome as TestProcessResult["observations"][number]["outcome"], reason: String(observation.reason) }] };
+    });
+    this.recordEvent(scope, auth, { action: "test-settled", holder: launch.holder, settlement: reference("actual-process-and-registry-terminal", { launch, status: status.status }), git: evidence, results });
+  }
+  async captureReview(context: PiPreparationContext, operationId: string, finalRequirements?: string, signal?: AbortSignal): Promise<void> {
+    const caller = this.#authenticate(context); const auth = parseTestAuthorization(this.readAuthorization(operationId));
+    this.#binding(auth); const history = this.readFinalHistory(auth), assessment = assessTestWorkflow(this.readAuthorization(operationId), history);
+    const settled = history.map((raw) => parseTestWorkflowEvent(raw).data).find((data) => data.action === "test-settled");
+    if (!assessment.resource || !settled || settled.action !== "test-settled") throw workflowError();
+    verifyRequirementsTestGit(auth, assessment.resource, settled.git);
+    if (context.mode !== "tui" || !context.ui?.select || signal?.aborted || caller.deploymentId !== auth.parent.holder.deploymentId || !assessment.oracle) throw workflowError();
+    let data: TestEventData;
+    if (finalRequirements === undefined) {
+      if (assessment.state !== "test-settled") throw workflowError();
+      const accept = "Sinh independently approves this exact oracle and wrong-output control";
+      const answer = await context.ui.select(`Independent non-author oracle review, not child self-approval or product UAT. Inspect original outcome, exact test bytes and plausible intact wrong-output control: ${JSON.stringify(assessment.oracle)}. Complete private history: ${JSON.stringify(history)}.`, [accept, "Cancel"], signal ? { signal } : undefined);
+      if (answer !== accept || !context.ui.input) throw workflowError();
+      const outcomeRationale = await context.ui.input("Sinh: why do these exact tests express the original recipient outcome?", undefined, signal ? { signal } : undefined);
+      const wrongOutputRationale = await context.ui.input("Sinh: why is the intact wrong-output control plausible and effectively rejected?", undefined, signal ? { signal } : undefined);
+      if (!outcomeRationale?.trim() || !wrongOutputRationale?.trim() || outcomeRationale.length > 2000 || wrongOutputRationale.length > 2000) throw workflowError();
+      data = { action: "oracle-reviewed", oracle: assessment.oracle, reviewer: "sinh", delegation: null, decision: reference("native-oracle-decision", { caller, id: randomUUID(), oracle: assessment.oracle }), outcomeRationale, wrongOutputRationale };
+    } else {
+      if (assessment.state !== "oracle-reviewed") throw workflowError();
+      const pair = this.native.preview(caller, finalRequirements);
+      const accept = "Approve this exact final pair, matrix and reviewed oracle for product continuation";
+      const answer = await context.ui.select(`Separate final whole-document decision, NOT test authorization. Exact final pair ${JSON.stringify(pair)}; exact reviewed oracle ${JSON.stringify(assessment.oracle)}.`, [accept, "Cancel"], signal ? { signal } : undefined);
+      if (answer !== accept || !same(this.native.preview(caller, finalRequirements), pair)) throw workflowError();
+      data = { action: "final-approved", owner: "sinh", oracle: assessment.oracle, reviewSha256: workflowDigest(history.at(-1)!), pair: { requirements: pair.requirements, uat: pair.uat, matrix: pair.matrix,
+        matrixApproval: reference("native-matrix-approval", pair.matrixApprovalEvidence), finalChecks: pair.finalChecks, finalCheckCount: 13 }, decision: reference("native-final-pair-decision", { caller, id: randomUUID(), pair, oracle: assessment.oracle }) };
+    }
+    if (signal?.aborted || !same(this.#authenticate(context), caller) || !same(this.readFinalHistory(auth), history)) throw workflowError(); this.#binding(auth);
+    withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, () => run()), worktree: (run) => run() }, (scope) => {
+      if (!same(this.readFinalHistory(auth), history)) throw workflowError(); this.recordEvent(scope, auth, data);
+    });
+  }
+  assertFinalApproval(auth: TestAuthorization, assessment: TestWorkflowAssessment): void {
+    const history = this.readFinalHistory(auth);
+    if (assessment.state !== "final-approved" || !same(assessTestWorkflow(this.readAuthorization(auth.operationId), history), assessment)) throw workflowError();
+    const final = parseTestWorkflowEvent(history.at(-1)!).data;
+    if (final.action !== "final-approved") throw workflowError();
+    const caller = { deploymentId: auth.parent.holder.deploymentId, repoKey: auth.repository.key, repoRoot: auth.repository.root, ticket: auth.repository.ticket, callerIdentity: "0".repeat(64) };
+    const pair = this.native.preview(caller, final.pair.requirements.ref);
+    if (!same(final.pair.requirements, pair.requirements) || !same(final.pair.uat, pair.uat) || !same(final.pair.matrix, pair.matrix) || !same(final.pair.finalChecks, pair.finalChecks)
+      || !same(final.pair.matrixApproval, reference("native-matrix-approval", pair.matrixApprovalEvidence))) throw workflowError();
+  }
+  readPreviousAuthorization(auth: TestAuthorization): string {
+    if (!auth.amendment) throw workflowError();
+    const rows = this.#store().records().map((name) => this.#store().read(name) as Record<string, unknown>).filter((row) => row.schemaVersion === AUTHORITY_VERSION && row.authorizationSha256 === auth.amendment!.previousAuthorizationSha256);
+    if (rows.length !== 1 || typeof rows[0]!.raw !== "string") throw workflowError(); return rows[0]!.raw;
+  }
+  assertAmendment(previous: TestAuthorization, next: TestAuthorization): void {
+    this.assertAuthorization(next, workflowDigest(this.readAuthorization(next.operationId)));
+    if (!same(parseTestAuthorization(this.readPreviousAuthorization(next)), previous)) throw workflowError();
+    testWorkflowInvalidation(this.readAuthorization(previous.operationId), this.readAuthorization(next.operationId), this.readFinalHistory(previous));
+  }
+  assertCapacityRetry(_auth: TestAuthorization, _decision: SourceVersion, _failure: SourceVersion, _retriesUsed: number): void { throw workflowError(); }
 }
 
 /** Actual foreground caller authentication is reused, not an env route selector.

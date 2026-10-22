@@ -25,7 +25,7 @@ export * from "./deploy/index.js";
 export * from "./deploy/runtime-config.js";
 // Pure grammar/replay only; no constructor, authority injection or route activation.
 export { parseTestAuthorization, parseTestWorkflowEvent, assessTestWorkflow, testWorkflowInvalidation, requirementsTestCapability } from "./deploy/requirements-test-workflow.js";
-export type { TestAuthorization, TestResource, TestWorkflowEvent, TestGitEvidence, TestWorkflowAssessment } from "./deploy/requirements-test-workflow.js";
+export type { TestAuthorization, TestResource, TestWorkflowEvent, TestGitEvidence, TestWorkflowAssessment, TestEventData, TestProcessResult } from "./deploy/requirements-test-workflow.js";
 export * from "./agent-api/index.js";
 export * from "./serve-lifecycle.js";
 export * from "./semantic/index.js";

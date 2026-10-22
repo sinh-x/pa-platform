@@ -1,6 +1,6 @@
 # requirements-test-workflow/v1 — phase-1 contract
 
-Status: **staged, inactive; phase-1 source model plus phase-2 internal native transaction adapter**. Owner: PAP-265, approved requirements
+Status: **staged, inactive; source model, native capture/dedicated test custody/SDK composition; phase 2 remains unaccepted**. Owner: PAP-265, approved requirements
 `2026-10-22-pap-265-requirements-tested-oracle.md`, section 13 phase 1;
 approval `PAP-265#c-20261021223147279`. Audience: core contract, Pi native launcher,
 capacity/custody, assertion collector and PAPC-065 consumer implementors.
@@ -24,9 +24,12 @@ its stronger confinement wording before any activation.
 
 `requirementsTestCapability(unknown)` always returns
 `{enabled:false,legacyUnchanged:true,reason:"unqualified-inactive"}` without reading
-its argument. There is no activation flag, environment selector, authority-root
-parameter, callback-based authority injector, public request command, constructor,
-new approval database or parallel reservation owner in this phase. Helpers are not
+its argument. This is a pure-model descriptor, not the native selection reader.
+There is no CLI activation flag, environment selector, model-selected authority
+root, new approval database or parallel reservation owner. Native-only foreground
+selection and standalone capture are described below; they require independently
+produced exact installed/pair qualification and are not exercised on a real ticket
+by this implementation. Helpers are not
 exported wholesale from the package index. Phase 2 selectively exports pure
 parsers/replay/types for the Pi consumer; none authenticates a caller or admits effects. Existing fresh/amendment/preparation/review
 contracts, OPA/CPA, auto/spike, signing/hooks, review caps and inactive PAP-254 retain
@@ -219,8 +222,11 @@ Worktree differs from canonical root; lease holder equals
 `pa:<repository.key>:<repository.ticket>`, permit 1–4. All fields, not just branch or
 HEAD, remain equal during continuation. Missing/stale resources block, never legacy
 fallback/create/reacquisition. Reservation is the **existing**
-`IdlePreparationReservation` schema, parsed by its owner. Inventory 1–4 rows reuses
-`assertReservationInventory`, including idle/settled-retained resources. Unique
+`IdlePreparationReservation` schema, parsed by its owner. A complete inventory
+also accepts strict existing `RepositoryTicketSlot` rows from the same owner;
+these remain occupied legacy slots, never test authority. Inventory 1–4 rows reuses
+`assertReservationInventory` for prepared rows and `parseRepositoryTicketSlot` for
+legacy rows, including idle/settled-retained resources. Unique
 canonical ticket/operation/reservation/permit/lineage; same canonical key/root.
 The matching active row binds operation/reservation/permit/lineage and exactly one
 custody holder with no in-flight operation. Existing `implement-child` custody is
@@ -347,18 +353,20 @@ activation is executed by this source suite.
 `packages/pi-pa/src/requirements-test-native.ts` composes the existing
 `ProtectedWorkflowStore`, shared ticket capacity, vacant/execution worktree mutexes,
 `TreehouseClient` and exact-base ticket materialization. It is not a public CLI,
-new generic builder mode, activation method or core authority export.
-`requestPiRequirementsTestNative` reuses foreground caller authentication and then
-rejects the inactive capability. Generic product preparation explicitly rejects
+new generic builder mode or core authority export.
+The historical `requestPiRequirementsTestNative` preflight helper still rejects the
+pure inactive descriptor. The dedicated native tool below is a distinct composed
+boundary, not a generic deployment flag or a legacy preparation grant. Generic product preparation explicitly rejects
 retained test intents/reservations, including missing-resource and cancelled cases;
 no legacy reconstruction or second reservation is allowed.
 
 The internal `RequirementsTestNativeService` requires native authority and executor
 ports. Those are trusted embedding dependencies, NOT JSON/environment/tool options.
-No default success executor/approval producer is installed. Native operator capture,
-complete result/audit/oracle/final-pair producers belong to phase 3; exact installed
-qualification, SDK composition and separate activation belong to phase 4/later
-rollout. Source fixtures supplying these ports do not establish installed readiness.
+No default success executor/approval producer is installed. The native capture,
+restricted SDK definitions and dedicated registry owner below now supply concrete
+producers. Complete phase-3 validation, actual installed qualification, model
+transport and product-holder admission remain separate incomplete boundaries.
+Source fixtures supplying dependencies do not establish installed readiness.
 
 Authority must independently authenticate original approved bytes, live foreground
 canonical parent, separate exact test-only approval and pair; retained settlement
@@ -401,19 +409,19 @@ objective digest pointer to the entire transport binding. Existing Treehouse
 registry fields require builder authority and are deliberately NOT reused. This
 ordinary lifecycle pointer is NOT authority or dedicated custody; copied public
 text cannot make `restrictedHolderReady` true or release executable work. A
-supported dedicated resource/custody correlation producer remains unimplemented,
-as do native operator approval, shared-owner reservation authentication and the
-restricted runner. Settlement requires actual matching process absence,
+dedicated resource/custody correlation is deliberately absent from this historical
+inert class. The separate composed owner below adds it without relabelling this
+ordinary objective pointer or changing this class's unconditional release denial. Settlement requires actual matching process absence,
 original stopped receipt AND an exactly correlated explicit terminal registry row;
 registry-only, crash-without-receipt and missing/unknown settlement remain blocked.
 The transport never writes a success registry marker or releases a shared permit.
 `release` remains unconditionally unreachable, even with exact parked/registry
 facts: no generic Pi prompt can fill the missing restricted executor.
 
-Production composition is still incomplete: the synchronous native transaction
-executor port is not yet adapted to this asynchronous transport, native operator/
-qualified restricted-tool producers are absent, and same-reservation product
-transfer needs their authenticated composition. No live new-route launch, installed
+This historical inert transport remains incomplete as an executor. The new async
+service and restricted SDK owner below are separate from it; neither converts an
+inert acknowledgement into qualified readiness. Same-reservation production product
+admission and installed qualification remain incomplete. No live new-route launch, installed
 qualification, final-approval chronology, human UAT or activation is claimed by
 these source transport tests. They use real inert processes with explicitly
 fixture-authored registry rows and exercise actual process-birth/death, premature
@@ -453,3 +461,99 @@ Critical/Major findings, accepted Minor rationale, configuration/model evidence,
 actual native SDK/process observations, actual human/browser/Obsidian access and
 operator activation must each retain distinct provenance. Help/status/source
 fixtures/file existence/merge/HTML generation prove none of the other classes.
+
+## Native composition continuation — still unaccepted/inactive
+
+`pa_requirements_test` is registered only for foreground Pi requirements/analyze.
+Every request uses an exact `schemaVersion:"requirements-test-native/v1"` and a
+strict discriminated object (unknown fields reject):
+
+- `{schemaVersion,action:"selection-status"|"activate"}`: inspect exact native
+  qualification, or show a separate native operator selection dialog. Neither
+  public JSON nor this method can produce qualification.
+- `{schemaVersion,action:"authorize",authorization:<raw JSON string>}`: a separate
+  native test-only dialog displays the complete packet and raw SHA-256. Fresh
+  caller, process, sources, pair and environment rereads precede immutable capture.
+- `{schemaVersion,action:"request"|"status"|"cancel"|"settle"|"review-oracle",operationId:<digest>}`.
+- `{schemaVersion,action:"approve-final",operationId:<digest>,requirements:<attached final source ref>}`.
+
+There is no product-launch, generic shell, delegation, authority-root or arbitrary
+record option. Public lifecycle HTTP JSON cannot mint `requirementsTest` custody.
+Missing/malformed/unqualified native policy blocks; no activation occurs in this
+implementation run. The pure model's `runtimeAuthorized:false` remains accurate.
+
+`PiRequirementsTestAuthority` resolves fixed native roots through the existing
+`PiPreparedNativeAuthority` store and independently pins installed Nix provenance
+and clean exact config revision. Dedicated qualification requires four protected
+source-bound evidence records (`native`, `installed`, `pairing`, `toolsAuditDecision`)
+for those exact facts. It is not today's prepared policy or post-final grant.
+Qualification production/installed assessment remain phase-4 work; fixture
+qualification records are explicitly synthetic and cannot qualify the installed
+route. Activation is a distinct exact native UI capture. Test authorization then
+requires the actual live foreground canonical requirements parent, exact registered
+ticket and attached raw contract/assertion/input sources. Environment references
+resolve only native non-secret `CI`, `LANG`, `TZ` and root-owned physical `PATH`
+entries. A check must bind PATH; no credentials, inherited deployment/task/activity
+principals or caller-selected literal values enter its process environment.
+
+The concrete `PiRestrictedTestExecutor` publishes a dedicated immutable process
+intent before spawn. Registry `requirements_test` serializes exactly
+`{schemaVersion:"requirements-test-custody/v1",operationId,authorizationSha256,
+intentId,parentDeploymentId,repoKey,repoRoot,worktreeRoot,ticket,branch,baseSha,
+initialHeadSha,leaseId,leaseHolder,reservationId,lineageId,repositoryPermit}`.
+It round-trips through registry events/status and is immutable across terminal
+publication. Builder/review authority, repository slots and legacy Treehouse
+correlation fields cannot mix with it. This correlation is identity, not approval.
+The actual child has to agree with the shared retained reservation, its process
+incarnation and registry role before release.
+
+`requestAsync` and `continueProductAsync` persist exclusive intent barriers under
+short synchronous capacity/worktree/publication transactions, release those locks
+for bounded async prepare/start, then reacquire and reread before publication or
+custody release. Expired transaction handles never cross await. Lost responses
+inspect the same intent; they cannot respawn or repeat an unproven release. Actual
+process absence plus matching terminal registry/owner records are mandatory for
+settlement. Cancellation records retain custody/resources and revoke new native
+actions; no cleanup/return is introduced.
+
+The dedicated process constructs a genuine Pi SDK session with no discovered
+extensions, context, skills, prompts, user settings or credential store. Its only
+active definitions are SDK-backed exact-path `write`/`edit`, exact-path `read` and
+`check({checkId})`. There is no bash, deploy, branch or arbitrary-environment tool.
+Lower file operations use no-follow dirfd traversal and reject hardlink/symlink
+aliases. Ignored approved paths and mismatched existing/new file identities reject
+before tools are parked, rather than escaping the ordinary complete Git audit.
+Every operation preserves intent, original failures and full NUL-safe
+before/after inventory/content identities; intervening commits are independently
+read, including both rename endpoints. Native checks preserve actual process-frame,
+separate private streams, exit/signal/deadline/cancel/output evidence. Stdout/stderr
+share one total approved budget. Public reading excerpts are redacted/bounded;
+reading truncation is not raw-result completion. Observable scope escape blocks
+readiness with retained evidence, not rollback. **This is not an OS sandbox.**
+
+Native assertion collection accepts one strict raw stdout JSON object:
+`{schemaVersion:"requirements-test-assertion/v1",assertion,outcome,reason}`.
+The native protocol requires empty stderr and exit 0 for a satisfied baseline or
+reserved exit 42 for a completed violated feature/control assertion. An earlier
+stdout marker followed by an ordinary import/runner exit cannot count as RED.
+Only exact approved assertion/reason and native exit/process facts can classify
+baseline PASS, intended RED and wrong-output rejection; infrastructure errors,
+missing controls, duplicates, unknown/truncated/unsettled results block. Raw RED
+remains RED. Exact test HEAD must cover all collected checks, and the complete
+Git history/content is independently verified before settled oracle evidence.
+Native service-owned sequence records precede resource/release effects. Independent
+Sinh review additionally captures native operator-provided recipient-outcome and
+wrong-output rationales, not agent-invented text. Final-pair capture rereads the
+existing 13-check/pair/matrix/approval producer and binds the reviewed exact oracle.
+These are implementation producers, not claims of semantic/human acceptance.
+
+**Remaining production blockers:** the no-credential SDK currently has no qualified
+model transport; an attempted prompt without one fails retained, not ready. The
+concrete executor rejects product-role preparation; the async same-reservation
+transaction is tested with real barrier processes and explicitly fixture-authored
+approvals/registry, not an admitted production builder. The native capacity-retry
+capture is not yet composed (no automatic retry). Phase-3 producer validation,
+phase-4 qualification/PAPC-065 compatibility, independent review/CI and actual
+human UAT remain pending. No fixture/help/status/merge or this document enables
+selection or establishes installed/human PASS. Phase 2 is not accepted by these
+source changes.

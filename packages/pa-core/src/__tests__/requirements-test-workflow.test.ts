@@ -260,6 +260,18 @@ test("TS13 AC9/AC11: material amendment explicitly retains source/tuple/oracle h
   assert.throws(() => parseTestAuthorization(encode(replace(next, ["amendment", "changedPaths"], ["src/product.ts"]))));
   assert.equal(assessTestWorkflow(f.authText, f.history).state, "product-consumed", "earlier immutable model still replays");
 });
+test("TS07 AC4: complete capacity history accepts occupied legacy rows without reinterpreting their authority", () => {
+  const f = fixture(); const active = parseTestWorkflowEvent(f.history[2]!);
+  assert.equal(active.data.action, "test-holder-active"); if (active.data.action !== "test-holder-active") return;
+  const legacy = { schemaVersion: 1 as const, slotToken: "model-private-token", slotId: "pa:example:EX-2", canonicalRepoKey: "example", canonicalRepoRoot: "/synthetic/canonical", ticket: "EX-2", deploymentId: "d-333333", deploymentDirectory: "/synthetic/deployment", repositoryPermit: 2 as const,
+    processFingerprint: processHolder("d-333333").process, acquiredAt: f.auth.bounds.startedAt };
+  const history = append(f.authText, f.history.slice(0, 2), { ...active.data, inventory: [...active.data.inventory, legacy] });
+  assert.equal(assessTestWorkflow(f.authText, history).state, "test-holder-active");
+  for (const mutation of [{ ...legacy, repositoryPermit: 1 }, { ...legacy, ticket: "EX-1", slotId: "pa:example:EX-1" }, { ...legacy, canonicalRepoRoot: "/crossed/root" }, { ...legacy, injected: true }]) {
+    assert.throws(() => assessTestWorkflow(f.authText, append(f.authText, f.history.slice(0, 2), { ...active.data, inventory: [...active.data.inventory, mutation] })));
+  }
+});
+
 test("TS14 AC12/AC13/NFR6: diagnostics redact synthetic canaries, five fields <=2000 JS units, no production injection exports", () => {
   const canary = "synthetic-canary-" + "private-value-".repeat(200);
   for (const raw of [encode(replace(packet(), ["authorityRoot"], canary)), encode(replace(packet(), ["checks", 0, "command"], canary + "\n"))]) {

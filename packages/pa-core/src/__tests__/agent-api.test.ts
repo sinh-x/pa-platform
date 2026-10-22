@@ -12,6 +12,14 @@ import { appendActivityEvent, appendEvaluatorResult, appendRegistryEvent, Bullet
 import type { DeployRequest, WsClient, WsEvent } from "../index.js";
 import { PA_OPENCODE_BINARY_ENV } from "../agent-api/ws/session-hub.js";
 
+// Never let API/source fixtures inherit the live deployment/task/activity owner.
+for (const key of Object.keys(process.env)) if ((key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") || key.startsWith("PI_")) delete process.env[key];
+const suiteState = mkdtempSync(join(tmpdir(), "pa-agent-api-isolated-"));
+process.env.PA_AI_USAGE_HOME = suiteState;
+process.env.PA_REGISTRY_DB = join(suiteState, "registry.db");
+process.env.PA_PLATFORM_CONFIG = join(suiteState, "config");
+test.after(() => { closeDb(); rmSync(suiteState, { recursive: true, force: true }); });
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
@@ -80,6 +88,17 @@ function p95(values: number[]): number {
   const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
   return sorted[index] ?? 0;
 }
+
+test("PAP-265 public lifecycle JSON cannot mint dedicated test custody", async () => {
+  await withApiEnv(async () => {
+    const api = createAgentApiApp({ ticketMutationAuth: { operatorCredential: "source-fixture-operator" } });
+    const response = await api.app.request("/api/deploy/start", { method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer source-fixture-operator" },
+      body: JSON.stringify({ deploymentId: "d-265abc", team: "requirements", runtime: "pi", binary: "ppa", mode: "test-author", requirementsTest: { schemaVersion: "requirements-test-custody/v1", ready: true } }) });
+    assert.equal(response.status, 400);
+    assert.equal(getDeploymentEvents("d-265abc").length, 0);
+    api.cleanup();
+  });
+});
 
 test("agent API exposes health, tickets, bulletins, teams, and documents", async () => {
   await withApiEnv(async (root) => {

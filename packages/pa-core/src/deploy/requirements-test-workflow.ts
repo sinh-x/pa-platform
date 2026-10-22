@@ -1,3 +1,4 @@
+import { parseRepositoryTicketSlot, type RepositoryTicketSlot } from "./ticket-concurrency.js";
 import { parseReviewEvidenceJson } from "../validation/review-contract.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { parseRepositoryGitStatus } from "./repository-admission.js";
@@ -241,15 +242,25 @@ function finalPair(input: unknown): FinalPair {
   if (requirements.ref === uat.ref || requirements.ref !== matrix.ref) throw stop();
   return Object.freeze({ requirements, uat, matrix, matrixApproval: parseSourceVersion(row.matrixApproval), finalChecks: parseSourceVersion(row.finalChecks), finalCheckCount: literal(row.finalCheckCount, 13) });
 }
+export type TestCapacityInventory = readonly (IdlePreparationReservation | RepositoryTicketSlot)[];
+function testInventory(input: unknown): TestCapacityInventory {
+  const values = list(input, (value) => value, 1, 4);
+  const prepared = assertReservationInventory(values.filter((value) => !(value && typeof value === "object" && "schemaVersion" in value && value.schemaVersion === 1)));
+  const legacy = values.filter((value) => value && typeof value === "object" && "schemaVersion" in value && value.schemaVersion === 1).map(parseRepositoryTicketSlot);
+  let p = 0; let l = 0;
+  const rows = values.map((value) => value && typeof value === "object" && "schemaVersion" in value && value.schemaVersion === 1 ? legacy[l++]! : prepared[p++]!);
+  if (rows.some((row) => !row) || new Set(rows.map((row) => row.ticket)).size !== rows.length || new Set(rows.map((row) => row.repositoryPermit)).size !== rows.length) throw stop();
+  return Object.freeze(rows);
+}
 export type TestEventData =
   | { readonly action: "authorized"; readonly owner: "sinh"; readonly decision: SourceVersion }
   | { readonly action: "intent-recorded"; readonly intentId: string }
-  | { readonly action: "test-holder-active"; readonly intentId: string; readonly resource: TestResource; readonly holder: ExecutionHolder; readonly inventory: readonly IdlePreparationReservation[]; readonly registry: SourceVersion; readonly launchSnapshot: SourceVersion }
+  | { readonly action: "test-holder-active"; readonly intentId: string; readonly resource: TestResource; readonly holder: ExecutionHolder; readonly inventory: TestCapacityInventory; readonly registry: SourceVersion; readonly launchSnapshot: SourceVersion }
   | { readonly action: "test-settled"; readonly holder: ExecutionHolder; readonly settlement: SourceVersion; readonly git: TestGitEvidence; readonly results: readonly TestProcessResult[] }
   | { readonly action: "oracle-reviewed"; readonly oracle: OracleBinding; readonly reviewer: string; readonly delegation: SourceVersion | null; readonly decision: SourceVersion; readonly outcomeRationale: string; readonly wrongOutputRationale: string }
   | { readonly action: "final-approved"; readonly owner: "sinh"; readonly oracle: OracleBinding; readonly reviewSha256: string; readonly pair: FinalPair; readonly decision: SourceVersion }
   | { readonly action: "product-intent"; readonly resource: TestResource; readonly initialHeadSha: string; readonly finalApprovalSha256: string; readonly intentId: string }
-  | { readonly action: "product-consumed"; readonly resource: TestResource; readonly initialHeadSha: string; readonly intentId: string; readonly holder: ExecutionHolder; readonly previousHolder: ExecutionHolder; readonly inventory: readonly IdlePreparationReservation[]; readonly launchSnapshot: SourceVersion; readonly registry: SourceVersion }
+  | { readonly action: "product-consumed"; readonly resource: TestResource; readonly initialHeadSha: string; readonly intentId: string; readonly holder: ExecutionHolder; readonly previousHolder: ExecutionHolder; readonly inventory: TestCapacityInventory; readonly launchSnapshot: SourceVersion; readonly registry: SourceVersion }
   | { readonly action: "interrupted"; readonly disposition: "known-absent" | "unknown" | "cancelled" | "failed"; readonly evidence: SourceVersion }
   | { readonly action: "retry"; readonly interruptionSha256: string; readonly owner: "sinh"; readonly decision: SourceVersion };
 function data(input: unknown): TestEventData {
@@ -257,12 +268,12 @@ function data(input: unknown): TestEventData {
   switch (input.action) {
     case "authorized": { const row = obj(input, "action owner decision"); return { action: "authorized", owner: literal(row.owner, "sinh"), decision: parseSourceVersion(row.decision) }; }
     case "intent-recorded": { const row = obj(input, "action intentId"); return { action: "intent-recorded", intentId: workflowSha(row.intentId) }; }
-    case "test-holder-active": { const row = obj(input, "action intentId resource holder inventory registry launchSnapshot"); return { action: "test-holder-active", intentId: workflowSha(row.intentId), resource: resource(row.resource), holder: holder(row.holder), inventory: assertReservationInventory(list(row.inventory, (value) => value, 1, 4)), registry: parseSourceVersion(row.registry), launchSnapshot: parseSourceVersion(row.launchSnapshot) }; }
+    case "test-holder-active": { const row = obj(input, "action intentId resource holder inventory registry launchSnapshot"); return { action: "test-holder-active", intentId: workflowSha(row.intentId), resource: resource(row.resource), holder: holder(row.holder), inventory: testInventory(row.inventory), registry: parseSourceVersion(row.registry), launchSnapshot: parseSourceVersion(row.launchSnapshot) }; }
     case "test-settled": { const row = obj(input, "action holder settlement git results"); return { action: "test-settled", holder: holder(row.holder), settlement: parseSourceVersion(row.settlement), git: git(row.git), results: unique(list(row.results, result), (value) => value.checkId) }; }
     case "oracle-reviewed": { const row = obj(input, "action oracle reviewer delegation decision outcomeRationale wrongOutputRationale"); return { action: "oracle-reviewed", oracle: oracle(row.oracle), reviewer: id(row.reviewer), delegation: row.delegation === null ? null : parseSourceVersion(row.delegation), decision: parseSourceVersion(row.decision), outcomeRationale: workflowText(row.outcomeRationale), wrongOutputRationale: workflowText(row.wrongOutputRationale) }; }
     case "final-approved": { const row = obj(input, "action owner oracle reviewSha256 pair decision"); return { action: "final-approved", owner: literal(row.owner, "sinh"), oracle: oracle(row.oracle), reviewSha256: workflowSha(row.reviewSha256), pair: finalPair(row.pair), decision: parseSourceVersion(row.decision) }; }
     case "product-intent": { const row = obj(input, "action resource initialHeadSha finalApprovalSha256 intentId"); return { action: "product-intent", resource: resource(row.resource), initialHeadSha: workflowSha(row.initialHeadSha, 40), finalApprovalSha256: workflowSha(row.finalApprovalSha256), intentId: workflowSha(row.intentId) }; }
-    case "product-consumed": { const row = obj(input, "action resource initialHeadSha intentId holder previousHolder inventory launchSnapshot registry"); return { action: "product-consumed", resource: resource(row.resource), initialHeadSha: workflowSha(row.initialHeadSha, 40), intentId: workflowSha(row.intentId), holder: holder(row.holder), previousHolder: holder(row.previousHolder), inventory: assertReservationInventory(list(row.inventory, (value) => value, 1, 4)), launchSnapshot: parseSourceVersion(row.launchSnapshot), registry: parseSourceVersion(row.registry) }; }
+    case "product-consumed": { const row = obj(input, "action resource initialHeadSha intentId holder previousHolder inventory launchSnapshot registry"); return { action: "product-consumed", resource: resource(row.resource), initialHeadSha: workflowSha(row.initialHeadSha, 40), intentId: workflowSha(row.intentId), holder: holder(row.holder), previousHolder: holder(row.previousHolder), inventory: testInventory(row.inventory), launchSnapshot: parseSourceVersion(row.launchSnapshot), registry: parseSourceVersion(row.registry) }; }
     case "interrupted": { const row = obj(input, "action disposition evidence"); return { action: "interrupted", disposition: choice(row.disposition, ["known-absent", "unknown", "cancelled", "failed"]), evidence: parseSourceVersion(row.evidence) }; }
     case "retry": { const row = obj(input, "action interruptionSha256 owner decision"); return { action: "retry", interruptionSha256: workflowSha(row.interruptionSha256), owner: literal(row.owner, "sinh"), decision: parseSourceVersion(row.decision) }; }
     default: throw stop();
@@ -285,9 +296,9 @@ export interface TestWorkflowAssessment {
   readonly authorizationSha256: string; readonly historySha256: readonly string[]; readonly retriesUsed: number; readonly elapsedMs: number;
   readonly bounds: ExecutionBounds; readonly resource: TestResource | null; readonly oracle: OracleBinding | null;
 }
-function capacity(auth: TestAuthorization, retained: TestResource, owner: ExecutionHolder, inventory: readonly IdlePreparationReservation[]): void {
+function capacity(auth: TestAuthorization, retained: TestResource, owner: ExecutionHolder, inventory: TestCapacityInventory): void {
   const row = inventory.find((entry) => entry.ticket === auth.repository.ticket);
-  if (!same(retained.repository, auth.repository) || inventory.some((entry) => entry.repoKey !== auth.repository.key || entry.repoRoot !== auth.repository.root) || !row || row.operationId !== auth.operationId || row.reservationId !== retained.reservationId || row.repositoryPermit !== retained.repositoryPermit || row.lineageId !== retained.lineageId || row.occupancy !== "active" || row.custody.state !== "implement-child" || row.custody.inFlightOperation !== null || !same(row.custody.holder, owner)) throw stop();
+  if (!same(retained.repository, auth.repository) || inventory.some((entry) => ("repoKey" in entry ? entry.repoKey : entry.canonicalRepoKey) !== auth.repository.key || ("repoRoot" in entry ? entry.repoRoot : entry.canonicalRepoRoot) !== auth.repository.root) || !row || !("operationId" in row) || row.operationId !== auth.operationId || row.reservationId !== retained.reservationId || row.repositoryPermit !== retained.repositoryPermit || row.lineageId !== retained.lineageId || row.occupancy !== "active" || row.custody.state !== "implement-child" || row.custody.inFlightOperation !== null || !same(row.custody.holder, owner)) throw stop();
 }
 /**
  * Replay ONLY a source model. A copied/rehashed journal is NOT native chronology.

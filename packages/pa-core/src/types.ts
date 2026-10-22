@@ -116,6 +116,7 @@ export interface RegistryEvent {
   /** Immutable serialized selection-only context; never a builder capability. */
   ticket_worktree_selection?: string;
   review_checkout?: import("./deploy/correlation.js").ReviewCheckoutCorrelationEvidence;
+  requirements_test?: import("./deploy/correlation.js").RequirementsTestCorrelationEvidence;
   deployment_id: string;
   team: string;
   event: "started" | "pid" | "completed" | "crashed" | "amended" | "updated" | "ticket-associated";
@@ -218,6 +219,7 @@ export interface DeploymentStatus {
   /** Immutable serialized selection-only context; absent on ordinary launches. */
   ticket_worktree_selection?: string;
   review_checkout?: import("./deploy/correlation.js").ReviewCheckoutCorrelationEvidence;
+  requirements_test?: import("./deploy/correlation.js").RequirementsTestCorrelationEvidence;
   deploy_id: string;
   team: string;
   status: "running" | "success" | "partial" | "failed" | "crashed" | "dead" | "unknown";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -367,6 +367,195 @@ test("AC11/AC12: cancel retains original effects and prevents resumed test work,
     assert.throws(() => f.service.request(f.auth.operationId)); assert.equal(f.records().length, before); assert.equal(f.inventory().length, 1); assert.equal(f.effects.prepare, 1);
     assert.ok(existsSync(f.worktree)); assert.equal(git(f.worktree, "branch", "--show-current"), f.auth.repository.branch);
     await f.stop(); f.service.settleTest(f.auth.operationId); assert.equal(f.service.status(f.auth.operationId).state, "blocked");
+  } finally { await f.cleanup(); }
+});
+
+test("AC2/AC9 source integration: concrete native operator capture uses exact qualified selection, private records, live registry and source rereads", async () => {
+  const f = await fixture(); const previousRegistry = process.env.PA_REGISTRY_DB; let sdkChild: ChildProcess | undefined;
+  try {
+    core.closeDb(); process.env.PA_REGISTRY_DB = join(f.root, "capture-registry.db");
+    const { PiRequirementsTestAuthority } = await import("../requirements-test-native.js");
+    const usage = join(f.root, "capture-usage"), sourceRoot = join(usage, "agent-teams/requirements/artifacts"), ticketsRoot = join(usage, "tickets");
+    mkdirSync(sourceRoot, { recursive: true }); mkdirSync(ticketsRoot);
+    mkdirSync(join(usage, "deployments"), { mode: 0o700 });
+    const sources = ["contract", "assertions", "valid-input", "wrong-input"].map((name) => {
+      const path = `agent-teams/requirements/artifacts/${name}.md`, text = `source fixture ${name}; not installed/operator/human qualification\n`;
+      writeFileSync(join(usage, path), text); return { ref: `requirements:${path}`, version: "r001", sha256: digest(text) };
+    });
+    const ticket = JSON.parse(readFileSync(join(f.ticketsRoot, "PAP-1.json"), "utf8")); ticket.doc_refs = sources.map((entry) => ({ type: "requirements", path: entry.ref.slice("requirements:".length) }));
+    writeFileSync(join(ticketsRoot, "PAP-1.json"), JSON.stringify(ticket));
+    const facts = { sourceSha: "b".repeat(40), configSha: "c".repeat(40), packageVersion: "source-fixture-only", storeRoot: f.root };
+    const native = new PiPreparedNativeAuthority({ root: join(f.root, "native"), aiUsageRoot: usage, runtime: () => facts });
+    const caller = { deploymentId: "d-111111", repoKey: "registered", repoRoot: f.repo, ticket: "PAP-1", callerIdentity: digest("native-ui-source-fixture") };
+    const authority = new PiRequirementsTestAuthority({ native, runtime: () => facts, authenticate: () => caller });
+    const context = { mode: "tui" as const, cwd: f.repo, sessionManager: { getSessionId: () => "source-fixture" }, ui: { select: async (_title: string, choices: string[]) => choices[0] } };
+    assert.throws(() => authority.selection(caller), "missing qualification cannot select a route");
+    const refs: Record<string, ReturnType<typeof source>> = {};
+    for (const kind of ["native", "installed", "pairing", "toolsAuditDecision"]) {
+      const id = digest(`explicit-synthetic-${kind}`), value = { schemaVersion: "requirements-test-qualification-evidence/v1", runtime: facts, kind, source: source(`SYNTHETIC-${kind}-NOT-ACTUAL-QUALIFICATION`), outcome: "qualified" };
+      publish(f.store, id, value); refs[kind] = { ref: `requirements-test-qualification-evidence:${id}`, version: "requirements-test-qualification-evidence/v1", sha256: digest(JSON.stringify(value)) };
+    }
+    const qualificationId = digest(JSON.stringify(["requirements-test-native-qualification/v1", facts]));
+    publish(f.store, qualificationId, { schemaVersion: "requirements-test-native-qualification/v1", runtime: facts, ...refs });
+    assert.equal(authority.selection(caller).active, false);
+    await authority.select(context); // ONLY isolated synthetic policy, never real activation
+    const selected = authority.selection(caller); assert.equal(selected.active, true);
+    core.appendRegistryEvent({ deployment_id: caller.deploymentId, team: "requirements", mode: "analyze", runtime: "pi", binary: "ppa", event: "started", timestamp: new Date().toISOString(), pid: process.pid,
+      ticket_id: "PAP-1", repo: f.repo, repo_root: f.repo, worktree_root: f.repo });
+    const startedAt = new Date(Date.now() - 1000).toISOString();
+    const auth = parseTestAuthorization(JSON.stringify({ ...f.auth, contract: sources[0], assertions: sources[1], pair: { ...f.auth.pair, qualification: selected.qualification, toolsAuditDecision: refs.toolsAuditDecision },
+      checks: f.auth.checks.map((check) => ({ ...check, input: check.kind === "control" ? sources[3] : sources[2], environment: authority.environmentSources() })),
+      bounds: { ...f.auth.bounds, startedAt, deadlineAt: new Date(Date.parse(startedAt) + 120 * 60_000).toISOString() } }));
+    const raw = JSON.stringify(auth);
+    await assert.rejects(authority.capture({ ...context, ui: { select: async () => "Cancel" } }, raw, "cancelled-capture"));
+    assert.throws(() => authority.readAuthorization(auth.operationId));
+    const captured = await authority.capture(context, raw, "exact-native-dialog"); assert.deepEqual(captured, auth);
+    authority.assertAuthorization(auth, digest(raw)); assert.equal(authority.readAuthorization(auth.operationId), raw);
+    const decision = authority.authorizationDecision(auth); assert.ok(decision.sha256);
+    assert.equal(f.effects.prepare, 0); assert.equal(f.allocationCount(), 0); assert.equal(f.inventory().length, 0);
+    // Source-only end-to-end owner composition: actual shared locks/store,
+    // dedicated registry, real child and real no-credential SDK. The synthetic
+    // operator/pair and Treehouse replies above are NOT installed qualification.
+    const { PiRestrictedTestExecutor } = await import("../background-runner.js");
+    const reqModule = new URL("../requirements-test-native.ts", import.meta.url).href, preparedModule = new URL("../prepared-native.ts", import.meta.url).href, runnerModule = new URL("../background-runner.ts", import.meta.url).href;
+    const executor = new PiRestrictedTestExecutor(authority, { spawnRunner(intentId, resource) {
+      const program = `const {PiRequirementsTestAuthority}=await import(${JSON.stringify(reqModule)}); const {PiPreparedNativeAuthority}=await import(${JSON.stringify(preparedModule)}); const {runRequirementsTestHolder}=await import(${JSON.stringify(runnerModule)}); const facts=${JSON.stringify(facts)}; const native=new PiPreparedNativeAuthority({root:${JSON.stringify(join(f.root, "native"))},aiUsageRoot:${JSON.stringify(usage)},runtime:()=>facts}); const authority=new PiRequirementsTestAuthority({native,runtime:()=>facts}); try {await runRequirementsTestHolder(${JSON.stringify(intentId)},authority);} catch(error) {const fs=await import('node:fs');fs.writeFileSync(${JSON.stringify(join(f.root, "sdk-bootstrap-error.json"))},JSON.stringify({message:error.message,stack:error.stack}),{mode:0o600});process.exitCode=1;}`;
+      sdkChild = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "--eval", program], { cwd: resource.worktreeRoot,
+        env: { PATH: process.env.PATH, LANG: "C.UTF-8", TZ: "UTC", HOME: suiteRoot, PA_REGISTRY_DB: process.env.PA_REGISTRY_DB, PA_AI_USAGE_HOME: usage, PA_PLATFORM_CONFIG: process.env.PA_PLATFORM_CONFIG }, detached: true, stdio: ["ignore", "ignore", "ignore"] });
+      return sdkChild;
+    } });
+    const service = new RequirementsTestNativeService({ ...f.options, authority, executor, tickets: native.tickets(), now: () => new Date().toISOString() });
+    try { await service.requestAsync(auth.operationId); } catch (error) { assert.ok(error instanceof Error, "a fast terminal SDK failure can race the released acknowledgement"); }
+    const until = Date.now() + 10_000;
+    while (sdkChild?.pid && readProcessFingerprint(sdkChild.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10));
+    assert.ok(sdkChild?.pid, JSON.stringify(f.records().map((row) => ({ step: row.step, state: row.state, value: row.state === "unknown" ? row.value : undefined }))));
+    assert.equal(readProcessFingerprint(sdkChild.pid), undefined, "actual SDK process must settle, not only registry");
+    const launch = f.records().find((row) => row.step === "test-process" && row.state === "observed")?.value as RequirementsTestLaunch | undefined;
+    assert.ok(launch, existsSync(join(f.root, "sdk-bootstrap-error.json")) ? readFileSync(join(f.root, "sdk-bootstrap-error.json"), "utf8") : "restricted SDK must park before any release");
+    const status = core.queryDeploymentStatus(launch.holder.deploymentId); assert.equal(status?.status, "failed"); assert.equal(status?.builder_authority, undefined); assert.equal(status?.requirements_test?.operationId, auth.operationId);
+    executor.assertSettled(launch);
+    assert.throws(() => service.settleTest(auth.operationId), "a missing model/test run cannot create an accepted oracle");
+    assert.equal(f.inventory()[0]!.occupancy, "settled-retained"); assert.equal(f.allocationCount(), 1);
+    await assert.rejects(service.continueProductAsync(auth.operationId)); assert.equal(f.allocationCount(), 1);
+    const different = parseTestAuthorization(JSON.stringify({ ...auth, checks: auth.checks.map((check, index) => index ? check : { ...check, command: `${check.command} changed` }) }));
+    assert.throws(() => authority.assertAuthorization(different, digest(JSON.stringify(different))));
+    writeFileSync(join(sourceRoot, "assertions.md"), "material source drift\n");
+    assert.throws(() => authority.assertAuthorization(auth, digest(raw)));
+    authority.assertRetainedAuthorization(auth, digest(raw)); // retained history is not new work
+  } finally {
+    if (sdkChild?.pid && readProcessFingerprint(sdkChild.pid)) {
+      sdkChild.kill("SIGTERM"); const until = Date.now() + 5_000;
+      while (readProcessFingerprint(sdkChild.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10));
+      if (readProcessFingerprint(sdkChild.pid)) sdkChild.kill("SIGKILL");
+      if (sdkChild.exitCode === null && sdkChild.signalCode === null) await new Promise<void>((done) => sdkChild!.once("exit", () => done()));
+    }
+    assert.equal(sdkChild?.pid ? readProcessFingerprint(sdkChild.pid) : undefined, undefined);
+    core.closeDb(); if (previousRegistry === undefined) delete process.env.PA_REGISTRY_DB; else process.env.PA_REGISTRY_DB = previousRegistry; await f.cleanup();
+  }
+});
+
+test("AC3/AC4: async parked composition releases both owners across await and publishes custody before release", async () => {
+  const f = await fixture();
+  try {
+    let inspectedDuringPrepare = false; let inspectedDuringRelease = false;
+    const executor: RequirementsTestNativeExecutor = { ...f.options.executor,
+      async prepareAsync(role, intent, resource) {
+        assert.equal(f.inventory().length, 1); inspectedDuringPrepare = true;
+        await new Promise((done) => setTimeout(done, 25));
+        return f.options.executor.prepare(role, intent, resource);
+      },
+      async startAsync(launch, intent) {
+        const row = f.inventory()[0]!; assert.ok("custody" in row); assert.deepEqual(row.custody.holder, launch.holder);
+        assert.ok(f.records().some((record) => record.step === "test-start" && record.state === "intent")); inspectedDuringRelease = true;
+        await new Promise((done) => setTimeout(done, 25)); f.options.executor.start(launch, intent);
+      },
+    };
+    const service = new RequirementsTestNativeService({ ...f.options, executor });
+    const first = await service.requestAsync(f.auth.operationId);
+    assert.equal(first.state, "test-active"); assert.equal(inspectedDuringPrepare, true); assert.equal(inspectedDuringRelease, true);
+    await service.requestAsync(f.auth.operationId);
+    assert.equal(f.effects.prepare, 1); assert.equal(f.effects.start, 1); assert.equal(f.allocationCount(), 1);
+    await f.stop(); service.settleTest(f.auth.operationId); assert.equal(f.inventory()[0]!.occupancy, "settled-retained");
+  } finally { await f.cleanup(); }
+});
+for (const point of ["test-process:observed", "test-start:intent", "test-start:observed"]) {
+  test(`AC11: async ${point} response loss never replays spawn or an unproven release`, async () => {
+    let crashed = false; const f = await fixture((actual) => { if (!crashed && actual === point) { crashed = true; throw new Error("source-async-response-loss"); } });
+    try {
+      const executor: RequirementsTestNativeExecutor = { ...f.options.executor, prepareAsync: async (...args) => f.options.executor.prepare(...args), startAsync: async (...args) => f.options.executor.start(...args) };
+      const service = new RequirementsTestNativeService({ ...f.options, executor });
+      await assert.rejects(service.requestAsync(f.auth.operationId));
+      const resumed = new RequirementsTestNativeService({ ...f.options, executor, boundary: undefined });
+      if (point === "test-start:intent") await assert.rejects(resumed.requestAsync(f.auth.operationId));
+      else await resumed.requestAsync(f.auth.operationId);
+      assert.equal(f.effects.prepare, 1); assert.equal(f.effects.start, point === "test-start:intent" ? 0 : 1); assert.equal(f.allocationCount(), 1);
+    } finally { await f.cleanup(); }
+  });
+}
+test("AC10: async continuation transfers the actual retained reservation after process/registry settlement, without acquire", async () => {
+  const f = await fixture();
+  try {
+    const executor: RequirementsTestNativeExecutor = { ...f.options.executor, prepareAsync: async (...args) => f.options.executor.prepare(...args), startAsync: async (...args) => f.options.executor.start(...args) };
+    const service = new RequirementsTestNativeService({ ...f.options, executor });
+    const { resource } = await service.requestAsync(f.auth.operationId); const evidence = f.final(resource);
+    await assert.rejects(service.continueProductAsync(f.auth.operationId));
+    await f.stop(); service.settleTest(f.auth.operationId); const before = f.inventory()[0]!;
+    const continued = await service.continueProductAsync(f.auth.operationId); const after = f.inventory()[0]!;
+    assert.equal(continued.initialHeadSha, evidence.testHeadSha); assert.deepEqual(continued.resource, resource);
+    assert.ok("reservationId" in before && "reservationId" in after); assert.equal(before.reservationId, after.reservationId); assert.equal(before.repositoryPermit, after.repositoryPermit); assert.equal(before.lineageId, after.lineageId);
+    assert.equal(f.allocationCount(), 1); assert.equal(f.effects.prepare, 2); assert.equal(f.effects.start, 2);
+  } finally { await f.cleanup(); }
+});
+
+test("AC5/AC6/AC7 source-native: genuine Pi SDK definitions enforce exact file/check actions; no builtin shell/delegation or sandbox claim", async () => {
+  const f = await fixture();
+  try {
+    const { RequirementsTestTools, requirementsTestFile } = await import("../native-execution-tools.js");
+    const { NativeExecutionEvidence } = await import("../native-execution-evidence.js");
+    const { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+    const { InMemoryCredentialStore } = await import("@earendil-works/pi-ai");
+    const evidenceRoot = join(f.root, "sdk-evidence"); mkdirSync(evidenceRoot, { mode: 0o700 });
+    const evidence = new NativeExecutionEvidence(new ProtectedWorkflowStore(evidenceRoot), evidenceRoot, { repository: (run) => run(), worktree: (run) => run() });
+    const { resource } = f.service.request(f.auth.operationId);
+    const startedAt = new Date(Date.now() - 1000).toISOString();
+    const auth = parseTestAuthorization(JSON.stringify({ ...f.auth, bounds: { ...f.auth.bounds, startedAt, deadlineAt: new Date(Date.parse(startedAt) + 120 * 60_000).toISOString() } }));
+    const exclude = git(f.worktree, "rev-parse", "--git-path", "info/exclude"); const originalExclude = readFileSync(exclude, "utf8");
+    writeFileSync(exclude, `${originalExclude}\ntest/oracle.mjs\n`);
+    assert.throws(() => new RequirementsTestTools(JSON.stringify(auth), resource, evidence, () => {}, () => ({})), "ignored approved paths cannot evade complete Git audit");
+    writeFileSync(exclude, originalExclude); // isolated fixture setup only, not runtime repair
+    const native = new RequirementsTestTools(JSON.stringify(auth), resource, evidence, () => {
+      const row = f.inventory()[0]!; assert.ok("custody" in row); assert.ok(row.custody.holder); assert.deepEqual(readProcessFingerprint(row.custody.holder.process.pid), row.custody.holder.process);
+    }, () => ({ PATH: process.env.PATH, LANG: "C.UTF-8", TZ: "UTC" }));
+    const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(f.root, "no-model-catalog.json"), allowModelNetwork: false, refreshOnCreate: false });
+    const { session } = await createAgentSession({ cwd: f.worktree, agentDir: f.root, resourceLoader: {
+      getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }), getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }), getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
+      getSystemPrompt: () => "Isolated SDK source fixture; no provider prompt, credential or production effects.", getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
+    }, tools: native.tools.map((tool) => tool.name), noTools: "builtin", customTools: native.tools, modelRuntime, sessionManager: SessionManager.inMemory(f.worktree), settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }) });
+    try {
+      assert.deepEqual([...session.getActiveToolNames()].sort(), ["check", "edit", "read", "write"]);
+      assert.equal(session.getActiveToolNames().includes("bash"), false);
+      const execute = async (name: string, id: string, input: unknown) => {
+        const tool = session.agent.state.tools.find((entry) => entry.name === name); assert.ok(tool); return tool.execute(id, input as never);
+      };
+      for (const input of [{ path: "src/product.txt", content: "forbidden" }, { path: "../escape", content: "forbidden" }, { path: join(f.worktree, "test/oracle.mjs"), content: "forbidden" }, { path: "test/oracle.mjs", content: "forbidden", env: { TOKEN: "not-a-grant" } }]) await assert.rejects(execute("write", `deny-${JSON.stringify(input)}`, input));
+      assert.equal(existsSync(join(f.worktree, "test/oracle.mjs")), false);
+      const code = `const kind = process.argv[2]; console.log(JSON.stringify({ schemaVersion: 'requirements-test-assertion/v1', assertion: kind === '--baseline' ? 'Q2' : 'Q1', outcome: kind === '--baseline' ? 'satisfied' : 'violated', reason: kind === '--baseline' ? 'preserved' : 'missing-through-T' })); process.exitCode = kind === '--baseline' ? 0 : 1;\n`;
+      await execute("write", "sdk-write", { path: "test/oracle.mjs", content: code });
+      await execute("edit", "sdk-edit", { path: "test/oracle.mjs", edits: [{ oldText: "const kind", newText: "// approved fixture\nconst kind" }] });
+      for (const id of ["baseline", "feature", "control"]) {
+        const result = await execute("check", `sdk-check-${id}`, { checkId: id });
+        assert.equal((result.details as { exitCode: number }).exitCode, id === "baseline" ? 0 : 1);
+        assert.equal((result.details as { productPass: boolean }).productPass, false);
+      }
+      await assert.rejects(execute("check", "unapproved-command", { checkId: "baseline", command: "printf bypass" }));
+      assert.equal(readFileSync(join(f.worktree, "src/product.txt"), "utf8"), "unchanged product baseline\n");
+      const proof = native.settled(); assert.ok(proof.sha256);
+      const rows = evidence.store.records().map((name) => evidence.store.read(name) as { kind: string }); assert.equal(rows.filter((row) => row.kind === "requirements-test-check").length, 3);
+      symlinkSync(join(f.worktree, "src/product.txt"), join(f.root, "alias"));
+      assert.throws(() => requirementsTestFile(f.worktree, ["test/oracle.mjs"], join(f.root, "alias"), "forbidden"));
+      const hard = join(f.worktree, "test/hard.mjs"); linkSync(join(f.worktree, "src/product.txt"), hard);
+      assert.throws(() => requirementsTestFile(f.worktree, ["test/hard.mjs"], hard, "forbidden"));
+    } finally { session.dispose(); }
   } finally { await f.cleanup(); }
 });
 

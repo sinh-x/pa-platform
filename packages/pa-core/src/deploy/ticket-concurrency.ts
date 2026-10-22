@@ -363,6 +363,17 @@ function isSlot(value: unknown): value is RepositoryTicketSlot {
     && typeof row["acquiredAt"] === "string" && Number.isFinite(Date.parse(row["acquiredAt"] as string));
 }
 
+/** Strict identity reader for complete native capacity snapshots; parsing grants
+ * no slot/admission authority and never tests liveness or mutates storage. */
+export function parseRepositoryTicketSlot(value: unknown): RepositoryTicketSlot {
+  const keys = ["schemaVersion", "slotToken", "slotId", "canonicalRepoKey", "canonicalRepoRoot", "ticket", "deploymentId", "deploymentDirectory", "repositoryPermit", "processFingerprint", "acquiredAt"];
+  if (!isSlot(value) || Object.keys(value).length !== keys.length || Object.keys(value).some((key) => !keys.includes(key))) throw new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "ticket capacity snapshot rejected", source: "existing ticket-slot identity reader", reason: "incomplete or malformed occupied slot",
+    correction: "preserve existing custody and reconcile the exact owner record", resumeAction: "read only a complete matching capacity snapshot",
+  }));
+  return Object.freeze(structuredClone(value));
+}
+
 function assertSlot(slot: RepositoryTicketSlot): void {
   const body = `${JSON.stringify(slot, null, 2)}\n`;
   if (!isSlot(slot) || Buffer.byteLength(body) > MAX_REPOSITORY_TICKET_SLOT_BYTES) throw new Error("ticket-concurrency: generated slot evidence is invalid or oversized");

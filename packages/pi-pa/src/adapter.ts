@@ -228,10 +228,9 @@ export class PiAdapter implements RuntimeAdapter {
     return this.preflightPromise;
   }
 
-  /** Dedicated route selection is deliberately NOT a SpawnOpts/env/config flag.
-   * The inert supervisor transport is internal; no qualified restricted Pi tool
-   * runner or protected native operator producer is composed yet. Reject before
-   * preflight, file reads, allocation or process launch, including on resume. */
+  /** Dedicated selection is NOT a SpawnOpts/env/config flag. Only the separately
+   * qualified foreground native boundary composes its protected parked executor.
+   * Generic adapter callers reject before preflight/effects, including resume. */
   prepareRequirementsTestHolder(): never {
     throw new Error("Condition: dedicated Pi test holder unavailable. Source: Pi lifecycle owner. Reason: restricted runner and protected operator composition are unqualified. Correction: retain inactive selection and qualify the exact runtime/config pair. Resume Action: use only a separately activated native request after composition; generic spawn cannot substitute.");
   }

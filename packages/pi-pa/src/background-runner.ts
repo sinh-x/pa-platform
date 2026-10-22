@@ -1,10 +1,18 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { PiRequirementsTestAuthority, type RequirementsTestLaunch, type RequirementsTestNativeExecutor } from "./requirements-test-native.js";
+import { RequirementsTestTools } from "./native-execution-tools.js";
+import { NativeExecutionEvidence } from "./native-execution-evidence.js";
 import {
+  appendRegistryEvent, workflowDigest, workflowObject, workflowError, parseTestAuthorization, parseSourceVersion,
+  withPreparedWorkflowLocks, withPreparedTicketCapacity, withExecutionWorktreeAdmission, validateRequirementsTestCorrelationEvidence,
+  type TestResource, type RequirementsTestCorrelationEvidence, type SourceVersion,
   advanceParentAuthoritySnapshot,
   appendActivityEvent,
   assertRepositoryGitIdentity,
@@ -807,15 +815,256 @@ export class PiParkedTestTransport {
   }
 }
 
+const RESTRICTED_OWNER = "pi-restricted-test-owner/v1";
+const restrictedOwnerId = (intent: string) => workflowDigest(JSON.stringify([RESTRICTED_OWNER, intent]));
+interface RestrictedOwner {
+  readonly schemaVersion: typeof RESTRICTED_OWNER;
+  readonly operationId: string;
+  readonly intentId: string;
+  readonly authorizationSha256: string;
+  readonly deploymentId: string;
+  readonly directory: string;
+  readonly resource: TestResource;
+  readonly correlation: RequirementsTestCorrelationEvidence;
+}
+function restrictedOwner(authority: PiRequirementsTestAuthority, intentId: string): RestrictedOwner {
+  const store = authority.native.operations(); if (!store || !/^[0-9a-f]{64}$/.test(intentId)) throw workflowError();
+  const row = workflowObject(store.read(`${restrictedOwnerId(intentId)}.intent.json`), ["schemaVersion", "operationId", "intentId", "authorizationSha256", "deploymentId", "directory", "resource", "correlation"]);
+  const owner = row as unknown as RestrictedOwner;
+  const auth = parseTestAuthorization(authority.readAuthorization(owner.operationId));
+  authority.assertRetainedAuthorization(auth, owner.authorizationSha256);
+  const correlation = validateRequirementsTestCorrelationEvidence(owner.correlation);
+  if (owner.schemaVersion !== RESTRICTED_OWNER || owner.intentId !== intentId || correlation.intentId !== intentId || correlation.operationId !== auth.operationId
+    || correlation.authorizationSha256 !== owner.authorizationSha256 || JSON.stringify(owner.resource.repository) !== JSON.stringify(auth.repository)
+    || owner.directory !== join(authority.native.aiUsageRoot, "deployments", owner.deploymentId) || !/^d-[0-9a-f]{6}$/.test(owner.deploymentId)
+    || correlation.worktreeRoot !== owner.resource.worktreeRoot || correlation.reservationId !== owner.resource.reservationId || correlation.lineageId !== owner.resource.lineageId
+    || correlation.repositoryPermit !== owner.resource.repositoryPermit || correlation.leaseId !== owner.resource.leaseId || correlation.leaseHolder !== owner.resource.leaseHolder) throw workflowError();
+  return owner;
+}
+function restrictedRegistry(owner: RestrictedOwner, fingerprint: ProcessFingerprint, terminal = false): SourceVersion {
+  const status = queryDeploymentStatus(owner.deploymentId);
+  if (!status || status.pid !== fingerprint.pid || status.runtime !== "pi" || status.binary !== "ppa" || status.team !== "requirements" || status.mode !== "test-author"
+    || status.repo !== owner.resource.worktreeRoot || status.repo_root !== owner.resource.repository.root || status.worktree_root !== owner.resource.worktreeRoot || status.ticket_id !== owner.resource.repository.ticket
+    || status.builder_authority || status.repository_slot || status.parent_deployment_id || status.review_checkout || !isDeepStrictEqual(status.requirements_test, owner.correlation)
+    || (terminal ? !["partial", "failed", "success", "crashed"].includes(status.status) : status.status !== "running")) throw workflowError();
+  return parseSourceVersion({ ref: `requirements-test-registry:${owner.deploymentId}`, version: "requirements-test-custody/v1", sha256: workflowDigest(JSON.stringify({ deploymentId: owner.deploymentId, process: fingerprint, correlation: owner.correlation })) });
+}
+function restrictedCustody(authority: PiRequirementsTestAuthority, owner: RestrictedOwner, processIdentity: ProcessFingerprint, released: boolean): void {
+  const auth = parseTestAuthorization(authority.readAuthorization(owner.operationId));
+  authority.assertAuthorization(auth, owner.authorizationSha256);
+  restrictedRegistry(owner, processIdentity);
+  if (!isDeepStrictEqual(readProcessFingerprint(processIdentity.pid), processIdentity)) throw workflowError();
+  withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, (capacity) => withExecutionWorktreeAdmission(auth.repository.root, owner.resource.worktreeRoot, capacity, () => {
+    const row = capacity.inventory().find((entry) => entry.ticket === auth.repository.ticket);
+    if (!row || !("purpose" in row) || row.purpose !== "requirements-test-workflow/v1" || row.operationId !== auth.operationId
+      || row.reservationId !== owner.resource.reservationId || row.repositoryPermit !== owner.resource.repositoryPermit
+      || (row.lineageId !== null && row.lineageId !== owner.resource.lineageId)) throw workflowError();
+    if (released && (row.occupancy !== "active" || row.custody.state !== "implement-child" || row.custody.inFlightOperation !== null
+      || !isDeepStrictEqual(row.custody.holder, { deploymentId: owner.deploymentId, process: processIdentity }))) throw workflowError();
+    if (!released && row.occupancy !== "idle-ready" && row.occupancy !== "settled-retained" && !(row.occupancy === "active" && isDeepStrictEqual(row.custody.holder, { deploymentId: owner.deploymentId, process: processIdentity }))) throw workflowError();
+  }));
+}
+/** Real dedicated SDK process owner, separate from builder mutation authority.
+ * Immutable process intent and shared reservation are required before spawn;
+ * release requires the service's published exact start intent plus registry and
+ * physical process/custody agreement. Unknown intent is NEVER respawned. */
+export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor {
+  constructor(readonly authority = new PiRequirementsTestAuthority(), readonly fixtures?: {
+    /** Isolated source tests only; not a tool/config/environment launch option. */
+    spawnRunner(intentId: string, resource: TestResource): ReturnType<typeof spawn>;
+  }) {}
+  prepare(): never { throw workflowError(); } // no synchronous async-owner fallback
+  start(): never { throw workflowError(); }
+  async prepareAsync(role: "test" | "product", intentId: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch> {
+    // Product tools/admission require their own final-approved producer, never
+    // test-only tool reuse or a generic builder spawn. No hidden fallback.
+    if (role !== "test" || signal?.aborted) throw workflowError();
+    const store = this.authority.native.operations(); if (!store) throw workflowError();
+    const records = store.records().map((name) => store.read(name) as Record<string, unknown>);
+    const request = records.find((row) => row.schemaVersion === "requirements-test-native/v1" && row.step === "test-process" && row.state === "intent"
+      && (row.value as { intentId?: string })?.intentId === intentId);
+    if (!request || typeof request.operationId !== "string") throw workflowError();
+    const auth = parseTestAuthorization(this.authority.readAuthorization(request.operationId)); const digest = workflowDigest(this.authority.readAuthorization(auth.operationId));
+    this.authority.assertAuthorization(auth, digest);
+    const remaining = Date.parse(auth.bounds.deadlineAt) - Date.now(); if (!(remaining > 0)) throw workflowError();
+    const deploymentId = `d-${randomBytes(3).toString("hex")}`, directory = join(this.authority.native.aiUsageRoot, "deployments", deploymentId);
+    physicalDirectory(dirname(directory));
+    const correlation = validateRequirementsTestCorrelationEvidence({ schemaVersion: "requirements-test-custody/v1", operationId: auth.operationId, authorizationSha256: digest, intentId,
+      parentDeploymentId: auth.parent.holder.deploymentId, repoKey: auth.repository.key, repoRoot: auth.repository.root, worktreeRoot: resource.worktreeRoot, ticket: auth.repository.ticket,
+      branch: auth.repository.branch, baseSha: auth.repository.baseSha, initialHeadSha: auth.repository.selectedHeadSha, leaseId: resource.leaseId, leaseHolder: resource.leaseHolder,
+      reservationId: resource.reservationId, lineageId: resource.lineageId, repositoryPermit: resource.repositoryPermit });
+    const owner: RestrictedOwner = { schemaVersion: RESTRICTED_OWNER, operationId: auth.operationId, intentId, authorizationSha256: digest, deploymentId, directory, resource, correlation };
+    withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, (capacity) => {
+      const row = capacity.inventory().find((entry) => entry.ticket === auth.repository.ticket);
+      if (!row || !("operationId" in row) || row.operationId !== auth.operationId || row.reservationId !== resource.reservationId || row.occupancy !== "idle-ready") throw workflowError();
+      return run();
+    }), worktree: (run) => run() }, (scope) => store.publish(scope, `${restrictedOwnerId(intentId)}.intent.json`, owner));
+    // Existing/unknown directory or owner intent cannot trigger a second launch.
+    mkdirSync(directory, { mode: 0o700 }); parkedWrite(join(directory, "restricted-intent.json"), owner);
+    const child = this.fixtures ? this.fixtures.spawnRunner(intentId, resource) : spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "--requirements-test-holder", intentId], {
+      cwd: resource.worktreeRoot, env: { PATH: process.env.PATH, LANG: "C.UTF-8", TZ: "UTC" }, detached: true, stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.on("error", (error) => { try { parkedWrite(join(directory, "restricted-failure.json"), { name: error.name, message: error.message }); } catch { /* retain unknown */ } });
+    const fingerprint = child.pid ? readProcessFingerprint(child.pid) : undefined; if (!fingerprint) throw workflowError();
+    parkedWrite(join(directory, "restricted-spawned.json"), { intentId, process: fingerprint });
+    appendRegistryEvent({ deployment_id: deploymentId, team: "requirements", mode: "test-author", event: "started", timestamp: new Date().toISOString(), pid: fingerprint.pid, runtime: "pi", binary: "ppa",
+      ticket_id: auth.repository.ticket, repo: resource.worktreeRoot, repo_root: auth.repository.root, worktree_root: resource.worktreeRoot, requirements_test: correlation,
+      effective_timeout_seconds: Math.ceil(remaining / 1000) });
+    child.unref();
+    const end = Date.now() + Math.min(10_000, remaining);
+    while (Date.now() < end) {
+      if (signal?.aborted) throw workflowError();
+      if (parkedRead(join(directory, "restricted-parked.json"))) { const launch = this.inspect(role, intentId, resource); this.assertParked(launch, resource, role); return launch; }
+      if (!isDeepStrictEqual(readProcessFingerprint(fingerprint.pid), fingerprint)) throw workflowError();
+      await new Promise((done) => setTimeout(done, 10));
+    }
+    throw workflowError();
+  }
+  inspect(role: "test" | "product", intentId: string, resource: TestResource): RequirementsTestLaunch {
+    if (role !== "test") throw workflowError();
+    const owner = restrictedOwner(this.authority, intentId);
+    if (!isDeepStrictEqual(owner.resource, resource)) throw workflowError();
+    const row = parkedRead(join(owner.directory, "restricted-spawned.json")); const fingerprint = row?.process as ProcessFingerprint | undefined;
+    if (!row || row.intentId !== intentId || !fingerprint) throw workflowError();
+    return Object.freeze({ holder: Object.freeze({ deploymentId: owner.deploymentId, process: fingerprint }), deploymentDirectory: owner.directory, registry: restrictedRegistry(owner, fingerprint, !readProcessFingerprint(fingerprint.pid)) });
+  }
+  #owner(launch: RequirementsTestLaunch): RestrictedOwner {
+    const row = parkedRead(join(launch.deploymentDirectory, "restricted-intent.json"));
+    if (!row || typeof row.intentId !== "string") throw workflowError();
+    const owner = restrictedOwner(this.authority, row.intentId);
+    if (!isDeepStrictEqual(row, owner) || owner.deploymentId !== launch.holder.deploymentId || owner.directory !== launch.deploymentDirectory
+      || !isDeepStrictEqual(restrictedRegistry(owner, launch.holder.process, !readProcessFingerprint(launch.holder.process.pid)), launch.registry)) throw workflowError(); return owner;
+  }
+  assertParked(launch: RequirementsTestLaunch, resource: TestResource, role: "test" | "product"): void {
+    const owner = this.#owner(launch); if (role !== "test" || !isDeepStrictEqual(resource, owner.resource)) throw workflowError();
+    // Service calls this inside its capacity/worktree transaction. Validate
+    // process/registry/SDK facts here without recursively taking that mutex.
+    // The service rereads the exact shared reservation under its live owner.
+    if (!isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) throw workflowError();
+    const parked = parkedRead(join(owner.directory, "restricted-parked.json"));
+    if (!parked || parked.intentId !== owner.intentId || !isDeepStrictEqual(parked.process, launch.holder.process) || !isDeepStrictEqual(parked.tools, ["write", "edit", "read", "check"])
+      || parkedRead(join(owner.directory, "restricted-started.json")) || parkedRead(join(owner.directory, "restricted-stopped.json"))) throw workflowError();
+  }
+  async startAsync(launch: RequirementsTestLaunch, intentId: string, signal?: AbortSignal): Promise<void> {
+    const owner = this.#owner(launch); if (signal?.aborted) throw workflowError();
+    restrictedCustody(this.authority, owner, launch.holder.process, true);
+    // Child independently resolves the exact service start publication. Neither
+    // this file nor an IPC message by itself is execution authority.
+    parkedWrite(join(owner.directory, "restricted-release.json"), { intentId, process: launch.holder.process });
+    const auth = parseTestAuthorization(this.authority.readAuthorization(owner.operationId));
+    const end = Math.min(Date.now() + 4_000, Date.parse(auth.bounds.deadlineAt));
+    while (Date.now() < end) {
+      if (signal?.aborted) throw workflowError();
+      if (parkedRead(join(owner.directory, "restricted-started.json"))) { this.assertStarted(launch, intentId); return; }
+      await new Promise((done) => setTimeout(done, 10));
+    }
+    throw workflowError();
+  }
+  assertStarted(launch: RequirementsTestLaunch, intentId: string): void {
+    const owner = this.#owner(launch); const started = parkedRead(join(owner.directory, "restricted-started.json"));
+    if (!started || started.intentId !== intentId || !isDeepStrictEqual(started.process, launch.holder.process)) throw workflowError();
+  }
+  cancel(launch: RequirementsTestLaunch): void {
+    const owner = this.#owner(launch); const path = join(owner.directory, "restricted-stop-intent.json");
+    if (parkedRead(path)) return;
+    parkedWrite(path, { intentId: owner.intentId, process: launch.holder.process });
+    if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) process.kill(launch.holder.process.pid, "SIGTERM");
+  }
+  assertSettled(launch: RequirementsTestLaunch): void {
+    const owner = this.#owner(launch);
+    if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) throw workflowError();
+    restrictedRegistry(owner, launch.holder.process, true);
+    const stopped = parkedRead(join(owner.directory, "restricted-stopped.json"));
+    if (!stopped || !isDeepStrictEqual(stopped.process, launch.holder.process) || stopped.intentId !== owner.intentId) throw workflowError();
+  }
+}
+
+/** No resource/extension/settings/auth discovery. Creates a genuine Pi SDK
+ * session with only the four bounded definitions. Provider-driven execution may
+ * fail without a separately configured non-secret model transport; failure is
+ * retained, never converted into oracle readiness. */
+export async function runRequirementsTestHolder(intentId: string, authority = new PiRequirementsTestAuthority()): Promise<void> {
+  const owner = restrictedOwner(authority, intentId); const raw = authority.readAuthorization(owner.operationId); const auth = parseTestAuthorization(raw);
+  const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint || process.cwd() !== owner.resource.worktreeRoot) throw workflowError();
+  const originalDeadline = Date.parse(auth.bounds.deadlineAt);
+  const until = Math.min(Date.now() + 10_000, originalDeadline);
+  while (Date.now() < until && !parkedRead(join(owner.directory, "restricted-spawned.json"))) await new Promise((done) => setTimeout(done, 10));
+  const spawned = parkedRead(join(owner.directory, "restricted-spawned.json"));
+  if (!spawned || !isDeepStrictEqual(spawned.process, fingerprint)) throw workflowError();
+  restrictedCustody(authority, owner, fingerprint, false);
+  const store = authority.native.operations(); if (!store) throw workflowError();
+  const locks = { repository: <T>(run: () => T): T => withPreparedTicketCapacity({ canonicalRepoKey: auth.repository.key, canonicalRepoRoot: auth.repository.root }, () => run()), worktree: <T>(run: () => T): T => run() };
+  const evidence = new NativeExecutionEvidence(store, join(authority.native.root, "operations"), locks);
+  const tools = new RequirementsTestTools(raw, owner.resource, evidence, () => restrictedCustody(authority, owner, fingerprint, true), (checkId) => authority.checkEnvironment(auth, checkId));
+  const resources: ResourceLoader = {
+    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }), getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }), getSystemPrompt: () => "Author only the exact authorized tests/harness. Use approved check IDs. No product work, delegation, credentials or production. Tools/audit are NOT an OS sandbox.",
+    getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
+  };
+  // Empty credentials and no models.json/catalog/network lookup. Never expose
+  // parent deployment/task/activity/registry environment or credential stores.
+  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(owner.directory, "models-cache.json"), allowModelNetwork: false, refreshOnCreate: false });
+  const { session } = await createAgentSession({ cwd: owner.resource.worktreeRoot, agentDir: owner.directory, resourceLoader: resources, modelRuntime,
+    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0 } }), sessionManager: SessionManager.inMemory(owner.resource.worktreeRoot),
+    tools: tools.tools.map((tool) => tool.name), customTools: tools.tools, noTools: "builtin" });
+  const shutdown = new AbortController(); const abort = () => { shutdown.abort(); void session.abort(); };
+  process.once("SIGTERM", abort); process.once("SIGINT", abort);
+  const timer = setTimeout(abort, Math.max(1, originalDeadline - Date.now()));
+  let started = false; let settlement: SourceVersion | null = null; let failure: unknown;
+  try {
+    if (!isDeepStrictEqual(session.getActiveToolNames(), ["write", "edit", "read", "check"])) throw workflowError();
+    parkedWrite(join(owner.directory, "restricted-parked.json"), { intentId, process: fingerprint, tools: session.getActiveToolNames(), arbitraryCodeConfinement: false });
+    while (!shutdown.signal.aborted && Date.now() < originalDeadline) {
+      const release = parkedRead(join(owner.directory, "restricted-release.json"));
+      if (!release) { await new Promise((done) => setTimeout(done, 10)); continue; }
+      const startIntent = workflowDigest(JSON.stringify([auth.operationId, "test-start"]));
+      if (release.intentId !== startIntent || !isDeepStrictEqual(release.process, fingerprint)) throw workflowError();
+      restrictedCustody(authority, owner, fingerprint, true);
+      const rows = store.records().map((name) => store.read(name) as Record<string, unknown>);
+      const publications = rows.filter((row) => row.schemaVersion === "requirements-test-native/v1" && row.operationId === auth.operationId && row.step === "test-start" && row.state === "intent");
+      if (publications.length !== 1) throw workflowError();
+      const publication = publications[0]!.value as { launch: RequirementsTestLaunch; resource: TestResource; launchSnapshot: RepositoryGitSnapshot };
+      if (!isDeepStrictEqual(publication.launch.holder, { deploymentId: owner.deploymentId, process: fingerprint }) || !isDeepStrictEqual(publication.resource, owner.resource)
+        || publication.launchSnapshot.head !== auth.repository.selectedHeadSha || publication.launchSnapshot.statusPorcelainV2Base64 !== "") throw workflowError();
+      parkedWrite(join(owner.directory, "restricted-started.json"), { intentId: startIntent, process: fingerprint, publicationSha256: workflowDigest(JSON.stringify(publications[0])) }); started = true;
+      await session.prompt(`Exact approved test-only packet: ${raw}`, { expandPromptTemplates: false });
+      await session.agent.waitForIdle(); settlement = tools.settled(); break;
+    }
+    if (!started || shutdown.signal.aborted || !settlement) throw workflowError();
+  } catch (error) { failure = error; }
+  finally {
+    clearTimeout(timer); process.removeListener("SIGTERM", abort); process.removeListener("SIGINT", abort);
+    await session.abort(); session.dispose();
+  }
+  const original = evidence.publish("requirements-test-runtime-terminal", { intentId, process: fingerprint, started, settlement,
+    failure: failure instanceof Error ? { name: failure.name, message: failure.message, stack: failure.stack ?? null } : failure ? "unknown" : null, cancelled: shutdown.signal.aborted });
+  parkedWrite(join(owner.directory, "restricted-stopped.json"), { intentId, process: fingerprint, original, started });
+  appendRegistryEvent({ deployment_id: owner.deploymentId, team: "requirements", event: "completed", timestamp: new Date().toISOString(), status: failure || shutdown.signal.aborted ? "failed" : "partial",
+    summary: "Dedicated test process ended; oracle/product approval is separate.", requirements_test: owner.correlation });
+}
+
 function isEntrypoint(): boolean {
   const entry = process.argv[1];
   return Boolean(entry && import.meta.url === pathToFileURL(entry).href);
 }
 
 if (isEntrypoint()) {
-  const configPath = process.argv[2];
-  if (!configPath) throw new Error("runner-readiness: Missing Pi background configuration path");
-  const config = readPiBackgroundConfig(configPath);
-  try { if (existsSync(configPath)) unlinkSync(configPath); } catch { /* the bounded non-secret config may remain for diagnosis */ }
-  await runPiBackgroundRunner(config);
+  if (process.argv[2] === "--requirements-test-holder") {
+    try { await runRequirementsTestHolder(process.argv[3] ?? ""); }
+    catch (error) {
+      // Startup failure is retained privately; it is NOT proof that an unknown
+      // SDK/process tree settled and cannot free its reservation.
+      try {
+        const owner = restrictedOwner(new PiRequirementsTestAuthority(), process.argv[3] ?? "");
+        parkedWrite(join(owner.directory, "restricted-failure.json"), { name: error instanceof Error ? error.name : "unknown", message: error instanceof Error ? error.message : "unknown", stack: error instanceof Error ? error.stack ?? null : null });
+      } catch { /* unknown intent remains retained */ }
+      process.exitCode = 1;
+    }
+  } else {
+    const configPath = process.argv[2];
+    if (!configPath) throw new Error("runner-readiness: Missing Pi background configuration path");
+    const config = readPiBackgroundConfig(configPath);
+    try { if (existsSync(configPath)) unlinkSync(configPath); } catch { /* the bounded non-secret config may remain for diagnosis */ }
+    await runPiBackgroundRunner(config);
+  }
 }

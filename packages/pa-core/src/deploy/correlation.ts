@@ -11,6 +11,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 export interface DeploymentCorrelationEvidence {
   reviewCheckout?: ReviewCheckoutCorrelationEvidence;
+  requirementsTest?: RequirementsTestCorrelationEvidence;
   parentDeploymentId?: string;
   builderAuthority?: "orchestrator" | "parented-implement" | "standalone-implement";
   treehousePath?: string;
@@ -21,6 +22,46 @@ export interface DeploymentCorrelationEvidence {
   branchHeadSha?: string;
   ticketSlotId?: string;
   repositoryPermit?: 1 | 2 | 3 | 4;
+}
+
+/** Dedicated native test correlation. Identity only: never builder/review authority.
+ * Immutable for the entire process incarnation, including terminal publication. */
+export interface RequirementsTestCorrelationEvidence {
+  readonly schemaVersion: "requirements-test-custody/v1";
+  readonly operationId: string;
+  readonly authorizationSha256: string;
+  readonly intentId: string;
+  readonly parentDeploymentId: string;
+  readonly repoKey: string;
+  readonly repoRoot: string;
+  readonly worktreeRoot: string;
+  readonly ticket: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly initialHeadSha: string;
+  readonly leaseId: string;
+  readonly leaseHolder: string;
+  readonly reservationId: string;
+  readonly lineageId: string;
+  readonly repositoryPermit: 1 | 2 | 3 | 4;
+}
+export function validateRequirementsTestCorrelationEvidence(value: unknown): RequirementsTestCorrelationEvidence {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail("dedicated test correlation is missing");
+  const row = value as Record<string, unknown>;
+  const keys = ["schemaVersion", "operationId", "authorizationSha256", "intentId", "parentDeploymentId", "repoKey", "repoRoot", "worktreeRoot", "ticket", "branch", "baseSha", "initialHeadSha", "leaseId", "leaseHolder", "reservationId", "lineageId", "repositoryPermit"];
+  if (Object.keys(row).length !== keys.length || Object.keys(row).some((key) => !keys.includes(key))
+    || row.schemaVersion !== "requirements-test-custody/v1" || !isCanonicalTicketId(row.ticket)
+    || ["operationId", "authorizationSha256", "intentId", "reservationId"].some((key) => typeof row[key] !== "string" || !/^[0-9a-f]{64}$/.test(row[key] as string))
+    || typeof row.repoKey !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.repoKey)
+    || typeof row.branch !== "string" || !row.branch.startsWith(`feature/${row.ticket}-`) || !/^[A-Za-z0-9/_-]+$/.test(row.branch)
+    || row.leaseHolder !== `pa:${row.repoKey}:${row.ticket}`) fail("dedicated test correlation is incomplete or malformed");
+  requiredCanonicalPath(row.repoRoot, "repoRoot"); requiredCanonicalPath(row.worktreeRoot, "worktreeRoot");
+  if (row.repoRoot === row.worktreeRoot) fail("dedicated test resource must be distinct from canonical root");
+  validateCanonicalDeploymentId(row.parentDeploymentId);
+  for (const key of ["baseSha", "initialHeadSha"]) if (!optionalSha(row[key], key)) fail("dedicated test SHA missing");
+  for (const key of ["leaseId", "lineageId"]) if (!optionalCanonicalId(row[key], key)) fail("dedicated test identity missing");
+  if (!optionalPermit(row.repositoryPermit)) fail("dedicated test permit missing");
+  return Object.freeze({ ...row }) as unknown as RequirementsTestCorrelationEvidence;
 }
 
 /** Read-only candidate identity, deliberately separate from builder capacity/ownership. */
@@ -105,6 +146,7 @@ export function validateDeploymentCorrelationEvidence(
   input: Record<string, unknown>,
   context: DeploymentCorrelationValidationContext = {},
 ): DeploymentCorrelationEvidence {
+  const requirementsTest = input["requirementsTest"] === undefined ? undefined : validateRequirementsTestCorrelationEvidence(input["requirementsTest"]);
   const reviewCheckout = input["reviewCheckout"] === undefined ? undefined
     : validateReviewCheckoutCorrelationEvidence(input["reviewCheckout"] as Record<string, unknown>);
   const parentDeploymentId = optionalDeploymentId(input["parentDeploymentId"], "parentDeploymentId");
@@ -124,6 +166,9 @@ export function validateDeploymentCorrelationEvidence(
 
   const hasBinding = [parentDeploymentId, builderAuthority, treehousePath, treehouseLeaseId, treehouseLeaseHolder, ticketSlotId, repositoryPermit]
     .some((value) => value !== undefined);
+  if (requirementsTest && (reviewCheckout || hasBinding || branchState || branchBaseSha || branchHeadSha
+    || (context.ticketId !== undefined && requirementsTest.ticket !== context.ticketId)
+    || (context.worktreeRoot !== undefined && requirementsTest.worktreeRoot !== context.worktreeRoot))) fail("dedicated test correlation cannot mix authority domains or identities");
   if (reviewCheckout && (hasBinding || (context.ticketId !== undefined && reviewCheckout.ticket !== context.ticketId)
     || (context.worktreeRoot !== undefined && reviewCheckout.worktreeRoot !== context.worktreeRoot))) {
     fail("review checkout cannot carry builder authority or mismatched ticket/execution roots");
@@ -149,6 +194,7 @@ export function validateDeploymentCorrelationEvidence(
   }
 
   return {
+    ...(requirementsTest ? { requirementsTest } : {}),
     ...(reviewCheckout ? { reviewCheckout } : {}),
     ...(parentDeploymentId ? { parentDeploymentId } : {}),
     ...(builderAuthority ? { builderAuthority } : {}),

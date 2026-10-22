@@ -6,6 +6,8 @@ import test from "node:test";
 import { ProtectedWorkflowStore, workflowDigest } from "@pa-platform/pa-core";
 import { NativeExecutionEvidence, NativeProcessEvidenceError, nativePublicText, runNativeExecutionProcess } from "../native-execution-evidence.js";
 
+for (const key of Object.keys(process.env)) if ((key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") || key.startsWith("PI_")) delete process.env[key];
+
 async function fixture(run: (evidence: NativeExecutionEvidence, root: string) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "pap256-native-process-"));
   try { await run(new NativeExecutionEvidence(new ProtectedWorkflowStore(root), root, { repository: (action) => action(), worktree: (action) => action() }), root); }
@@ -62,6 +64,13 @@ test("bounded output retains exact captured prefix and a distinct limit flag, ne
   const result = await runNativeExecutionProcess({ evidence, intent: intent(evidence), command: "printf '%0512d' 1", cwd: root, timeoutSeconds: 5, maximumOutputBytes: 256 });
   assert.equal(result.outputLimitExceeded, true); assert.equal(result.stdout.bytes, 256);
   assert.equal(evidence.blob(result.stdout).length, 256);
+}));
+
+test("combined stdout/stderr share one positive output budget", () => fixture(async (evidence, root) => {
+  const result = await runNativeExecutionProcess({ evidence, intent: intent(evidence), command: "printf '%0200d' 1; printf '%0200d' 2 >&2", cwd: root, timeoutSeconds: 5, maximumOutputBytes: 256, env: { PATH: process.env.PATH } });
+  assert.equal(result.outputLimitExceeded, true);
+  assert.equal(result.stdout.bytes + result.stderr.bytes, 256);
+  assert.equal(evidence.blob(result.stdout).length + evidence.blob(result.stderr).length, 256);
 }));
 
 test("whole-buffer public redaction leaves raw native bytes intact and withholds private-key bodies", () => {
