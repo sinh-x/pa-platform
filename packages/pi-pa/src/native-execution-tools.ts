@@ -8,6 +8,7 @@ import { captureNativeScope, type NativeScopeSnapshot } from "./execution-native
 import { NativeExecutionEvidence, runNativeExecutionProcess, nativePublicText } from "./native-execution-evidence.js";
 import type { PiNativeExecutionAdapter, NativeExecutionSession } from "./execution-native.js";
 import type { PiRuntime, PiSessionLifecycle, PiToolDefinition, PiToolResult } from "./pi-extension/index.js";
+import { createPiExecutionModule, PiExecutionParams } from "./pi-extension/prepared-workflow.js";
 
 /** Lower SDK file operations: exact native paths, dirfd anchoring, no aliases.
  * This restricts exposed tools, NOT subprocess/host effects of approved code. */
@@ -175,6 +176,53 @@ export class RequirementsTestTools {
   }
 }
 
+/** Dedicated SDK loadout reuses the actual native execution module and lower
+ * builtins. The outer SDK definitions are inert until resolve authenticates the
+ * exact new-version consumption. No extension/resource/credential discovery or
+ * generic tool fallback participates. All calls traverse the same begin/finish
+ * hooks inside this native wrapper, before any lower SDK effect. */
+export function createRequirementsProductTools(cwd: string, oraclePaths: readonly string[], resolveNative: () => NativeExecutionSession): ToolDefinition[] {
+  let installed: { native: NativeExecutionSession; definitions: Map<string, PiToolDefinition>; handlers: Map<string, ((event: unknown, context: unknown) => unknown)[]> } | undefined;
+  let busy = false;
+  const setup = () => {
+    const native = resolveNative(); native.assertCaller({ cwd });
+    if (installed) { if (installed.native !== native) throw workflowError(); return installed; }
+    const definitions = new Map<string, PiToolDefinition>(), handlers = new Map<string, ((event: unknown, context: unknown) => unknown)[]>();
+    const pi: PiRuntime = { registerTool: (tool) => { definitions.set(tool.name, tool as unknown as PiToolDefinition); },
+      on: ((event: string, handler: (event: unknown, context: unknown) => unknown) => { handlers.set(event, [...(handlers.get(event) ?? []), handler]); }) as PiRuntime["on"] };
+    registerNativeExecutionBuiltins(pi, { resolve: (context) => { native.assertCaller(context); return native; } });
+    createPiExecutionModule({ env: { PA_TEAM: "builder", PA_MODE: "orchestrator" }, resolveBinding: (context) => { native.assertCaller(context); return native.binding; } })(pi);
+    for (const handler of handlers.get("session_start") ?? []) handler({}, { cwd });
+    installed = { native, definitions, handlers }; return installed;
+  };
+  const templates = [createWriteTool(cwd), createEditTool(cwd), createBashTool(cwd)];
+  const schemas = [...templates.map((tool) => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters })),
+    { name: "pa_execution", label: "Native product execution", description: "Record the bounded product plan, select this exact direct holder and observe native recovery evidence. No acceptance from developer checks.", parameters: PiExecutionParams },
+    { name: "read", label: "Read product source", description: "Read an exact current plan or reviewed oracle path only.", parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }) }];
+  return schemas.map((schema): ToolDefinition => ({ ...schema, executionMode: "sequential", execute: async (id, input, signal, update) => {
+    if (busy || signal?.aborted) throw workflowError(); busy = true;
+    try {
+      const { native, definitions, handlers } = setup(), context = { cwd };
+      if (schema.name === "read") {
+        const row = workflowObject(input, ["path"]), paths = [...oraclePaths, ...(native.service.status(native.actor).plan?.paths ?? [])];
+        if (typeof row.path !== "string" || !paths.includes(row.path)) throw workflowError();
+        const text = (requirementsTestFile(cwd, paths, join(cwd, row.path)) as Buffer).toString("utf8");
+        return { content: [{ type: "text", text: truncateHead(native.publicText(text)).content }], details: {} };
+      }
+      const definition = definitions.get(schema.name); if (!definition) throw workflowError();
+      const event = { toolCallId: id, toolName: schema.name, input };
+      for (const handler of handlers.get("tool_call") ?? []) {
+        const decision = await handler(event, context) as { block?: boolean } | undefined;
+        if (decision?.block) throw workflowError();
+      }
+      let result: PiToolResult | undefined, failure: unknown;
+      try { result = await definition.execute(id, input as Record<string, unknown>, signal, update ? (partial) => update(partial) : undefined, context); }
+      catch (error) { failure = error; }
+      for (const handler of handlers.get("tool_execution_end") ?? []) await handler({ toolCallId: id, toolName: schema.name, result, isError: Boolean(failure) }, context);
+      if (failure || !result) throw workflowError(); return result;
+    } finally { busy = false; }
+  } }));
+}
 function publicResult(result: unknown, session: NativeExecutionSession): PiToolResult {
   const value = JSON.parse(JSON.stringify(result), (_key, item: unknown) => typeof item === "string" ? session.publicText(item) : item) as PiToolResult;
   return { ...value, details: value.details ?? {} };
@@ -182,7 +230,7 @@ function publicResult(result: unknown, session: NativeExecutionSession): PiToolR
 /** Install only after an authenticated consumed lineage is observed. Legacy and
  * inactive sessions retain Pi's actual built-ins, not merely equivalent mocks.
  * Native tool_call records precede these lower SDK operation boundaries. */
-export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: PiNativeExecutionAdapter, lifecycle?: PiSessionLifecycle): void {
+export function registerNativeExecutionBuiltins(pi: PiRuntime, adapter: Pick<PiNativeExecutionAdapter, "resolve">, lifecycle?: PiSessionLifecycle): void {
   let installed = false;
   pi.on?.("session_start", (_event, context) => {
     if (installed) return;

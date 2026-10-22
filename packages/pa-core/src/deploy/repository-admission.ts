@@ -348,6 +348,10 @@ export interface AcquireRepositoryMutationLeaseOptions {
   readonly ownershipToken?: string;
   readonly processFingerprint?: ProcessFingerprint;
   readonly gitSnapshot?: RepositoryGitSnapshot;
+  /** Native embedding only, inside the existing worktree mutex immediately
+   * before exclusive lease publication. Throw/non-void blocks the effect;
+   * this callback supplies no approval and is never a deploy JSON option. */
+  readonly beforePublish?: (lease: RepositoryMutationLease) => void;
   readonly branchTransitionPolicy?: RepositoryBranchTransitionPolicy;
   readonly dependencies?: Partial<RepositoryAdmissionDependencies>;
 }
@@ -1607,6 +1611,7 @@ export function acquireRepositoryMutationLease(options: AcquireRepositoryMutatio
       ...(initialDevelopRemoteHead ? { initialDevelopRemoteHead } : {}),
     });
     assertLease(lease);
+    if (options.beforePublish && options.beforePublish(lease) !== undefined) throw new Error("repository-admission: native before-publication callback must be synchronous void");
     publishLeaseExclusive(leasePath, lease, dependencies.createToken);
     return {
       status: "acquired",

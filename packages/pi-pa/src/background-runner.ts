@@ -7,11 +7,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { streamSimple as streamKeylessCompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import { PiRequirementsTestAuthority, type RequirementsTestLaunch, type RequirementsTestNativeExecutor } from "./requirements-test-native.js";
-import { RequirementsTestTools } from "./native-execution-tools.js";
+import { PiRequirementsTestAuthority, RequirementsTestNativeService, type RequirementsProductPreflight, type RequirementsTestLaunch, type RequirementsTestNativeExecutor } from "./requirements-test-native.js";
+import { RequirementsTestTools, createRequirementsProductTools } from "./native-execution-tools.js";
+import { NativeExecutionSession } from "./execution-native.js";
+import { recordPiProcessIdentity } from "./process-identity.js";
 import { NativeExecutionEvidence } from "./native-execution-evidence.js";
 import {
-  appendRegistryEvent, workflowDigest, workflowObject, workflowError, parseTestAuthorization, parseSourceVersion,
+  appendRegistryEvent, workflowDigest, workflowObject, workflowError, parseTestAuthorization, parseSourceVersion, ExecutionCustodyService, parseExecutionBinding,
   withPreparedWorkflowLocks, withPreparedTicketCapacity, withExecutionWorktreeAdmission, validateRequirementsTestCorrelationEvidence,
   type TestResource, type RequirementsTestCorrelationEvidence, type SourceVersion,
   advanceParentAuthoritySnapshot,
@@ -25,10 +27,10 @@ import {
   formatBoundedFiveFieldDiagnostic,
   getDeployPaths,
   readProcessFingerprint,
-  queryDeploymentStatus,
+  queryDeploymentStatus, queryReadonlyDeploymentEvents,
   reconcileTerminalRegistryEvent,
   refreshTicketLinkedBranchHead,
-  releaseRepositoryTicketSlot,
+  releaseRepositoryTicketSlot, releaseRepositoryMutationLease, inspectRepositoryMutationLease, resolveRepoExecutionPath,
   transferRepositoryMutationBorrower,
   transferRepositoryMutationLease,
   transferRepositoryTicketSlot,
@@ -56,7 +58,7 @@ import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { piRegistryEnvironment } from "./native-host.js";
 import { readPiTerminalStatus, writePiTerminalStatus } from "./terminal-status.js";
 import { assertPiMatrixStartedForLaunch, withPiReviewCandidateAtMatrixBoundary, withPiNixosPrerequisites } from "./validation-launch.js";
-import { finalizePiReviewCandidate, rereadPiReviewCandidate, reconcilePiTerminalChild, terminalSettlementUnavailable } from "./deploy.js";
+import { finalizePiReviewCandidate, rereadPiReviewCandidate, reconcilePiTerminalChild, terminalSettlementUnavailable, admitPiRequirementsProduct, resolvePiRequirementsProductExecution, createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
 import {
   PI_VALIDATION_HANDOFF_FILE,
   readPiProtectedValidationLaunch,
@@ -872,14 +874,15 @@ function restrictedCustody(authority: PiRequirementsTestAuthority, owner: Restri
 export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor {
   constructor(readonly authority = new PiRequirementsTestAuthority(), readonly fixtures?: {
     /** Isolated source tests only; not a tool/config/environment launch option. */
-    spawnRunner(intentId: string, resource: TestResource): ReturnType<typeof spawn>;
-  }) {}
+    spawnRunner(intentId: string, resource: TestResource, role?: "test" | "product"): ReturnType<typeof spawn>;
+    treehouse?: import("./treehouse.js").TreehouseClient;
+  }) { this.#product = new PiRequirementsProductExecutor(this, authority, fixtures); }
+  readonly #product: PiRequirementsProductExecutor;
   prepare(): never { throw workflowError(); } // no synchronous async-owner fallback
   start(): never { throw workflowError(); }
   async prepareAsync(role: "test" | "product", intentId: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch> {
-    // Product tools/admission require their own final-approved producer, never
-    // test-only tool reuse or a generic builder spawn. No hidden fallback.
-    if (role !== "test" || signal?.aborted) throw workflowError();
+    if (role === "product") return this.#product.prepareAsync(role, intentId, resource, signal);
+    if (signal?.aborted) throw workflowError();
     const store = this.authority.native.operations(); if (!store) throw workflowError();
     const records = store.records().map((name) => store.read(name) as Record<string, unknown>);
     const request = records.find((row) => row.schemaVersion === "requirements-test-native/v1" && row.step === "test-process" && row.state === "intent"
@@ -922,7 +925,7 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
     throw workflowError();
   }
   inspect(role: "test" | "product", intentId: string, resource: TestResource): RequirementsTestLaunch {
-    if (role !== "test") throw workflowError();
+    if (role === "product") return this.#product.inspect(role, intentId, resource);
     const owner = restrictedOwner(this.authority, intentId);
     if (!isDeepStrictEqual(owner.resource, resource)) throw workflowError();
     const row = parkedRead(join(owner.directory, "restricted-spawned.json")); const fingerprint = row?.process as ProcessFingerprint | undefined;
@@ -937,7 +940,8 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
       || !isDeepStrictEqual(restrictedRegistry(owner, launch.holder.process, !readProcessFingerprint(launch.holder.process.pid)), launch.registry)) throw workflowError(); return owner;
   }
   assertParked(launch: RequirementsTestLaunch, resource: TestResource, role: "test" | "product"): void {
-    const owner = this.#owner(launch); if (role !== "test" || !isDeepStrictEqual(resource, owner.resource)) throw workflowError();
+    if (role === "product") return this.#product.assertParked(launch, resource, role);
+    const owner = this.#owner(launch); if (!isDeepStrictEqual(resource, owner.resource)) throw workflowError();
     // Service calls this inside its capacity/worktree transaction. Validate
     // process/registry/SDK facts here without recursively taking that mutex.
     // The service rereads the exact shared reservation under its live owner.
@@ -947,6 +951,7 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
       || parkedRead(join(owner.directory, "restricted-started.json")) || parkedRead(join(owner.directory, "restricted-stopped.json"))) throw workflowError();
   }
   async startAsync(launch: RequirementsTestLaunch, intentId: string, signal?: AbortSignal): Promise<void> {
+    if (launch.registry.version === "requirements-product-registry/v1") return this.#product.startAsync(launch, intentId, signal);
     const owner = this.#owner(launch); if (signal?.aborted) throw workflowError();
     restrictedCustody(this.authority, owner, launch.holder.process, true);
     // Child independently resolves the exact service start publication. Neither
@@ -962,21 +967,191 @@ export class PiRestrictedTestExecutor implements RequirementsTestNativeExecutor 
     throw workflowError();
   }
   assertStarted(launch: RequirementsTestLaunch, intentId: string): void {
+    if (launch.registry.version === "requirements-product-registry/v1") return this.#product.assertStarted(launch, intentId);
     const owner = this.#owner(launch); const started = parkedRead(join(owner.directory, "restricted-started.json"));
     if (!started || started.intentId !== intentId || !isDeepStrictEqual(started.process, launch.holder.process)) throw workflowError();
   }
   cancel(launch: RequirementsTestLaunch): void {
+    if (launch.registry.version === "requirements-product-registry/v1") return this.#product.cancel(launch);
     const owner = this.#owner(launch); const path = join(owner.directory, "restricted-stop-intent.json");
     if (parkedRead(path)) return;
     parkedWrite(path, { intentId: owner.intentId, process: launch.holder.process });
     if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) process.kill(launch.holder.process.pid, "SIGTERM");
   }
+  finalizeProduct(launch: RequirementsTestLaunch): void {
+    if (launch.registry.version !== "requirements-product-registry/v1") throw workflowError();
+    this.#product.finalizeProduct(launch);
+  }
   assertSettled(launch: RequirementsTestLaunch): void {
+    if (launch.registry.version === "requirements-product-registry/v1") return this.#product.assertSettled(launch);
     const owner = this.#owner(launch);
     if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) throw workflowError();
     restrictedRegistry(owner, launch.holder.process, true);
     const stopped = parkedRead(join(owner.directory, "restricted-stopped.json"));
     if (!stopped || !isDeepStrictEqual(stopped.process, launch.holder.process) || stopped.intentId !== owner.intentId) throw workflowError();
+  }
+}
+
+const PRODUCT_OWNER = "pi-restricted-product-owner/v1";
+const productOwnerId = (intent: string) => workflowDigest(JSON.stringify([PRODUCT_OWNER, intent]));
+interface ProductOwner {
+  readonly schemaVersion: typeof PRODUCT_OWNER;
+  readonly binding: RequirementsProductPreflight;
+  readonly deploymentId: string;
+  readonly directory: string;
+}
+function productOwner(authority: PiRequirementsTestAuthority, intent: string): ProductOwner {
+  const store = authority.native.operations(); if (!store || !/^[0-9a-f]{64}$/.test(intent)) throw workflowError();
+  const row = workflowObject(store.read(`${productOwnerId(intent)}.intent.json`), ["schemaVersion", "binding", "deploymentId", "directory"]);
+  const value = row as unknown as ProductOwner;
+  if (value.schemaVersion !== PRODUCT_OWNER || value.binding.intentId !== intent || !/^d-[0-9a-f]{6}$/.test(value.deploymentId)
+    || value.directory !== join(authority.native.aiUsageRoot, "deployments", value.deploymentId)
+    || !isDeepStrictEqual(value.binding, authority.retainedProductPreflight(value.binding.operationId))) throw workflowError();
+  return value;
+}
+function productRegistry(owner: ProductOwner, fingerprint: ProcessFingerprint, terminal = false): SourceVersion {
+  const status = queryDeploymentStatus(owner.deploymentId), resource = owner.binding.resource;
+  const starts = queryReadonlyDeploymentEvents(owner.deploymentId).filter((row) => row.event === "started");
+  if (!status || starts.length !== 1 || starts[0]!.note !== `requirements-product-launch/v1:${workflowDigest(JSON.stringify(owner.binding))}`
+    || status.pid !== fingerprint.pid || status.team !== "builder" || status.mode !== "orchestrator" || status.runtime !== "pi" || status.binary !== "ppa"
+    || status.builder_authority !== "orchestrator" || status.parent_deployment_id || status.requirements_test || status.review_checkout
+    || status.repo !== resource.worktreeRoot || status.repo_root !== resource.repository.root || status.worktree_root !== resource.worktreeRoot || status.ticket_id !== resource.repository.ticket
+    || status.treehouse_path !== resource.worktreeRoot || status.treehouse_lease_id !== resource.leaseId || status.treehouse_lease_holder !== resource.leaseHolder
+    || status.ticket_slot_id !== `pa:${resource.repository.key}:${resource.repository.ticket}` || status.repository_permit !== resource.repositoryPermit
+    || status.branch_state !== "materialized" || status.branch_base_sha !== resource.repository.baseSha
+    || (terminal ? !["success", "partial", "failed", "crashed"].includes(status.status) : status.status !== "running")) throw workflowError();
+  return { ref: `requirements-product-registry:${owner.deploymentId}`, version: "requirements-product-registry/v1", sha256: workflowDigest(JSON.stringify({ owner, process: fingerprint })) };
+}
+/** Dedicated product holder through EXISTING native admission/execution owners.
+ * It cannot mint a legacy preparation grant, second reservation or generic spawn. */
+class PiRequirementsProductExecutor implements RequirementsTestNativeExecutor {
+  constructor(readonly executor: RequirementsTestNativeExecutor, readonly authority: PiRequirementsTestAuthority,
+    readonly fixtures?: { spawnRunner(intentId: string, resource: TestResource, role?: "test" | "product"): ReturnType<typeof spawn>; treehouse?: import("./treehouse.js").TreehouseClient }) {}
+  prepare(): never { throw workflowError(); }
+  start(): never { throw workflowError(); }
+  #service(): RequirementsTestNativeService {
+    const store = this.authority.native.operations(); if (!store) throw workflowError();
+    return new RequirementsTestNativeService({ store, authority: this.authority, executor: this.executor, tickets: this.authority.native.tickets(), treehouse: this.fixtures?.treehouse });
+  }
+  async prepareAsync(role: "test" | "product", intent: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch> {
+    if (role !== "product" || signal?.aborted) throw workflowError();
+    const store = this.authority.native.operations(); if (!store) throw workflowError();
+    const requests = store.records().map((name) => store.read(name) as { schemaVersion?: string; operationId?: string; step?: string; state?: string; value?: { intentId?: string } })
+      .filter((row) => row.schemaVersion === "requirements-test-native/v1" && row.step === "product-process" && row.state === "intent" && row.value?.intentId === intent);
+    if (requests.length !== 1 || !requests[0]!.operationId) throw workflowError();
+    const binding = this.#service().productPreflight(requests[0]!.operationId);
+    if (binding.intentId !== intent || !isDeepStrictEqual(binding.resource, resource)) throw workflowError();
+    const remaining = Date.parse(binding.bounds.deadlineAt) - Date.now(); if (!(remaining > 0)) throw workflowError();
+    const deploymentId = `d-${randomBytes(3).toString("hex")}`, directory = join(this.authority.native.aiUsageRoot, "deployments", deploymentId);
+    if (queryDeploymentStatus(deploymentId)) throw workflowError(); // no registry-ID reuse/retry
+    physicalDirectory(dirname(directory));
+    const owner: ProductOwner = { schemaVersion: PRODUCT_OWNER, binding, deploymentId, directory };
+    withPreparedWorkflowLocks({ repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: resource.repository.key, canonicalRepoRoot: resource.repository.root }, (capacity) => {
+      const row = capacity.inventory().find((entry) => entry.ticket === resource.repository.ticket);
+      if (!row || !("operationId" in row) || row.operationId !== binding.operationId || row.reservationId !== resource.reservationId || row.occupancy !== "settled-retained" || row.custody.state !== "idle") throw workflowError();
+      return run();
+    }), worktree: (run) => run() }, (scope) => store.publish(scope, `${productOwnerId(intent)}.intent.json`, owner));
+    mkdirSync(directory, { mode: 0o700 }); parkedWrite(join(directory, "product-intent.json"), owner);
+    const child = this.fixtures ? this.fixtures.spawnRunner(intent, resource, "product") : spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "--requirements-product-holder", intent], {
+      cwd: resource.worktreeRoot, env: { PATH: process.env.PATH, LANG: "C.UTF-8", TZ: "UTC" }, detached: true, stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.on("error", (error) => { try { parkedWrite(join(directory, "product-failure.json"), { name: error.name, message: error.message }); } catch { /* unknown intent retained */ } });
+    const fingerprint = child.pid ? readProcessFingerprint(child.pid) : undefined; if (!fingerprint || !recordPiProcessIdentity(deploymentId, directory, fingerprint.pid)) throw workflowError();
+    parkedWrite(join(directory, "product-spawned.json"), { intentId: intent, process: fingerprint });
+    appendRegistryEvent({ deployment_id: deploymentId, event: "started", timestamp: new Date().toISOString(), pid: fingerprint.pid, team: "builder", mode: "orchestrator", runtime: "pi", binary: "ppa",
+      builder_authority: "orchestrator", repository_slot: "orchestrator", repo: resource.worktreeRoot, repo_root: resource.repository.root, worktree_root: resource.worktreeRoot, ticket_id: resource.repository.ticket,
+      treehouse_path: resource.worktreeRoot, treehouse_lease_id: resource.leaseId, treehouse_lease_holder: resource.leaseHolder, ticket_slot_id: `pa:${resource.repository.key}:${resource.repository.ticket}`,
+      repository_permit: resource.repositoryPermit as 1 | 2 | 3 | 4, branch_state: "materialized", branch_base_sha: resource.repository.baseSha, branch_head_sha: binding.oracle.testHeadSha,
+      note: `requirements-product-launch/v1:${workflowDigest(JSON.stringify(binding))}`, effective_timeout_seconds: Math.ceil(remaining / 1000) });
+    child.unref(); const end = Date.now() + Math.min(10_000, remaining);
+    while (Date.now() < end) {
+      if (signal?.aborted || !isDeepStrictEqual(readProcessFingerprint(fingerprint.pid), fingerprint)) throw workflowError();
+      if (parkedRead(join(directory, "product-parked.json"))) { const launch = this.inspect(role, intent, resource); this.assertParked(launch, resource, role); return launch; }
+      await new Promise((done) => setTimeout(done, 10));
+    }
+    throw workflowError();
+  }
+  inspect(role: "test" | "product", intent: string, resource: TestResource): RequirementsTestLaunch {
+    const owner = productOwner(this.authority, intent), spawned = parkedRead(join(owner.directory, "product-spawned.json"));
+    const fingerprint = spawned?.process as ProcessFingerprint;
+    if (role !== "product" || !isDeepStrictEqual(owner.binding.resource, resource) || spawned?.intentId !== intent || !fingerprint) throw workflowError();
+    return { holder: { deploymentId: owner.deploymentId, process: fingerprint }, deploymentDirectory: owner.directory,
+      registry: productRegistry(owner, fingerprint, !readProcessFingerprint(fingerprint.pid)) };
+  }
+  #owner(launch: RequirementsTestLaunch): ProductOwner {
+    const row = parkedRead(join(launch.deploymentDirectory, "product-intent.json"));
+    const intent = (row?.binding as RequirementsProductPreflight | undefined)?.intentId; if (!intent) throw workflowError();
+    const owner = productOwner(this.authority, intent);
+    if (!isDeepStrictEqual(row, owner) || !isDeepStrictEqual(this.inspect("product", intent, owner.binding.resource), launch)) throw workflowError(); return owner;
+  }
+  assertParked(launch: RequirementsTestLaunch, resource: TestResource, role: "test" | "product"): void {
+    const owner = this.#owner(launch), parked = parkedRead(join(owner.directory, "product-parked.json"));
+    if (role !== "product" || !isDeepStrictEqual(resource, owner.binding.resource) || !isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)
+      || parked?.intentId !== owner.binding.intentId || !isDeepStrictEqual(parked.process, launch.holder.process)
+      || !isDeepStrictEqual(parked.tools, ["write", "edit", "bash", "pa_execution", "read"]) || parkedRead(join(owner.directory, "product-started.json")) || parkedRead(join(owner.directory, "product-stopped.json"))) throw workflowError();
+  }
+  async startAsync(launch: RequirementsTestLaunch, intent: string, signal?: AbortSignal): Promise<void> {
+    const owner = this.#owner(launch); if (signal?.aborted || intent !== workflowDigest(JSON.stringify([owner.binding.operationId, "product-start"]))) throw workflowError();
+    if (!isDeepStrictEqual(this.#service().productPreflight(owner.binding.operationId), owner.binding)) throw workflowError();
+    const reference = admitPiRequirementsProduct(this.authority, owner.binding.operationId, { treehouse: this.fixtures?.treehouse });
+    parkedWrite(join(owner.directory, "product-release.json"), { intentId: intent, process: launch.holder.process, reference });
+    const end = Math.min(Date.now() + 10_000, Date.parse(owner.binding.bounds.deadlineAt));
+    while (Date.now() < end) {
+      if (signal?.aborted) throw workflowError();
+      if (parkedRead(join(owner.directory, "product-started.json"))) { this.assertStarted(launch, intent); return; }
+      await new Promise((done) => setTimeout(done, 10));
+    }
+    throw workflowError();
+  }
+  assertStarted(launch: RequirementsTestLaunch, intent: string): void {
+    const owner = this.#owner(launch), started = parkedRead(join(owner.directory, "product-started.json"));
+    if (started?.intentId !== intent || !isDeepStrictEqual(started.process, launch.holder.process)) throw workflowError();
+    const value = this.authority.productConsumption(parseSourceVersion(started.reference));
+    if (!isDeepStrictEqual(value.launch, launch) || !isDeepStrictEqual(value.binding, owner.binding)) throw workflowError();
+  }
+  cancel(launch: RequirementsTestLaunch): void {
+    const owner = this.#owner(launch), path = join(owner.directory, "product-stop-intent.json"); if (parkedRead(path)) return;
+    parkedWrite(path, { intentId: owner.binding.intentId, process: launch.holder.process });
+    if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process)) process.kill(launch.holder.process.pid, "SIGTERM");
+  }
+  assertSettled(launch: RequirementsTestLaunch): void {
+    const owner = this.#owner(launch), stopped = parkedRead(join(owner.directory, "product-stopped.json"));
+    if (isDeepStrictEqual(readProcessFingerprint(launch.holder.process.pid), launch.holder.process) || stopped?.intentId !== owner.binding.intentId || !isDeepStrictEqual(stopped.process, launch.holder.process)) throw workflowError();
+    productRegistry(owner, launch.holder.process, true);
+    // Parent death/terminal text alone cannot settle an unproven tool/process
+    // group. Reuse the native execution journal's existing replay, without
+    // pretending that a dead holder passes the service's live admission gate.
+    const resource = owner.binding.resource, store = this.authority.native.execution(); if (!store) throw workflowError();
+    const binding = parseExecutionBinding({ schemaVersion: "execution-binding/v1", operationId: owner.binding.operationId, lineageId: resource.lineageId,
+      repoKey: resource.repository.key, repoRoot: resource.repository.root, worktreeRoot: resource.worktreeRoot, ticket: resource.repository.ticket,
+      branch: resource.repository.branch, initialHeadSha: owner.binding.oracle.testHeadSha, owner: launch.holder, bounds: owner.binding.bounds });
+    const unsupported = (): never => { throw workflowError(); };
+    const native = new ExecutionCustodyService(store, binding, { locks: { repository: unsupported, worktree: unsupported }, authorize: unsupported, assertLive: unsupported,
+      verifyEvidence: unsupported, assertHandover: unsupported, now: unsupported });
+    const state = native.inspectRetained();
+    if (state.operation || state.custody.inFlightOperation !== null) throw workflowError();
+  }
+  finalizeProduct(launch: RequirementsTestLaunch): void {
+    this.assertSettled(launch);
+    const owner = this.#owner(launch), resource = owner.binding.resource;
+    const physical = resolveRepoExecutionPath(undefined, resource.worktreeRoot, { allowLinkedWorktreeCwd: true });
+    const inspection = inspectRepositoryMutationLease(resource.repository.root, { worktreeRoot: resource.worktreeRoot, getProcessFingerprint: readProcessFingerprint });
+    if (inspection.state !== "absent") {
+      const lease = inspection.lease;
+      if (!lease || lease.deploymentId !== launch.holder.deploymentId || !isDeepStrictEqual(lease.processFingerprint, launch.holder.process)
+        || lease.canonicalRepoKey !== resource.repository.key || lease.canonicalRepoRoot !== resource.repository.root || lease.worktreeRoot !== resource.worktreeRoot
+        || lease.repositoryGitDir !== physical.gitDir || lease.repositoryGitCommonDir !== physical.gitCommonDir || lease.ticket !== resource.repository.ticket
+        || lease.runtime !== "pi" || lease.team !== "builder" || lease.mode !== "orchestrator" || lease.preLaunchGitSnapshot.head !== owner.binding.oracle.testHeadSha
+        || lease.preLaunchGitSnapshot.branch !== resource.repository.branch) throw workflowError();
+      const result = releaseRepositoryMutationLease({ canonicalRepoRoot: resource.repository.root, worktreeRoot: resource.worktreeRoot,
+        repositoryGitDir: physical.gitDir, slot: "orchestrator", ownershipToken: lease.ownershipToken });
+      if (result.status !== "released" && result.status !== "absent") throw workflowError();
+    }
+    if (inspectRepositoryMutationLease(resource.repository.root, { worktreeRoot: resource.worktreeRoot, getProcessFingerprint: readProcessFingerprint }).state !== "absent") throw workflowError();
+    const value = { holder: launch.holder, authority: "absent", resourceRetained: true };
+    const prior = parkedRead(join(owner.directory, "product-finalized.json"));
+    if (prior) { if (!isDeepStrictEqual(prior, value)) throw workflowError(); }
+    else parkedWrite(join(owner.directory, "product-finalized.json"), value);
   }
 }
 
@@ -1013,6 +1188,68 @@ export async function createRequirementsTestModelRuntime(authority: PiRequiremen
   });
   const model = modelRuntime.getModel(provider, transport.modelId); if (!model) throw workflowError();
   return { modelRuntime, model, transport };
+}
+
+/** Actual parked SDK holder. Its five definitions cannot execute until the
+ * parent publishes exact consumption + existing-owner admission and releases
+ * this process incarnation. Product implementation never borrows test-only tools. */
+export async function runRequirementsProductHolder(intent: string, authority = new PiRequirementsTestAuthority(), dependencies: PiReadonlyHelperDependencies = {}): Promise<void> {
+  const owner = productOwner(authority, intent), { binding } = owner, resource = binding.resource;
+  const raw = authority.readAuthorization(binding.operationId), auth = parseTestAuthorization(raw);
+  const fingerprint = readProcessFingerprint(process.pid); if (!fingerprint || process.cwd() !== resource.worktreeRoot) throw workflowError();
+  const deadline = Date.parse(binding.bounds.deadlineAt), wait = Math.min(Date.now() + 10_000, deadline);
+  while (Date.now() < wait && !parkedRead(join(owner.directory, "product-spawned.json"))) await new Promise((done) => setTimeout(done, 10));
+  if (!isDeepStrictEqual(parkedRead(join(owner.directory, "product-spawned.json"))?.process, fingerprint)) throw workflowError();
+  productRegistry(owner, fingerprint);
+  // Locators come only from the protected native owner, never inherited parent
+  // principals. Actual source authority independently rechecks every locator.
+  Object.assign(process.env, { PA_DEPLOYMENT_ID: owner.deploymentId, PA_DEPLOYMENT_DIR: owner.directory, PA_TEAM: "builder", PA_MODE: "orchestrator",
+    PA_TICKET_ID: resource.repository.ticket, PA_REPO: resource.worktreeRoot, PA_WORKTREE_ROOT: resource.worktreeRoot, PA_PI_EXECUTION_MODE: "background" });
+  let native: NativeExecutionSession | undefined;
+  const tools = createRequirementsProductTools(resource.worktreeRoot, binding.oracle.files.map((file) => file.path), () => { if (!native) throw workflowError(); return native; });
+  const resources: ResourceLoader = {
+    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }), getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }), getSystemPrompt: () => "Implement only the exact final-approved product contract. First record a bounded pa_execution plan and select this native direct holder. Preserve the reviewed oracle. No delegation, credentials, production, push/merge or resource return. Native tools/audit are NOT an OS sandbox.",
+    getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
+  };
+  const { modelRuntime, model, transport } = await createRequirementsTestModelRuntime(authority, auth, owner.directory);
+  const { session } = await createAgentSession({ cwd: resource.worktreeRoot, agentDir: owner.directory, resourceLoader: resources, modelRuntime, model, thinkingLevel: "off",
+    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0 } }), sessionManager: SessionManager.inMemory(resource.worktreeRoot),
+    tools: tools.map((tool) => tool.name), customTools: tools, noTools: "builtin" });
+  const shutdown = new AbortController(), abort = () => { shutdown.abort(); void session.abort(); };
+  process.once("SIGTERM", abort); process.once("SIGINT", abort); const timer = setTimeout(abort, Math.max(1, deadline - Date.now()));
+  let started = false, failure: unknown;
+  try {
+    if (!isDeepStrictEqual(session.getActiveToolNames(), ["write", "edit", "bash", "pa_execution", "read"])) throw workflowError();
+    parkedWrite(join(owner.directory, "product-parked.json"), { intentId: intent, process: fingerprint, tools: session.getActiveToolNames(), arbitraryCodeConfinement: false });
+    while (!shutdown.signal.aborted && Date.now() < deadline) {
+      const release = parkedRead(join(owner.directory, "product-release.json"));
+      if (!release) { await new Promise((done) => setTimeout(done, 10)); continue; }
+      const startIntent = workflowDigest(JSON.stringify([binding.operationId, "product-start"])), reference = parseSourceVersion(release.reference);
+      if (release.intentId !== startIntent || !isDeepStrictEqual(release.process, fingerprint)) throw workflowError();
+      const product = resolvePiRequirementsProductExecution(authority, owner.deploymentId, dependencies);
+      if (!product || !isDeepStrictEqual(product.reference, reference) || !isDeepStrictEqual(product.value.binding, binding)
+        || !isDeepStrictEqual(product.value.launch.holder, { deploymentId: owner.deploymentId, process: fingerprint })) throw workflowError();
+      const authentication = createPiReadonlyHelperCapability(dependencies).authenticate(resource.worktreeRoot); authentication.reread();
+      native = new NativeExecutionSession(authority.native, dependencies, product.consumed, authentication.context, product);
+      parkedWrite(join(owner.directory, "product-started.json"), { intentId: startIntent, process: fingerprint, reference }); started = true;
+      await session.prompt(authority.productPrompt(product.value), { expandPromptTemplates: false }); await session.agent.waitForIdle();
+      const state = native.service.status(native.actor);
+      if (state.operation || state.custody.state !== "idle" || state.originalFailure) throw workflowError();
+      product.assertOracle(); break;
+    }
+    if (!started || shutdown.signal.aborted || session.messages.some((message) => message.role === "assistant" && ["error", "aborted"].includes(message.stopReason))) throw workflowError();
+  } catch (error) { failure = error; }
+  finally { clearTimeout(timer); process.removeListener("SIGTERM", abort); process.removeListener("SIGINT", abort); await session.abort(); session.dispose(); }
+  const store = authority.native.operations(); if (!store) throw workflowError();
+  const evidence = new NativeExecutionEvidence(store, join(authority.native.root, "operations"), { repository: (run) => withPreparedTicketCapacity({ canonicalRepoKey: resource.repository.key, canonicalRepoRoot: resource.repository.root }, () => run()), worktree: (run) => run() });
+  const sink = evidence.sink(workflowDigest(JSON.stringify([intent, "requirements-product-model-terminal/v1"])), "stdout");
+  const complete = sink.write(Buffer.from(JSON.stringify({ transport, messages: session.messages, failure: failure instanceof Error ? { name: failure.name, message: failure.message, stack: failure.stack ?? null } : failure ? "unknown" : null })));
+  const detail = sink.close(); if (!complete) failure = workflowError();
+  const original = evidence.publish("requirements-product-runtime-terminal", { intent, process: fingerprint, started, detail, truncated: !complete, failed: Boolean(failure), cancelled: shutdown.signal.aborted });
+  parkedWrite(join(owner.directory, "product-stopped.json"), { intentId: intent, process: fingerprint, original, started });
+  appendRegistryEvent({ deployment_id: owner.deploymentId, team: "builder", event: "completed", timestamp: new Date().toISOString(), status: failure || shutdown.signal.aborted ? "failed" : "partial",
+    summary: "Dedicated product holder ended; independent review, CI, UAT and activation remain separate." });
 }
 
 /** No resource/extension/settings/auth discovery. Creates a genuine Pi SDK
@@ -1094,7 +1331,13 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-  if (process.argv[2] === "--requirements-test-holder") {
+  if (process.argv[2] === "--requirements-product-holder") {
+    try { await runRequirementsProductHolder(process.argv[3] ?? ""); }
+    catch (error) {
+      try { const owner = productOwner(new PiRequirementsTestAuthority(), process.argv[3] ?? ""); parkedWrite(join(owner.directory, "product-failure.json"), { name: error instanceof Error ? error.name : "unknown", message: error instanceof Error ? error.message : "unknown" }); } catch { /* unknown native intent retained */ }
+      process.exitCode = 1;
+    }
+  } else if (process.argv[2] === "--requirements-test-holder") {
     try { await runRequirementsTestHolder(process.argv[3] ?? ""); }
     catch (error) {
       // Startup failure is retained privately; it is NOT proof that an unknown

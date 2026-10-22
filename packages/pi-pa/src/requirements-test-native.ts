@@ -11,7 +11,7 @@ import {
   testWorkflowInvalidation, workflowDigest, workflowError, workflowObject, workflowSha, workflowSynchronous,
   type ExecutionHolder, type IdlePreparationReservation, type PreparedLockScope,
   type PreparedTicketCapacityTransaction, type RepositoryGitSnapshot, type SourceVersion,
-  type TestAuthorization, type TestGitEvidence, type TestResource, type TestWorkflowAssessment, type TestEventData, type TestProcessResult,
+  type TestAuthorization, type TestGitEvidence, type TestResource, type TestWorkflowAssessment, type TestEventData, type TestProcessResult, type ExecutionBounds,
   queryDeploymentStatus, processIsWithinFingerprintLineage, workflowTimestamp, type TicketStore,
 } from "@pa-platform/pa-core";
 import { authenticatePiPreparationCaller, type PiPreparationCaller, type PiPreparationContext } from "./pi-extension/prepared-workflow.js";
@@ -69,6 +69,27 @@ export interface RequirementsTestLaunch {
   readonly deploymentDirectory: string;
   readonly registry: SourceVersion;
 }
+export interface RequirementsProductPreflight {
+  readonly schemaVersion: "requirements-product-preflight/v1";
+  readonly operationId: string;
+  readonly authorizationSha256: string;
+  readonly intentId: string;
+  readonly resource: TestResource;
+  readonly oracle: NonNullable<TestWorkflowAssessment["oracle"]>;
+  readonly bounds: ExecutionBounds;
+  readonly retriesUsed: number;
+  readonly testHolder: ExecutionHolder;
+  readonly finalApprovalSha256: string;
+}
+export interface RequirementsProductConsumption {
+  readonly schemaVersion: "requirements-product-consumption/v1";
+  readonly binding: RequirementsProductPreflight;
+  readonly launch: RequirementsTestLaunch;
+  readonly launchSnapshot: RepositoryGitSnapshot;
+  readonly consumedEventSha256: string;
+  /** Private native slot token/custody; never included in model prompt/status. */
+  readonly reservation: IdlePreparationReservation;
+}
 export interface RequirementsTestNativeExecutor {
   /** Production parked lifecycle. No lock scope/capacity handle crosses await. */
   prepareAsync?(role: "test" | "product", intentId: string, resource: TestResource, signal?: AbortSignal): Promise<RequirementsTestLaunch>;
@@ -87,6 +108,8 @@ export interface RequirementsTestNativeExecutor {
   /** Actual process absence AND terminal registry, retaining original failures. */
   assertSettled(launch: RequirementsTestLaunch): void;
   cancel?(launch: RequirementsTestLaunch): void;
+  /** Matching native mutation-authority finalization only, never checkout return. */
+  finalizeProduct?(launch: RequirementsTestLaunch): void;
 }
 export interface RequirementsTestNativeOptions {
   readonly store: ProtectedWorkflowStore;
@@ -98,7 +121,7 @@ export interface RequirementsTestNativeOptions {
   /** Isolated fault tests only; throwing preserves intent/effects/resources. */
   readonly boundary?: (point: string) => void;
 }
-type Step = "reservation" | "allocation" | "branch" | "test-process" | "test-start" | "test-settlement" | "product-process" | "product-transfer" | "product-start" | "product-settlement";
+type Step = "reservation" | "allocation" | "branch" | "test-process" | "test-start" | "test-settlement" | "product-process" | "product-transfer" | "product-start" | "product-settlement" | "product-finalization";
 interface NativeRecord {
   readonly schemaVersion: typeof VERSION;
   readonly operationId: string;
@@ -109,7 +132,7 @@ interface NativeRecord {
   readonly state: "intent" | "observed" | "failed" | "unknown" | "cancelled";
   readonly value: unknown;
 }
-const STEPS: readonly Step[] = ["reservation", "allocation", "branch", "test-process", "test-start", "test-settlement", "product-process", "product-transfer", "product-start", "product-settlement"];
+const STEPS: readonly Step[] = ["reservation", "allocation", "branch", "test-process", "test-start", "test-settlement", "product-process", "product-transfer", "product-start", "product-settlement", "product-finalization"];
 const CAPACITY_RETRY_VERSION = "requirements-test-native-capacity-retry/v1";
 function loadNativeRecords(store: ProtectedWorkflowStore, auth: TestAuthorization, digest: string): readonly NativeRecord[] {
   const id = identity(auth.operationId); const names = store.records().filter((name) => name.startsWith(`${id}.`));
@@ -128,6 +151,46 @@ function loadNativeRecords(store: ProtectedWorkflowStore, auth: TestAuthorizatio
   }
   return records;
 }
+function productPreflight(raw: string, records: readonly NativeRecord[], history: readonly string[]): RequirementsProductPreflight {
+  const auth = parseTestAuthorization(raw), full = assessTestWorkflow(raw, history);
+  const finalIndex = history.findIndex((entry) => parseTestWorkflowEvent(entry).data.action === "final-approved");
+  const final = assessTestWorkflow(raw, history.slice(0, finalIndex + 1));
+  const author = records.find((row) => row.step === "test-process" && row.state === "observed")?.value as RequirementsTestLaunch | undefined;
+  const intentId = workflowDigest(JSON.stringify([auth.operationId, "product-process"]));
+  const intent = records.find((row) => row.step === "product-process" && row.state === "intent");
+  const event = history.map((entry) => parseTestWorkflowEvent(entry).data).find((data) => data.action === "product-intent");
+  if (!["product-intent", "product-consumed"].includes(full.state) || final.state !== "final-approved" || !final.resource || !final.oracle || !author || !intent
+    || (intent.value as { intentId?: string }).intentId !== intentId || event?.action !== "product-intent" || event.intentId !== intentId
+    || event.finalApprovalSha256 !== final.historySha256.at(-1) || !same(event.resource, final.resource)) throw workflowError();
+  return Object.freeze({ schemaVersion: "requirements-product-preflight/v1", operationId: auth.operationId, authorizationSha256: workflowDigest(raw), intentId,
+    resource: final.resource, oracle: final.oracle, bounds: final.bounds,
+    retriesUsed: Math.max(final.retriesUsed, auth.retriesUsed + records.filter((row) => row.step === "capacity-retry").length),
+    testHolder: author.holder, finalApprovalSha256: final.historySha256.at(-1)! });
+}
+function productConsumption(raw: string, records: readonly NativeRecord[], history: readonly string[]): RequirementsProductConsumption {
+  const binding = productPreflight(raw, records, history);
+  if (assessTestWorkflow(raw, history).state !== "product-consumed") throw workflowError();
+  const launched = records.filter((row) => row.step === "product-process" && row.state === "observed");
+  const starts = records.filter((row) => row.step === "product-start" && row.state === "intent");
+  const transfers = records.filter((row) => row.step === "product-transfer" && row.state === "observed");
+  const event = parseTestWorkflowEvent(history.at(-1)!);
+  if (launched.length !== 1 || starts.length !== 1 || transfers.length !== 1 || event.data.action !== "product-consumed") throw workflowError();
+  const launch = launched[0]!.value as RequirementsTestLaunch;
+  const start = starts[0]!.value as { resource: TestResource; launch: RequirementsTestLaunch; launchSnapshot: RepositoryGitSnapshot };
+  if (!same(event.data.resource, binding.resource) || !same(event.data.holder, launch.holder) || !same(event.data.previousHolder, binding.testHolder)
+    || !same(event.data.registry, launch.registry) || !same(start.launch, launch) || !same(start.resource, binding.resource)
+    || start.launchSnapshot.head !== binding.oracle.testHeadSha || start.launchSnapshot.branch !== binding.resource.repository.branch || start.launchSnapshot.dirty
+    || start.launchSnapshot.statusPorcelainV2Base64 !== "" || !same(event.data.launchSnapshot, reference("launch-snapshot", start.launchSnapshot))
+    || !same(transfers[0]!.value, { resource: binding.resource, previousHolder: binding.testHolder, holder: launch.holder,
+      finalApprovalSha256: binding.finalApprovalSha256, initialHeadSha: binding.oracle.testHeadSha })) throw workflowError();
+  const row = event.data.inventory.find((entry) => entry.ticket === binding.resource.repository.ticket);
+  const reservation = parseIdlePreparationReservation(row);
+  if (reservation.purpose !== "requirements-test-workflow/v1" || reservation.operationId !== binding.operationId || reservation.reservationId !== binding.resource.reservationId
+    || reservation.lineageId !== binding.resource.lineageId || reservation.repositoryPermit !== binding.resource.repositoryPermit || reservation.custody.state !== "orchestrator-direct"
+    || !same(reservation.custody.holder, launch.holder) || reservation.launch?.deploymentDirectory !== launch.deploymentDirectory) throw workflowError();
+  return Object.freeze({ schemaVersion: "requirements-product-consumption/v1", binding, launch, launchSnapshot: start.launchSnapshot, consumedEventSha256: workflowDigest(history.at(-1)!), reservation });
+}
+function productConsumptionId(value: RequirementsProductConsumption): string { return workflowDigest(JSON.stringify([value.schemaVersion, value.binding.operationId, value.launch.holder])); }
 function capacityRetryState(auth: TestAuthorization, records: readonly NativeRecord[], capacity: PreparedTicketCapacityTransaction) {
   const last = records.at(-1);
   const failures = records.filter((row) => row.state === "failed" || row.state === "unknown");
@@ -627,6 +690,16 @@ export class RequirementsTestNativeService {
     this.#final(auth, records, capacity);
     if (assessTestWorkflow(this.options.authority.readAuthorization(auth.operationId), this.options.authority.readFinalHistory(auth)).state !== "product-consumed") throw workflowError();
   }
+  /** Native executor preflight, never a public tool/CLI packet or a replay grant.
+   * Uses the same full final/Git/resource/settlement authentication as launch. */
+  productPreflight(operationId: string): RequirementsProductPreflight { return nativeGuard(() => {
+    const { raw, auth, sha256 } = this.#authorization(operationId);
+    const lease = this.#observed<TreehouseLeaseEvidence>(this.#load(auth, sha256), "allocation");
+    return this.#locked(auth, (capacity) => {
+      this.#final(auth, this.#load(auth, sha256), capacity);
+      return productPreflight(raw, this.#load(auth, sha256), this.options.authority.readFinalHistory(auth));
+    }, lease.path);
+  }); }
   /** Same resource/reservation/lineage, exact approved test HEAD; no allocation,
    * reservation call, branch construction, legacy preparation or fallback. */
   continueProduct(operationId: string): Readonly<{ state: "product-active"; resource: TestResource; initialHeadSha: string }> { return nativeGuard(() => this.#continueProduct(operationId)); }
@@ -679,11 +752,12 @@ export class RequirementsTestNativeService {
   settleProduct(operationId: string): void { nativeGuard(() => {
     const { auth, sha256 } = this.#authorization(operationId, false);
     const lease = this.#observed<TreehouseLeaseEvidence>(this.#load(auth, sha256), "allocation");
+    let terminal: RequirementsTestLaunch | undefined;
     this.#locked(auth, (capacity, scope) => {
       let records = this.#load(auth, sha256); const resource = this.#resource(auth, records, capacity);
       const history = this.options.authority.readFinalHistory(auth), complete = assessTestWorkflow(this.options.authority.readAuthorization(auth.operationId), history);
       const consumed = history.map((entry) => parseTestWorkflowEvent(entry).data).find((value) => value.action === "product-consumed");
-      const launch = this.#observed<RequirementsTestLaunch>(records, "product-process");
+      const launch = this.#observed<RequirementsTestLaunch>(records, "product-process"); terminal = launch;
       const intent = records.find((record) => record.step === "product-start" && record.state === "intent");
       const start = intent?.value as { launch: RequirementsTestLaunch; resource: TestResource; launchSnapshot: RepositoryGitSnapshot } | undefined;
       const observed = records.find((record) => record.step === "product-start" && record.state === "observed");
@@ -715,6 +789,17 @@ export class RequirementsTestNativeService {
       this.options.boundary?.("product-settlement:capacity-updated");
       this.#append(scope, auth, sha256, this.#load(auth, sha256), "product-settlement", "observed", value);
     }, lease.path);
+    if (terminal && this.options.executor.finalizeProduct) this.#locked(auth, (_capacity, scope) => {
+      const value = { launch: terminal }; let records = this.#load(auth, sha256);
+      const prior = records.find((row) => row.step === "product-finalization" && row.state === "intent");
+      if (prior && !same(prior.value, value)) throw workflowError();
+      if (!prior) this.#append(scope, auth, sha256, records, "product-finalization", "intent", value);
+      // This native port takes the existing worktree owner mutex itself. Do not
+      // recursively hold it; capacity remains the outer serialization owner.
+      synchronous(() => this.options.executor.finalizeProduct!(terminal!));
+      records = this.#load(auth, sha256);
+      if (!records.some((row) => row.step === "product-finalization" && row.state === "observed")) this.#append(scope, auth, sha256, records, "product-finalization", "observed", value);
+    });
   }); }
   /** Native operator-only manual retry of proven full-capacity/zero-resource
    * failure. Unknown allocation/process/branch failures are never cleared here. */
@@ -746,14 +831,14 @@ export class RequirementsTestNativeService {
       }
     });
   }
-  status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activation: false }> { return nativeGuard(() => this.#status(operationId)); }
-  #status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activation: false }> {
+  status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activationPerformed: false }> { return nativeGuard(() => this.#status(operationId)); }
+  #status(operationId: string): Readonly<{ schemaVersion: typeof VERSION; state: "unrequested" | "retained" | "blocked"; effects: number; activationPerformed: false }> {
     const { auth, sha256 } = this.#authorization(operationId, false);
     const records = this.#load(auth, sha256);
     const lastRetry = records.reduce((last, row, index) => row.step === "capacity-retry" ? index : last, -1);
     return Object.freeze({ schemaVersion: VERSION, state: !records.length ? "unrequested" : records.some((row, index) => ["unknown", "cancelled"].includes(row.state) || (row.state === "failed" && index > lastRetry)
         || (row.state === "intent" && row.step !== "request" && !(row.step === "reservation" && index < lastRetry) && !records.some((other) => other.step === row.step && other.state === "observed"))) ? "blocked" : "retained",
-      effects: records.filter((row) => row.state === "observed").length, activation: false });
+      effects: records.filter((row) => row.state === "observed").length, activationPerformed: false });
   }
 }
 
@@ -1020,9 +1105,10 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     const raw = this.readAuthorization(auth.operationId); this.assertRetainedAuthorization(auth, workflowDigest(raw));
     const history = this.readFinalHistory(auth); const prior = history.map((entry) => parseTestWorkflowEvent(entry)).find((entry) => entry.data.action === data.action);
     if (prior) { if (!same(prior.data, data)) throw workflowError(); return; }
-    const recorded = Math.max(auth.elapsedMs, Date.now() - Date.parse(auth.bounds.startedAt), history.length ? parseTestWorkflowEvent(history.at(-1)!).elapsedMs : 0);
+    const previous = history.length ? parseTestWorkflowEvent(history.at(-1)!) : null;
+    const recorded = Math.max(auth.elapsedMs, Date.now() - Date.parse(auth.bounds.startedAt), previous?.elapsedMs ?? 0);
     const entry = { schemaVersion: "requirements-test-workflow/v1", kind: "event", operationId: auth.operationId, authorizationSha256: workflowDigest(raw), sequence: history.length + 1,
-      previousSha256: workflowDigest(history.at(-1) ?? raw), bounds: auth.bounds, retriesUsed: auth.retriesUsed, elapsedMs: recorded,
+      previousSha256: workflowDigest(history.at(-1) ?? raw), bounds: previous?.bounds ?? auth.bounds, retriesUsed: previous?.retriesUsed ?? auth.retriesUsed, elapsedMs: recorded,
       evidence: reference("native-sequence", { operationId: auth.operationId, sequence: history.length + 1, data }), data };
     const next = JSON.stringify(entry); assessTestWorkflow(raw, [...history, next]);
     const id = workflowDigest(JSON.stringify(["requirements-test-native-history/v1", auth.operationId]));
@@ -1110,6 +1196,74 @@ export class PiRequirementsTestAuthority implements RequirementsTestNativeAuthor
     const pair = this.native.preview(caller, final.pair.requirements.ref);
     if (!same(final.pair.requirements, pair.requirements) || !same(final.pair.uat, pair.uat) || !same(final.pair.matrix, pair.matrix) || !same(final.pair.finalChecks, pair.finalChecks)
       || !same(final.pair.matrixApproval, reference("native-matrix-approval", pair.matrixApprovalEvidence))) throw workflowError();
+  }
+  /** Native-only producer. Inputs select an existing operation, never supply
+   * final approval, holder, bounds or a legacy grant. Recomputed from both owners. */
+  captureProductConsumption(scope: PreparedLockScope, operationId: string): SourceVersion {
+    const raw = this.readAuthorization(operationId), auth = parseTestAuthorization(raw);
+    this.assertAuthorization(auth, workflowDigest(raw));
+    const history = this.readFinalHistory(auth), records = loadNativeRecords(this.#store(), auth, workflowDigest(raw));
+    const value = productConsumption(raw, records, history);
+    this.assertFinalApproval(auth, assessTestWorkflow(raw, history.slice(0, history.findIndex((entry) => parseTestWorkflowEvent(entry).data.action === "final-approved") + 1)));
+    if (!same(clean(value.binding.resource.worktreeRoot, auth.repository.branch, value.binding.oracle.testHeadSha), value.launchSnapshot)) throw workflowError();
+    const id = productConsumptionId(value), name = `${id}.intent.json`;
+    if (this.#store().records().includes(name)) { if (!same(this.#store().read(name), value)) throw workflowError(); }
+    else this.#store().publish(scope, name, value);
+    return Object.freeze({ ref: `requirements-product-consumption:${id}`, version: value.schemaVersion, sha256: workflowDigest(JSON.stringify(value)) });
+  }
+  retainedProductPreflight(operationId: string): RequirementsProductPreflight {
+    const raw = this.readAuthorization(operationId), auth = parseTestAuthorization(raw); this.assertRetainedAuthorization(auth, workflowDigest(raw));
+    return productPreflight(raw, loadNativeRecords(this.#store(), auth, workflowDigest(raw)), this.readFinalHistory(auth));
+  }
+  productConsumption(input: SourceVersion): RequirementsProductConsumption {
+    const ref = parseSourceVersion(input), match = /^requirements-product-consumption:([0-9a-f]{64})$/.exec(ref.ref);
+    if (!match || ref.version !== "requirements-product-consumption/v1") throw workflowError();
+    const stored = this.#store().read(`${match[1]}.intent.json`) as RequirementsProductConsumption;
+    const raw = this.readAuthorization(stored.binding.operationId), auth = parseTestAuthorization(raw);
+    this.assertRetainedAuthorization(auth, workflowDigest(raw));
+    const value = productConsumption(raw, loadNativeRecords(this.#store(), auth, workflowDigest(raw)), this.readFinalHistory(auth));
+    if (!same(stored, value) || productConsumptionId(value) !== match[1] || workflowDigest(JSON.stringify(value)) !== ref.sha256) throw workflowError();
+    return value;
+  }
+  assertProductCurrent(value: RequirementsProductConsumption): void {
+    const raw = this.readAuthorization(value.binding.operationId), auth = parseTestAuthorization(raw);
+    this.assertAuthorization(auth, workflowDigest(raw));
+    const history = this.readFinalHistory(auth), index = history.findIndex((entry) => parseTestWorkflowEvent(entry).data.action === "final-approved");
+    this.assertFinalApproval(auth, assessTestWorkflow(raw, history.slice(0, index + 1)));
+    if (executionBoundStop(value.binding.bounds, new Date().toISOString()) || value.binding.retriesUsed >= auth.retryLimit) throw workflowError();
+    this.assertProductOracle(value);
+  }
+  productEnvironment(value: RequirementsProductConsumption): NodeJS.ProcessEnv { this.assertProductCurrent(value); return this.#environment(); }
+  productPrompt(value: RequirementsProductConsumption): string {
+    this.assertProductCurrent(value);
+    const auth = parseTestAuthorization(this.readAuthorization(value.binding.operationId));
+    const final = this.readFinalHistory(auth).map((entry) => parseTestWorkflowEvent(entry).data).find((entry) => entry.action === "final-approved");
+    if (final?.action !== "final-approved") throw workflowError();
+    const sources = [final.pair.requirements, final.pair.uat].map((source) => {
+      const path = source.ref.replace(/^(?:requirements|uat):/, "");
+      if (!path.startsWith("agent-teams/requirements/artifacts/") || /[\\\\%?#\u0000]/.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")) throw workflowError();
+      const bytes = readReviewEvidenceFile(join(this.native.aiUsageRoot, path), 1_048_576, "approved product source");
+      if (workflowDigest(bytes) !== source.sha256) throw workflowError(); return { source, text: Buffer.from(bytes).toString("utf8") };
+    });
+    return JSON.stringify({ task: "Implement the exact final-approved requirements using pa_execution plan/select and audited tools. Never alter the reviewed oracle, delegate, access credentials, push/merge, return resources or claim independent review/CI/UAT. Tools/audit are NOT an OS sandbox.", sources, oracle: value.binding.oracle });
+  }
+  assertProductOracle(value: RequirementsProductConsumption): void {
+    const { resource, oracle } = value.binding, root = resource.worktreeRoot;
+    const current = snapshot(root); if (current.branch !== resource.repository.branch) throw workflowError();
+    git(["merge-base", "--is-ancestor", oracle.testHeadSha, current.head], root);
+    const commits = git(["rev-list", `${oracle.testHeadSha}..${current.head}`], root).toString("utf8").trim().split("\n").filter(Boolean);
+    if (commits.length > 256) throw workflowError();
+    const paths = oracle.files.map((file) => file.path);
+    for (const sha of commits) {
+      const changed = git(["diff-tree", "--root", "-m", "--name-only", "--no-renames", "--no-commit-id", "-r", "-z", sha], root).toString("utf8").split("\0").filter(Boolean);
+      if (changed.some((path) => paths.includes(path))) throw workflowError();
+    }
+    for (const file of oracle.files) {
+      const path = join(root, file.path); let part = root;
+      for (const segment of file.path.split("/")) { part = join(part, segment); const info = lstatSync(part); if (info.isSymbolicLink() || (info.isFile() && info.nlink !== 1)) throw workflowError(); }
+      if (workflowDigest(readReviewEvidenceFile(path, 16_777_216, "product immutable oracle")) !== file.sha256
+        || workflowDigest(git(["show", `${current.head}:${file.path}`], root)) !== file.sha256) throw workflowError();
+    }
   }
   readPreviousAuthorization(auth: TestAuthorization): string {
     if (!auth.amendment) throw workflowError();

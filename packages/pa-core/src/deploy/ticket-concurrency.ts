@@ -60,14 +60,18 @@ export type RepositoryTicketSlotAuthentication =
 /** Existing protected capacity observation, with no mutex or capacity update. */
 export function observeReadonlyRepositoryTicketSlot(canonicalRepoRoot: string, ticket: string,
   getProcessFingerprint: (pid: number) => ProcessFingerprint | undefined = readProcessFingerprint,
-): { readonly slot: RepositoryTicketSlot; readonly identity: string } {
+): { readonly slot: RepositoryTicketSlot; readonly identity: string; readonly reservation?: IdlePreparationReservation } {
   const path = executionSlotPath(canonicalRepoRoot, ticket, false);
   const stat = lstatSync(path);
   if ((stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.uid !== process.getuid?.()) throw new Error("helper capacity evidence is not protected");
   const bytes = readReviewEvidenceFile(path, MAX_REPOSITORY_TICKET_SLOT_BYTES, "helper capacity");
-  const slot: unknown = path.endsWith(".prepared.json") ? preparedSlotView(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))) : JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const reservation = path.endsWith(".prepared.json") ? parseIdlePreparationReservation(value) : undefined;
+  const slot: unknown = reservation ? preparedSlotView(reservation) : value;
   if (!isSlot(slot) || !fingerprintsEqual(slot.processFingerprint, getProcessFingerprint(slot.processFingerprint.pid))) throw new Error("helper capacity evidence is malformed or stale");
-  return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex") };
+  // Private native observation, never a public projection. Preserve the full
+  // new-route identity rather than authenticating only its legacy slot view.
+  return { slot, identity: createHash("sha256").update(`${stat.dev}:${stat.ino}:${stat.ctimeMs}:`).update(bytes).digest("hex"), ...(reservation ? { reservation } : {}) };
 }
 
 export function authenticateRepositoryTicketSlot(options: {

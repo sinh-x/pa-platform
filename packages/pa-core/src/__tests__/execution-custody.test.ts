@@ -60,6 +60,16 @@ function failed(f: ReturnType<typeof setup>) {
   f.plan(); f.select(); f.begin("failed-check", "check"); f.finish("failed-check", failure()); f.settle();
 }
 
+test("PAP-265 retained inspection preserves pending barriers without asserting liveness, admission or effects", () => fixture((f) => {
+  f.plan(); f.select(); f.begin("lost-result"); f.setLive(false); f.setDeny(true);
+  const before = f.store.records().map((name) => [name, readFileSync(join(f.root, name)).toString("base64")]);
+  const calls = [...f.calls], state = f.service.inspectRetained();
+  assert.equal(state.operation?.id, "lost-result"); assert.equal(state.custody.inFlightOperation, "lost-result"); assert.ok(Object.isFrozen(state));
+  assert.deepEqual(f.calls, calls, "inspection does not fake a successful host/live check");
+  assert.throws(() => f.service.status(owner)); assert.throws(() => f.service.initialize(owner)); assert.throws(() => f.finish("lost-result"));
+  assert.deepEqual(f.store.records().map((name) => [name, readFileSync(join(f.root, name)).toString("base64")]), before, "retained observation never creates, reaffirms or clears a barrier");
+}));
+
 test("AC7 plan and rationale precede judgment-based selection; strict input never grants authority", () => fixture((f) => {
   assert.throws(() => f.select());
   for (const patch of [{ rationale: "" }, { paths: ["../escape"] }, { paths: ["src/*"] }, { extra: true }, { prerequisites: [{ ...source("a"), token: "PRIVATE" }] }]) assert.throws(() => parseExecutionPlan({ ...executionPlan(), ...patch }));

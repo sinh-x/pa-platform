@@ -1,6 +1,6 @@
 # requirements-test-workflow/v1 — phase-1 contract
 
-Status: **staged, inactive; source model, native capture/dedicated test custody/SDK composition; phase 2 remains unaccepted**. Owner: PAP-265, approved requirements
+Status: **staged, inactive; native test and same-resource product admission/execution implemented; independent phase acceptance and installed qualification pending**. Owner: PAP-265, approved requirements
 `2026-10-22-pap-265-requirements-tested-oracle.md`, section 13 phase 1;
 approval `PAP-265#c-20261021223147279`. Audience: core contract, Pi native launcher,
 capacity/custody, assertion collector and PAPC-065 consumer implementors.
@@ -368,8 +368,9 @@ ports. Those are trusted embedding dependencies, NOT JSON/environment/tool optio
 No default success executor/approval producer is installed. The native capture,
 restricted SDK definitions and dedicated registry owner below now supply concrete
 producers. The later direct continuation adds a protected keyless model-transport
-consumer and manual capacity-retry capture. Complete phase-3 validation, actual
-installed qualification and product-holder admission remain incomplete boundaries.
+consumer and manual capacity-retry capture. The product continuation below now
+connects native chronology to the existing admission/execution owners. Complete
+phase-3 validation and actual installed qualification remain pending.
 Source fixtures supplying dependencies do not establish installed readiness.
 
 Authority must independently authenticate original approved bytes, live foreground
@@ -424,9 +425,9 @@ facts: no generic Pi prompt can fill the missing restricted executor.
 
 This historical inert transport remains incomplete as an executor. The new async
 service and restricted SDK owner below are separate from it; neither converts an
-inert acknowledgement into qualified readiness. Same-reservation production product
-admission and installed qualification remain incomplete. No live new-route launch, installed
-qualification, final-approval chronology, human UAT or activation is claimed by
+inert acknowledgement into qualified readiness. The dedicated product owner below
+is a separate new-version admission/execution path; installed qualification remains
+pending. No live new-route launch, installed qualification, human UAT or activation is claimed by
 these source transport tests. They use real inert processes with explicitly
 fixture-authored registry rows and exercise actual process-birth/death, premature
 release, drift, cancellation, response loss, retained records and old-route suites.
@@ -478,12 +479,18 @@ strict discriminated object (unknown fields reject):
 - `{schemaVersion,action:"authorize",authorization:<raw JSON string>}`: a separate
   native test-only dialog displays the complete packet and raw SHA-256. Fresh
   caller, process, sources, pair and environment rereads precede immutable capture.
-- `{schemaVersion,action:"request"|"status"|"cancel"|"settle"|"review-oracle"|"retry-capacity",operationId:<digest>}`.
+- `{schemaVersion,action:"request"|"status"|"cancel"|"settle"|"review-oracle"|"retry-capacity"|"continue-product"|"settle-product",operationId:<digest>}`.
   `retry-capacity` captures and consumes one exact native manual decision; it does
   not execute `request`, queue, reclaim a slot or clear unknown effects.
 - `{schemaVersion,action:"approve-final",operationId:<digest>,requirements:<attached final source ref>}`.
 
-There is no product-launch, generic shell, delegation, authority-root or arbitrary
+`continue-product` authenticates the exact final-approved pair/reviewed oracle,
+actual settled author and same retained resource before admitting one product
+holder. `settle-product` performs factual matching terminal reconciliation only.
+Neither accepts a holder, grant, receipt, root, command, tuple or approval from JSON.
+`status` reports `activationPerformed:false`, not a false assertion that an already
+selected policy is inactive; `selection-status` independently reports selection.
+There is no generic product-deploy flag, shell, delegation, authority-root or arbitrary
 record option. Public lifecycle HTTP JSON cannot mint `requirementsTest` custody.
 Missing/malformed/unqualified native policy blocks; no activation occurs in this
 implementation run. The pure model's `runtimeAuthorized:false` remains accurate.
@@ -677,41 +684,119 @@ remains blocked even when the parked process has died. Settlement captures
 changed/dirty product Git state without approving it or reapplying the initial
 clean-test-HEAD gate. It grants no product PASS, source
 approval, linked-head update, new execution, permit release, merge or return.
-No product-launch/settlement option is added to the public native tool grammar.
+The bounded operation-id-only `continue-product`/`settle-product` native actions
+now connect these transactions to the concrete owner below. They preserve the
+foreground-only qualification/caller/final-approval gates; auto/OPA/CPA stay denied.
 
-These transaction cases use real disposable Git/locks/processes and explicitly
-modeled approval/registry ports. They are SOURCE evidence, not actual product
-execution adoption, installed qualification, semantic review, human UAT or
-activation. The concrete production executor's product-role denial is unchanged.
+The original transaction cases use real disposable Git/locks/processes and
+explicitly modeled approval/registry ports. Additional cases below observe actual
+SDK product tools, native admission, registry and execution owners; authorization,
+final-pair preview and model service remain explicit source fixtures. Neither case
+class establishes installed qualification, semantic review, human UAT or activation.
 
-### Remaining production product boundary / next owner slice
+### Concrete same-resource product admission and execution (staged)
 
-**Phase 2 remains unaccepted.** The concrete executor still rejects product-role
-preparation. A qualified keyless test runner and a final-pair digest are not ordinary
-builder execution/adoption authority. The async same-reservation transaction is
-source-tested with real barrier processes and explicitly fixture-authored
-approvals/registry, not an admitted production builder. A direct negative test
-retains this denial even with qualified source-fixture keyless test capability.
+`PiRestrictedTestExecutor` delegates product role to the dedicated native product
+owner, not the test-only loadout or ordinary `deploy` fallback. Preparation first
+calls the service's full native `productPreflight`: exact final sources, actual
+settled test process/registry, complete service history, independent Git/content,
+retained physical resource and current custody. Missing or arbitrary product
+intent still rejects even with qualified test-only capability.
 
-The next production slice must bridge the new exact final-approved history into
-existing native builder admission/execution owners, not open generic tools or
-forge a legacy `prepared-builder-consumption/v1` grant. Concrete affected owners:
-`requirements-test-native.ts` (connect the staged authenticated product
-publications to the concrete executor), `deploy.ts` (same retained reservation/lease admission),
-`execution-native.ts` (new-version consumed binding, process/custody and oracle
-immutability without implicit legacy adoption), `background-runner.ts` (parked
-product release and actual settlement), and their owned core registry/custody
-correlations/regressions as needed. Product executor preparation must independently
-recheck settled test process/registry and exact final pair, produce an explicitly
-versioned product correlation/consumption, atomically transfer the existing sole
-holder/reservation, inherit original bounds/counters and start at exact approved
-test HEAD. The native-produced product-intent/consumed transaction above must be
-bound to that execution/admission protocol; it is not by itself a consumed builder
-binding. No second acquisition, phase relabeling, counter reset, generic fallback or oracle weakening
-is authorized. Existing native execution currently recognizes only legacy
-prepared-consumption markers and builder ownership: merely removing the product
-role rejection would be an unsafe authority bypass, not completion.
+The strict native records are separate from legacy preparation:
 
-Phase-3 producer validation, phase-4 qualification/PAPC-065 compatibility,
-independent review/CI and actual human UAT remain pending. No fixture/help/status/
-merge or this document enables selection or establishes installed/human PASS.
+- `requirements-product-preflight/v1`: exactly `{schemaVersion,operationId,
+  authorizationSha256,intentId,resource,oracle,bounds,retriesUsed,testHolder,
+  finalApprovalSha256}`. `intentId` is the already-published product-process intent;
+  `finalApprovalSha256` pins the original final-approved event. Bounds/counters are
+  inherited, not recalculated from product process start.
+- `requirements-product-consumption/v1`: exactly `{schemaVersion,binding,launch,
+  launchSnapshot,consumedEventSha256,reservation}`. `binding` is the preflight above;
+  `launch` is the actual native parked product holder/registry; the snapshot is its
+  exact clean approved test HEAD. `reservation` is PRIVATE full existing capacity
+  evidence, including the original slot token. It is never placed in a model
+  prompt/status. The reader reconstructs the record from both protected native
+  chains, not caller JSON. Its protected id hashes
+  `JSON.stringify([schemaVersion,binding.operationId,launch.holder])`.
+- A SourceVersion uses `ref:"requirements-product-consumption:<id>"`, that version
+  and SHA-256 of the exact stored JSON rendering. The private deployment sidecar
+  `requirements-product-consumption.json` contains only this reference, not a
+  legacy receipt/grant or caller-selected resource packet.
+- `pi-restricted-product-owner/v1`: exactly `{schemaVersion,binding,deploymentId,
+  directory}` in the existing operations store, before the exclusive directory and
+  actual process spawn. Existing/unknown intent is inspect-only, never respawned.
+- Registry uses the EXISTING strict builder/orchestrator Treehouse/branch/slot
+  fields, actual process anchor and immutable started-event note
+  `requirements-product-launch/v1:<SHA256(JSON.stringify(binding))>`. This note is
+  correlation, not authority. No schema/legacy authority restriction is relaxed;
+  `requirements_test` remains test-only and cannot mix with builder evidence.
+
+Before release, `admitPiRequirementsProduct` captures consumption under existing
+capacity -> worktree -> publication owners. It authenticates the same complete
+reservation, actual holder, registry, process anchor and physical Treehouse lease.
+It acquires only the existing worktree MUTATION authority, never a second checkout,
+permit, reservation or branch. Its `requirements-product-admission/v1` intent binds
+`{schemaVersion,reference,holder,physical}` in the same operations store. The existing
+repository-admission owner's native `beforePublish` callback publishes that intent
+inside the worktree mutex immediately before exclusive lease publication. Throw,
+Promise or non-void callback blocks lease publication. Ordinary callers retain
+unchanged behavior. An existing admission intent with absent/uncertain/mismatched
+lease blocks rather than authorizing reacquisition. Same matching live lease may
+only be inspected/reused. No force, cleanup or legacy create/select is involved.
+
+`resolvePiRequirementsProductExecution` and `NativeExecutionSession` explicitly
+adopt this new version. They independently reread the protected consumption,
+registry/process lineage, existing mutation owner, physical lease and COMPLETE
+current reservation (operation/reservation/lineage/custody, not merely its ordinary
+slot view). Legacy prepared markers/grants retain their exact original path; new
+product markers cannot fall through to generic child admission. Native execution
+uses the same `ExecutionCustodyService`, existing tool/result/process evidence,
+plan/select, failure/recovery and source-authority advancement. Its initial HEAD,
+lineage, original deadline and used counters come from the new binding. No runtime
+or review/replacement accounting restarts at product spawn.
+
+The actual parked SDK has only `write`, `edit`, `bash`, `pa_execution`, `read`, with
+no resource/extension/settings/credential discovery and the same explicit keyless
+qualified model transport. Definitions are inert until exact consumption/admission
+and native release. Custom SDK wrappers reuse the actual native execution module's
+begin/finish hooks and lower SDK builtins. A model cannot supply their binding,
+resolver or authority. Every mutation/check persists native intent before lower
+SDK dispatch and requires native result/process/scope evidence to close it. Shell
+commands are limited to the native plan's fixed checks and bounded scoped Git;
+there is no unrestricted shell, delegation, feature push or acceptance producer.
+Checks receive only native non-secret environment, not inherited PA/PI principals
+or host credential environment. This is tools/audit enforcement, NOT a sandbox.
+
+Plans cannot include the reviewed oracle or a path containing/contained by it.
+Every new action rereads final source approval and oracle bytes/ancestry. Every
+intervening commit is checked for oracle changes: restoring the same final bytes
+cannot hide an intermediate oracle edit. Post-operation checks preserve scope
+escape and stop dependent work rather than rolling back or granting acceptance.
+Original model messages/errors remain private bounded native stream evidence.
+Product terminal status is partial/failed, never independent product PASS.
+
+Factual settlement additionally uses the existing execution journal's pure
+`inspectRetained()` reader after independently observed parent-process death and
+terminal registry/owner records. This reader does NOT assert a live host or grant
+an action. A pending tool/process barrier blocks settlement/finalization even when
+the SDK parent is dead. `initialize/status/apply` retain full host/live admission.
+Matching mutation-authority finalization is recorded before/after its native effect
+and uses the existing owner release primitive only after these proofs. The shared
+reservation/Treehouse checkout/branch/contents remain retained. No linked product
+HEAD approval/refresh, checkout return, merge or deletion occurs.
+
+Source integration now observes a real product SDK process, actual native registry,
+capacity, mutation admission and execution journals, real SDK tools, Git commit,
+check streams/process settlement and matching terminal authority release. A native
+admission-intent interruption observes zero model requests/lease publication and
+rejects reacquisition after response loss. Operator/test-result/final-pair preview,
+Treehouse service replies and deterministic model server are explicitly SOURCE
+fixtures, not installed/runtime/model/semantic/human qualification. Source success
+is an implementation candidate, not independent phase acceptance or activation.
+
+Phase-3 producer validation, phase-4 qualification/PAPC-065 compatibility (including
+these new operation actions/status/record shapes and tools/audit wording), independent
+full matrix/review/CI and actual human UAT remain pending. Exact installed source
+and paired config qualification plus separate explicit Sinh activation still block
+selection; no existing qualification migrates across a different source/config pin.
+No fixture/help/status/merge or this document establishes installed/human PASS.

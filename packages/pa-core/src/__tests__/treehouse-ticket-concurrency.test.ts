@@ -531,6 +531,8 @@ test("AC6: consumed reservation is the ordinary slot view; transfer and terminal
   const observed = observeReadonlyRepositoryTicketSlot(repo, "PAP-1", fingerprints);
   const handoff = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-1", slotToken: observed.slot.slotToken, slotId: observed.slot.slotId, repositoryPermit: observed.slot.repositoryPermit };
   assert.equal(observed.slot.deploymentId, "d-123abc"); assert.equal(observed.slot.repositoryPermit, 1);
+  const complete = withPreparedTicketCapacity(options, (tx) => tx.inventory()[0]);
+  assert.deepEqual(observed.reservation, complete, "private observation retains operation/reservation/lineage, not only the ordinary slot projection");
   assert.throws(() => statSync(repositoryTicketSlotPath(repo, "PAP-1"))); // no second slot file
   const authenticate = (processFingerprint: ProcessFingerprint) => authenticateRepositoryTicketSlot({ ...handoff, deploymentId: "d-123abc", deploymentDirectory: root, processFingerprint, dependencies: { getProcessFingerprint: fingerprints } });
   assert.equal(authenticate(first).status, "authenticated");

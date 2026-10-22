@@ -512,6 +512,12 @@ export class ExecutionCustodyService {
     }
     return { state: freezeExecution(state), previous };
   }
+  /** Existing-only immutable journal inspection for native terminal collectors.
+   * No host/live check is asserted, no store is reaffirmed and no effect is
+   * admitted. A prefix/copy is NOT current custody authority. The native caller
+   * must independently prove exact binding, process absence and terminal owners;
+   * initialize/status/apply retain their full admission/live requirements. */
+  inspectRetained(): ExecutionState { return this.#load().state; }
   initialize(actorInput: ExecutionHolder): ExecutionState {
     const actor = parseHolder(actorInput);
     return this.#locked((scope) => {

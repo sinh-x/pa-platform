@@ -236,11 +236,11 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
     Type.Object({ schemaVersion: version, action: Type.Literal("selection-status") }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("activate") }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("authorize"), authorization: Type.String({ maxLength: 65536 }) }, { additionalProperties: false }),
-    Type.Object({ schemaVersion: version, action: Type.Union([Type.Literal("request"), Type.Literal("status"), Type.Literal("cancel"), Type.Literal("settle"), Type.Literal("review-oracle"), Type.Literal("retry-capacity")]), operationId: operation }, { additionalProperties: false }),
+    Type.Object({ schemaVersion: version, action: Type.Union([Type.Literal("request"), Type.Literal("status"), Type.Literal("cancel"), Type.Literal("settle"), Type.Literal("review-oracle"), Type.Literal("retry-capacity"), Type.Literal("continue-product"), Type.Literal("settle-product")]), operationId: operation }, { additionalProperties: false }),
     Type.Object({ schemaVersion: version, action: Type.Literal("approve-final"), operationId: operation, requirements: Type.String() }, { additionalProperties: false }),
   ]);
   let mutating = false;
-  pi.registerTool?.({ name: "pa_requirements_test", label: "PA Requirements Test", description: "Strict staged test-only workflow. Separate exact qualified-pair activation and standalone native test authorization are mandatory; no legacy approval, product authority or sandbox is implied.", parameters, executionMode: "sequential",
+  pi.registerTool?.({ name: "pa_requirements_test", label: "PA Requirements Test", description: "Strict staged tested-oracle workflow. Test authoring requires separate exact activation and test-only approval. Product continuation additionally authenticates the exact final pair/oracle and settled same-resource holder; no legacy grant or sandbox is implied.", parameters, executionMode: "sequential",
     execute: async (id, input, signal, _update, rawContext) => {
       const run = async () => {
         const context = rawContext as PiPreparationContext;
@@ -249,9 +249,9 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
         const { PiRestrictedTestExecutor } = await import("../background-runner.js");
         const authority = new PiRequirementsTestAuthority();
         const action = Object.getOwnPropertyDescriptor(input, "action")?.value;
-        const keys = ["schemaVersion", "action", ...(action === "authorize" ? ["authorization"] : ["request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity"].includes(action) ? ["operationId", ...(action === "approve-final" ? ["requirements"] : [])] : [])];
+        const keys = ["schemaVersion", "action", ...(action === "authorize" ? ["authorization"] : ["request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity", "continue-product", "settle-product"].includes(action) ? ["operationId", ...(action === "approve-final" ? ["requirements"] : [])] : [])];
         const row = workflowObject(input, keys);
-        if (row.schemaVersion !== "requirements-test-native/v1" || !["selection-status", "activate", "authorize", "request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity"].includes(action) || signal?.aborted) throw workflowError();
+        if (row.schemaVersion !== "requirements-test-native/v1" || !["selection-status", "activate", "authorize", "request", "status", "cancel", "settle", "review-oracle", "approve-final", "retry-capacity", "continue-product", "settle-product"].includes(action) || signal?.aborted) throw workflowError();
         if (action === "selection-status") return executionResult({ schemaVersion: "requirements-test-native-status/v1", ...authority.selection(caller), activationPerformed: false });
         if (mutating) throw workflowError(); mutating = true;
         try {
@@ -267,6 +267,7 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
           const store = authority.native.operations(); if (!store) throw workflowError();
           const service = new RequirementsTestNativeService({ store, authority, executor: new PiRestrictedTestExecutor(authority), tickets: authority.native.tickets() });
           if (action === "request") return executionResult(await service.requestAsync(operationId, signal));
+          if (action === "continue-product") return executionResult(await service.continueProductAsync(operationId, signal));
           if (action === "status") return executionResult(service.status(operationId));
           if (action === "retry-capacity") {
             const decision = await authority.captureCapacityRetry(context, operationId, id, signal);
@@ -274,6 +275,7 @@ export const registerRequirementsTestWorkflowModule: PiExtensionModule = (pi, li
           }
           else if (action === "cancel") service.cancel(operationId);
           else if (action === "settle") service.settleTest(operationId);
+          else if (action === "settle-product") service.settleProduct(operationId);
           else await authority.captureReview(context, operationId, action === "approve-final" ? workflowText(row.requirements) : undefined, signal);
           return executionResult(service.status(operationId));
         } finally { mutating = false; }

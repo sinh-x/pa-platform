@@ -46,16 +46,19 @@ function packet(repo: string, base: string, ticket = "PAP-1"): TestAuthorization
     bounds: { startedAt: "2026-10-21T23:00:00.000Z", deadlineAt: "2026-10-22T01:00:00.000Z", runtimeMinutes: 120, consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null }, retryLimit: 3, retriesUsed: 0, elapsedMs: 0, cancellation: "retain", resume: "first-unproven", amendment: null }));
 }
 let serial = 0;
-async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
+async function fixture(boundary?: RequirementsTestNativeOptions["boundary"], currentTime = false) {
   const root = join(suiteRoot, `f-${++serial}`); mkdirSync(root);
   const repo = join(root, "canonical"); mkdirSync(repo);
   git(repo, "init", "-b", "develop"); git(repo, "config", "user.name", "Source Test"); git(repo, "config", "user.email", "source-test@example.invalid");
   mkdirSync(join(repo, "src")); writeFileSync(join(repo, "src/product.txt"), "unchanged product baseline\n");
+  if (currentTime) writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "source-product-fixture", private: true, packageManager: "pnpm@10.28.0", scripts: { typecheck: `node -e "if(Object.keys(process.env).some(k=>k.startsWith('PA_')||k.startsWith('PI_')||k.includes('TOKEN')))process.exit(19);console.log('source-native-product-check')"` } }));
   git(repo, "add", "."); git(repo, "commit", "-m", "initial"); const base = git(repo, "rev-parse", "HEAD");
   const worktree = join(root, "ticket"); git(repo, "worktree", "add", "--detach", worktree, base);
   writeFileSync(join(process.env.PA_PLATFORM_CONFIG!, "config.yaml"), `repos:\n  registered:\n    path: ${repo}\n    prefix: PAP\n    develop_branch: develop\n`);
   const ticketsRoot = join(root, "tickets"); mkdirSync(ticketsRoot); const tickets = new TicketStore(ticketsRoot);
-  const auth = packet(repo, base); let raw = JSON.stringify(auth);
+  const original = packet(repo, base), startedAt = new Date(Date.now() - 1000).toISOString();
+  const auth = currentTime ? parseTestAuthorization(JSON.stringify({ ...original, bounds: { ...original.bounds, startedAt, deadlineAt: new Date(Date.parse(startedAt) + 120 * 60_000).toISOString() } })) : original;
+  let raw = JSON.stringify(auth);
   const ticketPath = join(ticketsRoot, "PAP-1.json");
   writeFileSync(ticketPath, JSON.stringify({ id: "PAP-1", project: "registered", title: "isolated source test", linkedBranches: [{ repo: "registered", branch: auth.repository.branch, state: "planned", linkedAt: "2026-10-21T23:00:00.000Z", linkedBy: "fixture" }] }));
   const nativeRoot = join(root, "native"); mkdirSync(nativeRoot, { mode: 0o700 }); const operationsRoot = join(nativeRoot, "operations"); mkdirSync(operationsRoot, { mode: 0o700 });
@@ -140,7 +143,7 @@ async function fixture(boundary?: RequirementsTestNativeOptions["boundary"]) {
       const record = JSON.parse(readFileSync(join(launch.deploymentDirectory, "terminal"), "utf8")); assert.deepEqual(record.holder, launch.holder); assert.equal(record.state, "terminal");
     },
   };
-  const options = { store, authority, executor, tickets, treehouse, now: () => "2026-10-21T23:10:00.000Z", boundary };
+  const options = { store, authority, executor, tickets, treehouse, now: () => currentTime ? new Date().toISOString() : "2026-10-21T23:10:00.000Z", boundary };
   const service = new RequirementsTestNativeService(options);
   const stop = async (launch?: RequirementsTestLaunch, registry = true) => {
     for (const record of processes.values()) {
@@ -944,6 +947,182 @@ test("AC5/AC6/AC7 source-native: genuine Pi SDK definitions enforce exact file/c
       assert.throws(() => requirementsTestFile(f.worktree, ["test/hard.mjs"], hard, "forbidden"));
     } finally { session.dispose(); }
   } finally { await f.cleanup(); }
+});
+
+for (const scenario of ["normal", "admission-response-loss"] as const) test(`AC9/AC10/AC11 source: real product SDK adopts new consumption, preserves oracle and same native owners (${scenario})`, async (t) => {
+  const f = await fixture(undefined, true), previousRegistry = process.env.PA_REGISTRY_DB;
+  let child: ChildProcess | undefined, childError = "", stage = 0;
+  const requests: { authorization?: string; body: Record<string, unknown> }[] = [];
+  const server = createServer(async (request, response) => {
+    try {
+      const parts: Buffer[] = []; for await (const part of request) parts.push(Buffer.from(part));
+      const body = JSON.parse(Buffer.concat(parts).toString("utf8")); requests.push({ authorization: request.headers.authorization, body });
+      const plan = { phaseId: "product", scope: "SOURCE generic product fixture", paths: ["src/product.txt"], requirements: ["Q1"], prerequisites: [], checks: ["typecheck"], size: "bounded", complexity: "bounded", rationale: "SOURCE protocol fixture, not installed or semantic qualification." };
+      const lastEvidence = () => {
+        const messages = body.messages.filter((message: { role?: string }) => message.role === "tool");
+        const content = messages.at(-1)?.content; return JSON.parse(typeof content === "string" ? content : content.map((item: { text?: string }) => item.text ?? "").join("")).evidence;
+      };
+      const calls: { name: string; input: unknown }[] = [
+        { name: "pa_execution", input: { action: "plan", plan: { ...plan, paths: ["test/oracle.mjs"] } } },
+        { name: "pa_execution", input: { action: "plan", plan } },
+        { name: "pa_execution", input: { action: "observe", kind: "holder" } },
+        { name: "pa_execution", input: { action: "select", executor: "orchestrator-direct", holder: stage === 3 ? lastEvidence() : source("unused"), handover: stage === 3 ? lastEvidence() : source("unused") } },
+        { name: "read", input: { path: "src/product.txt" } },
+        { name: "write", input: { path: "src/product.txt", content: "SOURCE native product implementation\n" } },
+        { name: "bash", input: { command: "git add -- src/product.txt" } },
+        { name: "bash", input: { command: "git commit -m 'source native product implementation'" } },
+        { name: "bash", input: { command: "corepack pnpm typecheck" } },
+        { name: "pa_execution", input: { action: "observe", kind: "inventory" } },
+        { name: "pa_execution", input: { action: "settle", evidence: stage === 10 ? lastEvidence() : source("unused") } },
+      ];
+      const call = calls[stage++]; response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const delta = call ? { role: "assistant", tool_calls: [{ index: 0, id: `source-product-${stage}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.input) } }] } : { role: "assistant", content: "SOURCE product authoring ended; independent acceptance remains unperformed." };
+      response.end(`data: ${JSON.stringify({ id: `source-product-${stage}`, object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: `source-product-${stage}`, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: call ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
+    } catch (error) { childError += String(error); response.writeHead(500); response.end("source fixture protocol failure"); }
+  });
+  // Native Git/check tools can take longer than Node's five-second fixture
+  // keep-alive default. This local server's lifetime is the bounded test, not a
+  // transport retry or a claim about independently qualified broker behavior.
+  server.keepAliveTimeout = 120_000;
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    core.closeDb(); process.env.PA_REGISTRY_DB = join(f.root, "product-registry.db");
+    const { resource } = f.service.request(f.auth.operationId), oracle = f.final(resource); await f.stop(); f.service.settleTest(f.auth.operationId);
+    const usage = join(f.root, "product-usage"); mkdirSync(join(usage, "deployments"), { recursive: true, mode: 0o700 }); mkdirSync(join(usage, "tickets"));
+    writeFileSync(join(usage, "tickets/PAP-1.json"), readFileSync(join(f.ticketsRoot, "PAP-1.json")));
+    const docs = join(usage, "agent-teams/requirements/artifacts"); mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, "product-requirements.md"), "SOURCE-only approved-pair fixture: update src/product.txt, preserve test/oracle.mjs. Not real operator approval.\n");
+    writeFileSync(join(docs, "product-uat.md"), "SOURCE fixture UAT remains unexecuted.\n");
+    const sourceAt = (name: string, prefix: string) => ({ ref: `${prefix}:agent-teams/requirements/artifacts/${name}`, version: "r001", sha256: digest(readFileSync(join(docs, name))) });
+    const matrixApprovalEvidence = "SOURCE-only matrix approval fixture", history = [...f.history()]; const final = JSON.parse(history.at(-1)!);
+    final.data.pair.requirements = sourceAt("product-requirements.md", "requirements"); final.data.pair.uat = sourceAt("product-uat.md", "uat");
+    final.data.pair.matrix.ref = final.data.pair.requirements.ref;
+    final.data.pair.matrixApproval = { ref: "requirements-test-native:native-matrix-approval", version: "requirements-test-native/v1", sha256: digest(JSON.stringify(matrixApprovalEvidence)) };
+    history[history.length - 1] = JSON.stringify(final); f.setHistory(history);
+    // Initial operator/review/result events are explicitly MODELED fixtures.
+    // Subsequent product sequence and all execution/process owners are native.
+    const historyId = digest(JSON.stringify(["requirements-test-native-history/v1", f.auth.operationId]));
+    withPreparedWorkflowLocks({ repository: (run) => run(), worktree: (run) => run() }, (scope) => history.forEach((raw, index) => f.store.publish(scope, `${historyId}.transaction-${index + 1}.json`, { raw, sha256: digest(raw) })));
+    const authPath = join(f.root, "source-authorization.json"), pairPath = join(f.root, "source-pair.json");
+    writeFileSync(authPath, f.raw(), { mode: 0o600 }); writeFileSync(pairPath, JSON.stringify({ ...final.data.pair, matrixApprovalEvidence }), { mode: 0o600 });
+    const address = server.address(); assert.ok(address && typeof address !== "string");
+    const facts = { sourceSha: "b".repeat(40), configSha: "c".repeat(40), packageVersion: "SOURCE-only", storeRoot: f.root };
+    const transport = { schemaVersion: "requirements-test-model-transport/v1" as const, runtime: facts, endpoint: `http://127.0.0.1:${address.port}/v1`, modelId: "SOURCE-product-fixture", contextWindow: 16384, maxTokens: 2048,
+      process: readProcessFingerprint(process.pid)!, source: source("SYNTHETIC-product-transport-NOT-installed-qualification"), outcome: "qualified" as const };
+    const { PiRequirementsTestAuthority } = await import("../requirements-test-native.js");
+    class Preview extends PiPreparedNativeAuthority {
+      override preview(): ReturnType<InstanceType<typeof PiPreparedNativeAuthority>["preview"]> {
+        return { ...JSON.parse(readFileSync(pairPath, "utf8")), requirements: sourceAt("product-requirements.md", "requirements"), uat: sourceAt("product-uat.md", "uat") };
+      }
+    }
+    class SourceAuthority extends PiRequirementsTestAuthority {
+      override readAuthorization(operationId: string): string { const raw = readFileSync(authPath, "utf8"); assert.equal(parseTestAuthorization(raw).operationId, operationId); return raw; }
+      override assertRetainedAuthorization(auth: TestAuthorization, sha: string): void { assert.equal(digest(this.readAuthorization(auth.operationId)), sha); assert.deepEqual(auth, parseTestAuthorization(this.readAuthorization(auth.operationId))); }
+      override assertAuthorization(auth: TestAuthorization, sha: string): void { this.assertRetainedAuthorization(auth, sha); }
+      override authorizationDecision() { return source("unit-modeled-test-decision"); }
+      override modelTransport() { return transport; }
+    }
+    let publicationFault = scenario === "admission-response-loss";
+    class InterruptedStore extends ProtectedWorkflowStore {
+      override publish(...args: Parameters<InstanceType<typeof ProtectedWorkflowStore>["publish"]>): ReturnType<InstanceType<typeof ProtectedWorkflowStore>["publish"]> {
+        const result = super.publish(...args);
+        if (publicationFault && (args[2] as { schemaVersion?: string }).schemaVersion === "requirements-product-admission/v1") { publicationFault = false; throw new Error("SOURCE interruption after durable admission intent, before lease effect"); }
+        return result;
+      }
+    }
+    class NativeFixture extends Preview {
+      override operations(create = false): ReturnType<InstanceType<typeof PiPreparedNativeAuthority>["operations"]> {
+        const store = super.operations(create); return store && scenario === "admission-response-loss" ? new InterruptedStore(join(f.root, "native/operations")) : store;
+      }
+    }
+    const native = new NativeFixture({ root: join(f.root, "native"), aiUsageRoot: usage, runtime: () => facts }), authority = new SourceAuthority({ native, runtime: () => facts });
+    const { PiRestrictedTestExecutor } = await import("../background-runner.js");
+    class ProductExecutor extends PiRestrictedTestExecutor {
+      override assertSettled(launch: RequirementsTestLaunch): void { if (launch.registry.version === "requirements-product-registry/v1") super.assertSettled(launch); else f.options.executor.assertSettled(launch); }
+    }
+    const reqModule = new URL("../requirements-test-native.ts", import.meta.url).href, preparedModule = new URL("../prepared-native.ts", import.meta.url).href, runnerModule = new URL("../background-runner.ts", import.meta.url).href;
+    const treehouseModule = new URL("../treehouse.ts", import.meta.url).href, coreModule = import.meta.resolve("@pa-platform/pa-core");
+    const executor = new ProductExecutor(authority, { treehouse: f.options.treehouse, spawnRunner(intent, resource, role) {
+      assert.equal(role, "product");
+      const program = `const fs=await import('node:fs'); const core=await import(${JSON.stringify(coreModule)}); const {PiRequirementsTestAuthority}=await import(${JSON.stringify(reqModule)}); const {PiPreparedNativeAuthority}=await import(${JSON.stringify(preparedModule)}); const {runRequirementsProductHolder}=await import(${JSON.stringify(runnerModule)}); const {TreehouseClient}=await import(${JSON.stringify(treehouseModule)}); const authPath=${JSON.stringify(authPath)},pairPath=${JSON.stringify(pairPath)},usage=${JSON.stringify(usage)},facts=${JSON.stringify(facts)},transport=${JSON.stringify(transport)};
+      class Preview extends PiPreparedNativeAuthority {preview(){const pair=JSON.parse(fs.readFileSync(pairPath,'utf8'));for(const key of ['requirements','uat']){const path=pair[key].ref.replace(/^(?:requirements|uat):/,'');pair[key]={...pair[key],sha256:core.workflowDigest(fs.readFileSync(usage+'/'+path))};}return pair;}}
+      class SourceAuthority extends PiRequirementsTestAuthority {readAuthorization(id){const raw=fs.readFileSync(authPath,'utf8');if(core.parseTestAuthorization(raw).operationId!==id)throw core.workflowError();return raw;} assertRetainedAuthorization(auth,sha){const raw=this.readAuthorization(auth.operationId);if(core.workflowDigest(raw)!==sha||JSON.stringify(core.parseTestAuthorization(raw))!==JSON.stringify(auth))throw core.workflowError();}assertAuthorization(auth,sha){this.assertRetainedAuthorization(auth,sha);}authorizationDecision(){return ${JSON.stringify(source("unit-modeled-test-decision"))};}modelTransport(){return transport;}}
+      const native=new Preview({root:${JSON.stringify(join(f.root, "native"))},aiUsageRoot:usage,runtime:()=>facts});const authority=new SourceAuthority({native,runtime:()=>facts});const treehouse=new TreehouseClient({run(args){return {status:0,stdout:Buffer.from(args[0]==='--version'?'v3.1.3\\n':JSON.stringify([{path:${JSON.stringify(f.worktree)},leased:true,lease_id:${JSON.stringify(f.lease.leaseId)},lease_holder:${JSON.stringify(f.lease.leaseHolder)}}])),stderr:Buffer.alloc(0)};}});try{await runRequirementsProductHolder(${JSON.stringify(intent)},authority,{treehouse});}catch(error){fs.writeFileSync(${JSON.stringify(join(f.root, "product-bootstrap-error.json"))},JSON.stringify({message:error.message,stack:error.stack}),{mode:0o600});process.exitCode=1;}`;
+      child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "--eval", program], { cwd: resource.worktreeRoot, env: { PATH: process.env.PATH, LANG: "C.UTF-8", TZ: "UTC", HOME: suiteRoot,
+        PA_REGISTRY_DB: process.env.PA_REGISTRY_DB, PA_AI_USAGE_HOME: usage, PA_PLATFORM_CONFIG: process.env.PA_PLATFORM_CONFIG }, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+      child.stderr!.on("data", (part) => { childError += String(part); }); return child;
+    } });
+    const service = new RequirementsTestNativeService({ ...f.options, authority, executor, tickets: native.tickets() });
+    const before = f.inventory()[0]!;
+    if (scenario === "admission-response-loss") {
+      await assert.rejects(service.continueProductAsync(f.auth.operationId)); assert.equal(publicationFault, false);
+      const launch = f.records().find((row) => row.step === "product-process" && row.state === "observed")!.value as RequirementsTestLaunch;
+      const physical = core.resolveRepoExecutionPath(undefined, f.worktree, { allowLinkedWorktreeCwd: true });
+      assert.equal(core.observeReadonlyRepositoryAuthority(physical.gitDir).owner, undefined); assert.equal(requests.length, 0, "parked SDK cannot prompt/execute before admission");
+      assert.equal(existsSync(join(launch.deploymentDirectory, "requirements-product-consumption.json")), false);
+      const { admitPiRequirementsProduct } = await import("../deploy.js");
+      assert.throws(() => admitPiRequirementsProduct(authority, f.auth.operationId, { treehouse: f.options.treehouse }), "an existing intent plus absent lease is unknown, not permission to reacquire");
+      await assert.rejects(service.continueProductAsync(f.auth.operationId));
+      assert.equal(core.observeReadonlyRepositoryAuthority(physical.gitDir).owner, undefined); assert.equal(f.records().filter((row) => row.step === "product-process" && row.state === "observed").length, 1);
+      assert.equal(readFileSync(join(f.worktree, "src/product.txt"), "utf8"), "unchanged product baseline\n"); assert.equal(f.allocationCount(), 1);
+      service.cancel(f.auth.operationId);
+      const end = Date.now() + 10_000; while (child?.pid && readProcessFingerprint(child.pid) && Date.now() < end) await new Promise((done) => setTimeout(done, 10));
+      assert.equal(child?.pid ? readProcessFingerprint(child.pid) : undefined, undefined);
+      assert.throws(() => service.settleProduct(f.auth.operationId), "missing original start/execution proof remains blocked after process death");
+      assert.equal(f.inventory()[0]!.occupancy, "active"); assert.equal(service.status(f.auth.operationId).state, "blocked"); assert.equal(requests.length, 0); assert.ok(existsSync(f.worktree));
+      return;
+    }
+    try { await service.continueProductAsync(f.auth.operationId); }
+    catch (error) { throw new Error(`${String(error)}\n${childError}\n${existsSync(join(f.root, "product-bootstrap-error.json")) ? readFileSync(join(f.root, "product-bootstrap-error.json"), "utf8") : JSON.stringify(f.records().filter((row) => row.state === "unknown"))}`); }
+    const until = Date.now() + 60_000;
+    while (child?.pid && readProcessFingerprint(child.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 25));
+    assert.ok(child?.pid); assert.equal(readProcessFingerprint(child.pid), undefined, childError);
+    const launch = f.records().find((row) => row.step === "product-process" && row.state === "observed")!.value as RequirementsTestLaunch;
+    executor.assertSettled(launch);
+    const status = core.queryDeploymentStatus(launch.holder.deploymentId);
+    const terminal = f.store.records().map((name) => f.store.read(name) as { kind?: string; payload?: { detail: { name: string; bytes: number; sha256: string }; failed: boolean } }).find((row) => row.kind === "requirements-product-runtime-terminal");
+    assert.ok(terminal?.payload); const { NativeExecutionEvidence } = await import("../native-execution-evidence.js");
+    const evidence = new NativeExecutionEvidence(f.store, join(f.root, "native/operations"), { repository: (run) => run(), worktree: (run) => run() });
+    const transcript = JSON.parse(evidence.blob(terminal.payload.detail).toString("utf8"));
+    assert.equal(status?.status, "partial", `${childError}; requests=${requests.length}; stage=${stage}; ${JSON.stringify(transcript)}`); assert.equal(terminal.payload.failed, false, JSON.stringify(transcript));
+    assert.ok(transcript.messages.some((message: { role: string; toolName?: string; isError?: boolean }) => message.role === "toolResult" && message.toolName === "pa_execution" && message.isError), "oracle-path plan was genuinely rejected by the SDK tool");
+    assert.equal(readFileSync(join(f.worktree, "src/product.txt"), "utf8"), "SOURCE native product implementation\n");
+    assert.equal(digest(readFileSync(join(f.worktree, "test/oracle.mjs"))), oracle.files[0]!.sha256);
+    assert.notEqual(git(f.worktree, "rev-parse", "HEAD"), oracle.testHeadSha); git(f.worktree, "merge-base", "--is-ancestor", oracle.testHeadSha, "HEAD");
+    assert.equal(f.allocationCount(), 1); assert.ok(requests.every((request) => request.authorization === undefined));
+    const executionStore = native.execution()!; const execution = executionStore.records().map((name) => executionStore.read(name) as { kind?: string; payload?: { process?: { groupSettled: boolean; exitCode: number } }; binding?: { bounds: unknown; initialHeadSha: string; lineageId: string } });
+    const descriptor = execution.find((row) => row.binding); assert.deepEqual(descriptor?.binding?.bounds, f.auth.bounds); assert.equal(descriptor?.binding?.lineageId, resource.lineageId); assert.equal(descriptor?.binding?.initialHeadSha, oracle.testHeadSha);
+    assert.ok(execution.some((row) => row.kind === "tool-result" && row.payload?.process?.groupSettled && row.payload.process.exitCode === 0));
+    await t.test("new-version public pointer is not legacy authority; forged consumption rejects without mutation", () => {
+      const ref = JSON.parse(readFileSync(join(launch.deploymentDirectory, "requirements-product-consumption.json"), "utf8"));
+      assert.equal(ref.version, "requirements-product-consumption/v1"); const value = authority.productConsumption(ref);
+      assert.deepEqual(value.binding.resource, resource); assert.equal(value.binding.finalApprovalSha256, digest(history.at(-1)!));
+      assert.equal(existsSync(join(launch.deploymentDirectory, "prepared-consumption.json")), false);
+      const count = f.store.records().length;
+      for (const changed of [{ ...ref, version: "prepared-builder-consumption/v1" }, { ...ref, sha256: "0".repeat(64) }, { ...ref, extra: "not-authority" }]) assert.throws(() => authority.productConsumption(changed));
+      assert.equal(f.store.records().length, count);
+      assert.throws(() => assertNoRequirementsTestLegacyFallback({ repoKey: "registered", repoRoot: f.repo, ticket: "PAP-1" }, native));
+    });
+    service.settleProduct(f.auth.operationId); service.settleProduct(f.auth.operationId);
+    const after = f.inventory()[0]!; assert.ok("reservationId" in before && "reservationId" in after); assert.equal(after.reservationId, before.reservationId);
+    assert.equal(after.repositoryPermit, before.repositoryPermit); assert.equal(after.lineageId, before.lineageId); assert.equal(after.occupancy, "settled-retained");
+    const physical = core.resolveRepoExecutionPath(undefined, f.worktree, { allowLinkedWorktreeCwd: true }); assert.equal(core.observeReadonlyRepositoryAuthority(physical.gitDir).owner, undefined);
+    assert.ok(existsSync(join(launch.deploymentDirectory, "product-finalized.json"))); assert.ok(existsSync(f.worktree));
+    assert.equal(native.tickets().get("PAP-1")!.linkedBranches![0]!.headSha, oracle.testHeadSha, "factual finalization does not approve/refresh product HEAD");
+    await t.test("working, committed and concealed-intermediate oracle changes invalidate continuation", () => {
+      const ref = JSON.parse(readFileSync(join(launch.deploymentDirectory, "requirements-product-consumption.json"), "utf8")), value = authority.productConsumption(ref), path = join(f.worktree, "test/oracle.mjs"), bytes = readFileSync(path);
+      authority.assertProductOracle(value); writeFileSync(path, "changed oracle\n"); assert.throws(() => authority.assertProductOracle(value));
+      git(f.worktree, "add", "test/oracle.mjs"); git(f.worktree, "commit", "-m", "source oracle escape"); writeFileSync(path, bytes);
+      git(f.worktree, "add", "test/oracle.mjs"); git(f.worktree, "commit", "-m", "source oracle concealed restoration");
+      assert.throws(() => authority.assertProductOracle(value), "matching final bytes cannot conceal an intervening oracle change");
+    });
+  } finally {
+    if (child?.pid && readProcessFingerprint(child.pid)) { child.kill("SIGTERM"); const until = Date.now() + 5_000; while (readProcessFingerprint(child.pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 10)); if (readProcessFingerprint(child.pid)) child.kill("SIGKILL"); }
+    if (child && child.exitCode === null && child.signalCode === null) await new Promise<void>((done) => child!.once("exit", () => done()));
+    server.closeAllConnections(); await new Promise<void>((done) => server.close(() => done())); core.closeDb();
+    if (previousRegistry === undefined) delete process.env.PA_REGISTRY_DB; else process.env.PA_REGISTRY_DB = previousRegistry;
+    await f.cleanup();
+  }
 });
 
 after(() => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); rmSync(suiteRoot, { recursive: true, force: true }); });

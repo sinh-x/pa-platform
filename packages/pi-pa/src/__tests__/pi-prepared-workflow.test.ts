@@ -192,7 +192,10 @@ test("actual PA module dispatch registers the bounded tool only for foreground i
     const retry = { schemaVersion: "requirements-test-native/v1", action: "retry-capacity", operationId: digest };
     assert.equal(Check(testTool.parameters, retry), true);
     for (const extra of [{ decision: source("forged") }, { retriesUsed: 0 }, { endpoint: "http://127.0.0.1:1234/v1" }, { authority: "/tmp/forged" }, { activate: true }]) assert.equal(Check(testTool.parameters, { ...retry, ...extra }), false);
-    assert.equal(Check(testTool.parameters, { ...retry, action: "continue-product" }), false);
+    for (const action of ["continue-product", "settle-product"]) {
+      assert.equal(Check(testTool.parameters, { ...retry, action }), true);
+      for (const extra of [{ holder: source("forged") }, { resource: "/tmp/forged" }, { grantId: digest }, { finalApproval: source("forged") }, { command: "unrestricted" }]) assert.equal(Check(testTool.parameters, { ...retry, action, ...extra }), false);
+    }
     assert.equal(Check(testTool.parameters, { ...retry, schemaVersion: "prepared-workflow/v1" }), false);
     process.env.PA_MODE = "analyze-auto";
     const other: string[] = []; registerPaToolsModule({ registerTool: (tool) => other.push(tool.name) });
