@@ -9,6 +9,17 @@ import { materializeTicketBranch } from "../tickets/materialization.js";
 import { TicketStore } from "../tickets/store.js";
 import { observeReadonlyRepositoryTicketSlot, transferRepositoryTicketSlot, preparedRepositoryTicketReservationPath, withPreparedRepositoryTicketOwner, withPreparedTicketCapacity, type PreparedTicketCapacityTransaction } from "../deploy/ticket-concurrency.js";
 import { parseIdlePreparationReservation } from "../deploy/execution-custody.js";
+import { acquireRepositoryMutationLease, captureRepositoryGitSnapshot, readProcessFingerprint, releaseRepositoryMutationLease, repositoryMutationLeasePath } from "../deploy/repository-admission.js";
+import { appendRegistryEvent, closeDb, getDb } from "../registry/index.js";
+
+// Capacity finalization observes only this process's disposable registry, never
+// the admitted deployment's operator registry or runtime identity.
+for (const key of Object.keys(process.env)) if (key.startsWith("PA_") && key !== "PA_SQLITE_NATIVE_BINDING") delete process.env[key];
+const sandbox = mkdtempSync(join(tmpdir(), "pa-ticket-slot-registry-"));
+process.env["PA_REGISTRY_DB"] = join(sandbox, "registry.db");
+process.env["PA_AI_USAGE_HOME"] = sandbox;
+getDb();
+test.after(() => { closeDb(); rmSync(sandbox, { recursive: true, force: true }); });
 
 function git(args: string[], cwd: string, encoding: BufferEncoding | null = "utf8"): string | Buffer {
   return execFileSync("git", args, { cwd, encoding, stdio: ["ignore", "pipe", "pipe"] });
@@ -369,9 +380,9 @@ test("AC4/AC6: idle reservations share the four-permit namespace with legacy bui
   for (const force of [false, true]) {
     const duplicate = acquireRepositoryTicketSlot({ ...options, ticket: "PAP-1", deploymentId: "d-other", deploymentDirectory: root, force });
     assert.equal(duplicate.status, "rejected");
-    assert.equal(duplicate.status === "rejected" && duplicate.reason, "duplicate-ticket");
+    assert.equal(duplicate.status === "rejected" && duplicate.reason, "invalid-evidence");
   }
-  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 3); // legacy stale slot reconciled by its existing owner
+  assert.equal(withPreparedTicketCapacity(options, (tx) => tx.inventory()).length, 4); // process death does not settle legacy capacity
   assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.reserve({ ...preparedInput(1), operationId: "f".repeat(64) })));
 }));
 
@@ -510,9 +521,70 @@ test("prepared inventory rejects mismatched path/root and duplicate permit; ordi
   assert.throws(() => withPreparedTicketCapacity(options, (tx) => tx.inventory()));
 }));
 
+test("PAP-264 legacy dead, malformed and oversized capacity cannot be reclaimed by force", () => preparedFixture((repo, root) => {
+  const fp = fingerprint(45010);
+  const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-264", deploymentId: "d-legacy", deploymentDirectory: root,
+    pid: fp.pid, processFingerprint: fp, dependencies: { getProcessFingerprint: () => fp } };
+  const first = acquireRepositoryTicketSlot(options);
+  assert.equal(first.status, "acquired");
+  const path = repositoryTicketSlotPath(repo, options.ticket);
+  const original = readFileSync(path);
+  for (const bytes of [original, Buffer.from("{ PRIVATE-LEGACY-SENTINEL"), Buffer.alloc(MAX_REPOSITORY_TICKET_SLOT_BYTES + 1, 120)]) {
+    writeFileSync(path, bytes);
+    for (const ticket of ["PAP-264", "PAP-265"]) for (const force of [false, true]) {
+      const result = acquireRepositoryTicketSlot({ ...options, ticket, force, dependencies: { getProcessFingerprint: () => undefined } });
+      assert.equal(result.status, "rejected");
+      assert.deepEqual(readFileSync(path), bytes);
+      assert.match(result.diagnostic, /Condition:.*Source:.*Reason:.*Correction:.*Resume Action:/s);
+      assert.ok(result.diagnostic.length <= 2000);
+      assert.doesNotMatch(result.diagnostic, /PRIVATE-LEGACY|slotToken|startTimeTicks|bootId/);
+    }
+  }
+}));
+
+test("PAP-264 launchless rollback requires the actual allocating process, not death or a token alone", () => preparedFixture((repo, root) => {
+  const current = readProcessFingerprint(process.pid)!;
+  const acquired = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-264", deploymentId: "d-264a01", deploymentDirectory: root });
+  assert.equal(acquired.status, "acquired"); if (acquired.status !== "acquired") throw new Error("fixture slot");
+  const handoff = { ...acquired.slot };
+  const bytes = readFileSync(acquired.slotPath);
+  const transferred = transferRepositoryTicketSlot({ ...handoff, nextProcessFingerprint: fingerprint(45011), dependencies: { getProcessFingerprint: () => fingerprint(45011) } });
+  assert.equal(transferred.status, "transferred");
+  const dead = readFileSync(acquired.slotPath);
+  assert.equal(releaseRepositoryTicketSlot(handoff).status, "invalid-evidence");
+  assert.deepEqual(readFileSync(acquired.slotPath), dead);
+  assert.equal(transferRepositoryTicketSlot({ ...handoff, nextProcessFingerprint: current }).status, "transferred");
+  assert.notDeepEqual(dead, bytes);
+  assert.equal(releaseRepositoryTicketSlot(handoff).status, "released");
+  assert.equal(releaseRepositoryTicketSlot(handoff).status, "absent");
+}));
+
+test("PAP-264 registry-bound capacity survives live/malformed custody and releases only after matching owner finalization", () => preparedFixture((repo, root) => {
+  const checkout = join(root, "checkout"); git(["worktree", "add", "-b", "feature/PAP-264-capacity", checkout], repo);
+  const acquired = acquireRepositoryTicketSlot({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, ticket: "PAP-264", deploymentId: "d-264a02", deploymentDirectory: root });
+  assert.equal(acquired.status, "acquired"); if (acquired.status !== "acquired") throw new Error("fixture slot");
+  const owner = acquireRepositoryMutationLease({ canonicalRepoKey: "registered", canonicalRepoRoot: repo, worktreeRoot: checkout, ticket: "PAP-264", deploymentId: "d-264a02", deploymentDirectory: root,
+    runtime: "pi", team: "builder", mode: "orchestrator", gitSnapshot: captureRepositoryGitSnapshot(checkout) });
+  assert.equal(owner.status, "acquired"); if (owner.status !== "acquired") throw new Error("fixture owner");
+  appendRegistryEvent({ deployment_id: "d-264a02", team: "builder", event: "started", timestamp: new Date().toISOString(), runtime: "pi", mode: "orchestrator", repo: checkout,
+    repo_root: repo, worktree_root: checkout, ticket_id: "PAP-264", ticket_slot_id: acquired.slot.slotId, repository_permit: acquired.slot.repositoryPermit,
+    builder_authority: "orchestrator", treehouse_path: checkout, treehouse_lease_id: "isolated-capacity-fixture", treehouse_lease_holder: acquired.slot.slotId,
+    branch_state: "materialized", branch_head_sha: owner.lease.preLaunchGitSnapshot.head });
+  const bytes = readFileSync(acquired.slotPath); const leasePath = repositoryMutationLeasePath(checkout); const lease = readFileSync(leasePath);
+  for (const evidence of [lease, Buffer.from("{ PRIVATE-CUSTODY-SENTINEL")]) {
+    writeFileSync(leasePath, evidence);
+    assert.equal(releaseRepositoryTicketSlot(acquired.slot).status, "invalid-evidence");
+    assert.deepEqual(readFileSync(acquired.slotPath), bytes); assert.deepEqual(readFileSync(leasePath), evidence);
+  }
+  writeFileSync(leasePath, lease);
+  assert.equal(releaseRepositoryMutationLease({ canonicalRepoRoot: repo, worktreeRoot: checkout, ownershipToken: owner.lease.ownershipToken }).status, "released");
+  assert.equal(releaseRepositoryTicketSlot(acquired.slot).status, "released");
+  assert.equal(releaseRepositoryTicketSlot(acquired.slot).status, "absent");
+}));
+
 test("AC6: consumed reservation is the ordinary slot view; transfer and terminal release retain one occupied permit", () => preparedFixture((repo, root) => {
   const first = { pid: 12_001, startTimeTicks: "123", bootId: "fixture" };
-  const next = { pid: 12_002, startTimeTicks: "456", bootId: "fixture" };
+  const next = readProcessFingerprint(process.pid)!;
   const fingerprints = (pid: number) => pid === first.pid ? first : pid === next.pid ? next : undefined;
   const options = { canonicalRepoKey: "registered", canonicalRepoRoot: repo, dependencies: { getProcessFingerprint: fingerprints } };
   withPreparedTicketCapacity(options, (tx) => {

@@ -8,7 +8,7 @@ import {
   readReviewEvidenceFile, withExecutionWorktreeAdmission, withPreparedTicketCapacity, withPreparedWorkflowLocks,
   executionFailure, workflowDigest, workflowError, workflowObject, workflowSha, workflowText, type ExecutionBinding, type ExecutionCommand,
   type ExecutionFailure, type ExecutionHolder, type ExecutionHost, type ExecutionRecovery, type ExecutionRecoveryInventory, type ExecutionState,
-  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type RegistryEvent, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
+  type PreparedLockOwners, type PreparedTicketCapacityTransaction, type ExecutionWorktreeTransaction, type RegistryEvent, type RepositoryGitSnapshot, type SourceVersion, type PhaseReportCheck,
 } from "@pa-platform/pa-core";
 import { createPiReadonlyHelperCapability, type PiReadonlyHelperDependencies } from "./deploy.js";
 import { readPiProcessIdentity } from "./process-identity.js";
@@ -250,6 +250,7 @@ export class NativeExecutionSession {
         consecutiveNoProgress: 0, replacementsUsed: 0, reviewCap: 3, reviewsUsed: 0, unresolvedFailureRef: null } }); }
     catch { throw executionFailure("EXECUTION_CONTRACT_INVALID"); }
     let capacity: PreparedTicketCapacityTransaction | null = null;
+    let worktree: ExecutionWorktreeTransaction | null = null;
     this.locks = {
       repository: (action) => {
         // Observe securely before entering a mutation owner; its ordinary lock
@@ -259,7 +260,9 @@ export class NativeExecutionSession {
           if (capacity) throw workflowError(); capacity = tx; try { return action(); } finally { capacity = null; }
         });
       },
-      worktree: (action) => { if (!capacity) throw workflowError(); return withExecutionWorktreeAdmission(physical.repoRoot, physical.worktreeRoot, capacity, () => action()); },
+      worktree: (action) => { if (!capacity || worktree) throw workflowError(); return withExecutionWorktreeAdmission(physical.repoRoot, physical.worktreeRoot, capacity, (tx) => {
+        worktree = tx; try { return action(); } finally { worktree = null; }
+      }); },
     };
     // No storage creation before full live source authentication. Optional
     // qualification/activation is deliberately not consulted for ordinary work.
@@ -285,6 +288,13 @@ export class NativeExecutionSession {
       assertHandover: (state, command) => {
         this.#soleOwner(); this.#assertKnown(state);
         if (command.action === "select" && (command.executor !== "orchestrator-direct" || !equal(command.holder, this.actor))) throw workflowError();
+      },
+      projectCustody: (_state, command, stage) => {
+        if (!((stage === "before" && command.action === "select") || (stage === "after" && command.action === "settle"))) return;
+        const owner = observeReadonlyRepositoryAuthority(physical.gitDir).owner;
+        if (!worktree || !owner) throw workflowError();
+        worktree.setDirectCustody({ deploymentId: this.actor.deploymentId, ownershipToken: owner.ownershipToken,
+          custody: command.action === "settle" ? "idle" : "active" });
       },
     };
     this.service = new ExecutionCustodyService(store, this.contract, host);

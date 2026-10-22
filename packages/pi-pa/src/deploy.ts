@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
+import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
 import { PI_PARENT_LEASE_CAPABILITY_ENV, PiAdapter, assertPiExecutionRootAgreement, normalizePiEvent, redactPiProtectedReviewPrimer, type PiSupervisionHandle } from "./adapter.js";
 import { environmentSecrets, PiRedactionAudit } from "./diagnostics.js";
 import { assertNativePreparedChildLaunchSupported, ORDINARY_NATIVE_EXECUTION_START } from "./execution-native.js";
@@ -1113,6 +1113,22 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         if (settlement.outcome === "blocked") failures.push(settlement.diagnostic ?? terminalSettlementUnavailable());
         else activeRepositoryBorrower = undefined;
       }
+    } else if (borrowed && !runtimeLaunchAttempted) {
+      // Registration can precede a rejecting preflight reread. This is rollback
+      // by the original allocating process, not terminal settlement after spawn.
+      // Never route a transferred/live/uncertain runner through this path.
+      const inspection = inspectRepositoryMutationBorrower(borrowed.canonicalRepoRoot, { getProcessFingerprint: readProcessFingerprint,
+        worktreeRoot: borrowed.worktreeRoot, repositoryGitDir: borrowed.repositoryGitDir });
+      const current = readProcessFingerprint(process.pid);
+      const recorded = inspection.borrower?.processFingerprint;
+      if (inspection.state !== "live" || inspection.borrower?.deploymentId !== borrowed.deploymentId || !current || !recorded
+        || recorded.pid !== current.pid || recorded.startTimeTicks !== current.startTimeTicks || recorded.bootId !== current.bootId) {
+        failures.push(terminalSettlementUnavailable());
+      } else {
+        const rollback = releaseRepositoryMutationBorrower({ ...borrowed, expectedProcessFingerprint: current });
+        if (rollback.status === "released" || rollback.status === "absent") activeRepositoryBorrower = undefined;
+        else failures.push(terminalSettlementUnavailable());
+      }
     } else if (borrowed) {
       const finalization = finalizeRepositoryMutationBorrower({
         canonicalRepoRoot: borrowed.canonicalRepoRoot,
@@ -1396,7 +1412,7 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
         }
         const update = updateRepositoryMutationLeaseGitSnapshot({ canonicalRepoRoot: plan.repoRoot, worktreeRoot: plan.worktreeRoot, repositoryGitDir: activeRepositoryLease.repositoryGitDir, slot: activeRepositoryLease.slot, ownershipToken: activeRepositoryLease.ownershipToken, gitSnapshot: observed });
         if (update.status !== "updated") throw new Error(`repository-admission: could not persist authoritative Git snapshot (${update.status})`);
-        plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.preLaunchGitSnapshot);
+        plan = withAuthoritativeRepositoryAdmission(plan, update.lease!.authorityGitSnapshot ?? update.lease!.preLaunchGitSnapshot);
       }
       if (!stable) throw new Error("repository-admission: Git state did not stabilize after Pi preflight; ownership was released and no runtime was started");
     } else {

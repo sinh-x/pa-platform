@@ -70,6 +70,52 @@ test("AC7 plan and rationale precede judgment-based selection; strict input neve
   assert.throws(() => f.apply({ action: "begin", operation: { id: "forged", kind: "write", check: null, intent: null }, extra: true } as ExecutionCommand));
 }));
 
+test("PAP-264 native exclusion publishes before acquisition and relinquishes only after durable settlement", () => fixture((f) => {
+  const observations: string[] = [];
+  f.host.projectCustody = (next, command, stage) => {
+    const published = f.store.records().includes(`${f.service.executionId}.transaction-${next.sequence}.json`);
+    observations.push(`${command.action}:${stage}:${published}`);
+    assert.equal(published, stage === "after");
+  };
+  f.plan(); f.select(); f.begin("in-flight", "check");
+  const before = observations.length;
+  assert.throws(() => f.settle());
+  assert.equal(observations.length, before, "rejected handover has no custody projection effects");
+  const reloaded = new ExecutionCustodyService(f.store, binding(), f.host);
+  assert.equal(reloaded.status(owner).operation?.id, "in-flight");
+  f.finish("in-flight"); f.settle();
+  assert.ok(observations.includes("select:before:false"));
+  assert.ok(observations.includes("settle:after:true"));
+}));
+
+test("PAP-264 same-phase replan cannot remove, replace or reorder named rechecks after failure/reload", () => fixture((f) => {
+  failed(f);
+  const before = f.service.status(owner);
+  const reloaded = new ExecutionCustodyService(f.store, binding(), f.host);
+  for (const checks of [["build"], ["typecheck", "build"]]) {
+    assert.throws(() => reloaded.apply(owner, { action: "plan", plan: { ...executionPlan(), checks } }));
+    assert.deepEqual(reloaded.status(owner), before);
+  }
+  f.plan();
+  assert.deepEqual(f.service.status(owner).originalFailure, failure());
+  assert.deepEqual(f.service.status(owner).bounds, before.bounds);
+}));
+
+test("PAP-264 historical valid replans remain byte-readable but cannot authorize another check-list replacement", () => fixture((f) => {
+  f.plan();
+  const first = f.store.read(`${f.service.executionId}.transaction-1.json`);
+  const path = join(f.root, `${f.service.executionId}.transaction-2.json`);
+  const historical = JSON.stringify({ schemaVersion: "execution-event/v1", executionId: f.service.executionId, sequence: 2,
+    previousSha256: workflowDigest(JSON.stringify(first)), actor: owner, recordedAt: time,
+    command: { action: "plan", plan: { ...executionPlan(), checks: ["historical-check"] } } });
+  writeFileSync(path, historical, { mode: 0o600 });
+  const reloaded = new ExecutionCustodyService(f.store, binding(), f.host);
+  assert.deepEqual(reloaded.status(owner).plan?.checks, ["historical-check"]);
+  assert.throws(() => reloaded.apply(owner, { action: "plan", plan: executionPlan() }));
+  assert.equal(readFileSync(path, "utf8"), historical);
+  assert.deepEqual(reloaded.status(owner).bounds, binding().bounds);
+}));
+
 test("native completion binds an observed commit and invalidates old checks without rewriting launch/bounds", () => fixture((f) => {
   f.plan(); f.select(); f.begin("before", "check"); f.finish("before");
   f.begin("commit");

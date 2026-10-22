@@ -265,6 +265,9 @@ export interface ExecutionHost {
   verifyEvidence(evidence: SourceVersion, purpose: string, state: ExecutionState, command: ExecutionCommand): void;
   /** Process death + terminal registry + Git + matching existing authority finalization. */
   assertHandover(state: ExecutionState, command: Extract<ExecutionCommand, { action: "select" | "settle" }>): void;
+  /** Existing repository owner projects exclusion before acquisition and only
+   * relinquishes it after durable journal publication, under the same locks. */
+  projectCustody?(state: ExecutionState, command: ExecutionCommand, stage: "before" | "after"): void;
   now(): string;
 }
 function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
@@ -422,7 +425,8 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
       if (!state.plan || state.recoveryPending || state.operation || state.custody.inFlightOperation || state.usedOperationIds.includes(command.operation.id) || command.operation.id.startsWith("custody-child:")
         || (command.operation.check !== null && !state.plan.checks.includes(command.operation.check))) throw workflowError();
       next = { ...next, operation: command.operation, usedOperationIds: [...state.usedOperationIds, command.operation.id], custody: parseExecutionCustody({ ...state.custody, inFlightOperation: command.operation.id }),
-        passedChecks: sourceMutation(command.operation.kind) ? {} : state.passedChecks, acceptance: sourceMutation(command.operation.kind) ? {} : state.acceptance }; break;
+        passedChecks: sourceMutation(command.operation.kind) ? {} : state.passedChecks,
+        actionPasses: sourceMutation(command.operation.kind) ? {} : state.actionPasses, acceptance: sourceMutation(command.operation.kind) ? {} : state.acceptance }; break;
     case "finish": {
       writer(state, actor);
       if (!state.operation || state.operation.id !== command.operationId || state.custody.inFlightOperation !== command.operationId) throw workflowError();
@@ -433,7 +437,7 @@ function transition(state: ExecutionState, actor: ExecutionHolder, command: Exec
       const mayMutate = sourceMutation(state.operation.kind);
       const candidateSha = command.candidateSha ?? state.candidateSha;
       const passedChecks = mayMutate || candidateSha !== state.candidateSha ? {} : { ...state.passedChecks };
-      const actionPasses = { ...state.actionPasses };
+      const actionPasses = mayMutate || candidateSha !== state.candidateSha ? {} : { ...state.actionPasses };
       const results = state.operation.check === null ? actionPasses : passedChecks;
       if (command.failure) delete results[check]; else results[check] = command.evidence;
       next = { ...next, candidateSha, actionPasses, operation: null, custody: parseExecutionCustody({ ...state.custody, inFlightOperation: null }),
@@ -537,13 +541,19 @@ export class ExecutionCustodyService {
       nativeCheck(() => this.host.authorize(this.binding, actor, command)); nativeCheck(() => this.host.assertLive(actor));
       const { state, previous } = this.#load();
       if (state.sequence >= 256) throw workflowError();
+      // Apply the stricter named-check contract to new plans, not historical
+      // journal replay: old valid records remain readable without migration.
+      if (command.action === "plan" && state.plan && !same(command.plan.checks, state.plan.checks)) throw workflowError();
       const now = workflowTimestamp(this.host.now()); const next = transition(state, actor, command, now);
       for (const source of sources(command)) nativeCheck(() => this.host.verifyEvidence(source, command.action, state, command));
       if (command.action === "select") nativeCheck(() => this.host.assertLive(command.holder));
       if (command.action === "select" || command.action === "settle") nativeCheck(() => this.host.assertHandover(state, command));
       const event: ExecutionEvent = { schemaVersion: "execution-event/v1", executionId: this.executionId, sequence: next.sequence,
         previousSha256: workflowDigest(JSON.stringify(previous)), actor, command, recordedAt: now };
-      this.store.reaffirm(scope); this.store.publish(scope, `${this.executionId}.transaction-${next.sequence}.json`, event);
+      this.store.reaffirm(scope);
+      if (this.host.projectCustody) nativeCheck(() => this.host.projectCustody!(next, command, "before"));
+      this.store.publish(scope, `${this.executionId}.transaction-${next.sequence}.json`, event);
+      if (this.host.projectCustody) nativeCheck(() => this.host.projectCustody!(next, command, "after"));
       return next;
     });
   }
