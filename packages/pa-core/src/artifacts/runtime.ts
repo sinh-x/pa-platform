@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { openArtifactDirectory, readArtifactFile } from "./manifest.js";
 import { artifactDiagnostic, assertArtifactAbsolutePath, assertArtifactEnvironment } from "./policy.js";
 
-export type ReviewAdapter = "pi" | "opencode" | "claudecode";
+export type ReviewAdapter = "pi" | "opencode";
 export interface ReviewContext {
   adapter: ReviewAdapter; deployment: string; root: string; ownerPid: number; ownerBirth: string;
 }
@@ -60,7 +60,7 @@ export function reviewContext(env: NodeJS.ProcessEnv = process.env): ReviewConte
   const adapter = env["PA_ARTIFACT_ADAPTER"];
   const deployment = env["PA_DEPLOYMENT_ID"];
   const dir = env["PA_DEPLOYMENT_DIR"];
-  if (!(adapter === "pi" || adapter === "opencode" || adapter === "claudecode")
+  if (!(adapter === "pi" || adapter === "opencode")
       || !deployment || !/^d-[a-f0-9]{6,32}$/.test(deployment) || !dir) throw artifactDiagnostic("ARTIFACT_OWNER_CONFLICT");
   assertArtifactAbsolutePath(dir);
   const fd = openArtifactDirectory(dir, "ARTIFACT_OWNER_CONFLICT");

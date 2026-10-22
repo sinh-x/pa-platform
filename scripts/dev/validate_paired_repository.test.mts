@@ -67,7 +67,7 @@ const planFirstRequirementsContract = [
   "The trusted PPA builder/orchestrator launcher reserves capacity, acquires or reuses and authenticates the checkout, performs ordinary-Git branch materialization, persists durable correlation evidence, and only then spawns implementation.",
   "Admission permits one active builder lineage per repository/ticket and at most four active ticket checkouts per canonical repository.",
   "Only Sinh/operator may return the checkout after explicit approval.",
-  "OPA/OpenCode and CPA/Claude Code make no Treehouse behavior claim. Config wording does not prove PAP-189 runtime enforcement; PAP-215 owns paired runtime enforcement.",
+  "OPA/OpenCode makes no Treehouse behavior claim. Config wording does not prove PAP-189 runtime enforcement; PAP-215 owns paired runtime enforcement.",
   "",
 ].join("\n");
 
@@ -77,7 +77,7 @@ const ppaBranchContract = [
   "Branch evidence is planned or materialized for the exact linked branch. The orchestrator alone may use ordinary Git to create the exact planned branch from its approved base, or select the exact materialized branch.",
   "Admission permits one active builder lineage per repository/ticket and at most four active ticket checkouts per canonical repository.",
   "Any conflicting identity, ticket, branch state, base, branch, action, lineage, or capacity evidence rejects before project-file or branch mutation and before builder child/runtime spawn.",
-  "OPA/OpenCode and CPA/Claude Code retain supported non-Treehouse seven-state branch behavior and make no Treehouse claim.",
+  "OPA/OpenCode retains supported non-Treehouse seven-state branch behavior and makes no Treehouse claim.",
   "",
 ].join("\n");
 
@@ -186,6 +186,37 @@ test("implementation-first baseline compatibility does not certify v1 rollout pa
     assert.ok(!baseline.some((line) => line.startsWith("REVIEW_V1_PRODUCER_PROFILES=")));
     assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: fixture.sha, requireReviewV1: true }), /cannot read/);
   } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test("paired boundaries accept historical combined subjects without requiring a config ticket", () => {
+  for (const [relative, subject, replacement] of [
+    ["skills/requirements/analyze-objective.md", "OPA/OpenCode makes", "OPA/OpenCode and legacy-synthetic make"],
+    ["teams/builder/modes/orchestrator.md", "OPA/OpenCode retains", "OPA/OpenCode and legacy-synthetic only retain"],
+  ] as const) {
+    const fixture = createFixture();
+    try {
+      const path = join(fixture.root, relative);
+      writeFileSync(path, readFileSync(path, "utf8").replace(subject, replacement));
+      git(fixture.root, "add", "."); git(fixture.root, "commit", "-qm", "preserve historical subject wording");
+      assert.doesNotThrow(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: git(fixture.root, "rev-parse", "HEAD") }));
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  }
+});
+
+test("historical subject compatibility never removes OPA's non-Treehouse boundary", () => {
+  for (const [relative, subject, replacement, required, weakened, diagnostic] of [
+    ["skills/requirements/analyze-objective.md", "OPA/OpenCode makes", "OPA/OpenCode and legacy-synthetic make", "no Treehouse behavior claim", "a Treehouse behavior claim", /adapter and runtime-authority boundaries/],
+    ["teams/builder/modes/orchestrator.md", "OPA/OpenCode retains", "OPA/OpenCode and legacy-synthetic only retain", "supported non-Treehouse seven-state branch behavior", "supported Treehouse seven-state branch behavior", /non-Pi branch boundary/],
+    ["teams/builder/modes/orchestrator.md", "OPA/OpenCode retains", "OPA/OpenCode and legacy-synthetic only retain", "no Treehouse claim", "a Treehouse claim", /non-Pi branch boundary/],
+  ] as const) {
+    const fixture = createFixture();
+    try {
+      const path = join(fixture.root, relative);
+      writeFileSync(path, readFileSync(path, "utf8").replace(subject, replacement).replace(required, weakened));
+      git(fixture.root, "add", "."); git(fixture.root, "commit", "-qm", "reject weakened OPA safety boundary");
+      assert.throws(() => validatePairedRepository({ configRoot: fixture.root, expectedSha: git(fixture.root, "rev-parse", "HEAD") }), diagnostic);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  }
 });
 
 test("paired repository gate rejects requirements-time checkout prerequisites", () => {

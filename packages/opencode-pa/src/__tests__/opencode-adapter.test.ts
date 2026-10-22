@@ -1794,19 +1794,56 @@ test("opa deploy --resume fails fast when no session id was recorded", async () 
   });
 });
 
-test("opa deploy --resume fails clearly on claude session files without registering", async () => {
+test("opa deploy --resume rejects unsupported historical session files without registering", async () => {
   await withOpaEnv(async (root) => {
-    const priorId = "d-claude";
+    const priorId = "d-legacy";
     const priorDir = join(root, "deployments", priorId);
     mkdirSync(priorDir, { recursive: true });
-    writeFileSync(join(priorDir, "session-id-claude.txt"), "claude-session-token");
+    const sessionPath = join(priorDir, "session-id-unsupported-synthetic.txt");
+    const original = Buffer.from("opaque-session-token\n");
+    writeFileSync(sessionPath, original);
     const adapter = new OpencodeAdapter({ runCommand: () => { throw new Error("should not spawn"); } });
     const stderr: string[] = [];
     const code = await runCoreCommand(["deploy", "daily", "--mode", "plan", "--resume", priorId], { hooks: createOpencodeHooks(adapter), io: { stdout: () => {}, stderr: (line) => stderr.push(line) } });
     assert.notEqual(code, 0);
-    assert.match(stderr.join("\n"), /was launched by claude/);
-    assert.match(stderr.join("\n"), /cpa deploy --resume d-claude/);
+    assert.match(stderr.join("\n"), /unsupported runtime/);
+    assert.doesNotMatch(stderr.join("\n"), /\buse ['`]?\S+ deploy --resume/);
+    assert.deepEqual(readFileSync(sessionPath), original);
+    assert.equal(existsSync(join(root, "registry.db")), false, "rejected resume must not initialize the registry");
     assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("retained adapter rejects invalid selection and opaque recorded runtime before effects", async () => {
+  const supplied: unknown = JSON.parse(process.env["PA_RETIRED_RUNTIME_CASES"] ?? "[]");
+  assert.ok(Array.isArray(supplied) && supplied.every((value) => typeof value === "string" && value !== "pi" && value !== "opencode"));
+  for (const runtime of ["unsupported-synthetic", ...supplied]) await withOpaEnv(async (root) => {
+    let effects = 0;
+    const adapter = createStubAdapter({ exitCode: 0 });
+    adapter.installHooks = () => { effects++; };
+    adapter.spawn = adapter.resume = () => { effects++; return { exitCode: 0 }; };
+    adapter.describeTools = () => { effects++; return { runtime: "opencode", markdown: "unused" }; };
+    for (const [request, selected] of [[{ team: "daily", runtime }, adapter], [{ team: "daily" }, { ...adapter, name: runtime }]] as const) {
+      const result = await deployWithOpencode(request as never, selected as RuntimeAdapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+      assert.match(result.reason ?? "", /unsupported runtime/);
+    }
+    const id = "d-abcdef"; const dir = join(root, "deployments", id);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, adapter.sessionFileName); writeFileSync(path, "opaque-session\n");
+    appendRegistryEvent({ deployment_id: id, team: "daily", event: "started", timestamp: "2020-01-01T00:00:00Z", runtime });
+    const before = getDeploymentEvents(id);
+    const result = await deployWithOpencode({ team: "daily", resume: id }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", /unsupported runtime/);
+    assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
+    assert.equal(effects, 0); assert.deepEqual(getDeploymentEvents(id), before);
+    closeDb();
+    const registryBefore = readFileSync(join(root, "registry.db"));
+    assert.equal((await deployWithOpencode({ team: "daily", resume: id }, adapter)).status, "failed");
+    assert.deepEqual(readFileSync(join(root, "registry.db")), registryBefore, "cold resume inspection never migrates historical records");
+    assert.equal(readFileSync(path, "utf8"), "opaque-session\n");
+    assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
   });
 });
 

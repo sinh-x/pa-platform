@@ -3,7 +3,8 @@ import { reconcileRepositoryTerminalChild, withPreparedTicketCapacity, type Repo
 import { createHash } from "node:crypto";
 import { ReadOnlyHelperFailure, observeReadonlyRepositoryAuthority, observeReadonlyRepositoryTicketSlot, processIsWithinFingerprintLineage, queryReadonlyHelperRegistry, readReviewEvidenceFile, type ReadOnlyHelperCapability, type ReadOnlyHelperRole, type RepositoryMutationLease } from "@pa-platform/pa-core";
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, PA_PI_EXECUTION_MODE_ENV, acquireRepositoryMutationLease, acquireRepositoryTicketSlot, advanceParentAuthoritySnapshot, appendActivityEvent, assertRepositoryGitIdentity, authenticateRepositoryMutationLease, authenticateRepositoryTicketSlot, captureRepositoryGitSnapshot, classifyRepositoryAccess, createActivityEvent, emitCompletedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, finalizeRepositoryMutationBorrower, finalizeRepositoryMutationLease, formatBoundedFiveFieldDiagnostic, formatDirtyBackgroundBuilderDiagnostic, formatRepositoryBorrowerDiagnostic, generatePrimer, getDeployPaths, getTicketsDir, inspectRepositoryMutationBorrower, inspectRepositoryMutationLease, isRogueOneTeam, loadTeamConfig, materializeTicketBranch, normalizeRogueOneDeployRequest, readProcessFingerprint, requireTicketLinkedBranch, queryDeploymentStatus, getDeploymentEvents, repositoryMutationLeasePath, repositoryMutationBorrowerPath, reconcileTerminalRegistryEvent, refreshTicketLinkedBranchHead, registerRepositoryMutationBorrower, releaseRepositoryMutationBorrower, releaseRepositoryTicketSlot, renderEnvVarsBlock, repositoryDirtyBorrowApprovalPath, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRepoExecutionPath, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, type CoreExecutionHooks, type DeployDiagnostics, type DeployRequest, type DeploymentStatus, type ExecutionPlan, type PaEnvKey, type ProcessFingerprint, type Rating, type RegistryEvent, TicketStore, type RepositoryTicketSlotHandoff, type RuntimeAdapter, type SessionCommandBuilder, type TeamConfig, type TicketWorktreeSelectionEvidence, type TreehouseLaunchEvidence } from "@pa-platform/pa-core";
@@ -725,6 +726,16 @@ export function createDefaultPiHooks(): CoreExecutionHooks { return createPiHook
 
 export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapter = new PiAdapter(), diagnostics?: DeployDiagnostics, dependencies: PiDeployDependencies = {}): Promise<{ status: "pending" | "success" | "failed"; team: string; mode: string | null; deploymentId?: string; reason?: string }> {
   const inheritedAttempt = request.team === "builder" ? inheritedParentContext() : undefined;
+  let prior: string | undefined;
+  try {
+    assertMatchingRuntime(adapter.name, "pi");
+    if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "pi");
+  } catch (error) {
+    const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
+      : inheritedAttempt ? inheritedAdmissionFailure(detail, request.repo ?? "unknown", process.cwd()) : detail;
+    return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
+  }
   let timeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in timeout) {
     const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(timeout.error) : inheritedAttempt ? inheritedAdmissionFailure(timeout.error, request.repo ?? "unknown", process.cwd()) : timeout.error;
@@ -743,6 +754,16 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
     if (error instanceof DeployModeSelectionError) return { status: "failed", team: request.team, mode: null, reason: error.message };
     if (!request.ticketWorktree) throw error;
     return { status: "failed", team: request.team, mode: request.mode ?? null, reason: ticketWorktreeDiagnostic(error) };
+  }
+  // Strict mode rejection precedes resume-file inspection; unsupported historical
+  // runtime rejection still precedes workspace/registry allocation and hooks.
+  try {
+    if (request.resume) prior = readSession(request.resume, adapter.sessionFileName);
+  } catch (error) {
+    const detail = boundedDiagnostic(error instanceof Error ? error.message : String(error), process.env, 2000);
+    const reason = request.ticketWorktree ? ticketWorktreeDiagnostic(detail)
+      : inheritedAttempt ? inheritedAdmissionFailure(detail, request.repo ?? "unknown", process.cwd()) : detail;
+    return { status: "failed", team: request.team, mode: request.mode ?? null, reason };
   }
   // Pure static gate precedes ID/workspace allocation, audits, registry and runtime probes.
   // Dry-run is observational too and must not masquerade as successful review admission.
@@ -1262,8 +1283,6 @@ export async function deployWithPi(request: DeployRequest, adapter: RuntimeAdapt
       return completeFailure(error instanceof Error ? error.message : String(error));
     }
   }
-  let prior: string | undefined;
-  if (request.resume) { try { prior = readSession(request.resume, adapter.sessionFileName); } catch (error) { return completeFailure(error instanceof Error ? error.message : String(error)); } }
   const sessionId = prior ?? ("allocateSessionId" in adapter && typeof adapter.allocateSessionId === "function" ? adapter.allocateSessionId() : randomBytes(16).toString("hex"));
   const sessionPath = resolve(deployDir, adapter.sessionFileName);
   try {
@@ -1816,4 +1835,19 @@ function inheritedParentContext(): { parentDeploymentId: string; parentDeploymen
   return parentIdentity ? { parentDeploymentId, parentDeploymentDirectory } : undefined;
 }
 function paEnv(id: string, dir: string, activity: string, team: TeamConfig, request: DeployRequest, provider?: string, model?: string): Partial<Record<PaEnvKey | typeof PA_PI_EXECUTION_MODE_ENV, string>> { return { PA_DEPLOYMENT_ID: id, PA_DEPLOYMENT_DIR: dir, PA_ACTIVITY_LOG: activity, PA_TEAM: team.name, PA_MODE: request.mode ?? team.default_mode ?? "", PA_TICKET_ID: request.ticket ?? "", PA_REPO: request.repo ?? "", PA_PROVIDER: provider ?? "", PA_MODEL: model ?? "", PA_TEAM_MODEL: request.teamModel ?? "", PA_AGENT_MODEL: request.agentModel ?? "", ...(isRogueOneTeam(team.name) ? { PA_ROGUE_ONE: "1" } : {}), [PA_PI_EXECUTION_MODE_ENV]: request.background ? "background" : "foreground" }; }
-function readSession(id: string, expected: string): string { const dir = getDeployPaths(id).deployDir; const path = resolve(dir, expected); if (!existsSync(path)) { for (const [file, binary] of [["session-id-opencode.txt", "opa"], ["session-id-claude.txt", "cpa"], ["session-id-droid.txt", "dpa"], ["session-id-pi.txt", "ppa"]] as const) if (file !== expected && existsSync(resolve(dir, file))) throw new Error(`cannot resume: deploy ${id} was launched by another runtime; use '${binary} deploy --resume ${id}'`); throw new Error(`no Pi session id recorded for ${id} — cannot resume`); } const value = readFileSync(path, "utf8").trim(); if (!value) throw new Error(`empty Pi session id recorded for ${id} — cannot resume`); return value; }
+function readSession(id: string, expected: string): string {
+  const dir = getDeployPaths(id).deployDir;
+  const recorded = queryReadonlyDeploymentStatus(id)?.runtime;
+  if (recorded !== undefined) assertMatchingRuntime(recorded, "pi");
+  for (const file of existsSync(dir) ? readdirSync(dir) : []) {
+    const match = /^session-id-(.+)\.txt$/.exec(file);
+    if (!match) continue;
+    assertSupportedRuntime(match[1]);
+    assertMatchingRuntime(match[1], "pi");
+  }
+  const path = resolve(dir, expected);
+  if (!existsSync(path)) throw new Error(`no Pi session id recorded for ${id} — cannot resume`);
+  const value = readFileSync(path, "utf8").trim();
+  if (!value) throw new Error(`empty Pi session id recorded for ${id} — cannot resume`);
+  return value;
+}

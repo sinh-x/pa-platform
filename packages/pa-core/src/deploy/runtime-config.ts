@@ -1,5 +1,28 @@
 import type { DeployRequest } from "./control.js";
+import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import type { DeployMode, ModelName, ProviderName, RuntimeName, RuntimeOverrides, TeamConfig } from "../types.js";
+
+/** Validate untyped internal callers as well as public request parsers. Never infer a runtime. */
+export function assertSupportedRuntime(runtime: unknown): asserts runtime is RuntimeName {
+  if (runtime !== "pi" && runtime !== "opencode") throw new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "unsupported runtime selection",
+    source: "active runtime admission",
+    reason: "runtime must be opencode or pi; historical runtime metadata is read-only",
+    correction: "select a supported runtime explicitly; do not convert or rewrite historical sessions",
+    resumeAction: "start a new supported deployment, or resume only its matching retained-runtime session",
+  }));
+}
+
+/** An explicit selection or historical session must never fall back to another adapter. */
+export function assertMatchingRuntime(runtime: unknown, expected: RuntimeName): void {
+  assertSupportedRuntime(runtime);
+  if (runtime !== expected) throw new Error(formatBoundedFiveFieldDiagnostic({
+    condition: "runtime mismatch", source: "selected adapter and session admission",
+    reason: "the explicit runtime or historical session does not match the selected adapter",
+    correction: "use the matching retained runtime; preserve the historical record unchanged",
+    resumeAction: "resume through the matching retained adapter or start a new deployment explicitly",
+  }));
+}
 
 export type RuntimeConfigSource = "cli" | "mode" | "default" | "fallback";
 
@@ -33,6 +56,7 @@ export interface RuntimeConfigResolutionInput {
 }
 
 export function resolveRuntimeConfig(input: RuntimeConfigResolutionInput): EffectiveRuntimeConfig {
+  assertSupportedRuntime(input.runtime);
   const modeProvider = input.mode?.provider;
   const modeModel = input.mode?.model;
   if ((modeProvider === undefined) !== (modeModel === undefined)) {

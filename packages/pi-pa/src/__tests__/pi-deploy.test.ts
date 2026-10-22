@@ -863,6 +863,73 @@ test("Pi strict mode entry rejects retired/unknown/default, force, resume and in
   });
 });
 
+test("Pi rejects opaque unsupported resume files before allocation, hooks or preflight", async () => {
+  await withPiEnv(async (root) => {
+    const id = "d-abcdef";
+    const dir = join(root, "deployments", id);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "session-id-unsupported-synthetic.txt");
+    const original = Buffer.from("opaque-history\n");
+    writeFileSync(path, original);
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; }, onDescribe: () => { effects++; } });
+    const result = await deployWithPi({ team: "requirements", mode: "analyze", resume: id }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", /unsupported runtime/);
+    assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
+    assert.equal(effects, 0);
+    assert.deepEqual(readFileSync(path), original);
+    assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
+    assert.equal(existsSync(join(root, "registry.db")), false, "rejected resume must not initialize the registry");
+    assert.equal(queryDeploymentStatuses().length, 0);
+  });
+});
+
+test("early inherited resume rejection preserves the bounded admission diagnostic without allocation", async () => {
+  await withPiEnv(async (root) => {
+    process.env["PA_TEAM"] = "builder"; process.env["PA_MODE"] = "orchestrator";
+    process.env["PA_DEPLOYMENT_ID"] = "d-111111";
+    process.env["PA_DEPLOYMENT_DIR"] = join(root, "parent");
+    let effects = 0;
+    const result = await deployWithPi({ team: "builder", mode: "implement", resume: "d-ffffff" }, stubAdapter({ preflight: async () => { effects++; }, onSpawn: () => { effects++; }, onInstall: () => { effects++; } }));
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    for (const field of ["Condition:", "Source:", "Reason:", "Correction:", "Resume Action:"]) assert.ok(result.reason?.includes(field));
+    assert.ok(result.reason!.length <= 2000); assert.equal(effects, 0);
+    assert.equal(existsSync(join(root, "registry.db")), false);
+    assert.equal(existsSync(join(root, "deployments")), false);
+  });
+});
+
+test("retained adapter rejects invalid selection and opaque recorded runtime before effects", async () => {
+  const supplied: unknown = JSON.parse(process.env["PA_RETIRED_RUNTIME_CASES"] ?? "[]");
+  assert.ok(Array.isArray(supplied) && supplied.every((value) => typeof value === "string" && value !== "pi" && value !== "opencode"));
+  for (const runtime of ["unsupported-synthetic", ...supplied]) await withPiEnv(async (root) => {
+    let effects = 0;
+    const adapter = stubAdapter({ preflight: async () => { effects++; }, onInstall: () => { effects++; }, onSpawn: () => { effects++; }, onResume: () => { effects++; }, onDescribe: () => { effects++; } });
+    for (const [request, selected] of [[{ team: "requirements", runtime }, adapter], [{ team: "requirements" }, { ...adapter, name: runtime }]] as const) {
+      const result = await deployWithPi(request as never, selected as RuntimeAdapter);
+      assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+      assert.match(result.reason ?? "", /unsupported runtime/);
+    }
+    const id = "d-abcdef"; const dir = join(root, "deployments", id);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, adapter.sessionFileName); writeFileSync(path, "opaque-session\n");
+    appendRegistryEvent({ deployment_id: id, team: "requirements", event: "started", timestamp: "2020-01-01T00:00:00Z", runtime });
+    const before = getDeploymentEvents(id);
+    const result = await deployWithPi({ team: "requirements", resume: id }, adapter);
+    assert.equal(result.status, "failed"); assert.equal(result.deploymentId, undefined);
+    assert.match(result.reason ?? "", /unsupported runtime/);
+    assert.doesNotMatch(result.reason ?? "", /\buse ['`]?\S+ deploy --resume/);
+    assert.equal(effects, 0); assert.deepEqual(getDeploymentEvents(id), before);
+    closeDb();
+    const registryBefore = readFileSync(join(root, "registry.db"));
+    assert.equal((await deployWithPi({ team: "requirements", resume: id }, adapter)).status, "failed");
+    assert.deepEqual(readFileSync(join(root, "registry.db")), registryBefore, "cold resume inspection never migrates historical records");
+    assert.equal(readFileSync(path, "utf8"), "opaque-session\n");
+    assert.deepEqual(readdirSync(join(root, "deployments")), [id]);
+  });
+});
+
 function writeRogueOneTeamConfig(root: string): void {
   writeFileSync(join(root, "teams", "rogue-one.yaml"), [
     "name: rogue-one",
@@ -4325,6 +4392,57 @@ test("ticketed, standalone, resume, and evaluator foreground routes share deferr
     assertTimeoutMetadata(captured[3]!.opts, 600);
     assert.equal(getDeploymentEvents(ticketed.deploymentId!)[0]?.ticket_id, "PAP-159");
     assert.equal(getDeploymentEvents(resumed.deploymentId!)[0]?.resumed_from_deployment_id, standalone.deploymentId);
+  });
+});
+
+test("PAP-267 AC-3/5/6: shared requirements/builder foreground startup preserves persisted UUID, resume and no-spawn gates", async () => {
+  for (const team of ["requirements", "builder"]) await withPiEnv(async (root, gitState) => {
+    const mode = team === "requirements" ? "analyze" : "implement";
+    const id = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
+    const warning = `Warning: No project session found with id '${id}'; creating a new session with that id.\r\n`;
+    const output: string[] = [], invocations: string[][] = [];
+    const adapter = new PiAdapter({ cwd: join(root, "repo"), versionProbe: () => "1.0.4", nativeRegistryProbe: () => undefined,
+      sessionIdFactory: () => id, supervision: {
+        spawnPty: (_file, args) => {
+          invocations.push(args);
+          const pty = new ForegroundDeploymentPty(() => {});
+          setImmediate(() => { pty.emitData(warning); pty.emitExit(0); });
+          return pty as never;
+        },
+        input: new ForegroundDeploymentInput() as never,
+        output: { write: (chunk: string) => { output.push(chunk); return true; } } as never,
+        persistLine: () => {},
+      } });
+    const dryRun = await deployWithPi({ team, mode, dryRun: true }, adapter);
+    assert.equal(dryRun.status, "pending", dryRun.reason); assert.equal(invocations.length, 0);
+    const initial = await deployWithPi({ team, mode }, adapter);
+    assert.equal(initial.status, "success", initial.reason); assert.equal(invocations.length, 1);
+    assert.equal(output.join(""), "");
+    const dir = getDeployPaths(initial.deploymentId!).deployDir;
+    const path = join(dir, "session-id-pi.txt");
+    assert.equal(readFileSync(path, "utf8"), id + "\n");
+    assert.equal(readFileSync(join(dir, "pi.log"), "utf8"), warning);
+    const operationsBeforeResume = gitState.readOperations();
+    const resumed = await deployWithPi({ team, mode, resume: initial.deploymentId! }, adapter);
+    assert.equal(resumed.status, "success", resumed.reason); assert.equal(invocations.length, 2);
+    assert.equal(output.join(""), warning);
+    assert.equal(readFileSync(path, "utf8"), id + "\n");
+    assert.deepEqual(gitState.readOperations(), operationsBeforeResume);
+    for (const args of invocations) assert.equal(args[args.indexOf("--session-id") + 1], id);
+    assert.equal(readFileSync(join(getDeployPaths(resumed.deploymentId!).deployDir, "session-id-pi.txt"), "utf8"), id + "\n");
+    for (const state of ["absent", "empty"]) {
+      if (state === "absent") rmSync(path); else writeFileSync(path, "\n");
+      const rejected = await deployWithPi({ team, mode, resume: initial.deploymentId! }, adapter);
+      assert.equal(rejected.status, "failed");
+      assert.match(rejected.reason ?? "", /no Pi session id recorded|empty Pi session id recorded/);
+      assert.equal(invocations.length, 2);
+      if (state === "absent") assert.equal(existsSync(path), false); else assert.equal(readFileSync(path, "utf8"), "\n");
+    }
+    if (team === "builder") {
+      writeFileSync(join(root, "repo", "dirty.txt"), "no spawn\n");
+      const rejected = await deployWithPi({ team, mode, background: true }, adapter);
+      assert.equal(rejected.status, "failed"); assert.equal(invocations.length, 2);
+    }
   });
 });
 

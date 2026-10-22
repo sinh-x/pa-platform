@@ -1,7 +1,8 @@
 import type { ReadOnlyHelperCapability } from "../readonly-helper-context.js";
 import type { ApiRuntimeName, AutonomyLevel, DeployMode, TeamConfig } from "../types.js";
 import { isRogueOneTeam } from "./rogue-one.js";
-import { queryDeploymentStatus } from "../registry/index.js";
+import { queryReadonlyDeploymentStatus } from "../registry/index.js";
+import { assertSupportedRuntime } from "./runtime-config.js";
 import { formatBoundedFiveFieldDiagnostic } from "../repos.js";
 import { assertNoSensitiveMatch } from "../sensitive-patterns.js";
 import { MAX_REVIEW_OBJECTIVE_BYTES } from "../validation/review-contract.js";
@@ -72,7 +73,7 @@ export function resolveDeployMode(team: TeamConfig, requestedMode?: string): Dep
 /** A resume target never converts a retired historical mode into current launch authority. */
 export function assertDeployResumeMode(team: TeamConfig, resume?: string): void {
   if (!resume || isRogueOneTeam(team.name)) return;
-  const prior = queryDeploymentStatus(resume);
+  const prior = queryReadonlyDeploymentStatus(resume);
   if (prior?.mode !== undefined) resolveDeployMode(team, prior.mode);
 }
 
@@ -127,6 +128,7 @@ export interface CoreExecutionHooks {
 }
 
 export function composeRuntimeHooks(opencode: CoreExecutionHooks, pi: CoreExecutionHooks, cliDeployRuntime: ApiRuntimeName = "opencode"): CoreExecutionHooks {
+  assertSupportedRuntime(cliDeployRuntime);
   const cliDeployHooks = cliDeployRuntime === "pi" ? pi : opencode;
   return { ...opencode, readOnlyHelperContext: cliDeployHooks.readOnlyHelperContext, deploy: cliDeployHooks.deploy, deployPreflight: cliDeployHooks.deployPreflight, runtimeHooks: { opencode, pi } };
 }

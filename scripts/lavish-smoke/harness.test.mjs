@@ -39,7 +39,7 @@ test('inventory rejects omitted, skipped, duplicate outputs, wrong pin and writa
   for(const mutate of mutations){const value=inventory();mutate(value);assert.throws(()=>validateInventory(value));}
 });
 test('runtime/browser ledgers fail on omitted and repeated cases; no empty or invented case success',()=>{
-  assert.equal(runtimeCases.length,65);assert.equal(browserCases.length,47);
+  assert.equal(runtimeCases.length,44);assert.equal(browserCases.length,32);
   for(const required of [runtimeCases,browserCases]){
     const ledger=new Ledger(required);assert.throws(()=>ledger.finish());assert.throws(()=>ledger.pass('invented',{n:1}));assert.throws(()=>ledger.pass(required[0],{}));
     for(const name of required.slice(1))ledger.pass(name,{selfTestOnly:true});assert.throws(()=>ledger.finish());
@@ -131,7 +131,7 @@ test('partial worker JSON and prerequisite failure cannot become successful resu
 });
 test('generated Fish completions preserve nested artifact grammar without protected-review/status collisions',t=>{
   const home=fs.mkdtempSync('/tmp/pa-lavish-completion-test-');t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
-  for(const cli of ['ppa','opa','cpa','pa-core','dpa']){
+  for(const cli of ['ppa','opa','pa-core']){
     const file=join(here,'../../completions',cli+'.fish'),content=fs.readFileSync(file,'utf8');
     for(const word of ['artifact','render','review','start','status','stop','feedback','source','output-dir','manifest','session','timeout-ms','json'])assert.ok(content.includes(word),`${cli}: ${word}`);
     assert.doesNotMatch(content,/review lifecycle unavailable|Review operation \(not yet available\)/);

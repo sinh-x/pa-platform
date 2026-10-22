@@ -5,6 +5,7 @@ import { getBranchPattern, loadRepoEntry, resolveRepoExecutionPath } from "../re
 import { TicketStore } from "../tickets/store.js";
 import type { DeployMode, RuntimeName, SkillEntry, TeamConfig } from "../types.js";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, type DeployRequest } from "./control.js";
+import { assertMatchingRuntime, assertSupportedRuntime } from "./runtime-config.js";
 import { validateReviewCheckoutCorrelationEvidence, type ReviewCheckoutCorrelationEvidence } from "./correlation.js";
 import { resolveRepositoryAdmissionEvidence } from "./repository-admission.js";
 import type { RepositoryAdmissionEvidence, RepositoryAdmissionOperation, RepositoryBranchTransitionPolicy, RepositoryGitSnapshot } from "./repository-admission.js";
@@ -138,6 +139,8 @@ export function withAuthoritativeRepositoryAdmission(
 }
 
 export function resolveExecutionPlan(options: ResolveExecutionPlanOptions): ExecutionPlan {
+  assertSupportedRuntime(options.runtime);
+  if (options.request.runtime !== undefined) assertMatchingRuntime(options.request.runtime, options.runtime);
   const rogueOne = isRogueOneTeam(options.request.team) && isRogueOneTeam(options.teamConfig.name);
   const mode = resolveDeployMode(options.teamConfig, options.request.mode);
   if (!rogueOne && options.mode !== undefined && options.mode.id !== mode?.id) {

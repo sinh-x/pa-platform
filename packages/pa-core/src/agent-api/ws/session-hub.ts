@@ -5,6 +5,7 @@ import { getDeploymentDir } from "../../paths.js";
 import { nowUtc } from "../../time.js";
 import type { ApiRuntimeName } from "../../types.js";
 import type { CoreExecutionHooks } from "../../deploy/control.js";
+import { assertSupportedRuntime } from "../../deploy/runtime-config.js";
 
 export type SessionStatus = "running" | "stopping";
 
@@ -153,6 +154,11 @@ interface ActiveSession {
   secrets?: string[];
 }
 
+function runtimeAdmissionError(runtime: unknown): string | undefined {
+  try { assertSupportedRuntime(runtime); return undefined; }
+  catch (error) { return (error as Error).message; }
+}
+
 function readMaxSessionsFromEnv(): number {
   const raw = process.env["PA_MAX_SESSIONS"];
   if (!raw) return DEFAULT_MAX_SESSIONS;
@@ -275,6 +281,8 @@ export class SessionManager {
    * effort-M enhancement and is intentionally out of scope for now.
    */
   register(deploymentId: string, model?: string, runtime: ApiRuntimeName = DEFAULT_RUNTIME): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+    const runtimeError = runtimeAdmissionError(runtime);
+    if (runtimeError) return { ok: false, error: runtimeError, limit: this.maxSessions };
     if (this.atCapacity()) {
       return { ok: false, error: "Max sessions reached", limit: this.maxSessions };
     }
@@ -299,6 +307,10 @@ export class SessionManager {
   }
 
   private createSession(opts: SessionSpawnOptions & { sessionId?: string }, sink: SessionStreamSink): { ok: true; session: SessionRecord } | { ok: false; error: string; limit: number } {
+    const runtime = opts.runtime === undefined ? DEFAULT_RUNTIME : opts.runtime;
+    const runtimeError = runtimeAdmissionError(runtime);
+    if (runtimeError) return { ok: false, error: runtimeError, limit: this.maxSessions };
+    if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
     const newId = this.allocateId();
     const model = opts.model ?? this.defaultModel;
     const deploymentId = opts.deploymentId ?? `session-${newId}`;
@@ -308,7 +320,7 @@ export class SessionManager {
       status: "running",
       startedAt: nowUtc(this.now()),
       deploymentId,
-      runtime: opts.runtime ?? DEFAULT_RUNTIME,
+      runtime,
     };
     const session: ActiveSession = {
       record,
@@ -323,11 +335,6 @@ export class SessionManager {
     this.sessions.set(newId, session);
     this.logLifecycle(session, "session_started");
     try {
-      const runtime = opts.runtime ?? DEFAULT_RUNTIME;
-      if (runtime !== DEFAULT_RUNTIME && !this.runtimes[runtime]) {
-        this.sessions.delete(newId);
-        return { ok: false, error: `No adapter registered for runtime ${runtime}`, limit: this.maxSessions };
-      }
       const nativeSessionId = opts.sessionId ?? (record.runtime === "pi" ? record.id : undefined);
       if (nativeSessionId && isBoundedNativeSessionId(nativeSessionId)) this.nativeSessionRuntimes.set(nativeSessionId, record.runtime);
       this.spawnOpencode(session, opts);

@@ -48,7 +48,7 @@ approval gate rollout. Baseline CI pairing is not v1 producer proof; require
 `corepack pnpm verify:paired-config -- --require-origin-develop --require-review-v1`
 for rollout. Protected launch always checks producer pairing and readiness.
 Implementation-first merge does not assert live protected-review/UAT acceptance.
-No OPA/CPA review command or Treehouse claim is introduced.
+No OPA review command or Treehouse claim is introduced.
 
 ## Terminal child reconciliation (PAP-238)
 
@@ -224,7 +224,7 @@ source correction nor public identity equality authorizes repair or restart.
 | requirements/review-auto | Exact read-only candidate reservation and active authorization; no implement borrower. An optional idle orchestrator retains custody. |
 
 Other modes, ordinary sessions, rogue-one selection evidence, and unauthenticated
-standalone Treehouse calls gain no linked-checkout helper authority. OPA/CPA remain
+standalone Treehouse calls gain no linked-checkout helper authority. OPA remains
 canonical-only. Canonical CWD and explicit registered repository selectors retain
 their supported behavior. `board --project <key|prefix|basename>` and `board --all`
 are neutral data selections, not checkout authentication. An inferred linked board
@@ -597,7 +597,7 @@ same physical checkout path/Git identity, plus fresh current authentication.
 Every selection rejection precedes preflight/spawn and is bounded to 2,000
 characters with Condition, Source, Reason, Correction and Resume Action.
 
-The flag is excluded from builder deployments, OPA, CPA, DPA, direct `pa-core`
+The flag is excluded from builder deployments, OPA, direct `pa-core`
 and the Agent API (no request field). Existing builder and omitted-flag behavior
 is unchanged. Selection is neither filesystem sandboxing nor an immutable
 post-spawn snapshot. **Paired rollout ticket PAPC-038** owns eligible non-builder
@@ -659,8 +659,7 @@ not require or accept a builder checkout, worktree, lease, holder, ticket slot,
 or repository permit, and it performs no Treehouse lifecycle or branch action.
 After approval, the trusted PPA builder/orchestrator launcher owns capacity
 reservation, checkout acquire-or-reuse and authentication, exact branch
-action, durable correlation, and implementation spawn. OPA/OpenCode and
-CPA/Claude Code retain non-Treehouse behavior and make no Treehouse claim.
+action, durable correlation, and implementation spawn. OPA/OpenCode retains non-Treehouse behavior and makes no Treehouse claim.
 
 Record exactly one ticket branch before launch:
 
@@ -745,7 +744,7 @@ diagnostic bounded to 2,000 characters.
 A standalone ticketed `builder/implement` remains allowed only when launched
 from the matching free leased checkout, with `--repo` omitted and no live owner;
 explicit keys, paths, and canonical-root execution still reject. OPA/OpenCode
-and CPA/Claude Code behavior is unchanged and makes no Treehouse claim.
+behavior is unchanged and makes no Treehouse claim.
 Canonical-root, wrong-checkout, duplicate-ticket, fifth-ticket, or
 mismatched-parent attempts fail before Pi spawn. Requirements and non-builder
 modes do not enter this ticket-checkout acquisition flow. Protected Pi
@@ -974,8 +973,7 @@ Primers, environment, background configuration, registry start events, default
 status detail, and runtime spawn evidence carry both roots. `PA_REPO` is
 execution-scoped to `worktree_root`, while canonical identity remains
 `repo_root`. `ppa status <id>` shows `Repo Root`, a distinct `Worktree`, and
-`Repo Slot` when recorded. OPA,
-CPA, and DPA retain their prior repository behavior.
+`Repo Slot` when recorded. OPA retains its prior repository behavior.
 
 ## Orchestrator Branch Reconciliation
 
@@ -1008,13 +1006,13 @@ runtime. Dirty or stale states, missing local remote refs, ticket/pattern
 mismatch, repeated transitions, linked-worktree transitions, physical identity
 drift, and live ownership conflicts fail with bounded structured recovery
 diagnostics before spawn. This transition path is Pi-only and does not broaden
-OPA, CPA, or DPA policy.
+OPA policy.
 
 ## OpenAI-to-Codex Mapping
 
 PPA applies this normalization only after Pi runtime precedence has resolved the
 effective provider/model pair. The mapping is provider-bound and does not change
-OpenCode, Claude Code, Droid, or other non-Pi runtime values:
+OpenCode or unsupported runtime values:
 
 | Effective provider | Effective model | Pi command values |
 | --- | --- | --- |
@@ -1076,7 +1074,7 @@ Rows retain stable task `order`/`id` ordering and share Alt+I's lifecycle marker
 
 Before parsing, status rejects a sidecar larger than 5 MiB. Missing, malformed, unsupported-version, deployment-mismatched, oversized, or unreadable evidence renders a bounded `Session tasks: unavailable` / `Tasks unavailable: <reason>` section without hiding the deployment detail or changing a valid lookup's exit code from 0. Rendered task evidence is capped at 50 KiB and 2,000 lines; truncation retains the header and emits an explicit task-omission notice. Task text is stripped of ANSI and terminal controls and normalized to one terminal-safe row.
 
-This snapshot and status section are Pi-only. OpenCode, Claude Code, and Droid deployments are not inspected for tasks, and status lists, `--activity`, `--wait`, `--report`, and `--artifacts` keep their existing structures without a task section. `ppa status` is read-only: it neither mutates tasks nor aggregates child task lists. Managed todo guidance requires two-or-more-step work to initialize tasks after discovery and before the first target-repository mutation, complete or cancel the prior active task before starting the next phase, and complete or cancel an active task before shutdown. These checkpoints are observable guidance, not an automatic completion gate.
+This snapshot and status section are Pi-only. OpenCode deployments are not inspected for tasks, and status lists, `--activity`, `--wait`, `--report`, and `--artifacts` keep their existing structures without a task section. `ppa status` is read-only: it neither mutates tasks nor aggregates child task lists. Managed todo guidance requires two-or-more-step work to initialize tasks after discovery and before the first target-repository mutation, complete or cancel the prior active task before starting the next phase, and complete or cancel an active task before shutdown. These checkpoints are observable guidance, not an automatic completion gate.
 
 The shared default single-deployment header used by all adapters now renders exactly one Team line as `  Team:     <team>/<mode>` when a recorded mode is non-empty. If mode is absent, the byte-equivalent team-only fallback remains exactly `  Team:     <team>` with no slash or synthetic value. This human-readable formatting performs no additional I/O; list and alternate status paths remain unchanged. Structured registry and API fields are unchanged.
 
@@ -1094,7 +1092,7 @@ The compact value remains one complete additive `setStatus` string. The extensio
 
 Alt+I semantics are unchanged. In a managed linked-worktree deployment, its `Repository` field is the canonical registered `repo_root`, while `Path` is Pi's execution-worktree `ctx.cwd` and `Git` is looked up from that same execution worktree. It does not resolve the repository again or use the canonical checkout for Path/Git state. Git and todo compact segments are also unchanged.
 
-Relevant session, model, todo, tree, and turn events remain coalesced to at most one refresh per 2,000 ms. Git and deployment lookups retain their 500 ms deadline. A timed-out lookup retains the prior value with a `stale` label. Timers and overlays are disposed on session shutdown or reload; the extension starts no daemon or external server. Ordinary Pi sessions retain their existing unlabeled repository fallback while explicitly showing PA as unavailable, and this managed-Pi contract changes neither ordinary Pi behavior nor OpenCode, Claude Code, Droid, or other non-Pi adapters.
+Relevant session, model, todo, tree, and turn events remain coalesced to at most one refresh per 2,000 ms. Git and deployment lookups retain their 500 ms deadline. A timed-out lookup retains the prior value with a `stale` label. Timers and overlays are disposed on session shutdown or reload; the extension starts no daemon or external server. Ordinary Pi sessions retain their existing unlabeled repository fallback while explicitly showing PA as unavailable, and this managed-Pi contract changes neither ordinary Pi behavior nor OpenCode or other non-Pi adapters.
 
 ## Git Context Panel
 
@@ -1165,7 +1163,44 @@ caller-owned stdin state is preserved. This ownership-aware restoration lets the
 wrapper exit naturally after child-exit evidence and cleanup even when its parent
 keeps the stdin writer open; PPA does not force termination with `process.exit()`.
 
-Pi-owned content filtering is disabled. Foreground output and Pi-originated
+### Expected startup diagnostics
+
+Ticket-branch materialization probes the **exact local ref** with Git's
+`show-ref --exists`, capturing only that optional probe's stderr. Its documented
+exit status 2 means absent; every lookup/invocation failure is still an error,
+and a present ref must resolve to a commit. Only a planned absent branch can be
+created at the approved base. Missing materialized branches are not recreated.
+Required-ref and checkout diagnostics keep their existing presentation. A Git
+version without `--exists` fails closed rather than guessing absence.
+
+PPA also omits this one expected **presentation** line for a fresh Pi **1.0.4**
+launch, only when `<uuid>` is the exact allocated session UUID:
+
+```text
+Warning: No project session found with id '<uuid>'; creating a new session with that id.
+```
+
+The foreground PTY and managed pipe/background runner use the same bounded
+startup gate, derived from spawn/resume intent and the successful runtime-version
+probe, not environment flags or session-file existence. The gate recognizes at
+most one complete first line; ANSI controls and CRLF are normalized only in its
+comparison view. It closes on any nonmatching complete line, pipe stdout event,
+the 4096-byte cap, EOF, or a match, flushing unknown/incomplete bytes unchanged.
+It adds no timer, retry, version probe or child process. JSON stdout is never
+filtered. Resume warnings, wrong UUIDs, other/unknown versions (including the
+supported 0.84.4 development dependency), near matches and later/duplicate output
+remain visible. Older background configs without startup context pass through.
+
+Original bytes remain in the existing `pi.log`/structured diagnostic sinks under
+their existing bounds, audit, retention and access policies. This is not log
+redaction: the warning is omitted only from terminal presentation and managed
+stderr failure summaries. Session arguments, persisted identity, history,
+nonzero process status, cleanup, admission and checkout policy are unchanged.
+The regression fixtures are not evidence of live Pi UAT.
+
+### Pi content preservation and shadow audit
+
+Pi-owned content filtering is otherwise disabled. Foreground output and Pi-originated
 `pi.log`, `pi-output.jsonl`, activity records, terminal-status sidecars, registry
 diagnostics, and failure paths preserve protected values, credential-shaped
 text, credential-named fields, and reasoning metadata such as signatures or

@@ -176,7 +176,7 @@ test("packaged PA CLI guidance describes runtime adapters and core-owned serve",
   if (!existsSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"))) return t.skip("external pa-platform-config fixture not available");
   const guidance = readFileSync(join(CONFIG_ROOT, "skills", "global", "pa-cli", "SKILL.md"), "utf-8");
   assert.match(guidance, /# PA Platform CLI Reference/);
-  assert.match(guidance, /Use `ppa` for Pi sessions, `opa` for[\s\S]*OpenCode sessions, and `cpa` for Claude Code sessions/);
+  assert.match(guidance, /Use `ppa` for Pi sessions, `opa` for[\s\S]*OpenCode sessions\b/);
   assert.match(guidance, /Use `pa-core serve` for Agent API server lifecycle/);
   assert.match(guidance, /\| `pa-core serve` \| Start, stop, restart, and inspect the core-owned Agent API server/);
   assert.match(guidance, /rather than restored as required direct `daily`, `requirements`, `idea`, or `report` CLI commands/);
@@ -847,7 +847,7 @@ test("registry complete stages only live foreground Pi payloads and keeps other 
     assert.match(background.stdout.join("\n"), /Completed .*status success/);
     assert.equal(queryDeploymentStatus(backgroundId)?.status, "success");
 
-    for (const [runtime, binary] of [["opencode", "opa"], ["claude", "cpa"], ["droid", "dpa"]] as const) {
+    for (const [runtime, binary] of [["opencode", "opa"], ["opaque-historical", "historical-client"]] as const) {
       const id = `d-${runtime}-foreground`;
       appendRegistryEvent({ deployment_id: id, team: "builder", event: "started", timestamp: "2026-08-30T00:02:00.000Z", runtime, binary });
       process.env[PA_PI_EXECUTION_MODE_ENV] = "foreground";
@@ -939,7 +939,7 @@ test("registry ticket association CLI verifies projection and current-ticket con
     assert.equal(getDeploymentEvents(deployId).length, 1);
 
     const attach = capture();
-    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-001", "--expected-ticket", "none", "--actor", "  cli-operator  ", "--reason", "  ticket established  "], { binaryName: "cpa", io: attach.io }), 0);
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-001", "--expected-ticket", "none", "--actor", "  cli-operator  ", "--reason", "  ticket established  "], { binaryName: "ppa", io: attach.io }), 0);
     const attachOutput = attach.stdout.join("\n");
     assert.match(attachOutput, /Ticket association verified: d-cli-associate/);
     assert.match(attachOutput, /Previous ticket: none/);
@@ -962,7 +962,7 @@ test("registry ticket association CLI verifies projection and current-ticket con
     assert.match(attachedShow.stdout.join("\n"), /Current Ticket: PAP-001/);
 
     const stale = capture();
-    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-002", "--expected-ticket", "none", "--actor", "operator", "--reason", "stale"], { binaryName: "dpa", io: stale.io }), 1);
+    assert.equal(await runCoreCommand(["registry", "update", deployId, "--ticket", "PAP-002", "--expected-ticket", "none", "--actor", "operator", "--reason", "stale"], { binaryName: "opa", io: stale.io }), 1);
     assert.match(stale.stderr.join("\n"), /stale|expected ticket does not equal/i);
     assert.equal(getDeploymentEvents(deployId).length, 2);
     assert.equal(queryDeploymentStatus(deployId)?.ticket_id, "PAP-001");
@@ -1101,11 +1101,12 @@ test("runCoreCommand routes deploy through adapter hook", async () => {
   });
 });
 
-test("cpa and dpa remove force claims and reject the unsupported flag before hooks", async () => {
-  for (const binaryName of ["cpa", "dpa"]) {
+test("unsupported adapter identity rejects even help and force before hooks", async () => {
+  for (const binaryName of ["unsupported-synthetic", "unknown-adapter"]) {
     const help = capture();
-    assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName, io: help.io }), 0);
-    assert.doesNotMatch(help.stdout.join("\n"), /--force/);
+    assert.equal(await runCoreCommand(["deploy", "--help"], { binaryName, io: help.io }), 1);
+    assert.equal(help.stdout.length, 0);
+    assert.match(help.stderr.join("\n"), /unsupported deployment adapter/);
     let hookCalls = 0;
     const rejected = capture();
     assert.equal(await runCoreCommand(["deploy", "builder", "--force"], {
@@ -1113,7 +1114,7 @@ test("cpa and dpa remove force claims and reject the unsupported flag before hoo
       io: rejected.io,
       hooks: { deploy: () => { hookCalls += 1; return { status: "pending", deploymentId: "d-unsupported" }; } },
     }), 1);
-    assert.match(rejected.stderr.join("\n"), /--force is unsupported.*use ppa or opa/i);
+    assert.match(rejected.stderr.join("\n"), /unsupported deployment adapter.*use ppa or opa/is);
     assert.equal(hookCalls, 0);
   }
 });

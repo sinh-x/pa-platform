@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { assertMatchingRuntime, assertSupportedRuntime, queryReadonlyDeploymentStatus } from "@pa-platform/pa-core";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { assertDeployResumeMode, DeployModeSelectionError, resolveDeployMode, acquireRepositoryMutationLease, appendActivityEvent, captureRepositoryGitSnapshot, createActivityEvent, emitCompletedEvent, emitCrashedEvent, emitPidEvent, emitStartedEvent, ensureDeployDir, ensureTerminalRegistryMarker, formatDirtyBackgroundBuilderDiagnostic, generatePrimer, getAgentTeamsDir, getDailyDir, getDeployPaths, getSinhInputsDir, loadTeamConfig, nowUtc, queryDeploymentStatus, readServePidFile, redactDiagnostic, releaseRepositoryMutationLease, renderMemoryDocsBlock, renderEnvVarsBlock, repositoryGitSnapshotsEqual, resolveDeployTimeoutSeconds, resolveExecutionPlan, resolveRuntimeConfig, rogueOneAuditNotice, rogueOneModeWarning, normalizeRogueOneDeployRequest, isRogueOneTeam, updateRepositoryMutationLeaseGitSnapshot, withAuthoritativeRepositoryAdmission, DEFAULT_SERVE_HOST, DEFAULT_SERVE_PORT, TicketStore, type CoreExecutionHooks, type DeployDiagnostics, type DeployMode, type DeployRequest, type ExecutionPlan, type PaEnvKey, type RuntimeAdapter, type TeamConfig, type SessionCommandBuilder } from "@pa-platform/pa-core";
@@ -121,6 +122,13 @@ export function createDefaultOpencodeHooks(): CoreExecutionHooks {
 }
 
 export async function deployWithOpencode(request: DeployRequest, adapter: RuntimeAdapter = new OpencodeAdapter(), diagnostics?: DeployDiagnostics) {
+  let priorSession: string | undefined;
+  try {
+    assertMatchingRuntime(adapter.name, "opencode");
+    if (request.runtime !== undefined) assertMatchingRuntime(request.runtime, "opencode");
+  } catch (error) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
+  }
   const resolvedTimeout = resolveDeployTimeoutSeconds({ timeout: request.timeout });
   if ("error" in resolvedTimeout) return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: resolvedTimeout.error };
   const effectiveTimeoutSeconds = resolvedTimeout.timeout;
@@ -135,6 +143,13 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
   catch (error) {
     if (error instanceof DeployModeSelectionError) return { status: "failed" as const, team: request.team, mode: null, reason: error.message };
     throw error;
+  }
+  // Preserve strict mode precedence while rejecting unsupported resume history
+  // before any deployment allocation or runtime effects.
+  try {
+    if (request.resume) priorSession = readPriorSession(request.resume, adapter.sessionFileName);
+  } catch (error) {
+    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, reason: boundedDiagnostic(error) };
   }
   const deploymentId = `d-${randomBytes(3).toString("hex")}`;
   const deployDir = ensureDeployDir(deploymentId);
@@ -201,13 +216,6 @@ export async function deployWithOpencode(request: DeployRequest, adapter: Runtim
     appendActivityEvent(createActivityEvent({ deployId: deploymentId, kind: "text", source: "opencode", body: `Dry-run primer generated for ${request.team} using ${model}`, metadata: { provider, model } }), paths.activityLogPath);
     await registerDeploySessionBestEffort({ deploymentId, model, activityLogPath: paths.activityLogPath });
     return { status: "pending" as const, team: request.team, mode: request.mode ?? null, deploymentId };
-  }
-
-  let priorSession: string | undefined;
-  try {
-    priorSession = request.resume ? readPriorSession(request.resume, adapter.sessionFileName) : undefined;
-  } catch (error) {
-    return { status: "failed" as const, team: request.team, mode: request.mode ?? null, deploymentId, reason: boundedDiagnostic(error) };
   }
 
   if (request.sanitizedCharsRemoved && request.sanitizedCharsRemoved > 0) {
@@ -358,12 +366,17 @@ function firstLine(text: string): string {
 
 function readPriorSession(deploymentId: string, sessionFileName: string): string {
   const deployDir = getDeployPaths(deploymentId).deployDir;
+  const recorded = queryReadonlyDeploymentStatus(deploymentId)?.runtime;
+  if (recorded !== undefined) assertMatchingRuntime(recorded, "opencode");
+  // Session filenames are historical metadata, not an executable runtime map.
+  for (const file of existsSync(deployDir) ? readdirSync(deployDir) : []) {
+    const match = /^session-id-(.+)\.txt$/.exec(file);
+    if (!match) continue;
+    assertSupportedRuntime(match[1]);
+    assertMatchingRuntime(match[1], "opencode");
+  }
   const sessionPath = resolve(deployDir, sessionFileName);
   if (!existsSync(sessionPath)) {
-    const otherRuntime = detectOtherRuntimeSession(deployDir, sessionFileName);
-    if (otherRuntime) {
-      throw new Error(`cannot resume: deploy ${deploymentId} was launched by ${otherRuntime.runtime}; use '${otherRuntime.binary} deploy --resume ${deploymentId}'`);
-    }
     throw new Error(`no opencode session id recorded for ${deploymentId} — cannot resume (foreground TUI runs are not resumable)`);
   }
   const value = readFileSync(sessionPath, "utf-8").trim();
@@ -371,19 +384,6 @@ function readPriorSession(deploymentId: string, sessionFileName: string): string
     throw new Error(`empty opencode session id recorded for ${deploymentId} — cannot resume`);
   }
   return value;
-}
-
-function detectOtherRuntimeSession(deployDir: string, expectedSessionFileName: string): { runtime: string; binary: string } | undefined {
-  const knownSessions: Record<string, { runtime: string; binary: string }> = {
-    "session-id-claude.txt": { runtime: "claude", binary: "cpa" },
-    "session-id-opencode.txt": { runtime: "opencode", binary: "opa" },
-    "session-id-droid.txt": { runtime: "droid", binary: "dpa" },
-    "session-id-pi.txt": { runtime: "pi", binary: "ppa" },
-  };
-  for (const [fileName, runtime] of Object.entries(knownSessions)) {
-    if (fileName !== expectedSessionFileName && existsSync(resolve(deployDir, fileName))) return runtime;
-  }
-  return undefined;
 }
 
 function computePlannerVars(team: string, mode: string | undefined, today: string): Record<string, string> {

@@ -33,7 +33,7 @@ Commands (run in this exact order):
 4. `env CI=1 TZ=UTC corepack pnpm typecheck`
 5. `env CI=1 TZ=UTC corepack pnpm build`
 6. `env CI=1 TZ=UTC corepack pnpm test`
-7. `env CI=1 TZ=UTC corepack pnpm completions && git diff --exit-code -- completions/pa-core.fish completions/ppa.fish completions/opa.fish completions/cpa.fish completions/dpa.fish`
+7. `env CI=1 TZ=UTC corepack pnpm completions && git diff --exit-code -- completions/pa-core.fish completions/ppa.fish completions/opa.fish`
 8. `git diff --check`
 9. `corepack pnpm secrets:scan`
 

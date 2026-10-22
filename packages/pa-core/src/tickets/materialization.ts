@@ -105,7 +105,7 @@ export function materializeTicketBranch(options: MaterializeTicketBranchOptions)
     const selectedBase = approvedBase === undefined ? developSha : fullCommit(runGit, canonicalRoot, `${approvedBase}^{commit}`, "approved preparation base");
     if (approvedBase !== undefined && selectedBase !== approvedBase) throw diagnostic("approved preparation base did not resolve exactly", "preserve the checkout and reconcile the immutable approval source");
     if (approvedBase !== undefined && linked.state === "materialized" && linked.baseSha !== approvedBase) throw diagnostic("retained materialization base does not match the current exact approved preparation base", "preserve historical provenance and obtain the owning changed-base or migration decision");
-    const existingHead = optionalCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}^{commit}`);
+    const existingHead = optionalCommit(runGit, canonicalRoot, `refs/heads/${linked.branch}`);
     const occupiedAt = branchWorktree(runGit, canonicalRoot, linked.branch);
     if (occupiedAt && occupiedAt !== worktreeRoot) {
       throw diagnostic(`ticket branch ${linked.branch} is already checked out at ${occupiedAt}`, "stop the other checkout or reconcile it under operator control; do not replace the branch");
@@ -192,7 +192,15 @@ function fullCommit(runGit: (args: readonly string[], cwd: string) => string | B
 }
 
 function optionalCommit(runGit: (args: readonly string[], cwd: string) => string | Buffer, root: string, ref: string): string | undefined {
-  try { return fullCommit(runGit, root, ref, ref); } catch { return undefined; }
+  // --exists distinguishes an absent exact ref (2) from lookup failure (1).
+  // A present ref must still resolve to a commit: dangling/noncommit refs are errors.
+  try { runGit(["show-ref", "--exists", ref], root); }
+  catch (error) {
+    const result = error as { status?: number; stdout?: Buffer } | null;
+    if (result?.status === 2 && !result.stdout?.length) return undefined;
+    throw error;
+  }
+  return fullCommit(runGit, root, `${ref}^{commit}`, ref);
 }
 
 function isAncestor(runGit: (args: readonly string[], cwd: string) => string | Buffer, root: string, base: string, head: string): boolean {
@@ -210,7 +218,12 @@ function exactPhysicalPath(value: string, label: string): string {
 function lengthPrefix(value: Buffer): Buffer { const result = Buffer.alloc(8); result.writeBigUInt64BE(BigInt(value.length)); return result; }
 function gitText(value: string | Buffer): string { return typeof value === "string" ? value : value.toString("utf8"); }
 function gitBytes(value: string | Buffer): Buffer { return typeof value === "string" ? Buffer.from(value, "utf8") : Buffer.from(value); }
-function defaultGit(args: readonly string[], cwd: string): Buffer { return execFileSync("git", [...args], { cwd, maxBuffer: 16 * 1024 * 1024 }); }
+function defaultGit(args: readonly string[], cwd: string): Buffer {
+  // Capture only the optional existence operation. Other Git diagnostics keep
+  // their existing presentation; no checkout/required-ref stderr is discarded.
+  const optionalProbe = args[0] === "show-ref" && args[1] === "--exists";
+  return execFileSync("git", [...args], { cwd, ...(optionalProbe ? { stdio: ["ignore", "pipe", "pipe"] as const } : {}), maxBuffer: 16 * 1024 * 1024 });
+}
 function diagnostic(reason: string, resume: string): Error {
   const message = `Condition: ticket branch materialization. Source: authenticated registered Treehouse checkout and ticket linked-branch evidence. Reason: ${reason}. Correction: preserve canonical and Treehouse checkouts without reset, cleanup, or branch replacement. Resume Action: ${resume}.`;
   return new Error(message.length <= MAX_REPOSITORY_DIAGNOSTIC_CHARS ? message : `${message.slice(0, MAX_REPOSITORY_DIAGNOSTIC_CHARS - 3)}...`);

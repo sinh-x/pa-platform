@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import yaml from "js-yaml";
+import { assertSupportedRuntime } from "./deploy/runtime-config.js";
 import { expandHome, getConfigDir, getDataDir, getPlatformHomeDir, getSkillsDir, getTeamsDir, getUserConfigPath } from "./paths.js";
 import type { PlatformConfig, ProviderDefaults, RepoConfig } from "./types.js";
 
@@ -36,12 +37,14 @@ export function loadConfig(configPath = getUserConfigPath()): PlatformConfig {
     ? (yaml.load(readFileSync(configPath, "utf-8")) as RawConfig | undefined) ?? {}
     : {};
 
+  if (raw.defaults && Object.hasOwn(raw.defaults, "runtime")) assertSupportedRuntime(raw.defaults.runtime);
+
   const homeDir = process.env["PA_PLATFORM_HOME"] ? expandHome(process.env["PA_PLATFORM_HOME"]) : raw.config_dir ? expandHome(raw.config_dir) : getPlatformHomeDir();
   const teamsDir = process.env["PA_PLATFORM_TEAMS"] ? expandHome(process.env["PA_PLATFORM_TEAMS"]) : raw.teams_dir ? expandHome(raw.teams_dir) : raw.config_dir ? resolve(homeDir, "teams") : getTeamsDir();
   const skillsDir = process.env["PA_PLATFORM_SKILLS"] ? expandHome(process.env["PA_PLATFORM_SKILLS"]) : raw.skills_dir ? expandHome(raw.skills_dir) : raw.config_dir ? resolve(homeDir, "skills/global") : getSkillsDir();
 
   // Merge provider_defaults from the external config repo (config_dir) if present,
-  // so that provider credentials (e.g. factory api_key) stored in the external repo
+  // so that provider credentials stored in the external repo
   // flow through to all adapters. The main config overrides the external config.
   let externalProviderDefaults: ProviderDefaults | undefined;
   let externalRepos: Record<string, RepoConfig> | undefined;

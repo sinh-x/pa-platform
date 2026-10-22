@@ -99,6 +99,65 @@ function terminalEvents(deployId: string) {
   return getDeploymentEvents(deployId).filter((event) => event.event === "completed" || event.event === "crashed");
 }
 
+test("PAP-267 AC-3/5/6: requirements/builder runners preserve raw warnings, JSON, UUID and fresh/resume failures", async () => {
+  for (const team of ["requirements", "builder"]) for (const fresh of [true, false]) {
+    await withRunnerEnv(async (_root, _deployDir, config) => {
+      config.team = team;
+      appendRegistryEvent({ deployment_id: config.deploymentId, team, event: "started", timestamp: "2026-08-29T00:00:00.000Z", runtime: "pi", binary: "ppa", pid: 81_001, effective_timeout_seconds: 120 });
+      config.sessionId = "48c3aa4b-bc54-4772-944e-17f92103c1c1";
+      config.startup = { fresh, version: "1.0.4" };
+      const child = new RunnerChild();
+      let args: string[] = [];
+      const running = runPiBackgroundRunner(config, { supervision: {
+        spawnProcess: ((_file, argv) => { args = argv; return child as never; }) as typeof spawn,
+        persistLine: () => {},
+      } });
+      await immediate();
+      const warning = `Warning: No project session found with id '${config.sessionId}'; creating a new session with that id.\r\n`;
+      child.stderr.emit("data", Buffer.from(warning.slice(0, 20)));
+      child.stderr.emit("data", Buffer.from(warning.slice(20) + "real failure\n"));
+      child.stdout.emit("data", Buffer.from('{"type":"agent_start"}\n'));
+      child.emit("close", 7, null);
+      await running;
+      assert.equal(args[args.indexOf("--session-id") + 1], config.sessionId);
+      assert.deepEqual(args.slice(0, 3), ["--print", "--mode", "json"]);
+      const event = terminalEvents(config.deploymentId)[0]!;
+      assert.match(event.summary ?? "", /real failure/);
+      assert.equal((event.summary ?? "").includes("No project session found"), !fresh);
+      assert.match(readFileSync(config.logFile, "utf8"), /No project session found/);
+      assert.equal(queryDeploymentStatus(config.deploymentId)?.status, "failed");
+    }, "d-startup-runner", false);
+  }
+});
+
+test("PAP-267: launcher transports trusted fresh/resume version context; malformed context rejects", async () => {
+  for (const resume of [false, true]) await withRunnerEnv(async (_root, deployDir, config) => {
+    let observed: PiBackgroundConfig | undefined;
+    const adapter = new PiAdapter({ cwd: deployDir, env: { PA_PI_FRESH: "true", PA_PI_VERSION: "1.0.4" },
+      versionProbe: () => "0.84.4", nativeRegistryProbe: () => undefined, supervision: {
+        launchBackgroundRunner: (_runner, path) => {
+          observed = readPiBackgroundConfig(path);
+          writePiSupervisorOwnership(join(deployDir, PI_SUPERVISOR_FILE), { schemaVersion: 1, deploymentId: observed.deploymentId,
+            ownershipToken: observed.ownershipToken, state: "active", ready: true, supervisorPid: 81002, childPid: 81001,
+            updatedAt: new Date().toISOString(), finalizationDeadlineMs: 4900 });
+          return new LauncherProcess() as never;
+        },
+      } });
+    const opts = { primerPath: config.primerPath, deployId: config.deploymentId, mode: "background" as const, sessionId: config.sessionId };
+    const result = await (resume ? adapter.resume(opts) : adapter.spawn(opts));
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(observed?.startup, { fresh: !resume, version: "0.84.4" });
+    const path = join(deployDir, PI_BACKGROUND_CONFIG_FILE);
+    for (const startup of [null, [], { fresh: "true", version: "1.0.4" }, { fresh: true }, { fresh: true, version: "1.0.4", id: "other" }]) {
+      writeFileSync(path, JSON.stringify({ ...observed, startup }));
+      assert.throws(() => readPiBackgroundConfig(path), /configuration is malformed/);
+    }
+    const { startup: _startup, ...legacy } = observed!;
+    writeFileSync(path, JSON.stringify(legacy));
+    assert.equal(readPiBackgroundConfig(path).startup, undefined);
+  });
+});
+
 for (const scenario of ["failed-dirty", "partial-commit", "ticket-conflict"] as const) test(`parented terminal settlement: ${scenario} uses real process-birth and preserves original outcome`, async () => {
   await withRunnerEnv(async (root, deployDir, config) => {
     const { primary, worktree, gitDir, gitCommonDir } = linkedRepository(root, "feature/PAP-238-terminal-fixture");

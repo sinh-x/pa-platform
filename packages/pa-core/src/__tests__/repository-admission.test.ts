@@ -184,6 +184,25 @@ function reviewReservationFixture() {
   } };
 }
 
+test("opaque historical runtime ownership remains a live blocker even with force", () => {
+  const root = fixture("historical-runtime");
+  try {
+    const owner = fingerprint();
+    const held = acquire(root, owner);
+    assert.equal(held.status, "acquired");
+    const path = repositoryMutationLeasePath(root);
+    const historical = { ...JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>, runtime: "unsupported-synthetic" };
+    writeFileSync(path, JSON.stringify(historical));
+    const before = readFileSync(path);
+    const inspection = inspectRepositoryMutationLease(root, dependencies(owner));
+    assert.equal(inspection.state, "live");
+    assert.equal(inspection.lease?.runtime, "unsupported-synthetic");
+    const blocked = acquire(root, fingerprint(41002), { force: true, deps: dependencies(owner) });
+    assert.equal(blocked.status, "rejected");
+    assert.deepEqual(readFileSync(path), before);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 const reviewAuthorization = "review-auth:11111111-1111-4111-8111-111111111111";
 
 test("review reservation finalizes only matching terminal evidence", () => {

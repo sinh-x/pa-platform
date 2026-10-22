@@ -115,13 +115,13 @@ test("explicit neutral board selection and canonical inspection do not invoke de
   assert.deepEqual(snapshot(f.root), before);
 }));
 
-test("capability never widens branch create or quarantine; OPA/CPA and binary spelling alone retain default rejection", () => isolated(async (f) => {
+test("capability never widens branch create or quarantine; OPA and binary spelling alone retain default rejection", () => isolated(async (f) => {
   const forbidden: ReadOnlyHelperCapability = { authenticate() { assert.fail("mutation commands cannot consume helper capability"); } };
   const before = snapshot(f.root);
   for (const argv of [["branch", "create", "ALT-7", "--topic", "forbidden"], ["repository", "quarantine", "--expected-evidence", `v1-${"a".repeat(64)}`]]) {
     const result = await command(argv, forbidden); assert.equal(result.code, 1); assert.match(result.stderr, /linked Git working tree/i);
   }
-  for (const binary of ["opa", "cpa", "ppa"]) {
+  for (const binary of ["opa", "unsupported-synthetic", "ppa"]) {
     for (const argv of [["branch", "validate"], ["board"], ["repository", "inspect"]]) {
       assert.equal((await command(argv, undefined, binary)).code, 1);
     }

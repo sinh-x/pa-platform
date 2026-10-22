@@ -65,7 +65,9 @@ export async function runCoreCommand(argv: string[], opts: RunCoreCommandOptions
       sendProcessSignal: opts.sendProcessSignal ?? sendProcessGroupSignal,
       ...(opts.beforePiSupervisorLivenessCheck ? { beforePiSupervisorLivenessCheck: opts.beforePiSupervisorLivenessCheck } : {}),
     });
-    if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {}, opts.binaryName ?? defaultBinaryName());
+    // Programmatic callers have no adapter identity unless they supply one. argv[1]
+    // is only a display label (and may be a test or embedding application).
+    if (command === "deploy") return runDeployCommand(rest, io, opts.hooks ?? {}, opts.binaryName ?? "pa-core");
     if (command === "evaluate") return runEvaluateCommand(rest, io, opts.hooks ?? {});
     if (command === "serve" || command === "stop" || command === "restart" || command === "serve-status") return runServeCommand(command, rest, io, opts.hooks ?? {});
     if (command === "schedule") return runScheduleCommand(rest, io);

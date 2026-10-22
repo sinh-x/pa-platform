@@ -2,7 +2,7 @@
 
 Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 
-`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters provide execution hooks without duplicating core behavior. `opa` is the OpenCode deployment adapter, `cpa` is the Claude Code adapter, `dpa` is the Droid adapter, and `ppa` is the Pi adapter; `pa-core` still owns runtime-neutral server lifecycle behavior.
+`pa-platform` extracts shared PA state, API, CLI, registry, ticket, bulletin, document, health, codectx, signal, team, and primer logic into `packages/pa-core`. Runtime adapters provide execution hooks without duplicating core behavior. `opa` (OpenCode) and `ppa` (Pi) are the only deployment adapters; `pa-core` still owns runtime-neutral server lifecycle behavior.
 
 ## Packages
 
@@ -10,8 +10,6 @@ Runtime-neutral core library and adapter foundation for PA agent-team workflows.
 |---|---|
 | `@pa-platform/pa-core` | Runtime-neutral PA core library, shared CLI dispatcher, and Agent API app |
 | `@pa-platform/opencode-pa` | OpenCode adapter that provides the `opa` CLI and runtime hooks |
-| `@pa-platform/claudecode-pa` | Claude Code adapter that provides the `cpa` CLI, settings.json hooks, and stream-json activity capture |
-| `@pa-platform/droidcode-pa` | Droid adapter that provides the `dpa` CLI driven by the Factory SDK with streaming activity capture |
 | `@pa-platform/pi-pa` | Pi adapter that provides the `ppa` CLI and normalized Pi activity capture |
 
 ## CLI
@@ -29,22 +27,26 @@ pa-core status
 
 Ticket lists default to active, non-archived, non-backlog work. `--all` removes only those default exclusions, so explicit project, status, assignee, priority, type, tag, and search filters continue to compose.
 
-Deployment execution is adapter-hooked. Use `opa` for OpenCode runs, `cpa` for Claude Code runs, `dpa` for Droid runs, and `ppa` for Pi runs:
+Deployment execution is adapter-hooked. Use `opa` for OpenCode runs and `ppa` for Pi runs:
 
 ```bash
 opa deploy builder --mode implement
-cpa deploy builder --mode implement
-dpa deploy builder --mode implement
 ppa deploy builder --mode implement
 ```
 
-`cpa` defaults to model `claude-opus-4-7` and `--provider anthropic`; see `docs/cpa-claude-code-adapter.md` for the full adapter overview.
+Unsupported runtime selections reject before allocation or spawn; they are never translated to another adapter. Historical runtime identifiers remain readable as opaque metadata, but unsupported sessions cannot be resumed. No operational history, operator credentials or unrelated tools are removed. Provider/model support through the retained adapters is unchanged.
 
-`dpa` defaults to model `deepseek-v4-pro` and requires `FACTORY_API_KEY` in the environment. Provider hints map to Droid model IDs. See `docs/dpa-droid-adapter.md` for the full adapter overview.
+### Runtime compatibility and paired rollout
+
+Active runtime schemas accept only `opencode` and `pi`. Registry events/status retain opaque string runtime metadata for historical inspection; metadata and session filenames do not grant launch authority. Unsupported or mismatched resumes fail without allocating a new deployment, rewriting history, or suggesting an unavailable executable.
+
+PAPC-066 is a recommended follow-up for separately approved configuration cleanup, not a ticket-status dependency or merge gate. Paired validation uses the reviewed exact config pin and preserves safety/authority checks; older combined-runtime wording is read-only compatibility, not launch authority. Source cleanup alone does not establish installed readiness, change operator settings, or authorize a host upgrade.
+
+Before a separately authorized rollout, record the candidate/base, lockfile, package output and paired-config SHAs. Rollback uses the prior matched source/package/config pair under operator authority; preserve registry/log/session bytes and live holders, and never convert sessions or infer permission to resume unsupported runtimes. No automatic host uninstall, credential migration, worktree return or history rewrite is performed.
 
 ### Rogue-One bare deployment
 
-Exact team selection `ppa|opa|cpa|dpa deploy rogue-one` activates a fixed `rogue-one` bare profile; there is no bypass flag. It omits PA workflow/review primer content and bypasses ticket, Git-status, repository-lease, workflow-approval, and final-review admission. It does **not** bypass registered repository identity, sensitive-input or runtime/provider validation, adapter hooks and permissions, runtime tool/host constraints, logging, or registry lifecycle. A supplied `--mode` is ignored with a warning.
+Exact team selection `ppa|opa deploy rogue-one` activates a fixed `rogue-one` bare profile; there is no bypass flag. It omits PA workflow/review primer content and bypasses ticket, Git-status, repository-lease, workflow-approval, and final-review admission. It does **not** bypass registered repository identity, sensitive-input or runtime/provider validation, adapter hooks and permissions, runtime tool/host constraints, logging, or registry lifecycle. A supplied `--mode` is ignored with a warning.
 
 Rogue-one intentionally does not serialize repository mutation, so concurrent or dirty-checkout work can overwrite other work. The Agent API supports rogue-one only for OpenCode/Pi and requires `Authorization: Bearer <PA_AGENT_API_OPERATOR_CREDENTIAL>`; credentials are not persisted in rogue audit evidence.
 
@@ -62,7 +64,7 @@ ppa deploy builder --mode implement --background
 ppa deploy builder --mode implement --dry-run
 ```
 
-Every non-dry Pi deployment stores a session UUID in `session-id-pi.txt`. Resume it with `ppa deploy <team> --resume <deployment-id>`; cross-runtime resumes are rejected before spawn and identify the correct adapter.
+Every non-dry Pi deployment stores a session UUID in `session-id-pi.txt`. Resume it with `ppa deploy <team> --resume <deployment-id>`; cross-runtime and unsupported historical resumes are rejected before allocation or spawn without converting sessions.
 
 The Agent API server is core-owned:
 
@@ -80,7 +82,7 @@ See the [v1 contract](docs/contracts/lavish-artifact-review-v1.md) for exact
 schemas/diagnostics and the [readiness index](docs/artifacts/pap-197-runtime-readiness.md)
 for tested versus pending evidence. No PAPC configuration is changed here.
 
-`ppa`, `opa` and `cpa` share these commands (use authorized absolute paths):
+`ppa` and `opa` share these commands (use authorized absolute paths):
 
 ```sh
 ppa artifact render --source /absolute/document.md --output-dir /absolute/new-companion --json
@@ -111,7 +113,7 @@ CI and human UAT are still pending; aarch64 is evaluation-only, not native-ready
 `lib.mkPaPlatform` accepts independent strict booleans `enableGhAxi`,
 `enableChromeDevtoolsAxi`, and `enableQuotaAxi`, all **false** by default. Selected
 outputs add only managed executable shims and their pinned dependencies to PPA
-PATH; OPA/CPA/DPA and pa-core added prefixes are unchanged. Inherited host PATH
+PATH; OPA and pa-core added prefixes are unchanged. Inherited host PATH
 is not a sandbox prohibition. Pi's existing plugin selection and managed
 skill/extension discovery remain unchanged; no AXI skill or global hook is
 installed. PAPC-040 owns later selected skills; Lavish 0.1.67 remains separately
@@ -129,7 +131,7 @@ pa-platform.lib.mkPaPlatform "x86_64-linux" {
 ```
 
 Strings, integers and null are rejected, not coerced. All default package aliases
-(`default`, `pa-platform`, `pa-core`, `opa`, `cpa`, `dpa`, `ppa`) and the default
+(`default`, `pa-platform`, `pa-core`, `opa`, `ppa`) and the default
 overlay keep all three tools disabled. Explicit standalone tool outputs exist on
 x86_64-linux and aarch64-linux; only x86_64-linux native execution is covered.
 
@@ -385,7 +387,7 @@ corepack pnpm build
 nix flake show --no-write-lock-file
 ```
 
-Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`, `completions/opa.fish`, `completions/cpa.fish`, `completions/dpa.fish`, and `completions/ppa.fish`.
+Fish completions are installed by the Nix package and maintained in `completions/pa-core.fish`, `completions/opa.fish`, and `completions/ppa.fish`.
 
 Regenerate adapter completions and run the staged secret scanner with:
 
